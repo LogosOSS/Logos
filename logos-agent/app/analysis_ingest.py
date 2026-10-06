@@ -394,12 +394,12 @@ async def upsert_analysis(
                     text("""
                         INSERT INTO ai_workflows
                             (analysis_id, name, trigger_summary, diagram_mermaid, sort_order, tag,
-                             diagram_set_by_owner, proposed_diagram_mermaid, dismissed_diagram_mermaid,
-                             status, deleted_at)
+                             status, deleted_at, previous_workflow_id,
+                             diagram_set_by_owner, proposed_diagram_mermaid, dismissed_diagram_mermaid)
                         VALUES
                             (:analysis_id, :name, :trigger_summary, :diagram, :sort_order, :tag,
-                             :diagram_set_by_owner, :proposed, :dismissed,
-                             :status, :deleted_at)
+                             :status, :deleted_at, :previous_workflow_id,
+                             :diagram_set_by_owner, :proposed, :dismissed)
                         RETURNING id
                         """),
                     {
@@ -410,6 +410,7 @@ async def upsert_analysis(
                         "sort_order": int(raw.get("sort_order") if raw.get("sort_order") is not None else index),
                         "tag": (previous_wf or {}).get("tag")
                         or unique_workflow_tag(normalize_workflow_tag(raw.get("tag")), taken_tags),
+                        "previous_workflow_id": (previous_wf or {}).get("id"),
                         "diagram_set_by_owner": owner_flag,
                         "proposed": proposed,
                         "dismissed": dismissed,
@@ -690,6 +691,7 @@ async def _previous_workflows(conn: Any, team_repository_id: int, analysis_id: i
         workflow = previous.setdefault(
             row.get("workflow_id", name),
             {
+                "id": row.get("workflow_id"),
                 "name": name,
                 "diagram_mermaid": row.get("diagram_mermaid"),
                 "diagram_set_by_owner": row.get("diagram_set_by_owner"),
