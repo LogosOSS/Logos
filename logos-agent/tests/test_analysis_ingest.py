@@ -70,6 +70,8 @@ class _Conn:
             return _Result([dict(p) for p in self.previous_workflows])
         if "FROM ai_llm_call_recommendations r" in text_sql:
             return _Result([dict(p) for p in self.previous])
+        if "FROM ai_workflows w LEFT JOIN ai_workflow_steps s" in text_sql:
+            return _Result([dict(p) for p in self.previous_workflows])
         if "SELECT commit_sha FROM ai_workflow_analyses" in text_sql:
             return _Result(self.analysed_commit)
         if "FROM team_repositories" in text_sql and "SELECT" in text_sql:
@@ -269,6 +271,65 @@ async def test_upsert_persists_workflow_tag_and_steps(monkeypatch):
     assert recs[0]["step_id"] == 500
     assert recs[0]["workflow_id"] == 100
     assert recs[1]["step_id"] is None
+
+
+async def test_upsert_carries_workflow_lifecycle_and_step_confirmation(monkeypatch):
+    previous_row = {
+        "workflow_name": "checkout",
+        "status": "ignored",
+        "deleted_at": None,
+        "workflow_tag": "owner-tag",
+    }
+    conn = _Conn(
+        previous_workflows=[
+            {
+                **previous_row,
+                "step_name": "score",
+                "step_tag": "owner-score",
+                "confirmed_sla": "ux-background",
+                "confirmed_objective_priority": '["price", "quality", "latency"]',
+            },
+            {
+                **previous_row,
+                "step_name": "summarize",
+                "step_tag": None,
+                "confirmed_sla": None,
+                "confirmed_objective_priority": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(db, "sessionmaker", lambda: (lambda: conn))
+    payload = {
+        "commit_sha": "def456",
+        "workflows": [
+            {
+                "name": "checkout",
+                "tag": "checkout",
+                "steps": [
+                    {"name": "score", "tag": "score", "recommended_sla": "ux-critical"},
+                    {"name": "summarize", "tag": "summarize", "recommended_sla": "ux-background"},
+                ],
+            },
+            {"name": "search", "tag": "search", "steps": []},
+        ],
+        "recommendations": [],
+    }
+    await analysis_ingest.upsert_analysis(session_id=6, team_repository_id=11, payload=payload)
+
+    workflows = [p for sql, p in conn.statements if "INSERT INTO ai_workflows" in sql]
+    assert workflows[0]["status"] == "ignored"
+    assert workflows[0]["tag"] == "owner-tag"
+    assert workflows[1]["status"] == "active"
+    assert workflows[1]["deleted_at"] is None
+    assert workflows[1]["tag"] == "search"
+    steps = [p for sql, p in conn.statements if "INSERT INTO ai_workflow_steps" in sql]
+    assert steps[0]["tag"] == "owner-score"
+    assert steps[0]["sla"] == "ux-critical"
+    assert steps[0]["confirmed_sla"] == "ux-background"
+    assert json.loads(steps[0]["confirmed_priority"]) == ["price", "quality", "latency"]
+    assert steps[1]["tag"] == "summarize"
+    assert steps[1]["confirmed_sla"] is None
+    assert steps[1]["confirmed_priority"] is None
 
 
 def test_normalize_workflow_tag():
