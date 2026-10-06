@@ -336,6 +336,13 @@ group.
 
 ![Teams page](/img/roles/logos-admin-team-management.png)
 
+Below the team list, Logos Admins also see **Queue order**: an ordered ranking
+of application keys across teams. Rank 1 is served first when SLO and priority
+buckets tie. For example, `testapp1-prod` can outrank `testapp2-prod` while
+`testapp1-staging` stays below `testapp2-test`. Move keys up or down, remove
+them from the ranking, or add an unranked application key from any team. Keys
+that are not in the list keep their usual team and per-key priority only.
+
 ### Keycloak Group Links
 
 A team can get its members from a Keycloak group or a realm role. Then you do

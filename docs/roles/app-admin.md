@@ -100,6 +100,31 @@ key priorities do not change. When you accept or override a recommendation,
 Logos sets the queue priority of that key from the confirmed SLO. Thus the
 orchestrator serves the traffic as the SLO requires.
 
+#### Lifecycle
+
+Workflows start as **active**. Owners can **Deprecate** or **Ignore** one so
+it leaves the default list (toggle **Show deprecated / ignored** to see them
+again), **Restore** it to active, or **Delete** it (soft — it disappears from
+the list). Soft-deleted workflows are not shown even with the toggle on.
+
+#### Steps and tags
+
+A workflow may contain multiple **steps**, each with its own recommended (and
+confirmable) SLO. Applications attribute traffic by sending
+`X-Logos-Workflow-Tag` with the workflow or step tag (click the tag chip for a
+copy hint). Alternatively, a request can set its SLO directly with
+`X-Logos-SLA` (`ux-critical`, `ux-high-prio`, or `ux-background`).
+
+**Propose tagging PR** queues an agent session that opens a pull request in
+the linked repository to add those headers at the call sites.
+
+#### Compare model
+
+**Compare model** opens an inline benchmark: pick a candidate model from the
+catalogue, run compare, and see historic metrics for tagged traffic (sample
+count, latency percentiles, models seen) plus a note that live candidate
+metrics need traffic on that model.
+
 A new analysis **proposes** changes and does not overwrite your decisions. If
 it recommends what you already accepted, overrode or rejected for a call site,
 Logos keeps your decision ("Kept from the previous analysis"). If it

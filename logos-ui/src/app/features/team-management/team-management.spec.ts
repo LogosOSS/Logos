@@ -48,6 +48,9 @@ describe('TeamManagement', () => {
     updateTeamPriority: ReturnType<typeof vi.fn>;
     getKeycloakGroups: ReturnType<typeof vi.fn>;
     createTeam: ReturnType<typeof vi.fn>;
+    getApplicationKeyQueueRanks: ReturnType<typeof vi.fn>;
+    getTeamApiKeys: ReturnType<typeof vi.fn>;
+    replaceApplicationKeyQueueRanks: ReturnType<typeof vi.fn>;
   };
   let currentUser: ReturnType<typeof signal<User | null>>;
 
@@ -78,6 +81,9 @@ describe('TeamManagement', () => {
       updateTeamPriority: vi.fn().mockResolvedValue(undefined),
       getKeycloakGroups: vi.fn().mockResolvedValue({ available: false, groups: [] }),
       createTeam: vi.fn().mockResolvedValue(team()),
+      getApplicationKeyQueueRanks: vi.fn().mockResolvedValue([]),
+      getTeamApiKeys: vi.fn().mockResolvedValue([]),
+      replaceApplicationKeyQueueRanks: vi.fn().mockResolvedValue([]),
     };
     TestBed.resetTestingModule();
   });

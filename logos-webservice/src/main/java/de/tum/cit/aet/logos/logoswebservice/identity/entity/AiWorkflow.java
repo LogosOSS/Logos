@@ -1,5 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.identity.entity;
 
+import java.time.Instant;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -39,6 +41,15 @@ public class AiWorkflow {
     /** Agent Mermaid the owner dismissed; ingest does not propose it again. */
     private String dismissedDiagramMermaid;
 
+    /** active | deprecated | ignored — ignored/deprecated stay in the DB but leave the default UI. */
+    @Column(nullable = false)
+    private String status = "active";
+
+    private Instant deletedAt;
+
+    /** Stable tag applications send as X-Logos-Workflow-Tag to attribute traffic. */
+    private String tag;
+
     public Integer getId() { return id; }
     public Integer getAnalysisId() { return analysisId; }
     public String getName() { return name; }
@@ -48,6 +59,9 @@ public class AiWorkflow {
     public boolean isDiagramSetByOwner() { return diagramSetByOwner; }
     public String getProposedDiagramMermaid() { return proposedDiagramMermaid; }
     public String getDismissedDiagramMermaid() { return dismissedDiagramMermaid; }
+    public String getStatus() { return status; }
+    public Instant getDeletedAt() { return deletedAt; }
+    public String getTag() { return tag; }
 
     public void setAnalysisId(Integer analysisId) { this.analysisId = analysisId; }
     public void setName(String name) { this.name = name; }
@@ -61,4 +75,7 @@ public class AiWorkflow {
     public void setDismissedDiagramMermaid(String dismissedDiagramMermaid) {
         this.dismissedDiagramMermaid = dismissedDiagramMermaid;
     }
+    public void setStatus(String status) { this.status = status; }
+    public void setDeletedAt(Instant deletedAt) { this.deletedAt = deletedAt; }
+    public void setTag(String tag) { this.tag = tag; }
 }

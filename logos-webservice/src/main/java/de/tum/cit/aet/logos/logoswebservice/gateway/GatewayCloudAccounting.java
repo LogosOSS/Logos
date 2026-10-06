@@ -198,12 +198,28 @@ public class GatewayCloudAccounting {
     public Integer admitAndReserve(GatewayKey key, GatewayDeployment deployment,
                                    byte[] requestBody, String logLevel, Instant arrivedAt,
                                    String reasoningEffort) {
+        return admitAndReserve(key, deployment, requestBody, logLevel, arrivedAt,
+            reasoningEffort, GatewayRequestAttribution.EMPTY);
+    }
+
+    /**
+     * As {@link #admitAndReserve(GatewayKey, GatewayDeployment, byte[], String, Instant, String)},
+     * also storing the workflow attribution the request carries.
+     *
+     * @param attribution the workflow, step and SLA the request is attributed to
+     */
+    @Transactional
+    public Integer admitAndReserve(GatewayKey key, GatewayDeployment deployment,
+                                   byte[] requestBody, String logLevel, Instant arrivedAt,
+                                   String reasoningEffort, GatewayRequestAttribution attribution) {
         budgetService.enforceCloudBudget(key, deployment.providerId());
 
         if (reservationMicroCents <= 0) {
             return null;
         }
         String privacy = privacyLevel(logLevel);
+        GatewayRequestAttribution attr = attribution == null
+            ? GatewayRequestAttribution.EMPTY : attribution;
         String requestId = "gw-" + UUID.randomUUID();
         Instant admittedAt = Instant.now();
         MapSqlParameterSource params = new MapSqlParameterSource()
@@ -220,7 +236,11 @@ public class GatewayCloudAccounting {
             .addValue("privacy_level", privacy)
             .addValue("reasoning_effort", reasoningEffort)
             .addValue("input_payload",
-                GatewayLoggingLevel.storesPayloads(privacy) ? asJsonb(requestBody) : null);
+                GatewayLoggingLevel.storesPayloads(privacy) ? asJsonb(requestBody) : null)
+            .addValue("workflow_tag", attr.workflowTag())
+            .addValue("workflow_id", attr.workflowId())
+            .addValue("workflow_step_id", attr.workflowStepId())
+            .addValue("request_sla", attr.requestSla());
         KeyHolder keys = new GeneratedKeyHolder();
         jdbc.update("""
             INSERT INTO log_entry (
@@ -228,14 +248,16 @@ public class GatewayCloudAccounting {
                 api_key_id, team_id, user_id, environment,
                 model_id, provider_id, request_id,
                 result_status, cost_finalized, settled_cost_micro_cents,
-                privacy_level, input_payload, reasoning_effort
+                privacy_level, input_payload, reasoning_effort,
+                workflow_tag, workflow_id, workflow_step_id, request_sla
             ) VALUES (
                 :arrived, :admitted,
                 :api_key_id, :team_id, :user_id, :environment,
                 :model_id, :provider_id, :request_id,
                 NULL, TRUE, :settled,
                 CAST(:privacy_level AS logging_enum), CAST(:input_payload AS jsonb),
-                CAST(:reasoning_effort AS TEXT)
+                CAST(:reasoning_effort AS TEXT),
+                :workflow_tag, :workflow_id, :workflow_step_id, :request_sla
             )
             """, params, keys, new String[] {"id"});
         Number id = keys.getKey();
