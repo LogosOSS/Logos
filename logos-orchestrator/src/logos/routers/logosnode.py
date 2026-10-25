@@ -24,6 +24,7 @@ from logos.dbutils.dbrequest import (
     LogosNodeClearUnsupportedRequest,
     LogosNodeDeleteLaneRequest,
     LogosNodeInvalidateCalibrationRequest,
+    LogosNodeMaintenanceRequest,
     LogosNodeModelProfilesRequest,
     LogosNodeReconfigureLaneRequest,
     LogosNodeRegisterRequest,
@@ -907,6 +908,43 @@ async def logosnode_calibration_reservation(data: LogosNodeCalibrationReservatio
             return _load_effective_profiles(provider_id, [data.model_name])
 
     return {"profiles": await asyncio.to_thread(_reserve)}
+
+
+async def _maintenance_provider_id(data: LogosNodeMaintenanceRequest, request: Request) -> int:
+    """The node a node manager's key belongs to. TLS is required because the key travels in the body."""
+    _require_tls_request(request)
+    provider = await asyncio.to_thread(_logosnode_provider_for_key, data.shared_key)
+    return int(provider["id"])
+
+
+@router.post("/logosdb/providers/logosnode/node-maintenance/cordon", tags=["logosnode"])
+async def logosnode_maintenance_cordon(data: LogosNodeMaintenanceRequest, request: Request):
+    """Cordon the caller's node for the replacement of its container, or renew the cordon.
+
+    ``status`` is ``granted`` or ``denied``. While another node is being replaced, or this one calibrates, the answer
+    is ``denied`` with a ``reason`` and the caller asks again later. A granted answer says whether the node has
+    ``drained``; the caller replaces the container only after it did, and gives the cordon back with ``release``.
+    """
+    provider_id = await _maintenance_provider_id(data, request)
+    return _main._node_maintenance.request(provider_id, data.deployment_id)
+
+
+@router.post("/logosdb/providers/logosnode/node-maintenance/status", tags=["logosnode"])
+async def logosnode_maintenance_status(data: LogosNodeMaintenanceRequest, request: Request):
+    """What the orchestrator sees of the caller's node: online, its session, whether it has drained.
+
+    The caller uses it to see that the node reconnected after its container was replaced. The call renews the cordon
+    when the deployment holds it.
+    """
+    provider_id = await _maintenance_provider_id(data, request)
+    return _main._node_maintenance.status(provider_id, data.deployment_id)
+
+
+@router.post("/logosdb/providers/logosnode/node-maintenance/release", tags=["logosnode"])
+async def logosnode_maintenance_release(data: LogosNodeMaintenanceRequest, request: Request):
+    """End the cordon of the caller's node. Repeating the call is harmless."""
+    provider_id = await _maintenance_provider_id(data, request)
+    return _main._node_maintenance.release(provider_id, data.deployment_id)
 
 
 @router.websocket("/logosdb/providers/logosnode/session")

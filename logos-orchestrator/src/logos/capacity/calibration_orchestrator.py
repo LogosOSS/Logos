@@ -255,6 +255,9 @@ class CalibrationOrchestrator:
                 continue
             if not self._registry.has_received_first_status(provider_id):
                 continue
+            if self._registry.is_cordoned(provider_id):
+                # Its container is about to be replaced; a calibration session would end with it.
+                continue
             if self._provider_is_unhealthy(provider_id):
                 continue
             if self._worker_locked(provider_id):
