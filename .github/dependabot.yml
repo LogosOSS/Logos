@@ -1,0 +1,37 @@
+version: 2
+updates:
+  # The logos services are uv projects. The ecosystem is "uv" rather than "pip"
+  # deliberately: these images install with `uv sync --locked`, so a bump that
+  # edited pyproject.toml without updating uv.lock would fail the build.
+  - package-ecosystem: "uv"
+    directory: "logos-agent"
+    schedule:
+      interval: "weekly"
+    groups:
+      logos-agent-python-dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
+  - package-ecosystem: "uv"
+    directory: "logos-orchestrator"
+    schedule:
+      interval: "weekly"
+    groups:
+      logos-orchestrator-python-dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
+  - package-ecosystem: "npm"
+    directories:
+      - "logos-ui"
+    schedule:
+      interval: "weekly"
+    groups:
+      npm-dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

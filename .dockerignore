@@ -1,0 +1,39 @@
+# The repo-root build context is used by logos-orchestrator/Dockerfile,
+# logos-agent/Dockerfile, logos-agent/workspace/Dockerfile,
+# agent-gateway/Dockerfile and rate-limit-gateway/Dockerfile.
+# Whitelist exactly what those Dockerfiles COPY so the context stays small
+# and untracked local files (benchmarks, calibration data, .git, …) never
+# get uploaded to the builder.
+#
+# A Dockerfile added here without its inputs whitelisted fails with
+# "failed to compute cache key: … not found" — the path is simply absent from
+# the context.
+*
+!db
+!logos-orchestrator/pyproject.toml
+# The orchestrator installs with `uv sync --locked`, so the lock is a build
+# input rather than local churn.
+!logos-orchestrator/uv.lock
+!logos-orchestrator/src
+!logos-orchestrator/tests
+# Agent runner: the service package and the session-image entrypoints.
+# Deliberately not the whole directory — no README, no tests in the image.
+!logos-agent/pyproject.toml
+!logos-agent/app
+!logos-agent/workspace/run_session.py
+!logos-agent/workspace/screenshot.js
+# The session image installs the repository's own hook environments at build
+# time, because a session has no network to install them with.
+!.pre-commit-config.yaml
+# The model gateway's nginx configuration, shipped in its image rather than
+# bind-mounted: a deployment copies only the compose file to its VM.
+!agent-gateway/nginx.conf
+# The per-IP rate-limit gateway's nginx configuration and entrypoint, same
+# reasoning as the agent gateway above.
+!rate-limit-gateway/nginx.conf
+!rate-limit-gateway/upstream.conf
+!rate-limit-gateway/entrypoint.sh
+**/__pycache__
+**/.venv
+**/.pytest_cache
+**/.mypy_cache
