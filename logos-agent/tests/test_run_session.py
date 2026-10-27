@@ -519,7 +519,7 @@ class TestFinalizer:
         remote_subject = _git(
             "--git-dir", str(origin), "log", "--format=%s", "-1", self.BRANCH, cwd=workspace
         ).stdout.strip()
-        assert remote_subject.startswith("`Logos`: ")
+        assert remote_subject and not remote_subject.startswith("`")
         parent = _git("--git-dir", str(origin), "rev-parse", f"{self.BRANCH}^", cwd=workspace).stdout.strip()
         base = _git("--git-dir", str(origin), "rev-parse", "main", cwd=workspace).stdout.strip()
         assert parent == base
@@ -975,15 +975,14 @@ class TestCommitSubjects:
         (tmp_path / "commit.txt").write_text("Cancel the queued request when the client goes away\n")
 
         assert (
-            run_session._commit_subject("some long task text")
-            == "`Logos`: Cancel the queued request when the client goes away"
+            run_session._commit_subject("some long task text") == "Cancel the queued request when the client goes away"
         )
 
     def test_it_stays_one_line(self, tmp_path, monkeypatch):
         monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
         (tmp_path / "commit.txt").write_text("Cancel the queued request\n\nAnd here is why, at length.\n")
 
-        assert run_session._commit_subject("task") == "`Logos`: Cancel the queued request"
+        assert run_session._commit_subject("task") == "Cancel the queued request"
 
     def test_a_long_line_is_cut_on_a_word(self, tmp_path, monkeypatch):
         monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
@@ -998,11 +997,11 @@ class TestCommitSubjects:
         # Cut between words, not through one.
         assert subject.split()[-1] in "Cancel the queued request when the client goes away before".split()
 
-    def test_a_repeated_prefix_is_not_doubled(self, tmp_path, monkeypatch):
+    def test_a_stray_prefix_is_dropped(self, tmp_path, monkeypatch):
         monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
         (tmp_path / "commit.txt").write_text("`Logos`: Cancel the queued request")
 
-        assert run_session._commit_subject("task") == "`Logos`: Cancel the queued request"
+        assert run_session._commit_subject("task") == "Cancel the queued request"
 
     def test_the_runner_s_sentence_is_the_fallback(self, tmp_path, monkeypatch):
         # Nothing written: what the session was for beats the task's first
@@ -1012,14 +1011,14 @@ class TestCommitSubjects:
         monkeypatch.setenv("LOGOS_SESSION_SUBJECT", "Address the review on #858")
 
         assert run_session._commit_subject("Pull request #851 ('…') has been assigned to you: …") == (
-            "`Logos`: Address the review on #858"
+            "Address the review on #858"
         )
 
     def test_something_is_always_committed(self, tmp_path, monkeypatch):
         monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
         monkeypatch.delenv("LOGOS_SESSION_SUBJECT", raising=False)
 
-        assert run_session._commit_subject("") == "`Logos`: Update from an agent session"
+        assert run_session._commit_subject("") == "Update from an agent session"
 
 
 class TestClosedIssues:
@@ -1163,7 +1162,7 @@ class TestHowAPullRequestIsOpened:
         run_session.open_pull_request("logos/agent/x", "main", "do the thing")
 
         title = calls[0][calls[0].index("--title") + 1]
-        assert title == "`Logos`: Fit the KPI card sparkline to its slot"
+        assert title == "Fit the KPI card sparkline to its slot"
 
     @staticmethod
     def reuse_capture(monkeypatch, tmp_path, *, number, url, commit_subject, edit_ok: bool = True):
@@ -1216,7 +1215,7 @@ class TestHowAPullRequestIsOpened:
 
         assert url == "https://github.com/x/y/pull/933"
         edit = next(cmd for cmd in calls if cmd[:3] == ["gh", "pr", "edit"])
-        assert edit[edit.index("--title") + 1] == "`Logos`: Forward OpenAI Batch API calls to upstream providers"
+        assert edit[edit.index("--title") + 1] == "Forward OpenAI Batch API calls to upstream providers"
         assert str(933) in edit
 
     def test_reusing_a_pull_request_still_closes_only_the_assigned_issue(self, monkeypatch, tmp_path):

@@ -1150,8 +1150,8 @@ def commit_and_push(branch: str, task: str) -> int:
 
 
 # What a subject may be. Fifty is the git convention and seventy-two the
-# point at which tools start wrapping; with the `Logos`: prefix counted, this
-# leaves a summary that fits on one line in every viewer.
+# point at which tools start wrapping; this keeps a summary on one line in
+# every viewer.
 _SUBJECT_LIMIT = 72
 
 
@@ -1161,14 +1161,13 @@ def _commit_subject(task: str) -> str:
     The agent writes it, because it is the only one that knows: a subject
     derived from the task describes the *request*, and for a handover that
     reads "Pull request #851 ('…') has been assigned to you" — which is not
-    what the commit did. What it writes is trimmed to one line and given the
-    `` `Logos`: `` prefix the repository requires, so a session cannot fail
-    review on a formatting rule either.
+    what the commit did. What it writes is trimmed to one line and capitalised,
+    so a session cannot fail review on a formatting rule either.
     """
     return (
         _as_subject(_written_subject())
         or _as_subject(os.environ.get("LOGOS_SESSION_SUBJECT", ""))
-        or "`Logos`: Update from an agent session"
+        or "Update from an agent session"
     )
 
 
@@ -1185,16 +1184,17 @@ def _as_subject(text: str) -> str:
     """One clean line, or nothing."""
     first_line = next((line for line in (text or "").splitlines() if line.strip()), "")
     cleaned = re.sub(r"\s+", " ", first_line).strip().rstrip(".")
+    # The old convention put a component prefix in front; drop one the agent
+    # still writes out of habit.
     cleaned = re.sub(r"^`?logos`?\s*:\s*", "", cleaned, flags=re.IGNORECASE)
     if not cleaned:
         return ""
     cleaned = cleaned[0].upper() + cleaned[1:]
-    room = _SUBJECT_LIMIT - len("`Logos`: ")
-    if len(cleaned) > room:
+    if len(cleaned) > _SUBJECT_LIMIT:
         # Cut on a word rather than mid-word, and without a trailing ellipsis:
         # a subject is a sentence, not a preview of one.
-        cleaned = cleaned[:room].rsplit(" ", 1)[0].rstrip(",;:-")
-    return f"`Logos`: {cleaned}"
+        cleaned = cleaned[:_SUBJECT_LIMIT].rsplit(" ", 1)[0].rstrip(",;:-")
+    return cleaned
 
 
 def _closed_issues(closes: str) -> str:

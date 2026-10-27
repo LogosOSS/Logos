@@ -29,8 +29,7 @@ Commits and pull requests:
   `$LOGOS_ARTIFACT_DIR/commit.txt`. Imperative, under sixty characters, and
   about what the change does — "Cancel the queued request when the client
   goes away". Not what you were asked to do, not a summary of your session,
-  no body and no issue numbers. The runner prefixes the component and
-  commits with exactly that line; whatever needs explaining goes in the pull
+  no body and no issue numbers. The runner commits with exactly that line; whatever needs explaining goes in the pull
   request, where people read it.
 - Never merge a pull request, and never force-push over somebody else's
   commits.
