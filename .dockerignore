@@ -1,6 +1,7 @@
 # The repo-root build context is used by logos-orchestrator/Dockerfile,
 # logos-agent/Dockerfile, logos-agent/workspace/Dockerfile,
-# agent-gateway/Dockerfile and rate-limit-gateway/Dockerfile.
+# agent-gateway/Dockerfile, rate-limit-gateway/Dockerfile and
+# e2e/harness/nodesim/Dockerfile.
 # Whitelist exactly what those Dockerfiles COPY so the context stays small
 # and untracked local files (benchmarks, calibration data, .git, …) never
 # get uploaded to the builder.
@@ -22,6 +23,10 @@
 !logos-agent/app
 !logos-agent/workspace/run_session.py
 !logos-agent/workspace/screenshot.js
+# The E2E node simulator image: the real worker package plus the harness.
+!logos-workernode/requirements.txt
+!logos-workernode/logos_worker_node
+!e2e/harness
 # The session image installs the repository's own hook environments at build
 # time, because a session has no network to install them with.
 !.pre-commit-config.yaml
