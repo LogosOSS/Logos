@@ -81,9 +81,9 @@ requires. **Sync project** installs them using uv. No separate `requirements.txt
 
 ### PR Naming Convention
 
-Prefix all PRs with `` `Logos`: `` followed by a short description. The `L` in `Logos` must be capitalised.
+Give every PR a short, descriptive title that starts with a capital letter and says what the change does.
 
-Example: `` `Logos`: Add team management endpoints ``
+Example: `Add team management endpoints`
 
 ### Pre-commit hooks
 
