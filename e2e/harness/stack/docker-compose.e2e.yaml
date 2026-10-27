@@ -11,7 +11,7 @@
 #     the webservice, so the inter-node tier does not have to wait on Keycloak;
 #   * worker nodes run the nodesim image (see harness/nodesim/Dockerfile).
 #
-# Build context for every service is the `logos/` directory.
+# Build context for every service is the repository root.
 #
 #   docker compose -f e2e/harness/stack/docker-compose.e2e.yaml up --wait
 #
@@ -75,8 +75,8 @@ services:
 
   logos-orchestrator:
     build:
-      context: ../../../../
-      dockerfile: ./logos/logos-orchestrator/Dockerfile
+      context: ../../../
+      dockerfile: ./logos-orchestrator/Dockerfile
     depends_on:
       seed:
         condition: service_completed_successfully
