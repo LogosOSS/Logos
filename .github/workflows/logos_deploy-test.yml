@@ -35,7 +35,9 @@ jobs:
         run: |
           BASENAME=$(basename "${{ matrix.compose-file }}")
           echo "basename=$BASENAME" >> $GITHUB_OUTPUT
-          cp "${{ matrix.compose-file }}" "$BASENAME"
+          # In the flat layout the root compose file already is the basename,
+          # and cp refuses to copy a file onto itself.
+          [ "${{ matrix.compose-file }}" -ef "$BASENAME" ] || cp "${{ matrix.compose-file }}" "$BASENAME"
 
       - name: Copy docker compose file to VM
         uses: appleboy/scp-action@v1.0.0
