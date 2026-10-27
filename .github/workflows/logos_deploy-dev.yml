@@ -29,10 +29,10 @@ jobs:
       # `up -d` on the host itself. See logos-node-manager/README.md.
       matrix:
         include:
-          - environment: "Logos - Dev"
+          - environment: "Dev"
             compose-file: ./docker-compose.yaml
             base-path: /opt/logos
-          - environment: "Logos Worker - hochbruegge-vm-2"
+          - environment: "hochbruegge-vm-2"
             compose-file: ./logos-workernode/docker-compose.yml
             base-path: /opt/logos-workernode
             node-manager: true

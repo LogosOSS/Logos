@@ -29,22 +29,22 @@ jobs:
       # `up -d` on the host itself. See logos-node-manager/README.md.
       matrix:
         include:
-          - environment: "Logos - Prod"
+          - environment: "Prod"
             compose-file: ./docker-compose.yaml
             base-path: /opt/logos
-          - environment: "Logos Worker - Prod - deioma"
+          - environment: "deioma"
             compose-file: ./logos-workernode/docker-compose.yml
             base-path: /opt/logos-workernode
             node-manager: true
-          - environment: "Logos Worker - Prod - deimama"
+          - environment: "deimama"
             compose-file: ./logos-workernode/docker-compose.yml
             base-path: /opt/logos-workernode
             node-manager: true
-          - environment: "Logos Worker - Prod - deipapa"
+          - environment: "deipapa"
             compose-file: ./logos-workernode/docker-compose.yml
             base-path: /opt/logos-workernode
             node-manager: true
-          - environment: "Logos Worker - hochbruegge-vm-1"
+          - environment: "hochbruegge-vm-1"
             compose-file: ./logos-workernode/docker-compose.yml
             base-path: /opt/logos-workernode
             node-manager: true

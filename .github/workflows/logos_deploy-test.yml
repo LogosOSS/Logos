@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - environment: "Logos - Test"
+          - environment: "Test"
             compose-file: ./docker-compose.yaml
             base-path: /opt/logos
     environment:
