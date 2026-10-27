@@ -53,7 +53,7 @@ jobs:
       LOGOS_BENCH_GW_BUDGET_FAIL_ON_THRESHOLD: "1"
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Disable the fixed webservice host port (conflicts with --scale)
         # docker-compose.dev.yaml publishes 127.0.0.1:18082:8081 for direct
