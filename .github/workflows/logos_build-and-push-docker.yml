@@ -13,6 +13,11 @@
 # stay on Harbor too: the public mirror tracks main, and a version tag is
 # published to the deployment registry.
 #
+# Dependabot pull requests build every image but push none of them: its runs
+# see no Harbor credentials, and its GITHUB_TOKEN is read-only, so GHCR would
+# refuse the push as well. The build still catches a dependency bump that
+# breaks an image.
+#
 # The MLX worker is the exception on both counts: it is a distribution
 # artifact for Macs, never deployed, so GHCR is its only registry and it
 # keeps its own pr-<number> and version tags there.
@@ -170,7 +175,7 @@ jobs:
       packages: write
     with:
       output: image
-      push: true
+      push: ${{ github.actor != 'dependabot[bot]' }}
       context: .
       file: logos-orchestrator/Dockerfile
       platforms: linux/amd64
@@ -195,7 +200,7 @@ jobs:
       cache-mode: max
       sign: false
       meta-images: |
-        ${{ vars.LOGOS_HARBOR_REGISTRY }}/logos/logos
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos' || format('{0}/logos/logos', vars.LOGOS_HARBOR_REGISTRY) }}
         ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos' || '' }}
       meta-tags: |
         type=ref,event=pr
@@ -205,9 +210,9 @@ jobs:
         latest=false
     secrets:
       registry-auths: |
-        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
-          username: ${{ vars.LOGOS_HARBOR_USER }}
-          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
+          password: ${{ github.actor == 'dependabot[bot]' && secrets.GITHUB_TOKEN || secrets.LOGOS_HARBOR_PASSWORD }}
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -222,7 +227,7 @@ jobs:
       packages: write
     with:
       output: image
-      push: true
+      push: ${{ github.actor != 'dependabot[bot]' }}
       context: ./logos-webservice
       file: Dockerfile
       platforms: linux/amd64
@@ -235,7 +240,7 @@ jobs:
       cache-mode: max
       sign: false
       meta-images: |
-        ${{ vars.LOGOS_HARBOR_REGISTRY }}/logos/logos-webservice
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-webservice' || format('{0}/logos/logos-webservice', vars.LOGOS_HARBOR_REGISTRY) }}
         ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-webservice' || '' }}
       meta-tags: |
         type=ref,event=pr
@@ -245,9 +250,9 @@ jobs:
         latest=false
     secrets:
       registry-auths: |
-        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
-          username: ${{ vars.LOGOS_HARBOR_USER }}
-          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
+          password: ${{ github.actor == 'dependabot[bot]' && secrets.GITHUB_TOKEN || secrets.LOGOS_HARBOR_PASSWORD }}
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -262,7 +267,7 @@ jobs:
       packages: write
     with:
       output: image
-      push: true
+      push: ${{ github.actor != 'dependabot[bot]' }}
       context: ./logos-ui
       file: Dockerfile
       platforms: linux/amd64
@@ -275,7 +280,7 @@ jobs:
       cache-mode: max
       sign: false
       meta-images: |
-        ${{ vars.LOGOS_HARBOR_REGISTRY }}/logos/logos-ui
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-ui' || format('{0}/logos/logos-ui', vars.LOGOS_HARBOR_REGISTRY) }}
         ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-ui' || '' }}
       meta-tags: |
         type=ref,event=pr
@@ -285,9 +290,9 @@ jobs:
         latest=false
     secrets:
       registry-auths: |
-        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
-          username: ${{ vars.LOGOS_HARBOR_USER }}
-          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
+          password: ${{ github.actor == 'dependabot[bot]' && secrets.GITHUB_TOKEN || secrets.LOGOS_HARBOR_PASSWORD }}
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -302,7 +307,7 @@ jobs:
       packages: write
     with:
       output: image
-      push: true
+      push: ${{ github.actor != 'dependabot[bot]' }}
       context: ./db
       file: Dockerfile
       platforms: linux/amd64
@@ -313,7 +318,7 @@ jobs:
       cache-scope: logos-db
       sign: false
       meta-images: |
-        ${{ vars.LOGOS_HARBOR_REGISTRY }}/logos/logos-db
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-db' || format('{0}/logos/logos-db', vars.LOGOS_HARBOR_REGISTRY) }}
         ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-db' || '' }}
       meta-tags: |
         type=ref,event=pr
@@ -323,9 +328,9 @@ jobs:
         latest=false
     secrets:
       registry-auths: |
-        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
-          username: ${{ vars.LOGOS_HARBOR_USER }}
-          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
+          password: ${{ github.actor == 'dependabot[bot]' && secrets.GITHUB_TOKEN || secrets.LOGOS_HARBOR_PASSWORD }}
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -341,7 +346,7 @@ jobs:
       packages: write
     with:
       output: image
-      push: true
+      push: ${{ github.actor != 'dependabot[bot]' }}
       context: ./logos-workernode
       file: Dockerfile
       platforms: linux/amd64
@@ -362,7 +367,7 @@ jobs:
         BASE_IMAGE=ubuntu:24.04
         GIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
       meta-images: |
-        ${{ vars.LOGOS_HARBOR_REGISTRY }}/logos/logos-workernode-vllm
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-workernode-vllm' || format('{0}/logos/logos-workernode-vllm', vars.LOGOS_HARBOR_REGISTRY) }}
         ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-workernode-vllm' || '' }}
       meta-tags: |
         type=ref,event=pr
@@ -372,9 +377,9 @@ jobs:
         latest=false
     secrets:
       registry-auths: |
-        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
-          username: ${{ vars.LOGOS_HARBOR_USER }}
-          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
+          password: ${{ github.actor == 'dependabot[bot]' && secrets.GITHUB_TOKEN || secrets.LOGOS_HARBOR_PASSWORD }}
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -441,7 +446,7 @@ jobs:
           context: ./logos-workernode
           file: ./logos-workernode/Dockerfile.mlx
           platforms: linux/arm64
-          push: true
+          push: ${{ github.actor != 'dependabot[bot]' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # The commit shown as this worker's version; see the vLLM worker job.
@@ -460,14 +465,14 @@ jobs:
       packages: write
     with:
       output: image
-      push: true
+      push: ${{ github.actor != 'dependabot[bot]' }}
       context: ./logos-node-manager
       file: Dockerfile
       platforms: linux/amd64
       runner: ubuntu-latest
       sign: false
       meta-images: |
-        ${{ vars.LOGOS_HARBOR_REGISTRY }}/logos/logos-node-manager
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-node-manager' || format('{0}/logos/logos-node-manager', vars.LOGOS_HARBOR_REGISTRY) }}
         ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-node-manager' || '' }}
       meta-tags: |
         type=ref,event=pr
@@ -477,9 +482,9 @@ jobs:
         latest=false
     secrets:
       registry-auths: |
-        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
-          username: ${{ vars.LOGOS_HARBOR_USER }}
-          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
+          password: ${{ github.actor == 'dependabot[bot]' && secrets.GITHUB_TOKEN || secrets.LOGOS_HARBOR_PASSWORD }}
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -494,7 +499,7 @@ jobs:
       packages: write
     with:
       output: image
-      push: true
+      push: ${{ github.actor != 'dependabot[bot]' }}
       # Built from the repository root: the Dockerfile copies paths under
       # logos-agent, matching how the orchestrator image is built.
       context: .
@@ -503,7 +508,7 @@ jobs:
       runner: ubuntu-latest
       sign: false
       meta-images: |
-        ${{ vars.LOGOS_HARBOR_REGISTRY }}/logos/logos-agent
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-agent' || format('{0}/logos/logos-agent', vars.LOGOS_HARBOR_REGISTRY) }}
         ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-agent' || '' }}
       meta-tags: |
         type=ref,event=pr
@@ -513,9 +518,9 @@ jobs:
         latest=false
     secrets:
       registry-auths: |
-        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
-          username: ${{ vars.LOGOS_HARBOR_USER }}
-          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
+          password: ${{ github.actor == 'dependabot[bot]' && secrets.GITHUB_TOKEN || secrets.LOGOS_HARBOR_PASSWORD }}
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -530,7 +535,7 @@ jobs:
       packages: write
     with:
       output: image
-      push: true
+      push: ${{ github.actor != 'dependabot[bot]' }}
       # Built from the repository root like the other agent images: the
       # `file` path is resolved relative to the context, so a context of the
       # gateway's own directory would look for the Dockerfile inside itself.
@@ -540,7 +545,7 @@ jobs:
       runner: ubuntu-latest
       sign: false
       meta-images: |
-        ${{ vars.LOGOS_HARBOR_REGISTRY }}/logos/logos-agent-gateway
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-agent-gateway' || format('{0}/logos/logos-agent-gateway', vars.LOGOS_HARBOR_REGISTRY) }}
         ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-agent-gateway' || '' }}
       meta-tags: |
         type=ref,event=pr
@@ -550,9 +555,9 @@ jobs:
         latest=false
     secrets:
       registry-auths: |
-        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
-          username: ${{ vars.LOGOS_HARBOR_USER }}
-          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
+          password: ${{ github.actor == 'dependabot[bot]' && secrets.GITHUB_TOKEN || secrets.LOGOS_HARBOR_PASSWORD }}
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -567,7 +572,7 @@ jobs:
       packages: write
     with:
       output: image
-      push: true
+      push: ${{ github.actor != 'dependabot[bot]' }}
       # Same root context as the agent gateway: the nginx configuration and
       # entrypoint are COPYed from rate-limit-gateway/ (and must be
       # whitelisted in .dockerignore for that to work).
@@ -577,7 +582,7 @@ jobs:
       runner: ubuntu-latest
       sign: false
       meta-images: |
-        ${{ vars.LOGOS_HARBOR_REGISTRY }}/logos/logos-rate-gateway
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-rate-gateway' || format('{0}/logos/logos-rate-gateway', vars.LOGOS_HARBOR_REGISTRY) }}
         ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-rate-gateway' || '' }}
       meta-tags: |
         type=ref,event=pr
@@ -587,9 +592,9 @@ jobs:
         latest=false
     secrets:
       registry-auths: |
-        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
-          username: ${{ vars.LOGOS_HARBOR_USER }}
-          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
+          password: ${{ github.actor == 'dependabot[bot]' && secrets.GITHUB_TOKEN || secrets.LOGOS_HARBOR_PASSWORD }}
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -604,14 +609,14 @@ jobs:
       packages: write
     with:
       output: image
-      push: true
+      push: ${{ github.actor != 'dependabot[bot]' }}
       context: .
       file: logos-agent/workspace/Dockerfile
       platforms: linux/amd64
       runner: ubuntu-latest
       sign: false
       meta-images: |
-        ${{ vars.LOGOS_HARBOR_REGISTRY }}/logos/logos-agent-workspace
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-agent-workspace' || format('{0}/logos/logos-agent-workspace', vars.LOGOS_HARBOR_REGISTRY) }}
         ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-agent-workspace' || '' }}
       meta-tags: |
         type=ref,event=pr
@@ -621,9 +626,9 @@ jobs:
         latest=false
     secrets:
       registry-auths: |
-        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
-          username: ${{ vars.LOGOS_HARBOR_USER }}
-          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
+          password: ${{ github.actor == 'dependabot[bot]' && secrets.GITHUB_TOKEN || secrets.LOGOS_HARBOR_PASSWORD }}
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
