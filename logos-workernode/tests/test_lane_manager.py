@@ -3764,7 +3764,7 @@ class TestValidateCapabilities:
     """Startup validation must check the cache the lanes actually read from.
 
     The caller passes the resolved layout; re-deriving it here from the
-    ollama models path would check a directory that does not exist on a Mac
+    default models path would check a directory that does not exist on a Mac
     and where neither the prefetch nor the lanes ever download.
     """
 
@@ -3775,7 +3775,7 @@ class TestValidateCapabilities:
     def test_finds_weights_in_the_resolved_hf_cache(self, tmp_path) -> None:
         hf_home = tmp_path / "cache" / ".hf_cache"
         (hf_home / "hub" / "models--org--model").mkdir(parents=True)
-        missing = self._manager(str(tmp_path / "ollama")).validate_capabilities(
+        missing = self._manager(str(tmp_path / "models")).validate_capabilities(
             ["org/model"], str(hf_home), str(tmp_path / "cache")
         )
         assert missing == []
@@ -3783,19 +3783,19 @@ class TestValidateCapabilities:
     def test_reports_a_model_that_is_not_downloaded(self, tmp_path) -> None:
         hf_home = tmp_path / "cache" / ".hf_cache"
         hf_home.mkdir(parents=True)
-        missing = self._manager(str(tmp_path / "ollama")).validate_capabilities(["org/model"], str(hf_home))
+        missing = self._manager(str(tmp_path / "models")).validate_capabilities(["org/model"], str(hf_home))
         assert missing == ["org/model"]
 
     def test_counts_a_model_dir_placed_under_the_cache_root(self, tmp_path) -> None:
         (tmp_path / "cache" / "local-model").mkdir(parents=True)
-        missing = self._manager(str(tmp_path / "ollama")).validate_capabilities(
+        missing = self._manager(str(tmp_path / "models")).validate_capabilities(
             ["local-model"], str(tmp_path / "elsewhere"), str(tmp_path / "cache")
         )
         assert missing == []
 
-    def test_still_finds_a_model_in_the_ollama_models_path(self, tmp_path) -> None:
-        """The CUDA/ollama layout must keep working unchanged."""
-        models_path = tmp_path / "ollama"
+    def test_still_finds_a_model_in_the_models_path(self, tmp_path) -> None:
+        """The CUDA layout must keep working unchanged."""
+        models_path = tmp_path / "models"
         (models_path / "org-model").mkdir(parents=True)
         missing = self._manager(str(models_path)).validate_capabilities(["org-model"], str(tmp_path / "elsewhere-hf"))
         assert missing == []

@@ -548,7 +548,7 @@ class LaneManager:
 
         ``hf_home``/``cache_root`` come from the caller's resolved storage
         layout — the same directory the lane processes download into — rather
-        than being re-derived here: on a Mac the inherited ollama models path
+        than being re-derived here: on a Mac the inherited default models path
         does not exist, and re-deriving would check a location the lanes
         never read.
         """
