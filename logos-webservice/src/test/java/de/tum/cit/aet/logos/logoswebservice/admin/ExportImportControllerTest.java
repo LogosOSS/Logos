@@ -76,13 +76,13 @@ class ExportImportControllerTest {
                 .contentType("application/json")
                 .content("""
                     {
-                      "repo_url": "https://github.com/LogosOSS/Logos.git",
+                      "repo_url": "https://github.com/ls1intum/edutelligence.git",
                       "branch": "develop",
                       "paths": ["logos"]
                     }
                     """))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$.repo_slug").value("LogosOSS/Logos"));
+           .andExpect(jsonPath("$.repo_slug").value("ls1intum/edutelligence"));
 
         Integer workspaceId = jdbc.queryForObject("""
             INSERT INTO agent_workspaces (name, base_branch, volume_name, created_by, ephemeral)
@@ -90,7 +90,7 @@ class ExportImportControllerTest {
             RETURNING id
             """, Integer.class);
         Integer repoLinkId = jdbc.queryForObject(
-            "SELECT id FROM team_repositories WHERE team_id = 2001 AND repo_slug = 'LogosOSS/Logos'",
+            "SELECT id FROM team_repositories WHERE team_id = 2001 AND repo_slug = 'ls1intum/edutelligence'",
             Integer.class);
         Integer sessionId = jdbc.queryForObject("""
             INSERT INTO agent_sessions (
@@ -135,7 +135,7 @@ class ExportImportControllerTest {
                 .with(TestJwt.logosAdmin()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.length()").value(1))
-           .andExpect(jsonPath("$[0].repo_slug").value("LogosOSS/Logos"))
+           .andExpect(jsonPath("$[0].repo_slug").value("ls1intum/edutelligence"))
            .andExpect(jsonPath("$[0].branch").value("develop"))
            .andExpect(jsonPath("$[0].paths[0]").value("logos"));
 
@@ -150,7 +150,7 @@ class ExportImportControllerTest {
         org.assertj.core.api.Assertions.assertThat(restoredLink).isNotNull();
         String restoredSlug = jdbc.queryForObject(
             "SELECT repo_slug FROM team_repositories WHERE id = ?", String.class, restoredLink);
-        org.assertj.core.api.Assertions.assertThat(restoredSlug).isEqualTo("LogosOSS/Logos");
+        org.assertj.core.api.Assertions.assertThat(restoredSlug).isEqualTo("ls1intum/edutelligence");
     }
 
     @Test

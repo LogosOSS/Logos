@@ -7,6 +7,8 @@ updates:
     directory: "logos-agent"
     schedule:
       interval: "weekly"
+    commit-message:
+      prefix: "`Logos`:"
     groups:
       logos-agent-python-dependencies:
         applies-to: version-updates
@@ -16,6 +18,8 @@ updates:
     directory: "logos-orchestrator"
     schedule:
       interval: "weekly"
+    commit-message:
+      prefix: "`Logos`:"
     groups:
       logos-orchestrator-python-dependencies:
         applies-to: version-updates
@@ -26,6 +30,8 @@ updates:
       - "logos-ui"
     schedule:
       interval: "weekly"
+    commit-message:
+      prefix: "`Logos`:"
     groups:
       npm-dependencies:
         applies-to: version-updates
@@ -35,3 +41,5 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    commit-message:
+      prefix: "`Logos`:"

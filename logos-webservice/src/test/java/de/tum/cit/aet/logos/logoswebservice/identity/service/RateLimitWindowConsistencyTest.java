@@ -49,7 +49,7 @@ class RateLimitWindowConsistencyTest {
     // the working directory; walk up to the checkout root so the test also
     // works when run from the repository root.
     private static Path findRateLimiterSource() {
-        Path relative = Path.of("logos", "logos-orchestrator", "src", "logos", "rate_limiter.py");
+        Path relative = Path.of("logos-orchestrator", "src", "logos", "rate_limiter.py");
         for (Path dir = Path.of(System.getProperty("user.dir")).toAbsolutePath();
              dir != null;
              dir = dir.getParent()) {

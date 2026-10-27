@@ -88,16 +88,16 @@ class TeamRepoLinkControllerTest {
                 .contentType("application/json")
                 .content("""
                     {
-                      "repo_url": "https://github.com/LogosOSS/Logos.git",
+                      "repo_url": "https://github.com/ls1intum/edutelligence.git",
                       "branch": "main",
-                      "paths": ["logos-ui", "logos-agent"]
+                      "paths": ["logos/logos-ui", "logos/logos-agent"]
                     }
                     """))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$.repo_slug").value("LogosOSS/Logos"))
+           .andExpect(jsonPath("$.repo_slug").value("ls1intum/edutelligence"))
            .andExpect(jsonPath("$.branch").value("main"))
-           .andExpect(jsonPath("$.paths[0]").value("logos-ui"))
-           .andExpect(jsonPath("$.paths[1]").value("logos-agent"))
+           .andExpect(jsonPath("$.paths[0]").value("logos/logos-ui"))
+           .andExpect(jsonPath("$.paths[1]").value("logos/logos-agent"))
            .andReturn();
 
         JsonNode link = mapper.readTree(created.getResponse().getContentAsString());
@@ -106,7 +106,7 @@ class TeamRepoLinkControllerTest {
         mvc.perform(post("/admin/teams/2001/repositories")
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
-                .content("{\"repo_url\":\"git@github.com:LogosOSS/Logos.git\"}"))
+                .content("{\"repo_url\":\"git@github.com:ls1intum/edutelligence.git\"}"))
            .andExpect(status().isConflict());
 
         mvc.perform(patch("/admin/teams/2001/repositories/" + linkId)
@@ -561,7 +561,7 @@ class TeamRepoLinkControllerTest {
         mvc.perform(post("/admin/teams/2001/repositories")
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
-                .content("{\"repo_url\":\"https://gitlab.com/LogosOSS/Logos\"}"))
+                .content("{\"repo_url\":\"https://gitlab.com/ls1intum/edutelligence\"}"))
            .andExpect(status().isBadRequest())
            .andExpect(jsonPath("$.detail", containsString("GitHub")));
     }
