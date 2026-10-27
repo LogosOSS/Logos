@@ -30,7 +30,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Download Logos docs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: logos-docs
           path: site
