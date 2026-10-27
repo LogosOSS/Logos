@@ -50,7 +50,7 @@ their roles. Do not use them in a production deployment.
 ## Production deployment
 
 For production, use `docker-compose.yaml`. Every image is on the public mirror
-at `ghcr.io/logososs/logos`. The compose file pulls from this mirror
+at `ghcr.io/logososs`. The compose file pulls from this mirror
 by default. You do not need registry configuration or a login:
 
 ```bash
@@ -78,7 +78,7 @@ for example a local registry:
 cd ..
 REGISTRY=localhost:5000
 IMAGE_TAG=latest
-docker build -t "$REGISTRY/logos:$IMAGE_TAG" -f logos-orchestrator/Dockerfile .
+docker build -t "$REGISTRY/logos-orchestrator:$IMAGE_TAG" -f logos-orchestrator/Dockerfile .
 docker build -t "$REGISTRY/logos-webservice:$IMAGE_TAG" logos-webservice
 docker build -t "$REGISTRY/logos-ui:$IMAGE_TAG" logos-ui
 docker build -t "$REGISTRY/logos-db:$IMAGE_TAG" db

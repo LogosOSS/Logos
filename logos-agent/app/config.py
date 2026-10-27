@@ -153,7 +153,7 @@ class Settings:
     # runner started outside compose reaches the same image.
     workspace_image: str = os.getenv(
         "LOGOS_AGENT_WORKSPACE_IMAGE",
-        "ghcr.io/logososs/logos/logos-agent-workspace:latest",
+        "ghcr.io/logososs/logos-agent-workspace:latest",
     )
     # The network the untrusted agent phase is attached to. It is an
     # *internal* bridge: no external egress at all, so the only reachable

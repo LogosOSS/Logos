@@ -2,7 +2,7 @@
 #
 # Every image is published twice:
 #   - the project's Harbor registry, which the deploy workflows pull from;
-#   - ghcr.io/logososs/logos/<image>, public, which is what a
+#   - ghcr.io/logososs/<image>, public, which is what a
 #     self-hosted install pulls (docker-compose.yaml defaults to it, so
 #     the installation guide needs no registry configuration at all).
 #
@@ -200,8 +200,8 @@ jobs:
       cache-mode: max
       sign: false
       meta-images: |
-        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos' || format('{0}/logos/logos', vars.LOGOS_HARBOR_REGISTRY) }}
-        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos' || '' }}
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos-orchestrator' || format('{0}/logos/logos-orchestrator', vars.LOGOS_HARBOR_REGISTRY) }}
+        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos-orchestrator' || '' }}
       meta-tags: |
         type=ref,event=pr
         type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
@@ -240,8 +240,8 @@ jobs:
       cache-mode: max
       sign: false
       meta-images: |
-        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-webservice' || format('{0}/logos/logos-webservice', vars.LOGOS_HARBOR_REGISTRY) }}
-        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-webservice' || '' }}
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos-webservice' || format('{0}/logos/logos-webservice', vars.LOGOS_HARBOR_REGISTRY) }}
+        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos-webservice' || '' }}
       meta-tags: |
         type=ref,event=pr
         type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
@@ -280,8 +280,8 @@ jobs:
       cache-mode: max
       sign: false
       meta-images: |
-        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-ui' || format('{0}/logos/logos-ui', vars.LOGOS_HARBOR_REGISTRY) }}
-        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-ui' || '' }}
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos-ui' || format('{0}/logos/logos-ui', vars.LOGOS_HARBOR_REGISTRY) }}
+        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos-ui' || '' }}
       meta-tags: |
         type=ref,event=pr
         type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
@@ -318,8 +318,8 @@ jobs:
       cache-scope: logos-db
       sign: false
       meta-images: |
-        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-db' || format('{0}/logos/logos-db', vars.LOGOS_HARBOR_REGISTRY) }}
-        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-db' || '' }}
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos-db' || format('{0}/logos/logos-db', vars.LOGOS_HARBOR_REGISTRY) }}
+        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos-db' || '' }}
       meta-tags: |
         type=ref,event=pr
         type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
@@ -367,8 +367,8 @@ jobs:
         BASE_IMAGE=ubuntu:24.04
         GIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
       meta-images: |
-        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-workernode-vllm' || format('{0}/logos/logos-workernode-vllm', vars.LOGOS_HARBOR_REGISTRY) }}
-        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-workernode-vllm' || '' }}
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos-workernode-vllm' || format('{0}/logos/logos-workernode-vllm', vars.LOGOS_HARBOR_REGISTRY) }}
+        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos-workernode-vllm' || '' }}
       meta-tags: |
         type=ref,event=pr
         type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
@@ -423,7 +423,7 @@ jobs:
           # logos-workernode/scripts/bootstrap-macos.sh — that script is
           # the consumer, and nothing in CI catches a publish/consumer
           # mismatch.
-          images: ghcr.io/logososs/logos/logos-workernode-mlx
+          images: ghcr.io/logososs/logos-workernode-mlx
           tags: |
             type=ref,event=pr
             type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
@@ -472,8 +472,8 @@ jobs:
       runner: ubuntu-latest
       sign: false
       meta-images: |
-        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-node-manager' || format('{0}/logos/logos-node-manager', vars.LOGOS_HARBOR_REGISTRY) }}
-        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-node-manager' || '' }}
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos-node-manager' || format('{0}/logos/logos-node-manager', vars.LOGOS_HARBOR_REGISTRY) }}
+        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos-node-manager' || '' }}
       meta-tags: |
         type=ref,event=pr
         type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
@@ -508,8 +508,8 @@ jobs:
       runner: ubuntu-latest
       sign: false
       meta-images: |
-        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-agent' || format('{0}/logos/logos-agent', vars.LOGOS_HARBOR_REGISTRY) }}
-        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-agent' || '' }}
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos-agent' || format('{0}/logos/logos-agent', vars.LOGOS_HARBOR_REGISTRY) }}
+        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos-agent' || '' }}
       meta-tags: |
         type=ref,event=pr
         type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
@@ -545,8 +545,8 @@ jobs:
       runner: ubuntu-latest
       sign: false
       meta-images: |
-        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-agent-gateway' || format('{0}/logos/logos-agent-gateway', vars.LOGOS_HARBOR_REGISTRY) }}
-        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-agent-gateway' || '' }}
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos-agent-gateway' || format('{0}/logos/logos-agent-gateway', vars.LOGOS_HARBOR_REGISTRY) }}
+        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos-agent-gateway' || '' }}
       meta-tags: |
         type=ref,event=pr
         type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
@@ -582,8 +582,8 @@ jobs:
       runner: ubuntu-latest
       sign: false
       meta-images: |
-        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-rate-gateway' || format('{0}/logos/logos-rate-gateway', vars.LOGOS_HARBOR_REGISTRY) }}
-        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-rate-gateway' || '' }}
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos-rate-gateway' || format('{0}/logos/logos-rate-gateway', vars.LOGOS_HARBOR_REGISTRY) }}
+        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos-rate-gateway' || '' }}
       meta-tags: |
         type=ref,event=pr
         type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
@@ -616,8 +616,8 @@ jobs:
       runner: ubuntu-latest
       sign: false
       meta-images: |
-        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos/logos-agent-workspace' || format('{0}/logos/logos-agent-workspace', vars.LOGOS_HARBOR_REGISTRY) }}
-        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos/logos-agent-workspace' || '' }}
+        ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos-agent-workspace' || format('{0}/logos/logos-agent-workspace', vars.LOGOS_HARBOR_REGISTRY) }}
+        ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/logososs/logos-agent-workspace' || '' }}
       meta-tags: |
         type=ref,event=pr
         type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}

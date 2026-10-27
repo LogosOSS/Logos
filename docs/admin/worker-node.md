@@ -26,7 +26,7 @@ until the orchestrator is reachable.
 
 By default, the production Compose file pulls the worker image
 `${REGISTRY}/logos-workernode-vllm` from the public mirror at
-`ghcr.io/logososs/logos`. No login is necessary. To pull a version tag
+`ghcr.io/logososs`. No login is necessary. To pull a version tag
 from the deployment registry or from your own mirror, set `REGISTRY` and
 `IMAGE_TAG` in the `.env` file of the worker. Do this only for that purpose.
 

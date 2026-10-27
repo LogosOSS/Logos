@@ -4,7 +4,7 @@
 #
 #   ./bootstrap-macos.sh [image-ref] [--no-deps] [--no-power-settings]
 #
-# Default image: ghcr.io/logososs/logos/logos-workernode-mlx:latest
+# Default image: ghcr.io/logososs/logos-workernode-mlx:latest
 #
 # This default must stay literally identical to the `images:` line for this
 # image in .github/workflows/logos_build-and-push-docker.yml — that workflow
@@ -37,7 +37,7 @@
 # =============================================================================
 set -euo pipefail
 
-IMAGE="${LOGOS_MLX_IMAGE:-ghcr.io/logososs/logos/logos-workernode-mlx:latest}"
+IMAGE="${LOGOS_MLX_IMAGE:-ghcr.io/logososs/logos-workernode-mlx:latest}"
 INSTALL_DEPS=1
 POWER_SETTINGS=1
 for arg in "$@"; do
@@ -124,7 +124,7 @@ cleanup() { rm -rf "$STAGING" "$UNPACK"; }
 trap cleanup EXIT
 
 registry_ref() {
-    # ghcr.io/logososs/logos/logos-workernode-mlx:latest → registry, repo, reference
+    # ghcr.io/logososs/logos-workernode-mlx:latest → registry, repo, reference
     local ref="$1" rest
     REGISTRY="${ref%%/*}"
     rest="${ref#*/}"

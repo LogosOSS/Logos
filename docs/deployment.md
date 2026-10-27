@@ -35,7 +35,7 @@ A deployment consists of:
 | `logos-workernode-vllm` | the worker node runtime (on the GPU host) |
 | `logos-workernode-mlx` | the Apple Silicon worker. Logos does not push this image to Harbor, and nobody runs it as a container (see the MLX section below) |
 
-`REGISTRY` (default `ghcr.io/logososs/logos`, the public mirror) and
+`REGISTRY` (default `ghcr.io/logososs`, the public mirror) and
 `IMAGE_TAG` (default `latest`) in the `.env` select the source. The deploy
 workflows write `${LOGOS_HARBOR_REGISTRY}/logos` and the deployed tag into the
 `.env` that they send. Every node therefore pulls from Harbor, and you log in

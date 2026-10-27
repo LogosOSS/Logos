@@ -130,7 +130,7 @@ services:
     # Configuration is baked into the image (not bind-mounted): a
     # deployment copies only the compose file to its VM, so a mount of
     # ./rate-limit-gateway/... would resolve to a missing path there.
-    image: ${REGISTRY:-ghcr.io/logososs/logos}/logos-rate-gateway:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-rate-gateway:${IMAGE_TAG:-latest}
     container_name: logos-rate-gateway
     restart: unless-stopped
     depends_on:
@@ -192,7 +192,7 @@ services:
       - ratelimit
 
   logos-orchestrator:
-    image: ${REGISTRY:-ghcr.io/logososs/logos}/logos:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-orchestrator:${IMAGE_TAG:-latest}
     container_name: logos-orchestrator
     restart: unless-stopped
     # The single uvicorn worker holds one open fd per in-flight client stream
@@ -345,7 +345,7 @@ services:
       - internal
 
   logos-webservice:
-    image: ${REGISTRY:-ghcr.io/logososs/logos}/logos-webservice:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-webservice:${IMAGE_TAG:-latest}
     # No fixed container_name: Traefik load-balances across replicas.
     # Production/dev/test deploy workflows scale from the node's .env:
     #   LOGOS_WEBSERVICE_REPLICAS=<N>   # default 1
@@ -501,7 +501,7 @@ services:
       - internal
 
   logos-db:
-    image: ${REGISTRY:-ghcr.io/logososs/logos}/logos-db:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-db:${IMAGE_TAG:-latest}
     container_name: logos-db
     restart: unless-stopped
     user: postgres
@@ -551,7 +551,7 @@ services:
       - internal
 
   logos-agent:
-    image: ${REGISTRY:-ghcr.io/logososs/logos}/logos-agent:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-agent:${IMAGE_TAG:-latest}
     container_name: logos-agent
     # Long enough to freeze every running session before the process is
     # killed. A deploy restarts this service and the model gateway together;
@@ -602,7 +602,7 @@ services:
       LOGOS_AGENT_DEFAULT_MODEL: "${LOGOS_AGENT_DEFAULT_MODEL:-}"
 
       # Sessions run in this image, on this network, under these ceilings.
-      LOGOS_AGENT_WORKSPACE_IMAGE: "${REGISTRY:-ghcr.io/logososs/logos}/logos-agent-workspace:${IMAGE_TAG:-latest}"
+      LOGOS_AGENT_WORKSPACE_IMAGE: "${REGISTRY:-ghcr.io/logososs}/logos-agent-workspace:${IMAGE_TAG:-latest}"
       # The internal session network: no external egress, the model gateway
       # is the only reachable peer. The egress network is for the runner's
       # trusted helper containers (checkout preparation, post-agent
@@ -708,7 +708,7 @@ services:
     # mount of ./agent-gateway/nginx.conf resolved to a missing path there,
     # Docker created an empty directory in its place, and the gateway served
     # its stock configuration and failed its health check forever.
-    image: ${REGISTRY:-ghcr.io/logososs/logos}/logos-agent-gateway:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-agent-gateway:${IMAGE_TAG:-latest}
     container_name: logos-agent-gateway
     restart: unless-stopped
     profiles: ["agent"]
@@ -735,7 +735,7 @@ services:
       - agent
 
   logos-ui:
-    image: ${REGISTRY:-ghcr.io/logososs/logos}/logos-ui:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-ui:${IMAGE_TAG:-latest}
     container_name: logos-ui
     restart: unless-stopped
     expose:

@@ -13,7 +13,7 @@
 #   When TMPFS_SIZE is unset or "0", the tmpfs mount is a no-op (size=0).
 services:
   logos-workernode:
-    image: ${REGISTRY:-ghcr.io/logososs/logos}/logos-workernode-vllm:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-workernode-vllm:${IMAGE_TAG:-latest}
     container_name: logos-workernode
     init: true
     restart: unless-stopped
@@ -138,7 +138,7 @@ services:
   # owns. See "Security model" in logos-node-manager/README.md.
   logos-node-manager:
     profiles: ["node-manager"]
-    image: ${REGISTRY:-ghcr.io/logososs/logos}/logos-node-manager:${NODE_MANAGER_IMAGE_TAG:-${IMAGE_TAG:-latest}}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-node-manager:${NODE_MANAGER_IMAGE_TAG:-${IMAGE_TAG:-latest}}
     container_name: logos-node-manager
     init: true
     restart: unless-stopped
