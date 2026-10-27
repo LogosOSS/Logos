@@ -41,7 +41,7 @@ jobs:
       UPSTREAM: vllm-project/vllm-metal
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Same rationale as logos_update-vllm.yml: use the PAT when
           # configured so the push and PR are attributed to a real user and CI
