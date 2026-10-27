@@ -64,7 +64,7 @@ def is_metal_backend() -> bool:
     choose between and a misconfiguration is impossible. ``LOGOS_WORKER_BACKEND``
     (``metal`` or ``cuda``) overrides it — primarily so tests can exercise both
     paths on one machine, but it also leaves an escape hatch if a Mac should
-    ever run Ollama-only lanes.
+    ever need to run the CUDA backend.
     """
     override = (os.environ.get("LOGOS_WORKER_BACKEND") or "").strip().lower()
     if override in {"metal", "cuda"}:

@@ -378,11 +378,11 @@ class TestCacheRoot:
         monkeypatch.setenv("LOGOS_WORKER_CACHE_ROOT", str(tmp_path))
         assert MetalVllmProcessHandle._resolve_persistent_cache_root(WorkerConfig()) == str(tmp_path)
 
-    def test_falls_back_to_a_macos_path_not_the_ollama_one(self, monkeypatch) -> None:
-        """The inherited default points into /usr/share/ollama, absent on macOS."""
+    def test_falls_back_to_a_macos_path_not_the_container_one(self, monkeypatch) -> None:
+        """The inherited default points into /usr/share/logos, absent on macOS."""
         monkeypatch.delenv("LOGOS_WORKER_CACHE_ROOT", raising=False)
         root = MetalVllmProcessHandle._resolve_persistent_cache_root(WorkerConfig())
-        assert "/usr/share/ollama" not in root
+        assert "/usr/share/logos" not in root
         assert root.startswith(str(Path.home()))
 
     def test_uses_models_path_when_it_actually_exists(self, monkeypatch, tmp_path) -> None:
