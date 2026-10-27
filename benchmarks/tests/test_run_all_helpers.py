@@ -337,14 +337,12 @@ def _config_env_fake(legacy_env: str):
     return fake_run, tee_inputs
 
 
-def test_apply_config_appends_logos_models_mount_for_legacy_only_env():
-    """A legacy-only .env (OLLAMA_MODELS_MOUNT, no LOGOS_MODELS_MOUNT) must
-    still receive a LOGOS_MODELS_MOUNT line when a local cache path is given,
-    or the override is silently ignored by the still-active old mount."""
-    legacy_env = (
-        "OLLAMA_MODELS_MOUNT=/data/legacy-models\n" "TMPFS_SIZE=400\n" "LOGOS_TMPFS_CACHE_PATH=/dev/shm/logos\n"
-    )
-    fake_run, tee_inputs = _config_env_fake(legacy_env)
+def test_apply_config_appends_logos_models_mount_when_env_has_none():
+    """An .env without a LOGOS_MODELS_MOUNT line (the host uses the default
+    volume) must still receive one when a local cache path is given, or the
+    override is silently ignored."""
+    env = "TMPFS_SIZE=400\n" "LOGOS_TMPFS_CACHE_PATH=/dev/shm/logos\n"
+    fake_run, tee_inputs = _config_env_fake(env)
     with patch.object(bm.subprocess, "run", side_effect=fake_run), patch.object(bm, "_YAML", None):
         bm._apply_benchmark_workernode_config_via_ssh(
             hosts=["h1"],
@@ -355,10 +353,7 @@ def test_apply_config_appends_logos_models_mount_for_legacy_only_env():
             local_cache_path="/data/bench-cache",
         )
     assert tee_inputs, "the .env was never rewritten"
-    new_env = tee_inputs[0].decode()
-    assert "LOGOS_MODELS_MOUNT=/data/bench-cache" in new_env
-    # the legacy line is kept (Compose prefers LOGOS, so it is shadowed)
-    assert "OLLAMA_MODELS_MOUNT=/data/legacy-models" in new_env
+    assert "LOGOS_MODELS_MOUNT=/data/bench-cache" in tee_inputs[0].decode()
 
 
 def test_apply_config_replaces_existing_logos_models_mount_without_duplicating():
@@ -380,11 +375,9 @@ def test_apply_config_replaces_existing_logos_models_mount_without_duplicating()
     assert "LOGOS_MODELS_MOUNT=/data/new" in new_env
 
 
-def test_wipe_weights_falls_back_to_ollama_models_mount():
-    """With no explicit weight_cache_path the wipe reads the mount from .env —
-    preferring LOGOS_MODELS_MOUNT but falling back to the legacy
-    OLLAMA_MODELS_MOUNT so a not-yet-migrated .env still wipes the weights
-    Compose actually mounted."""
+def test_wipe_weights_reads_the_mount_from_env():
+    """With no explicit weight_cache_path the wipe reads LOGOS_MODELS_MOUNT
+    from the worker's .env."""
     calls, fake = _capture_subprocess()
     with patch.object(bm.subprocess, "run", side_effect=fake):
         bm._wipe_calibration_and_weights_via_ssh(
@@ -397,9 +390,7 @@ def test_wipe_weights_falls_back_to_ollama_models_mount():
         )
     wipe = [c for c in calls if "rm -rf" in _flatten(c) and "MODELS_MOUNT" in _flatten(c)]
     assert wipe, "no weight-wipe command was issued"
-    script = _flatten(wipe[-1])
-    assert "^LOGOS_MODELS_MOUNT=" in script
-    assert "^OLLAMA_MODELS_MOUNT=" in script
+    assert "^LOGOS_MODELS_MOUNT=" in _flatten(wipe[-1])
 
 
 class _ResetResponse:

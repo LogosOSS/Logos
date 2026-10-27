@@ -532,8 +532,8 @@ class WorkerConfig(BaseModel):
 
         Existing deployment configs (and the engines.ollama migrator) may
         still carry the Ollama-era container path. The container now mounts
-        the model volume at /usr/share/logos/models (resolving the legacy
-        OLLAMA_MODELS_MOUNT variable / pre-existing volume), so a config
+        the model volume at /usr/share/logos/models (from LOGOS_MODELS_MOUNT
+        or the pre-existing volume), so a config
         left on the old path would point at a directory that no longer
         exists in the container. Translated for backwards compatibility.
         """

@@ -75,12 +75,10 @@ services:
     volumes:
       - ./config.yml:/app/config.yml:ro
       - ./data:/app/data
-      # Model volume — backward-compatible source resolution (kept for one
-      # release): LOGOS_MODELS_MOUNT → legacy OLLAMA_MODELS_MOUNT → the
-      # the pre-existing model named volume. In-place upgrades keep
-      # their cached model weights (the legacy env var / volume still
-      # resolves); fresh deployments set LOGOS_MODELS_MOUNT (.env.example).
-      - ${LOGOS_MODELS_MOUNT:-${OLLAMA_MODELS_MOUNT:-ollama-models}}:/usr/share/logos/models
+      # Model volume: LOGOS_MODELS_MOUNT (.env.example), else the
+      # pre-existing `ollama-models` named volume, so hosts that never set a
+      # mount keep their cached model weights.
+      - ${LOGOS_MODELS_MOUNT:-ollama-models}:/usr/share/logos/models
       - ./certs:/app/certs:ro
       # Custom Jinja chat templates, referenced per model via
       # engines.vllm.model_overrides.<model>.chat_template in config.yml.
