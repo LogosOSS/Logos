@@ -3656,11 +3656,11 @@ def test_probe_stalled_needs_only_warnings_at_the_end_of_the_log(tmp_path):
     log = tmp_path / "probe.log"
     warmup = "(Worker_TP0 pid=1) INFO 10-21 04:21:34 [kernel_warmup.py:291] Warming up FlashInfer attention."
     _write_log(log, [warmup, _SHM_LINE.format(minute=22), _SHM_LINE.format(minute=23)])
-    assert not _probe_stalled(log)
+    assert not _probe_stalled(log, 1)
     _write_log(log, [warmup] + [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
-    assert _probe_stalled(log)
+    assert _probe_stalled(log, 1)
     _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)] + ["INFO: Application startup complete."])
-    assert not _probe_stalled(log)
+    assert not _probe_stalled(log, 1)
 
 
 def test_probe_stalled_is_false_while_a_compiler_runs(tmp_path, monkeypatch):
@@ -3668,16 +3668,52 @@ def test_probe_stalled_is_false_while_a_compiler_runs(tmp_path, monkeypatch):
 
     log = tmp_path / "probe.log"
     _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
-    monkeypatch.setattr(calibration, "_compiler_running", lambda: True)
-    assert not calibration._probe_stalled(log)
-    monkeypatch.setattr(calibration, "_compiler_running", lambda: False)
-    assert calibration._probe_stalled(log)
+    monkeypatch.setattr(calibration, "_compiler_running", lambda *_: True)
+    assert not calibration._probe_stalled(log, 1)
+    monkeypatch.setattr(calibration, "_compiler_running", lambda *_: False)
+    assert calibration._probe_stalled(log, 1)
+
+
+def _fake_proc(root: Path, processes: dict[int, tuple[str, int]]) -> Path:
+    for pid, (comm, ppid) in processes.items():
+        entry = root / str(pid)
+        entry.mkdir(parents=True)
+        (entry / "stat").write_text(f"{pid} ({comm}) S {ppid} {pid} 0 0 -1 4194560\n")
+    return root
+
+
+def test_compiler_running_only_counts_the_probes_own_process_tree(tmp_path):
+    from logos_worker_node.calibration import _compiler_running
+
+    proc_root = _fake_proc(
+        tmp_path,
+        {
+            1: ("systemd", 0),
+            100: ("vllm", 1),
+            101: ("python3", 100),
+            102: ("ninja", 101),
+            200: ("bash", 1),
+            201: ("nvcc", 200),
+        },
+    )
+    assert _compiler_running(100, proc_root)
+    assert not _compiler_running(999, proc_root)
+    other = _fake_proc(tmp_path / "other", {1: ("systemd", 0), 100: ("vllm", 1), 300: ("nvcc", 1)})
+    assert not _compiler_running(100, other)
+
+
+def test_compiler_running_handles_spaces_in_comm_and_a_missing_proc(tmp_path):
+    from logos_worker_node.calibration import _compiler_running
+
+    proc_root = _fake_proc(tmp_path, {100: ("VLLM::Engine Core", 1), 101: ("cicc", 100)})
+    assert _compiler_running(100, proc_root)
+    assert not _compiler_running(100, tmp_path / "missing")
 
 
 def test_probe_stalled_without_a_log_file_is_false(tmp_path):
     from logos_worker_node.calibration import _probe_stalled
 
-    assert not _probe_stalled(tmp_path / "missing.log")
+    assert not _probe_stalled(tmp_path / "missing.log", 1)
 
 
 def test_wait_ready_aborts_early_when_the_stall_check_fires(monkeypatch):

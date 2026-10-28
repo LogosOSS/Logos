@@ -1564,22 +1564,39 @@ class _GpuHealthWatch:
         return result.state, result.detail
 
 
-def _compiler_running() -> bool:
-    proc_root = Path("/proc")
-    if not proc_root.exists():
+def _compiler_running(root_pid: int, proc_root: Path = Path("/proc")) -> bool:
+    # Only the probe's own process tree counts: an unrelated build on the host
+    # must neither extend this probe's deadline nor mask its stall.
+    comms: dict[int, str] = {}
+    children: dict[int, list[int]] = {}
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
         return False
-    for entry in proc_root.iterdir():
+    for entry in entries:
         if not entry.name.isdigit():
             continue
         try:
-            if (entry / "comm").read_text().strip() in _COMPILER_PROCESSES:
-                return True
+            stat = (entry / "stat").read_text()
         except OSError:
             continue
+        head, _, tail = stat.rpartition(")")
+        fields = tail.split()
+        if len(fields) < 2:
+            continue
+        pid = int(entry.name)
+        comms[pid] = head.partition("(")[2]
+        children.setdefault(int(fields[1]), []).append(pid)
+    pending = list(children.get(root_pid, []))
+    while pending:
+        pid = pending.pop()
+        if comms[pid] in _COMPILER_PROCESSES:
+            return True
+        pending.extend(children.get(pid, []))
     return False
 
 
-def _probe_stalled(log_path: Path) -> bool:
+def _probe_stalled(log_path: Path, root_pid: int) -> bool:
     """True once the log's last lines are only the shared-memory warning."""
     try:
         with log_path.open("rb") as f:
@@ -1590,7 +1607,7 @@ def _probe_stalled(log_path: Path) -> bool:
     lines = [line for line in tail.splitlines() if line.strip()]
     if len(lines) < _STALL_REPEATS or not all(_STALL_NEEDLE in line for line in lines[-_STALL_REPEATS:]):
         return False
-    return not _compiler_running()
+    return not _compiler_running(root_pid)
 
 
 def _append_log_marker(log_path: Path, text: str) -> None:
@@ -2797,7 +2814,7 @@ def _calibrate_model_probe(
         try:
 
             def _stall_check() -> bool:
-                if not _probe_stalled(log_path):
+                if not _probe_stalled(log_path, proc.pid):
                     return False
                 _mark_stalled(log_path)
                 return True
@@ -2809,7 +2826,7 @@ def _calibrate_model_probe(
                 gpu_indices,
                 cancel_event=cancel_event,
                 stall_check=_stall_check,
-                busy_check=_compiler_running,
+                busy_check=lambda: _compiler_running(proc.pid),
                 health_check=_GpuHealthWatch(),
             )
             # This attempt actually came up — anchor the cold-load
