@@ -166,6 +166,7 @@ A candidate must complete every request with the same completion reason as the n
 Each output token count must stay within 80–120% of its baseline count.
 The candidate's p95 request latency cannot exceed 110% of the nightly baseline.
 Among eligible candidates, Logos saves the highest observed aggregate throughput and its parameters.
+The historical winner remains until an eligible measurement exceeds its recorded throughput.
 These checks prevent selection through shorter or truncated answers. They do not measure answer quality.
 Production settings return after every plan. The winner guides the next night's search only.
 

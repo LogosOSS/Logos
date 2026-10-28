@@ -134,8 +134,11 @@ def select_state(search, runs, report):
     state["reference_id"] = search["reference_id"] or baseline_id
     valid = [baseline] + [run for run in runs if run["id"] != baseline_id and eligible(run, baseline)]
     winner = max(valid, key=lambda run: (rate(run), -run["id"]))
-    state["best_benchmark_id"] = winner["id"]
-    state["best_parameters"] = winner["configuration"]["nightly"]["parameters"]
+    previous_rate = state.get("best_throughput")
+    if type(previous_rate) not in (int, float) or not math.isfinite(previous_rate) or rate(winner) > previous_rate:
+        state["best_benchmark_id"] = winner["id"]
+        state["best_parameters"] = winner["configuration"]["nightly"]["parameters"]
+        state["best_throughput"] = rate(winner)
     state["iterations"] = state.get("iterations", 0) + 1
     state["guardrails"] = {"output_token_ratio": [0.8, 1.2], "max_p95_latency_ratio": 1.1}
     return state

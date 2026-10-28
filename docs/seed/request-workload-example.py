@@ -89,6 +89,7 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
             "workload_id": workload["id"],
             "reference_id": reference,
             "best_benchmark_id": best["id"],
+            "best_throughput": best["metrics"]["aggregate_output_tokens_per_second"],
             "best_parameters": {"max_num_seqs": 20, "max_num_batched_tokens": 4096},
             "iterations": 3,
         }

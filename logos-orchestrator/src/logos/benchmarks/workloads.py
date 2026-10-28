@@ -130,7 +130,18 @@ def create(log_ids, name, provenance):
             {**metadata(snapshot), "requests": canonical(snapshot["requests"])},
         )
         db.session.commit()
-    return metadata(snapshot)
+        stored = (
+            db.session.execute(
+                text(
+                    "SELECT id, name, model_id, model_name, provenance, request_count "
+                    "FROM benchmark_workloads WHERE id = :id"
+                ),
+                {"id": snapshot["id"]},
+            )
+            .mappings()
+            .one()
+        )
+        return dict(stored)
 
 
 def load(workload_id, model_id=None):

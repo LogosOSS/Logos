@@ -70,5 +70,14 @@ def test_selection_retains_fixed_reference_and_measured_incumbent():
     assert state["reference_id"] == 7
     assert state["best_parameters"] == {"max_num_seqs": 32}
     assert state["iterations"] == 3
+    lower = optimizer.select_state(
+        {"state": state, "reference_id": 7},
+        [measured(20, 30), measured(21, 40, sequences=64)],
+        [{"configuration": 1, "status": "success", "benchmark_id": 20}],
+    )
+    assert lower["best_benchmark_id"] == 11
+    assert lower["best_parameters"] == {"max_num_seqs": 32}
+    assert lower["best_throughput"] == 60
+    assert lower["iterations"] == 4
     previous = copy.deepcopy(state)
     assert optimizer.select_state({"state": state, "reference_id": 7}, [], []) == previous

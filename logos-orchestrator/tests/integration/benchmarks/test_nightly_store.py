@@ -101,6 +101,7 @@ def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(dat
             )
         )
     created = workloads.create([7], "Trial", "synthetic")
+    assert workloads.create([7], "Same inputs, another name", "synthetic") == created
     store.set_enabled(31, False, False, created["id"], None)
     with pytest.raises(ValueError):
         store.set_enabled(31, False, False, None, None)
