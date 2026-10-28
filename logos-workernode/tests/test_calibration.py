@@ -3435,6 +3435,9 @@ class _FakeCalibrationCache:
             return str(self._cache_hub.parent)
         return str(self._source)
 
+    def is_cached(self, model: str) -> bool:
+        return self._select == "tmpfs"
+
     def reserve_cache_use(self, model: str) -> None:
         self._refs[model] = self._refs.get(model, 0) + 1
 

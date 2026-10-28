@@ -256,6 +256,91 @@ async def test_runtime_reports_worker_gpu_selection(raw_config, expected):
     assert runtime.gpu_devices == expected
 
 
+@pytest.mark.asyncio
+async def test_runtime_publishes_configured_vllm_and_startup_gmu():
+    """model_overrides win; startup_gmu_by_model carries source=configured."""
+    config = AppConfig.model_validate(
+        {
+            "logos": {
+                "capabilities_models": [
+                    "google/gemma-3-4b-it",
+                    {"model": "org/other", "gpu_memory_utilization": 0.7},
+                ],
+            },
+            "engines": {
+                "vllm": {
+                    "model_overrides": {
+                        "google/gemma-3-4b-it": {"gpu_memory_utilization": 0.83},
+                    }
+                }
+            },
+        }
+    )
+    runtime = await build_runtime_status(_make_app([], _NvidiaCollector(), config=config))
+    by_model = runtime.configured_vllm_by_model or {}
+    assert by_model["google/gemma-3-4b-it"]["gpu_memory_utilization"] == 0.83
+    assert by_model["org/other"]["gpu_memory_utilization"] == 0.7
+    startup = runtime.startup_gmu_by_model or {}
+    assert startup["google/gemma-3-4b-it"] == {
+        "gpu_memory_utilization": 0.83,
+        "source": "configured",
+    }
+    assert startup["org/other"]["source"] == "configured"
+    assert startup["org/other"]["gpu_memory_utilization"] == 0.7
+
+
+@pytest.mark.asyncio
+async def test_runtime_startup_gmu_default_when_no_profile_or_override():
+    config = AppConfig.model_validate({"logos": {"capabilities_models": ["org/unseen"]}})
+    runtime = await build_runtime_status(_make_app([], _NvidiaCollector(), config=config))
+    assert runtime.configured_vllm_by_model is None
+    startup = runtime.startup_gmu_by_model or {}
+    assert startup["org/unseen"] == {"gpu_memory_utilization": 0.9, "source": "default"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("totals", [(16_384.0,), (8192.0, 32_768.0)])
+async def test_runtime_startup_gmu_derived_from_profile(totals):
+    from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry
+
+    profiles = ModelProfileRegistry()
+    profiles._profiles["org/calibrated"] = ModelProfileRecord(  # noqa: SLF001
+        residency_source="calibrated",
+        loaded_vram_mb=12_288.0,
+        tensor_parallel_size=1,
+        kv_budget_mb=4096.0,
+    )
+    config = AppConfig.model_validate({"logos": {"capabilities_models": ["org/calibrated"]}})
+
+    class _Gpu:
+        async def get_snapshot(self):
+            return DeviceSummary(
+                timestamp=datetime.now(timezone.utc),
+                mode="nvidia",
+                nvidia_smi_available=True,
+                telemetry_available=True,
+                devices=[
+                    DeviceInfo(
+                        device_id=f"gpu{index}",
+                        kind="nvidia",
+                        memory_total_mb=total,
+                        memory_free_mb=total - 384.0,
+                        extra={"index": index},
+                    )
+                    for index, total in enumerate(totals)
+                ],
+                total_memory_mb=sum(totals),
+                free_memory_mb=sum(totals) - 384.0 * len(totals),
+            )
+
+    app = _make_app([], _Gpu(), config=config)
+    app.state.model_profiles = profiles
+    runtime = await build_runtime_status(app)
+    entry = (runtime.startup_gmu_by_model or {})["org/calibrated"]
+    assert entry["source"] == "derived"
+    assert entry["gpu_memory_utilization"] == pytest.approx(12_288.0 / (sum(totals) / len(totals)))
+
+
 _COMMIT = "a3f9c21e0b7d4f65a1c2d3e4f5061728394a5b6c"
 
 

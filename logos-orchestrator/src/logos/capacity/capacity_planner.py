@@ -274,15 +274,12 @@ class CapacityPlanner:
     VRAM_SAFETY_MARGIN = 1.0
     PER_GPU_COLD_START_MB = 500.0
 
-    # vLLM floors gpu_memory_utilization at this fraction at lane spawn (mirrors
-    # the workernode's _GMU_AUTO_FLOOR / _VLLM_GMU_FLOOR). Even a tiny model
-    # therefore *reserves* at least this fraction of each GPU it runs on, and
-    # vLLM's startup memory check needs that much free. Placement must account
-    # for this floored reservation — otherwise the orchestrator packs lanes by
-    # their (smaller) real footprint, sees "free room", emits a no-eviction load,
-    # and the worker rejects it ("no feasible GPU subset") in a loop because the
-    # orchestrator never realises eviction (sleep/stop) is needed.
+    # Auto-derive clamp floor on the worker (GMU_AUTO_FLOOR). Used only when
+    # deriving from a calibrated footprint locally as a last resort — prefer
+    # worker-published startup_gmu_by_model.
     VLLM_GMU_FLOOR = 0.5
+    # vLLM default when --gpu-memory-utilization is omitted (current engines).
+    VLLM_DEFAULT_GMU = 0.9
 
     # ─── Host-RAM headroom model ────────────────────────────────────────────
     #
@@ -3919,12 +3916,11 @@ class CapacityPlanner:
         """Find the best GPU set for a cold load and its required eviction set.
 
         Tries every combination of `tp` GPUs. For each combination, computes
-        the per-GPU deficit using the same headroom rule as
-        ``_passes_minimum_load_feasibility`` / ``_check_per_gpu_feasibility``
-        (even split of ``load_cost_mb`` + fixed ``PER_GPU_COLD_START_MB``) and
-        calls ``_find_eviction_set``. Returns the placement whose eviction set
-        has the lowest maximum effective-demand score (sacrifice least-valued
-        models first).
+        the per-GPU deficit using the cold-start free check (resident footprint
+        plus ``PER_GPU_COLD_START_MB``, raised to the startup GMU reservation)
+        and calls ``_find_eviction_set``. Returns the placement whose eviction
+        set has the lowest maximum effective-demand score (sacrifice
+        least-valued models first).
 
         Replicas-first: when ``self._replica_first_eviction`` is on AND
         ``cluster_lanes_by_model`` is provided, runs a Pass 1 over all GPU
@@ -3935,7 +3931,8 @@ class CapacityPlanner:
 
         Returns (gpu_set, eviction_set) or None if no feasible placement exists.
         """
-        per_gpu_needed = (load_cost_mb / max(tp, 1)) + self.PER_GPU_COLD_START_MB
+        footprint_per_gpu = load_cost_mb / max(tp, 1)
+        target_profile = profiles.get(target_model_name) if target_model_name else None
         per_gpu_free = self._get_per_gpu_free(provider_id)
 
         if not per_gpu_free:
@@ -3979,11 +3976,10 @@ class CapacityPlanner:
         if len(all_gpu_ids) < tp:
             return None  # Not enough GPUs
 
-        # vLLM reserves at least VLLM_GMU_FLOOR × GPU-total per rank regardless of
-        # the model's real footprint (see VLLM_GMU_FLOOR). Raise the per-GPU need
-        # to that floored reservation so the deficit — and therefore the need to
-        # evict (sleep/stop) a resident lane — is computed against what vLLM will
-        # actually occupy, not just the smaller weights+KV footprint.
+        # Cold EngineCore init needs max(footprint, startup-GMU × total) free per
+        # rank — see _cold_start_per_gpu_need_mb. Raise the deficit against that
+        # bound so eviction is planned when residual free would pass the smaller
+        # weights+KV estimate but fail vLLM's request_memory gate.
         per_gpu_total = self._get_per_gpu_total(provider_id) or {}
 
         def _try(replicas_only: bool):
@@ -3994,8 +3990,13 @@ class CapacityPlanner:
                 per_gpu_deficit: dict[int, float] = {}
                 for g in gpu_set:
                     free = per_gpu_free.get(g, 0.0)
-                    floor_reservation = self.VLLM_GMU_FLOOR * per_gpu_total.get(g, 0.0)
-                    need_g = max(per_gpu_needed, floor_reservation)
+                    need_g = self._cold_start_per_gpu_need_mb(
+                        footprint_per_gpu,
+                        per_gpu_total.get(g, 0.0),
+                        target_profile,
+                        provider_id=provider_id,
+                        model_name=target_model_name,
+                    )
                     deficit = max(0.0, need_g - free)
                     if deficit > 0:
                         per_gpu_deficit[g] = deficit
@@ -6166,6 +6167,7 @@ class CapacityPlanner:
                     target_gpu_devices = target_action.params.get("gpu_devices")
                 target_gpu_ids = self._parse_gpu_device_ids(target_gpu_devices)
                 per_gpu_free = self._get_per_gpu_free(provider_id)
+                per_gpu_total = self._get_per_gpu_total(provider_id) or {}
                 if target_gpu_ids and per_gpu_free is not None and all(dev in per_gpu_free for dev in target_gpu_ids):
                     tp = len(target_gpu_ids)
                     is_calibrated = profile is not None and profile.residency_source in ("calibrated", "measured")
@@ -6173,30 +6175,37 @@ class CapacityPlanner:
                         if is_calibrated:
                             # Calibrated base_residency is the measured total across
                             # all TP ranks — even split is accurate.
-                            per_gpu_needed = needed / tp
+                            footprint_per_gpu = needed / tp
                         else:
                             # Unknown model: TP rank 0 hosts API server, tokenizer,
                             # sampling, embedding — ~60% of total VRAM.  Require
                             # every GPU to have room for the worst case (rank 0).
-                            per_gpu_needed = needed * self.TP_RANK0_VRAM_FRACTION
+                            footprint_per_gpu = needed * self.TP_RANK0_VRAM_FRACTION
                     else:
-                        per_gpu_needed = needed
-                    # Cold-start runtime overhead (CUDA context, NCCL ring buffers,
-                    # vLLM allocator warm-up) is constant per GPU regardless of
-                    # profile calibration or action kind. Estimation slack for
-                    # non-calibrated profiles was already applied upstream by
-                    # _estimate_action_vram, so `needed` here is the model's
-                    # actual footprint estimate.
-                    per_gpu_needed += self.PER_GPU_COLD_START_MB
-                    gpu_effective = [
-                        self._vram_ledger.get_gpu_effective_available_mb(
-                            provider_id,
-                            dev,
-                            float(per_gpu_free[dev]),
-                        )
-                        for dev in target_gpu_ids
-                    ]
-                    per_gpu_ready = all(free_mb >= per_gpu_needed for free_mb in gpu_effective)
+                        footprint_per_gpu = needed
+                    # Cold loads raise the per-GPU need to the startup GMU
+                    # reservation. Wakes keep footprint + headroom only — the
+                    # sleeping lane already holds the allocator pool.
+                    if target_action.action == "load":
+                        per_gpu_needed_by_dev = {
+                            dev: self._cold_start_per_gpu_need_mb(
+                                footprint_per_gpu,
+                                per_gpu_total.get(dev, 0.0),
+                                profile,
+                                provider_id=provider_id,
+                                model_name=target.model_name,
+                            )
+                            for dev in target_gpu_ids
+                        }
+                    else:
+                        wake_need = footprint_per_gpu + self.PER_GPU_COLD_START_MB
+                        per_gpu_needed_by_dev = {dev: wake_need for dev in target_gpu_ids}
+                    per_gpu_needed = max(per_gpu_needed_by_dev.values()) if per_gpu_needed_by_dev else 0.0
+                    # per_gpu_free is already ledger-adjusted via _get_per_gpu_free.
+                    gpu_effective = [float(per_gpu_free[dev]) for dev in target_gpu_ids]
+                    per_gpu_ready = all(
+                        free_mb >= per_gpu_needed_by_dev[dev] for free_mb, dev in zip(gpu_effective, target_gpu_ids)
+                    )
                     logger.info(
                         "ensure_capacity worker=%s model=%s: known-GPU path "
                         "target_gpus=%s per_gpu_needed=%.0fMB gpu_effective=%s per_gpu_ready=%s",
@@ -6250,24 +6259,42 @@ class CapacityPlanner:
                     is_calibrated_tp = profile is not None and profile.residency_source in ("calibrated", "measured")
                     if tp > 1:
                         if is_calibrated_tp:
-                            per_gpu_needed = needed / tp
+                            footprint_per_gpu = needed / tp
                         else:
-                            per_gpu_needed = needed * self.TP_RANK0_VRAM_FRACTION
+                            footprint_per_gpu = needed * self.TP_RANK0_VRAM_FRACTION
                     else:
-                        per_gpu_needed = needed
-                    # Same fixed per-GPU cold-start headroom as the known-GPU path.
-                    per_gpu_needed += self.PER_GPU_COLD_START_MB
-                    sorted_free = sorted(
-                        (
-                            self._vram_ledger.get_gpu_effective_available_mb(
-                                provider_id,
-                                dev,
-                                float(free_mb),
+                        footprint_per_gpu = needed
+                    # per_gpu_free is already ledger-adjusted. Filter-then-choose
+                    # (mixed cards: each physical total has its own gmu×total
+                    # need — do not pick absolute-free top-TP then check).
+                    effective_free = {dev: float(free_mb) for dev, free_mb in per_gpu_free.items()}
+                    sorted_free = sorted(effective_free.values(), reverse=True)
+                    if target_action.action == "load":
+                        selected = self._select_cold_load_gpus(
+                            provider_id,
+                            profile,
+                            needed,
+                            tp=tp,
+                            per_gpu_free=effective_free,
+                            model_name=target.model_name,
+                        )
+                        fits = selected is not None
+                        if selected:
+                            per_gpu_needed = max(
+                                self._cold_start_per_gpu_need_mb(
+                                    footprint_per_gpu,
+                                    per_gpu_total.get(dev, 0.0),
+                                    profile,
+                                    provider_id=provider_id,
+                                    model_name=target.model_name,
+                                )
+                                for dev in selected
                             )
-                            for dev, free_mb in per_gpu_free.items()
-                        ),
-                        reverse=True,
-                    )
+                        else:
+                            per_gpu_needed = footprint_per_gpu + self.PER_GPU_COLD_START_MB
+                    else:
+                        per_gpu_needed = footprint_per_gpu + self.PER_GPU_COLD_START_MB
+                        fits = (sorted_free[tp - 1] if len(sorted_free) >= tp else 0.0) >= per_gpu_needed
                     nth_gpu_free = sorted_free[tp - 1] if len(sorted_free) >= tp else 0.0
                     logger.info(
                         "ensure_capacity worker=%s model=%s: unknown-GPU path "
@@ -6278,9 +6305,9 @@ class CapacityPlanner:
                         per_gpu_needed,
                         [f"{v:.0f}MB" for v in sorted_free],
                         nth_gpu_free,
-                        nth_gpu_free >= per_gpu_needed,
+                        fits,
                     )
-                    if nth_gpu_free >= per_gpu_needed:
+                    if fits:
                         return True
                     shortfall = max(shortfall, (per_gpu_needed - nth_gpu_free) * tp)
                     logger.info(
@@ -7382,17 +7409,16 @@ class CapacityPlanner:
             )
             return False
 
-        # Per-GPU feasibility check for TP models. Cold-start overhead is a
-        # fixed PER_GPU_COLD_START_MB additive headroom (CUDA context, NCCL
-        # init, allocator pools) regardless of whether the profile is
-        # calibrated — must match _ensure_request_capacity and
-        # _pick_cold_load_placement.
-        if tp > 1 and provider_id is not None:
+        # Per-GPU feasibility (TP≥1). Aggregate free can look fine while every
+        # card is below the cold-start free need (footprint + GMU reservation).
+        # Must match _ensure_request_capacity and _pick_cold_load_placement.
+        if provider_id is not None:
             per_gpu_ok = self._check_per_gpu_feasibility(
                 provider_id,
                 minimum_needed,
                 tp,
                 model_name,
+                profile=profile,
             )
             if not per_gpu_ok:
                 return False
@@ -7405,75 +7431,36 @@ class CapacityPlanner:
         total_needed_mb: float,
         tp: int,
         model_name: str,
+        profile: Optional["ModelProfile"] = None,
     ) -> bool:
-        """Check if a TP model fits on tp individual GPUs given per-GPU free VRAM.
+        """Check if a model fits on tp individual GPUs given per-GPU free VRAM.
 
         Total free VRAM can be misleading for multi-GPU systems. A 2×16GB system
         with 18GB+2GB free shows 20GB total free, but a TP=2 model needing
-        10GB/GPU would fail on GPU1.
+        10GB/GPU would fail on GPU1. TP=1 uses the same gate so a cold start
+        cannot land on residual free that is below vLLM's startup GMU check.
 
-        Uses DeviceInfo from the worker runtime snapshot (serialized as dicts
-        with fields: device_id, memory_free_mb, memory_total_mb, memory_used_mb).
+        Delegates to ``_gpus_can_admit_cold_load`` so unit tests and the
+        placement picker share one physical free-memory rule.
         """
-        if self._registry is None:
-            return True  # can't check, allow
-        snap = self._registry.peek_runtime_snapshot(provider_id)
-        if snap is None:
-            return True
-
-        devices_info = (snap.get("runtime") or {}).get("devices") or {}
-        device_list = devices_info.get("devices") or []
-        if not isinstance(device_list, list) or len(device_list) < tp:
-            return True  # can't check, allow
-
-        # Gather per-GPU free memory from DeviceInfo dicts, subtracting
-        # VRAM committed by in-flight ledger reservations on each GPU.
-        per_gpu_free: list[tuple[str, float]] = []
-        for dev in device_list:
-            if not isinstance(dev, dict):
-                continue
-            dev_id = str(dev.get("device_id", "?"))
-            free_mb = float(dev.get("memory_free_mb", 0) or 0)
-            if free_mb <= 0:
-                total_mb = float(dev.get("memory_total_mb", 0) or 0)
-                used_mb = float(dev.get("memory_used_mb", 0) or 0)
-                if total_mb > 0 and used_mb >= 0:
-                    free_mb = max(total_mb - used_mb, 0.0)
-            # Subtract VRAM already committed by in-flight operations on this GPU
-            try:
-                dev_id_int = int(dev_id) if dev_id.isdigit() else -1
-            except (ValueError, AttributeError):
-                dev_id_int = -1
-            if dev_id_int >= 0:
-                free_mb = self._vram_ledger.get_gpu_effective_available_mb(
-                    provider_id,
-                    dev_id_int,
-                    free_mb,
-                )
-            per_gpu_free.append((dev_id, free_mb))
-
-        if len(per_gpu_free) < tp:
-            return True  # can't determine per-GPU, allow
-
-        # Sort by most free first; check if the tp-th GPU has enough.
-        # Per-GPU need = even split of the total + fixed cold-start headroom.
-        per_gpu_free.sort(key=lambda x: x[1], reverse=True)
-        per_gpu_needed = (total_needed_mb / tp) + self.PER_GPU_COLD_START_MB
-        best_tp_gpus = per_gpu_free[:tp]
-        weakest_gpu = best_tp_gpus[-1]
-
-        if weakest_gpu[1] < per_gpu_needed:
+        ok = self._gpus_can_admit_cold_load(
+            provider_id,
+            profile,
+            total_needed_mb,
+            tp=tp,
+            model_name=model_name,
+        )
+        if not ok:
+            gmu = self._startup_gmu_for_model(provider_id, model_name, profile)
             logger.info(
-                "Per-GPU feasibility FAILED for %s (TP=%d): need %.0fMB/GPU, "
-                "best %d GPUs have %s free (after ledger commitments)",
+                "Per-GPU feasibility FAILED for %s (TP=%d): no GPU set clears "
+                "cold-start free need (footprint=%.0fMB, startup_gmu=%s)",
                 model_name,
                 tp,
-                per_gpu_needed,
-                tp,
-                ", ".join(f"GPU{did}={free:.0f}MB" for did, free in best_tp_gpus),
+                total_needed_mb,
+                f"{gmu:.2f}" if gmu is not None else "unknown",
             )
-            return False
-        return True
+        return ok
 
     def _validate_vram_budget(self, actions: List[CapacityPlanAction]) -> List[CapacityPlanAction]:
         """Filter out actions that would exceed available VRAM.
@@ -7535,6 +7522,22 @@ class CapacityPlanner:
 
         validated_ids: set[int] = set()
         cumulative_vram: dict[int, float] = {}
+        # Working per-GPU free after known same-batch eviction credits and after
+        # debits from accepted load/wake actions. Starts from physical free
+        # minus in-flight ledger commitments.
+        working_free: dict[int, dict[int, float]] = {}
+
+        def _ensure_working(pid: int) -> Optional[dict[int, float]]:
+            if pid in working_free:
+                return working_free[pid]
+            # _get_per_gpu_free already subtracts in-flight ledger reservations —
+            # copy once; do not apply get_gpu_effective_available_mb again.
+            raw = self._get_per_gpu_free(pid)
+            if not raw:
+                working_free[pid] = {}
+                return None
+            working_free[pid] = dict(raw)
+            return working_free[pid]
 
         # Process sleep/stop first (they free VRAM)
         free_actions = [a for a in actions if a.action in ("sleep_l1", "sleep_l2", "stop")]
@@ -7545,7 +7548,9 @@ class CapacityPlanner:
         validated_ids.update(id(action) for action in free_actions)
         validated_ids.update(id(action) for action in other_actions)
 
-        # Credit freed VRAM from sleep/stop actions to cumulative tracking
+        # Credit freed VRAM from sleep/stop — aggregate always; per-GPU only when
+        # the victim's placement is known. Unknown placement must not invent free
+        # VRAM on cards the victim may not occupy.
         for action in free_actions:
             try:
                 profiles = self._facade.get_model_profiles(action.provider_id)
@@ -7553,10 +7558,20 @@ class CapacityPlanner:
                 profiles = {}
             profile = profiles.get(action.model_name)
             freed = self._estimate_freed_vram(action, profile)
-            if freed > 0:
-                cumulative_vram[action.provider_id] = cumulative_vram.get(action.provider_id, 0.0) - freed
+            if freed <= 0:
+                continue
+            cumulative_vram[action.provider_id] = cumulative_vram.get(action.provider_id, 0.0) - freed
+            gpu_ids = self._parse_gpu_device_ids(self._lane_gpu_devices_str(action.provider_id, action.lane_id))
+            if not gpu_ids:
+                continue
+            free_map = _ensure_working(action.provider_id)
+            if free_map is None:
+                continue
+            share = freed / float(len(gpu_ids))
+            for gpu_id in gpu_ids:
+                free_map[gpu_id] = float(free_map.get(gpu_id, 0.0)) + share
 
-        # For consuming actions, check VRAM budget
+        # For consuming actions, check VRAM budget with cumulative per-GPU debits.
         for action in consume_actions:
             provider_id = action.provider_id
 
@@ -7593,16 +7608,94 @@ class CapacityPlanner:
                     estimated_vram * self.VRAM_SAFETY_MARGIN,
                 )
                 continue
-            else:
-                logger.info(
-                    "VRAM budget OK for %s on worker=%s: available=%.0fMB estimated=%.0fMB (margin=%.0fMB) cumulative=%.0fMB",  # noqa: E501
-                    action.model_name,
-                    self._facade.get_provider_name(provider_id) or provider_id,
-                    available,
-                    estimated_vram,
-                    estimated_vram * self.VRAM_SAFETY_MARGIN,
-                    cumulative_vram.get(provider_id, 0.0),
-                )
+
+            tp = self._profile_tp(profile)
+            params = action.params if isinstance(action.params, dict) else {}
+            pinned = self._parse_gpu_device_ids(params.get("gpu_devices") if params else None)
+            required_gpus: Optional[tuple[int, ...]] = pinned if pinned else None
+            free_map = _ensure_working(provider_id)
+
+            if free_map is not None:
+                if action.action == "load":
+                    selected = self._select_cold_load_gpus(
+                        provider_id,
+                        profile,
+                        estimated_vram,
+                        tp=tp,
+                        per_gpu_free=free_map,
+                        required_gpus=required_gpus,
+                        model_name=action.model_name,
+                    )
+                    if selected is None:
+                        gmu = self._startup_gmu_for_model(provider_id, action.model_name, profile)
+                        logger.warning(
+                            "VRAM budget check failed for load on %s: no GPU set clears "
+                            "cold-start free need (footprint=%.0fMB, startup_gmu=%s, pinned=%s)",
+                            action.model_name,
+                            estimated_vram,
+                            f"{gmu:.2f}" if gmu is not None else "unknown",
+                            list(required_gpus) if required_gpus else None,
+                        )
+                        continue
+                    # Communicate auto-chosen placement so later accounting and the
+                    # worker share one concrete set. Pinned sets stay unchanged.
+                    if required_gpus is None:
+                        if action.params is None:
+                            action.params = {}
+                        if isinstance(action.params, dict):
+                            action.params["gpu_devices"] = ",".join(str(g) for g in selected)
+                    # Conservatively reserve cold-start free headroom
+                    # (max footprint, gmu×total) until live telemetry updates
+                    # working free. With an explicit KV pin this matches the
+                    # EngineCore request_memory startup check, not a long-lived
+                    # GMU allocator lock — batch peers must still see the debit.
+                    per_gpu_total = self._get_per_gpu_total(provider_id) or {}
+                    footprint_per_gpu = float(estimated_vram) / float(len(selected))
+                    for gpu_id in selected:
+                        debit = self._cold_start_per_gpu_need_mb(
+                            footprint_per_gpu,
+                            per_gpu_total.get(gpu_id, 0.0),
+                            profile,
+                            provider_id=provider_id,
+                            model_name=action.model_name,
+                        )
+                        free_map[gpu_id] = float(free_map.get(gpu_id, 0.0)) - debit
+                else:
+                    # Wake: no GMU threshold, but the wake footprint still consumes
+                    # VRAM on the lane's GPUs (or the pinned set when provided).
+                    wake_gpus = required_gpus
+                    if wake_gpus is None:
+                        wake_gpus = self._parse_gpu_device_ids(self._lane_gpu_devices_str(provider_id, action.lane_id))
+                    if wake_gpus:
+                        if any(gpu_id not in free_map for gpu_id in wake_gpus):
+                            logger.warning(
+                                "VRAM budget check failed for wake on %s: target GPUs %s " "unavailable in free map",
+                                action.model_name,
+                                list(wake_gpus),
+                            )
+                            continue
+                        per_gpu_cost = float(estimated_vram) / float(len(wake_gpus))
+                        if any(free_map[gpu_id] < per_gpu_cost for gpu_id in wake_gpus):
+                            logger.warning(
+                                "VRAM budget check failed for wake on %s: insufficient "
+                                "free on GPUs %s for footprint=%.0fMB",
+                                action.model_name,
+                                list(wake_gpus),
+                                estimated_vram,
+                            )
+                            continue
+                        for gpu_id in wake_gpus:
+                            free_map[gpu_id] = float(free_map.get(gpu_id, 0.0)) - per_gpu_cost
+
+            logger.info(
+                "VRAM budget OK for %s on worker=%s: available=%.0fMB estimated=%.0fMB (margin=%.0fMB) cumulative=%.0fMB",  # noqa: E501
+                action.model_name,
+                self._facade.get_provider_name(provider_id) or provider_id,
+                available,
+                estimated_vram,
+                estimated_vram * self.VRAM_SAFETY_MARGIN,
+                cumulative_vram.get(provider_id, 0.0),
+            )
 
             cumulative_vram[provider_id] = cumulative_vram.get(provider_id, 0.0) + estimated_vram
             validated_ids.add(id(action))
@@ -9738,6 +9831,234 @@ class CapacityPlanner:
             if total_mb > 0:
                 result[dev_id] = total_mb
         return result if result else None
+
+    def _runtime_dict_for_provider(self, provider_id: int) -> dict:
+        if self._registry is None:
+            return {}
+        snap = self._registry.peek_runtime_snapshot(provider_id)
+        if not isinstance(snap, dict):
+            return {}
+        runtime = snap.get("runtime") if isinstance(snap.get("runtime"), dict) else snap
+        return runtime if isinstance(runtime, dict) else {}
+
+    def _startup_gmu_entry_for_model(self, provider_id: int, model_name: str) -> dict:
+        """Worker-published ``startup_gmu_by_model`` entry, or {}."""
+        by_model = self._runtime_dict_for_provider(provider_id).get("startup_gmu_by_model")
+        if not isinstance(by_model, dict):
+            return {}
+        entry = by_model.get(model_name)
+        return dict(entry) if isinstance(entry, dict) else {}
+
+    def _configured_vllm_for_model(self, provider_id: int, model_name: str) -> dict:
+        """Worker-published explicit vLLM knobs for ``model_name``, or {}."""
+        by_model = self._runtime_dict_for_provider(provider_id).get("configured_vllm_by_model")
+        if not isinstance(by_model, dict):
+            return {}
+        entry = by_model.get(model_name)
+        return dict(entry) if isinstance(entry, dict) else {}
+
+    def _live_lane_gmu(self, provider_id: int, model_name: str) -> Optional[float]:
+        """GMU from an existing lane of ``model_name`` on this worker, if set."""
+        runtime = self._runtime_dict_for_provider(provider_id)
+        lanes = runtime.get("lanes")
+        if not isinstance(lanes, list):
+            return None
+        for lane in lanes:
+            if not isinstance(lane, dict) or lane.get("model") != model_name:
+                continue
+            cfg = lane.get("lane_config") or lane.get("vllm_config") or {}
+            if isinstance(cfg, dict) and "vllm_config" in cfg:
+                cfg = cfg.get("vllm_config") or {}
+            if not isinstance(cfg, dict):
+                continue
+            raw = cfg.get("gpu_memory_utilization")
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return None
+
+    def _startup_gmu_for_model(
+        self,
+        provider_id: Optional[int],
+        model_name: Optional[str],
+        profile: Optional["ModelProfile"] = None,
+    ) -> Optional[float]:
+        """Admission GMU for a cold EngineCore request_memory check.
+
+        Prefer worker-published ``startup_gmu_by_model`` (configured / derived /
+        default — never mislabeled as observed). Fallbacks: explicit
+        configured_vllm override, live lane config, profile observed/min
+        fields. When nothing is known, admit against vLLM's omitted-flag
+        default (``VLLM_DEFAULT_GMU`` = 0.9). An empty configured map does
+        **not** imply the auto-derive floor 0.5.
+        """
+        if provider_id is not None and model_name:
+            published = self._startup_gmu_entry_for_model(provider_id, model_name)
+            raw = published.get("gpu_memory_utilization")
+            if raw is not None:
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError):
+                    value = None
+                if value is not None and value > 0:
+                    return value
+            configured = self._configured_vllm_for_model(provider_id, model_name)
+            raw = configured.get("gpu_memory_utilization")
+            if raw is not None:
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError):
+                    value = None
+                if value is not None and value > 0:
+                    return value
+            live = self._live_lane_gmu(provider_id, model_name)
+            if live is not None:
+                return live
+
+        if profile is not None:
+            best: Optional[float] = None
+            for attr in (
+                "observed_gpu_memory_utilization",
+                "min_gpu_memory_utilization_to_load",
+                "gpu_memory_utilization",
+            ):
+                raw = getattr(profile, attr, None)
+                if raw is None:
+                    continue
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0:
+                    best = value if best is None else max(best, value)
+            if best is not None:
+                return best
+
+        # No published/override/profile pin: honor vLLM's omitted-flag default.
+        return float(self.VLLM_DEFAULT_GMU)
+
+    def _cold_start_per_gpu_need_mb(
+        self,
+        footprint_per_gpu_mb: float,
+        gpu_total_mb: float,
+        profile: Optional["ModelProfile"] = None,
+        *,
+        provider_id: Optional[int] = None,
+        model_name: Optional[str] = None,
+        gmu: Optional[float] = None,
+    ) -> float:
+        """Per-GPU free VRAM a cold vLLM start must see before spawn.
+
+        Takes the max of the resident footprint (weights + explicit KV, plus
+        cold-start headroom) and the startup GMU reservation. Wake paths must
+        not call this — sleeping weights already hold the allocator pool and
+        re-applying the GMU gate over-restricts wakes.
+        """
+        footprint_need = float(footprint_per_gpu_mb) + self.PER_GPU_COLD_START_MB
+        if gpu_total_mb <= 0:
+            return footprint_need
+        if gmu is None:
+            gmu = self._startup_gmu_for_model(provider_id, model_name, profile)
+        if gmu is None or gmu <= 0:
+            return footprint_need
+        return max(footprint_need, float(gmu) * float(gpu_total_mb))
+
+    def _select_cold_load_gpus(
+        self,
+        provider_id: int,
+        profile: Optional["ModelProfile"],
+        load_cost_mb: float,
+        tp: int = 1,
+        *,
+        per_gpu_free: Optional[dict[int, float]] = None,
+        required_gpus: Optional[tuple[int, ...]] = None,
+        model_name: Optional[str] = None,
+    ) -> Optional[tuple[int, ...]]:
+        """Choose a feasible GPU set for a cold load, or None if none fits.
+
+        When ``required_gpus`` is set (action params / sticky placement), that
+        exact set is checked: wrong length vs TP, unknown ids, or any card
+        below its own ``max(footprint, gmu×total)`` need → reject. When
+        unspecified, every physical card is filtered by its own need, then a
+        TP-sized feasible set is chosen (mixed-size nodes must not falsely
+        reject a smaller card that clears its own GMU reservation). Missing
+        per-GPU telemetry returns ``None`` (caller decides fall-open policy).
+        """
+        tp = max(int(tp or 1), 1)
+        free_map = dict(per_gpu_free) if per_gpu_free is not None else self._get_per_gpu_free(provider_id)
+        if not free_map:
+            return None
+        per_gpu_total = self._get_per_gpu_total(provider_id) or {}
+        footprint_per_gpu = float(load_cost_mb) / float(tp)
+        gmu = self._startup_gmu_for_model(
+            provider_id,
+            model_name or (getattr(profile, "model_name", None) if profile else None),
+            profile,
+        )
+
+        def _need(gpu_id: int) -> float:
+            return self._cold_start_per_gpu_need_mb(
+                footprint_per_gpu,
+                per_gpu_total.get(gpu_id, 0.0),
+                profile,
+                provider_id=provider_id,
+                model_name=model_name,
+                gmu=gmu,
+            )
+
+        if required_gpus is not None:
+            if len(required_gpus) != tp:
+                return None
+            if any(gpu_id not in free_map for gpu_id in required_gpus):
+                return None
+            if any(free_map[gpu_id] < _need(gpu_id) for gpu_id in required_gpus):
+                return None
+            return tuple(required_gpus)
+
+        feasible = [gpu_id for gpu_id, free_mb in free_map.items() if free_mb >= _need(gpu_id)]
+        if len(feasible) < tp:
+            return None
+        # Prefer more free headroom above each card's own need.
+        feasible.sort(key=lambda gpu_id: free_map[gpu_id] - _need(gpu_id), reverse=True)
+        return tuple(sorted(feasible[:tp]))
+
+    def _gpus_can_admit_cold_load(
+        self,
+        provider_id: int,
+        profile: Optional["ModelProfile"],
+        load_cost_mb: float,
+        tp: int = 1,
+        *,
+        per_gpu_free: Optional[dict[int, float]] = None,
+        required_gpus: Optional[tuple[int, ...]] = None,
+        model_name: Optional[str] = None,
+    ) -> bool:
+        """True when a feasible GPU set exists for a cold load.
+
+        Missing per-GPU telemetry falls open so single-GPU / Metal / legacy
+        paths keep working — that is an explicit lack of physical placement
+        data, not a silent invent of free VRAM.
+        """
+        free_map = per_gpu_free if per_gpu_free is not None else self._get_per_gpu_free(provider_id)
+        if not free_map:
+            return True
+        return (
+            self._select_cold_load_gpus(
+                provider_id,
+                profile,
+                load_cost_mb,
+                tp=tp,
+                per_gpu_free=free_map,
+                required_gpus=required_gpus,
+                model_name=model_name,
+            )
+            is not None
+        )
 
     def _lane_gpu_devices_str(
         self,

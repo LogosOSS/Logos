@@ -742,6 +742,26 @@ class AppConfig(BaseModel):
         return values
 
 
+def merged_vllm_engine_overrides(cfg: AppConfig, model_name: str) -> dict[str, Any]:
+    """Per-model vLLM engine-field overrides for ``model_name``.
+
+    Same merge spawn uses conceptually: ``logos.capabilities_overrides``
+    engine-field keys first, then ``engines.vllm.model_overrides`` wins.
+    Only keys that exist on ``VllmConfig`` are returned; None values dropped.
+    """
+    engine_fields = VllmConfig.model_fields
+    merged: dict[str, Any] = {}
+    if cfg.logos is not None:
+        for key, value in (cfg.logos.capabilities_overrides.get(model_name) or {}).items():
+            if key in engine_fields:
+                merged[key] = value
+    if cfg.engines is not None and cfg.engines.vllm is not None:
+        for key, value in (cfg.engines.vllm.model_overrides.get(model_name) or {}).items():
+            if key in engine_fields:
+                merged[key] = value
+    return {k: v for k, v in merged.items() if v is not None}
+
+
 def model_can_sleep(cfg: AppConfig, model_name: str) -> bool:
     """Effective enable_sleep_mode for a model on this worker.
 
@@ -1009,6 +1029,16 @@ class WorkerRuntimeStatus(BaseModel):
     # orchestrator MUST skip calibration scheduling on unhealthy workers and
     # log the condition so an operator can intervene (usually reboot).
     node_health: dict[str, Any] | None = None
+    # Explicit per-model vLLM engine knobs from engines.vllm.model_overrides
+    # (and matching engine-field keys under logos.capabilities_overrides).
+    # Only models with at least one published key appear.
+    configured_vllm_by_model: dict[str, dict[str, Any]] | None = None
+    # Calculated startup gpu_memory_utilization the worker will enforce at
+    # cold EngineCore init, per configured model. Each entry:
+    #   {"gpu_memory_utilization": float, "source": "configured"|"derived"|"default"}
+    # ``source`` documents how the value was obtained — never mislabel a
+    # computed value as observed. Absent on legacy workers.
+    startup_gmu_by_model: dict[str, dict[str, Any]] | None = None
 
 
 class LaneSetRequest(BaseModel):
