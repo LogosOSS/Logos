@@ -8,7 +8,7 @@
           <div><strong>{{ top.run.provider_name }}</strong><small>Run #{{ top.run.id }} · {{ top.run.recorded_at | date:'dd MMM yyyy, HH:mm Z' }}</small></div>
           <strong class="top-configuration__rate">{{ top.rate | number:'1.1-1' }} <small>tok/s</small></strong>
         </div>
-        <p class="results-note">{{ top.run.dataset }} · {{ top.run.sample_size }} requests
+        <p class="results-note">{{ datasetLabel(top.run) }} · {{ top.run.sample_size }} requests
           @for (setting of top.workload; track setting.key) {
             @if (setting.captured && (setting.key === 'profile' || setting.key === 'max_concurrency' || setting.key === 'max_output_tokens')) { · {{ setting.label }}: {{ setting.value }} }
           }
@@ -32,7 +32,7 @@
 @if (activeProgress(); as chart) {
   <section class="benchmark-progress" aria-label="Nightly progress">
     <div class="results-heading">
-      <h3>Nightly progress <small>Best variant vs. baseline</small></h3>
+      <h3>Nightly progress <small>{{ chart.fixed ? 'Best so far vs. fixed reference' : 'Best variant vs. nightly baseline' }}</small></h3>
       @if (progress().length > 1) {
         <select aria-label="Progress workload" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
           @for (group of progress(); track group.key) { <option [value]="group.key">{{ group.label }}</option> }
@@ -40,7 +40,7 @@
       }
     </div>
     <p class="results-note">{{ chart.context }}</p>
-    <div class="progress-plot" role="group" aria-label="Throughput change over time; each point is the best successful variant against its own baseline">
+    <div class="progress-plot" role="group" [attr.aria-label]="chart.fixed ? 'Best eligible throughput so far against a fixed reference' : 'Best successful variant against its nightly baseline'">
       <span class="progress-axis progress-axis--top">{{ chart.max | number:'1.0-1' }}%</span>
       <span class="progress-axis progress-axis--zero" [style.top.%]="chart.zero">0%</span>
       <span class="progress-axis progress-axis--bottom">{{ chart.min | number:'1.0-1' }}%</span>
@@ -48,10 +48,10 @@
         <line x1="0" x2="100" [attr.y1]="chart.zero" [attr.y2]="chart.zero" class="progress-zero" />
         @if (chart.points.length > 1) { <polyline [attr.points]="chart.line" class="progress-line" /> }
       </svg>
-      @for (point of chart.points; track point.run.id) {
+      @for (point of chart.points; track point.key ?? point.run.id) {
         <button type="button" class="progress-point" [class.progress-point--last]="point.x > 80" [class.progress-point--first]="point.x < 20" [style.left.%]="point.x" [style.top.%]="point.y"
-          [attr.aria-label]="'Run #' + point.run.id + ', ' + (point.time | date:'dd MMM yyyy, HH:mm') + ': ' + (point.gain | number:'1.1-1') + '% vs. baseline'"
-          ><span class="progress-tooltip">#{{ point.run.id }} · {{ point.gain > 0 ? '+' : '' }}{{ point.gain | number:'1.1-1' }}%<small>{{ point.time | date:'dd MMM yyyy, HH:mm' }}</small></span></button>
+          [attr.aria-label]="(chart.fixed ? 'Best so far run #' : 'Run #') + point.run.id + ', observed by ' + (point.time | date:'dd MMM yyyy, HH:mm') + ': ' + (point.gain | number:'1.1-1') + '% vs. baseline'"
+          ><span class="progress-tooltip">#{{ point.run.id }} · {{ point.gain > 0 ? '+' : '' }}{{ point.gain | number:'1.1-1' }}%<small>Observed by {{ point.time | date:'dd MMM yyyy, HH:mm' }}</small></span></button>
       }
     </div>
     <div class="progress-dates"><span>{{ chart.first | date:'dd MMM yyyy, HH:mm' }}</span>@if (chart.first !== chart.last) { <span>{{ chart.last | date:'dd MMM yyyy, HH:mm' }}</span> }</div>

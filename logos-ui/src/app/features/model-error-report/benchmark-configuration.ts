@@ -21,6 +21,18 @@ export function benchmarkConfigurationItems(
 ): readonly BenchmarkConfigurationItem[] {
   const configuration = benchmark.configuration;
 
+  if (configuration['tool'] === 'logos-replay') {
+    return [
+      item('dataset', 'Dataset', benchmark.dataset),
+      item('workload_name', 'Request workload', field(configuration['workload'], 'name')),
+      item('provenance', 'Provenance', field(configuration['workload'], 'provenance')),
+      item('sample_size', 'Sample size', benchmark.sample_size),
+      item('profile', 'Profile', first(configuration, [['benchmark', 'profile', 'kind']])),
+      item('max_concurrency', 'Max concurrency', first(configuration, [['benchmark', 'strategy', 'max_concurrency']])),
+      item('max_output_tokens', 'Output limits', 'From source requests'),
+      item('streaming', 'Streaming', true),
+    ];
+  }
   return [
     item('dataset', 'Dataset', benchmark.dataset),
     item('subset', 'Subset', first(configuration, [

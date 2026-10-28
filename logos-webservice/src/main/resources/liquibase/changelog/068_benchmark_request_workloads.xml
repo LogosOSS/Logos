@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="068-request-workloads" author="logos">
+        <sql><![CDATA[
+            CREATE TABLE benchmark_workloads (
+                id VARCHAR(64) PRIMARY KEY CHECK (id ~ '^[a-f0-9]{64}$'),
+                name VARCHAR(128) NOT NULL,
+                model_id INTEGER NOT NULL,
+                model_name TEXT NOT NULL,
+                provenance TEXT NOT NULL CHECK (provenance IN ('synthetic', 'production')),
+                requests JSONB NOT NULL CHECK (jsonb_typeof(requests) = 'array'),
+                request_count INTEGER NOT NULL CHECK (request_count BETWEEN 1 AND 100),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CHECK (jsonb_array_length(requests) = request_count)
+            );
+            ALTER TABLE nightly_benchmarks ADD COLUMN workload_id VARCHAR(64) REFERENCES benchmark_workloads(id);
+            ALTER TABLE nightly_benchmarks ADD COLUMN optimizer JSONB NOT NULL DEFAULT '{}'::jsonb;
+            CREATE TABLE benchmark_completion_events (
+                event_id TEXT PRIMARY KEY,
+                payload JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                delivered_at TIMESTAMPTZ
+            );
+            CREATE INDEX idx_benchmark_completion_pending ON benchmark_completion_events(created_at)
+                WHERE delivered_at IS NULL;
+            ALTER TABLE notifications ADD COLUMN event_key VARCHAR(200);
+            CREATE UNIQUE INDEX uq_notifications_event_key ON notifications(event_key) WHERE event_key IS NOT NULL;
+        ]]></sql>
+        <rollback><sql><![CDATA[
+            DROP INDEX uq_notifications_event_key;
+            ALTER TABLE notifications DROP COLUMN event_key;
+            DROP TABLE benchmark_completion_events;
+            ALTER TABLE nightly_benchmarks DROP COLUMN optimizer;
+            ALTER TABLE nightly_benchmarks DROP COLUMN workload_id;
+            DROP TABLE benchmark_workloads;
+        ]]></sql></rollback>
+    </changeSet>
+</databaseChangeLog>

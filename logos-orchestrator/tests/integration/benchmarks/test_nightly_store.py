@@ -53,6 +53,22 @@ def database(monkeypatch):
 
         for sql in tree.findall("{*}changeSet/{*}sql"):
             connection.execute(text(sql.text))
+        connection.execute(text("CREATE TABLE notifications(id integer PRIMARY KEY)"))
+        connection.execute(
+            text(
+                "CREATE TABLE log_entry(id integer PRIMARY KEY, model_id integer, privacy_level text, "
+                "result_status text, environment text, input_payload jsonb)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE model_provider_benchmarks(id integer PRIMARY KEY, configuration jsonb, "
+                "metrics jsonb, sample_size integer)"
+            )
+        )
+        workloads_migration = migration.with_name("068_benchmark_request_workloads.xml")
+        for sql in ElementTree.parse(workloads_migration).findall("{*}changeSet/{*}sql"):
+            connection.execute(text(sql.text))
 
     class Database(store.DBManager):
         def __enter__(self):
@@ -66,6 +82,113 @@ def database(monkeypatch):
     with admin.begin() as connection:
         connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
     admin.dispose()
+
+
+def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(database, monkeypatch):
+    import importlib
+
+    from logos.benchmarks import workloads
+
+    dbmodule = importlib.import_module("logos.dbutils.dbmanager")
+
+    engine, Database = database
+    monkeypatch.setattr(dbmodule, "DBManager", Database)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO log_entry VALUES (7, 11, 'FULL', 'success', '', "
+                '\'{"messages":[{"role":"user","content":"Synthetic prompt"}]}\')'
+            )
+        )
+    created = workloads.create([7], "Trial", "synthetic")
+    store.set_enabled(31, False, False, created["id"], None)
+    with pytest.raises(ValueError):
+        store.set_enabled(31, False, False, None, None)
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM log_entry WHERE id = 7"))
+    assert workloads.load(created["id"], 11)["requests"][0]["body"]["messages"][0]["content"] == "Synthetic prompt"
+    with pytest.raises(ValueError):
+        workloads.create([7], "Missing", "synthetic")
+    assert store.status(31)["workload_id"] == created["id"]
+
+
+async def test_completion_event_survives_failed_delivery_and_deduplicates_finish(database, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import logos.notifications as notifications
+
+    engine, _ = database
+    store.set_enabled(31, True, False)
+    store.claim(31, date(2026, 10, 28))
+    store.finish(31, "completed", [])
+    store.finish(31, "completed", [])
+    delivery = AsyncMock(side_effect=[False, True])
+    monkeypatch.setattr(notifications, "emit_notification", delivery)
+    await store.deliver_completion_events()
+    with engine.connect() as connection:
+        assert (
+            connection.execute(
+                text("SELECT COUNT(*) FROM benchmark_completion_events WHERE delivered_at IS NULL")
+            ).scalar_one()
+            == 1
+        )
+    await store.deliver_completion_events()
+    await store.deliver_completion_events()
+    assert delivery.await_count == 2
+    assert delivery.call_args.kwargs["event_key"] == "nightly:31:2026-10-28"
+
+
+def test_finish_persists_winner_reference_and_chart_eligibility_atomically(database):
+    import json
+
+    engine, _ = database
+    store.set_enabled(31, True, False)
+    store.claim(31, date(2026, 10, 28))
+    search = {"state": {"series_key": "series", "workload_id": "a" * 64}, "reference_id": 1}
+    with engine.begin() as connection:
+        for identifier, throughput in [(1, 40), (2, 50)]:
+            configuration = {
+                "workload": {"id": "a" * 64},
+                "nightly": {
+                    "baseline_id": 1,
+                    "reference_id": 1,
+                    "series_key": "series",
+                    "parameters": {"max_num_seqs": 16 * identifier},
+                },
+            }
+            metrics = {
+                "aggregate_output_tokens_per_second": throughput,
+                "request_totals": {"total": 1, "successful": 1, "errored": 0, "incomplete": 0},
+                "replay_samples": [{"source_log_id": 7, "finish_reason": "stop", "output_tokens": 100}],
+                "request_latency_ms": {"successful": {"percentiles": {"p95": 1000}}},
+            }
+            connection.execute(
+                text(
+                    "INSERT INTO model_provider_benchmarks "
+                    "VALUES (:id, CAST(:config AS jsonb), CAST(:metrics AS jsonb), 1)"
+                ),
+                {"id": identifier, "config": json.dumps(configuration), "metrics": json.dumps(metrics)},
+            )
+    report = [{"configuration": i, "status": "success", "benchmark_id": i} for i in (1, 2)]
+    store.finish(31, "completed", report, search)
+    assert store.status(31)["optimizer"]["best_parameters"] == {"max_num_seqs": 32}
+    assert store.status(31)["optimizer"]["reference_id"] == 1
+    with engine.connect() as connection:
+        assert (
+            connection.execute(
+                text(
+                    "SELECT configuration->'nightly'->>'eligible_for_selection' "
+                    "FROM model_provider_benchmarks WHERE id=2"
+                )
+            ).scalar_one()
+            == "true"
+        )
+        assert (
+            connection.execute(
+                text("SELECT payload->>'best_benchmark_id' FROM benchmark_completion_events")
+            ).scalar_one()
+            == "2"
+        )
 
 
 def test_opt_in_compare_and_set_and_persistent_daily_claim(database):
@@ -320,8 +443,9 @@ def test_manual_job_and_cleanup_claim_count_once(database, monkeypatch):
 def test_comparison_metadata_survives_database_session_close(database):
     engine, _ = database
     with engine.begin() as connection:
-        connection.execute(text("CREATE TABLE model_provider_benchmarks (id integer PRIMARY KEY, configuration jsonb)"))
-        connection.execute(text('INSERT INTO model_provider_benchmarks VALUES (1, \'{"tool":"guidellm"}\')'))
+        connection.execute(
+            text('INSERT INTO model_provider_benchmarks(id, configuration) VALUES (1, \'{"tool":"guidellm"}\')')
+        )
     store.record_comparison(1, 1, {"max_num_seqs": 16}, {"max_num_seqs": 16})
     with engine.connect() as connection:
         config = connection.execute(

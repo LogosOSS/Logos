@@ -17,6 +17,26 @@ describe('Nightly benchmark confirmation', () => {
   });
   afterEach(() => { control.ngOnDestroy(); http.verify(); });
 
+  it('changes the dataset with the saved dataset as its compare-and-set expectation', async () => {
+    control.selectedWorkload = 'a'.repeat(64);
+    control.sourceEdited = true;
+    const operation = control.saveSource();
+    const request = http.expectOne('/api/logosdb/model_benchmarks/nightly/configure');
+    expect(request.request.body).toMatchObject({ enabled: false, expected_enabled: false,
+      workload_id: 'a'.repeat(64), expected_workload_id: null });
+    request.flush({ enabled: false, status: 'disabled', report: [], recovery_required: false, workload_id: 'a'.repeat(64) });
+    await Promise.resolve();
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush({ enabled: false, status: 'disabled', report: [], recovery_required: false, workload_id: 'a'.repeat(64) });
+    await operation;
+    expect(control.sourceEdited).toBe(false);
+  });
+
+  it('does not replace a workload while worker recovery is pending', async () => {
+    control.state.update(value => ({ ...value!, recovery_required: true }));
+    await control.saveSource();
+    http.expectNone('/api/logosdb/model_benchmarks/nightly/configure');
+  });
+
   it('explains worker reservation and restoration', () => {
     expect(control.confirmationMessage).toContain('cannot serve production requests');
     expect(control.confirmationMessage).toContain('Original settings are restored');

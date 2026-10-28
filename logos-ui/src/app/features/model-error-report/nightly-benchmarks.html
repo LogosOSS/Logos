@@ -14,13 +14,39 @@
   </div>
   <div class="nightly__preview">
     <strong>Current settings → {{ (state()?.plan?.length ?? 1) - 1 }} test configurations</strong>
-    <p>Same workload · 50 requests · 4 concurrent · up to 512 output tokens</p>
+    @if (workload; as source) {
+      <p>{{ source.name }} · {{ source.provenance }} · {{ source.request_count }} requests · 4 concurrent · source output limits</p>
+      <p>Production settings, the previous winner, then neighbouring batching settings. The first successful production run fixes the reference.</p>
+      @if (state()?.optimizer?.reference_id; as reference) {
+        <p>Fixed reference #{{ reference }} · winner #{{ state()?.optimizer?.best_benchmark_id }} · {{ state()?.optimizer?.iterations }} completed iterations</p>
+      }
+    } @else { <p>Same workload · 50 requests · 4 concurrent · up to 512 output tokens</p> }
     <div class="nightly__parameters">
       @for (parameter of plannedParameters; track parameter.name) {
         <span>{{ parameter.name === 'max_num_seqs' ? 'Sequence limit' : 'Batch token limit' }} <b>{{ parameter.values }}</b></span>
       }
     </div>
   </div>
+  <details>
+    <summary>Request workload</summary>
+    <label for="nightly-workload-{{ pairId }}">Dataset</label>
+    <select id="nightly-workload-{{ pairId }}" [(ngModel)]="selectedWorkload" (ngModelChange)="sourceEdited = true" [disabled]="!state() || sourceLocked">
+      <option [ngValue]="null">Hugging Face · GSM8K</option>
+      @for (source of state()?.workloads ?? []; track source.id) {
+        <option [value]="source.id">{{ source.name }} · {{ source.request_count }} requests · {{ source.provenance }}</option>
+      }
+    </select>
+    <button type="button" (click)="saveSource()" [disabled]="!sourceEdited || sourceLocked">Apply dataset</button>
+    <p>Each configuration uses the same saved inputs. Changing the dataset starts a new reference series. The snapshot survives deletion of source logs.</p>
+    <details>
+      <summary>Create a fixed dataset from FULL request logs</summary>
+      <label>Name <input [(ngModel)]="workloadName" maxlength="128" [disabled]="sourceLocked" /></label>
+      <label>Request IDs <input [(ngModel)]="logIds" placeholder="3280, 3281, 3282" [disabled]="sourceLocked" /></label>
+      <label>Provenance <select [(ngModel)]="provenance" [disabled]="sourceLocked"><option value="synthetic">Synthetic test requests</option><option value="production">Production requests</option></select></label>
+      <p>Select 1–100 successful FULL requests for this model. Their text and inference settings remain in the database.</p>
+      <button type="button" (click)="createWorkload()" [disabled]="sourceLocked || !state()">Create dataset</button>
+    </details>
+  </details>
   <details>
     <summary>Schedule and test plan</summary>
     @if (window; as timing) {

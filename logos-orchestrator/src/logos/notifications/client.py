@@ -23,6 +23,7 @@ async def emit_notification(
     payload: Optional[Dict[str, Any]] = None,
     targets: Optional[List[Dict[str, Any]]] = None,
     actor_user_id: Optional[int] = None,
+    event_key: Optional[str] = None,
 ) -> bool:
     """POST a notification to the application server's internal endpoint.
 
@@ -56,12 +57,15 @@ async def emit_notification(
         "targets": targets or [],
         "actor_user_id": actor_user_id,
     }
+    headers = {"Authorization": "Bearer " + secret}
+    if event_key:
+        headers["Idempotency-Key"] = event_key
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{url}/internal/notifications",
                 json=data,
-                headers={"Authorization": "Bearer " + secret},
+                headers=headers,
                 timeout=10,
             )
             response.raise_for_status()

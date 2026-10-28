@@ -16,6 +16,8 @@ button:disabled { opacity: .5; cursor: default; }
 [role="alert"] { color: rgb(var(--color-error)); }
 small { display: block; margin-top: .75rem; overflow-wrap: anywhere; }
 summary { cursor: pointer; padding: .4rem 0; }
+label { display: block; margin: .65rem 0 .3rem; }
+input, select { max-width: 100%; width: 100%; margin: .3rem 0 .65rem; padding: .6rem; border-radius: .5rem; border: 1px solid rgb(var(--color-outline-300)); background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-0)); font: inherit; }
 li { margin: .5rem 0; overflow-wrap: anywhere; }
 @media (max-width: 600px) { button { width: 100%; } }
 

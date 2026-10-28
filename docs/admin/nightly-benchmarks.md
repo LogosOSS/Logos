@@ -26,7 +26,7 @@ for screenshots of the plan and both confirmation dialogs.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
 4. Expand **Schedule and test plan**.
 5. Select **Enable nightly runs…**, then confirm **Enable nightly runs**.
-6. Check that the card shows **Nightly runs activated**.
+6. Check that the card shows **Enabled · in nightly rotation**.
 
 The schedule persists after a page reload or browser close. To remove the pair
 from rotation, select **Disable nightly runs…** and confirm **Disable nightly runs**.
@@ -113,7 +113,7 @@ Each trial sets both limits explicitly. A known limit remains fixed when the oth
 These values are test candidates, not inferred production defaults.
 The unchanged production configuration always runs first.
 
-Every configuration uses GSM8K `main/test`, the `question` column, 50 requests,
+Without a saved request workload, every configuration uses GSM8K `main/test`, the `question` column, 50 requests,
 512 maximum output tokens, concurrent profile with concurrency 4, and seed 42.
 Quantization, context length and model weights are not search parameters.
 The fixed output cap is not itself an optimization parameter.
@@ -122,8 +122,68 @@ Completed GuideLLM reports are stored in `model_provider_benchmarks` and appear
 in the existing performance comparison. Internal inference requests use the
 existing `log_entry` logging path. The nightly control shows per-configuration
 outcomes, retries and benchmark IDs. Failed or incomplete runs are not stored
-as successful throughput measurements. This iteration does not replay
-production requests or automatically apply winning parameters.
+as successful throughput measurements. Logos does not automatically apply winning parameters to production.
+
+## Fixed request workloads
+
+Use **Request workload** to replace Hugging Face data for a nightly schedule.
+The manual benchmark editor remains independent.
+
+1. Collect successful requests with `FULL` logging.
+2. Open **Create a fixed dataset from FULL request logs**.
+3. Enter a name and 1–100 distinct request IDs for the same model.
+4. Select **Synthetic test requests** or **Production requests**.
+5. Select **Create dataset**.
+6. Check the selected dataset and select **Apply dataset**.
+
+The database stores an ordered copy of the inputs and inference settings.
+It excludes request headers, API keys, user identities and response bodies.
+Deletion of source logs does not remove this copy.
+Treat the saved inputs as private data with their own retention requirements.
+The content hash identifies the selected requests and their order.
+Unsupported inference controls and non-text content cause rejection.
+The feature rejects missing, failed, non-FULL or mixed-model source requests.
+Benchmark requests cannot become source data.
+
+Every configuration replays the complete snapshot with 4 concurrent requests.
+Each request retains its temperature, tools and output limits.
+If the source omits an output limit, then Logos adds no output limit.
+Worker context limits still apply. A truncated or incomplete response fails the configuration.
+The measured throughput equals all output tokens divided by the complete replay duration.
+The saved results also contain request latency, TTFT, token counts and completion reasons.
+They do not contain response text.
+
+## Iterative optimization and the fixed reference
+
+Each night measures production settings first, then the previous winner and its neighbouring batching settings.
+The first successful production measurement establishes the fixed reference for that workload and environment.
+The reference does not reuse measurements from another dataset or an earlier Hugging Face run.
+A change to the workload, captured hardware, worker version or other serving settings starts a separate series.
+Batching changes remain in the same series.
+The search state and reference persist across application restarts.
+
+A candidate must complete every request with the same completion reason as the nightly baseline.
+Each output token count must stay within 80–120% of its baseline count.
+The candidate's p95 request latency cannot exceed 110% of the nightly baseline.
+Among eligible candidates, Logos saves the highest observed aggregate throughput and its parameters.
+These checks prevent selection through shorter or truncated answers. They do not measure answer quality.
+Production settings return after every plan. The winner guides the next night's search only.
+
+For request workloads, **Nightly progress** shows the best eligible throughput so far against the fixed reference.
+The initial point is 0%. Each subsequent point represents a nightly plan with completed measurements.
+Different workloads and captured environments have separate charts.
+These measurements do not establish statistical significance.
+Ten synthetic requests provide an integration pilot, not a representative thesis evaluation dataset.
+Use repeated measurements and a separate evaluation dataset before drawing performance conclusions.
+
+## Completion notifications
+
+After worker restoration, Logos stores the final report and a completion event in one transaction.
+The event includes the outcome, successful configuration count, reference and winner IDs.
+Logos retries failed notification delivery, including outside the maintenance window.
+A stable event key prevents duplicate notifications after a retry or application restart.
+Logos Admins receive **Benchmark ready** in their notification inbox.
+A recovery that still needs attention does not emit a completed event.
 
 ## Worker ownership and recovery
 

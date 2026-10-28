@@ -39,6 +39,7 @@ public class InternalNotificationController {
     @PostMapping("/notifications")
     public ResponseEntity<?> publish(
             @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestHeader(value = "Idempotency-Key", required = false) String eventKey,
             @RequestBody PublishNotificationRequestDTO request) {
         if (!authorized(authorization)) {
             return ResponseEntity.status(401).body(Map.of("error", "unauthorized"));
@@ -52,7 +53,7 @@ public class InternalNotificationController {
             request.actorUserId(),
             request.targets());
         try {
-            long id = service.publish(fromOrchestrator);
+            long id = eventKey == null ? service.publish(fromOrchestrator) : service.publishOnce(fromOrchestrator, eventKey);
             return ResponseEntity.ok(Map.of("status", "accepted", "id", id));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));

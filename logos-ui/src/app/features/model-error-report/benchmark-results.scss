@@ -2,7 +2,7 @@
 .results-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 h3 { font-size: 1rem; margin: 0; color: rgb(var(--color-typography-0)); }
 .results-heading span, .results-note, small { color: rgb(var(--color-typography-500)); font-size: .8125rem; }
-.results-note { margin: .5rem 0 1rem; line-height: 1.5; }
+.results-note { margin: .5rem 0 1rem; line-height: 1.5; overflow-wrap: anywhere; }
 table { width: 100%; border-collapse: collapse; font-size: .8125rem; color: rgb(var(--color-typography-100)); }
 th { text-align: left; color: rgb(var(--color-typography-500)); font-weight: 500; }
 th, td { padding: 1rem .75rem; border-bottom: 1px solid rgb(var(--color-outline-200)); vertical-align: top; }

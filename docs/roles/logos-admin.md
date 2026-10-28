@@ -185,7 +185,8 @@ Select **Measured configuration** to see the saved benchmark settings and servin
 Runs can use different workloads. This record does not prove an improvement under identical conditions.
 The application does not apply these parameters automatically.
 
-**Nightly progress** shows the best successful variant against its baseline for each completed test plan.
+**Nightly progress** shows the best eligible throughput so far against a fixed reference for saved request workloads.
+Hugging Face runs retain their separate nightly baselines.
 The chart separates runs with different captured workloads or other serving settings.
 Select a point to read its run number, time and percentage change.
 The chart does not show automatic parameter adoption or statistical significance.
@@ -193,7 +194,7 @@ Expand **Benchmark runs** to see the latest 5 results. Select **Show all** to re
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
 Select the same column again to reverse the order. Missing values stay at the end.
 
-![Best recorded benchmark and its saved parameters](../static/img/benchmarks/results-desktop.png)
+![Best recorded benchmark and the fixed reference chart](../static/img/roles/logos-admin-nightly-results.png)
 
 ### Nightly benchmarks
 
@@ -224,6 +225,15 @@ The card shows possible parameter values for this pair, not a guaranteed place f
 The example uses illustrative measurements and an active nightly schedule.
 Use **Manual benchmark** to configure a run during the day.
 These controls do not change the nightly workload.
+Use **Request workload** to select a saved dataset for the nightly schedule.
+Select **Create a fixed dataset from FULL request logs** to copy 1–100 successful requests from the database.
+Enter the request IDs, name and provenance. Select **Create dataset**, then **Apply dataset**.
+![Create a fixed request dataset](../static/img/roles/logos-admin-nightly-workload.png)
+
+The dataset keeps its inputs when source logs are deleted.
+The first successful run establishes a new reference for this dataset.
+Each night measures production settings and searches around the previous winner.
+Production settings return after the plan. **Benchmark ready** appears after restoration.
 
 ![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
 

@@ -171,3 +171,30 @@ describe('Top measured configuration', () => {
     expect(fixture.componentInstance.topRuns()[0].run.id).toBe(1);
   });
 });
+
+
+describe('Fixed request reference', () => {
+  function replay(id: number, rate: number, baseline = id, eligible = true, workload = 'a') {
+    const row = run(id, rate, baseline);
+    row.sample_size = 10;
+    row.dataset = 'requests/' + workload;
+    row.configuration = { tool: 'logos-replay', workload: { id: workload, request_count: 10 },
+      nightly: { baseline_id: baseline, reference_id: 1, series_key: 'series', eligible_for_selection: eligible },
+      benchmark: { profile: { kind: 'concurrent' }, strategy: { max_concurrency: 4 } },
+      serving: { max_num_seqs: id === 1 ? 16 : 32, dtype: 'float16' },
+      measurement: { ended_at: `2026-10-${20 + id}T04:00:00Z` } };
+    row.metrics.request_totals = { successful: 10, total: 10, errored: 0, incomplete: 0 };
+    row.metrics.aggregate_output_tokens_per_second = rate;
+    return row;
+  }
+
+  it('keeps one reference and cumulative gains across nights without counting rejected trials', () => {
+    const groups = benchmarkProgress([replay(1, 40), replay(2, 60, 1), replay(3, 20, 3),
+      replay(4, 50, 3), replay(5, 100, 3, false), replay(6, 200, 3, true, 'other')]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].fixed).toBe(true);
+    expect(groups[0].points.map(point => point.gain)).toEqual([0, 50, 50]);
+    expect(groups[0].points.map(point => point.run.id)).toEqual([1, 2, 2]);
+    expect(new Set(groups[0].points.map(point => point.key)).size).toBe(3);
+  });
+});

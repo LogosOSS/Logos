@@ -76,6 +76,21 @@ class InternalNotificationControllerTest {
     }
 
     @Test
+    void repeatedProducerEventCreatesOneNotification() throws Exception {
+        String body = "{\"type\":\"benchmark_result_ready\",\"title\":\"Nightly done\","
+            + "\"targets\":[{\"kind\":\"role\",\"role\":\"logos_admin\"}]}";
+        for (int retry = 0; retry < 2; retry++) {
+            mvc.perform(post("/internal/notifications")
+                    .header("Authorization", "Bearer test-internal-secret")
+                    .header("Idempotency-Key", "nightly:31:2026-10-28")
+                    .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+        }
+        assertThat(notifications.findByEventKey("orchestrator:nightly:31:2026-10-28")).isPresent();
+        assertThat(notifications.count()).isEqualTo(5L);
+    }
+
+    @Test
     void wrongSecretIsRejected() throws Exception {
         mvc.perform(post("/internal/notifications")
                 .header("Authorization", "Bearer wrong-secret")

@@ -10,6 +10,7 @@ from logos.dbutils.dbmanager import DBManager, _init_engine
 from logos.maintenance_window import maintenance_node_limit
 
 LOCK_ID = 125500301
+UNCHANGED = object()
 
 
 @contextmanager
@@ -61,7 +62,7 @@ def status(pair_id: int) -> dict:
         row = (
             db.session.execute(
                 text(
-                    "SELECT model_provider_id, enabled, last_run_date, status, report, "
+                    "SELECT model_provider_id, enabled, last_run_date, status, report, workload_id, optimizer, "
                     "recovery IS NOT NULL AS recovery_required FROM nightly_benchmarks WHERE model_provider_id = :id"
                 ),
                 {"id": pair_id},
@@ -78,11 +79,13 @@ def status(pair_id: int) -> dict:
                 "status": "disabled",
                 "report": [],
                 "recovery_required": False,
+                "workload_id": None,
+                "optimizer": {},
             }
         )
 
 
-def set_enabled(pair_id: int, enabled: bool, expected: bool) -> dict:
+def set_enabled(pair_id: int, enabled: bool, expected: bool, workload_id=UNCHANGED, expected_workload_id=None) -> dict:
     """Compare-and-set prevents a stale confirmation from toggling newer state."""
     with DBManager() as db:
         db.session.execute(
@@ -92,11 +95,23 @@ def set_enabled(pair_id: int, enabled: bool, expected: bool) -> dict:
         changed = db.session.execute(
             text(
                 "UPDATE nightly_benchmarks SET enabled = :enabled, updated_at = CURRENT_TIMESTAMP, "
+                "workload_id = CASE WHEN :change_workload THEN :workload_id ELSE workload_id END, "
+                "optimizer = CASE WHEN :change_workload AND workload_id IS DISTINCT FROM :workload_id "
+                "THEN '{}'::jsonb ELSE optimizer END, "
                 "status = CASE WHEN recovery IS NOT NULL THEN status "
                 "WHEN :enabled THEN 'scheduled' ELSE 'disabled' END "
-                "WHERE model_provider_id = :id AND enabled = :expected AND (NOT :enabled OR recovery IS NULL)"
+                "WHERE model_provider_id = :id AND enabled = :expected AND (NOT :enabled OR recovery IS NULL) "
+                "AND (NOT :change_workload OR (workload_id IS NOT DISTINCT FROM :expected_workload "
+                "AND recovery IS NULL AND status NOT IN ('running', 'preparing', 'recovery_required')))"
             ),
-            {"id": pair_id, "enabled": enabled, "expected": expected},
+            {
+                "id": pair_id,
+                "enabled": enabled,
+                "expected": expected,
+                "change_workload": workload_id is not UNCHANGED,
+                "workload_id": None if workload_id is UNCHANGED else workload_id,
+                "expected_workload": expected_workload_id,
+            },
         )
         if not changed.rowcount:
             raise ValueError("Nightly state changed or recovery is required. Refresh before confirming.")
@@ -423,7 +438,7 @@ def finish_recovery_jobs(job_ids: list[int]) -> None:
         db.session.commit()
 
 
-def record_comparison(benchmark_id, baseline_id, parameters, original):
+def record_comparison(benchmark_id, baseline_id, parameters, original, search=None):
     """Attach an explicit same-night baseline; never infer a comparison from dates."""
     with DBManager() as db:
         db.session.execute(
@@ -439,9 +454,142 @@ def record_comparison(benchmark_id, baseline_id, parameters, original):
                             "baseline_id": baseline_id,
                             "parameters": parameters,
                             "original": {key: original.get(key) for key in parameters},
+                            **(
+                                {
+                                    "reference_id": search["reference_id"],
+                                    "series_key": search["series_key"],
+                                    "workload_id": search["workload_id"],
+                                }
+                                if search
+                                else {}
+                            ),
                         }
                     }
                 ),
             },
         )
         db.session.commit()
+
+
+def finish(pair_id, state, report, search=None):
+    """Commit restored state, the observed winner and its completion event together."""
+    from logos.benchmarks.optimization import eligible, select_state
+
+    with DBManager() as db:
+        row = (
+            db.session.execute(
+                text(
+                    "SELECT n.last_run_date, mp.model_id, p.name AS provider_name FROM nightly_benchmarks n "
+                    "JOIN model_provider mp ON mp.id = n.model_provider_id JOIN providers p ON p.id = mp.provider_id "
+                    "WHERE n.model_provider_id = :id FOR UPDATE OF n"
+                ),
+                {"id": pair_id},
+            )
+            .mappings()
+            .one()
+        )
+        optimizer = None
+        if search:
+            ids = [item["benchmark_id"] for item in report if item.get("benchmark_id")]
+            runs = (
+                list(
+                    db.session.execute(
+                        text(
+                            "SELECT id, configuration, metrics, sample_size FROM model_provider_benchmarks "
+                            "WHERE id = ANY(:ids)"
+                        ),
+                        {"ids": ids},
+                    ).mappings()
+                )
+                if ids
+                else []
+            )
+            optimizer = select_state(search, runs, report)
+            baseline_id = next(
+                (
+                    item.get("benchmark_id")
+                    for item in report
+                    if item.get("configuration") == 1 and item.get("status") == "success"
+                ),
+                None,
+            )
+            baseline = next((run for run in runs if run["id"] == baseline_id), None)
+            for run in runs:
+                comparison = dict(run["configuration"].get("nightly") or {})
+                comparison["eligible_for_selection"] = bool(baseline and eligible(run, baseline))
+                db.session.execute(
+                    text(
+                        "UPDATE model_provider_benchmarks SET configuration = "
+                        "jsonb_set(configuration, '{nightly}', CAST(:nightly AS jsonb)) WHERE id = :id"
+                    ),
+                    {"id": run["id"], "nightly": json.dumps(comparison)},
+                )
+        db.session.execute(
+            text(
+                "UPDATE nightly_benchmarks SET status = :state, report = CAST(:report AS jsonb), recovery = NULL, "
+                "optimizer = COALESCE(CAST(:optimizer AS jsonb), optimizer), updated_at = CURRENT_TIMESTAMP "
+                "WHERE model_provider_id = :id"
+            ),
+            {
+                "id": pair_id,
+                "state": state,
+                "report": json.dumps(report),
+                "optimizer": json.dumps(optimizer) if optimizer is not None else None,
+            },
+        )
+        if row["last_run_date"] is not None:
+            payload = {
+                "model_provider_id": pair_id,
+                "model_id": row["model_id"],
+                "provider_name": row["provider_name"],
+                "date": str(row["last_run_date"]),
+                "status": state,
+                "successful_configurations": sum(item.get("status") == "success" for item in report),
+                "reference_id": (optimizer or {}).get("reference_id"),
+                "best_benchmark_id": (optimizer or {}).get("best_benchmark_id"),
+            }
+            db.session.execute(
+                text(
+                    "INSERT INTO benchmark_completion_events(event_id, payload) "
+                    "VALUES (:event, CAST(:payload AS jsonb)) "
+                    "ON CONFLICT (event_id) DO NOTHING"
+                ),
+                {"event": f"nightly:{pair_id}:{row['last_run_date']}", "payload": json.dumps(payload)},
+            )
+        db.session.commit()
+
+
+async def deliver_completion_events():
+    """Retry persisted events; the application server deduplicates each event key."""
+    from logos.notifications import emit_notification
+
+    with DBManager() as db:
+        events = list(
+            db.session.execute(
+                text(
+                    "SELECT event_id, payload FROM benchmark_completion_events WHERE delivered_at IS NULL "
+                    "ORDER BY created_at LIMIT 20"
+                )
+            ).mappings()
+        )
+    for event in events:
+        payload = event["payload"]
+        delivered = await emit_notification(
+            "benchmark_result_ready",
+            "Nightly benchmark finished",
+            f"{payload['provider_name']}: {payload['successful_configurations']} successful configurations. "
+            f"Status: {payload['status']}. Original worker settings restored.",
+            payload,
+            [{"kind": "role", "role": "logos_admin"}],
+            event_key=event["event_id"],
+        )
+        if delivered:
+            with DBManager() as db:
+                db.session.execute(
+                    text(
+                        "UPDATE benchmark_completion_events SET delivered_at = CURRENT_TIMESTAMP "
+                        "WHERE event_id = :event"
+                    ),
+                    {"event": event["event_id"]},
+                )
+                db.session.commit()

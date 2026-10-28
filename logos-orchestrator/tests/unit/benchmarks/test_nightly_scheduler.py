@@ -66,6 +66,12 @@ def scheduler(monkeypatch):
     monkeypatch.setattr(module.store, "record_comparison", MagicMock())
     service.saved = []
     monkeypatch.setattr(module.store, "save", lambda *args: service.saved.append(args))
+    monkeypatch.setattr(
+        module.store,
+        "finish",
+        lambda pair, state, report, search=None: service.saved.append((pair, state, report, None)),
+    )
+    monkeypatch.setattr(module.store, "deliver_completion_events", AsyncMock())
     yield service
     benchmark_reservations.release(-31)
 
