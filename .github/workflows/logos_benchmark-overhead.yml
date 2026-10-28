@@ -88,7 +88,7 @@ jobs:
             postgres:17 psql "postgresql://postgres:root@host.docker.internal:5432/logosdb" -v ON_ERROR_STOP=1 -f /seed.sql
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
