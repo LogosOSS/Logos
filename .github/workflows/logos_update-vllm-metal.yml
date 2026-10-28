@@ -198,10 +198,23 @@ jobs:
             *) VLLM_TAG="v$VERSION" ;;
           esac
           VLLM_VERSION="${VLLM_TAG#v}"
-          CORE_WHEEL="vllm-${VLLM_VERSION}+cpu-cp312-cp312-macosx_11_0_arm64.whl"
-          CORE_URL="https://github.com/vllm-project/vllm/releases/download/${VLLM_TAG}/vllm-${VLLM_VERSION}%2Bcpu-cp312-cp312-macosx_11_0_arm64.whl"
-          if ! curl -fsSL "$CORE_URL" -o "$work/$CORE_WHEEL"; then
-            echo "::error::Could not download the vLLM core wheel for $VLLM_TAG ($CORE_URL). Upstream may have changed how the core wheel is named or which release it comes from."
+          # vLLM 0.32+ ships the macOS arm64 wheel as cp38-abi3; earlier
+          # releases used cp312-cp312. Probe in the same order as upstream's
+          # install.sh so a future tag that drops one tag still resolves.
+          CORE_WHEEL=""
+          CORE_URL=""
+          for wheel_tag in cp38-abi3 cp312-cp312; do
+            candidate_wheel="vllm-${VLLM_VERSION}+cpu-${wheel_tag}-macosx_11_0_arm64.whl"
+            candidate_url="https://github.com/vllm-project/vllm/releases/download/${VLLM_TAG}/vllm-${VLLM_VERSION}%2Bcpu-${wheel_tag}-macosx_11_0_arm64.whl"
+            if curl -fsSL "$candidate_url" -o "$work/$candidate_wheel"; then
+              CORE_WHEEL="$candidate_wheel"
+              CORE_URL="$candidate_url"
+              break
+            fi
+            rm -f "$work/$candidate_wheel"
+          done
+          if [[ -z "$CORE_WHEEL" ]]; then
+            echo "::error::Could not download the vLLM core wheel for $VLLM_TAG (tried cp38-abi3 and cp312-cp312). Upstream may have changed how the core wheel is named or which release it comes from."
             exit 1
           fi
 
