@@ -194,17 +194,13 @@ jobs:
           pick_release_wheel() {
             local repo="$1" tag="$2" pattern="$3" label="$4"
             local names
+            # One-liner keeps the YAML block scalar intact (a multi-line
+            # python -c body at column 0 would close the run: | block).
             names=$(curl -fsSL \
               -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${repo}/releases/tags/${tag}" \
-              | python3 -c '
-import json, re, sys
-pattern = re.compile(sys.argv[1])
-assets = json.load(sys.stdin).get("assets") or []
-names = sorted(a["name"] for a in assets if pattern.match(a.get("name") or ""))
-print("\n".join(names))
-' "$pattern")
+              | python3 -c "import json,re,sys; p=re.compile(sys.argv[1]); a=json.load(sys.stdin).get('assets') or []; print('\\n'.join(sorted(x['name'] for x in a if p.match(x.get('name') or ''))))" "$pattern")
             case "$(printf '%s' "$names" | grep -c . || true)" in
               1) printf '%s' "$names" ;;
               0)
