@@ -26,6 +26,11 @@ updates:
       - "logos-ui"
     schedule:
       interval: "weekly"
+    # Angular 22 requires typescript >=6.0 <6.1. TS 7.0 has no stable
+    # programmatic compiler API yet; Angular support is blocked until ~7.1+.
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-dependencies:
         applies-to: version-updates
