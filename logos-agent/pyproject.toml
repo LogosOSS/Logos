@@ -13,6 +13,13 @@ dependencies = [
     "asyncpg==0.32.0",
     "pydantic==2.14.1",
     "pyjwt[crypto]==2.15.1",
+    # Security floors for transitive packages (fastapi[standard] / httpx).
+    "certifi==2026.10.23",
+    "dnspython==2.9.0",
+    # Keep the OpenTelemetry trio on one release line (sdk pins api exactly).
+    "opentelemetry-api==1.45.1",
+    "opentelemetry-sdk==1.45.1",
+    "opentelemetry-exporter-otlp-proto-http==1.45.1",
 ]
 
 [project.optional-dependencies]

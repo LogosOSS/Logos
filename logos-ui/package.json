@@ -45,7 +45,10 @@
     "vitest": "5.0.5"
   },
   "overrides": {
-    "katex": "0.19.1"
+    "katex": "0.19.1",
+    "dompurify": "3.4.17",
+    "vite": "8.3.5",
+    "fast-uri": "3.1.9"
   },
   "allowScripts": {
     "@parcel/watcher@2.6.0": true,

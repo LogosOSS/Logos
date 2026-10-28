@@ -25,6 +25,7 @@ const config: Config = {
             "**/AGENTS.md",
             "**/CLAUDE.md",
             "**/seed/**",
+            "**/vendor/**",
           ],
           routeBasePath: "/",
           sidebarPath: "./sidebars.ts",
