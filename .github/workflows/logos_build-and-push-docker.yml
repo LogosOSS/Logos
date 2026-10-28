@@ -78,7 +78,7 @@ jobs:
       - name: Find previous successful worker build
         if: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
         id: previous-build
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const { owner, repo } = context.repo;
