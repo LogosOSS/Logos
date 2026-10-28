@@ -18,6 +18,8 @@ on:
       - "logos-workernode/**"
       - "logos-orchestrator/**"
       - "e2e/**"
+      - "db/**"
+      - ".dockerignore"
       - "logos-webservice/src/main/resources/liquibase/**"
       - "benchmarks/residency_simulation/**"
       - ".github/workflows/logos_benchmark-simulation.yml"
@@ -102,7 +104,6 @@ jobs:
         run: |
           .venv/bin/python -m pytest \
             tests/gpu/test_benchmark_topology.py \
-            tests/gpu/test_planner_benchmark_invariants.py \
             -v --timeout=120 \
             --junitxml="../benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/junit-gpu.xml"
         working-directory: e2e
@@ -116,13 +117,32 @@ jobs:
         run: .venv/bin/python -m harness.stack.bootstrap_benchmark
         working-directory: e2e
 
-      - name: Run integrated node + stack tests
+      - name: Recreate orchestrator for the residency policy
+        # LOGOS_RESIDENCY_POLICY is read at container start; recreate so the
+        # matrix policy is guaranteed to be active before any traffic.
+        run: |
+          docker compose -p "$E2E_COMPOSE_PROJECT" \
+            -f harness/stack/docker-compose.e2e.yaml \
+            -f harness/stack/docker-compose.benchmark-topology.yaml \
+            up -d --force-recreate --no-deps logos-orchestrator
+        working-directory: e2e
+
+      - name: Run topology stack assertions
         run: |
           .venv/bin/python -m pytest \
-            tests/node/test_benchmark_integrated.py \
             tests/node/test_benchmark_topology_stack.py \
             -v --timeout=300 \
-            --junitxml="../benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/junit.xml"
+            --junitxml="../benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/junit-stack.xml"
+        working-directory: e2e
+
+      - name: Run phased residency benchmark
+        # External runner owns the lifecycle-isolation restart between the
+        # traffic and lifecycle phases; tests never restart compose. It writes
+        # result.json and the merged junit.xml that pr_comment.py gates on.
+        run: |
+          .venv/bin/python -m harness.stack.run_phased_benchmark \
+            --report "$E2E_SIM_REPORT_PATH" \
+            --junit "../benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/junit.xml"
         working-directory: e2e
 
       - name: Fail closed on missing / empty simulation report

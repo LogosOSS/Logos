@@ -25,36 +25,83 @@ from pathlib import Path
 import httpx
 
 COMPOSE_FILE = Path(__file__).parent / "docker-compose.e2e.yaml"
-PROJECT = "logos-e2e"
-
-#: Host port the orchestrator is published on. Deliberately not 18080 (the dev
-#: stack's) so an E2E run cannot silently talk to someone's dev orchestrator.
-ORCHESTRATOR_PORT = int(os.environ.get("E2E_ORCHESTRATOR_PORT", "18090"))
-ORCHESTRATOR_URL = f"http://localhost:{ORCHESTRATOR_PORT}"
-
-#: Traefik's port when the `ui` profile is up. The browser tier must go through
-#: it rather than straight to the UI container: the UI and the API share an
-#: origin in production, and testing them on separate origins would miss every
-#: CORS and cookie problem that shape causes.
-UI_PORT = int(os.environ.get("E2E_UI_PORT", "18091"))
-UI_URL = f"http://localhost:{UI_PORT}"
-
-KEYCLOAK_PORT = int(os.environ.get("E2E_KEYCLOAK_PORT", "18095"))
-KEYCLOAK_URL = f"http://localhost:{KEYCLOAK_PORT}"
+BENCHMARK_TOPOLOGY_FILE = Path(__file__).parent / "docker-compose.benchmark-topology.yaml"
 
 ADMIN_KEY = "lg-e2e-admin-key"
 DEVELOPER_KEY = "lg-e2e-developer-key"
 
-NODE_SERVICES = ("node-l40s", "node-2080ti")
+DEFAULT_NODE_SERVICES = ("node-l40s", "node-2080ti")
+BENCHMARK_NODE_SERVICES = ("node-ada-a", "node-ada-b")
+
+#: Active worker services for wait_for_nodes / CLI readiness. Overridden when
+#: the benchmark-topology overlay is selected.
+NODE_SERVICES = DEFAULT_NODE_SERVICES
+
+# When True, compose commands include the benchmark-topology overlay file.
+_ACTIVE_BENCHMARK_TOPOLOGY = False
 
 
-def _compose(*args: str, check: bool = True, capture: bool = False, ui: bool = False) -> subprocess.CompletedProcess:
+def project_name() -> str:
+    """Compose project — always read from the environment so isolated runs win."""
+    return os.environ.get("E2E_COMPOSE_PROJECT", "logos-e2e")
+
+
+def orchestrator_port() -> int:
+    return int(os.environ.get("E2E_ORCHESTRATOR_PORT", "18090"))
+
+
+def orchestrator_url() -> str:
+    return f"http://localhost:{orchestrator_port()}"
+
+
+def ui_port() -> int:
+    return int(os.environ.get("E2E_UI_PORT", "18091"))
+
+
+def ui_url() -> str:
+    return f"http://localhost:{ui_port()}"
+
+
+def keycloak_port() -> int:
+    return int(os.environ.get("E2E_KEYCLOAK_PORT", "18095"))
+
+
+def keycloak_url() -> str:
+    return f"http://localhost:{keycloak_port()}"
+
+
+def db_port() -> int:
+    """Host port for Postgres, or 0 if unpublished."""
+    return int(os.environ.get("E2E_DB_PORT", "0") or 0)
+
+
+# Back-compat aliases (resolved at import; prefer the functions above in new code).
+PROJECT = project_name()
+ORCHESTRATOR_PORT = orchestrator_port()
+ORCHESTRATOR_URL = orchestrator_url()
+UI_PORT = ui_port()
+UI_URL = ui_url()
+KEYCLOAK_PORT = keycloak_port()
+KEYCLOAK_URL = keycloak_url()
+
+
+def _compose(
+    *args: str,
+    check: bool = True,
+    capture: bool = False,
+    ui: bool = False,
+    benchmark_topology: bool | None = None,
+) -> subprocess.CompletedProcess:
+    use_bench = _ACTIVE_BENCHMARK_TOPOLOGY if benchmark_topology is None else benchmark_topology
     profile = ["--profile", "ui"] if ui else []
-    cmd = ["docker", "compose", "-f", str(COMPOSE_FILE), "-p", PROJECT, *profile, *args]
+    files = ["-f", str(COMPOSE_FILE)]
+    if use_bench:
+        files.extend(["-f", str(BENCHMARK_TOPOLOGY_FILE)])
+    cmd = ["docker", "compose", *files, "-p", project_name(), *profile, *args]
     return subprocess.run(cmd, check=check, text=True, capture_output=capture)
 
 
-def pull(*, attempts: int = 3, ui: bool = False) -> None:
+def pull(*, attempts: int = 3, ui: bool = False, benchmark_topology: bool = False) -> None:
     """Pre-pull base images, retrying past registry flakes.
 
     Docker Hub resets connections often enough on shared CI runners that a
@@ -67,7 +114,15 @@ def pull(*, attempts: int = 3, ui: bool = False) -> None:
     to produce the real error.
     """
     for attempt in range(1, attempts + 1):
-        result = _compose("pull", "--ignore-buildable", "--policy", "missing", check=False, ui=ui)
+        result = _compose(
+            "pull",
+            "--ignore-buildable",
+            "--policy",
+            "missing",
+            check=False,
+            ui=ui,
+            benchmark_topology=benchmark_topology,
+        )
         if result.returncode == 0:
             return
         if attempt == attempts:
@@ -78,20 +133,54 @@ def pull(*, attempts: int = 3, ui: bool = False) -> None:
         time.sleep(delay)
 
 
-def up(*, timeout_s: float = 900.0, ui: bool = False, pull_attempts: int = 3) -> None:
+def up(
+    *,
+    timeout_s: float = 900.0,
+    ui: bool = False,
+    pull_attempts: int = 3,
+    benchmark_topology: bool = False,
+) -> None:
     """Bring the stack up. *ui* adds Keycloak, the webservice and the UI.
 
     Those three roughly triple the startup cost, so the inter-node and SDK tiers
-    deliberately run without them.
+    deliberately run without them. *benchmark_topology* swaps in the dual-node
+    dual-Ada overlay (isolated project recommended via ``E2E_COMPOSE_PROJECT``).
     """
-    pull(attempts=pull_attempts, ui=ui)
-    _compose("up", "-d", "--build", "--wait", "--wait-timeout", str(int(timeout_s)), ui=ui)
+    global NODE_SERVICES, _ACTIVE_BENCHMARK_TOPOLOGY, PROJECT, ORCHESTRATOR_PORT, ORCHESTRATOR_URL
+    global UI_PORT, UI_URL, KEYCLOAK_PORT, KEYCLOAK_URL
+    _ACTIVE_BENCHMARK_TOPOLOGY = bool(benchmark_topology)
+    if benchmark_topology:
+        NODE_SERVICES = BENCHMARK_NODE_SERVICES
+    else:
+        NODE_SERVICES = DEFAULT_NODE_SERVICES
+    # Refresh aliases so callers that still read module constants see isolation env.
+    PROJECT = project_name()
+    ORCHESTRATOR_PORT = orchestrator_port()
+    ORCHESTRATOR_URL = orchestrator_url()
+    UI_PORT = ui_port()
+    UI_URL = ui_url()
+    KEYCLOAK_PORT = keycloak_port()
+    KEYCLOAK_URL = keycloak_url()
+    pull(attempts=pull_attempts, ui=ui, benchmark_topology=benchmark_topology)
+    _compose(
+        "up",
+        "-d",
+        "--build",
+        "--wait",
+        "--wait-timeout",
+        str(int(timeout_s)),
+        ui=ui,
+        benchmark_topology=benchmark_topology,
+    )
     wait_for_orchestrator()
     if ui:
         wait_for_ui()
 
 
-def down(*, volumes: bool = True) -> None:
+def down(*, volumes: bool = True, benchmark_topology: bool | None = None) -> None:
+    global _ACTIVE_BENCHMARK_TOPOLOGY
+    if benchmark_topology is not None:
+        _ACTIVE_BENCHMARK_TOPOLOGY = bool(benchmark_topology)
     args = ["down", "--remove-orphans"]
     if volumes:
         args.append("--volumes")
@@ -122,18 +211,19 @@ def start(service: str) -> None:
 
 def is_up() -> bool:
     try:
-        return httpx.get(f"{ORCHESTRATOR_URL}/docs", timeout=2.0).status_code < 500
+        return httpx.get(f"{orchestrator_url()}/docs", timeout=2.0).status_code < 500
     except httpx.HTTPError:
         return False
 
 
 def wait_for_orchestrator(timeout_s: float = 120.0) -> None:
+    url = orchestrator_url()
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if is_up():
             return
         time.sleep(1.0)
-    raise TimeoutError(f"orchestrator did not answer at {ORCHESTRATOR_URL} within {timeout_s:.0f}s")
+    raise TimeoutError(f"orchestrator did not answer at {url} within {timeout_s:.0f}s")
 
 
 def ui_is_up() -> bool:
@@ -153,9 +243,9 @@ def ui_is_up() -> bool:
     succeeds with the config it requires.
     """
     try:
-        if httpx.get(UI_URL, timeout=2.0, follow_redirects=True).status_code >= 500:
+        if httpx.get(ui_url(), timeout=2.0, follow_redirects=True).status_code >= 500:
             return False
-        response = httpx.get(f"{UI_URL}/api/info", timeout=5.0, follow_redirects=True)
+        response = httpx.get(f"{ui_url()}/api/info", timeout=5.0, follow_redirects=True)
     except httpx.HTTPError:
         return False
     if response.status_code != 200:
@@ -174,12 +264,12 @@ def wait_for_ui(timeout_s: float = 240.0) -> None:
             return
         time.sleep(2.0)
     raise TimeoutError(
-        f"the UI could not bootstrap within {timeout_s:.0f}s: {UI_URL}/api/info never returned "
+        f"the UI could not bootstrap within {timeout_s:.0f}s: {ui_url()}/api/info never returned "
         f"a keycloak issuer and client_id. Webservice logs:\n{logs('logos-webservice', tail=40)}"
     )
 
 
-def wait_for_nodes(expected: int = len(NODE_SERVICES), timeout_s: float = 180.0) -> list[dict]:
+def wait_for_nodes(expected: int | None = None, timeout_s: float = 180.0) -> list[dict]:
     """Block until *expected* worker nodes have completed their WS handshake.
 
     Registration is an HTTP call but the node is only usable once its session is
@@ -187,7 +277,9 @@ def wait_for_nodes(expected: int = len(NODE_SERVICES), timeout_s: float = 180.0)
     """
     from harness.clients.admin import AdminClient  # noqa: PLC0415
 
-    admin = AdminClient(ORCHESTRATOR_URL, ADMIN_KEY)
+    if expected is None:
+        expected = len(NODE_SERVICES)
+    admin = AdminClient(orchestrator_url(), ADMIN_KEY)
     deadline = time.monotonic() + timeout_s
     connected: list[dict] = []
     while time.monotonic() < deadline:
@@ -210,11 +302,16 @@ def main() -> int:
         action="store_true",
         help="also start Keycloak, the webservice and the UI (needed for the Playwright tier)",
     )
+    parser.add_argument(
+        "--benchmark-topology",
+        action="store_true",
+        help="dual-node × dual RTX 6000 Ada overlay (set E2E_COMPOSE_PROJECT to avoid clashing with logos-e2e)",
+    )
     args = parser.parse_args()
 
     if args.action == "up":
         try:
-            up(ui=args.ui)
+            up(ui=args.ui, benchmark_topology=args.benchmark_topology)
         except (subprocess.CalledProcessError, TimeoutError) as exc:
             # A failed `up` leaves containers behind with the actual reason in
             # their logs; a bare traceback here sends the reader hunting for it.
@@ -222,11 +319,11 @@ def main() -> int:
             print(logs(tail=80), file=sys.stderr)
             return 1
         nodes = wait_for_nodes()
-        print(f"stack ready at {ORCHESTRATOR_URL} with {len(nodes)} worker node(s)")
+        print(f"stack ready at {orchestrator_url()} with {len(nodes)} worker node(s) " f"(project={project_name()})")
         if args.ui:
-            print(f"UI ready at {UI_URL} (Keycloak at {KEYCLOAK_URL})")
+            print(f"UI ready at {ui_url()} (Keycloak at {keycloak_url()})")
     elif args.action == "down":
-        down()
+        down(benchmark_topology=args.benchmark_topology)
     elif args.action == "logs":
         print(logs(args.service))
     else:
