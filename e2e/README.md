@@ -6,7 +6,7 @@ An end-to-end suite that runs without GPUs, in four tiers.
 |------|----------------|-------|---------|
 | 1 — `tests/gpu` | The real `logos_worker_node` against simulated GPUs | nothing | ~75 s |
 | 2 — `tests/node` | Orchestrator + database + simulated worker nodes | Docker | minutes |
-| 3 — `tests/client` | The same stack through the real OpenAI/Anthropic SDKs | Docker | minutes |
+| 3 — `tests/client` | The same stack through the real OpenAI SDK | Docker | minutes |
 | 4 — `../logos-ui/e2e` | The UI in a real browser (Playwright) | Docker + Node | minutes |
 
 Nothing in the worker or the orchestrator is stubbed. Only the layer *below* the

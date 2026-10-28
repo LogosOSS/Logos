@@ -1,0 +1,11 @@
+# Vendored `deepmerge` 4.3.2
+
+Upstream `deepmerge@4.3.1` is the last npm release and is affected by
+[GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4)
+(prototype poisoning). No patched release exists on the registry yet.
+
+This directory is `4.3.1` plus the `setProperty` fix from
+[TehShrike/deepmerge#277](https://github.com/TehShrike/deepmerge/pull/277),
+versioned as `4.3.2` so Dependabot treats the alert as resolved. Remove this
+vendor tree and the `file:vendor/deepmerge` dependency once upstream publishes
+a fixed release.

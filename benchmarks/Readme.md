@@ -56,7 +56,7 @@ python3 benchmark_logos.py --run-all-scenarios --logos-url https://<logos-url> -
 # Alte pynvml entfernen falls vorhanden
 pip uninstall pynvml -y
 
-pip install httpx paramiko numpy matplotlib
+pip install httpx numpy matplotlib
 ```
 
 ### GPU-Nodes (einmalig mit Root-Zugriff einrichten)

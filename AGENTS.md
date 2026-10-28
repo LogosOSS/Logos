@@ -76,6 +76,7 @@ This section is a behavioral rule, not a technical control — the repository ca
 - **Pin exact versions.** Never use range operators (`^`, `~`, `>=`, `*`) in a manifest or an `overrides` entry; write the specific version (`==1.2.3` in Python, `1.2.3` in `package.json`). Upgrades are explicit edits that re-lock.
 - **Keep lock files current.** Re-lock to the latest versions that satisfy the manifest (`uv lock --upgrade`, `npm update`) instead of only editing the manifest, and commit the lock file with it.
 - **Watch security alerts.** Check `gh api repos/LogosOSS/Logos/dependabot/alerts?state=open` for the packages you touch, fix them in the same change (upgrade, or an `overrides` entry when a transitive parent caps the version), and say in the PR which alerts remain because no patched release exists.
+- **Report every new dependency in the PR description (MANDATORY).** Any PR that adds a direct dependency, a security-floor pin, an `overrides` / `resolutions` entry, a vendored / `file:` package, or a build-system requirement that was not on `main` must include a dedicated **New dependencies** section in the PR body. For each entry list: package name, exact version, manifest path (e.g. `logos-ui/package.json`), and a one-line reason (feature need, peer requirement, or which Dependabot / CVE alert it closes). Bumping an existing pin is not “new”; adding a package or pin that `main` did not declare is. Do not open or merge such a PR without that section.
 
 ### Running the full stack
 

@@ -28,8 +28,6 @@ protobuf = "==5.29.6"
 python-dateutil = "==2.9.0.post0"
 sentence-transformers = "==5.7.0"
 torch = "==2.14.0"
-matplotlib = "==3.11.2"
-aiohttp = "==3.14.5"
 prometheus-client = "==0.21.1"
 python-multipart = "==0.0.32"
 guidellm = {version = "==0.7.2", extras = ["recommended"]}
@@ -39,7 +37,12 @@ guidellm = {version = "==0.7.2", extras = ["recommended"]}
 # runs, the benchmark workflow and local environments resolve from this
 # manifest alone, so these pins are what keep a fresh resolve off a
 # vulnerable version.
-pillow = "==12.3.0"
+pillow = "==13.0.0"
+certifi = "==2026.10.23"
+dnspython = "==2.9.0"
+filelock = "==4.2.4"
+msgpack = "==1.2.4"
+setuptools = "==84.2.1"
 urllib3 = "==2.8.0"
 httpcore2 = "==2.13.0"
 httpx2 = "==2.13.0"
