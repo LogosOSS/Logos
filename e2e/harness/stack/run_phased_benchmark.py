@@ -277,7 +277,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    if not compose.is_up():
+    try:
+        # A just-recreated orchestrator needs a moment before it answers.
+        compose.wait_for_orchestrator(timeout_s=180.0)
+    except TimeoutError:
         print("orchestrator not reachable — start the benchmark stack first", file=sys.stderr)
         return 2
 

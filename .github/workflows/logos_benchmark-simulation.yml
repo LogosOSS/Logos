@@ -125,6 +125,9 @@ jobs:
             -f harness/stack/docker-compose.e2e.yaml \
             -f harness/stack/docker-compose.benchmark-topology.yaml \
             up -d --force-recreate --no-deps logos-orchestrator
+          # Wait until the recreated orchestrator answers and both nodes reconnect;
+          # otherwise the stack assertions skip and the runner finds no stack.
+          .venv/bin/python -c "from harness.stack import compose; compose.wait_for_orchestrator(timeout_s=180.0); compose.wait_for_nodes(expected=2)"
         working-directory: e2e
 
       - name: Run topology stack assertions
