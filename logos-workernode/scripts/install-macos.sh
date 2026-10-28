@@ -65,18 +65,18 @@ VLLM_METAL_INSTALLER_SHA256="b3b8b7a283a508c5fa1421bdd8f76ce4e02e0b768029cbdc3dd
 # The pinned installer performs further fetches of its own before it installs
 # anything — and it only checksums itself. At this tag it sources
 # scripts/lib.sh from the mutable `main` branch (executed code!), selects the
-# vllm-metal wheel from /releases/latest, and probes GitHub for a vLLM core
-# wheel (cp38-abi3 first, then cp312-cp312). So each of those artifacts is
-# fetched from the pinned tag and verified HERE, before the installer ever
-# runs, and the installer is patched to consume the verified copies:
+# vllm-metal wheel from /releases/latest, and discovers a vLLM core wheel by
+# probing release URLs. So each of those artifacts is fetched from the pinned
+# tag and verified HERE, before the installer ever runs, and the installer is
+# patched to consume the verified copies:
 VLLM_METAL_LIB="https://raw.githubusercontent.com/vllm-project/vllm-metal/${VLLM_METAL_REF}/scripts/lib.sh"
 VLLM_METAL_LIB_SHA256="f309a3430bb5c1f06e9d91a7fadd90bfa83f2567641bc85e9237227d96fc1d27"
 VLLM_METAL_WHEEL_NAME="vllm_metal-0.32.0-cp312-cp312-macosx_15_0_arm64.whl"
 VLLM_METAL_WHEEL_URL="https://github.com/vllm-project/vllm-metal/releases/download/${VLLM_METAL_REF}/${VLLM_METAL_WHEEL_NAME}"
 VLLM_METAL_WHEEL_SHA256="458d34157eb02a6bfb0e293c70485df18f72b7eb1d1ce8f1eefea95ba47ab63c"
-# vLLM core wheel. From 0.32.0 the macOS arm64 build is tagged cp38-abi3
-# (still runs in the installer's Python 3.12 venv); earlier releases used
-# cp312-cp312. PyPI carries no macOS vLLM wheel, hence the release URL.
+# vLLM core wheel (macOS arm64 CPU build from the vLLM release assets; the
+# Python / platform tags in the filename change across releases). PyPI carries
+# no macOS vLLM wheel, hence the release URL.
 VLLM_CORE_WHEEL_NAME="vllm-0.32.0+cpu-cp38-abi3-macosx_11_0_arm64.whl"
 VLLM_CORE_WHEEL_URL="https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0%2Bcpu-cp38-abi3-macosx_11_0_arm64.whl"
 VLLM_CORE_WHEEL_SHA256="c28cf0fede58f02c4886d2794217ec3c7e4bbd22dfeb16b4b32586a8f230bb75"
@@ -304,7 +304,7 @@ pin(
     exit 1
   fi""",
     f'  vllm_wheel_url="{stage}/wheels/{vllm_wheel}"  # pinned + sha256-verified by logos install-macos.sh',
-    "vLLM core wheel URL (was: probe cp38-abi3 then cp312-cp312)",
+    "vLLM core wheel URL (was: upstream release-URL discovery)",
 )
 pin(
     """    release_data=$(fetch_release "$repo_owner" "$repo_name" "$channel")
