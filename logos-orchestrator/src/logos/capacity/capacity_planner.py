@@ -348,6 +348,15 @@ class CapacityPlanner:
         # lane_id, revision, record) -> whether every lock still held its revision.
         self._lane_restore_writer = lane_restore_writer
         self._lane_idle_since: dict[tuple[int, str], float] = {}
+        # Residency policy: how the planner chooses eviction victims and whether
+        # wake/load decisions are gated by demand. "demand" (default) orders
+        # victims by effective demand ascending and keeps the competitive-ratio
+        # gates. "lru" orders victims by idle time (least recently used first)
+        # and disables those demand-ratio gates. Placement, VRAM / host-RAM
+        # ledgers, sleep-before-stop preference, drain, queueing, cooldowns,
+        # tenure, and queued-residency GPU safeguards are shared. Set
+        # LOGOS_RESIDENCY_POLICY=lru to enable.
+        self._residency_policy = self._parse_residency_policy(os.environ.get("LOGOS_RESIDENCY_POLICY"))
         self._lane_sleep_since: dict[tuple[int, str], float] = {}
         self._lane_sleep_level: dict[tuple[int, str], int] = {}
         self._lane_loaded_at: dict[tuple[int, str], float] = {}
@@ -584,13 +593,41 @@ class CapacityPlanner:
             self._provider_capacity_locks[provider_id] = lock
         return lock
 
+    RESIDENCY_POLICIES = ("demand", "lru")
+
+    @classmethod
+    def _parse_residency_policy(cls, raw: Optional[str]) -> str:
+        """Normalise LOGOS_RESIDENCY_POLICY; unknown values fall back to "demand"."""
+        value = (raw or "demand").strip().lower()
+        if value not in cls.RESIDENCY_POLICIES:
+            logger.warning(
+                "Unknown LOGOS_RESIDENCY_POLICY=%r; falling back to 'demand' (valid: %s)",
+                raw,
+                ", ".join(cls.RESIDENCY_POLICIES),
+            )
+            return "demand"
+        return value
+
+    @property
+    def residency_policy(self) -> str:
+        # getattr default keeps planners built via __new__ (unit tests) on the
+        # production policy without having to set the attribute explicitly.
+        return getattr(self, "_residency_policy", "demand")
+
+    def _lru_policy_active(self) -> bool:
+        return self.residency_policy == "lru"
+
     async def start(self) -> None:
         """Start the planner background loop."""
         if self._enabled:
             # Event must be created in the running loop, not at __init__ time.
             self._tick_event = asyncio.Event()
             self._task = asyncio.create_task(self._run_loop(), name="capacity-planner")
-            logger.info("Capacity planner started (cycle=%ss)", self._cycle_seconds)
+            logger.info(
+                "Capacity planner started (cycle=%ss, residency_policy=%s)",
+                self._cycle_seconds,
+                self.residency_policy,
+            )
 
     def hint_capacity_needed(
         self,
@@ -3790,7 +3827,17 @@ class CapacityPlanner:
         # Stopping a sleeping lane is destructive (requires cold load to recover),
         # while sleeping a loaded lane is cheap (fast wake, ~2-3s).
         _action_cost = {"sleep_l1": 0, "sleep_l2": 0, "stop": 1}
-        candidates.sort(key=lambda c: (_action_cost.get(c.action, 2), c.eff_demand))
+        if self._lru_policy_active():
+            # LRU: same sleep-before-stop preference, but victims are ordered by
+            # idle age (oldest idle start first) instead of effective demand.
+            candidates.sort(
+                key=lambda c: (
+                    _action_cost.get(c.action, 2),
+                    self._lane_idle_since.get(self._lane_key(provider_id, c.lane.lane_id), now),
+                )
+            )
+        else:
+            candidates.sort(key=lambda c: (_action_cost.get(c.action, 2), c.eff_demand))
 
         skipped_str = "; ".join(f"{lid}[{mn}]:{reason}" for lid, mn, reason in skipped) if skipped else "none"
         logger.info(
@@ -5117,6 +5164,9 @@ class CapacityPlanner:
                                 f"×{self.WAKE_COMPETITIVE_RATIO}"
                             )
                         )
+                    if self._lru_policy_active() and not proceed:
+                        proceed = True
+                        gate_reason = f"lru policy: demand-ratio gate disabled (eff={eff:.2f})"
                     if proceed:
                         target_lane_destroyed = False
                         for vlane, vaction, _ in eviction_set:
@@ -5447,6 +5497,9 @@ class CapacityPlanner:
                             f"×{self.LOAD_COMPETITIVE_RATIO}"
                         )
                     )
+                if self._lru_policy_active() and not proceed:
+                    proceed = True
+                    gate_reason = f"lru policy: demand-ratio gate disabled (eff={eff:.2f})"
                 if proceed:
                     # _pick_cold_load_placement already verified eviction-aware
                     # feasibility (total VRAM + per-GPU, with the eviction set's
