@@ -53,8 +53,7 @@ try:
     from matplotlib.ticker import MaxNLocator, ScalarFormatter
 except ImportError as exc:  # pragma: no cover - optional charting for this script
     raise SystemExit(
-        "matplotlib is required for run_api_workload charts; "
-        "install it from benchmarks/requirements.txt"
+        "matplotlib is required for run_api_workload charts; install it from benchmarks/requirements.txt"
     ) from exc
 
 
