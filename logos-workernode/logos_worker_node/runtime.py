@@ -361,7 +361,12 @@ def _configured_vllm_by_model(cfg) -> dict[str, dict]:
         models = list(cfg.logos.configured_models or cfg.logos.capabilities_models or [])
     out: dict[str, dict] = {}
     for model_name in models:
-        published = merged_vllm_engine_overrides(cfg, model_name)
+        merged = merged_vllm_engine_overrides(cfg, model_name)
+        published = {
+            key: value
+            for key, value in merged.items()
+            if key in {"gpu_memory_utilization", "tensor_parallel_size", "kv_cache_memory_bytes"}
+        }
         if published:
             out[model_name] = published
     return out

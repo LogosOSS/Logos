@@ -1029,8 +1029,8 @@ class WorkerRuntimeStatus(BaseModel):
     # orchestrator MUST skip calibration scheduling on unhealthy workers and
     # log the condition so an operator can intervene (usually reboot).
     node_health: dict[str, Any] | None = None
-    # Explicit per-model vLLM engine knobs from engines.vllm.model_overrides
-    # (and matching engine-field keys under logos.capabilities_overrides).
+    # Admission-related per-model overrides: GMU, TP and explicit KV bytes.
+    # Environment and template payloads are not included.
     # Only models with at least one published key appear.
     configured_vllm_by_model: dict[str, dict[str, Any]] | None = None
     # Calculated startup gpu_memory_utilization the worker will enforce at

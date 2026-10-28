@@ -270,7 +270,10 @@ async def test_runtime_publishes_configured_vllm_and_startup_gmu():
             "engines": {
                 "vllm": {
                     "model_overrides": {
-                        "google/gemma-3-4b-it": {"gpu_memory_utilization": 0.83},
+                        "google/gemma-3-4b-it": {
+                            "gpu_memory_utilization": 0.83,
+                            "env_overrides": {"HF_TOKEN": "test-only-private-value"},
+                        },
                     }
                 }
             },
@@ -279,6 +282,8 @@ async def test_runtime_publishes_configured_vllm_and_startup_gmu():
     runtime = await build_runtime_status(_make_app([], _NvidiaCollector(), config=config))
     by_model = runtime.configured_vllm_by_model or {}
     assert by_model["google/gemma-3-4b-it"]["gpu_memory_utilization"] == 0.83
+    assert "env_overrides" not in by_model["google/gemma-3-4b-it"]
+    assert "test-only-private-value" not in runtime.model_dump_json()
     assert by_model["org/other"]["gpu_memory_utilization"] == 0.7
     startup = runtime.startup_gmu_by_model or {}
     assert startup["google/gemma-3-4b-it"] == {
