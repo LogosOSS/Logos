@@ -415,7 +415,7 @@ jobs:
 
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           # Publish target for the MLX distribution image, in the same GHCR
           # namespace as every other Logos image. Written literally because it
