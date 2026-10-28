@@ -241,9 +241,11 @@ For model M with effective_demand = eff:
        │    └── act if eff ≥ FLOOR  (immediate; no competitive check)
        │
        ├── eviction_set = [lane1, lane2, ...]  (eviction required)
-       │    └── act if eff > max(eviction scores) × COMPETITIVE_RATIO
+       │    └── act if eff > sum(non-self victim scores) × COMPETITIVE_RATIO
        │         ├── YES → prepend eviction actions, then wake/load
        │         └── NO  → skip (M doesn't outweigh what it displaces)
+       │    (queued demand may bypass the historical ratio when victims are
+       │     idle — an exception for real waiters, not the same as the sum gate)
        │
        └── eviction_set = None  (can't free enough VRAM at all)
             └── skip
@@ -267,7 +269,7 @@ The algorithm:
 
 1. Compute `per_gpu_deficit[gpu_id] = max(0, per_gpu_needed × safety_margin - per_gpu_free[gpu_id])` for each GPU in `required_gpus`.
 
-2. Build candidate list: idle lanes whose GPU devices overlap with `required_gpus`. Skip busy lanes (`active_requests > 0` or `queue_waiting > 0`) and lanes in load cooldown.
+2. Build candidate list: idle lanes whose GPU devices overlap with `required_gpus`. Skip busy lanes (`active_requests > 0` or `queue_waiting > 0`) and lanes still inside minimum tenure.
 
 3. For each candidate, determine the freed VRAM it contributes **per GPU**:
    - `sleep_l1` (preferred): `(current_vram - residual_mb) / tp` per overlapping GPU
@@ -534,7 +536,9 @@ All constants are defined as class variables on `CapacityPlanner` in `capacity_p
 | `TP_OVERHEAD_RATIO` | 0.10 | 10% extra VRAM for TP > 1 NCCL buffers |
 | `REQUEST_WAKE_TIMEOUT_SECONDS` | 30s | Max wait for a sleeping lane to wake at request time |
 | `WAKE_FAILURE_COOLDOWN_SECONDS` | 15s | Skip lane after a failed wake for 15s |
-| `LOAD_COOLDOWN_SECONDS` | 60s (env) | Don't evict a lane loaded in the last 60s |
+| `LOAD_FAILURE_COOLDOWN_SECONDS` | 120s | Skip lane after a failed load for 120s |
+| `LANE_MIN_TENURE_SECONDS` | 5s | Minimum residency before reclaim after wake/load |
+| `LANE_COLD_WAITER_TENURE_SECONDS` | 15s | Extended tenure while a cold-at-queue waiter exists |
 
 `DemandTracker` constants (`demand_tracker.py:17-23`):
 

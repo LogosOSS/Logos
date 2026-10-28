@@ -418,7 +418,6 @@ def _planner(provider: _MockProvider, *, score: float = 2.0, replicate: bool = F
     planner._lane_idle_since = {}
     planner._lane_sleep_since = {}
     planner._lane_sleep_level = {}
-    planner._load_cooldown_seconds = 0.0
     planner._eviction_gate_v2 = True
     planner._stop_dedup_siblings = False
     planner._announced_use = {}
