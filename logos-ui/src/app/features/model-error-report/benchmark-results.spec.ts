@@ -160,6 +160,16 @@ describe('Top measured configuration', () => {
     expect(fixture.componentInstance.topRuns().map(top => top.run.id)).toEqual([2, 3]);
   });
 
+  it('does not rank an older faster workload against the latest recorded workload', () => {
+    const fixture = TestBed.createComponent(BenchmarkResults);
+    const old = measured(1, 100, 1, 20);
+    const recent = measured(2, 40, 2, 21);
+    recent.dataset = 'new/dataset';
+    recent.recorded_at = '2026-10-22T04:00:00Z';
+    fixture.componentRef.setInput('runs', [old, recent]);
+    expect(fixture.componentInstance.topRuns()[0].run.id).toBe(2);
+  });
+
   it('shows the winning saved parameters and recalculates after removal', () => {
     const fixture = TestBed.createComponent(BenchmarkResults);
     const winner = run(2, 50);

@@ -18,10 +18,11 @@ def test_one_override_controls_calibration_benchmarks_and_display(monkeypatch):
         window.end,
         window.timezone,
     )
-    assert window.describe() == dict(start="06:00", end="09:00", benchmark_start_cutoff="08:50", timezone="UTC")
+    assert window.describe() == dict(start="06:00", end="09:00", benchmark_start_cutoff="09:00", timezone="UTC")
     assert not can_start(datetime.fromisoformat("2026-10-20T05:59:59Z"))
     assert can_start(datetime.fromisoformat("2026-10-20T08:49:59Z"))
-    assert not can_start(datetime.fromisoformat("2026-10-20T08:50:00Z"))
+    assert can_start(datetime.fromisoformat("2026-10-20T08:59:59Z"))
+    assert not can_start(datetime.fromisoformat("2026-10-20T09:00:00Z"))
     assert window.contains(datetime.fromisoformat("2026-10-20T08:59:59Z"))
     assert not window.contains(datetime.fromisoformat("2026-10-20T09:00:00Z"))
 

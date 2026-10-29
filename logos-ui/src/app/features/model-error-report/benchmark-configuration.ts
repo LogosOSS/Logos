@@ -115,9 +115,10 @@ export function servingConfigurationItems(
 
 export function benchmarkConfigurationRows(
   benchmark: ModelProviderBenchmark,
+  includeMissing = true,
 ): readonly BenchmarkConfigurationRow[] {
-  const benchmarkItems = benchmarkConfigurationItems(benchmark);
-  const servingItems = servingConfigurationItems(benchmark);
+  const benchmarkItems = benchmarkConfigurationItems(benchmark).filter(item => includeMissing || item.captured);
+  const servingItems = servingConfigurationItems(benchmark).filter(item => includeMissing || item.captured);
   const rowCount = Math.max(benchmarkItems.length, servingItems.length);
 
   return Array.from({ length: rowCount }, (_, index) => ({

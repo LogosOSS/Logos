@@ -1,7 +1,7 @@
-@if (topRuns().length) {
+@if (!activeProgress() && topRuns().length) {
   <section class="top-configurations" aria-label="Top configurations so far">
-    <h3><i class="pi pi-trophy" aria-hidden="true"></i> Top configuration so far</h3>
-    <p class="results-note">Best recorded run. Workloads may differ.</p>
+    <h3>Highest recorded throughput</h3>
+    <p class="results-note">Latest captured workload per provider. Older workloads are not ranked against it.</p>
     @for (top of topRuns(); track top.run.model_provider_id) {
       <article class="top-configuration">
         <div class="results-heading">
@@ -30,9 +30,10 @@
   </section>
 }
 @if (activeProgress(); as chart) {
-  <section class="benchmark-progress" aria-label="Nightly progress">
+  <details class="benchmark-progress" name="performance-analysis" open aria-label="Nightly progress">
+    <summary class="progress-summary"><h3>Nightly progress</h3><span>{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}% vs. reference #{{ chart.reference.id }}</span></summary>
     <div class="results-heading">
-      <h3>Nightly progress <small>{{ chart.fixed ? 'Best so far vs. fixed reference' : 'Best variant vs. nightly baseline' }}</small></h3>
+      <p class="results-note">{{ chart.fixed ? 'Best so far vs. fixed reference' : 'Best variant vs. nightly baseline' }}</p>
       @if (progress().length > 1) {
         <select aria-label="Progress workload" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
           @for (group of progress(); track group.key) { <option [value]="group.key">{{ group.label }}</option> }
@@ -40,6 +41,11 @@
       }
     </div>
     <p class="results-note">{{ chart.context }}</p>
+    <dl class="results-summary">
+      <div><dt>Reference #{{ chart.reference.id }}</dt><dd>{{ throughput(chart.reference) | number:'1.1-1' }} <small>tok/s</small></dd></div>
+      <div><dt>{{ chart.fixed ? 'Best eligible throughput' : 'Latest winning variant' }}</dt><dd>{{ throughput(chart.latest.run) | number:'1.1-1' }} <small>tok/s</small></dd></div>
+      <div><dt>Observed change</dt><dd>{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}%</dd></div>
+    </dl>
     <div class="progress-plot" role="group" [attr.aria-label]="chart.fixed ? 'Best eligible throughput so far against a fixed reference' : 'Best successful variant against its nightly baseline'">
       <span class="progress-axis progress-axis--top">{{ chart.max | number:'1.0-1' }}%</span>
       <span class="progress-axis progress-axis--zero" [style.top.%]="chart.zero">0%</span>
@@ -55,7 +61,8 @@
       }
     </div>
     <div class="progress-dates"><span>{{ chart.first | date:'dd MMM yyyy, HH:mm' }}</span>@if (chart.first !== chart.last) { <span>{{ chart.last | date:'dd MMM yyyy, HH:mm' }}</span> }</div>
-  </section>
+    <p class="results-note">Dashed line: baseline (0%). {{ chart.fixed ? 'Each point keeps the best eligible result observed so far under the same captured conditions.' : 'Each point compares a completed round with its own baseline.' }}</p>
+  </details>
 }
 <details class="run-history">
   <summary><h3>Benchmark runs <small>{{ rows().length }} results · output tok/s</small></h3></summary>

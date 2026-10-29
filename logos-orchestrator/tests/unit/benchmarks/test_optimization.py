@@ -106,3 +106,24 @@ def test_changed_daily_cohort_retains_candidate_parameters_without_comparing_old
     assert optimizer.context(current, {}, workload, previous)["state"]["best_throughput"] == 99
     different_user = {**workload, "source_selection": {"username": "another.user", "user_id": 2}}
     assert "best_parameters" not in optimizer.context(current, {}, different_user, previous)["state"]
+
+
+def test_further_rounds_explore_new_radii_on_the_same_frozen_requests():
+    current = {"max_num_seqs": 16, "max_num_batched_tokens": 4096}
+    search = {"state": {}, "workload_id": "a" * 64, "workload": {"request_count": 50}}
+    plans = [optimizer.plan(current, search, round_index=index) for index in range(3)]
+    values = [
+        {tuple(sorted(run.serving_overrides.model_dump(exclude_none=True).items())) for run in plan[1:]}
+        for plan in plans
+    ]
+    assert len(set.union(*values)) == 12
+    for plan in plans:
+        assert plan[0].serving_overrides.model_dump(exclude_none=True) == current
+        assert all(run.samples == 50 and run.workload_id == "a" * 64 for run in plan)
+        assert all(
+            sum(value != current[key] for key, value in run.serving_overrides.model_dump(exclude_none=True).items())
+            == 1
+            for run in plan[1:]
+        )
+    assert optimizer.round_index({"nightly_session": {"date": "2026-10-29", "rounds": 2}}, "2026-10-29") == 2
+    assert optimizer.round_index({"nightly_session": {"date": "2026-10-28", "rounds": 7}}, "2026-10-29") == 0

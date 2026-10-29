@@ -120,23 +120,26 @@ Worker disconnects and orchestrator restarts stop the job. Batches do not resume
 
 Open **Results** to see runs, changed parameters, measurement times and throughput.
 Expand **Charts and comparison**.
-Select a reference run and a metric in **Compare benchmark runs**.
-Each chart varies one parameter while the other recorded settings match the reference.
-The charts use separate vertical scales to show their measured ranges.
+Select a **Reference run**, **Parameter** and **Metric** in **Parameter comparison**.
+The chart shows one parameter at a time: sequence limit, batch token limit, tensor parallelism or concurrent requests.
+Other captured settings must match the reference.
+The dashed line marks the reference measurement. Labels show recorded values and percentage changes.
+For repeated runs, the box shows the middle 50% and the line marks the median.
+A single run appears as a point.
+If only one parameter value exists, then the view explains why it cannot show a parameter comparison.
+**Individual runs** contains only the selected parameter's matching measurements.
 
-One eligible measurement appears as a filled point, including when repetitions is 1.
-The label `n = 1` means one measured run. That run can contain many sample requests.
-Multiple measurements use a boxplot. The box shows the middle 50%; the line shows the median.
-Separate dots show outliers.
-
+The summary shows reference throughput, the best recorded median and the observed change.
+These observations do not establish statistical significance.
 A result must be successful and complete, with the required configuration metadata.
-Logos does not infer missing controls in historical results.
 If a result is absent, check its completion state and recorded configuration.
+Saved request workloads require the same workload identity and captured environment.
 
-The example shows a nightly baseline and one variant with illustrative measurements.
-**Before** uses the baseline from the same nightly plan. Expand the sections below for charts and saved configurations.
+**Benchmark runs** lists changed parameters, measurement times and output throughput.
+**Before** uses the production baseline from the same nightly round.
+Expand **Run details and saved configurations** for the saved benchmark and serving settings.
 
-[![Desktop comparison charts and run history](/img/benchmarks/results-desktop.png)](/img/benchmarks/results-desktop.png)
+[![Parameter comparison with reference line](/img/roles/logos-admin-benchmark-comparison.png)](/img/roles/logos-admin-benchmark-comparison.png)
 
 ## Change settings and retry a failed model
 

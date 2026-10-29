@@ -35,9 +35,19 @@ async def nightly_status(data: NightlyStatusRequest, request: Request):
     search = None
     if result.get("workload_id"):
         workload = workloads.load(result["workload_id"], target["model_id"])
+        source = (result.get("optimizer") or {}).get("source")
+        if source and source.get("username") == recent_requests.username():
+            workload["source_selection"] = source
         search = optimization.context(current, snapshot or {}, workload, result.get("optimizer") or {})
     result["plan"] = [
-        run.model_dump() for run in (optimization.plan(current, search) if search else parameter_plan(current))
+        run.model_dump()
+        for run in (
+            optimization.plan(
+                current, search, round_index=optimization.round_index(search["state"], local_now().date())
+            )
+            if search
+            else parameter_plan(current)
+        )
     ]
     result["workloads"] = workloads.list_for_model(target["model_id"]) if "model_id" in target else []
     if search and not any(item["id"] == workload["id"] for item in result["workloads"]):

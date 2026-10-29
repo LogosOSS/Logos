@@ -13,15 +13,16 @@
     </button>
   </div>
   <div class="nightly__preview">
-    <strong>Current settings → {{ (state()?.plan?.length ?? 1) - 1 }} test configurations</strong>
+    <strong>Adaptive testing until {{ window?.end ?? 'the window ends' }}</strong>
+    <p class="nightly__round-note">Baseline → batching variants → update candidate → next round. Initial values are shown below.</p>
     @if (automaticSource) {
       <p>Latest 50 successful FULL requests · {{ state()?.workload_policy?.username }} · 4 concurrent · source output limits</p>
       <p>Freeze once at {{ window?.start }} {{ window?.timezone }}, before calibration. Baseline and every variant use those same 50 inputs.</p>
-      <p>Production settings first, then the previous winner and neighbouring batching settings. New inputs start a separate measurement reference.</p>
+      <p>New inputs start a separate measurement reference.</p>
       @if (state()?.workload_policy?.error; as failure) { <p role="alert">Dataset unavailable: {{ failure }}</p> }
     } @else if (workload; as source) {
       <p>{{ source.name }} · {{ source.provenance }} · {{ source.request_count }} requests · 4 concurrent · source output limits</p>
-      <p>Production settings, the previous winner, then neighbouring batching settings. The first successful production run fixes the reference.</p>
+      <p>The first successful production run fixes the reference. Every round uses this same saved workload.</p>
       @if (state()?.optimizer?.reference_id; as reference) {
         <p>Fixed reference #{{ reference }} · winner #{{ state()?.optimizer?.best_benchmark_id }} · {{ state()?.optimizer?.iterations }} completed iterations</p>
       }
@@ -31,6 +32,7 @@
         <span>{{ parameter.name === 'max_num_seqs' ? 'Sequence limit' : 'Batch token limit' }} <b>{{ parameter.values }}</b></span>
       }
     </div>
+    @if (state()?.optimizer?.nightly_session; as session) { <p class="nightly__round-note">{{ session.date }} · {{ session.rounds }} rounds · {{ session.successful_configurations }} successful configurations</p> }
   </div>
   @if (!automaticSource) {
   <details>
@@ -54,29 +56,36 @@
     </details>
   </details>
   }
-  <details>
+  <details class="nightly__plan">
     <summary>Schedule and test plan</summary>
     @if (window; as timing) {
-      <p>{{ timing.start }}–{{ timing.end }} · {{ timing.timezone }} · up to 2 model/worker pairs per night, oldest first.</p>
-      <p>Calibration runs first. No new test after {{ timing.benchmark_start_cutoff }}. At {{ timing.end }}, runs below 50% stop. Five minutes without progress also stops a run.</p>
+      <dl class="nightly__schedule">
+        <div><dt>Window</dt><dd>{{ timing.start }}–{{ timing.end }} · {{ timing.timezone }}</dd></div>
+        <div><dt>Rotation</dt><dd>Up to 2 model/worker pairs; another round after each pair has its turn.</dd></div>
+        <div><dt>Stop</dt><dd>No new test at {{ timing.end }}. Below 50% complete, an active run stops; otherwise it may finish.</dd></div>
+      </dl>
     }
-    <ol>
-      @for (run of state()?.plan ?? []; track $index) {
-        <li>{{ $index === 0 ? 'Current settings' : 'Variant ' + $index }}
-          @if ($index > 0) {
-            · sequences {{ run.serving_overrides['max_num_seqs'] ?? 'auto' }}
-            · batch tokens {{ run.serving_overrides['max_num_batched_tokens'] ?? 'auto' }}
-          }
-        </li>
-      }
+    <ol class="nightly__steps">
+      <li><strong>Prepare and measure the baseline</strong><p>Freeze the night's inputs, complete calibration, then test the production settings.</p></li>
+      <li><strong>Test and refine</strong><p>Retest the saved candidate and vary the sequence and batch token limits. Only complete, comparable runs can update the candidate.</p></li>
+      <li><strong>Rotate and repeat</strong><p>Restore production settings, give the next model its turn, then start another round until the window ends.</p></li>
     </ol>
-    <p>The whole worker is reserved during testing. Original settings are restored afterwards.</p>
+    <details class="nightly__initial"><summary>Initial parameter values · {{ (state()?.plan?.length ?? 1) - 1 }} variants</summary>
+      <div class="nightly__table-scroll"><table>
+        <thead><tr><th>Configuration</th><th>Sequences</th><th>Batch tokens</th></tr></thead>
+        <tbody>@for (run of state()?.plan ?? []; track $index) {
+          <tr><th>{{ $index === 0 ? 'Production baseline' : 'Candidate ' + $index }}</th><td>{{ run.serving_overrides['max_num_seqs'] ?? 'auto' }}</td><td>{{ run.serving_overrides['max_num_batched_tokens'] ?? 'auto' }}</td></tr>
+        }</tbody>
+      </table></div>
+      <p>This is the next round, not a limit on the total tests for the night.</p>
+    </details>
+    <p>The whole worker is reserved during each round. Five minutes without progress stops a run. Completion is reported after the night's final restoration.</p>
   </details>
   @if (state(); as status) {
     <small>Latest state: {{ statusLabel(status.status) }} @if (status.last_run_date) { · {{ status.last_run_date }} }</small>
     @if (status.recovery_required) { <p role="alert">Worker recovery is pending. Further nightly benchmarks are paused.</p> }
     @if (status.report.length) {
-      <details><summary>Latest nightly results</summary>
+      <details><summary>Latest round results</summary>
         <ul>@for (result of status.report; track $index) {
           <li>@if (result.configuration) {Configuration {{ result.configuration }} · }{{ statusLabel(result.status) }}
             @if (result.attempt) { · attempt {{ result.attempt }} }
@@ -84,7 +93,7 @@
             @if (result.reason) { — {{ result.reason }} }
           </li>
         }</ul>
-        <p>Successful measurements appear in the performance comparison below. Production settings are restored after the nightly plan.</p>
+        <p>Successful measurements appear in the performance comparison below. Production settings are restored after every round.</p>
       </details>
     }
   }

@@ -62,6 +62,7 @@ class NightlyScheduler:
 
     async def _cycle(self):
         recent_requests.freeze(local_now(), include_requests=False)
+        store.finalize_continuations(local_now())
         await store.deliver_completion_events()
         claims = []
         if self.maintenance:
@@ -121,10 +122,13 @@ class NightlyScheduler:
                         not can_start(local_now())
                         or store.has_active_benchmarks()
                         or (self.calibration and self.calibration.benchmarks_must_wait())
-                        or store.claimed_today(day) >= MAX_PAIRS_PER_NIGHT
                     ):
                         break
-                    if not row["enabled"] or row["last_run_date"] == day:
+                    if not row["enabled"]:
+                        continue
+                    if row["last_run_date"] == day and row.get("status") != "continuing":
+                        continue
+                    if row["last_run_date"] != day and store.claimed_today(day) >= MAX_PAIRS_PER_NIGHT:
                         continue
                     if len(selected) >= maintenance_node_limit():
                         deferred.append(row)
@@ -361,7 +365,9 @@ class NightlyScheduler:
                 if recent_requests.username():
                     store.bind_workload(pair_id, workload["id"])
                 search = optimization.context(current, snapshot, workload, schedule.get("optimizer") or {})
-                plan = optimization.plan(current, search)
+                plan = optimization.plan(
+                    current, search, round_index=optimization.round_index(search["state"], local_now().date())
+                )
             recovery = {
                 "provider_id": pid,
                 "model": model,
@@ -471,6 +477,16 @@ class NightlyScheduler:
                     state = "recovery_required"
                     report.append({"status": state, "reason": str(exc)[:1000]})
             if recovery is None:
+                baseline_ok = any(item.get("configuration") == 1 and item.get("status") == "success" for item in report)
+                successful = sum(item.get("status") == "success" for item in report)
+                if (
+                    state == "completed"
+                    and baseline_ok
+                    and successful > 1
+                    and can_start(local_now())
+                    and store.status(pair_id)["enabled"]
+                ):
+                    state = "continuing"
                 store.finish(pair_id, state, report, search)
             else:
                 store.save(pair_id, state, report, recovery)

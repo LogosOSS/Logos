@@ -64,6 +64,7 @@ def scheduler(monkeypatch):
         pid, "*", owner
     )
     monkeypatch.setattr(module.store, "record_comparison", MagicMock())
+    monkeypatch.setattr(module.store, "finalize_continuations", MagicMock())
     service.saved = []
     monkeypatch.setattr(module.store, "save", lambda *args: service.saved.append(args))
     monkeypatch.setattr(
@@ -128,8 +129,8 @@ async def test_recovery_failure_holds_node_and_stops_other_schedules(scheduler):
     assert not benchmark_reservations.allows(20, "other", "production")
 
 
-async def test_no_configuration_or_retry_starts_at_0450(scheduler, monkeypatch):
-    monkeypatch.setattr(module, "local_now", lambda: datetime.fromisoformat("2026-10-13T07:50:00+02:00"))
+async def test_no_configuration_or_retry_starts_at_window_end(scheduler, monkeypatch):
+    monkeypatch.setattr(module, "local_now", lambda: datetime.fromisoformat("2026-10-13T08:00:00+02:00"))
     scheduler.submit = AsyncMock()
     assert await scheduler.run_schedule(31, MagicMock())
     scheduler.submit.assert_not_awaited()
@@ -263,7 +264,7 @@ async def test_recent_user_mode_uses_fifty_frozen_requests_in_every_configuratio
     binding.assert_called_once_with(31, "a" * 64)
     assert len(settings_sent) == 5
     assert all(settings.samples == 50 and settings.workload_id == source["id"] for settings in settings_sent)
-    assert scheduler.saved[-1][1] == "completed"
+    assert scheduler.saved[-1][1] == "continuing"
 
 
 async def test_manual_benchmark_does_not_consume_pending_calibration_attempt(scheduler, monkeypatch):
@@ -316,7 +317,7 @@ async def test_metal_plan_runs_all_batching_configurations(scheduler):
     scheduler.submit = AsyncMock(side_effect=submit)
     assert await scheduler.run_schedule(31, MagicMock())
     assert scheduler.submit.await_count == 5
-    assert scheduler.saved[-1][1] == "completed"
+    assert scheduler.saved[-1][1] == "continuing"
 
 
 async def test_unknown_inventory_is_rejected_before_worker_is_drained(scheduler):
@@ -471,7 +472,7 @@ async def test_explicit_single_worker_maintenance_runs_and_restores(scheduler, m
     assert await scheduler.run_schedule(31, MagicMock())
     assert scheduler.submit.await_count == 5
     scheduler.restore.assert_awaited_once()
-    assert scheduler.saved[-1][1] == "completed"
+    assert scheduler.saved[-1][1] == "continuing"
     assert benchmark_reservations.owner(20, "other") is None
 
 
@@ -655,3 +656,61 @@ async def test_recovery_completes_although_the_orchestrator_counter_is_stale(sch
     planner._drain_lane.assert_awaited_once()
     assert scheduler.saved[-1][1:] == ("interrupted_recovered", [], None)
     assert benchmark_reservations.owner(20, "model") is None
+
+
+async def test_restored_rounds_rotate_without_admitting_a_third_pair(scheduler, rotation, monkeypatch):
+    rows, claimed = rotation
+    day = module.local_now().date()
+
+    def claim(pair, date):
+        row = next(item for item in rows if item["model_provider_id"] == pair)
+        if pair in claimed and row.get("status") != "continuing":
+            return False
+        claimed.add(pair)
+        row.update(last_run_date=date, status="running")
+        return True
+
+    async def restored(pair, connection):
+        row = next(item for item in rows if item["model_provider_id"] == pair)
+        row.update(status="continuing", recovery=None)
+        return True
+
+    monkeypatch.setattr(module.store, "claim", claim)
+    scheduler.run_schedule.side_effect = restored
+    await scheduler.tick()
+    await scheduler.tick()
+    assert claimed == {31, 32}
+    assert [call.args[0] for call in scheduler.run_schedule.await_args_list] == [31, 32, 31, 32]
+    assert all(row["last_run_date"] == day for row in rows[:2])
+
+
+async def test_a_round_that_finishes_at_window_end_restores_and_reports_completion(scheduler, monkeypatch):
+    now = datetime.fromisoformat("2026-10-13T07:59:00+02:00")
+    monkeypatch.setattr(module, "local_now", lambda: now)
+
+    async def submit(*args):
+        async def execute():
+            nonlocal now
+            now = datetime.fromisoformat("2026-10-13T08:00:00+02:00")
+            return 1
+
+        return 7, asyncio.create_task(execute())
+
+    scheduler.submit = AsyncMock(side_effect=submit)
+    assert await scheduler.run_schedule(31, MagicMock())
+    assert scheduler.submit.await_count == 1
+    scheduler.restore.assert_awaited_once()
+    assert scheduler.saved[-1][1] == "window_closed"
+
+
+async def test_failed_baseline_does_not_schedule_unbounded_further_rounds(scheduler):
+    count = 0
+
+    async def submit(*args):
+        nonlocal count
+        count += 1
+        return count, asyncio.create_task(asyncio.sleep(0, result=None if count == 1 else count))
+
+    scheduler.submit = submit
+    assert await scheduler.run_schedule(31, MagicMock())
+    assert scheduler.saved[-1][1] == "completed"

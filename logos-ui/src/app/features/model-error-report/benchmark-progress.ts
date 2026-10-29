@@ -61,7 +61,10 @@ export function benchmarkProgress(runs: readonly ModelProviderBenchmark[]) {
     const plotted = points.map(point => ({ ...point,
       x: first === last ? 50 : (point.time - first) / (last - first) * 100, y: y(point.gain) }));
     const settings = comparisonSettings(group.reference);
-    return { key, fixed, first, last, min, max, zero: y(0), points: plotted,
+    const latest = plotted[plotted.length - 1];
+    const latestBaseline = (latest.run.configuration['nightly'] as { baseline_id?: number } | undefined)?.baseline_id;
+    const reference = fixed ? group.reference : byId.get(latestBaseline ?? -1) ?? group.reference;
+    return { key, fixed, reference, latest, first, last, min, max, zero: y(0), points: plotted,
       line: plotted.map(point => `${point.x},${point.y}`).join(' '),
       label: `${group.reference.provider_name} · ${group.reference.dataset} · #${group.reference.id}`,
       context: fixed ? `${group.reference.provider_name} · fixed reference #${group.reference.id} · ${group.reference.sample_size} saved requests · source output limits` : `${group.reference.provider_name} · ${group.reference.dataset} · ${settings['max_concurrency']} parallel · ≤${settings['max_output_tokens']} output tokens · ${group.reference.sample_size} requests`,

@@ -1570,8 +1570,23 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     return 'GuideLLM';
   }
 
+  benchmarkDatasetLabel(benchmark: ModelProviderBenchmark): string {
+    const workload = benchmark.configuration['workload'];
+    return this.isRecord(workload) && typeof workload['name'] === 'string' ? workload['name'] : benchmark.dataset;
+  }
+
+  benchmarkLatency(benchmark: ModelProviderBenchmark, percentile: 'p50' | 'p95' | 'p100'): string {
+    return this.formatBenchmarkDuration(benchmark.metrics.request_latency_ms ?? benchmark.metrics.request_latency,
+      percentile, benchmark.metrics.request_latency_ms ? 'milliseconds' : 'seconds');
+  }
+
   configurationRows(benchmark: ModelProviderBenchmark) {
-    return benchmarkConfigurationRows(benchmark);
+    return benchmarkConfigurationRows(benchmark, false);
+  }
+
+  uncapturedConfiguration(benchmark: ModelProviderBenchmark) {
+    return benchmarkConfigurationRows(benchmark).flatMap(row => [row.benchmark, row.serving]
+      .flatMap(item => item && !item.captured ? [item] : []));
   }
 
   servingCommand(benchmark: ModelProviderBenchmark): string | null {

@@ -512,6 +512,7 @@
 
         <!-- Performance -->
         @case ('performance') {
+          <div class="performance-workspace">
 
           <div class="performance-header">
             <div>
@@ -682,10 +683,10 @@
             }
 
             <app-benchmark-results [runs]="performance()" />
-            <details class="performance-detail-section"><summary>Charts and comparison</summary>
+            <details class="performance-detail-section" name="performance-analysis"><summary>Charts and comparison</summary>
               <app-benchmark-comparison [runs]="performance()" />
             </details>
-            <details class="performance-detail-section"><summary>Run details and saved configurations</summary>
+            <details class="performance-detail-section" name="performance-analysis"><summary>Run details and saved configurations</summary>
 
             <div class="performance-list">
 
@@ -752,9 +753,9 @@
 
                     <section class="metric">
                       <strong>Request latency</strong>
-                      <span>p50 <b>{{ formatBenchmarkDuration(benchmark.metrics.request_latency, 'p50', 'seconds') }}</b></span>
-                      <span>p95 <b>{{ formatBenchmarkDuration(benchmark.metrics.request_latency, 'p95', 'seconds') }}</b></span>
-                      <span>p100 <b>{{ formatBenchmarkDuration(benchmark.metrics.request_latency, 'p100', 'seconds') }}</b></span>
+                      <span>p50 <b>{{ benchmarkLatency(benchmark, 'p50') }}</b></span>
+                      <span>p95 <b>{{ benchmarkLatency(benchmark, 'p95') }}</b></span>
+                      <span>p100 <b>{{ benchmarkLatency(benchmark, 'p100') }}</b></span>
                     </section>
 
                     <section class="metric">
@@ -777,7 +778,7 @@
                         Use for next benchmark
                       </button>
                       <div class="configuration-headings">
-                        <h4>GuideLLM benchmark</h4>
+                        <h4>Benchmark settings</h4>
                         <div>
                           <h4>vLLM serving</h4>
                           <small>Snapshot at benchmark time</small>
@@ -808,6 +809,13 @@
                         }
                       </dl>
 
+                      @if (uncapturedConfiguration(benchmark).length) {
+                        <details class="uncaptured-configuration"><summary>Fields not captured ({{ uncapturedConfiguration(benchmark).length }})</summary>
+                          <dl>@for (item of uncapturedConfiguration(benchmark); track item.key) {
+                            <div><dt>{{ item.label }}</dt><dd>Not captured</dd></div>
+                          }</dl>
+                        </details>
+                      }
                       @if (servingCommand(benchmark); as command) {
                         <div class="serving-command">
                           <strong>vLLM command</strong>
@@ -818,7 +826,7 @@
                   </details>
 
                   <footer class="performance-card__footer">
-                    {{ benchmark.dataset }} · {{ benchmarkProfile(benchmark) }} ·
+                    {{ benchmarkDatasetLabel(benchmark) }} · {{ benchmarkProfile(benchmark) }} ·
                     {{ formatBenchmarkTimestamp(benchmark.recorded_at) }}
                   </footer>
 
@@ -835,44 +843,45 @@
 
           </div>
 
-          <details class="performance-glossary">
-            <summary>
-              <span>
-                <i class="pi pi-info-circle" aria-hidden="true"></i>
-                Glossary &amp; abbreviations
-              </span>
-              <small>Metrics and vLLM parameters</small>
-            </summary>
-
-            <dl class="glossary-grid">
-              <div><dt>TTFT</dt><dd>Time To First Token</dd></div>
-              <div><dt>TPOT</dt><dd>Time Per Output Token</dd></div>
-              <div><dt>Latency</dt><dd>Full request duration</dd></div>
-              <div><dt>Throughput</dt><dd>Output tokens per second</dd></div>
-              <div><dt>p50 / p95 / p100</dt><dd>Median / 95% / slowest</dd></div>
-              <div><dt>Prefix hit</dt><dd>Reused prompt-prefix rate</dd></div>
-              <div><dt>MTP accept</dt><dd>Multi-Token Prediction acceptance</dd></div>
-              <div><dt>AWQ</dt><dd>Activation-aware Weight Quantization</dd></div>
-              <div><dt>KV cache</dt><dd>Cached attention keys and values</dd></div>
-              <div><dt>GSM8K</dt><dd>Grade School Math 8K dataset</dd></div>
-              <div><dt>CUDA</dt><dd>Compute Unified Device Architecture</dd></div>
-              <div><dt>vLLM</dt><dd>Model-serving engine</dd></div>
-              <div><dt><code>tensor_parallel_size</code></dt><dd>GPUs sharing tensor work</dd></div>
-              <div><dt><code>pipeline_parallel_size</code></dt><dd>Model-layer pipeline stages</dd></div>
-              <div><dt><code>kv_cache_dtype</code></dt><dd>KV-cache precision</dd></div>
-              <div><dt><code>kv_cache_memory</code></dt><dd>Memory reserved for KV cache</dd></div>
-              <div><dt><code>max_num_seqs</code></dt><dd>Concurrent sequences</dd></div>
-              <div><dt><code>max_num_batched_tokens</code></dt><dd>Tokens per batch</dd></div>
-              <div><dt><code>enable_prefix_caching</code></dt><dd>Reuse common prompt starts</dd></div>
-              <div><dt><code>max_model_len</code></dt><dd>Maximum context length</dd></div>
-              <div><dt><code>gpu_memory_utilization</code></dt><dd>vLLM GPU-memory fraction</dd></div>
-              <div><dt><code>quantization</code></dt><dd>Weight-compression format</dd></div>
-              <div><dt><code>dtype</code></dt><dd>Calculation precision</dd></div>
-              <div><dt><code>enforce_eager</code></dt><dd>Disable CUDA graph execution</dd></div>
-              <div><dt><code>disable_custom_all_reduce</code></dt><dd>Use standard GPU reduction</dd></div>
-              <div><dt><code>hf_overrides</code></dt><dd>Hugging Face config overrides</dd></div>
-            </dl>
+          <details class="performance-glossary" name="performance-analysis">
+            <summary><span>Glossary &amp; abbreviations</span><small>Metrics and serving parameters</small></summary>
+            <div class="glossary-sections">
+              <section><h4>Metrics</h4><dl class="glossary-grid">
+                <div><dt>TTFT</dt><dd>Time to first token.</dd></div>
+                <div><dt>TPOT</dt><dd>Time per output token after the first token.</dd></div>
+                <div><dt>Latency / TTLT</dt><dd>Total response time, from request to completion.</dd></div>
+                <div><dt>Throughput</dt><dd>Output tokens per second. Higher is better.</dd></div>
+                <div><dt>p50 / p95 / p100</dt><dd>Median, 95th percentile and slowest observation.</dd></div>
+                <div><dt>Reference</dt><dd>The saved run used to calculate the displayed change.</dd></div>
+              </dl></section>
+              <section><h4>Parameters used in nightly testing</h4><dl class="glossary-grid">
+                <div><dt>Sequence limit</dt><dd>Concurrent sequences (<code>max_num_seqs</code>).</dd></div>
+                <div><dt>Batch token limit</dt><dd>Tokens processed per batch (<code>max_num_batched_tokens</code>).</dd></div>
+                <div><dt>Concurrency</dt><dd>Requests sent in parallel by the benchmark client.</dd></div>
+                <div><dt>TP / PP</dt><dd>Tensor and pipeline parallelism across GPUs.</dd></div>
+                <div><dt>Output limit</dt><dd>Maximum generated tokens. Request replay preserves each source request's limit.</dd></div>
+                <div><dt>Frozen workload</dt><dd>Identical saved inputs for the baseline and every variant in that night.</dd></div>
+              </dl></section>
+            </div>
+            <details class="glossary-advanced"><summary>Runtime terms and other serving parameters</summary><dl class="glossary-grid">
+              <div><dt>AWQ</dt><dd>Activation-aware Weight Quantization.</dd></div>
+              <div><dt>KV cache</dt><dd>Cached attention keys and values.</dd></div>
+              <div><dt>Prefix hit</dt><dd>Prompt content reused from the prefix cache.</dd></div>
+              <div><dt>MTP accept</dt><dd>Multi-Token Prediction acceptance.</dd></div>
+              <div><dt>GSM8K</dt><dd>Grade School Math 8K dataset.</dd></div>
+              <div><dt>CUDA / vLLM</dt><dd>GPU computing platform and model-serving engine.</dd></div>
+              <div><dt><code>kv_cache_dtype</code></dt><dd>KV-cache precision.</dd></div>
+              <div><dt><code>kv_cache_memory</code></dt><dd>Memory reserved for the KV cache.</dd></div>
+              <div><dt><code>enable_prefix_caching</code></dt><dd>Reuse common prompt starts.</dd></div>
+              <div><dt><code>max_model_len</code></dt><dd>Maximum context length.</dd></div>
+              <div><dt><code>gpu_memory_utilization</code></dt><dd>vLLM GPU-memory fraction.</dd></div>
+              <div><dt><code>quantization / dtype</code></dt><dd>Weight-compression format and calculation precision.</dd></div>
+              <div><dt><code>enforce_eager</code></dt><dd>Disable CUDA graph execution.</dd></div>
+              <div><dt><code>disable_custom_all_reduce</code></dt><dd>Use standard GPU reduction.</dd></div>
+              <div><dt><code>hf_overrides</code></dt><dd>Hugging Face configuration overrides.</dd></div>
+            </dl></details>
           </details>
+          </div>
 
         }
 

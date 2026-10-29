@@ -179,10 +179,9 @@ Open the model's **Performance** tab to configure and start a benchmark.
 The orchestrator reserves the selected model lanes during a worker benchmark.
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
-The **Results** tab shows **Top configuration so far** for each model/provider.
-This is the highest recorded output throughput among fully successful runs.
-Select **Measured configuration** to see the saved benchmark settings and serving parameters.
-Runs can use different workloads. This record does not prove an improvement under identical conditions.
+The **Results** tab starts with the nightly reference and observed improvement when comparable nightly runs exist.
+Without a nightly series, **Highest recorded throughput** shows the best result within each provider's latest captured workload.
+Older workloads are not ranked against it. Unknown controls do not establish a comparison.
 The application does not apply these parameters automatically.
 
 **Nightly progress** shows the best eligible throughput so far against a fixed reference for saved request workloads.
@@ -194,7 +193,26 @@ Expand **Benchmark runs** to see the latest 5 results. Select **Show all** to re
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
 Select the same column again to reverse the order. Missing values stay at the end.
 
-![Best recorded benchmark and the fixed reference chart](../static/img/roles/logos-admin-nightly-results.png)
+![Reference throughput, observed change and fixed reference chart](../static/img/roles/logos-admin-nightly-results.png)
+
+The large analysis sections open one at a time.
+Expand **Charts and comparison**. Select the **Reference run**, **Parameter** and **Metric**.
+The chart shows one parameter at a time, with a dashed reference line and measured changes.
+Only matching workloads and other captured settings enter the comparison.
+A single parameter value shows an explanation instead of an empty comparison chart.
+
+![Parameter comparison with reference and measured changes](../static/img/roles/logos-admin-benchmark-comparison.png)
+
+Expand **Run details and saved configurations** to inspect a selected run.
+Expand **Configuration** for its captured benchmark settings and serving parameters.
+Expand **Fields not captured** to see unavailable fields.
+
+![Run details and saved configuration](../static/img/roles/logos-admin-benchmark-configuration.png)
+
+Expand **Glossary & abbreviations** for metric definitions and nightly parameter names.
+Expand **Runtime terms and other serving parameters** for less common terms.
+
+![Grouped benchmark glossary](../static/img/roles/logos-admin-benchmark-glossary.png)
 
 ### Nightly benchmarks
 
@@ -233,7 +251,8 @@ Enter the request IDs, name and provenance. Select **Create dataset**, then **Ap
 The dataset keeps its inputs when source logs are deleted.
 The first successful run establishes a new reference for this dataset.
 Each night measures production settings and searches around the previous winner.
-Production settings return after the plan. **Benchmark ready** appears after restoration.
+Production settings return after each round. The pairs take turns through further rounds until the window ends.
+**Benchmark ready** appears once after the final restoration.
 
 ![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
 

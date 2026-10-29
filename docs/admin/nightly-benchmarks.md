@@ -38,7 +38,7 @@ The card shows a plan for this pair, not a guaranteed reservation for tonight.
 The scheduler selects eligible pairs at runtime. Use **Manual benchmark** for the dataset editor and question previews.
 These controls configure manual runs. They do not alter the nightly workload.
 
-The next day, expand **Latest nightly results** and inspect each configuration's
+The next day, expand **Latest round results** and inspect each configuration's
 outcome, attempt and benchmark ID. Use the performance comparison below for
 successful measurements. A finished plan can contain failed configurations;
 review individual outcomes before comparing throughput.
@@ -46,7 +46,7 @@ review individual outcomes before comparing throughput.
 ## Results
 
 **Results** shows the run, model, changed parameters, measurement times and output throughput.
-New nightly variants link to their own baseline from the same plan.
+New nightly variants link to the production baseline from the same round.
 **Before** shows this baseline. **After** shows the measured result. **Change** shows the percentage difference.
 A dash means the value or baseline is unavailable. Historical timestamps are not reconstructed.
 Expand **Charts and comparison** or **Run details and saved configurations** for more information.
@@ -55,24 +55,32 @@ Expand **Charts and comparison** or **Run details and saved configurations** for
 
 Each night admits at most 2 enabled model/worker pairs, one after the other.
 Pairs without a previous attempt come first, followed by the oldest previous attempt.
-The pair ID determines the order when previous attempt dates match.
+The pair ID determines the initial order when previous attempt dates match.
+After a restored round, the pair waits behind the other admitted pair.
 The scheduler skips unavailable pairs before admission; they do not consume a slot.
 The scheduler excludes disabled pairs.
 
 The quota counts admitted pairs, including failed or cancelled plans. All
-parameter configurations and the bounded retry belong to the same pair's slot.
+parameter configurations, further rounds and bounded retries belong to the same pair's slot.
 The count persists across application restarts and disabling/re-enabling a
 schedule cannot reset it. The next Berlin calendar date has a fresh quota.
 
-The 07:50 admission cutoff can leave fewer than 2 pairs tested. Remaining
+The 08:00 admission cutoff can leave fewer than 2 pairs tested. Remaining
 pairs keep their priority for the next night. Recovery of an interrupted worker
 always happens before selection, even when tonight's quota is already full.
+
+After a successful round, the scheduler stores the candidate and restores production settings.
+It then gives the other admitted pair its turn.
+Further rounds use the same saved inputs and refine the candidate until 08:00.
+The daily quota limits distinct pairs, not rounds.
+A failed baseline or a round without successful variants does not schedule another round.
+Disabling a schedule stops further rounds. Pending recovery always takes priority.
 
 ## Time and failure policy
 
 All times use `Europe/Berlin`, including daylight-saving changes.
 
-- Start configurations and retries from 05:00 inclusive to 07:50 exclusive.
+- Start configurations and retries from 05:00 inclusive to 08:00 exclusive.
 - At 08:00, stop an active run with fewer than 50% of its measured requests
   successfully completed. Started requests and output tokens do not count
   toward this percentage. With 50 samples, at least 25 must have completed.
@@ -83,7 +91,7 @@ All times use `Europe/Berlin`, including daylight-saving changes.
   request completion stops the run. Transport and lease heartbeats do not
   count. This watchdog also applies after 08:00.
 - A stalled run gets at most 1 retry with the same configuration, after a
-  worker-lane restart, and only before 07:50. A second stall skips that
+  worker-lane restart, and only before 08:00. A second stall skips that
   configuration. Configuration errors are recorded and skipped without retry.
 - Preparation and warm-up have a separate 15-minute budget. Worker draining
   also has a 15-minute budget. Cleanup can finish after the nominal window.
@@ -93,7 +101,8 @@ every 15 s. These intervals do not guarantee an exact response time.
 
 ## Workload and parameter plan
 
-Each nightly plan starts with the current production configuration.
+Each round starts with the current production configuration.
+The table shows an initial round, not a limit on the tests for the night.
 If explicit positive values are known, then it tests `max_num_seqs` and
 `max_num_batched_tokens` at approximately 75% and 125% of their current values.
 It changes only 1 parameter at a time. With sequence limit 16 and batch-token
@@ -112,6 +121,9 @@ Automatic batch-token limits use trial values 2048 and 4096.
 Each trial sets both limits explicitly. A known limit remains fixed when the other limit is automatic.
 These values are test candidates, not inferred production defaults.
 The unchanged production configuration always runs first.
+Later rounds change the search radius around the saved candidate.
+The radii are 25%, 50%, 12.5%, 75%, 37.5%, 62.5% and 87.5%, then repeat.
+Worker hardware limits still apply. Repeated measurements remain possible.
 
 Without a saved request workload, every configuration uses GSM8K `main/test`, the `question` column, 50 requests,
 512 maximum output tokens, concurrent profile with concurrency 4, and seed 42.
@@ -225,8 +237,10 @@ Use repeated measurements and a separate evaluation dataset before drawing perfo
 
 ## Completion notifications
 
-After worker restoration, Logos stores the final report and a completion event in one transaction.
-The event includes the outcome, successful configuration count, reference and winner IDs.
+After each round, Logos stores the report and candidate after worker restoration.
+It emits no completion event while another round can start.
+After the final restoration, Logos stores the final state and completion event in one transaction.
+The event includes the outcome, completed round count, total successful configuration count, reference and winner IDs.
 Logos retries failed notification delivery, including outside the maintenance window.
 A stable event key prevents duplicate notifications after a retry or application restart.
 Logos Admins receive **Benchmark ready** in their notification inbox.
@@ -237,7 +251,7 @@ A recovery that still needs attention does not emit a completed event.
 One PostgreSQL advisory lock gives 1 scheduler control of each nightly batch.
 Each batch uses at most `LOGOS_MAINTENANCE_MAX_NODES` distinct workers.
 The lock excludes new manual benchmarks until the batch finishes cleanup. A persisted
-local-date claim prevents re-running a schedule after an application restart.
+local-date claim limits distinct pairs after an application restart. Restored rounds can continue within the same window.
 Existing manual benchmarks finish before nightly admission.
 
 The selected worker must be online, healthy and not calibrating.
@@ -330,11 +344,11 @@ The Performance tab reads the effective times from the status API.
 `LOGOS_CALIB_ENABLED=false` disables automatic calibration. It does not disable manual calibration.
 These shared variables control calibration and benchmarks.
 The window must end on the same day, more than 10 minutes after its start.
-New benchmark configurations stop 10 minutes before the window ends.
+New benchmark configurations stop when the window ends.
 
 Calibration has priority. A healthy worker with pending calibration blocks new benchmarks during the calibration window.
 Each worker gets at most 1 automatic calibration attempt per window.
-Benchmarks start only after these attempts finish and before 07:50.
+Benchmarks start only after these attempts finish and before 08:00.
 If new calibration work appears during a benchmark, the current run finishes first.
 The scheduler restores the worker and stops the remaining benchmark plan with `calibration_pending`.
 
@@ -480,8 +494,9 @@ last successful measurement. The current pair limit is the code constant
 | `scheduled` | Enabled and waiting in the rotation. Check the time window and other pairs' priority. |
 | `unavailable` | Admission skipped the pair. Read the report for worker, lane or capacity requirements. No nightly slot was consumed. |
 | `preparing` / `running` | The pair has a nightly slot. The scheduler reserves the worker and executes its plan. |
-| `completed` | The plan finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
-| `window_closed` | No further configuration can start after 07:50. |
+| `continuing` | Production settings are restored. Another round waits for its turn within this window. |
+| `completed` | The night finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
+| `window_closed` | No further configuration can start after 08:00. |
 | `window_closed_below_half` | The 08:00 check found fewer than 25 of 50 successful completions. |
 | `preparation_timeout` / `stalled` | Preparation exceeded its budget, or measurement stopped making progress. Inspect the attempt report. |
 | `recovery_required` | The original configuration is not ready. Resolve the worker error; keep the reservation and journal intact. |
@@ -490,7 +505,7 @@ last successful measurement. The current pair limit is the code constant
 
 A restart, a failed run or an opt-in change does not clear the nightly quota.
 If fewer than 2 pairs run, check eligibility, existing manual jobs, recovery
-and the 07:50 cutoff. One long pair can use the available admission window.
+and the 08:00 cutoff. One long round can use the available admission window.
 
 ## Validation
 
@@ -520,7 +535,7 @@ Before the first production activation, complete these steps:
 6. Test cancellation.
 7. Test retry after a stall.
 8. Verify restoration of the original configuration.
-9. Use a controlled test clock to verify the 07:50 cutoff.
+9. Use a controlled test clock to verify the 08:00 cutoff.
 10. Test both sides of the 08:00 completion threshold with that clock.
 11. Set the maintenance limit to `2`.
 12. Verify parallel runs on different workers and sequential runs on the same worker.
