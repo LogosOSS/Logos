@@ -226,10 +226,14 @@ The candidate's p95 request latency cannot exceed 110% of the nightly baseline.
 Among eligible candidates, Logos saves the highest observed aggregate throughput and its parameters.
 The historical winner remains until an eligible measurement exceeds its recorded throughput.
 These checks prevent selection through shorter or truncated answers. They do not measure answer quality.
-Production settings return after every plan. The winner guides the next night's search only.
+Production settings return after every plan. The winner guides the following search rounds.
 
 For request workloads, **Nightly progress** shows the best eligible throughput so far against the fixed reference.
 The initial point is 0%. Each subsequent point represents a nightly plan with completed measurements.
+The line increases only when a round records a better eligible result. Otherwise, the line stays flat.
+Each tooltip shows total improvement from the starting baseline and relative improvement from the previous point.
+For example, 40 → 42 → 44 tok/s gives 10% total improvement and 4.8% improvement from the previous point.
+Historical Hugging Face charts use their first comparable baseline, with the same captured test settings.
 Different workloads and captured environments have separate charts.
 These measurements do not establish statistical significance.
 Ten synthetic requests provide an integration pilot, not a representative thesis evaluation dataset.

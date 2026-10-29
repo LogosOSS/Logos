@@ -184,10 +184,14 @@ Without a nightly series, **Highest recorded throughput** shows the best result 
 Older workloads are not ranked against it. Unknown controls do not establish a comparison.
 The application does not apply these parameters automatically.
 
-**Nightly progress** shows the best eligible throughput so far against a fixed reference for saved request workloads.
-Hugging Face runs retain their separate nightly baselines.
+**Nightly progress** starts at 0% and shows the total improvement against one starting baseline.
+The line increases when a completed round records a better result. Otherwise, the line stays flat.
+Saved request workloads use eligible results and their fixed reference.
+Historical Hugging Face series use the first comparable baseline and captured test settings.
 The chart separates runs with different captured workloads or other serving settings.
-Select a point to read its run number, time and percentage change.
+Select a point to read its best run, throughput, time and total improvement.
+The tooltip also shows the relative improvement from the previous point.
+For example, 40 → 42 → 44 tok/s gives 10% total improvement and 4.8% improvement from the previous point.
 The chart does not show automatic parameter adoption or statistical significance.
 Expand **Benchmark runs** to see the latest 5 results. Select **Show all** to read older results.
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
