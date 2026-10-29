@@ -74,15 +74,23 @@ async def measure_request(client, url, body, headers, source_log_id, operation="
                 if choice.get("finish_reason") is not None:
                     finish = choice["finish_reason"]
     ended = time.perf_counter()
-    reasons = {"end_turn": "stop", "stop_sequence": "stop", "tool_use": "tool_calls"}
+    reasons = {"end_turn": "stop", "stop_sequence": "stop", "tool_use": "tool_calls", "max_tokens": "length"}
     native_finish = finish
     finish = reasons.get(finish) if operation == "messages" else finish
-    if not terminal or finish not in {"stop", "tool_calls", "function_call"}:
+    tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+    requested_limit = body.get("max_completion_tokens", body.get("max_tokens"))
+    completed_budget = (
+        finish == "length"
+        and type(requested_limit) is int
+        and requested_limit > 0
+        and type(tokens) is int
+        and tokens == requested_limit
+    )
+    if not terminal or (finish not in {"stop", "tool_calls", "function_call"} and not completed_budget):
         raise RuntimeError(
             "Replay response was incomplete or reached an output/context limit "
             f"(source_log_id={source_log_id}, finish_reason={native_finish!r}, stream_complete={terminal})"
         )
-    tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
     if type(tokens) is not int or tokens < 0:
         raise RuntimeError("Replay response omitted valid output token usage")
     return {

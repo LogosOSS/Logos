@@ -194,6 +194,8 @@ The run preserves each source request's output limit. Set the profile and concur
 Open **Repeat or compare settings** and select **Run a batch** to compare parameter values.
 Open **View run plan & fixed settings** to check each combination and the saved request count.
 The frozen dataset keeps its source inference and output settings for all runs.
+A response that reaches the caller's explicit token limit completes the requested output budget.
+A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
