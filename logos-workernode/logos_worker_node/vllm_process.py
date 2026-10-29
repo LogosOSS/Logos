@@ -2174,8 +2174,8 @@ class VllmProcessHandle:
                 self._auto_attention_backend,
             )
         )
-        if vc.enable_prefix_caching:
-            cmd.append("--enable-prefix-caching")
+        # vLLM's own default is on, so a disabled setting must be passed explicitly.
+        cmd.append("--enable-prefix-caching" if vc.enable_prefix_caching else "--no-enable-prefix-caching")
         # vLLM only reports usage.prompt_tokens_details (cached_tokens) when
         # this server flag is set — its default is off, so without it local
         # lanes omit the prefix-cache hit count that cloud providers include
