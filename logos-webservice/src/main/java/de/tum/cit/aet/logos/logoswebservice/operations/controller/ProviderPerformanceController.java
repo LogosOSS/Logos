@@ -179,6 +179,12 @@ public class ProviderPerformanceController {
         return nightlyResponse("status", body);
     }
 
+    @PostMapping("/model_benchmarks/workloads/create")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> createWorkload(@RequestBody Map<String, Object> body) {
+        return nightlyResponse("workloads", body);
+    }
+
     @PostMapping("/model_benchmarks/nightly/configure")
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> configureNightly(@RequestBody Map<String, Object> body) {

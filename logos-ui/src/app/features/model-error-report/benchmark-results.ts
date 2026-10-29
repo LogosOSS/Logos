@@ -16,6 +16,10 @@ type ResultColumn = 'before' | 'after' | 'delta';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class BenchmarkResults {
+  datasetLabel(run: ModelProviderBenchmark): string {
+    const workload = run.configuration['workload'] as { name?: string } | undefined;
+    return workload?.name ?? run.dataset;
+  }
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
   readonly progress = computed(() => benchmarkProgress(this.runs()));
   readonly progressKey = signal('');

@@ -17,9 +17,14 @@ export function parameterValue(run: ModelProviderBenchmark, parameter: Compariso
 export function canCompare(run: ModelProviderBenchmark): boolean {
   const settings = comparisonSettings(run);
   const totals = run.metrics.request_totals;
-  return run.sample_size > 0 && totals?.successful === run.sample_size && totals.total === run.sample_size
-    && totals.errored === 0 && totals.incomplete === 0
-    && ['dataset', 'subset', 'split', 'text_column', 'max_output_tokens', 'seed', 'pipeline_parallel_size']
+  const complete = run.sample_size > 0 && totals?.successful === run.sample_size && totals.total === run.sample_size
+    && totals.errored === 0 && totals.incomplete === 0;
+  if (run.configuration['tool'] === 'logos-replay') {
+    const workload = record(run.configuration['workload']);
+    return complete && typeof workload['id'] === 'string' && workload['request_count'] === run.sample_size
+      && parameterValue(run, 'max_concurrency') !== null;
+  }
+  return complete && ['dataset', 'subset', 'split', 'text_column', 'max_output_tokens', 'seed', 'pipeline_parallel_size']
       .every(key => settings[key] !== undefined)
     && parameterValue(run, 'tensor_parallel_size') !== null && parameterValue(run, 'max_concurrency') !== null
     && (settings['profile'] === 'concurrent'
@@ -41,6 +46,19 @@ function record(value: unknown): Record<string, unknown> {
 
 function signature(run: ModelProviderBenchmark, parameter: ComparisonParameter | 'batching'): string {
   const settings = comparisonSettings(run);
+  if (run.configuration['tool'] === 'logos-replay') {
+    const serving = { ...record(run.configuration['serving']) };
+    delete serving['command'];
+    delete serving[parameter];
+    if (parameter === 'batching') {
+      delete serving['max_num_seqs'];
+      delete serving['max_num_batched_tokens'];
+    }
+    const nightly = record(run.configuration['nightly']);
+    return canonical({ provider: run.model_provider_id, model: run.model_id,
+      workload: record(run.configuration['workload'])['id'], series: nightly['series_key'],
+      serving, benchmark: run.configuration['benchmark'] });
+  }
   delete settings[parameter];
   if (parameter === 'batching') {
     delete settings['max_num_seqs'];
@@ -72,9 +90,9 @@ export function batchingSignature(run: ModelProviderBenchmark): string | null {
 
 export function isolatedRuns(runs: readonly ModelProviderBenchmark[], baseline: ModelProviderBenchmark,
   parameter: ComparisonParameter): ModelProviderBenchmark[] {
-  if (!canCompare(baseline)) return [];
+  if (!canCompare(baseline) || parameterValue(baseline, parameter) === null) return [];
   const expected = signature(baseline, parameter);
-  return runs.filter(run => canCompare(run) && signature(run, parameter) === expected)
+  return runs.filter(run => canCompare(run) && parameterValue(run, parameter) !== null && signature(run, parameter) === expected)
     .sort((a, b) => parameterValue(a, parameter)! - parameterValue(b, parameter)!
       || Date.parse(a.recorded_at) - Date.parse(b.recorded_at) || a.id - b.id);
 }

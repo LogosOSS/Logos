@@ -71,6 +71,19 @@ class ProviderPerformanceControllerTest {
     }
 
     @Test
+    void requestWorkloads_requireLogosAdmin() throws Exception {
+        String payload = "{\"name\":\"Pilot\",\"log_ids\":[7],\"provenance\":\"synthetic\"}";
+        Map<String, Object> body = Map.of("name", "Pilot", "log_ids", java.util.List.of(7), "provenance", "synthetic");
+        when(orchestratorWorkerAdminClient.nightlyBenchmark("workloads", body))
+            .thenReturn(ResponseEntity.ok(Map.of("id", "a".repeat(64), "request_count", 1)));
+        mvc.perform(post("/logosdb/model_benchmarks/workloads/create").with(TestJwt.testUser())
+                .contentType("application/json").content(payload)).andExpect(status().isForbidden());
+        mvc.perform(post("/logosdb/model_benchmarks/workloads/create").with(TestJwt.logosAdmin())
+                .contentType("application/json").content(payload))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.request_count").value(1));
+    }
+
+    @Test
     void nightlyStatus_requiresAuthentication() throws Exception {
         mvc.perform(post("/logosdb/model_benchmarks/nightly/status")
                 .contentType("application/json").content("{\"model_provider_id\":31}"))

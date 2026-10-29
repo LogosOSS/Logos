@@ -2,6 +2,7 @@ package de.tum.cit.aet.logos.logoswebservice.notifications.repository;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -23,6 +24,11 @@ import de.tum.cit.aet.logos.logoswebservice.notifications.entity.RecipientKind;
  * whitespace, which would glue {@code WHERE} to the following {@code EXISTS}.
  */
 public interface NotificationRepository extends JpaRepository<Notification, Long> {
+
+    Optional<Notification> findByEventKey(String eventKey);
+
+    @Query(value = "SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(:eventKey, 0))", nativeQuery = true)
+    Integer lockEventKey(@Param("eventKey") String eventKey);
 
     /** A recipient row matches the user's id, one of their roles, or a team. */
     String RECIPIENT_MATCH = """

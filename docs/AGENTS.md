@@ -207,6 +207,14 @@ capturing.
 
 Use the isolated screenshots stack for these images. After the seed, start
 `node docs/seed/nightly-worker.mjs` with Node.js 22 or later.
+For the fixed request workload, apply the illustrative example:
+
+```bash
+docker exec -i doks-orchestrator python - < docs/seed/request-workload-example.py
+```
+
+The example replaces documentation measurements with a saved request workload.
+The throughput values remain illustrative. They are not GPU results.
 This example worker supplies telemetry for **Docs Local Worker** and
 the 3 example models. It uses sequence limit 16 and batch-token limit 4096.
 The seed adds illustrative baseline and variant measurements for 3 nights.
@@ -237,6 +245,8 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-models.png` | `tobias.wasner` | `/models` | `roles/logos-admin.md` |
 | `logos-admin-nightly-enable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — activation dialog | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-benchmarks.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark controls and active nightly plan | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-workload.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — request dataset form | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-results.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — fixed reference chart | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-nightly-disable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — deactivation dialog | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-model-details-delays.png` | `tobias.wasner` | `/models/<id>/details` — **Delays** tab of a model with requests at more than one reasoning effort (local or cloud provider) | `roles/logos-admin.md#models` |
 | `logos-admin-providers.png` | `tobias.wasner` | `/providers` | `roles/logos-admin.md` |

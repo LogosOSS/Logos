@@ -18,9 +18,9 @@ export function comparisonValue(run: ModelProviderBenchmark, metric: ComparisonM
   if (!(run.metrics.request_totals?.successful > 0)) return null;
   // GuideLLM aggregates output token timings across requests for this rate;
   // it is not the arithmetic mean of the individual requests' token rates.
-  const value = metric === 'throughput' ? run.metrics.output_tokens_per_second?.successful?.mean
+  const value = metric === 'throughput' ? (run.metrics.aggregate_output_tokens_per_second ?? run.metrics.output_tokens_per_second?.successful?.mean)
     : metric === 'ttft' ? run.metrics.time_to_first_token_ms?.successful?.mean
-    : run.metrics.request_latency?.successful?.mean;
+    : (run.metrics.request_latency_ms?.successful?.mean != null ? run.metrics.request_latency_ms.successful.mean / 1000 : run.metrics.request_latency?.successful?.mean);
   if (value == null || !Number.isFinite(value) || value < 0) return null;
   return metric === 'ttft' ? value / 1000 : value;
 }

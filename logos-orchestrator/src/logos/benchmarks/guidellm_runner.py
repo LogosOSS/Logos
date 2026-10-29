@@ -437,8 +437,15 @@ async def run_benchmark_job(
 
     lease_task = asyncio.create_task(renew_lease())
     try:
+        snapshot = None
+        if settings.workload_id:
+            from logos.benchmarks import workloads
+
+            snapshot = workloads.load(settings.workload_id)
+            if snapshot["model_name"] != model or snapshot["request_count"] != samples:
+                raise ValueError("Snapshot model and request count must match the benchmark")
         guidellm_bin = shutil.which("guidellm")
-        if guidellm_bin is None:
+        if snapshot is None and guidellm_bin is None:
             raise RuntimeError("GuideLLM executable is not installed in the orchestrator")
 
         if worker_preparer is not None and not await worker_preparer():
@@ -467,68 +474,85 @@ async def run_benchmark_job(
         if job_id in PROGRESS:
             PROGRESS[job_id].start_measurement()
 
-        with tempfile.TemporaryDirectory(prefix="logos-guidellm-") as directory:
-            workdir = Path(directory)
-            report_path = workdir / "benchmarks.json"
-            scenario_path = workdir / "scenario.json"
-            scenario = build_scenario(
+        if snapshot is not None:
+            from logos.benchmarks.replay import run_replay
+
+            summary = await run_replay(
+                snapshot=snapshot,
                 target=target,
                 model=model,
                 api_key=api_key,
-                samples=samples,
-                max_output_tokens=max_output_tokens,
-                report_path=report_path,
                 request_headers=request_headers,
                 settings=settings,
             )
-            scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
-            scenario_path.chmod(0o600)
-
-            env = os.environ.copy()
-            process = await asyncio.create_subprocess_exec(
-                guidellm_bin,
-                "run",
-                "--config",
-                str(scenario_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=BENCHMARK_TIMEOUT_SECONDS,
+            summary["model_provider_id"] = model_provider_id
+            summary["configuration"]["serving"] = {
+                **serving_configuration,
+                **(serving_configuration_getter() if serving_configuration_getter else {}),
+            }
+        else:
+            with tempfile.TemporaryDirectory(prefix="logos-guidellm-") as directory:
+                workdir = Path(directory)
+                report_path = workdir / "benchmarks.json"
+                scenario_path = workdir / "scenario.json"
+                scenario = build_scenario(
+                    target=target,
+                    model=model,
+                    api_key=api_key,
+                    samples=samples,
+                    max_output_tokens=max_output_tokens,
+                    report_path=report_path,
+                    request_headers=request_headers,
+                    settings=settings,
                 )
-            except TimeoutError:
-                process.kill()
-                await process.communicate()
-                raise RuntimeError("GuideLLM benchmark timed out after two hours")
-            except asyncio.CancelledError:
-                process.kill()
-                await process.communicate()
-                raise
-            if process.returncode != 0:
-                output = (stderr or stdout).decode("utf-8", errors="replace")
-                if api_key:
-                    output = output.replace(api_key, "[redacted]")
-                last_line = next((line.strip() for line in reversed(output.splitlines()) if line.strip()), "")
-                raise RuntimeError(f"GuideLLM exited with code {process.returncode}: {last_line[:500]}")
-            if not report_path.is_file():
-                raise RuntimeError("GuideLLM did not create a benchmark report")
+                scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+                scenario_path.chmod(0o600)
 
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-            if serving_configuration_getter is not None:
-                serving_configuration = {
-                    **serving_configuration,
-                    **serving_configuration_getter(),
-                }
-            summary = successful_summary(
-                report,
-                model_provider_id=model_provider_id,
-                expected_samples=samples,
-                serving_configuration=serving_configuration,
-                dataset=settings.dataset,
-            )
+                env = os.environ.copy()
+                process = await asyncio.create_subprocess_exec(
+                    guidellm_bin,
+                    "run",
+                    "--config",
+                    str(scenario_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(),
+                        timeout=BENCHMARK_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    process.kill()
+                    await process.communicate()
+                    raise RuntimeError("GuideLLM benchmark timed out after two hours")
+                except asyncio.CancelledError:
+                    process.kill()
+                    await process.communicate()
+                    raise
+                if process.returncode != 0:
+                    output = (stderr or stdout).decode("utf-8", errors="replace")
+                    if api_key:
+                        output = output.replace(api_key, "[redacted]")
+                    last_line = next((line.strip() for line in reversed(output.splitlines()) if line.strip()), "")
+                    raise RuntimeError(f"GuideLLM exited with code {process.returncode}: {last_line[:500]}")
+                if not report_path.is_file():
+                    raise RuntimeError("GuideLLM did not create a benchmark report")
+
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                if serving_configuration_getter is not None:
+                    serving_configuration = {
+                        **serving_configuration,
+                        **serving_configuration_getter(),
+                    }
+                summary = successful_summary(
+                    report,
+                    model_provider_id=model_provider_id,
+                    expected_samples=samples,
+                    serving_configuration=serving_configuration,
+                    dataset=settings.dataset,
+                )
 
         summary["configuration"]["requested_overrides"] = redact_secrets(
             settings.serving_overrides.model_dump(exclude_none=True)
