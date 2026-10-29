@@ -1,6 +1,7 @@
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 
 export interface BenchmarkSettings {
+  workload_id?: string | null;
   dataset: string;
   subset: string;
   split: string;
@@ -10,6 +11,13 @@ export interface BenchmarkSettings {
   seed: number;
   max_output_tokens: number;
   serving_overrides: Record<string, unknown>;
+}
+
+export interface SavedBenchmarkWorkload {
+  id: string;
+  name: string;
+  request_count: number;
+  provenance: string;
 }
 
 export const DEFAULT_BENCHMARK_SETTINGS: BenchmarkSettings = {
@@ -75,12 +83,14 @@ export function settingsFromBenchmark(benchmark: ModelProviderBenchmark): Benchm
   if (serving.hf_overrides && typeof serving.hf_overrides === 'object') overrides['hf_overrides'] = structuredClone(serving.hf_overrides);
   return {
     ...DEFAULT_BENCHMARK_SETTINGS,
-    dataset: benchmark.dataset,
+    dataset: config.tool === 'logos-replay' ? DEFAULT_BENCHMARK_SETTINGS.dataset : benchmark.dataset,
+    ...(config.tool === 'logos-replay' && config.workload?.id ? { workload_id: config.workload.id } : {}),
     subset: data.load_kwargs?.name ?? DEFAULT_BENCHMARK_SETTINGS.subset,
     split: data.load_kwargs?.split ?? DEFAULT_BENCHMARK_SETTINGS.split,
     text_column: spec.data_column_mapper?.column_mappings?.text_column ?? DEFAULT_BENCHMARK_SETTINGS.text_column,
     profile: profile.kind === 'concurrent' ? 'concurrent' : 'synchronous',
-    concurrency: typeof profile.streams === 'number' ? profile.streams : Array.isArray(profile.streams) ? profile.streams[0] : 1,
+    concurrency: typeof profile.streams === 'number' ? profile.streams : Array.isArray(profile.streams)
+      ? profile.streams[0] : config.benchmark?.strategy?.max_concurrency ?? 1,
     max_output_tokens: spec.backend?.extras?.body?.max_tokens ?? config.benchmark?.backend?.extras?.body?.max_tokens ?? 512,
     seed: spec.seed?.value ?? 42,
     serving_overrides: overrides,

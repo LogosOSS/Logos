@@ -383,6 +383,24 @@ class ProviderPerformanceControllerTest {
     }
 
     @Test
+    void runModelBenchmark_preservesSavedWorkloadForSingleRunAndRequiresAdmin() throws Exception {
+        String workload = "a".repeat(64);
+        Map<String, Object> settings = Map.of("workload_id", workload, "profile", "concurrent", "concurrency", 4);
+        when(orchestratorWorkerAdminClient.startModelBenchmark(7001, 10, 512, settings))
+            .thenReturn(ResponseEntity.accepted().body(Map.of("job_id", 45, "status", "pending")));
+        String body = """
+            {"model_provider_id":7001,"sample_size":10,"workload_id":"%s","profile":"concurrent","concurrency":4}
+            """.formatted(workload);
+        mvc.perform(post("/logosdb/model_benchmarks/run").with(TestJwt.logosAdmin())
+                .contentType("application/json").content(body))
+            .andExpect(status().isAccepted()).andExpect(jsonPath("$.job_id").value(45));
+        org.mockito.Mockito.verify(orchestratorWorkerAdminClient).startModelBenchmark(7001, 10, 512, settings);
+        mvc.perform(post("/logosdb/model_benchmarks/run").with(TestJwt.testUser())
+                .contentType("application/json").content(body))
+            .andExpect(status().isForbidden());
+    }
+
+    @Test
     void runModelBenchmark_forwardsBatchPlanAndRequiresAdmin() throws Exception {
         Map<String, Object> batch = Map.of("repetitions", 20,
             "configurations", java.util.List.of(Map.of("concurrency", 4, "samples", 50)));

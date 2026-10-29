@@ -47,6 +47,18 @@ Private datasets, gated datasets and structured conversation columns are not sup
 The orchestrator downloads the dataset when the job starts.
 A small sample size does not necessarily limit the dataset download size.
 
+### Saved request datasets
+
+For a Logos worker, **Dataset and settings → Input dataset** also lists saved request datasets for that model.
+Select a dataset to replay all its saved requests. The sample size becomes fixed at the saved request count.
+Each run preserves the source prompts, inference controls and output limits.
+The Hugging Face dataset, prompt column, seed and output-limit controls do not apply to these runs.
+Select **Concurrent** and set **Concurrent requests** to use the same load for each configuration.
+Batch configurations keep the selected saved dataset. They cannot vary its request count, seed or output limits.
+Create a saved dataset through **Nightly benchmarks → Request workload** before selecting it here.
+
+![Manual benchmark with a saved request dataset](/img/roles/logos-admin-benchmark-saved-requests.png)
+
 ### Desktop example
 
 **Run benchmark** contains the configuration. **Results** contains the charts and run history.

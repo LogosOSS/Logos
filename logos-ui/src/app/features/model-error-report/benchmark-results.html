@@ -43,7 +43,7 @@
     <p class="results-note">{{ chart.context }}</p>
     <dl class="results-summary">
       <div><dt>Starting baseline #{{ chart.reference.id }}</dt><dd>{{ throughput(chart.reference) | number:'1.1-1' }} <small>tok/s</small></dd></div>
-      <div><dt>{{ chart.fixed ? 'Best eligible throughput' : 'Best recorded throughput' }}</dt><dd>{{ throughput(chart.latest.run) | number:'1.1-1' }} <small>tok/s</small></dd></div>
+      <div><dt>{{ chart.fixed ? 'Best eligible throughput' : 'Best recorded throughput' }} #{{ chart.latest.run.id }}</dt><dd>{{ throughput(chart.latest.run) | number:'1.1-1' }} <small>tok/s</small></dd></div>
       <div><dt>Total improvement</dt><dd>{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}%</dd></div>
     </dl>
     <div class="progress-plot" role="group" aria-label="Best throughput so far against the starting baseline">

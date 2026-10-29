@@ -115,6 +115,7 @@ public class ProviderPerformanceController {
         if (request.seed() != null) settings.put("seed", request.seed());
         if (request.servingOverrides() != null) settings.put("serving_overrides", request.servingOverrides());
         if (request.batch() != null) settings.put("batch", request.batch());
+        if (request.workloadId() != null) settings.put("workload_id", request.workloadId());
         return settings;
     }
 

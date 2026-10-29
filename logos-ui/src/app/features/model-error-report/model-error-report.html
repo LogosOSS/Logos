@@ -595,19 +595,19 @@
                   </select>
                 </label>
                 <label>Sample size
-                  <input #sampleSize aria-label="Sample size" aria-describedby="benchmark-sample-help" type="number" min="1" max="100" step="1"
+                  <input #sampleSize aria-label="Sample size" aria-describedby="benchmark-sample-help" type="number" min="1" max="100" step="1" [disabled]="!!benchmarkSettings().workload_id"
                     [value]="benchmarkSampleSize()" (input)="setBenchmarkSampleSize(sampleSize.value)"
                     (change)="sampleSize.value = benchmarkSampleSize().toString()" />
-                  <small id="benchmark-sample-help">1–100 requests per run</small>
+                  <small id="benchmark-sample-help">{{ benchmarkSettings().workload_id ? 'All saved requests per run' : '1–100 requests per run' }}</small>
                 </label>
               </div>
 
               <details class="benchmark-settings-panel">
                 <summary>
                   <strong>Dataset and settings</strong>
-                  <span>{{ benchmarkSettings().dataset }} · {{ benchmarkSettings().max_output_tokens }} max tokens · {{ benchmarkSettings().profile === 'synchronous' ? 'Sequential' : benchmarkSettings().concurrency + ' concurrent requests' }}</span>
+                  <span>{{ benchmarkSettings().workload_id ? 'Frozen requests · source output limits' : benchmarkSettings().dataset + ' · ' + benchmarkSettings().max_output_tokens + ' max tokens' }} · {{ benchmarkSettings().profile === 'synchronous' ? 'Sequential' : benchmarkSettings().concurrency + ' concurrent requests' }}</span>
                 </summary>
-                @if (pair.provider_type === 'logosnode') {
+                @if (pair.provider_type === 'logosnode' && !benchmarkSettings().workload_id) {
                   <button type="button" class="benchmark-preset" (click)="useComparisonBaseline()"
                     title="Prepare GSM8K main/test, 50 requests, 512 max output tokens, seed 42, TP 1, PP 1 and concurrency 4. Other worker settings stay unchanged.">
                     Load comparison preset
@@ -615,7 +615,8 @@
                 }
                 <app-benchmark-settings-editor [pair]="pair"
                   [settings]="benchmarkSettings()" (settingsChange)="benchmarkSettings.set($event)"
-                  (validChange)="benchmarkSettingsValid.set($event)" (limitsChange)="benchmarkWorkerLimits.set($event)" />
+                  (validChange)="benchmarkSettingsValid.set($event)" (limitsChange)="benchmarkWorkerLimits.set($event)"
+                  (sampleSizeChange)="benchmarkSampleSize.set($event)" />
               </details>
 
               <details class="benchmark-settings-panel">
@@ -966,7 +967,7 @@
   <div modal-details class="benchmark-confirmation-details">
     <dl>
       <div><dt>Provider</dt><dd>{{ benchmarkConfirmPair()?.provider_name }}</dd></div>
-      <div><dt>Dataset</dt><dd>{{ benchmarkSettings().dataset }}</dd></div>
+      <div><dt>Dataset</dt><dd>{{ benchmarkSettings().workload_id ? 'Frozen requests · source output limits' : benchmarkSettings().dataset }}</dd></div>
       <div><dt>Samples per run</dt><dd>{{ benchmarkSampleRange() }}</dd></div>
       <div><dt>Runs</dt><dd>{{ benchmarkTotalRuns() }}</dd></div>
     </dl>

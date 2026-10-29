@@ -184,8 +184,16 @@ Without a nightly series, **Highest recorded throughput** shows the best result 
 Older workloads are not ranked against it. Unknown controls do not establish a comparison.
 The application does not apply these parameters automatically.
 
+To benchmark saved requests manually, open **Run benchmark → Dataset and settings**.
+Select the saved dataset under **Input dataset**. Logos fixes the sample size to its request count.
+The run preserves each source request's output limit. Set the profile and concurrency for the comparison.
+**Repeat or compare settings** uses the same saved requests for every configuration.
+
+![Manual benchmark with a saved request dataset](../static/img/roles/logos-admin-benchmark-saved-requests.png)
+
 **Nightly progress** starts at 0% and shows the total improvement against one starting baseline.
 The line increases when a completed round records a better result. Otherwise, the line stays flat.
+The starting baseline and best throughput labels show their run numbers.
 Saved request workloads use eligible results and their fixed reference.
 Historical Hugging Face series use the first comparable baseline and captured test settings.
 The chart separates runs with different captured workloads or other serving settings.
