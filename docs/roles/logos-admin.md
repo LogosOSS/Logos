@@ -191,6 +191,12 @@ The run preserves each source request's output limit. Set the profile and concur
 
 ![Manual benchmark with a saved request dataset](../static/img/roles/logos-admin-benchmark-saved-requests.png)
 
+Open **Repeat or compare settings** and select **Run a batch** to compare parameter values.
+Open **View run plan & fixed settings** to check each combination and the saved request count.
+The frozen dataset keeps its source inference and output settings for all runs.
+
+![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
+
 **Nightly progress** starts at 0% and shows the total improvement against one starting baseline.
 The line increases when a completed round records a better result. Otherwise, the line stays flat.
 The starting baseline and best throughput labels show their run numbers.
