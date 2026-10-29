@@ -26,6 +26,14 @@ async def test_truncated_or_unaccounted_streams_never_become_successes(reason, u
             await replay.measure_request(client, "http://worker/v1/chat/completions", {}, {}, 9)
 
 
+async def test_output_limit_error_identifies_the_source_and_stream_completion():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, text=response(reason="length")))
+    ) as client:
+        with pytest.raises(RuntimeError, match="source_log_id=9, finish_reason='length', stream_complete=True"):
+            await replay.measure_request(client, "http://worker/v1/chat/completions", {}, {}, 9)
+
+
 async def test_replay_sends_every_input_once_without_injecting_an_output_cap(monkeypatch):
     sent = []
     original_client = httpx.AsyncClient
