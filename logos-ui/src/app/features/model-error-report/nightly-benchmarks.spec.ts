@@ -42,6 +42,13 @@ describe('Nightly benchmark confirmation', () => {
     expect(control.confirmationMessage).toContain('Original settings are restored');
   });
 
+  it('keeps dataset changes unavailable when the deployment freezes one user’s recent requests', async () => {
+    control.state.update(value => ({ ...value!, workload_policy: { kind: 'recent_user', username: 'source.user', request_count: 50 } }));
+    expect(control.automaticSource).toBe(true);
+    await control.saveSource();
+    http.expectNone('/api/logosdb/model_benchmarks/nightly/configure');
+  });
+
   it('does not activate with missing server window settings', () => {
     control.state.set({ enabled: false, status: 'disabled', report: [], recovery_required: false });
     control.review();

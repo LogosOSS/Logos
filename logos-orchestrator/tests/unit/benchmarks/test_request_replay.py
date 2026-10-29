@@ -94,3 +94,38 @@ async def test_one_failure_cancels_and_awaits_sibling_streams(monkeypatch):
             settings=BenchmarkSettings(profile="concurrent", concurrency=2),
         )
     assert cleaned == [1]
+
+
+@pytest.mark.parametrize("reason, succeeds", [("end_turn", True), ("tool_use", True), ("max_tokens", False)])
+async def test_messages_stream_uses_native_usage_and_preserves_inference_controls(reason, succeeds):
+    sent = []
+    events = [
+        {"type": "message_start", "message": {"usage": {"output_tokens": 0}}},
+        {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "Synthetic reasoning"}},
+        {"type": "message_delta", "delta": {"stop_reason": reason}, "usage": {"output_tokens": 42}},
+        {"type": "message_stop"},
+    ]
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, text="".join("data: " + json.dumps(event) + "\n\n" for event in events))
+
+    body = {
+        "model": "model",
+        "messages": [{"role": "user", "content": "Synthetic request"}],
+        "system": "Synthetic system",
+        "thinking": {"type": "adaptive"},
+        "max_tokens": 8192,
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        if succeeds:
+            measured = await replay.measure_request(
+                client, "http://worker/v1/messages", body, {}, 7, operation="messages"
+            )
+            assert measured["output_tokens"] == 42
+            assert measured["native_finish_reason"] == reason
+            assert measured["ttft_ms"] is not None
+        else:
+            with pytest.raises(RuntimeError, match="incomplete"):
+                await replay.measure_request(client, "http://worker/v1/messages", body, {}, 7, operation="messages")
+    assert sent == [{**body, "stream": True}]

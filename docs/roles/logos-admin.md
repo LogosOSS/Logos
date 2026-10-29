@@ -237,6 +237,15 @@ Production settings return after the plan. **Benchmark ready** appears after res
 
 ![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
 
+Some deployments select a user instead of a fixed dataset.
+The card then shows **Latest 50 successful FULL requests**, the username and the cutoff.
+All configurations use the same selection for that night.
+The dataset controls are unavailable because the deployment setting controls this source.
+If fewer than 50 requests qualify, then the card shows the selection error.
+See [deployment-specific request sources](../admin/nightly-benchmarks.md#deployment-specific-request-sources) for the exact rules.
+
+![Nightly selection of recent user requests](../static/img/roles/logos-admin-nightly-automatic-source.png)
+
 To remove the pair from the nightly rotation:
 
 1. Select **Disable nightly runs…**.

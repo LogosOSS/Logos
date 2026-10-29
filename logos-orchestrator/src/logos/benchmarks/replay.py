@@ -23,11 +23,12 @@ def distribution(values):
     }
 
 
-async def measure_request(client, url, body, headers, source_log_id):
+async def measure_request(client, url, body, headers, source_log_id, operation="chat/completions"):
     """Use streaming only as a measurement transport; preserve all inference controls."""
     payload = copy.deepcopy(body)
     payload["stream"] = True
-    payload["stream_options"] = {"include_usage": True}
+    if operation == "chat/completions":
+        payload["stream_options"] = {"include_usage": True}
     started = time.perf_counter()
     first = None
     usage = None
@@ -46,6 +47,22 @@ async def measure_request(client, url, body, headers, source_log_id):
             data = json.loads(content)
             if data.get("error"):
                 raise RuntimeError("Replay stream reported an inference error")
+            if operation == "messages":
+                event = data.get("type")
+                delta = data.get("delta") or {}
+                block = data.get("content_block") or {}
+                if first is None and (
+                    any(delta.get(key) for key in ("text", "thinking", "partial_json"))
+                    or any(block.get(key) for key in ("text", "thinking"))
+                    or (block.get("type") == "tool_use" and block.get("name"))
+                ):
+                    first = time.perf_counter()
+                if event == "message_delta":
+                    finish = delta.get("stop_reason") or finish
+                    if "output_tokens" in (data.get("usage") or {}):
+                        usage = {"completion_tokens": data["usage"]["output_tokens"]}
+                terminal = terminal or event == "message_stop"
+                continue
             if data.get("usage") is not None:
                 usage = data["usage"]
             for choice in data.get("choices", []):
@@ -57,6 +74,9 @@ async def measure_request(client, url, body, headers, source_log_id):
                 if choice.get("finish_reason") is not None:
                     finish = choice["finish_reason"]
     ended = time.perf_counter()
+    reasons = {"end_turn": "stop", "stop_sequence": "stop", "tool_use": "tool_calls"}
+    native_finish = finish
+    finish = reasons.get(finish) if operation == "messages" else finish
     if not terminal or finish not in {"stop", "tool_calls", "function_call"}:
         raise RuntimeError("Replay response was incomplete or reached an output/context limit")
     tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
@@ -66,6 +86,7 @@ async def measure_request(client, url, body, headers, source_log_id):
         "source_log_id": source_log_id,
         "output_tokens": tokens,
         "finish_reason": finish,
+        **({"native_finish_reason": native_finish} if operation == "messages" else {}),
         "ttft_ms": (first - started) * 1000 if first is not None else None,
         "latency_ms": (ended - started) * 1000,
         "output_tokens_per_second": tokens / max(ended - started, 0.000001),
@@ -75,7 +96,7 @@ async def measure_request(client, url, body, headers, source_log_id):
 async def run_replay(*, snapshot, target, model, api_key, request_headers, settings):
     """Run every selected request exactly once; failures cancel and await sibling streams."""
     base = target.rstrip("/")
-    url = base + ("/chat/completions" if base.endswith("/v1") else "/v1/chat/completions")
+    prefix = base if base.endswith("/v1") else base + "/v1"
     headers = dict(request_headers or {})
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
@@ -92,7 +113,17 @@ async def run_replay(*, snapshot, target, model, api_key, request_headers, setti
             while not queue.empty():
                 index, request = queue.get_nowait()
                 body = {**request["body"], "model": model}
-                results[index] = await measure_request(client, url, body, headers, request["source_log_id"])
+                operation = request.get("operation", "chat/completions")
+                if operation not in {"chat/completions", "messages"}:
+                    raise ValueError("Unsupported replay operation")
+                results[index] = await measure_request(
+                    client,
+                    prefix + "/" + operation,
+                    body,
+                    headers,
+                    request["source_log_id"],
+                    **({"operation": operation} if operation == "messages" else {}),
+                )
 
         async with asyncio.timeout(7200):
             tasks = [asyncio.create_task(worker()) for _ in range(min(concurrency, snapshot["request_count"]))]

@@ -154,6 +154,11 @@ To see the latest deployment, run `docker exec logos-node-manager node-manager s
 
 ## Nightly benchmarks
 
+To retain a fixed Dev workload, leave `LOGOS_NIGHTLY_REQUEST_USERNAME` empty.
+To freeze 50 recent requests on Prod, set this variable to the exact Prod username.
+See [deployment-specific request sources](admin/nightly-benchmarks.md#deployment-specific-request-sources) for selection and failure rules.
+This setting reads the deployment's own database. It does not copy Prod requests to Dev.
+
 Nightly benchmarks require updates to the webservice, orchestrator, web application and selected workers.
 The webservice applies changelog `065_nightly_benchmarks.xml` before the new scheduler starts.
 Workers report `supports_benchmark_restart` in their runtime status.

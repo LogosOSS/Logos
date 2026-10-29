@@ -153,6 +153,52 @@ The measured throughput equals all output tokens divided by the complete replay 
 The saved results also contain request latency, TTFT, token counts and completion reasons.
 They do not contain response text.
 
+## Deployment-specific request sources
+
+Dev can retain its manually selected, fixed 10-request pilot workload.
+Leave `LOGOS_NIGHTLY_REQUEST_USERNAME` empty on Dev.
+
+For Prod, set `LOGOS_NIGHTLY_REQUEST_USERNAME` to the exact username of the intended source user.
+Use the username from the Prod user record. Do not use a display name or a user ID from Dev.
+For workflow deployments, add this variable to the **Prod** GitHub environment.
+The deploy workflow copies it to the service configuration.
+The setting applies to all enabled nightly schedules in that deployment.
+The orchestrator reads its own configured database. It does not connect Dev to Prod.
+Deploy migration 069, the orchestrator and the user interface together.
+
+At the maintenance window start, Logos stores 1 source selection before calibration.
+The default cutoff is 05:00 Europe/Berlin.
+The selection contains the latest 50 successful FULL requests with stored inputs.
+Both request arrival and completion must occur at or before the cutoff.
+The recorded `log_entry.user_id` must match exactly 1 user with the configured username.
+Shared keys without an individual recorded caller cannot establish this identity.
+Benchmark replays, other users, failed requests and requests without FULL inputs cannot enter the selection.
+The order is request arrival, newest first. The request ID resolves equal arrival times.
+The source model does not restrict selection. All tested models use the same selected inputs.
+
+Each tested model measures its production configuration first, then the previous winner and batching variants.
+Every configuration uses all 50 saved requests with 4 concurrent requests.
+No request is replaced during a plan or after an application restart.
+Source-log deletion does not remove the saved inputs.
+New requests after the cutoff wait for the next night.
+The source selection persists separately from each model's workload hash.
+
+If fewer than 50 requests qualify, then the night has no request dataset.
+Unsupported request formats or a snapshot above 5 MB also block the selection.
+Chat Completions and native Messages requests can enter the selection.
+Messages replay retains the system prompt, thinking controls and client-side tool history.
+The benchmark does not execute client tools. Server-side tools and external MCP servers are rejected.
+Responses API requests and non-text content remain unsupported.
+The system reports this reason and does not substitute Hugging Face or another user's requests.
+A blocked selection stays fixed for that date. The next night makes a new selection.
+The user interface shows the configured source and its current selection error.
+Manual dataset changes are unavailable while this deployment policy is active.
+
+When the selected inputs change, Logos retains candidate parameters for the same source user and captured environment.
+It starts a new measurement reference and discards the old cohort's measured winner rate.
+Compare each candidate with that night's baseline. Do not compare raw throughput across different request cohorts.
+The fixed Dev pilot retains its reference across nights while its inputs and captured environment stay unchanged.
+
 ## Iterative optimization and the fixed reference
 
 Each night measures production settings first, then the previous winner and its neighbouring batching settings.

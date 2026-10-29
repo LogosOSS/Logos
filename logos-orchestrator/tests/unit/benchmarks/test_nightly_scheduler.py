@@ -226,6 +226,7 @@ async def test_daily_quota_never_blocks_pending_recovery(scheduler, rotation):
 
 async def test_calibration_runs_before_benchmarks_even_without_enabled_schedules(scheduler, monkeypatch):
     events = []
+    monkeypatch.setattr(module.recent_requests, "freeze", lambda *args, **kwargs: events.append("freeze"))
     scheduler.calibration = MagicMock()
     scheduler.calibration._active_provider_ids = set()
     scheduler.calibration._tick = AsyncMock(side_effect=lambda: events.append("calibration"))
@@ -233,7 +234,36 @@ async def test_calibration_runs_before_benchmarks_even_without_enabled_schedules
     monkeypatch.setattr(module.store, "has_recovery", lambda: False)
     monkeypatch.setattr(module.store, "has_active_benchmarks", lambda: False)
     await scheduler._cycle()
-    assert events == ["calibration", "benchmarks"]
+    assert events == ["freeze", "calibration", "benchmarks"]
+
+
+async def test_recent_user_mode_uses_fifty_frozen_requests_in_every_configuration(scheduler, monkeypatch):
+    target, snapshot, lane = scheduler.target_lane(31)
+    target["model_id"] = 1
+    scheduler.target_lane = lambda pair: (target, snapshot, lane)
+    monkeypatch.setattr(module.recent_requests, "username", lambda: "source.user")
+    source = {
+        "id": "a" * 64,
+        "name": "Recent requests",
+        "request_count": 50,
+        "provenance": "production",
+        "source_selection": {"username": "source.user", "user_id": 1},
+    }
+    monkeypatch.setattr(module.recent_requests, "for_model", lambda *args: source)
+    binding = MagicMock()
+    monkeypatch.setattr(module.store, "bind_workload", binding)
+    settings_sent = []
+
+    async def submit(pair, settings):
+        settings_sent.append(settings)
+        return len(settings_sent), asyncio.create_task(asyncio.sleep(0, result=len(settings_sent)))
+
+    scheduler.submit = submit
+    assert await scheduler.run_schedule(31, MagicMock())
+    binding.assert_called_once_with(31, "a" * 64)
+    assert len(settings_sent) == 5
+    assert all(settings.samples == 50 and settings.workload_id == source["id"] for settings in settings_sent)
+    assert scheduler.saved[-1][1] == "completed"
 
 
 async def test_manual_benchmark_does_not_consume_pending_calibration_attempt(scheduler, monkeypatch):

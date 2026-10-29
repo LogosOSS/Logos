@@ -42,6 +42,17 @@ def observe_response(response, job_id: int):
                 if not isinstance(data, dict):
                     continue
                 failed = failed or bool(data.get("error"))
+                if data.get("type") == "content_block_delta" and any(
+                    (data.get("delta") or {}).get(key) for key in ("text", "thinking", "partial_json")
+                ):
+                    progress.output()
+                if data.get("type") == "message_delta":
+                    finished = finished or (data.get("delta") or {}).get("stop_reason") in {
+                        "end_turn",
+                        "stop_sequence",
+                        "tool_use",
+                    }
+                terminal = terminal or data.get("type") == "message_stop"
                 for choice in data.get("choices", []):
                     delta = choice.get("delta") or {}
                     if delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls"):

@@ -141,6 +141,31 @@ def test_parameter_plan_changes_only_one_known_parameter_and_fixes_workload():
     assert plan[0].max_output_tokens == 512
 
 
+@pytest.mark.parametrize("reason, completed", [("end_turn", 1), ("tool_use", 1), ("max_tokens", 0)])
+async def test_messages_progress_counts_output_and_one_complete_response(reason, completed):
+    import json
+
+    progress = nightly.RunProgress(50, measuring=True)
+    progress.last_progress = -1
+    nightly.PROGRESS[7] = progress
+
+    async def chunks():
+        yield b'event: ping\ndata: {"type":"ping"}\n\n'
+        assert progress.last_progress == -1
+        yield b'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Synthetic"}}\n\n'
+        assert progress.last_progress > 0
+        yield ("data: " + json.dumps({"type": "message_delta", "delta": {"stop_reason": reason}}) + "\n\n").encode()
+        yield b'data: {"type":"message_stop"}\n\n'
+        yield b'data: {"type":"message_stop"}\n\n'
+
+    try:
+        async for _ in observe_response(StreamingResponse(chunks()), 7).body_iterator:
+            pass
+        assert progress.completed == completed
+    finally:
+        nightly.PROGRESS.pop(7)
+
+
 def test_auto_batching_starts_unchanged_then_sets_both_limits():
     plan = nightly.parameter_plan({"max_num_seqs": 0})
     assert plan[0].serving_overrides.model_dump(exclude_none=True) == {}

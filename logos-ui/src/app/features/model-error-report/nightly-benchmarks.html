@@ -14,7 +14,12 @@
   </div>
   <div class="nightly__preview">
     <strong>Current settings → {{ (state()?.plan?.length ?? 1) - 1 }} test configurations</strong>
-    @if (workload; as source) {
+    @if (automaticSource) {
+      <p>Latest 50 successful FULL requests · {{ state()?.workload_policy?.username }} · 4 concurrent · source output limits</p>
+      <p>Freeze once at {{ window?.start }} {{ window?.timezone }}, before calibration. Baseline and every variant use those same 50 inputs.</p>
+      <p>Production settings first, then the previous winner and neighbouring batching settings. New inputs start a separate measurement reference.</p>
+      @if (state()?.workload_policy?.error; as failure) { <p role="alert">Dataset unavailable: {{ failure }}</p> }
+    } @else if (workload; as source) {
       <p>{{ source.name }} · {{ source.provenance }} · {{ source.request_count }} requests · 4 concurrent · source output limits</p>
       <p>Production settings, the previous winner, then neighbouring batching settings. The first successful production run fixes the reference.</p>
       @if (state()?.optimizer?.reference_id; as reference) {
@@ -27,6 +32,7 @@
       }
     </div>
   </div>
+  @if (!automaticSource) {
   <details>
     <summary>Request workload</summary>
     <label for="nightly-workload-{{ pairId }}">Dataset</label>
@@ -47,6 +53,7 @@
       <button type="button" (click)="createWorkload()" [disabled]="sourceLocked || !state()">Create dataset</button>
     </details>
   </details>
+  }
   <details>
     <summary>Schedule and test plan</summary>
     @if (window; as timing) {

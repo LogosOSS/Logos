@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 import logos.main as main
 from logos.benchmarks import nightly_store as store
-from logos.benchmarks import optimization, workloads
+from logos.benchmarks import optimization, recent_requests, workloads
 from logos.benchmarks.guidellm_runner import extract_serving_configuration
 from logos.benchmarks.nightly import local_now, parameter_plan
 from logos.benchmarks.nightly_overview import overview
@@ -29,6 +29,7 @@ async def nightly_status(data: NightlyStatusRequest, request: Request):
     _require_internal_secret(request)
     target = target_for(data.model_provider_id)
     result = store.status(data.model_provider_id)
+    result["workload_policy"] = recent_requests.policy(local_now())
     snapshot = main._logosnode_registry.peek_runtime_snapshot(target["provider_id"])
     current = extract_serving_configuration(snapshot, target["model_name"])
     search = None
@@ -58,6 +59,8 @@ async def configure_nightly(data: NightlyUpdateRequest, request: Request):
             raise HTTPException(status_code=409, detail="Update and connect this worker before enabling nightly runs")
     try:
         if "workload_id" in data.model_fields_set:
+            if recent_requests.username():
+                raise ValueError("This deployment freezes the configured user's latest 50 FULL requests each night")
             if data.workload_id:
                 workloads.load(data.workload_id, target["model_id"])
             result = store.set_enabled(
@@ -66,6 +69,7 @@ async def configure_nightly(data: NightlyUpdateRequest, request: Request):
         else:
             result = store.set_enabled(data.model_provider_id, data.enabled, data.expected_enabled)
         result["window"] = MaintenanceWindow.from_env().describe()
+        result["workload_policy"] = recent_requests.policy()
         result["max_maintenance_nodes"] = maintenance_node_limit()
         return result
     except ValueError as exc:

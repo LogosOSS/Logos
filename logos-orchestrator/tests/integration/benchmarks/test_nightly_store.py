@@ -54,10 +54,12 @@ def database(monkeypatch):
         for sql in tree.findall("{*}changeSet/{*}sql"):
             connection.execute(text(sql.text))
         connection.execute(text("CREATE TABLE notifications(id integer PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE users(id integer PRIMARY KEY, username text)"))
         connection.execute(
             text(
                 "CREATE TABLE log_entry(id integer PRIMARY KEY, model_id integer, privacy_level text, "
-                "result_status text, environment text, input_payload jsonb)"
+                "result_status text, environment text, input_payload jsonb, user_id integer, "
+                "timestamp_request timestamptz, timestamp_response timestamptz)"
             )
         )
         connection.execute(
@@ -69,6 +71,10 @@ def database(monkeypatch):
         workloads_migration = migration.with_name("068_benchmark_request_workloads.xml")
         for sql in ElementTree.parse(workloads_migration).findall("{*}changeSet/{*}sql"):
             connection.execute(text(sql.text))
+        for sql in ElementTree.parse(migration.with_name("069_nightly_request_sources.xml")).findall(
+            "{*}changeSet/{*}sql"
+        ):
+            connection.execute(text(sql.text))
 
     class Database(store.DBManager):
         def __enter__(self):
@@ -77,6 +83,9 @@ def database(monkeypatch):
 
     monkeypatch.setattr(store, "DBManager", Database)
     monkeypatch.setattr(store, "_init_engine", lambda: engine)
+    from logos.benchmarks import recent_requests
+
+    monkeypatch.setattr(recent_requests, "DBManager", Database)
     yield engine, Database
     engine.dispose()
     with admin.begin() as connection:
@@ -96,7 +105,8 @@ def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(dat
     with engine.begin() as connection:
         connection.execute(
             text(
-                "INSERT INTO log_entry VALUES (7, 11, 'FULL', 'success', '', "
+                "INSERT INTO log_entry(id, model_id, privacy_level, result_status, environment, input_payload) "
+                "VALUES (7, 11, 'FULL', 'success', '', "
                 '\'{"messages":[{"role":"user","content":"Synthetic prompt"}]}\')'
             )
         )

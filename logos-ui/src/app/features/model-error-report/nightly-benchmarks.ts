@@ -5,6 +5,7 @@ import { FormsModule } from '@angular/forms';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
 
 export interface NightlyStatus {
+  workload_policy?: { kind: 'selected' | 'recent_user'; username?: string; request_count?: number; ready?: boolean; error?: string | null };
   workload_id?: string | null;
   workloads?: { id: string; name: string; request_count: number; provenance: string }[];
   optimizer?: { reference_id?: number; best_benchmark_id?: number; iterations?: number };
@@ -98,7 +99,8 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   }
 
   get workload() { return this.state()?.workloads?.find(item => item.id === this.state()?.workload_id); }
-  get sourceLocked(): boolean { return this.saving() || !!this.state()?.recovery_required || ['running', 'preparing'].includes(this.state()?.status ?? ''); }
+  get automaticSource(): boolean { return this.state()?.workload_policy?.kind === 'recent_user'; }
+  get sourceLocked(): boolean { return this.automaticSource || this.saving() || !!this.state()?.recovery_required || ['running', 'preparing'].includes(this.state()?.status ?? ''); }
 
   async saveSource(): Promise<void> {
     const current = this.state();

@@ -138,6 +138,21 @@ def claim(pair_id: int, day) -> bool:
         return claimed
 
 
+def bind_workload(pair_id, workload_id):
+    """Bind the admitted night's inputs without discarding its previous search parameters."""
+    with DBManager() as db:
+        changed = db.session.execute(
+            text(
+                "UPDATE nightly_benchmarks SET workload_id = :workload WHERE model_provider_id = :id "
+                "AND recovery IS NULL AND status = 'running'"
+            ),
+            {"id": pair_id, "workload": workload_id},
+        )
+        if not changed.rowcount:
+            raise ValueError("The nightly schedule is no longer available for source selection")
+        db.session.commit()
+
+
 def claimed_today(day) -> int:
     with DBManager() as db:
         return db.session.execute(
@@ -459,6 +474,7 @@ def record_comparison(benchmark_id, baseline_id, parameters, original, search=No
                                     "reference_id": search["reference_id"],
                                     "series_key": search["series_key"],
                                     "workload_id": search["workload_id"],
+                                    "source_selection": search.get("source_selection"),
                                 }
                                 if search
                                 else {}

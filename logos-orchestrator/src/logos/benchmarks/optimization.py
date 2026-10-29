@@ -30,8 +30,18 @@ def context(current, snapshot, workload, previous):
             }
             for device in (devices.get("devices", []) if isinstance(devices, dict) else devices)
         ]
+    source_selection = workload.get("source_selection")
+    if source_selection:
+        identity["source"] = {key: source_selection[key] for key in ("username", "user_id")}
+    environment_key = hashlib.sha256(
+        canonical({key: value for key, value in identity.items() if key != "workload"}).encode()
+    ).hexdigest()
     series_key = hashlib.sha256(canonical(identity).encode()).hexdigest()
     state = copy.deepcopy(previous) if previous.get("series_key") == series_key else {}
+    if not state and source_selection and previous.get("environment_key") == environment_key:
+        # A changed request cohort can reuse candidate parameters, never an older cohort's measured rate or reference.
+        state["best_parameters"] = copy.deepcopy(previous.get("best_parameters") or {})
+    state["environment_key"] = environment_key
     state["series_key"] = series_key
     state["workload_id"] = workload["id"]
     return {
@@ -39,6 +49,7 @@ def context(current, snapshot, workload, previous):
         "series_key": series_key,
         "reference_id": state.get("reference_id"),
         "workload_id": workload["id"],
+        "source_selection": source_selection,
         "workload": {key: workload[key] for key in ("id", "name", "request_count", "provenance")},
     }
 
@@ -101,6 +112,8 @@ def eligible(candidate, baseline):
     for row in samples:
         original = base_samples[row["source_log_id"]]
         if row["finish_reason"] != original["finish_reason"] or row["finish_reason"] not in {"stop", "tool_calls"}:
+            return False
+        if row.get("native_finish_reason") != original.get("native_finish_reason"):
             return False
         tokens, before = row["output_tokens"], original["output_tokens"]
         if not (0.8 * before <= tokens <= 1.2 * before):

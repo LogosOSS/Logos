@@ -857,7 +857,7 @@ async def internal_cancel_model_benchmark(job_id: int, request: Request):
 @router.post("/internal/model_benchmarks/jobs/{job_id}/v1/{path:path}", tags=["admin"])
 async def internal_model_benchmark_completion(job_id: int, path: str, request: Request):
     """Execute one signed benchmark request without a user API key."""
-    if path.strip("/") != "chat/completions":
+    if path.strip("/") not in {"chat/completions", "messages"}:
         raise HTTPException(status_code=404, detail="Unsupported benchmark operation")
 
     try:

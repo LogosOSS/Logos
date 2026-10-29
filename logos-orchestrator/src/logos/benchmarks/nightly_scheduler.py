@@ -8,7 +8,7 @@ import logging
 from starlette.requests import Request
 
 from logos.benchmarks import nightly_store as store
-from logos.benchmarks import optimization, workloads
+from logos.benchmarks import optimization, recent_requests, workloads
 from logos.benchmarks.guidellm_runner import extract_serving_configuration
 from logos.benchmarks.maintenance import AUTOMATIC_CALIBRATION
 from logos.benchmarks.nightly import (
@@ -61,6 +61,7 @@ class NightlyScheduler:
             await asyncio.sleep(15)
 
     async def _cycle(self):
+        recent_requests.freeze(local_now(), include_requests=False)
         await store.deliver_completion_events()
         claims = []
         if self.maintenance:
@@ -351,8 +352,14 @@ class NightlyScheduler:
             current = extract_serving_configuration(snapshot, model)
             plan = parameter_plan(current)
             schedule = store.status(pair_id)
-            if schedule.get("workload_id"):
-                workload = workloads.load(schedule["workload_id"], target["model_id"])
+            if recent_requests.username() or schedule.get("workload_id"):
+                workload = (
+                    recent_requests.for_model(target, local_now())
+                    if recent_requests.username()
+                    else workloads.load(schedule["workload_id"], target["model_id"])
+                )
+                if recent_requests.username():
+                    store.bind_workload(pair_id, workload["id"])
                 search = optimization.context(current, snapshot, workload, schedule.get("optimizer") or {})
                 plan = optimization.plan(current, search)
             recovery = {
