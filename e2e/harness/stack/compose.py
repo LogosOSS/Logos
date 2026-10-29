@@ -91,6 +91,7 @@ def _compose(
     capture: bool = False,
     ui: bool = False,
     benchmark_topology: bool | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     use_bench = _ACTIVE_BENCHMARK_TOPOLOGY if benchmark_topology is None else benchmark_topology
     profile = ["--profile", "ui"] if ui else []
@@ -98,7 +99,8 @@ def _compose(
     if use_bench:
         files.extend(["-f", str(BENCHMARK_TOPOLOGY_FILE)])
     cmd = ["docker", "compose", *files, "-p", project_name(), *profile, *args]
-    return subprocess.run(cmd, check=check, text=True, capture_output=capture)
+    run_env = {**os.environ, **env} if env else None
+    return subprocess.run(cmd, check=check, text=True, capture_output=capture, env=run_env)
 
 
 def pull(*, attempts: int = 3, ui: bool = False, benchmark_topology: bool = False) -> None:
@@ -199,6 +201,27 @@ def logs(service: str | None = None, tail: int = 200) -> str:
 
 def restart(service: str) -> None:
     _compose("restart", service)
+
+
+def capabilities_exclude_env_var(service: str) -> str:
+    """Compose interpolation variable holding a node's announced-model exclusions."""
+    return f"E2E_{service.upper().replace('-', '_')}_CAPABILITIES_EXCLUDE"
+
+
+def recreate_node_without_models(service: str, models: list[str]) -> None:
+    """Recreate one worker node container so it no longer announces *models*.
+
+    Only the container is recreated (volumes, hence the provider key, persist).
+    The exclusion reaches the node through ``LOGOS_SIM_CAPABILITIES_EXCLUDE``.
+    """
+    _compose(
+        "up",
+        "-d",
+        "--force-recreate",
+        "--no-deps",
+        service,
+        env={capabilities_exclude_env_var(service): ",".join(models)},
+    )
 
 
 def stop(service: str) -> None:

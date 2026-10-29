@@ -27,6 +27,9 @@ services:
       LOGOS_SIM_GPU_COUNT: "2"
       LOGOS_SIM_NODE_NAME: node-ada-a
       LOGOS_SIM_CAPABILITIES: "benchmark5"
+      # Empty by default; the runner's lifecycle prepare sets it when recreating
+      # a foreign node so the planner cannot place the lifecycle models there.
+      LOGOS_SIM_CAPABILITIES_EXCLUDE: "${E2E_NODE_ADA_A_CAPABILITIES_EXCLUDE:-}"
       LOGOS_SIM_VLLM_READY_AFTER_S: "0.3"
       LOGOS_URL: "http://logos-orchestrator:8080"
       LOGOS_ALLOW_INSECURE_HTTP: "true"
@@ -57,6 +60,9 @@ services:
       LOGOS_SIM_GPU_COUNT: "2"
       LOGOS_SIM_NODE_NAME: node-ada-b
       LOGOS_SIM_CAPABILITIES: "benchmark5"
+      # Empty by default; the runner's lifecycle prepare sets it when recreating
+      # a foreign node so the planner cannot place the lifecycle models there.
+      LOGOS_SIM_CAPABILITIES_EXCLUDE: "${E2E_NODE_ADA_B_CAPABILITIES_EXCLUDE:-}"
       LOGOS_SIM_VLLM_READY_AFTER_S: "0.3"
       LOGOS_URL: "http://logos-orchestrator:8080"
       LOGOS_ALLOW_INSECURE_HTTP: "true"

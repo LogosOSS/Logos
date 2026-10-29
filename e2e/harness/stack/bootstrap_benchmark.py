@@ -181,6 +181,34 @@ def delete_model_lanes_on_providers(
     )
 
 
+def _wait_capabilities_exclude(
+    admin: AdminClient,
+    provider_ids: list[int],
+    models: list[str],
+    *,
+    timeout_s: float = 120.0,
+) -> None:
+    """Block until each provider reports a capability list free of *models*."""
+    deadline = time.monotonic() + float(timeout_s)
+    pending = list(provider_ids)
+    while time.monotonic() < deadline:
+        pending = []
+        for provider_id in provider_ids:
+            try:
+                status = admin.node_status(int(provider_id))
+            except Exception:  # noqa: BLE001
+                pending.append(provider_id)
+                continue
+            caps = status.get("capabilities_models") or []
+            configured = status.get("configured_models") or []
+            if not caps or any(model in [*caps, *configured] for model in models):
+                pending.append(provider_id)
+        if not pending:
+            return
+        time.sleep(1.0)
+    raise TimeoutError(f"providers {pending} still announce {models} after {timeout_s:.0f}s")
+
+
 def prepare_lifecycle_isolation(
     admin: AdminClient,
     *,
@@ -196,6 +224,8 @@ def prepare_lifecycle_isolation(
 
     1. Restrict ``model_provider`` for *target_model* (and optional pressure
        models) to *keep_provider_id* only — catalogue cannot answer elsewhere.
+       Recreate every other worker node container without those models in its
+       announced capabilities so the planner cannot load them there either.
     2. Optionally restart the orchestrator so in-memory deployment maps drop
        stale provider bindings (SQL alone may leave a cached map).
     3. Delete preexisting target engines on every *other* provider through the
@@ -216,6 +246,15 @@ def prepare_lifecycle_isolation(
     models = [target_model, *(also_restrict or [])]
     for model in models:
         restrict_model_to_providers(model, [keep])
+
+    # The planner ranks over worker capabilities, not the catalogue: a foreign
+    # worker that still announces a restricted model would be planned onto while
+    # the scheduler can only queue on the keep provider. Recreate each foreign
+    # node (container only) without those models in its announced capabilities.
+    foreign_services = [str(n.name) for n in admin.connected_nodes() if int(n.provider_id) in others]
+    for service in foreign_services:
+        compose.recreate_node_without_models(service, models)
+    _wait_capabilities_exclude(admin, others, models)
 
     deleted: list[tuple[int, str]] = []
     # Delete *before* orch restart while worker sessions still advertise lanes.
@@ -287,7 +326,11 @@ def prepare_lifecycle_isolation(
         "restricted_models": models,
         "deleted_lanes": deleted,
         "orchestrator_restarted": orch_restarted,
-        "setup": "restrict_model_provider+lanes_delete_pre_post_orch_restart+settle",
+        "foreign_nodes_recreated_without_models": foreign_services,
+        "setup": (
+            "restrict_model_provider+foreign_node_recreate_without_capabilities"
+            "+lanes_delete_pre_post_orch_restart+settle"
+        ),
     }
 
 
@@ -451,7 +494,7 @@ def main() -> int:
     with AdminClient(compose.orchestrator_url(), compose.ADMIN_KEY) as admin:
         for node in nodes:
             status = admin.node_status(node.provider_id)
-            caps = (status.get("runtime") or {}).get("capabilities_models") or []
+            caps = status.get("capabilities_models") or []
             print(f"provider {node.provider_id} ({node.name}): caps={caps}")
         if args.prepare_lifecycle:
             keep = next(

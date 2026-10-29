@@ -36,6 +36,7 @@ from tests.node._benchmark_common import (
     process_pid,
     sample_card_vram,
     wait_bench_nodes,
+    wait_vram_telemetry_settled,
 )
 
 pytestmark = pytest.mark.stack
@@ -309,6 +310,9 @@ async def test_awake_sleep_l1_wake_same_engine_pid(
                 f"sleeping target lost before wake: still={still}; " f"lanes={admin.node_lanes(pin_provider)}"
             )
 
+            # Let device telemetry reflect the pressure lanes before the wake
+            # request, so the planner's wake decision reads current free VRAM.
+            await wait_vram_telemetry_settled(admin, bench_nodes)
             await chat_ok(client, developer_key, _TARGET_MODEL, "post-sleep wake probe")
 
             deadline = time.monotonic() + 90.0

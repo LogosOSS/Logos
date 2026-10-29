@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from typing import Any
 
 import pytest
@@ -59,6 +61,34 @@ def sample_card_vram(admin, nodes) -> list[tuple[int, int, float, float]]:
             total = float(device.get("memory_total_mb") or 0.0)
             samples.append((node.provider_id, index, used, total))
     return samples
+
+
+async def wait_vram_telemetry_settled(
+    admin,
+    nodes,
+    *,
+    stable_s: float = 6.0,
+    timeout_s: float = 45.0,
+    poll_s: float = 1.0,
+) -> None:
+    """Wait until every card's reported used VRAM stops changing for *stable_s*.
+
+    Device telemetry reaches the orchestrator on a status-refresh cadence, so a
+    lane that was loaded or woken moments ago is not yet reflected in the
+    free-VRAM figures a planner cycle reads. Observing only, no lane actions.
+    """
+    deadline = time.monotonic() + timeout_s
+    last: list[float] | None = None
+    stable_since = time.monotonic()
+    while time.monotonic() < deadline:
+        used = [sample[2] for sample in await asyncio.to_thread(sample_card_vram, admin, nodes)]
+        now = time.monotonic()
+        if used != last:
+            last = used
+            stable_since = now
+        elif now - stable_since >= stable_s:
+            return
+        await asyncio.sleep(poll_s)
 
 
 def assert_vram_safety(samples, observations, *, where: str) -> None:

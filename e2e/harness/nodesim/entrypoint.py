@@ -11,6 +11,10 @@ heterogeneous fleet without a config file per node:
                             mixed-architecture node (default ``l40s``)
 ``LOGOS_SIM_GPU_COUNT``     number of cards, when a single profile is named
 ``LOGOS_SIM_BASELINE_MB``   VRAM already in use before any lane starts
+``LOGOS_SIM_CAPABILITIES``  announced model catalogue (``benchmark5`` or a list)
+``LOGOS_SIM_CAPABILITIES_EXCLUDE``  comma-separated models removed from the
+                            announced catalogue (and its engine pins), so the
+                            planner cannot place them on this node
 ``LOGOS_URL``               orchestrator base URL
 ``LOGOS_ADMIN_KEY``         admin key used to self-register when ``LOGOS_API_KEY``
                             is not supplied (default: the seeded E2E admin key)
@@ -100,6 +104,21 @@ def self_register(logos_url: str, provider_name: str, deadline_s: float = 120.0)
     raise RuntimeError(f"[nodesim] could not register with {url} within {deadline_s:.0f}s: {last_error}")
 
 
+def _capability_models() -> list[str]:
+    """Models this node announces: the catalogue minus ``LOGOS_SIM_CAPABILITIES_EXCLUDE``."""
+    raw = os.environ.get("LOGOS_SIM_CAPABILITIES", "").strip()
+    if not raw:
+        return []
+    if raw == "benchmark5":
+        from harness.benchmark_topology import BENCHMARK_MODELS_5  # noqa: PLC0415
+
+        models = list(BENCHMARK_MODELS_5)
+    else:
+        models = [m.strip() for m in raw.split(",") if m.strip()]
+    excluded = {m.strip() for m in os.environ.get("LOGOS_SIM_CAPABILITIES_EXCLUDE", "").split(",") if m.strip()}
+    return [m for m in models if m not in excluded]
+
+
 def _capabilities_yaml_lines() -> list[str]:
     """Optional benchmark model catalogue for the worker config.
 
@@ -107,17 +126,7 @@ def _capabilities_yaml_lines() -> list[str]:
     names only. Calibration residency stays in central ``model_profiles``;
     frozen engine pins go under ``engines.vllm.model_overrides`` (separate).
     """
-    raw = os.environ.get("LOGOS_SIM_CAPABILITIES", "").strip()
-    if not raw:
-        return []
-    if raw == "benchmark5":
-        from harness.benchmark_topology import BENCHMARK_MODELS_5  # noqa: PLC0415
-
-        lines = ["  capabilities_models:"]
-        for model in BENCHMARK_MODELS_5:
-            lines.append(f"    - {model!r}")
-        return lines
-    models = [m.strip() for m in raw.split(",") if m.strip()]
+    models = _capability_models()
     if not models:
         return []
     lines = ["  capabilities_models:"]
@@ -145,7 +154,7 @@ def _engine_overrides_yaml_lines() -> list[str]:
     """
     if os.environ.get("LOGOS_SIM_CAPABILITIES", "").strip() != "benchmark5":
         return []
-    from harness.benchmark_topology import BENCHMARK_MODELS_5, engine_vllm_overrides, load_engine_specs  # noqa: PLC0415
+    from harness.benchmark_topology import engine_vllm_overrides, load_engine_specs  # noqa: PLC0415
 
     load_engine_specs()
     lines = [
@@ -153,7 +162,7 @@ def _engine_overrides_yaml_lines() -> list[str]:
         "  vllm:",
         "    model_overrides:",
     ]
-    for model in BENCHMARK_MODELS_5:
+    for model in _capability_models():
         overrides = engine_vllm_overrides(model)
         if not overrides:
             continue
