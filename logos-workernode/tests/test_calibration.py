@@ -3729,39 +3729,36 @@ def _write_log(path, lines):
     path.write_text("\n".join(lines) + "\n")
 
 
-def test_probe_stalled_needs_only_warnings_at_the_end_of_the_log(tmp_path):
-    from logos_worker_node.calibration import _probe_stalled
+def test_trailing_warnings_counts_only_warnings_at_the_end_of_the_log(tmp_path):
+    from logos_worker_node.calibration import _trailing_warnings
 
     log = tmp_path / "probe.log"
     warmup = "(Worker_TP0 pid=1) INFO 10-21 04:21:34 [kernel_warmup.py:291] Warming up FlashInfer attention."
     _write_log(log, [warmup, _SHM_LINE.format(minute=22), _SHM_LINE.format(minute=23)])
-    assert not _probe_stalled(log, 0, lambda: False)
+    assert _trailing_warnings(log, 0) == 2
     _write_log(log, [warmup] + [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
-    assert _probe_stalled(log, 0, lambda: False)
+    assert _trailing_warnings(log, 0) == 3
     _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)] + ["INFO: Application startup complete."])
-    assert not _probe_stalled(log, 0, lambda: False)
+    assert _trailing_warnings(log, 0) == 0
 
 
-def test_probe_stalled_ignores_the_log_before_the_probe_started(tmp_path):
-    from logos_worker_node.calibration import _probe_stalled
+def test_trailing_warnings_ignores_the_log_before_the_probe_started(tmp_path):
+    from logos_worker_node.calibration import _trailing_warnings
 
     log = tmp_path / "probe.log"
     _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
     offset = log.stat().st_size
-    assert _probe_stalled(log, 0, lambda: False)
-    assert not _probe_stalled(log, offset, lambda: False)
+    assert _trailing_warnings(log, 0) == 3
+    assert _trailing_warnings(log, offset) == 0
     with log.open("a") as f:
         f.write("\n".join(_SHM_LINE.format(minute=m) for m in (25, 26, 27)) + "\n")
-    assert _probe_stalled(log, offset, lambda: False)
+    assert _trailing_warnings(log, offset) == 3
 
 
-def test_probe_stalled_is_false_while_a_compiler_runs(tmp_path, monkeypatch):
-    from logos_worker_node import calibration
+def test_trailing_warnings_without_a_log_file_is_zero(tmp_path):
+    from logos_worker_node.calibration import _trailing_warnings
 
-    log = tmp_path / "probe.log"
-    _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
-    assert not calibration._probe_stalled(log, 0, lambda: True)
-    assert calibration._probe_stalled(log, 0, lambda: False)
+    assert _trailing_warnings(tmp_path / "missing.log", 0) == 0
 
 
 def test_compiler_watch_rescans_only_after_the_interval(monkeypatch):
@@ -3813,12 +3810,6 @@ def test_compiler_running_handles_spaces_in_comm_and_a_missing_proc(tmp_path):
     proc_root = _fake_proc(tmp_path, {100: ("VLLM::Engine Core", 1), 101: ("cicc", 100)})
     assert _compiler_running(100, proc_root)
     assert not _compiler_running(100, tmp_path / "missing")
-
-
-def test_probe_stalled_without_a_log_file_is_false(tmp_path):
-    from logos_worker_node.calibration import _probe_stalled
-
-    assert not _probe_stalled(tmp_path / "missing.log", 0, lambda: False)
 
 
 class _Watchdog:
@@ -3902,7 +3893,9 @@ def test_a_single_shared_memory_warning_is_not_classified_as_a_stall():
     assert _classify_fatal_load_error(_SHM_LINE.format(minute=22)) is None
 
 
-def _search_with_ready_timeouts(tmp_path: Path, side_effect, log_text="Warming up FlashInfer attention.\n"):
+def _search_with_ready_timeouts(
+    tmp_path: Path, side_effect, log_text="Warming up FlashInfer attention.\n", plan_extra=None
+):
     log_dir = tmp_path / "calibration_logs"
     log_dir.mkdir()
     log_path = log_dir / "org__stuck-model.log"
@@ -3911,7 +3904,7 @@ def _search_with_ready_timeouts(tmp_path: Path, side_effect, log_text="Warming u
     managers = {k: p.__enter__() for k, p in patches.items()}
     try:
         result = calibrate_model(
-            {"model": "org/stuck-model"},
+            {"model": "org/stuck-model", **(plan_extra or {})},
             vllm_binary="vllm",
             port=11499,
             log_dir=log_dir,
@@ -3967,6 +3960,30 @@ def test_a_stall_abort_is_not_counted_as_a_ready_timeout(tmp_path: Path):
     assert result.retryable_fatal_reason == "engine-warmup-stalled"
     assert managers["spawn"].call_count == 1
     assert "ready timeout:" not in log_path.read_text()
+
+
+def _blacklist_lines(log_path: Path) -> list[str]:
+    path = log_path.parent / "calibration_failed_commands.txt"
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def test_a_failing_first_probe_is_blacklisted(tmp_path: Path):
+    _, _, log_path = _search_with_ready_timeouts(
+        tmp_path, RuntimeError("vLLM exited"), plan_extra={"kv_cache_memory_bytes": "2G"}
+    )
+
+    assert len(_blacklist_lines(log_path)) == 1
+
+
+def test_a_stall_abort_is_not_blacklisted(tmp_path: Path):
+    from logos_worker_node.calibration import VllmEngineStalled
+
+    result, _, log_path = _search_with_ready_timeouts(
+        tmp_path, VllmEngineStalled("engine warmup stalled: test"), plan_extra={"kv_cache_memory_bytes": "2G"}
+    )
+
+    assert result.retryable_fatal_reason == "engine-warmup-stalled"
+    assert _blacklist_lines(log_path) == []
 
 
 def test_a_stall_abort_is_marked_in_the_log_only_after_vllm_has_stopped(tmp_path: Path):
@@ -4060,21 +4077,54 @@ def test_compiler_running_sees_a_real_compiler_below_the_probe_only(tmp_path: Pa
             process.wait()
 
 
-def test_probe_watchdog_raises_typed_errors(tmp_path: Path, monkeypatch):
+def _watchdog(tmp_path: Path, monkeypatch, compiling=False, gpu=None):
     from logos_worker_node import calibration
 
     log = tmp_path / "probe.log"
     _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
-    proc = MagicMock(pid=4242)
-    monkeypatch.setattr(calibration, "_compiler_running", lambda pid: False)
-    monkeypatch.setattr(calibration, "_GpuHealthWatch", lambda **_: lambda: None)
+    monkeypatch.setattr(calibration, "_compiler_running", lambda pid: compiling)
+    monkeypatch.setattr(calibration, "_GpuHealthWatch", lambda **_: lambda: gpu)
+    return calibration.ProbeWatchdog(MagicMock(pid=4242), log, 0, None), log
+
+
+def test_probe_watchdog_needs_a_further_warning_after_it_first_saw_the_stall(tmp_path: Path, monkeypatch):
+    from logos_worker_node import calibration
+
+    watchdog, log = _watchdog(tmp_path, monkeypatch)
+    watchdog.check()
+    watchdog.check()
+    with log.open("a") as f:
+        f.write(_SHM_LINE.format(minute=25) + "\n")
     with pytest.raises(calibration.VllmEngineStalled, match="engine warmup stalled"):
-        calibration.ProbeWatchdog(proc, log, 0, None).check()
-    monkeypatch.setattr(calibration, "_GpuHealthWatch", lambda **_: lambda: ("gpu-error", "detail"))
+        watchdog.check()
+
+
+def test_probe_watchdog_forgets_a_stall_that_stops_looking_like_one(tmp_path: Path, monkeypatch):
+    watchdog, log = _watchdog(tmp_path, monkeypatch)
+    watchdog.check()
+    with log.open("a") as f:
+        f.write("INFO: capturing CUDA graphs\n" + _SHM_LINE.format(minute=25) + "\n")
+    watchdog.check()
+    with log.open("a") as f:
+        f.write(_SHM_LINE.format(minute=26) + "\n")
+    watchdog.check()
+
+
+def test_probe_watchdog_does_not_report_a_stall_while_a_compiler_runs(tmp_path: Path, monkeypatch):
+    watchdog, log = _watchdog(tmp_path, monkeypatch, compiling=True)
+    watchdog.check()
+    with log.open("a") as f:
+        f.write(_SHM_LINE.format(minute=25) + "\n")
+    watchdog.check()
+    assert watchdog.compiling()
+
+
+def test_probe_watchdog_raises_the_gpu_error(tmp_path: Path, monkeypatch):
+    from logos_worker_node import calibration
+
+    watchdog, _ = _watchdog(tmp_path, monkeypatch, gpu=("gpu-error", "detail"))
     with pytest.raises(calibration.GpuHealthError):
-        calibration.ProbeWatchdog(proc, log, 0, None).check()
-    monkeypatch.setattr(calibration, "_compiler_running", lambda pid: True)
-    assert calibration.ProbeWatchdog(proc, log, 0, None).compiling()
+        watchdog.check()
 
 
 class _Sensor:
@@ -4138,6 +4188,19 @@ def test_gpu_health_watch_ignores_a_sensor_that_raises():
     assert watch() is None
     watch._thread.join()
     assert watch() is None
+
+
+def test_gpu_health_watch_warns_when_the_sensor_raises(caplog):
+    from logos_worker_node import calibration
+
+    def boom():
+        raise OSError("no nvidia-smi")
+
+    watch = calibration._GpuHealthWatch(boom)
+    with caplog.at_level("WARNING"):
+        watch()
+        watch._thread.join()
+    assert "this probe is not protected" in caplog.text
 
 
 def test_gpu_health_watch_does_not_wait_for_a_blocked_sensor():

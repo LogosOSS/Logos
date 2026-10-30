@@ -1559,7 +1559,7 @@ class _GpuHealthWatch:
         try:
             result = check()
         except Exception:  # noqa: BLE001
-            logger.debug("GPU health check raised", exc_info=True)
+            logger.warning("GPU health check raised; this probe is not protected", exc_info=True)
             return
         with self._lock:
             self._result = result
@@ -1633,18 +1633,20 @@ class _CompilerWatch:
         return self._running
 
 
-def _probe_stalled(log_path: Path, offset: int, compiler_running: Callable[[], bool]) -> bool:
-    """True once this probe's log segment (from ``offset``) ends in only the shared-memory warning."""
+def _trailing_warnings(log_path: Path, offset: int) -> int:
+    """Number of consecutive shared-memory warnings at the end of this probe's log."""
     try:
         with log_path.open("rb") as f:
             f.seek(max(offset, f.seek(0, os.SEEK_END) - 16384))
             tail = f.read().decode("utf-8", errors="replace")
     except OSError:
-        return False
-    lines = [line for line in tail.splitlines() if line.strip()]
-    if len(lines) < _STALL_REPEATS or not all(_STALL_NEEDLE in line for line in lines[-_STALL_REPEATS:]):
-        return False
-    return not compiler_running()
+        return 0
+    count = 0
+    for line in reversed([line for line in tail.splitlines() if line.strip()]):
+        if _STALL_NEEDLE not in line:
+            break
+        count += 1
+    return count
 
 
 def _append_log_marker(log_path: Path, text: str) -> None:
@@ -1665,6 +1667,8 @@ class ProbeWatchdog:
         self._compiler = _CompilerWatch(proc.pid)
         self._gpu = _GpuHealthWatch(gpu_indices=gpu_indices)
         self._started = time.perf_counter()
+        # Warnings at the log's end when the stall was first seen.
+        self._first_seen: int | None = None
 
     def compiling(self) -> bool:
         return self._compiler()
@@ -1673,7 +1677,15 @@ class ProbeWatchdog:
         unhealthy = self._gpu()
         if unhealthy is not None:
             raise GpuHealthError(*unhealthy)
-        if _probe_stalled(self._log_path, self._log_offset, self._compiler):
+        warnings = _trailing_warnings(self._log_path, self._log_offset)
+        if warnings < _STALL_REPEATS or self._compiler():
+            self._first_seen = None
+            return
+        if self._first_seen is None:
+            self._first_seen = warnings
+            return
+        # Ranks can log the warning together; a hang keeps logging it.
+        if warnings > self._first_seen:
             raise VllmEngineStalled(
                 f"{_STALL_MARKER}: the last {_STALL_REPEATS} log lines are only the shared-memory "
                 f"warning and no compiler is running (after {time.perf_counter() - self._started:.0f}s)"
@@ -1724,7 +1736,7 @@ def wait_ready(
             )
             last_log = now
         time.sleep(2.0)
-    raise VllmReadyTimeout(f"vLLM not ready after {timeout_s:.0f}s")
+    raise VllmReadyTimeout(f"vLLM not ready after {time.perf_counter() - t_start:.0f}s")
 
 
 def probe_generative(base_url: str, model: str, timeout_s: float) -> bool:
@@ -3076,15 +3088,6 @@ def _calibrate_model_probe(
             if not _capacity_oom_box and _is_cuda_oom_log(probe_log):
                 _capacity_oom_box.append(True)
 
-            # Normal recoverable failure (OOM at this kv, NCCL timeout, …):
-            # record the per-command blacklist line so the kv search avoids
-            # re-trying this exact fingerprint on the next pass.
-            if record_blacklist:
-                _record_failed_command(failed_path, fingerprint)
-                failed_commands.add(fingerprint)
-            # Remove stale whitelist entry — this command no longer works.
-            succeeded_commands.discard(fingerprint)
-
             # Look for fatal, model-identity-level errors in the log tail
             # (bad repo id, gated repo, unsupported architecture, …). When
             # one matches, no other kv-cache size will help — every probe
@@ -3096,6 +3099,16 @@ def _calibrate_model_probe(
             if fatal_pattern is None and _ready_timeouts[0] >= _MAX_CONSECUTIVE_READY_TIMEOUTS:
                 fatal_pattern = _REPEATED_READY_TIMEOUT_FATAL
                 _observed_reason_box[:] = [_REPEATED_READY_TIMEOUT_OBSERVED]
+            # Normal recoverable failure (OOM at this kv, NCCL timeout, …):
+            # record the per-command blacklist line so the kv search avoids
+            # re-trying this exact fingerprint on the next pass. A non-persisted
+            # fatal error is retried by a later session, so it is never listed.
+            retried_later = fatal_pattern is not None and not fatal_pattern.persist
+            if record_blacklist and not retried_later:
+                _record_failed_command(failed_path, fingerprint)
+                failed_commands.add(fingerprint)
+            # Remove stale whitelist entry — this command no longer works.
+            succeeded_commands.discard(fingerprint)
             if fatal_pattern is not None and not _unsupported_box and not _retryable_fatal_box:
                 if fatal_pattern.persist:
                     _unsupported_box.append(fatal_pattern)
