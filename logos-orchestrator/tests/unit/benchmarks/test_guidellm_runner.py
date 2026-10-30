@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -36,6 +37,7 @@ async def test_saved_requests_use_guidellm_and_persist_only_the_safe_summary(mon
         "name": "Saved requests",
         "provenance": "synthetic",
         "model_name": "org/model",
+        "created_at": datetime(2026, 10, 30, tzinfo=timezone.utc),
         "request_count": 1,
         "requests": [
             {
@@ -68,7 +70,8 @@ async def test_saved_requests_use_guidellm_and_persist_only_the_safe_summary(mon
         config_path = Path(command[2])
         assert config_path.stat().st_mode & 0o777 == 0o600
         config = json.loads(config_path.read_text())
-        assert config["snapshot"] == snapshot and config["concurrency"] == 4
+        assert config["snapshot"]["requests"] == snapshot["requests"] and config["concurrency"] == 4
+        assert set(config["snapshot"]) == {"id", "name", "provenance", "request_count", "requests"}
         assert "max_output_tokens" not in config
         Path(config["report_path"]).write_text(
             json.dumps(

@@ -481,7 +481,9 @@ async def run_benchmark_job(
             scenario_path = workdir / "scenario.json"
             if snapshot is not None:
                 scenario = {
-                    "snapshot": snapshot,
+                    "snapshot": {
+                        key: snapshot[key] for key in ("id", "name", "provenance", "request_count", "requests")
+                    },
                     "target": target,
                     "model": model,
                     "api_key": api_key,
