@@ -5,6 +5,7 @@ import time
 from dataclasses import fields
 
 import pytest
+
 from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry, _record_from_dict
 
 

@@ -30,10 +30,7 @@ from logos.dbutils.dbrequest import (
     LogosNodeWakeLaneRequest,
 )
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeOfflineError, LogosNodeSessionConflictError
-from logos.logosnode_snapshot import (
-    _LOGOSNODE_STATS_STALE_AFTER_SECONDS,
-    _parse_iso_datetime,
-)
+from logos.logosnode_snapshot import _LOGOSNODE_STATS_STALE_AFTER_SECONDS, _parse_iso_datetime
 from logos.main import (
     _benchmark_sessions_by_job,
     _cancel_benchmark_job,
