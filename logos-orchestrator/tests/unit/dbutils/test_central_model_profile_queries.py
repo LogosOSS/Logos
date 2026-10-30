@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from logos.dbutils.dbmanager import (
+    _CALIBRATED_PROFILE_COLUMNS,
     _CENTRAL_PROFILE_ROW,
     _PERSIST_CENTRAL_PROFILE_SQL,
     _RESET_PROFILE_COLUMNS,
@@ -94,8 +95,7 @@ def test_profile_emptied_by_a_central_change_stays_central():
     """Clearing the only verdict of an unsupported-only profile leaves {}
     at a bumped revision; the worker must still be sent that empty state."""
     assert "OR mp.sync_revision > 0" in _CENTRAL_PROFILE_ROW
-    for method in (DBManager.get_central_model_profiles, DBManager.import_legacy_model_profiles):
-        assert "_CENTRAL_PROFILE_ROW" in inspect.getsource(method)
+    assert "_CENTRAL_PROFILE_ROW" in inspect.getsource(DBManager.get_central_model_profiles)
 
 
 def test_malformed_worker_values_bind_as_null_instead_of_failing():
@@ -152,20 +152,6 @@ def test_an_echo_keeps_the_stored_values_of_overridden_fields():
     assert ":overridden_fields" in _PERSIST_CENTRAL_PROFILE_SQL
 
 
-def test_a_legacy_import_does_not_overwrite_a_reset_that_won_the_race():
-    """A reset committed after the already-central check owns the row; the
-    import write is rejected and must not re-link the old calibration."""
-    db = _db()
-    db.session.execute.side_effect = [
-        MagicMock(fetchone=MagicMock(return_value=None)),
-        SimpleNamespace(rowcount=0),
-    ]
-    legacy = {"org/m": {"base_residency_mb": 1.0, "residency_source": "calibrated", "last_measured_epoch": 1e9}}
-    assert db.import_legacy_model_profiles(7, legacy, {}) == 0
-    assert db.session.execute.call_count == 2
-    assert "model_profiles.sync_revision = 0" in inspect.getsource(DBManager.import_legacy_model_profiles)
-
-
 def test_an_implausible_gpu_count_is_dropped_instead_of_failing_the_report():
     db = _db()
     db.update_reported_calibration_keys(7, {"a": "H1", "b": "H2", "c": "H3"}, {"a": 10**12, "b": -1, "c": 4})
@@ -176,11 +162,37 @@ def test_an_implausible_gpu_count_is_dropped_instead_of_failing_the_report():
 def test_a_settled_node_costs_one_query_to_find_nothing_to_adopt():
     db = _db()
     db.session.execute.return_value.fetchall.return_value = []
-    assert db.adopt_shared_calibrations(7, ["a", "b"], 30) == []
+    assert db.adopt_shared_calibrations(7, ["a", "b"]) == []
     assert db.session.execute.call_count == 1
 
 
 def test_no_models_cost_no_query():
     db = _db()
-    assert db.adopt_shared_calibrations(7, [], 30) == []
+    assert db.adopt_shared_calibrations(7, []) == []
     db.session.execute.assert_not_called()
+
+
+def test_an_old_snapshot_is_still_adopted():
+    assert "calibrated_at >=" not in inspect.getsource(DBManager._adopt_shared_calibration)
+
+
+def test_the_profile_changes_leave_the_commit_to_the_caller():
+    calls = (
+        lambda db: db.update_reported_calibration_keys(7, {"a": "H"}),
+        lambda db: db.adopt_shared_calibrations(7, ["a"]),
+        lambda db: db.adopt_shared_calibration_for_siblings(7, "a"),
+        lambda db: db.clear_calibration_unsupported(7, "a"),
+        lambda db: db.reset_model_profiles(7),
+        lambda db: db.invalidate_model_calibration(1, "bad"),
+        lambda db: db.reject_shared_calibration(7, "a", 1),
+    )
+    for call in calls:
+        db = _db()
+        db.session.execute.return_value.fetchall.return_value = []
+        db.session.execute.return_value.fetchone.return_value = None
+        call(db)
+        db.session.commit.assert_not_called()
+
+
+def test_the_columns_a_calibration_clears_are_typed_columns():
+    assert set(_CALIBRATED_PROFILE_COLUMNS) <= set(_model_profile_column_params({}))

@@ -2,10 +2,11 @@
 
 import threading
 import time
+from dataclasses import fields
 
 import pytest
 
-from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry
+from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry, _record_from_dict
 
 
 def _round_trip(registry: ModelProfileRegistry, **kwargs) -> ModelProfileRegistry:
@@ -208,12 +209,18 @@ def test_estimate_vram_fallback_zero_when_nothing_known():
 def test_estimate_base_residency_returns_stored_value():
     """estimate_base_residency_mb returns base_residency_mb; no name/disk fallback."""
     p = ModelProfileRecord(base_residency_mb=6000.0)
-    assert p.estimate_base_residency_mb("org/model-7b") == 6000.0
+    assert p.estimate_base_residency_mb() == 6000.0
 
 
 def test_estimate_base_residency_returns_none_when_unknown():
     p = ModelProfileRecord()
-    assert p.estimate_base_residency_mb("org/model-7b") is None
+    assert p.estimate_base_residency_mb() is None
+
+
+def test_optional_int_keeps_only_positive_numbers():
+    from logos_worker_node.model_profiles import _optional_int
+
+    assert [_optional_int(v) for v in (None, 0, -3, "x", "7", 7.9, 12)] == [None, None, None, None, 7, 7, 12]
 
 
 # ---------------------------------------------------------------------------
@@ -1149,3 +1156,12 @@ def test_a_local_calibration_awaits_its_snapshot_until_logos_links_it():
     assert registry.awaiting_snapshot_models() == ["org/m"]
     registry.replace_from_sync({"org/m": {"base_residency_mb": 1.0, "sync_revision": 1, "calibration_id": 4}})
     assert registry.awaiting_snapshot_models() == []
+
+
+def test_a_new_record_field_reaches_the_dict_and_comes_back():
+    record = ModelProfileRecord(
+        base_residency_mb=5.0, residency_source="measured", calibration_max_model_len=4096, host_ram_mb=7.0
+    )
+    echoed = record.to_dict()
+    assert set(echoed) == {field.name for field in fields(ModelProfileRecord)}
+    assert _record_from_dict(echoed).to_dict() == echoed

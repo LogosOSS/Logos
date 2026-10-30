@@ -76,6 +76,7 @@ from logos.logosnode_snapshot import (
     resolve_proxy_model_from_deployments,
 )
 from logos.middleware import APIPrefixStripperMiddleware
+from logos.model_profile_store import profile_needs_calibration
 from logos.monitoring import prometheus_metrics as prom
 from logos.pipeline.context_resolver import ContextResolver
 from logos.pipeline.correcting_scheduler import ClassificationCorrectingScheduler
@@ -4854,24 +4855,7 @@ def _find_uncalibrated_models_on_provider(provider_id: int) -> list[str]:
     uncalibrated: list[str] = []
     for model_name in candidates:
         profile = profiles.get(model_name)
-        if not isinstance(profile, dict):
-            profile = None
-        collapsed_envelope = (
-            profile is not None
-            and profile.get("min_kv_cache_mb") is not None
-            and profile.get("max_kv_cache_mb") is not None
-            and profile.get("min_kv_cache_mb") > 0
-            and profile.get("min_kv_cache_mb") == profile.get("max_kv_cache_mb")
-        )
-        if (
-            profile is None
-            or profile.get("base_residency_mb") is None
-            or profile.get("sleeping_residual_mb") is None
-            or profile.get("sleep_l1_transient_host_ram_mb") is None
-            or (profile.get("residency_source") == "calibrated" and not profile.get("kv_cache_to_max_model_len_pairs"))
-            or collapsed_envelope
-            or bool(profile is not None and profile.get("calibration_stale"))
-        ):
+        if profile_needs_calibration(profile if isinstance(profile, dict) else None):
             uncalibrated.append(model_name)
     return uncalibrated
 
@@ -4937,7 +4921,7 @@ def _cloud_context_by_model() -> dict[str, dict[str, int]]:
 def _historic_max_context_by_model() -> dict[str, int]:
     """Model name -> widest context ever reported for it, from the database.
 
-    The durable counterpart of the live runtime snapshots: ``upsert_model_profiles``
+    The durable counterpart of the live runtime snapshots: ``persist_central_model_profile``
     keeps a high-water mark per (provider, model) in ``model_profiles`` on every
     worker snapshot, so this is still what a model's context is when no
     workernode is connected to say otherwise. Returns an empty mapping when the

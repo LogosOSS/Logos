@@ -14,6 +14,9 @@ import time
 from typing import Any, Mapping
 
 SYNC_MODEL_PROFILES_ACTION = "sync_model_profiles"
+ORIGIN_LEGACY = "legacy"
+ORIGIN_LOCAL = "local"
+ORIGIN_SHARED = "shared"
 
 # Fields a calibration run measures; snapshotted into model_calibrations.
 CALIBRATION_FIELDS = frozenset(
@@ -61,16 +64,31 @@ def shared_profiles_enabled() -> bool:
     return os.environ.get("LOGOS_SHARED_PROFILES", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def shared_profile_max_age_days() -> int:
-    try:
-        return max(1, int(os.environ.get("LOGOS_SHARED_PROFILE_MAX_AGE_DAYS", "30")))
-    except ValueError:
-        return 30
-
-
 def is_central_profile_payload(profiles: Mapping[str, Any]) -> bool:
     """True when the worker keeps no local store and syncs with the database."""
     return any(isinstance(p, dict) and "sync_revision" in p for p in profiles.values())
+
+
+def profile_needs_calibration(profile: Mapping[str, Any] | None) -> bool:
+    """Whether a node's next calibration window should measure this model."""
+    if profile is None:
+        return True
+    if profile.get("calibration_unsupported"):
+        return False
+    sleep_na = bool(profile.get("sleep_mode_disabled"))
+    min_kv, max_kv = profile.get("min_kv_cache_mb"), profile.get("max_kv_cache_mb")
+    collapsed_envelope = min_kv is not None and max_kv is not None and min_kv > 0 and min_kv == max_kv
+    return (
+        profile.get("base_residency_mb") is None
+        # An HF estimate is no measurement; the worker keeps such a model a
+        # candidate, so a session must start for it too.
+        or profile.get("residency_source") == "hf"
+        or (not sleep_na and profile.get("sleeping_residual_mb") is None)
+        or (not sleep_na and profile.get("sleep_l1_transient_host_ram_mb") is None)
+        or (profile.get("residency_source") == "calibrated" and not profile.get("kv_cache_to_max_model_len_pairs"))
+        or collapsed_envelope
+        or bool(profile.get("calibration_stale"))
+    )
 
 
 def reported_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
@@ -102,7 +120,7 @@ def is_new_local_calibration(profile: Mapping[str, Any]) -> bool:
         epoch = 0.0
     return (
         profile.get("residency_source") == "calibrated"
-        and profile.get("calibration_origin") == "local"
+        and profile.get("calibration_origin") == ORIGIN_LOCAL
         and not profile.get("calibration_id")
         and bool(profile.get("calibration_key_hash"))
         and epoch > 0
@@ -151,11 +169,11 @@ def effective_profile(provider_id: int, row: Mapping[str, Any]) -> dict[str, Any
         return profile
     cal_key_hash = row.get("cal_key_hash")
     if cal_key_hash is None:
-        origin = "legacy"
+        origin = ORIGIN_LEGACY
     elif row.get("cal_source_provider_id") == provider_id:
-        origin = "local"
+        origin = ORIGIN_LOCAL
     else:
-        origin = "shared"
+        origin = ORIGIN_SHARED
     reported = row.get("calibration_key_hash")
     # A key change (vLLM bump, config edit) keeps the old result serving
     # until the next calibration window replaces it.

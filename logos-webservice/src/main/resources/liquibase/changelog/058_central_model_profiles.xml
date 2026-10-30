@@ -70,9 +70,10 @@
         </rollback>
     </changeSet>
 
-    <!-- model_profiles is written on every worker status. Every query keys
-         on provider_id, which the (provider_id, model_name) unique index
-         already serves; these three indexes are never read. -->
+    <!-- model_profiles is written on every worker status. Every query but
+         get_historic_max_context_by_model keys on provider_id, which the
+         (provider_id, model_name) unique index already serves; these three
+         indexes are never read. -->
     <changeSet id="057-model-profiles-drop-unused-indexes" author="logos">
         <sql><![CDATA[
             DROP INDEX IF EXISTS idx_model_profiles_provider;

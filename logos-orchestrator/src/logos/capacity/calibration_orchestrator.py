@@ -38,6 +38,7 @@ from zoneinfo import ZoneInfo
 # one definition keeps the two from drifting apart.
 from logos.logosnode_registry import TERMINAL_CALIBRATION_SESSION_EVENTS as _TERMINAL_SESSION_EVENTS
 from logos.maintenance_window import MaintenanceWindow, maintenance_node_limit
+from logos.model_profile_store import profile_needs_calibration
 
 # Commands a worker must list in its hello before it is calibrated automatically.
 _CALIBRATION_ACTIONS = ("start_calibration_session", "stop_calibration_session", "get_calibration_status")
@@ -417,7 +418,7 @@ class CalibrationOrchestrator:
 
     def _provider_has_uncalibrated_models(self, provider_id: int) -> bool:
         """Return True when the worker still has at least one model that needs
-        calibration. Mirrors the worker's own selection logic so we don't fire
+        calibration, by the same core test the worker applies, so we don't fire
         a session that immediately ends as a no-op.
         """
         candidates = self._facade.get_configured_models(provider_id)
@@ -433,30 +434,7 @@ class CalibrationOrchestrator:
             if model_name in capacity_skip:
                 continue
             profile = profiles.get(model_name)
-            if profile is not None and profile.calibration_unsupported:
-                continue
-            sleep_na = bool(profile is not None and profile.sleep_mode_disabled)
-            collapsed_envelope = (
-                profile is not None
-                and profile.min_kv_cache_mb is not None
-                and profile.max_kv_cache_mb is not None
-                and profile.min_kv_cache_mb > 0
-                and profile.min_kv_cache_mb == profile.max_kv_cache_mb
-            )
-            needs_calib = (
-                profile is None
-                or profile.base_residency_mb is None
-                or (not sleep_na and profile.sleeping_residual_mb is None)
-                or (not sleep_na and profile.sleep_l1_transient_host_ram_mb is None)
-                or (
-                    profile is not None
-                    and profile.residency_source == "calibrated"
-                    and not profile.kv_cache_to_max_model_len_pairs
-                )
-                or collapsed_envelope
-                or bool(profile is not None and profile.calibration_stale)
-            )
-            if needs_calib:
+            if profile_needs_calibration(profile.to_dict() if profile is not None else None):
                 return True
         return False
 

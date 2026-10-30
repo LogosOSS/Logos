@@ -94,6 +94,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -4361,7 +4362,7 @@ def _admin_base_from_url(logos_url: str, admin_port: int) -> str:
     """Build the admin/logosnode REST base (https://<host>:<admin_port>) from the
     user-facing logos URL. The /logosdb/providers/logosnode/* endpoints are served
     on the default HTTPS port (443) alongside the user-facing API."""
-    host = logos_url.split("://")[-1].split("/")[0].split(":")[0]
+    host = urlparse(logos_url if "://" in logos_url else f"//{logos_url}").hostname or ""
     return f"https://{host}:{admin_port}"
 
 
@@ -5077,7 +5078,7 @@ def _wipe_calibration_and_weights_via_ssh(
     holds the files / GPU). The profiles themselves live in Logos and are reset
     there (:func:`_reset_profiles_via_rest`). Per node it removes:
       - any ``{workernode_dir}/data/model_profiles.yml*`` a pre-central worker
-        left behind, so it is never handed over to Logos again.
+        left behind.
       - ``{workernode_dir}/data/calibration_logs/`` — the per-model logs plus
         the calibration black/whitelist files
         (``calibration_failed_commands.txt`` / ``calibration_succeeded_commands.txt``).
@@ -5173,11 +5174,6 @@ def _profile_is_calibrated(profile: object) -> bool:
         if loaded is not None and kv_budget is not None and base is not None and loaded - base > 0.5 * kv_budget:
             return False
     return True
-
-
-def _admin_base_url(logos_url: str, admin_port: int) -> str:
-    host = logos_url.split("://")[-1].split("/")[0].split(":")[0]
-    return f"https://{host}:{admin_port}"
 
 
 async def _calibration_status_for_provider(
@@ -5344,7 +5340,7 @@ async def _trigger_calibration_via_rest(
 
     Returns True iff a session was started for every provider.
     """
-    endpoint = f"{_admin_base_url(logos_url, admin_port)}/logosdb/providers/logosnode/calibrate_uncalibrated"
+    endpoint = f"{_admin_base_from_url(logos_url, admin_port)}/logosdb/providers/logosnode/calibrate_uncalibrated"
     all_ok = True
     async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
         for pid in provider_ids:
@@ -5430,7 +5426,7 @@ async def _reset_and_calibrate_all_nodes(
             file=sys.stderr,
         )
         return False
-    admin_url = _admin_base_url(logos_url, admin_port)
+    admin_url = _admin_base_from_url(logos_url, admin_port)
     await _verify_sharing_arm(admin_url, logos_key, expect_shared_profiles)
     _stop_workernode_via_ssh(hosts, ssh_user, ssh_key, workernode_dir, use_sudo, relay_host, relay_user)
     for pid in provider_ids:
@@ -5508,7 +5504,7 @@ async def _ensure_calibration_complete_all_nodes(
        block until every model has a complete profile.
     """
     models = list(benchmark_models)
-    admin_url = _admin_base_url(logos_url, admin_port)
+    admin_url = _admin_base_from_url(logos_url, admin_port)
     await _verify_sharing_arm(admin_url, logos_key, expect_shared_profiles)
 
     print("\n[Ensure-Calibrate] Checking calibration status on all providers ...")

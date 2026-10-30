@@ -16,13 +16,16 @@ loop (which also relays stream chunks) never waits on it.
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 
 import pytest
 
 import logos as main_mod
+from logos.model_profile_sync import profile_sync
 from logos.routers import logosnode as logosnode_mod
 
+sync_mod = sys.modules["logos.model_profile_sync"]
 _TS = "2026-09-03T12:00:00+00:00"
 
 
@@ -87,22 +90,22 @@ def _sample(runtime: dict) -> dict:
 def registry(monkeypatch):
     registry = _Registry()
     monkeypatch.setattr(main_mod, "_logosnode_registry", registry)
-    for name in ("_unsaved_samples", "_sample_writers", "_last_runtime_ts", "_last_snapshot_at", "_resync_rounds"):
-        monkeypatch.setattr(logosnode_mod, name, {})
+    for name in ("unsaved_samples", "sample_writers", "last_runtime_ts", "last_snapshot_at", "resync_rounds"):
+        monkeypatch.setattr(profile_sync, name, {})
     return registry
 
 
 def _patched_capture(monkeypatch, db):
-    monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
-    monkeypatch.setattr(logosnode_mod, "_build_live_local_provider_sample", lambda _p, snap: _sample(snap["runtime"]))
-    monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda provider_id: "gpu-1")
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "_build_live_local_provider_sample", lambda _p, snap: _sample(snap["runtime"]))
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda provider_id: "gpu-1")
 
 
 def _capture(*runtimes: dict) -> None:
     async def _run():
         for runtime in runtimes:
-            await logosnode_mod._capture_logosnode_provider_snapshot(7, runtime)
-        await asyncio.gather(*list(logosnode_mod._sample_writers.values()))
+            await profile_sync.capture_status(7, runtime)
+        await asyncio.gather(*list(profile_sync.sample_writers.values()))
 
     asyncio.run(_run())
 
@@ -167,50 +170,50 @@ def test_count_only_statuses_are_written_at_most_once_per_interval(monkeypatch, 
     db = _SnapshotDB()
     _patched_capture(monkeypatch, db)
     persisted: list = []
-    original = logosnode_mod._persist_logosnode_status
+    original = profile_sync._persist_status
 
     def _spy(provider_id, sample, count_only=False):
         persisted.append(count_only)
         return original(provider_id, sample, count_only)
 
-    monkeypatch.setattr(logosnode_mod, "_persist_logosnode_status", _spy)
+    monkeypatch.setattr(profile_sync, "_persist_status", _spy)
 
     _capture({"timestamp": _TS})
     _capture({"timestamp": _TS}, {"timestamp": _TS})
     assert persisted == [False]
     assert len(registry.samples) == 3
 
-    logosnode_mod._last_snapshot_at[7] -= logosnode_mod._COUNT_ONLY_SNAPSHOT_SECONDS
+    profile_sync.last_snapshot_at[7] -= sync_mod._COUNT_ONLY_SNAPSHOT_SECONDS
     _capture({"timestamp": _TS})
     assert persisted == [False, True]
 
 
 def test_an_accepted_status_ends_the_resync_backoff(monkeypatch, registry):
     _patched_capture(monkeypatch, _SnapshotDB())
-    logosnode_mod._resync_rounds[7] = 4
+    profile_sync.resync_rounds[7] = 4
 
     _capture({"timestamp": _TS})
 
-    assert 7 not in logosnode_mod._resync_rounds
+    assert 7 not in profile_sync.resync_rounds
 
 
 def test_a_malformed_status_does_not_stop_the_writer(monkeypatch, registry):
     db = _SnapshotDB()
     _patched_capture(monkeypatch, db)
-    original = logosnode_mod._persist_logosnode_status
+    original = profile_sync._persist_status
 
     def _flaky(provider_id, sample, count_only=False):
         if sample["runtime_payload"].get("bad"):
             raise ValueError("malformed")
         return original(provider_id, sample, count_only)
 
-    monkeypatch.setattr(logosnode_mod, "_persist_logosnode_status", _flaky)
+    monkeypatch.setattr(profile_sync, "_persist_status", _flaky)
 
     async def _run():
-        await logosnode_mod._capture_logosnode_provider_snapshot(7, {"timestamp": _TS, "bad": True})
+        await profile_sync.capture_status(7, {"timestamp": _TS, "bad": True})
         await asyncio.sleep(0)
-        await logosnode_mod._capture_logosnode_provider_snapshot(7, {"timestamp": "2026-09-03T12:00:01+00:00"})
-        await asyncio.gather(*list(logosnode_mod._sample_writers.values()))
+        await profile_sync.capture_status(7, {"timestamp": "2026-09-03T12:00:01+00:00"})
+        await asyncio.gather(*list(profile_sync.sample_writers.values()))
 
     asyncio.run(_run())
     assert len(db.inserts) == 1
@@ -249,18 +252,18 @@ def test_a_cold_mark_change_is_written_although_the_worker_status_repeats(monkey
     db = _SnapshotDB()
     _patched_capture(monkeypatch, db)
     monkeypatch.setattr(
-        logosnode_mod,
+        sync_mod,
         "_build_live_local_provider_sample",
         lambda _p, snap: {**_sample(snap["runtime"]), "timestamp": snap["last_heartbeat"]},
     )
     persisted: list = []
-    original = logosnode_mod._persist_logosnode_status
+    original = profile_sync._persist_status
 
     def _spy(provider_id, sample, count_only=False):
         persisted.append(count_only)
         return original(provider_id, sample, count_only)
 
-    monkeypatch.setattr(logosnode_mod, "_persist_logosnode_status", _spy)
+    monkeypatch.setattr(profile_sync, "_persist_status", _spy)
     registry.runtime = {"timestamp": _TS, "lanes": [{"lane_id": "lane-2", "model": "m", "runtime_state": "sleeping"}]}
     registry.cold_marked.add((7, "lane-2"))
     _capture(registry.runtime)
@@ -270,7 +273,7 @@ def test_a_cold_mark_change_is_written_although_the_worker_status_repeats(monkey
     async def _republish():
         logosnode_mod.republish_lane_snapshot(7)
         await asyncio.sleep(0)
-        await asyncio.gather(*list(logosnode_mod._sample_writers.values()))
+        await asyncio.gather(*list(profile_sync.sample_writers.values()))
 
     asyncio.run(_republish())
 
@@ -291,7 +294,7 @@ def test_a_cold_mark_republish_writes_the_status_current_when_it_runs(monkeypatc
         registry.runtime = {"timestamp": _TS, "lanes": [{"lane_id": "lane-2", "runtime_state": "sleeping"}]}
         for _ in range(5):
             await asyncio.sleep(0)
-        await asyncio.gather(*list(logosnode_mod._sample_writers.values()))
+        await asyncio.gather(*list(profile_sync.sample_writers.values()))
 
     asyncio.run(_run())
 

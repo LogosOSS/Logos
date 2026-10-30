@@ -24,12 +24,7 @@ from logos.dbutils.types import (
     infer_cloud_provider_type,
     normalize_provider_type,
 )
-from logos.model_profile_store import (
-    CALIBRATION_FIELDS,
-    SYNC_METADATA_FIELDS,
-    base_residency_agrees,
-    calibration_snapshot,
-)
+from logos.model_profile_store import CALIBRATION_FIELDS, base_residency_agrees
 
 # Backwards-compatible re-export (temporary; remove once all imports are migrated)
 __all__ = [
@@ -373,7 +368,6 @@ def _upsert_model_profile_sql(
 
 
 # Built once: these run for every changed profile of every worker status.
-_MIRROR_PROFILE_SQL = _upsert_model_profile_sql()
 _PERSIST_CENTRAL_PROFILE_SQL = _upsert_model_profile_sql(
     extra={
         "profile": "CAST(:profile AS jsonb)",
@@ -1802,42 +1796,6 @@ class DBManager:
         self.session.commit()
         return int(result[0]) if result is not None else 0
 
-    def upsert_model_profiles(
-        self,
-        provider_id: int,
-        profiles: Dict[str, Dict[str, Any]],
-    ) -> int:
-        """Upsert model profiles from worker runtime into the model_profiles table.
-
-        ``max_reported_context_length`` is maintained as the historic maximum
-        (see ``_upsert_model_profile_sql``): a later calibration that reports
-        a narrower window cannot shrink the widest window this model has ever
-        been reported at. That high-water mark is what the orchestrator falls
-        back to for a model's context when every workernode is offline.
-
-        Args:
-            provider_id: Provider ID (FK to providers.id)
-            profiles: Dict of model_name -> profile dict (from runtime_payload.model_profiles)
-
-        Returns:
-            Number of profiles upserted.
-        """
-        if not profiles:
-            return 0
-
-        sql = text(_MIRROR_PROFILE_SQL)
-        count = 0
-        for model_name, data in profiles.items():
-            if not isinstance(data, dict):
-                continue
-            self.session.execute(
-                sql,
-                {"provider_id": provider_id, "model_name": str(model_name), **_model_profile_column_params(data)},
-            )
-            count += 1
-        self.session.commit()
-        return count
-
     def persist_central_model_profile(
         self,
         provider_id: int,
@@ -2021,7 +1979,7 @@ class DBManager:
         """Record the calibration key and GPU count each model has on the node.
 
         A model without a row gets an empty one, so a node that never ran the
-        model can still be offered a shared calibration.
+        model can still be offered a shared calibration. The caller commits.
         """
         if not key_hashes:
             return
@@ -2047,23 +2005,21 @@ class DBManager:
                 "slice_counts": [_slice_gpu_count(counts.get(name)) for name in key_hashes],
             },
         )
-        self.session.commit()
 
     def adopt_shared_calibrations(
-        self, provider_id: int, model_names: List[str], max_age_days: int, adopt: bool = True
+        self, provider_id: int, model_names: List[str], adopt: bool = True
     ) -> List[Tuple[str, int]]:
         """Give a node another node's calibration for each model it fits.
 
         With ``adopt`` off, a shared calibration that no longer fits is only
-        dropped. Returns the (model, calibration_id) pairs adopted; commits
-        once.
+        dropped. Returns the (model, calibration_id) pairs adopted; the caller
+        commits.
         """
         adopted = []
         for model_name in self._adoption_candidates(provider_id, model_names):
-            _, calibration_id = self._adopt_shared_calibration(provider_id, model_name, max_age_days, adopt)
+            _, calibration_id = self._adopt_shared_calibration(provider_id, model_name, adopt)
             if calibration_id is not None:
                 adopted.append((model_name, calibration_id))
-        self.session.commit()
         return adopted
 
     def _adoption_candidates(self, provider_id: int, model_names: List[str]) -> List[str]:
@@ -2095,14 +2051,13 @@ class DBManager:
         self,
         provider_id: int,
         model_name: str,
-        max_age_days: int,
         skip: Optional[Callable[[int], bool]] = None,
     ) -> List[Tuple[int, Optional[int]]]:
         """Offer a node's fresh calibration to every other node of its key.
 
         ``skip`` names nodes to leave alone, e.g. one calibrating the model.
         Returns (provider, adopted calibration or None) for each profile that
-        changed; commits once.
+        changed; the caller commits.
         """
         rows = self.session.execute(
             text("""
@@ -2122,10 +2077,9 @@ class DBManager:
             sibling = int(row.provider_id)
             if skip is not None and skip(sibling):
                 continue
-            did_change, calibration_id = self._adopt_shared_calibration(sibling, model_name, max_age_days)
+            did_change, calibration_id = self._adopt_shared_calibration(sibling, model_name)
             if did_change:
                 changed.append((sibling, calibration_id))
-        self.session.commit()
         return changed
 
     def _node_calibration_state(self, provider_id: int, model_name: str, lock: bool = False) -> Any:
@@ -2144,7 +2098,7 @@ class DBManager:
         ).fetchone()
 
     def _adopt_shared_calibration(
-        self, provider_id: int, model_name: str, max_age_days: int, adopt: bool = True
+        self, provider_id: int, model_name: str, adopt: bool = True
     ) -> Tuple[bool, Optional[int]]:
         """Drop a shared calibration the node's GPUs no longer fit, else adopt one.
 
@@ -2168,7 +2122,6 @@ class DBManager:
                   AND invalidated_at IS NULL
                   AND source_provider_id IS DISTINCT FROM :provider_id
                   AND NOT (CAST(:provider_id AS integer) = ANY(rejected_by))
-                  AND calibrated_at >= CURRENT_TIMESTAMP - make_interval(days => :max_age_days)
                   AND CASE WHEN profile->>'tensor_parallel_size' ~ '^[0-9]+$'
                            THEN (profile->>'tensor_parallel_size')::int ELSE 1 END <= :slice_gpu_count
                 ORDER BY calibrated_at DESC
@@ -2179,7 +2132,6 @@ class DBManager:
                     "model_name": model_name,
                     "key_hash": hint.calibration_key_hash,
                     "provider_id": provider_id,
-                    "max_age_days": int(max_age_days),
                     "slice_gpu_count": int(hint.slice_gpu_count),
                 },
             ).fetchone()
@@ -2240,70 +2192,11 @@ class DBManager:
         )
         return True, int(snapshot.id)
 
-    def import_legacy_model_profiles(
-        self,
-        provider_id: int,
-        profiles: Dict[str, Dict[str, Any]],
-        unsupported: Dict[str, str],
-    ) -> int:
-        """Take over a worker's local profile file on its first central start.
-
-        Imported calibrations have no key, so they serve but count as stale
-        until the next calibration window re-measures them.
-        """
-        already_central = self.session.execute(
-            text(
-                "SELECT 1 FROM model_profiles mp WHERE mp.provider_id = :provider_id AND "
-                + _CENTRAL_PROFILE_ROW
-                + " LIMIT 1"
-            ),
-            {"provider_id": provider_id},
-        ).fetchone()
-        if already_central is not None:
-            return 0
-        merged: Dict[str, Dict[str, Any]] = {}
-        for model_name, data in profiles.items():
-            if isinstance(data, dict):
-                merged[str(model_name)] = {k: v for k, v in data.items() if k not in SYNC_METADATA_FIELDS}
-        for model_name, reason in unsupported.items():
-            entry = merged.setdefault(str(model_name), {})
-            entry["calibration_unsupported"] = True
-            entry["calibration_unsupported_reason"] = reason
-        # A central change (e.g. a reset) committed since the check above
-        # owns the row; the import must not write over it.
-        upsert = text(
-            _upsert_model_profile_sql(
-                extra={"profile": "CAST(:profile AS jsonb)"},
-                conflict_set={"profile": "EXCLUDED.profile"},
-                where="model_profiles.profile = '{}'::jsonb AND model_profiles.sync_revision = 0",
-            )
-        )
-        imported = 0
-        for model_name, data in merged.items():
-            written = self.session.execute(
-                upsert,
-                {
-                    "provider_id": provider_id,
-                    "model_name": model_name,
-                    **_model_profile_column_params(data),
-                    "profile": _json_for_jsonb(data),
-                },
-            ).rowcount
-            if not written:
-                continue
-            imported += 1
-            calibrated_at = _epoch_to_datetime(data.get("last_measured_epoch"))
-            if data.get("residency_source") != "calibrated" or calibrated_at is None:
-                continue
-            calibration_id, _ = self._insert_calibration_snapshot(
-                provider_id, model_name, calibration_snapshot(data), None, None, calibrated_at
-            )
-            self._link_calibration(provider_id, model_name, calibration_id)
-        self.session.commit()
-        return imported
-
     def clear_calibration_unsupported(self, provider_id: int, model_name: str) -> Optional[int]:
-        """Drop a node's unsupported verdict; returns the new sync_revision."""
+        """Drop a node's unsupported verdict; returns the new sync_revision.
+
+        The caller commits.
+        """
         row = self.session.execute(
             text("""
                 UPDATE model_profiles
@@ -2316,7 +2209,6 @@ class DBManager:
             """),
             {"provider_id": provider_id, "model_name": model_name},
         ).fetchone()
-        self.session.commit()
         return int(row.sync_revision) if row is not None else None
 
     def reset_model_profiles(self, provider_id: int, model_names: Optional[List[str]] = None) -> List[str]:
@@ -2324,6 +2216,7 @@ class DBManager:
 
         A central change like any other: the bumped sync_revision rejects
         echoes of the old state. Snapshots and the context high-water mark stay.
+        The caller commits.
         """
         cleared = ", ".join(f"{column} = NULL" for column in _RESET_PROFILE_COLUMNS)
         sql = f"""
@@ -2340,13 +2233,13 @@ class DBManager:
             sql += " AND model_name = ANY(:model_names)"
             params["model_names"] = list(model_names)
         rows = self.session.execute(text(sql + " RETURNING model_name"), params).fetchall()
-        self.session.commit()
         return [str(r.model_name) for r in rows]
 
     def invalidate_model_calibration(self, calibration_id: int, reason: str) -> List[Tuple[int, str]]:
         """Stop trusting a calibration and strip it from every node using it.
 
-        Returns the (provider_id, model_name) rows that lost it.
+        Returns the (provider_id, model_name) rows that lost it; the caller
+        commits.
         """
         marked = self.session.execute(
             text("""
@@ -2358,10 +2251,8 @@ class DBManager:
             {"calibration_id": calibration_id, "reason": reason[:1000]},
         ).fetchone()
         if marked is None:
-            self.session.commit()
             return []
         cleared = self._clear_linked_calibration("calibration_id = :calibration_id", {"calibration_id": calibration_id})
-        self.session.commit()
         return cleared
 
     def _clear_linked_calibration(self, where: str, params: Dict[str, Any]) -> List[Tuple[int, str]]:
@@ -2395,7 +2286,7 @@ class DBManager:
         second node invalidates it for everyone, since one failure may have
         a cause of its own. Does nothing unless the node runs it as another
         node's snapshot. Returns the (provider_id, model_name) rows that
-        lost it.
+        lost it; the caller commits.
         """
         counted = self.session.execute(
             text("""
@@ -2413,7 +2304,6 @@ class DBManager:
             {"provider_id": provider_id, "model_name": model_name, "calibration_id": calibration_id},
         ).fetchone()
         if counted is None:
-            self.session.commit()
             return []
         if int(counted.rejections) >= _REJECTIONS_TO_INVALIDATE:
             return self.invalidate_model_calibration(
@@ -2423,14 +2313,13 @@ class DBManager:
             "provider_id = :provider_id AND model_name = :model_name AND calibration_id = :calibration_id",
             {"provider_id": provider_id, "model_name": model_name, "calibration_id": calibration_id},
         )
-        self.session.commit()
         return cleared
 
     def get_historic_max_context_by_model(self) -> Dict[str, int]:
         """Model name -> widest context ever reported for it, across providers.
 
         Reads the ``max_reported_context_length`` high-water mark
-        :meth:`upsert_model_profiles` maintains and reduces each model to the
+        :meth:`persist_central_model_profile` maintains and reduces each model to the
         maximum over every provider that has ever reported it. Only models with
         a positive (i.e. actually reported) window are returned; a model that
         was never calibrated to a known context is absent, so callers treat a
@@ -2465,7 +2354,7 @@ class DBManager:
         """Upsert a calibration probe log from a worker's calibration_probe_log event.
 
         Keeps only the most recent row per (provider_id, model_name) — same
-        ON CONFLICT DO UPDATE pattern as upsert_model_profiles above.
+        ON CONFLICT DO UPDATE pattern as persist_central_model_profile.
 
         Args:
             provider_id: Provider ID (FK to providers.id) — the worker node.

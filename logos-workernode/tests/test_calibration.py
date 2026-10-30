@@ -38,10 +38,7 @@ from logos_worker_node.calibration import (
     _plan_needs_gpu_pin,
     calibrate_model,
     calibrate_with_tp_escalation,
-    calibration_gpu_slice,
     extract_revision_arg,
-    merge_profile,
-    parse_gpu_indices,
     pin_plan_gpu_devices,
     plans_from_config,
     probe_classification,
@@ -55,6 +52,7 @@ from logos_worker_node.calibration import (
     warmup_inference,
 )
 from logos_worker_node.model_profiles import ModelProfileRegistry
+from logos_worker_node.profile_utils import calibration_gpu_slice, merge_profile, parse_gpu_indices
 
 
 @pytest.fixture(autouse=True)
@@ -1427,7 +1425,7 @@ def test_query_vllm_quantization_methods_reads_baked_file(tmp_path):
 
 
 def test_query_vllm_quantization_methods_resolves_bare_command_via_path(tmp_path, monkeypatch):
-    """_DEFAULT_VLLM in production is bare "vllm", not a full path —
+    """DEFAULT_VLLM in production is bare "vllm", not a full path —
     resolving it against the CWD instead of a real PATH search would
     silently break the baked-file lookup."""
     from logos_worker_node.calibration import query_vllm_quantization_methods

@@ -3,7 +3,7 @@
 Every request used to pay a full lane status build (three HTTP probes against
 the lane) on the hot path. The TTL cache serves steady-state re-acquires from
 cache, rebuilds after expiry, and is cleared by any lifecycle event (which is
-what calls _mark_status_dirty). A dead process is never masked by a cached
+what calls mark_status_dirty). A dead process is never masked by a cached
 status: the cheap synchronous process check is consulted on every call.
 """
 
@@ -90,7 +90,7 @@ async def test_dirty_mark_clears_the_cache() -> None:
     lane_id, handle = _inject(manager)
 
     await manager._get_status_unlocked(lane_id)  # noqa: SLF001
-    manager._mark_status_dirty()
+    manager.mark_status_dirty()
     await manager._get_status_unlocked(lane_id)  # noqa: SLF001
 
     assert handle.model_probe_count == 2

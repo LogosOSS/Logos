@@ -176,10 +176,6 @@ it starts any lane. While Logos is unreachable, or does not offer that
 endpoint yet, the worker waits and retries (backoff up to 60 s), so update
 the Logos server before the workers.
 
-A worker whose `data/` directory still holds a `model_profiles.yml` or
-`calibration_logs/calibration_unsupported_models.txt` hands both to Logos on
-its first start and renames them to `*.migrated`.
-
 A calibration is tied to the GPU class, vLLM version and worker configuration
 it was measured under. When any of them changes, the profile keeps serving
 but is reported with `calibration_stale: true`, and the next calibration
@@ -189,11 +185,9 @@ Nodes with the same calibration key share calibrations. A node that has none
 for a model adopts the newest valid one measured on another node, as soon as
 it connects or that node finishes calibrating, and skips its own calibration.
 An adopted calibration shows `calibration_origin: shared`. It is only used if
-the node has at least as many GPUs as its tensor-parallel size and it is not
-older than the age limit: 30 days by default, or the number of days set in
-`LOGOS_SHARED_PROFILE_MAX_AGE_DAYS` (at least 1). A shared calibration
-that stops fitting (e.g. after re-pinning to fewer GPUs) is dropped, also with
-sharing switched off.
+the node has at least as many GPUs as its tensor-parallel size. A shared
+calibration that stops fitting (e.g. after re-pinning to fewer GPUs) is
+dropped, also with sharing switched off.
 
 Before a worker calibrates a model it reserves it with Logos
 (`POST /logosdb/providers/logosnode/calibration-reservation`, shared key).

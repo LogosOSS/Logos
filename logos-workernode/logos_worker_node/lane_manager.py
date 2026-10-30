@@ -18,7 +18,7 @@ from logos_worker_node.calibration import select_calibration_gpus
 from logos_worker_node.host_ram import measure_process_tree_host_ram_mb
 from logos_worker_node.metal import is_metal_backend
 from logos_worker_node.metal_process import MetalVllmProcessHandle
-from logos_worker_node.model_profiles import ModelProfileRegistry, reconfigured_vram_mb
+from logos_worker_node.model_profiles import ORIGIN_SHARED, ModelProfileRegistry, reconfigured_vram_mb
 from logos_worker_node.models import (
     DeviceSummary,
     LaneAction,
@@ -434,7 +434,7 @@ class LaneManager:
         # for_infer). A status build costs three HTTP probes against the lane
         # (loaded models, metrics, sleep state); before this, EVERY request
         # paid that. Entries expire after _lane_status_ttl_seconds and any
-        # lifecycle event clears the whole cache via _mark_status_dirty, so
+        # lifecycle event clears the whole cache via mark_status_dirty, so
         # only steady-state re-acquires of an unchanged lane are served from
         # cache. 0 disables the cache (legacy per-call build).
         try:
@@ -762,7 +762,7 @@ class LaneManager:
                     try:
                         await self._remove_lane_unlocked(lid)
                         # Refresh GPU snapshot BEFORE _record_event so the status-push
-                        # triggered by _mark_status_dirty carries post-removal VRAM numbers.
+                        # triggered by mark_status_dirty carries post-removal VRAM numbers.
                         # This mirrors the same pattern in sleep_lane/wake_lane and prevents
                         # the server from seeing the lane as gone but VRAM still occupied
                         # (causing the wake VRAM check to be denied on the next request).
@@ -1362,7 +1362,7 @@ class LaneManager:
             await handle.sleep(level=level, mode=mode)
             self._clear_transition(lane_id)
             # Refresh GPU snapshot BEFORE _record_event so that the status-push
-            # triggered by _mark_status_dirty carries post-sleep GPU numbers.
+            # triggered by mark_status_dirty carries post-sleep GPU numbers.
             # Without this, _status_refresh_loop would race ahead with stale data,
             # causing the server to see the lane as sleeping but VRAM still full.
             if self._gpu_force_poll is not None:
@@ -1825,7 +1825,7 @@ class LaneManager:
             if lane_id not in self._handles:
                 raise KeyError(f"Lane '{lane_id}' not found")
             self._active_requests[lane_id] = self._active_requests.get(lane_id, 0) + 1
-            # No _mark_status_dirty() here: counting a request is not a
+            # No mark_status_dirty() here: counting a request is not a
             # lifecycle change, and a dirty mark would make the bridge loop
             # rebuild the full node status (all lanes, all probes) next to the
             # relay — the worker's biggest per-request cost . The
@@ -2179,7 +2179,7 @@ class LaneManager:
             # Can't determine GPU size — keep TP=1 (safe default)
             return lane_config
 
-        base_mb = profile.estimate_base_residency_mb(lane_config.model)
+        base_mb = profile.estimate_base_residency_mb()
         if base_mb is None or base_mb <= 0:
             return lane_config
 
@@ -2368,7 +2368,7 @@ class LaneManager:
         if profile is None:
             return 0.0
 
-        base_mb = float(profile.base_residency_mb or profile.estimate_base_residency_mb(lane_config.model) or 0.0)
+        base_mb = float(profile.base_residency_mb or profile.estimate_base_residency_mb() or 0.0)
 
         # Calibrated base_residency_mb already includes KV (measured under the
         # configured cap; see calibration.py). Adding KV again double-counts.
@@ -3587,7 +3587,7 @@ class LaneManager:
         profile = self._model_profiles.get_profile(model) if self._model_profiles is not None else None
         if (
             profile is None
-            or profile.calibration_origin != "shared"
+            or profile.calibration_origin != ORIGIN_SHARED
             or profile.calibration_id is None
             or self._lane_calibration_at_spawn.get(lane_id) != profile.calibration_id
             or self._served_models.get(model, _NEVER_SERVED) == profile.calibration_id
@@ -3624,7 +3624,7 @@ class LaneManager:
         # Trim to max size
         if len(self._event_log) > _MAX_EVENT_LOG:
             self._event_log = self._event_log[-_MAX_EVENT_LOG:]
-        self._mark_status_dirty()
+        self.mark_status_dirty()
 
     @property
     def event_log(self) -> list[LaneEvent]:
@@ -3678,13 +3678,13 @@ class LaneManager:
 
     def _set_transition(self, lane_id: str, transition: str) -> None:
         self._transitions[lane_id] = transition
-        self._mark_status_dirty()
+        self.mark_status_dirty()
 
     def _clear_transition(self, lane_id: str) -> None:
         if self._transitions.pop(lane_id, None) is not None:
-            self._mark_status_dirty()
+            self.mark_status_dirty()
 
-    def _mark_status_dirty(self) -> None:
+    def mark_status_dirty(self) -> None:
         self._status_revision += 1
         self._status_event.set()
         # A dirty mark is a lifecycle signal (lane added/removed/slept/woken/

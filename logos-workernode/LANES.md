@@ -92,8 +92,6 @@ For vLLM, Logos does not blindly reuse `loaded_vram_mb` as the next load cost. I
 
 Profiles update via exponential moving average (alpha=0.3). The worker keeps them only in memory: Logos stores them in its database (`model_profiles`, with calibration snapshots in `model_calibrations`) from the runtime status the worker sends every few seconds, and hands them back when the worker starts. The worker therefore waits for Logos before it starts any lane, and a profile survives the node being reinstalled. The capacity planner reads the same profiles to validate VRAM budgets before loading or waking lanes.
 
-A node whose state directory still holds a `model_profiles.yml` or `calibration_logs/calibration_unsupported_models.txt` from before hands both to Logos once on its first start and renames them to `*.migrated`.
-
 Example profiles as the worker reports them:
 ```yaml
 model_profiles:
