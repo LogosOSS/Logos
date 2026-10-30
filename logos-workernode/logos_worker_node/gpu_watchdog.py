@@ -78,6 +78,10 @@ _LINUX_REBOOT_CMD_RESTART = 0x01234567
 _GPU_REASON_PREFIX = "gpu-"
 
 
+DEFAULT_POLL_INTERVAL_S = 60.0
+DEFAULT_TRIGGER_THRESHOLD = 3
+
+
 class GpuWatchdog:
     """Polls ``evaluate_node_health()`` and triggers ``reboot(2)`` when
     the GPU sensor stays unhealthy for ``trigger_threshold`` ticks."""
@@ -86,8 +90,8 @@ class GpuWatchdog:
         self,
         state_dir: Path,
         *,
-        poll_interval_seconds: float = 60.0,
-        trigger_threshold: int = 3,
+        poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_S,
+        trigger_threshold: int = DEFAULT_TRIGGER_THRESHOLD,
         rate_limit_seconds: float = 30 * 60,
         startup_grace_seconds: float = 5 * 60,
         reboot_fn=None,  # injection point for tests

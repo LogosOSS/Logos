@@ -41,7 +41,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +94,9 @@ def _is_gpu_error_token(value: str) -> bool:
     return stripped in _GPU_ERROR_TOKENS
 
 
-def _check_gpu() -> SensorResult:
+def check_gpu(gpu_indices: Sequence[int] | None = None) -> SensorResult:
     """Return ``state="ok"`` when nvidia-smi reports clean values for
-    every visible GPU; otherwise ``"gpu-error"`` (some field is literally
+    every visible GPU (or only for ``gpu_indices`` when given); otherwise ``"gpu-error"`` (some field is literally
     ``[Error]`` / ``ERR!``) or ``"gpu-na"`` (a *memory* field is ``N/A``).
 
     Two failure modes to detect:
@@ -120,13 +120,16 @@ def _check_gpu() -> SensorResult:
     Misses nvidia-smi being absent / non-executable entirely — that's
     expected on dev machines and not what this sensor is for.
     """
+    command = [
+        "nvidia-smi",
+        ("--query-gpu=index,memory.total,memory.used,memory.free," "power.draw,fan.speed,temperature.gpu"),
+        "--format=csv,noheader,nounits",
+    ]
+    if gpu_indices:
+        command.append("--id=" + ",".join(str(index) for index in gpu_indices))
     try:
         raw = subprocess.check_output(
-            [
-                "nvidia-smi",
-                ("--query-gpu=index,memory.total,memory.used,memory.free," "power.draw,fan.speed,temperature.gpu"),
-                "--format=csv,noheader,nounits",
-            ],
+            command,
             text=True,
             timeout=10,
         )
@@ -247,7 +250,7 @@ def _check_storage() -> SensorResult:
 
 
 _SENSORS: tuple[tuple[str, Callable[[], SensorResult]], ...] = (
-    ("gpu", _check_gpu),
+    ("gpu", check_gpu),
     ("storage", _check_storage),
 )
 

@@ -332,6 +332,17 @@ const UNSUPPORTED_REASON_DESCRIPTIONS: Record<string, ReasonDescription> = {
   },
 };
 
+// Written by the worker's GPU health check during a probe.
+const GPU_HEALTH_NEEDLE = 'gpu health:';
+
+function gpuHealthReason(label: string, finding: string, consequence: string): ReasonDescription {
+  return {
+    label,
+    description: `nvidia-smi ${finding} while the probe was running. ${consequence}`,
+    needle: GPU_HEALTH_NEEDLE,
+  };
+}
+
 const NODE_UNHEALTHY_REASON_DESCRIPTIONS: Record<string, ReasonDescription> = {
   'filesystem-eio': {
     label: 'Filesystem I/O error',
@@ -355,6 +366,26 @@ const NODE_UNHEALTHY_REASON_DESCRIPTIONS: Record<string, ReasonDescription> = {
     // Same reasoning as filesystem-eio above.
     needle: 'No space left on device',
   },
+  'gpu-error': gpuHealthReason(
+    'GPU reports an error',
+    'reported an error state (ERR!/[Error]) for a GPU',
+    'The card or driver is wedged and the node needs operator action.'
+  ),
+  'gpu-na': gpuHealthReason(
+    'GPU memory unreadable',
+    'could not read a GPU\'s memory',
+    'The card fell off the bus or the driver lost it.'
+  ),
+  'gpu-query-failed': gpuHealthReason(
+    'GPU query failed',
+    'exited with an error',
+    'The driver is likely unhealthy.'
+  ),
+  'gpu-query-timeout': gpuHealthReason(
+    'GPU query timed out',
+    'did not answer',
+    'The driver is likely stuck.'
+  ),
   'cuda-device-not-detected': {
     label: 'No GPU detected',
     description: 'No CUDA-capable device is visible to vLLM on this node.',
@@ -430,6 +461,23 @@ const OBSERVED_REASON_DESCRIPTIONS: Record<string, ReasonDescription> = {
     // Can hit at essentially any point CUDA kernels run — resolved
     // positionally (domain omitted), same as cuda-oom.
     needle: 'CUDA error:',
+  },
+  'repeated-ready-timeout': {
+    label: 'Repeated ready timeout (observed)',
+    description:
+      'vLLM did not become ready within the ready timeout on consecutive ' +
+      'probes, so the KV-cache search was stopped. A later session retries.',
+    domain: DOMAIN_SERVER_START,
+    needle: 'ready timeout:',
+  },
+  'engine-warmup-stalled': {
+    label: 'Engine warmup stalled (observed)',
+    description:
+      'vLLM stopped producing output during engine warmup and no compiler ' +
+      'was running, so the probe was aborted early. A larger KV cache ' +
+      'cannot fix this; a later session retries.',
+    domain: DOMAIN_SERVER_START,
+    needle: 'engine warmup stalled',
   },
   'hf-network-timeout': {
     label: 'Hugging Face network timeout (observed)',

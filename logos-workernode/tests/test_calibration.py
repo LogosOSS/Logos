@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -734,6 +735,75 @@ def test_calibrate_with_tp_escalation_stops_on_fatal_error_surfaced_after_wideni
     assert seen_tps == [2, 8]
     assert not result.success
     assert result.tensor_parallel_size == 8
+
+
+def test_calibrate_with_tp_escalation_stops_at_the_first_retryable_fatal_error(tmp_path):
+    """A non-persisted fatal error (a hung probe) is retried by a later
+    session, but no other tp is probed in this one: the same hang would only
+    cost another probe."""
+
+    def side_effect(plan, **kw):
+        tp = plan.get("tensor_parallel_size", 1)
+        seen_tps.append(tp)
+        return CalibrationResult(
+            model="big-model",
+            tensor_parallel_size=tp,
+            gpu_devices="",
+            kv_cache_sent_mb=0.0,
+            success=False,
+            error="retryable fatal error (engine-warmup-stalled): vLLM stopped producing output",
+            retryable_fatal_reason="engine-warmup-stalled",
+        )
+
+    seen_tps: list[int] = []
+    with patch("logos_worker_node.calibration.calibrate_model", side_effect=side_effect):
+        result = calibrate_with_tp_escalation(
+            {"model": "big-model", "_hf_max_tp_ceiling": 2, "tensor_parallel_size": 1},
+            vllm_binary="vllm",
+            port=11499,
+            log_dir=tmp_path,
+            sleep_level=0,
+            ready_timeout_s=60.0,
+            available_gpus=8,
+        )
+
+    assert seen_tps == [2]
+    assert not result.success
+    assert result.unsupported_reason is None
+    assert result.retryable_fatal_reason == "engine-warmup-stalled"
+
+
+def test_calibrate_with_tp_escalation_stops_when_the_node_is_unhealthy(tmp_path):
+    """A degraded node (e.g. a wedged GPU) ends the session's attempts: another
+    tp would run on the same node."""
+
+    def side_effect(plan, **kw):
+        tp = plan.get("tensor_parallel_size", 1)
+        seen_tps.append(tp)
+        return CalibrationResult(
+            model="big-model",
+            tensor_parallel_size=tp,
+            gpu_devices="",
+            kv_cache_sent_mb=0.0,
+            success=False,
+            error="node degraded (gpu-error): GPU1.power='ERR!'",
+            node_unhealthy_reason="gpu-error",
+        )
+
+    seen_tps: list[int] = []
+    with patch("logos_worker_node.calibration.calibrate_model", side_effect=side_effect):
+        result = calibrate_with_tp_escalation(
+            {"model": "big-model", "_hf_max_tp_ceiling": 2, "tensor_parallel_size": 1},
+            vllm_binary="vllm",
+            port=11499,
+            log_dir=tmp_path,
+            sleep_level=0,
+            ready_timeout_s=60.0,
+            available_gpus=8,
+        )
+
+    assert seen_tps == [2]
+    assert result.node_unhealthy_reason == "gpu-error"
 
 
 def test_calibrate_with_tp_escalation_skips_original_tp_fallback_on_capacity_exhaustion(tmp_path):
@@ -3647,3 +3717,582 @@ def test_spawn_vllm_expands_model_path_with_plan_cache_token_and_revision(monkey
     assert seen["popen_env"]["HF_HOME"] == str(tmp_path / "hf")
     # The probe's slice is chosen by nvidia-smi index, so CUDA must count the same way.
     assert seen["popen_env"]["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+
+
+_SHM_LINE = (
+    "(EngineCore pid=1916738) INFO 10-21 04:{minute:02d}:34 [shm_broadcast.py:871] No available shared "
+    "memory broadcast block found in 60 seconds. This typically happens when some processes are hanging."
+)
+
+
+def _write_log(path, lines):
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_trailing_warnings_counts_only_warnings_at_the_end_of_the_log(tmp_path):
+    from logos_worker_node.calibration import _trailing_warnings
+
+    log = tmp_path / "probe.log"
+    warmup = "(Worker_TP0 pid=1) INFO 10-21 04:21:34 [kernel_warmup.py:291] Warming up FlashInfer attention."
+    _write_log(log, [warmup, _SHM_LINE.format(minute=22), _SHM_LINE.format(minute=23)])
+    assert _trailing_warnings(log, 0) == 2
+    _write_log(log, [warmup] + [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
+    assert _trailing_warnings(log, 0) == 3
+    _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)] + ["INFO: Application startup complete."])
+    assert _trailing_warnings(log, 0) == 0
+
+
+def test_trailing_warnings_ignores_the_log_before_the_probe_started(tmp_path):
+    from logos_worker_node.calibration import _trailing_warnings
+
+    log = tmp_path / "probe.log"
+    _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
+    offset = log.stat().st_size
+    assert _trailing_warnings(log, 0) == 3
+    assert _trailing_warnings(log, offset) == 0
+    with log.open("a") as f:
+        f.write("\n".join(_SHM_LINE.format(minute=m) for m in (25, 26, 27)) + "\n")
+    assert _trailing_warnings(log, offset) == 3
+
+
+def test_trailing_warnings_without_a_log_file_is_zero(tmp_path):
+    from logos_worker_node.calibration import _trailing_warnings
+
+    assert _trailing_warnings(tmp_path / "missing.log", 0) == 0
+
+
+def test_compiler_watch_rescans_only_after_the_interval(monkeypatch):
+    from logos_worker_node import calibration
+
+    scans = []
+    monkeypatch.setattr(calibration, "_compiler_running", lambda pid: scans.append(pid) or len(scans) == 1)
+    now = [100.0]
+    monkeypatch.setattr(calibration.time, "monotonic", lambda: now[0])
+    watch = calibration._CompilerWatch(42)
+    assert watch() and watch()
+    assert scans == [42]
+    now[0] += calibration._COMPILER_CHECK_INTERVAL_S
+    assert not watch()
+    assert scans == [42, 42]
+
+
+def _fake_proc(root: Path, processes: dict[int, tuple[str, int]]) -> Path:
+    for pid, (comm, ppid) in processes.items():
+        entry = root / str(pid)
+        entry.mkdir(parents=True)
+        (entry / "stat").write_text(f"{pid} ({comm}) S {ppid} {pid} 0 0 -1 4194560\n")
+    return root
+
+
+def test_compiler_running_only_counts_the_probes_own_process_tree(tmp_path):
+    from logos_worker_node.calibration import _compiler_running
+
+    proc_root = _fake_proc(
+        tmp_path,
+        {
+            1: ("systemd", 0),
+            100: ("vllm", 1),
+            101: ("python3", 100),
+            102: ("ninja", 101),
+            200: ("bash", 1),
+            201: ("nvcc", 200),
+        },
+    )
+    assert _compiler_running(100, proc_root)
+    assert not _compiler_running(999, proc_root)
+    other = _fake_proc(tmp_path / "other", {1: ("systemd", 0), 100: ("vllm", 1), 300: ("nvcc", 1)})
+    assert not _compiler_running(100, other)
+
+
+def test_compiler_running_handles_spaces_in_comm_and_a_missing_proc(tmp_path):
+    from logos_worker_node.calibration import _compiler_running
+
+    proc_root = _fake_proc(tmp_path, {100: ("VLLM::Engine Core", 1), 101: ("cicc", 100)})
+    assert _compiler_running(100, proc_root)
+    assert not _compiler_running(100, tmp_path / "missing")
+
+
+class _Watchdog:
+    def __init__(self, compiling=lambda: False, check=lambda: None):
+        self.compiling = compiling
+        self.check = check
+
+
+def test_wait_ready_aborts_early_when_the_watchdog_reports_a_stall(monkeypatch):
+    from logos_worker_node import calibration
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    monkeypatch.setattr(calibration, "_get", lambda *a, **k: (503, None))
+    monkeypatch.setattr(calibration.time, "sleep", lambda _: None)
+
+    def stalled():
+        raise calibration.VllmEngineStalled("engine warmup stalled: test")
+
+    with pytest.raises(calibration.VllmEngineStalled, match="engine warmup stalled"):
+        calibration.wait_ready("http://x", 600.0, proc, watchdog=_Watchdog(check=stalled))
+
+
+def test_wait_ready_keeps_waiting_past_the_deadline_while_busy(monkeypatch):
+    from logos_worker_node import calibration
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(calibration.time, "perf_counter", lambda: clock["now"])
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    busy = {"left": 3}
+
+    def busy_check():
+        busy["left"] -= 1
+        return busy["left"] >= 0
+
+    monkeypatch.setattr(calibration.time, "sleep", sleep)
+    monkeypatch.setattr(calibration, "_get", lambda *a, **k: (503, None))
+    with pytest.raises(TimeoutError, match="not ready after"):
+        calibration.wait_ready("http://x", 4.0, proc, watchdog=_Watchdog(compiling=busy_check))
+    assert clock["now"] > 1000.0 + 4.0
+    assert busy["left"] < 0
+
+
+def test_wait_ready_deadline_is_hard_even_when_always_busy(monkeypatch):
+    from logos_worker_node import calibration
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    clock = {"now": 0.0}
+    monkeypatch.setattr(calibration.time, "perf_counter", lambda: clock["now"])
+    monkeypatch.setattr(calibration.time, "sleep", lambda s: clock.update(now=clock["now"] + s))
+    monkeypatch.setattr(calibration, "_get", lambda *a, **k: (503, None))
+    with pytest.raises(TimeoutError):
+        calibration.wait_ready("http://x", 10.0, proc, watchdog=_Watchdog(compiling=lambda: True))
+    assert clock["now"] <= 10.0 + calibration._COMPILE_EXTENSION_S + 5.0
+
+
+def test_stall_marker_is_classified_as_retryable_and_observed(tmp_path):
+    from logos_worker_node.calibration import _STALL_MARKER, _append_log_marker, _classify_observed_transient_error
+
+    log = tmp_path / "probe.log"
+    _write_log(log, [_SHM_LINE.format(minute=22)])
+    _append_log_marker(log, f"{_STALL_MARKER}: test")
+    text = log.read_text()
+    observed = _classify_observed_transient_error(text)
+    assert observed is not None and observed.reason_code == "engine-warmup-stalled"
+    fatal = _classify_fatal_load_error(text)
+    assert fatal is not None and fatal.reason_code == "engine-warmup-stalled"
+    assert fatal.persist is False
+
+
+def test_a_single_shared_memory_warning_is_not_classified_as_a_stall():
+    from logos_worker_node.calibration import _classify_observed_transient_error
+
+    assert _classify_observed_transient_error(_SHM_LINE.format(minute=22)) is None
+    assert _classify_fatal_load_error(_SHM_LINE.format(minute=22)) is None
+
+
+def _search_with_ready_timeouts(
+    tmp_path: Path, side_effect, log_text="Warming up FlashInfer attention.\n", plan_extra=None
+):
+    log_dir = tmp_path / "calibration_logs"
+    log_dir.mkdir()
+    log_path = log_dir / "org__stuck-model.log"
+    patches = _patch_calibration_infra(wait_ready_side_effect=side_effect, gpu_vram_total_mb=24000.0)
+    patches["spawn"] = _spawn_writing_log(log_path, log_text)
+    managers = {k: p.__enter__() for k, p in patches.items()}
+    try:
+        result = calibrate_model(
+            {"model": "org/stuck-model", **(plan_extra or {})},
+            vllm_binary="vllm",
+            port=11499,
+            log_dir=log_dir,
+            sleep_level=1,
+            ready_timeout_s=60.0,
+        )
+    finally:
+        for p in patches.values():
+            p.__exit__(None, None, None)
+    return result, managers, log_path
+
+
+def test_two_ready_timeouts_in_a_row_stop_the_kv_search(tmp_path: Path):
+    from logos_worker_node.calibration import VllmReadyTimeout
+
+    result, managers, log_path = _search_with_ready_timeouts(tmp_path, VllmReadyTimeout("vLLM not ready after 600s"))
+
+    assert not result.success
+    assert result.observed_reason == "repeated-ready-timeout"
+    assert result.unsupported_reason is None
+    assert result.retryable_fatal_reason == "repeated-ready-timeout"
+    assert "repeated-ready-timeout" in result.error
+    assert managers["spawn"].call_count == 2
+    assert log_path.read_text().count("[LOGOS] ready timeout:") == 2
+
+
+def test_a_different_failure_between_timeouts_resets_the_count(tmp_path: Path):
+    from logos_worker_node.calibration import VllmReadyTimeout
+
+    calls = []
+
+    def alternate(*args, **kwargs):
+        calls.append(1)
+        if len(calls) % 2:
+            raise VllmReadyTimeout("vLLM not ready after 600s")
+        raise RuntimeError("vLLM exited (code=1)")
+
+    result, managers, log_path = _search_with_ready_timeouts(tmp_path, alternate)
+
+    log = log_path.read_text()
+    assert result.observed_reason != "repeated-ready-timeout"
+    assert managers["spawn"].call_count > 2
+    assert log.count("[LOGOS] ready timeout:") == log.count("(in a row: 1)") > 1
+    assert "(in a row: 2)" not in log
+
+
+def test_a_stall_abort_is_not_counted_as_a_ready_timeout(tmp_path: Path):
+    from logos_worker_node.calibration import VllmEngineStalled
+
+    result, managers, log_path = _search_with_ready_timeouts(tmp_path, VllmEngineStalled("engine warmup stalled: test"))
+
+    assert result.observed_reason == "engine-warmup-stalled"
+    assert result.retryable_fatal_reason == "engine-warmup-stalled"
+    assert managers["spawn"].call_count == 1
+    assert "ready timeout:" not in log_path.read_text()
+
+
+def _blacklist_lines(log_path: Path) -> list[str]:
+    path = log_path.parent / "calibration_failed_commands.txt"
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def test_a_failing_first_probe_is_blacklisted(tmp_path: Path):
+    _, _, log_path = _search_with_ready_timeouts(
+        tmp_path, RuntimeError("vLLM exited"), plan_extra={"kv_cache_memory_bytes": "2G"}
+    )
+
+    assert len(_blacklist_lines(log_path)) == 1
+
+
+def test_a_stall_abort_is_not_blacklisted(tmp_path: Path):
+    from logos_worker_node.calibration import VllmEngineStalled
+
+    result, _, log_path = _search_with_ready_timeouts(
+        tmp_path, VllmEngineStalled("engine warmup stalled: test"), plan_extra={"kv_cache_memory_bytes": "2G"}
+    )
+
+    assert result.retryable_fatal_reason == "engine-warmup-stalled"
+    assert _blacklist_lines(log_path) == []
+
+
+def test_a_stall_abort_is_marked_in_the_log_only_after_vllm_has_stopped(tmp_path: Path):
+    from logos_worker_node.calibration import VllmEngineStalled
+
+    log_dir = tmp_path / "calibration_logs"
+    log_dir.mkdir()
+    log_path = log_dir / "org__stuck-model.log"
+    patches = _patch_calibration_infra(
+        wait_ready_side_effect=VllmEngineStalled("engine warmup stalled: test"), gpu_vram_total_mb=24000.0
+    )
+    patches["spawn"] = _spawn_writing_log(log_path, "Warming up FlashInfer attention.\n")
+    managers = {k: p.__enter__() for k, p in patches.items()}
+    marked_when_stopped = []
+    managers["stop"].side_effect = lambda *_: marked_when_stopped.append(
+        "engine warmup stalled" in log_path.read_text()
+    )
+    try:
+        result = calibrate_model(
+            {"model": "org/stuck-model"},
+            vllm_binary="vllm",
+            port=11499,
+            log_dir=log_dir,
+            sleep_level=1,
+            ready_timeout_s=60.0,
+        )
+    finally:
+        for p in patches.values():
+            p.__exit__(None, None, None)
+
+    assert marked_when_stopped and not any(marked_when_stopped)
+    assert "[LOGOS] engine warmup stalled" in log_path.read_text()
+    assert result.retryable_fatal_reason == "engine-warmup-stalled"
+
+
+def test_cancel_wins_over_a_gpu_health_abort(monkeypatch):
+    from logos_worker_node import calibration
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    cancel = threading.Event()
+    cancel.set()
+
+    def unhealthy():
+        raise calibration.GpuHealthError("gpu-error", "GPU1.power='ERR!'")
+
+    monkeypatch.setattr(calibration, "_get", lambda *a, **k: (503, None))
+    with pytest.raises(RuntimeError, match="cancelled"):
+        calibration.wait_ready("http://x", 600.0, proc, cancel_event=cancel, watchdog=_Watchdog(check=unhealthy))
+
+
+def test_a_node_log_pattern_wins_over_a_gpu_health_abort(tmp_path: Path):
+    from logos_worker_node.calibration import GpuHealthError
+
+    result, managers, log_path = _search_with_ready_timeouts(
+        tmp_path,
+        GpuHealthError("gpu-error", "GPU1.power='ERR!'"),
+        log_text="OSError: [Errno 5] Input/output error\n",
+    )
+
+    assert result.node_unhealthy_reason == "filesystem-eio"
+    assert managers["spawn"].call_count == 1
+    assert "[LOGOS] gpu health: gpu-error" in log_path.read_text()
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs a Linux /proc")
+def test_compiler_running_sees_a_real_compiler_below_the_probe_only(tmp_path: Path):
+    import shutil
+    import subprocess
+    import sys
+
+    from logos_worker_node.calibration import _compiler_running
+
+    fake_compiler = tmp_path / "ninja"
+    shutil.copy(shutil.which("sleep"), fake_compiler)
+    probe = subprocess.Popen(
+        [sys.executable, "-c", "import subprocess, sys; subprocess.run([sys.argv[1], '30'])", str(fake_compiler)]
+    )
+    unrelated_compiler = subprocess.Popen([str(fake_compiler), "30"])
+    idle = subprocess.Popen(["sleep", "30"])
+    try:
+        deadline = time.monotonic() + 10
+        while not _compiler_running(probe.pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert _compiler_running(probe.pid)
+        assert not _compiler_running(idle.pid)
+        assert not _compiler_running(unrelated_compiler.pid)
+    finally:
+        for process in (probe, unrelated_compiler, idle):
+            process.kill()
+            process.wait()
+
+
+def _watchdog(tmp_path: Path, monkeypatch, compiling=False, gpu=None):
+    from logos_worker_node import calibration
+
+    log = tmp_path / "probe.log"
+    _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
+    clock = {"now": 0.0}
+    monkeypatch.setattr(calibration.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(calibration, "_compiler_running", lambda pid: compiling)
+    monkeypatch.setattr(calibration, "_GpuHealthWatch", lambda **_: lambda: gpu)
+    watchdog = calibration.ProbeWatchdog(MagicMock(pid=4242), log, 0, None)
+    original_check = watchdog.check
+
+    def check():
+        clock["now"] += calibration._LOG_CHECK_INTERVAL_S
+        original_check()
+
+    watchdog.check = check
+    return watchdog, log
+
+
+def test_probe_watchdog_needs_a_further_warning_after_it_first_saw_the_stall(tmp_path: Path, monkeypatch):
+    from logos_worker_node import calibration
+
+    watchdog, log = _watchdog(tmp_path, monkeypatch)
+    watchdog.check()
+    watchdog.check()
+    with log.open("a") as f:
+        f.write(_SHM_LINE.format(minute=25) + "\n")
+    with pytest.raises(calibration.VllmEngineStalled, match="engine warmup stalled"):
+        watchdog.check()
+
+
+def test_probe_watchdog_forgets_a_stall_that_stops_looking_like_one(tmp_path: Path, monkeypatch):
+    watchdog, log = _watchdog(tmp_path, monkeypatch)
+    watchdog.check()
+    with log.open("a") as f:
+        f.write("INFO: capturing CUDA graphs\n" + _SHM_LINE.format(minute=25) + "\n")
+    watchdog.check()
+    with log.open("a") as f:
+        f.write(_SHM_LINE.format(minute=26) + "\n")
+    watchdog.check()
+
+
+def test_probe_watchdog_does_not_report_a_stall_while_a_compiler_runs(tmp_path: Path, monkeypatch):
+    watchdog, log = _watchdog(tmp_path, monkeypatch, compiling=True)
+    watchdog.check()
+    with log.open("a") as f:
+        f.write(_SHM_LINE.format(minute=25) + "\n")
+    watchdog.check()
+    assert watchdog.compiling()
+
+
+def test_probe_watchdog_reads_the_log_only_once_per_interval(tmp_path: Path, monkeypatch):
+    from logos_worker_node import calibration
+
+    reads = []
+    monkeypatch.setattr(calibration, "_trailing_warnings", lambda *a: reads.append(1) or 0)
+    monkeypatch.setattr(calibration, "_GpuHealthWatch", lambda **_: lambda: None)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(calibration.time, "monotonic", lambda: clock["now"])
+    watchdog = calibration.ProbeWatchdog(MagicMock(pid=1), tmp_path / "probe.log", 0, None)
+    for _ in range(5):
+        watchdog.check()
+    assert len(reads) == 1
+    clock["now"] += calibration._LOG_CHECK_INTERVAL_S
+    watchdog.check()
+    assert len(reads) == 2
+
+
+def test_probe_watchdog_raises_the_gpu_error(tmp_path: Path, monkeypatch):
+    from logos_worker_node import calibration
+
+    watchdog, _ = _watchdog(tmp_path, monkeypatch, gpu=("gpu-error", "detail"))
+    with pytest.raises(calibration.GpuHealthError):
+        watchdog.check()
+
+
+class _Sensor:
+    def __init__(self, *states):
+        self.states = list(states)
+        self.calls = 0
+
+    def __call__(self):
+        from logos_worker_node.node_health import SensorResult
+
+        state = self.states[min(self.calls, len(self.states) - 1)]
+        self.calls += 1
+        return SensorResult(state=state, detail=f"detail for {state}")
+
+
+def _poll(watch, clock):
+    """One poll, then wait for the sensor thread it started and advance the clock."""
+    from logos_worker_node import calibration
+
+    answer = watch()
+    if watch._thread is not None:
+        watch._thread.join()
+    clock["now"] += calibration._GPU_HEALTH_INTERVAL_S
+    return answer
+
+
+def test_gpu_health_watch_needs_consecutive_bad_reads(monkeypatch):
+    from logos_worker_node import calibration
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(calibration.time, "monotonic", lambda: clock["now"])
+    watch = calibration._GpuHealthWatch(_Sensor("ok", "gpu-error", "ok", "gpu-error", "gpu-error"))
+    # A poll collects the previous check, so answers lag by one poll.
+    seen = [_poll(watch, clock) for _ in range(6)]
+    assert seen[:5] == [None, None, None, None, None]
+    assert seen[5] == ("gpu-error", "detail for gpu-error")
+
+
+def test_gpu_health_watch_is_rate_limited(monkeypatch):
+    from logos_worker_node import calibration
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(calibration.time, "monotonic", lambda: clock["now"])
+    sensor = _Sensor("gpu-na")
+    watch = calibration._GpuHealthWatch(sensor)
+    for _ in range(10):
+        watch()
+        if watch._thread is not None:
+            watch._thread.join()
+        clock["now"] += 1.0
+    assert sensor.calls == 1
+
+
+def test_gpu_health_watch_ignores_a_sensor_that_raises():
+    from logos_worker_node import calibration
+
+    def boom():
+        raise OSError("no nvidia-smi")
+
+    watch = calibration._GpuHealthWatch(boom)
+    assert watch() is None
+    watch._thread.join()
+    assert watch() is None
+
+
+def test_gpu_health_watch_warns_when_the_sensor_raises(caplog):
+    from logos_worker_node import calibration
+
+    def boom():
+        raise OSError("no nvidia-smi")
+
+    watch = calibration._GpuHealthWatch(boom)
+    with caplog.at_level("WARNING"):
+        watch()
+        watch._thread.join()
+    assert "this probe is not protected" in caplog.text
+
+
+def test_gpu_health_watch_does_not_wait_for_a_blocked_sensor():
+    from logos_worker_node import calibration
+
+    release = threading.Event()
+
+    def blocked():
+        release.wait(5.0)
+        raise OSError("never answers in time")
+
+    watch = calibration._GpuHealthWatch(blocked)
+    started = time.monotonic()
+    assert watch() is None
+    assert watch() is None
+    assert time.monotonic() - started < 1.0
+    release.set()
+    watch._thread.join()
+
+
+def test_gpu_health_watch_checks_only_the_probes_gpus(monkeypatch):
+    from logos_worker_node import calibration, node_health
+
+    seen = []
+
+    def fake_check(indices):
+        seen.append(indices)
+        return node_health.SensorResult(state="ok")
+
+    monkeypatch.setattr(node_health, "check_gpu", fake_check)
+    watch = calibration._GpuHealthWatch(gpu_indices=[2, 3])
+    watch()
+    watch._thread.join()
+    assert seen == [[2, 3]]
+
+
+def test_gpu_health_strikes_fit_inside_one_watchdog_tick():
+    from logos_worker_node import calibration, gpu_watchdog
+
+    assert calibration._GPU_HEALTH_STRIKES * calibration._GPU_HEALTH_INTERVAL_S <= gpu_watchdog.DEFAULT_POLL_INTERVAL_S
+
+
+def test_wait_ready_aborts_with_gpu_health_error(monkeypatch):
+    from logos_worker_node import calibration
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    monkeypatch.setattr(calibration, "_get", lambda *a, **k: (503, None))
+    monkeypatch.setattr(calibration.time, "sleep", lambda _: None)
+
+    def unhealthy():
+        raise calibration.GpuHealthError("gpu-error", "GPU1.power='ERR!'")
+
+    with pytest.raises(calibration.GpuHealthError) as error:
+        calibration.wait_ready("http://x", 600.0, proc, watchdog=_Watchdog(check=unhealthy))
+    assert error.value.reason_code == "gpu-error"
+
+
+def test_gpu_error_during_a_probe_aborts_the_calibration_without_blacklisting(tmp_path: Path):
+    from logos_worker_node.calibration import GpuHealthError
+
+    result, managers, log_path = _search_with_ready_timeouts(tmp_path, GpuHealthError("gpu-error", "GPU1.power='ERR!'"))
+
+    assert not result.success
+    assert result.node_unhealthy_reason == "gpu-error"
+    assert result.unsupported_reason is None
+    assert managers["spawn"].call_count == 1
+    assert "[LOGOS] gpu health: gpu-error: GPU1.power='ERR!'" in log_path.read_text()
