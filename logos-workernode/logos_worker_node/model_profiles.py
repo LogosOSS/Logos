@@ -246,46 +246,7 @@ class ModelProfileRecord:
         return self.base_residency_mb
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "loaded_vram_mb": self.loaded_vram_mb,
-            "sleeping_residual_mb": self.sleeping_residual_mb,
-            "disk_size_bytes": self.disk_size_bytes,
-            "base_residency_mb": self.base_residency_mb,
-            "kv_budget_mb": self.kv_budget_mb,
-            "min_kv_cache_mb": self.min_kv_cache_mb,
-            "max_kv_cache_mb": self.max_kv_cache_mb,
-            "engine": self.engine,
-            "observed_gpu_memory_utilization": self.observed_gpu_memory_utilization,
-            "min_gpu_memory_utilization_to_load": self.min_gpu_memory_utilization_to_load,
-            "tensor_parallel_size": self.tensor_parallel_size,
-            "kv_per_token_bytes": self.kv_per_token_bytes,
-            "num_key_value_heads": self.num_key_value_heads,
-            "max_context_length": self.max_context_length,
-            "min_context_fraction": self.min_context_fraction,
-            "measurement_count": self.measurement_count,
-            "last_measured_epoch": self.last_measured_epoch,
-            "residency_source": self.residency_source,
-            "enforce_eager_at_calibration": self.enforce_eager_at_calibration,
-            "host_ram_mb": self.host_ram_mb,
-            "host_ram_residual_mb": self.host_ram_residual_mb,
-            "sleep_l1_transient_host_ram_mb": self.sleep_l1_transient_host_ram_mb,
-            "sleep_l2_transient_host_ram_mb": self.sleep_l2_transient_host_ram_mb,
-            "cold_load_time_s": self.cold_load_time_s,
-            "wake_from_sleep_time_s": self.wake_from_sleep_time_s,
-            "sleep_mode_disabled": self.sleep_mode_disabled,
-            "calibration_unsupported": self.calibration_unsupported,
-            "calibration_unsupported_reason": self.calibration_unsupported_reason,
-            "metal_capacity_floor_mb": self.metal_capacity_floor_mb,
-            "calibration_max_model_len": self.calibration_max_model_len,
-            "calibration_max_num_seqs": self.calibration_max_num_seqs,
-            "kv_cache_to_max_model_len_pairs": self.kv_cache_to_max_model_len_pairs,
-            "sync_revision": self.sync_revision,
-            "calibration_id": self.calibration_id,
-            "calibration_origin": self.calibration_origin,
-            "calibration_stale": self.calibration_stale,
-            "calibration_key": self.calibration_key,
-            "calibration_duration_s": self.calibration_duration_s,
-        }
+        return {field.name: getattr(self, field.name) for field in fields(self)}
 
     def estimate_host_ram_mb(self) -> float:
         """Best estimate of awake host-RAM footprint for the lane process tree.
@@ -1062,43 +1023,18 @@ def _record_from_dict(data: dict[str, Any]) -> ModelProfileRecord:
         eager_at_cal = True
     pairs = data.get("kv_cache_to_max_model_len_pairs")
     key = data.get("calibration_key")
-    return ModelProfileRecord(
-        loaded_vram_mb=data.get("loaded_vram_mb"),
-        sleeping_residual_mb=data.get("sleeping_residual_mb"),
-        disk_size_bytes=data.get("disk_size_bytes"),
-        base_residency_mb=data.get("base_residency_mb"),
-        kv_budget_mb=data.get("kv_budget_mb"),
-        min_kv_cache_mb=data.get("min_kv_cache_mb"),
-        max_kv_cache_mb=data.get("max_kv_cache_mb"),
-        engine=data.get("engine"),
-        observed_gpu_memory_utilization=data.get("observed_gpu_memory_utilization"),
-        min_gpu_memory_utilization_to_load=data.get("min_gpu_memory_utilization_to_load"),
-        tensor_parallel_size=data.get("tensor_parallel_size"),
-        kv_per_token_bytes=data.get("kv_per_token_bytes"),
-        num_key_value_heads=data.get("num_key_value_heads"),
-        max_context_length=data.get("max_context_length"),
-        min_context_fraction=data.get("min_context_fraction"),
+    values = {name: data.get(name) for name in _RECORD_FIELDS}
+    values.update(
         measurement_count=int(data.get("measurement_count", 0) or 0),
         last_measured_epoch=float(data.get("last_measured_epoch", 0.0) or 0.0),
         residency_source=persisted_source or "cached",
         enforce_eager_at_calibration=eager_at_cal,
-        host_ram_mb=data.get("host_ram_mb"),
-        host_ram_residual_mb=data.get("host_ram_residual_mb"),
-        sleep_l1_transient_host_ram_mb=data.get("sleep_l1_transient_host_ram_mb"),
-        sleep_l2_transient_host_ram_mb=data.get("sleep_l2_transient_host_ram_mb"),
-        cold_load_time_s=data.get("cold_load_time_s"),
-        wake_from_sleep_time_s=data.get("wake_from_sleep_time_s"),
-        sleep_mode_disabled=data.get("sleep_mode_disabled"),
-        calibration_unsupported=data.get("calibration_unsupported"),
-        calibration_unsupported_reason=data.get("calibration_unsupported_reason"),
-        metal_capacity_floor_mb=data.get("metal_capacity_floor_mb"),
         calibration_max_model_len=_optional_int(data.get("calibration_max_model_len")),
         calibration_max_num_seqs=_optional_int(data.get("calibration_max_num_seqs")),
         kv_cache_to_max_model_len_pairs=pairs if isinstance(pairs, list) else None,
         sync_revision=int(data.get("sync_revision", 0) or 0),
         calibration_id=_optional_int(data.get("calibration_id")),
-        calibration_origin=data.get("calibration_origin"),
-        calibration_stale=data.get("calibration_stale"),
         calibration_key=key if isinstance(key, dict) else None,
         calibration_duration_s=_optional_float(data.get("calibration_duration_s")),
     )
+    return ModelProfileRecord(**values)

@@ -1979,7 +1979,7 @@ class DBManager:
         """Record the calibration key and GPU count each model has on the node.
 
         A model without a row gets an empty one, so a node that never ran the
-        model can still be offered a shared calibration.
+        model can still be offered a shared calibration. The caller commits.
         """
         if not key_hashes:
             return
@@ -2005,7 +2005,6 @@ class DBManager:
                 "slice_counts": [_slice_gpu_count(counts.get(name)) for name in key_hashes],
             },
         )
-        self.session.commit()
 
     def adopt_shared_calibrations(
         self, provider_id: int, model_names: List[str], adopt: bool = True
@@ -2013,15 +2012,14 @@ class DBManager:
         """Give a node another node's calibration for each model it fits.
 
         With ``adopt`` off, a shared calibration that no longer fits is only
-        dropped. Returns the (model, calibration_id) pairs adopted; commits
-        once.
+        dropped. Returns the (model, calibration_id) pairs adopted; the caller
+        commits.
         """
         adopted = []
         for model_name in self._adoption_candidates(provider_id, model_names):
             _, calibration_id = self._adopt_shared_calibration(provider_id, model_name, adopt)
             if calibration_id is not None:
                 adopted.append((model_name, calibration_id))
-        self.session.commit()
         return adopted
 
     def _adoption_candidates(self, provider_id: int, model_names: List[str]) -> List[str]:
@@ -2059,7 +2057,7 @@ class DBManager:
 
         ``skip`` names nodes to leave alone, e.g. one calibrating the model.
         Returns (provider, adopted calibration or None) for each profile that
-        changed; commits once.
+        changed; the caller commits.
         """
         rows = self.session.execute(
             text("""
@@ -2082,7 +2080,6 @@ class DBManager:
             did_change, calibration_id = self._adopt_shared_calibration(sibling, model_name)
             if did_change:
                 changed.append((sibling, calibration_id))
-        self.session.commit()
         return changed
 
     def _node_calibration_state(self, provider_id: int, model_name: str, lock: bool = False) -> Any:
@@ -2196,7 +2193,10 @@ class DBManager:
         return True, int(snapshot.id)
 
     def clear_calibration_unsupported(self, provider_id: int, model_name: str) -> Optional[int]:
-        """Drop a node's unsupported verdict; returns the new sync_revision."""
+        """Drop a node's unsupported verdict; returns the new sync_revision.
+
+        The caller commits.
+        """
         row = self.session.execute(
             text("""
                 UPDATE model_profiles
@@ -2209,7 +2209,6 @@ class DBManager:
             """),
             {"provider_id": provider_id, "model_name": model_name},
         ).fetchone()
-        self.session.commit()
         return int(row.sync_revision) if row is not None else None
 
     def reset_model_profiles(self, provider_id: int, model_names: Optional[List[str]] = None) -> List[str]:
@@ -2217,6 +2216,7 @@ class DBManager:
 
         A central change like any other: the bumped sync_revision rejects
         echoes of the old state. Snapshots and the context high-water mark stay.
+        The caller commits.
         """
         cleared = ", ".join(f"{column} = NULL" for column in _RESET_PROFILE_COLUMNS)
         sql = f"""
@@ -2233,13 +2233,13 @@ class DBManager:
             sql += " AND model_name = ANY(:model_names)"
             params["model_names"] = list(model_names)
         rows = self.session.execute(text(sql + " RETURNING model_name"), params).fetchall()
-        self.session.commit()
         return [str(r.model_name) for r in rows]
 
     def invalidate_model_calibration(self, calibration_id: int, reason: str) -> List[Tuple[int, str]]:
         """Stop trusting a calibration and strip it from every node using it.
 
-        Returns the (provider_id, model_name) rows that lost it.
+        Returns the (provider_id, model_name) rows that lost it; the caller
+        commits.
         """
         marked = self.session.execute(
             text("""
@@ -2251,10 +2251,8 @@ class DBManager:
             {"calibration_id": calibration_id, "reason": reason[:1000]},
         ).fetchone()
         if marked is None:
-            self.session.commit()
             return []
         cleared = self._clear_linked_calibration("calibration_id = :calibration_id", {"calibration_id": calibration_id})
-        self.session.commit()
         return cleared
 
     def _clear_linked_calibration(self, where: str, params: Dict[str, Any]) -> List[Tuple[int, str]]:
@@ -2288,7 +2286,7 @@ class DBManager:
         second node invalidates it for everyone, since one failure may have
         a cause of its own. Does nothing unless the node runs it as another
         node's snapshot. Returns the (provider_id, model_name) rows that
-        lost it.
+        lost it; the caller commits.
         """
         counted = self.session.execute(
             text("""
@@ -2306,7 +2304,6 @@ class DBManager:
             {"provider_id": provider_id, "model_name": model_name, "calibration_id": calibration_id},
         ).fetchone()
         if counted is None:
-            self.session.commit()
             return []
         if int(counted.rejections) >= _REJECTIONS_TO_INVALIDATE:
             return self.invalidate_model_calibration(
@@ -2316,7 +2313,6 @@ class DBManager:
             "provider_id = :provider_id AND model_name = :model_name AND calibration_id = :calibration_id",
             {"provider_id": provider_id, "model_name": model_name, "calibration_id": calibration_id},
         )
-        self.session.commit()
         return cleared
 
     def get_historic_max_context_by_model(self) -> Dict[str, int]:

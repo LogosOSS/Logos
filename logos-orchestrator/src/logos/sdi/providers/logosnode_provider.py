@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -702,40 +703,10 @@ class LogosNodeDataProvider:
         for model_name, data in raw_profiles.items():
             if not isinstance(data, dict):
                 continue
-            profiles[str(model_name)] = ModelProfile(
-                model_name=str(model_name),
-                loaded_vram_mb=data.get("loaded_vram_mb"),
-                sleeping_residual_mb=data.get("sleeping_residual_mb"),
-                disk_size_bytes=data.get("disk_size_bytes"),
-                base_residency_mb=data.get("base_residency_mb"),
-                kv_budget_mb=data.get("kv_budget_mb"),
-                min_kv_cache_mb=data.get("min_kv_cache_mb"),
-                max_kv_cache_mb=data.get("max_kv_cache_mb"),
-                kv_cache_to_max_model_len_pairs=data.get("kv_cache_to_max_model_len_pairs"),
-                engine=data.get("engine"),
-                observed_gpu_memory_utilization=data.get("observed_gpu_memory_utilization"),
-                min_gpu_memory_utilization_to_load=data.get("min_gpu_memory_utilization_to_load"),
-                tensor_parallel_size=data.get("tensor_parallel_size"),
-                enforce_eager_at_calibration=data.get("enforce_eager_at_calibration"),
-                kv_per_token_bytes=data.get("kv_per_token_bytes"),
-                num_key_value_heads=data.get("num_key_value_heads"),
-                max_context_length=data.get("max_context_length"),
-                min_context_fraction=data.get("min_context_fraction"),
-                measurement_count=int(data.get("measurement_count", 0) or 0),
-                last_measured_epoch=float(data.get("last_measured_epoch", 0.0) or 0.0),
-                residency_source=data.get("residency_source"),
-                sleep_l1_transient_host_ram_mb=data.get("sleep_l1_transient_host_ram_mb"),
-                sleep_l2_transient_host_ram_mb=data.get("sleep_l2_transient_host_ram_mb"),
-                cold_load_time_s=data.get("cold_load_time_s"),
-                wake_from_sleep_time_s=data.get("wake_from_sleep_time_s"),
-                host_ram_mb=data.get("host_ram_mb"),
-                host_ram_residual_mb=data.get("host_ram_residual_mb"),
-                sleep_mode_disabled=data.get("sleep_mode_disabled"),
-                calibration_unsupported=data.get("calibration_unsupported"),
-                calibration_unsupported_reason=data.get("calibration_unsupported_reason"),
-                metal_capacity_floor_mb=data.get("metal_capacity_floor_mb"),
-                calibration_stale=data.get("calibration_stale"),
-            )
+            values = {item.name: data.get(item.name) for item in fields(ModelProfile) if item.name != "model_name"}
+            values["measurement_count"] = int(data.get("measurement_count", 0) or 0)
+            values["last_measured_epoch"] = float(data.get("last_measured_epoch", 0.0) or 0.0)
+            profiles[str(model_name)] = ModelProfile(model_name=str(model_name), **values)
 
         if isinstance(raw_lanes, list):
             for lane in raw_lanes:

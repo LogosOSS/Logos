@@ -284,7 +284,9 @@ async def _handle_calibration_rejected(provider_id: int, event: Dict[str, Any]) 
 
     def _reject() -> list[tuple[int, str]]:
         with DBManager() as db:
-            return db.reject_shared_calibration(provider_id, model_name, calibration_id)
+            affected = db.reject_shared_calibration(provider_id, model_name, calibration_id)
+            db.session.commit()
+            return affected
 
     try:
         affected = await asyncio.to_thread(_reject)
@@ -508,6 +510,7 @@ def _update_reported_calibration_keys(
     """Store what a node reports about its models, then let it adopt."""
     with DBManager() as db:
         db.update_reported_calibration_keys(provider_id, calibration_key_hashes, slice_gpu_counts)
+        db.session.commit()
         try:
             with _adoption_gate:
                 # Its own result for the model in progress would be discarded.
@@ -515,6 +518,7 @@ def _update_reported_calibration_keys(
                 models = [name for name in calibration_key_hashes if name not in busy]
                 # Switched off, a calibration that stopped fitting still goes.
                 adopted = db.adopt_shared_calibrations(provider_id, models, adopt=shared_profiles_enabled())
+                db.session.commit()
         except Exception:
             # Sharing is an optimisation; it must not keep a worker from
             # starting or from receiving its profiles.
@@ -559,6 +563,7 @@ def _offer_calibrations_to_siblings(provider_id: int, model_names: list[str]) ->
                 adopters.setdefault(sibling, []).append(model_name)
                 if calibration_id is not None:
                     adopted.append((sibling, model_name, calibration_id))
+            db.session.commit()
     for sibling, names in adopters.items():
         for model_name in names:
             _profile_write_cache.forget(sibling, model_name)
@@ -880,6 +885,7 @@ async def logosnode_calibration_reservation(data: LogosNodeCalibrationReservatio
                     db.update_reported_calibration_keys(
                         provider_id, {data.model_name: data.calibration_key_hash}, counts
                     )
+                    db.session.commit()
             return _load_effective_profiles(provider_id, [data.model_name])
 
     return {"profiles": await asyncio.to_thread(_reserve)}
@@ -1224,7 +1230,9 @@ async def logosnode_clear_unsupported(data: LogosNodeClearUnsupportedRequest):
 
     def _clear() -> int | None:
         with DBManager() as db:
-            return db.clear_calibration_unsupported(data.provider_id, data.model_name)
+            revision = db.clear_calibration_unsupported(data.provider_id, data.model_name)
+            db.session.commit()
+            return revision
 
     revision = await asyncio.to_thread(_clear)
     if revision is None:
@@ -1241,7 +1249,9 @@ async def logosnode_invalidate_calibration(data: LogosNodeInvalidateCalibrationR
 
     def _invalidate() -> list[tuple[int, str]]:
         with DBManager() as db:
-            return db.invalidate_model_calibration(data.calibration_id, data.reason)
+            affected = db.invalidate_model_calibration(data.calibration_id, data.reason)
+            db.session.commit()
+            return affected
 
     affected = await asyncio.to_thread(_invalidate)
     by_provider: Dict[int, list[str]] = {}
@@ -1274,7 +1284,9 @@ async def logosnode_reset_profiles(data: LogosNodeResetProfilesRequest):
 
     def _reset() -> list[str]:
         with DBManager() as db:
-            return db.reset_model_profiles(data.provider_id, data.model_names)
+            reset = db.reset_model_profiles(data.provider_id, data.model_names)
+            db.session.commit()
+            return reset
 
     reset = await asyncio.to_thread(_reset)
     for model_name in reset:

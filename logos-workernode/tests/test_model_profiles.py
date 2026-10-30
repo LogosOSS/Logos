@@ -2,10 +2,10 @@
 
 import threading
 import time
+from dataclasses import fields
 
 import pytest
-
-from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry
+from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry, _record_from_dict
 
 
 def _round_trip(registry: ModelProfileRegistry, **kwargs) -> ModelProfileRegistry:
@@ -1155,3 +1155,12 @@ def test_a_local_calibration_awaits_its_snapshot_until_logos_links_it():
     assert registry.awaiting_snapshot_models() == ["org/m"]
     registry.replace_from_sync({"org/m": {"base_residency_mb": 1.0, "sync_revision": 1, "calibration_id": 4}})
     assert registry.awaiting_snapshot_models() == []
+
+
+def test_a_new_record_field_reaches_the_dict_and_comes_back():
+    record = ModelProfileRecord(
+        base_residency_mb=5.0, residency_source="measured", calibration_max_model_len=4096, host_ram_mb=7.0
+    )
+    echoed = record.to_dict()
+    assert set(echoed) == {field.name for field in fields(ModelProfileRecord)}
+    assert _record_from_dict(echoed).to_dict() == echoed

@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from logos.dbutils.dbmanager import (
+    _CALIBRATED_PROFILE_COLUMNS,
     _CENTRAL_PROFILE_ROW,
     _PERSIST_CENTRAL_PROFILE_SQL,
     _RESET_PROFILE_COLUMNS,
@@ -173,3 +174,25 @@ def test_no_models_cost_no_query():
 
 def test_an_old_snapshot_is_still_adopted():
     assert "calibrated_at >=" not in inspect.getsource(DBManager._adopt_shared_calibration)
+
+
+def test_the_profile_changes_leave_the_commit_to_the_caller():
+    calls = (
+        lambda db: db.update_reported_calibration_keys(7, {"a": "H"}),
+        lambda db: db.adopt_shared_calibrations(7, ["a"]),
+        lambda db: db.adopt_shared_calibration_for_siblings(7, "a"),
+        lambda db: db.clear_calibration_unsupported(7, "a"),
+        lambda db: db.reset_model_profiles(7),
+        lambda db: db.invalidate_model_calibration(1, "bad"),
+        lambda db: db.reject_shared_calibration(7, "a", 1),
+    )
+    for call in calls:
+        db = _db()
+        db.session.execute.return_value.fetchall.return_value = []
+        db.session.execute.return_value.fetchone.return_value = None
+        call(db)
+        db.session.commit.assert_not_called()
+
+
+def test_the_columns_a_calibration_clears_are_typed_columns():
+    assert set(_CALIBRATED_PROFILE_COLUMNS) <= set(_model_profile_column_params({}))
