@@ -1,8 +1,20 @@
 # src/logos/pipeline/correcting_scheduler.py
 """
-Classification-correcting scheduler that re-ranks candidates using ETTFT penalties.
+Classification-correcting scheduler that re-ranks candidates using ETTFT.
 
-corrected_score = classification_weight - range_scaled_penalty(expected_wait)
+Two ranking modes (existing ``ettft_enabled`` switch; no extra feature flag):
+
+- **Named-model peers** — the classified candidate list names exactly one
+  model_id (caller-named / proxy traffic, or a single classified model).
+  Same-model deployments are ordered by ascending true ``expected_wait_s``.
+  GPU-weighted (or uniform) randomness breaks only true wait ties. Prefix
+  affinity must not promote a higher-wait peer over a lower-wait one.
+- **Multi-model RESOURCE** — two or more distinct model_ids. Ranking uses
+  ``corrected_score = classification_weight - range_scaled_penalty(wait)``
+  with the existing prefix-affinity bonus on warm sticky workers.
+
+When ``ettft_enabled=False``, both modes fall back to pure classification
+weights (ablation baseline).
 
 Invariant: never promotes models not in the classification candidate list.
 Multi-provider: expands all deployments per model_id so the same model on
@@ -13,6 +25,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import math
 import os
 import random
 import time
@@ -23,6 +36,7 @@ from logos.benchmarks.reservations import benchmark_reservations
 from logos.context_budget import estimate_prompt_tokens
 from logos.monitoring import prometheus_metrics as prom
 from logos.queue.priority_queue import Priority
+from logos.residency_policy import configured_residency_policy
 from logos.terminal_logging import style_model, style_provider
 from logos.timeouts import global_timeout_s
 
@@ -56,13 +70,28 @@ PREFIX_AFFINITY_BONUS_FRACTION = 0.25
 
 class ClassificationCorrectingScheduler(BaseScheduler):
     """
-    Re-ranks classification candidates using range-scaled ETTFT penalties.
+    Re-ranks classification candidates using ETTFT.
 
     When ettft_enabled=True (default):
-        corrected = weight - (wait/horizon × span × strength)
+        - One unique classified model_id → ascending true expected_wait_s
+          among that model's deployments (named-model peer ranking).
+        - Multiple model_ids → corrected = weight - (wait/horizon × span × strength).
     When ettft_enabled=False:
-        corrected = weight (pure classification ordering, ablation baseline)
+        corrected = weight (pure classification ordering, ablation baseline).
     """
+
+    @staticmethod
+    def _named_model_peer_ranking(candidates: List[Tuple[int, float, int]], ettft_enabled: bool) -> bool:
+        """Whether to rank same-model deployments by ascending expected_wait_s.
+
+        Triggered when ETTFT correction is on and the candidate list contains
+        exactly one distinct model_id — the proxy / named-model case and the
+        single-candidate classification case. Multi-model RESOURCE lists keep
+        classification-weighted scoring.
+        """
+        if not ettft_enabled or not candidates:
+            return False
+        return len({model_id for model_id, _, _ in candidates}) == 1
 
     def __init__(
         self,
@@ -83,6 +112,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             on_capacity_needed,
         )
         self._ettft_enabled = ettft_enabled
+        self._residency_policy = configured_residency_policy()
         # Whether an operator locked a worker (set by main once the capacity
         # planner exists). Nothing wakes or loads a lane there on its own, so
         # only a lane already awake can serve a request.
@@ -103,6 +133,14 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 logger.info("ECCS weight overrides: %s", self._weight_overrides)
             except (json.JSONDecodeError, ValueError, TypeError):
                 logger.warning("Invalid ECCS_WEIGHT_OVERRIDE, ignoring: %s", _override_raw)
+
+    def _uses_ettft_routing(self) -> bool:
+        return getattr(self, "_residency_policy", "demand") != "simple"
+
+    @staticmethod
+    def _simple_candidate_key(candidate: tuple) -> tuple:
+        model_id, provider_id, _ptype, score, _priority, estimate = candidate
+        return (-score, estimate.tier not in {ReadinessTier.WARM, ReadinessTier.BUSY}, provider_id, model_id)
 
     def _log_decision(
         self,
@@ -160,14 +198,14 @@ class ClassificationCorrectingScheduler(BaseScheduler):
 
     async def schedule(self, request: SchedulingRequest) -> Optional[SchedulingResult]:
         """
-        Select a model from candidates based on ETTFT-corrected scores.
+        Select a model from candidates based on ETTFT ranking.
 
         1. For each candidate × each deployment, compute EttftEstimate
-        2. Compute corrected_score using range-scaled penalty
-        3. Sort by corrected_score descending
-        4. Try try_reserve_capacity on each logosnode candidate in order
-        5. Azure candidates: accept if not UNAVAILABLE
-        6. If none immediately available: queue on best logosnode candidate
+        2. Rank: named-model peers by ascending expected_wait_s; otherwise
+           by corrected_score (weight − range-scaled wait penalty) descending
+        3. Try try_reserve_capacity on each logosnode candidate in order
+        4. Azure candidates: accept if not UNAVAILABLE
+        5. If none immediately available: queue on best logosnode candidate
         """
         with perf_trace.phase(request.request_id, "schedule.affinity"):
             affinity = self._resolve_affinity(request)
@@ -179,9 +217,11 @@ class ClassificationCorrectingScheduler(BaseScheduler):
 
         with perf_trace.phase(request.request_id, "schedule.tokens"):
             input_tokens = estimate_prompt_tokens(request.payload)
+        classified = request.classified_models or []
+        named_model_peers = self._named_model_peer_ranking(classified, self._ettft_enabled)
         with perf_trace.phase(request.request_id, "schedule.score"):
             scored = self._compute_candidate_scores(
-                request.classified_models or [],
+                classified,
                 deployments,
                 affinity,
                 input_tokens=input_tokens,
@@ -194,7 +234,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         if best is not None:
             model_id, provider_id, provider_type, score, priority_int, ettft = best
             self._record_affinity(request, model_id, provider_id, provider_type, affinity)
-            self._log_decision(request.request_id, scored, request.classified_models or [], best, False)
+            self._log_decision(request.request_id, scored, classified, best, False)
             with perf_trace.phase(request.request_id, "schedule.metrics"):
                 self._record_scheduling_metrics(model_id, provider_id, ettft)
             result = self._create_result(
@@ -214,12 +254,12 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         # No immediate candidate — queue on the best logosnode candidate.
         # Cloud providers don't queue (accept or reject immediately).
         if not scored:
-            self._log_decision(request.request_id, [], request.classified_models or [], None, False)
+            self._log_decision(request.request_id, [], classified, None, False)
             return None
 
         logosnode_candidates = [s for s in scored if s[2] == "logosnode"]
         if not logosnode_candidates:
-            self._log_decision(request.request_id, scored, request.classified_models or [], None, False)
+            self._log_decision(request.request_id, scored, classified, None, False)
             return None  # All cloud, none accepted → caller returns 503
 
         # Diagnostic only: the candidate's provider_id is no longer a binding
@@ -227,22 +267,28 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         # this request when its lane releases. The picked candidate is just
         # the representative used to record ETTFT tier and originating
         # provider in metadata.
+        #
+        # Named-model peer ranking already ordered by ascending true wait, so
+        # the head (and any true wait-tie group) is the right representative.
+        # Multi-model keeps corrected_score ties. Random among the tied head
+        # matches the pre-existing equal-score queue pick.
         top_score = logosnode_candidates[0][3]
-        tied = [s for s in logosnode_candidates if abs(s[3] - top_score) < 1e-9]
-        # Break ties randomly so queue load is spread across workers rather
-        # than always pinning to the first in sort order (lowest provider_id).
+        tied = [s for s in logosnode_candidates if self._ranking_scores_tie(s[3], top_score)]
         logosnode_candidate = random.choice(tied)
         if len(tied) > 1:
             tied_desc = ", ".join(
-                f"model={m} worker={self._logosnode.get_provider_name(p) or p} tier={e.tier.value}"
+                f"model={m} worker={self._logosnode.get_provider_name(p) or p} "
+                f"tier={e.tier.value} wait={e.expected_wait_s:.1f}s"
                 for m, p, _, _, _, e in tied
             )
             logger.info(
-                "Tied logosnode candidates for request %s (top score=%.2f, count=%d): %s"
-                " — picked worker=%s randomly; model-only queue: any of these workers may dispatch.",
+                "Tied logosnode candidates for request %s (top score=%.2f, count=%d, "
+                "named_model_peers=%s): %s — picked worker=%s randomly; "
+                "model-only queue: any of these workers may dispatch.",
                 request.request_id,
                 top_score,
                 len(tied),
+                named_model_peers,
                 tied_desc,
                 self._logosnode.get_provider_name(logosnode_candidate[1]) or logosnode_candidate[1],
             )
@@ -250,7 +296,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         self._log_decision(
             request.request_id,
             scored,
-            request.classified_models or [],
+            classified,
             logosnode_candidate,
             True,
         )
@@ -404,6 +450,27 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         """Tell the scheduler which workers an operator locked (see _compute_candidate_scores)."""
         self._worker_locked = worker_locked
 
+    def _ranking_score(
+        self,
+        weight: float,
+        expected_wait_s: float,
+        weight_span: float,
+        *,
+        named_model_peers: bool,
+    ) -> float:
+        """Ranking key stored in scored tuples (higher is better).
+
+        Named-model peers use ``-expected_wait_s`` so descending sort is
+        ascending true wait, and only exact wait ties share a key (GPU /
+        random break those). Multi-model RESOURCE keeps the range-scaled
+        corrected score. With ETTFT off, both paths reduce to ``weight``.
+        """
+        if not self._ettft_enabled or not self._uses_ettft_routing():
+            return weight
+        if named_model_peers:
+            return -expected_wait_s
+        return compute_corrected_score(weight, expected_wait_s, weight_span)
+
     def _compute_candidate_scores(
         self,
         candidates: List[Tuple[int, float, int]],
@@ -418,13 +485,15 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         producing one scored entry per (model_id, provider_id) pair.
 
         ``affinity`` maps model_id → the worker that last served this
-        request's prefix. A warm candidate on that worker gets a bounded
-        bonus so the stream stays put; the bonus is small enough that a
-        meaningfully faster peer still wins.
+        request's prefix. In multi-model RESOURCE mode a warm candidate on
+        that worker gets a bounded bonus so the stream stays put when peers
+        are comparable. Named-model peer ranking ignores the bonus so a
+        higher true wait cannot win via stickiness.
 
         Returns list of (model_id, provider_id, provider_type,
-                         corrected_score, priority_int, ettft)
-        sorted by corrected_score descending.
+                         ranking_score, priority_int, ettft)
+        sorted by ranking_score descending (named-model: lower wait first;
+        multi-model: higher corrected_score first).
         """
         scored = []
         unavailable_fallbacks = []
@@ -433,6 +502,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         # Apply weight overrides for controlled ablation experiments
         if self._weight_overrides:
             candidates = [(mid, self._weight_overrides.get(mid, w), pint) for mid, w, pint in candidates]
+
+        named_model_peers = self._named_model_peer_ranking(candidates, self._ettft_enabled)
 
         # Compute weight span across all (possibly overridden) weights
         all_weights = [weight for _, weight, _ in candidates]
@@ -449,7 +520,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 provider_type = deployment["type"]
                 provider_id = deployment["provider_id"]
 
-                # Hotfix: never score or fall back to a logosnode provider whose
+                # Hot path: never score or fall back to a logosnode provider whose
                 # worker session is gone — context resolution would raise
                 # LogosNodeOfflineError("No active logosnode worker session"),
                 # which the unavailable-fallback path can't recover from
@@ -494,42 +565,59 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                     # transitioning (sleep→wake) and will become available.
                     # Cloud unavailable means truly rate-limited → skip.
                     if provider_type == "logosnode":
+                        # Multi-model RESOURCE (and ETTFT-off) keep the historical
+                        # cold-load stand-in. Named-model peers alone may keep a
+                        # finite estimator wait so unavailable representatives
+                        # still strict-rank by true expected_wait_s.
+                        if named_model_peers and math.isfinite(ettft.expected_wait_s) and ettft.expected_wait_s > 0:
+                            fallback_wait = ettft.expected_wait_s
+                            state_overhead_s = min(fallback_wait, OVERHEAD_COLD_S)
+                        else:
+                            fallback_wait = OVERHEAD_COLD_S
+                            state_overhead_s = OVERHEAD_COLD_S
                         fallback_ettft = EttftEstimate(
-                            expected_wait_s=OVERHEAD_COLD_S,
+                            expected_wait_s=fallback_wait,
                             tier=ReadinessTier.COLD,
                             reasoning=f"Fallback: {ettft.reasoning} — queueing as cold",
-                            state_overhead_s=OVERHEAD_COLD_S,
+                            state_overhead_s=state_overhead_s,
                             warmth_state=-1,
                         )
-                        corrected = compute_corrected_score(
+                        ranking = self._ranking_score(
                             weight,
-                            (fallback_ettft.expected_wait_s if self._ettft_enabled else 0.0),
+                            fallback_ettft.expected_wait_s,
                             weight_span,
+                            named_model_peers=named_model_peers,
                         )
                         unavailable_fallbacks.append(
                             (
                                 model_id,
                                 provider_id,
                                 provider_type,
-                                corrected,
+                                ranking,
                                 priority_int,
                                 fallback_ettft,
                             )
                         )
                     continue
 
-                corrected = compute_corrected_score(
+                ranking = self._ranking_score(
                     weight,
-                    ettft.expected_wait_s if self._ettft_enabled else 0.0,
+                    ettft.expected_wait_s,
                     weight_span,
+                    named_model_peers=named_model_peers,
                 )
 
-                # Prefix-cache stickiness: only for a warm lane on the worker
-                # that already holds this stream's KV blocks. Restricting it
-                # to WARM keeps affinity from waking a sleeping worker or
-                # forcing a cold load just to stay on the familiar one.
-                if affinity.get(model_id) == provider_id and ettft.tier == ReadinessTier.WARM:
-                    corrected += affinity_bonus
+                # Prefix-cache stickiness (multi-model RESOURCE only): warm
+                # lane on the worker that already holds this stream's KV.
+                # Named-model peer ranking omits the bonus so stickiness
+                # cannot outrank a strictly lower true expected_wait_s.
+                if (
+                    self._uses_ettft_routing()
+                    and not named_model_peers
+                    and affinity.get(model_id) == provider_id
+                    and ettft.tier == ReadinessTier.WARM
+                ):
+                    ranking += affinity_bonus
                     logger.debug(
                         "Prefix affinity bonus %.2f for model=%s worker=%s",
                         affinity_bonus,
@@ -542,7 +630,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                         model_id,
                         provider_id,
                         provider_type,
-                        corrected,
+                        ranking,
                         priority_int,
                         ettft,
                     )
@@ -551,7 +639,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         scored.sort(key=lambda x: x[3], reverse=True)
 
         # If all candidates were UNAVAILABLE, use logosnode fallbacks so we
-        # queue instead of returning 503.
+        # queue instead of returning 503. Same ranking key as the live path
+        # (named-model: ascending true wait; multi-model: corrected_score).
         if not scored and unavailable_fallbacks:
             unavailable_fallbacks.sort(key=lambda x: x[3], reverse=True)
             scored = unavailable_fallbacks
@@ -560,9 +649,11 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 len(scored),
             )
 
-        if scored and self._ettft_enabled:
+        if scored and self._ettft_enabled and self._uses_ettft_routing():
+            mode = "named-model-wait" if named_model_peers else "multi-model-corrected"
             logger.info(
-                "ETTFT ranking: %s",
+                "ETTFT ranking (%s): %s",
+                mode,
                 ", ".join(
                     f"model={self._logosnode.get_model_name(m, p) or m} "
                     f"worker={self._logosnode.get_provider_name(p) or p} "
@@ -571,6 +662,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 ),
             )
 
+        if not self._uses_ettft_routing():
+            scored.sort(key=self._simple_candidate_key)
         return scored
 
     def _record_scheduling_metrics(self, model_id: int, provider_id: int, ettft: "EttftEstimate") -> None:
@@ -855,6 +948,22 @@ class ClassificationCorrectingScheduler(BaseScheduler):
     # differ in the last few ULPs without being meaningfully different.
     _TIE_EPSILON = 1e-9
 
+    @classmethod
+    def _ranking_scores_tie(cls, a: float, b: float, epsilon: Optional[float] = None) -> bool:
+        """Whether two ranking keys should share a tie zone.
+
+        Exact equality is checked first so matching infinities (``-inf`` vs
+        ``-inf``, or ``+inf`` vs ``+inf``) count as ties. Opposite-signed
+        infinities do not. Finite values keep the historical abs-epsilon
+        comparison; non-finite mismatches are never epsilon-tied.
+        """
+        if a == b:
+            return True
+        if not math.isfinite(a) or not math.isfinite(b):
+            return False
+        tol = cls._TIE_EPSILON if epsilon is None else epsilon
+        return abs(a - b) < tol
+
     def _candidate_weight(self, candidate: tuple) -> float:
         """Weight for weighted-RR tie-break. logosnode candidates use the
         worker's declared `gpu_performance_score` (default 100). Azure /
@@ -889,7 +998,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         while i < n:
             anchor = scored[i][3]
             j = i + 1
-            while j < n and abs(scored[j][3] - anchor) < self._TIE_EPSILON:
+            while j < n and self._ranking_scores_tie(scored[j][3], anchor):
                 j += 1
             zone = scored[i:j]
             if len(zone) > 1:
@@ -939,7 +1048,11 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         # before walking the list. Same-score warm logosnode workers
         # are weighted by gpu_performance_score so the faster GPU
         # absorbs proportionally more traffic.
-        scored = self._weighted_shuffle_tied(scored)
+        scored = (
+            self._weighted_shuffle_tied(scored)
+            if self._uses_ettft_routing()
+            else sorted(scored, key=self._simple_candidate_key)
+        )
         for idx, (
             model_id,
             provider_id,

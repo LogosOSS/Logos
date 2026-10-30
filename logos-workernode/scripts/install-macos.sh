@@ -56,30 +56,30 @@ export LOGOS_METAL_VENV="$METAL_VENV"
 # use. Bump ref and checksums together when upgrading (and re-check the patch
 # patterns below against the new installer — see the version-pinning section
 # of MACOS.md).
-VLLM_METAL_REF="v0.31.0"
+VLLM_METAL_REF="v0.32.0"
 VLLM_METAL_INSTALLER="https://raw.githubusercontent.com/vllm-project/vllm-metal/${VLLM_METAL_REF}/install.sh"
-# Unchanged from v0.28.0 on purpose, not an oversight: install.sh and
-# scripts/lib.sh are byte-identical at both tags (re-verified against
-# v0.29.0), so only the wheels below move. Always re-compute these when
-# bumping — an identical checksum is a fact to confirm, never to assume.
-VLLM_METAL_INSTALLER_SHA256="ce9894403571fd662a47c2c3f4d84eb2ba3079480bf65cd6bddf8dfa2642277c"
+# Always re-compute these when bumping — an identical checksum is a fact to
+# confirm, never to assume (install.sh / lib.sh have been byte-identical across
+# some past tags, and have not been across others).
+VLLM_METAL_INSTALLER_SHA256="b3b8b7a283a508c5fa1421bdd8f76ce4e02e0b768029cbdc3dde6c864d3de597"
 # The pinned installer performs further fetches of its own before it installs
 # anything — and it only checksums itself. At this tag it sources
 # scripts/lib.sh from the mutable `main` branch (executed code!), selects the
-# vllm-metal wheel from /releases/latest, and derives the vLLM core wheel URL
-# from a release lookup. So each of those artifacts is fetched from the
-# pinned tag and verified HERE, before the installer ever runs, and the
-# installer is patched to consume the verified copies:
+# vllm-metal wheel from /releases/latest, and discovers a vLLM core wheel by
+# probing release URLs. So each of those artifacts is fetched from the pinned
+# tag and verified HERE, before the installer ever runs, and the installer is
+# patched to consume the verified copies:
 VLLM_METAL_LIB="https://raw.githubusercontent.com/vllm-project/vllm-metal/${VLLM_METAL_REF}/scripts/lib.sh"
-VLLM_METAL_LIB_SHA256="8131890a883ee4a49acbf5e160b2ecafabd3e0ef248dab064f8747664307fe53"
-VLLM_METAL_WHEEL_NAME="vllm_metal-0.31.0-cp312-cp312-macosx_15_0_arm64.whl"
+VLLM_METAL_LIB_SHA256="f309a3430bb5c1f06e9d91a7fadd90bfa83f2567641bc85e9237227d96fc1d27"
+VLLM_METAL_WHEEL_NAME="vllm_metal-0.32.0-cp312-cp312-macosx_15_0_arm64.whl"
 VLLM_METAL_WHEEL_URL="https://github.com/vllm-project/vllm-metal/releases/download/${VLLM_METAL_REF}/${VLLM_METAL_WHEEL_NAME}"
-VLLM_METAL_WHEEL_SHA256="e2ab31296f8c42d8b65c8d5f5490f160087d1070178444870a5672e44aaacf6e"
-# vLLM core wheel (cp312 — the installer's lib.sh creates the venv with
-# Python 3.12). PyPI carries no macOS vLLM wheel, hence the release URL.
-VLLM_CORE_WHEEL_NAME="vllm-0.31.0+cpu-cp312-cp312-macosx_11_0_arm64.whl"
-VLLM_CORE_WHEEL_URL="https://github.com/vllm-project/vllm/releases/download/v0.31.0/vllm-0.31.0%2Bcpu-cp312-cp312-macosx_11_0_arm64.whl"
-VLLM_CORE_WHEEL_SHA256="21378516a51ff15029f71168e827b94660e21b39484eb52277166f01ac7dd686"
+VLLM_METAL_WHEEL_SHA256="458d34157eb02a6bfb0e293c70485df18f72b7eb1d1ce8f1eefea95ba47ab63c"
+# vLLM core wheel (macOS arm64 CPU build from the vLLM release assets; the
+# Python / platform tags in the filename change across releases). PyPI carries
+# no macOS vLLM wheel, hence the release URL.
+VLLM_CORE_WHEEL_NAME="vllm-0.32.0+cpu-cp38-abi3-macosx_11_0_arm64.whl"
+VLLM_CORE_WHEEL_URL="https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0%2Bcpu-cp38-abi3-macosx_11_0_arm64.whl"
+VLLM_CORE_WHEEL_SHA256="c28cf0fede58f02c4886d2794217ec3c7e4bbd22dfeb16b4b32586a8f230bb75"
 # Two different things, deliberately separate.
 #
 # PINNED is the version of the wheels above — what the managed default venv is
@@ -92,7 +92,7 @@ VLLM_CORE_WHEEL_SHA256="21378516a51ff15029f71168e827b94660e21b39484eb52277166f01
 # venvs, which only have to be new enough. A routine release bump is NOT a new
 # compatibility requirement, so the workflow leaves this alone — raise it by
 # hand only when something genuinely stops working below that version.
-VLLM_METAL_PINNED_VERSION="0.31.0"
+VLLM_METAL_PINNED_VERSION="0.32.0"
 VLLM_METAL_MIN_VERSION="0.29.0"
 
 log()  { printf '\033[1;36m[install]\033[0m %s\n' "$*"; }
@@ -283,9 +283,28 @@ pin(
     "lib.sh source (was: mutable main branch)",
 )
 pin(
-    '  local vllm_wheel_url="https://github.com/vllm-project/vllm/releases/download/${vllm_release_tag}/vllm-${vllm_version}%2Bcpu-cp312-cp312-macosx_11_0_arm64.whl"',
-    f'  local vllm_wheel_url="{stage}/wheels/{vllm_wheel}"  # pinned + sha256-verified by logos install-macos.sh',
-    "vLLM core wheel URL",
+    """  # vLLM 0.32 tags its macOS wheel cp38-abi3; earlier releases use cp312-cp312.
+  # SCAFFOLDING: remove cp312-cp312 when the latest stable release pins vLLM >= 0.32.
+  for wheel_tag in cp38-abi3 cp312-cp312; do
+    candidate_url="${download_url}/vllm-${vllm_version}%2Bcpu-${wheel_tag}-macosx_11_0_arm64.whl"
+    status=$(curl -sIL --retry 3 -o /dev/null -w '%{http_code}' "$candidate_url" || true)
+    if [[ "$status" == 200 ]]; then
+      vllm_wheel_url="$candidate_url"
+      break
+    fi
+    if [[ "$status" != 404 ]]; then
+      error "Failed to reach ${candidate_url} (HTTP ${status})."
+      echo "Please check your internet connection and try again." >&2
+      exit 1
+    fi
+  done
+
+  if [[ -z "$vllm_wheel_url" ]]; then
+    error "vLLM ${vllm_release_tag} has no prebuilt macOS arm64 wheel."
+    exit 1
+  fi""",
+    f'  vllm_wheel_url="{stage}/wheels/{vllm_wheel}"  # pinned + sha256-verified by logos install-macos.sh',
+    "vLLM core wheel URL (was: upstream release-URL discovery)",
 )
 pin(
     """    release_data=$(fetch_release "$repo_owner" "$repo_name" "$channel")

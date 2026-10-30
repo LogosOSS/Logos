@@ -1,0 +1,38 @@
+# Timing model and source mounts for an isolated synthetic performance run.
+services:
+  logos-db:
+    image: ${E2E_PERF_DB_IMAGE}
+  logos-orchestrator:
+    image: ${E2E_PERF_ORCHESTRATOR_IMAGE}
+    volumes:
+      - ../../../logos-orchestrator/src/logos:/app/src/logos:ro
+    environment:
+      LOGOS_CAPACITY_CYCLE_S: ${E2E_PERF_CYCLE_S}
+      LOGOS_LANE_MIN_TENURE_S: ${E2E_PERF_TENURE_S}
+      LOGOS_LANE_COLD_WAITER_TENURE_S: ${E2E_PERF_COLD_TENURE_S}
+      LOGOS_WAKE_FAILURE_COOLDOWN_S: ${E2E_PERF_WAKE_BACKOFF_S}
+      LOGOS_LOAD_FAILURE_COOLDOWN_S: ${E2E_PERF_LOAD_BACKOFF_S}
+      LOGOS_IDLE_SLEEP_L1_S: ${E2E_PERF_IDLE_S}
+      LOGOS_TIMEOUT_S: "1200"
+  node-ada-a:
+    image: ${E2E_PERF_NODE_A_IMAGE}
+    volumes:
+      - ../:/app/harness:ro
+      - ${E2E_PERF_TIMING_PROFILE_HOST:-../gpusim/timing_profiles/dual_ada_v1.json}:/app/timing-profile.json:ro
+      - ../../../logos-workernode/logos_worker_node:/app/logos_worker_node:ro
+      - ../nodesim/entrypoint.py:/app/entrypoint.py:ro
+    environment:
+      LOGOS_SIM_TIMING_PROFILE: /app/timing-profile.json
+      LOGOS_SIM_TIME_FACTOR: ${E2E_PERF_TIME_FACTOR}
+      LOGOS_SIM_EVENTS_FILE: /app/state/events.jsonl
+  node-ada-b:
+    image: ${E2E_PERF_NODE_B_IMAGE}
+    volumes:
+      - ../:/app/harness:ro
+      - ${E2E_PERF_TIMING_PROFILE_HOST:-../gpusim/timing_profiles/dual_ada_v1.json}:/app/timing-profile.json:ro
+      - ../../../logos-workernode/logos_worker_node:/app/logos_worker_node:ro
+      - ../nodesim/entrypoint.py:/app/entrypoint.py:ro
+    environment:
+      LOGOS_SIM_TIMING_PROFILE: /app/timing-profile.json
+      LOGOS_SIM_TIME_FACTOR: ${E2E_PERF_TIME_FACTOR}
+      LOGOS_SIM_EVENTS_FILE: /app/state/events.jsonl

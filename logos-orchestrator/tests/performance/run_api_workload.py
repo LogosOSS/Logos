@@ -41,14 +41,20 @@ from typing import Dict, List, Optional, Sequence
 from urllib.parse import urlparse
 
 import httpx
-import matplotlib
 from sqlalchemy import text
 
 from logos import DBManager
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator, ScalarFormatter
+try:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import MaxNLocator, ScalarFormatter
+except ImportError as exc:  # pragma: no cover - optional charting for this script
+    raise SystemExit(
+        "matplotlib is required for run_api_workload charts; install it from benchmarks/requirements.txt"
+    ) from exc
 
 
 @dataclass(slots=True)

@@ -182,9 +182,42 @@ jobs:
           set -euo pipefail
           work=$(mktemp -d)
 
-          METAL_WHEEL="vllm_metal-${VERSION}-cp312-cp312-macosx_15_0_arm64.whl"
           curl -fsSL "https://raw.githubusercontent.com/${UPSTREAM}/${TAG}/install.sh"       -o "$work/install.sh"
           curl -fsSL "https://raw.githubusercontent.com/${UPSTREAM}/${TAG}/scripts/lib.sh"   -o "$work/lib.sh"
+
+          # Resolve wheel filenames from the release asset list rather than
+          # hard-coding the Python / macOS platform tags (those flipped from
+          # cp312-cp312 to cp38-abi3 at vLLM 0.32 and will flip again). Match
+          # the prebuilt macOS arm64 wheel; fail if none or if several remain
+          # after the version filter so an ambiguous release cannot silently
+          # pick the wrong artifact.
+          pick_release_wheel() {
+            local repo="$1" tag="$2" pattern="$3" label="$4"
+            local names
+            # One-liner keeps the YAML block scalar intact (a multi-line
+            # python -c body at column 0 would close the run: | block).
+            names=$(curl -fsSL \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${repo}/releases/tags/${tag}" \
+              | python3 -c "import json,re,sys; p=re.compile(sys.argv[1]); a=json.load(sys.stdin).get('assets') or []; print('\\n'.join(sorted(x['name'] for x in a if p.match(x.get('name') or ''))))" "$pattern")
+            case "$(printf '%s' "$names" | grep -c . || true)" in
+              1) printf '%s' "$names" ;;
+              0)
+                echo "::error::No ${label} wheel matching /${pattern}/ on ${repo}@${tag}."
+                exit 1
+                ;;
+              *)
+                echo "::error::Ambiguous ${label} wheels on ${repo}@${tag}:"
+                printf '%s\n' "$names" | sed 's/^/  /'
+                exit 1
+                ;;
+            esac
+          }
+
+          METAL_WHEEL=$(pick_release_wheel "$UPSTREAM" "$TAG" \
+            "^vllm_metal-${VERSION//./\\.}-.+-macosx_[0-9]+_[0-9]+_arm64\\.whl$" \
+            "vllm-metal")
           curl -fsSL "https://github.com/${UPSTREAM}/releases/download/${TAG}/${METAL_WHEEL}" -o "$work/$METAL_WHEEL"
 
           # The vLLM core wheel version is not always equal to the vllm-metal
@@ -198,12 +231,12 @@ jobs:
             *) VLLM_TAG="v$VERSION" ;;
           esac
           VLLM_VERSION="${VLLM_TAG#v}"
-          CORE_WHEEL="vllm-${VLLM_VERSION}+cpu-cp312-cp312-macosx_11_0_arm64.whl"
-          CORE_URL="https://github.com/vllm-project/vllm/releases/download/${VLLM_TAG}/vllm-${VLLM_VERSION}%2Bcpu-cp312-cp312-macosx_11_0_arm64.whl"
-          if ! curl -fsSL "$CORE_URL" -o "$work/$CORE_WHEEL"; then
-            echo "::error::Could not download the vLLM core wheel for $VLLM_TAG ($CORE_URL). Upstream may have changed how the core wheel is named or which release it comes from."
-            exit 1
-          fi
+          CORE_WHEEL=$(pick_release_wheel "vllm-project/vllm" "$VLLM_TAG" \
+            "^vllm-${VLLM_VERSION//./\\.}\\+cpu-.+-macosx_[0-9]+_[0-9]+_arm64\\.whl$" \
+            "vLLM core")
+          # GitHub release asset URLs encode '+' as %2B.
+          CORE_URL="https://github.com/vllm-project/vllm/releases/download/${VLLM_TAG}/${CORE_WHEEL/+/%2B}"
+          curl -fsSL "$CORE_URL" -o "$work/$CORE_WHEEL"
 
           {
             echo "installer_sha=$(sha256sum "$work/install.sh"        | cut -d' ' -f1)"

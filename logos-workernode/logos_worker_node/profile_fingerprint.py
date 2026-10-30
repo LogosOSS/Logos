@@ -17,6 +17,10 @@ from logos_worker_node.models import AppConfig, DeviceInfo, MetalConfig, model_c
 logger = logging.getLogger(__name__)
 
 _KEY_SCHEMA = 1
+# Launch-contract revision for CUDA probes with prefix caching disabled.
+# These profiles are valid only when the negative CLI flag is explicit;
+# unaffected default/true and Metal plans retain their existing keys.
+_PREFIX_CACHING_CLI_EXPLICIT_NO = 2
 
 
 def _canonical(value: Any) -> str:
@@ -95,6 +99,9 @@ def compute_calibration_key(
         backend = probe_attention_backend(plan)
         if backend:
             key["attention_backend"] = backend
+        # The shared store and local registry require exact key-hash equality.
+        if not bool(plan.get("enable_prefix_caching", True)):
+            key["enable_prefix_caching_cli"] = _PREFIX_CACHING_CLI_EXPLICIT_NO
     return key
 
 

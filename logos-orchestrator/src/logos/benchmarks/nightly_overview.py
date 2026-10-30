@@ -14,7 +14,8 @@ def overview(schedules, scheduler, now, *, recovery_pending=False, claimed_count
     if claimed_count is not None:
         claimed = claimed_count
     next_day = now.date()
-    if now >= end - timedelta(minutes=10) or claimed >= MAX_PAIRS_PER_NIGHT:
+    continuing = any(row.get("status") == "continuing" and row["enabled"] for row in schedules)
+    if now >= end or (claimed >= MAX_PAIRS_PER_NIGHT and not continuing):
         next_day += timedelta(days=1)
         claimed = 0
     blocked = recovery_pending or any(row.get("recovery") for row in schedules)
@@ -36,9 +37,13 @@ def overview(schedules, scheduler, now, *, recovery_pending=False, claimed_count
                 state, reason = "blocked", "Nightly rotation waits for the reserved worker"
             elif row["last_run_date"] == next_day:
                 state, reason = (
-                    ("recent", "Already tested in this window")
-                    if success
-                    else ("waiting", "Already attempted in this window")
+                    ("next", "Another optimization round in this window; production settings restored between rounds")
+                    if row.get("status") == "continuing"
+                    else (
+                        ("recent", "Already tested in this window")
+                        if success
+                        else ("waiting", "Already attempted in this window")
+                    )
                 )
             else:
                 try:

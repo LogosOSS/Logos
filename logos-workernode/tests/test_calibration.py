@@ -2449,18 +2449,24 @@ def test_sweep_computes_rising_curve_from_vllm_rate_without_crawling():
 
 
 def test_build_vllm_cmd_enables_prefix_caching_to_match_serving():
-    """Calibration must spawn vLLM with --enable-prefix-caching, because serving
-    lanes default to it (models.LaneConfig.enable_prefix_caching=True). Without
+    """Calibration must spawn vLLM with the same prefix-caching flags as serving.
+
+    Lanes default to enable_prefix_caching=True (models.LaneConfig). Without
     matching, the calibrated max_model_len is optimistic vs the serving config
-    and the lane fails to start ("KV needed > budget"). Default on; explicit
-    False omits it."""
+    and the lane fails to start ("KV needed > budget"). vLLM's own default is
+    on, so explicit False must pass --no-enable-prefix-caching rather than
+    omit the flag.
+    """
     plan = {"model": "m", "tensor_parallel_size": 2, "max_model_len": 1000}
     cmd = _build_vllm_cmd(plan, "vllm", "127.0.0.1", 11499, "1G")
     assert "--enable-prefix-caching" in cmd
+    assert "--no-enable-prefix-caching" not in cmd
 
     plan_off = {**plan, "enable_prefix_caching": False}
     cmd_off = _build_vllm_cmd(plan_off, "vllm", "127.0.0.1", 11499, "1G")
+    assert "--no-enable-prefix-caching" in cmd_off
     assert "--enable-prefix-caching" not in cmd_off
+    assert sum(arg in {"--enable-prefix-caching", "--no-enable-prefix-caching"} for arg in cmd_off) == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -3434,6 +3440,9 @@ class _FakeCalibrationCache:
         if self._select == "tmpfs":
             return str(self._cache_hub.parent)
         return str(self._source)
+
+    def is_cached(self, model: str) -> bool:
+        return self._select == "tmpfs"
 
     def reserve_cache_use(self, model: str) -> None:
         self._refs[model] = self._refs.get(model, 0) + 1

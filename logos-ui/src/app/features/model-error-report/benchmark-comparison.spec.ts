@@ -62,6 +62,20 @@ describe('Benchmark parameter isolation', () => {
     expect(isolatedRuns([changed], run(1), 'tensor_parallel_size')).toEqual([]);
   });
 
+  it('compares each nightly batching parameter while holding the other one fixed', () => {
+    const baseline = run(1);
+    (baseline.configuration['serving'] as any).max_num_seqs = 16;
+    (baseline.configuration['serving'] as any).max_num_batched_tokens = 4096;
+    const sequences = structuredClone(baseline); sequences.id = 2;
+    (sequences.configuration['serving'] as any).max_num_seqs = 20;
+    const tokens = structuredClone(baseline); tokens.id = 3;
+    (tokens.configuration['serving'] as any).max_num_batched_tokens = 5120;
+    const both = structuredClone(sequences); both.id = 4;
+    (both.configuration['serving'] as any).max_num_batched_tokens = 5120;
+    expect(isolatedRuns([baseline, sequences, tokens, both], baseline, 'max_num_seqs').map(row => row.id)).toEqual([1, 2]);
+    expect(isolatedRuns([baseline, sequences, tokens, both], baseline, 'max_num_batched_tokens').map(row => row.id)).toEqual([1, 3]);
+  });
+
   it('compares request body options, ignoring object key order and job-specific transport details', () => {
     const baseline = run(1);
     const other = run(2, 2, 4);
@@ -127,10 +141,10 @@ describe('Benchmark comparison', () => {
     expect(comparisonValue(benchmark, 'ttlt')).toBeNull();
   });
 
-  it('defaults to TP 1/concurrency 4 and changes both vertical charts through one metric selector', async () => {
+  it('shows one selected parameter and recomputes it through the metric selector', async () => {
     expect(fixture.componentInstance.baseline()?.id).toBe(1);
     expect(fixture.nativeElement.querySelector('.baseline-picker select').value).toBe('1');
-    expect(fixture.nativeElement.querySelectorAll('figure')).toHaveLength(2);
+    expect(fixture.nativeElement.querySelectorAll('figure')).toHaveLength(1);
     const select: HTMLSelectElement = fixture.nativeElement.querySelector('.metric-picker select');
     select.value = 'ttft'; select.dispatchEvent(new Event('change'));
     await fixture.whenStable();
@@ -139,22 +153,19 @@ describe('Benchmark comparison', () => {
     expect(charts[1].groups.map(group => group.parameter)).toEqual([1, 4, 16]);
     expect(charts.flatMap(chart => chart.groups).flatMap(group => group.rows).every(row => row.value === 0.68)).toBe(true);
     expect(fixture.nativeElement.querySelector('.single-value').style.bottom).not.toBe('');
-    expect(fixture.nativeElement.querySelectorAll('tbody tr')).toHaveLength(4);
-    expect(fixture.nativeElement.querySelectorAll('tbody .active-metric')).toHaveLength(4);
+    expect(fixture.nativeElement.querySelectorAll('tbody tr')).toHaveLength(2);
+    expect(fixture.nativeElement.querySelectorAll('tbody .active-metric')).toHaveLength(2);
     expect(fixture.nativeElement.querySelector('tbody').textContent).toContain('7.6');
   });
 
-  it.each([1, 4])('renders one repetition with concurrency %s as a visible point for every metric', concurrency => {
+  it.each([1, 4])('explains insufficient variation for concurrency %s without an empty plot', concurrency => {
     fixture.componentRef.setInput('runs', [run(1, 1, concurrency)]);
     for (const metric of ['throughput', 'ttft', 'ttlt'] as const) {
       fixture.componentInstance.metric.set(metric);
       fixture.detectChanges();
-      expect(fixture.nativeElement.querySelectorAll('figure')).toHaveLength(2);
-      const points = [...fixture.nativeElement.querySelectorAll('.single-value')] as HTMLElement[];
-      expect(points).toHaveLength(2);
-      expect(points.every(point => Math.abs(parseFloat(point.style.bottom) - 50) < 0.001)).toBe(true);
-      expect(fixture.nativeElement.querySelector('.run-count').textContent).toContain('n = 1');
-      expect(fixture.nativeElement.querySelector('.empty')).toBeNull();
+      expect(fixture.nativeElement.querySelector('figure')).toBeNull();
+      expect(fixture.nativeElement.querySelector('.comparison-note').textContent).toContain('at least two values');
+      expect(fixture.nativeElement.querySelector('.comparison-summary').textContent).toContain('Reference #1');
     }
   });
 
@@ -173,8 +184,8 @@ describe('Benchmark comparison', () => {
   });
 
   it('makes a narrow distribution readable and places the median relative to the fitted minimum', () => {
-    const benchmarks = Array.from({ length: 5 }, (_, i) => run(i + 1));
-    benchmarks.forEach((benchmark, i) => benchmark.metrics.output_tokens_per_second!.successful.mean = 1000 + i);
+    const benchmarks = [...Array.from({ length: 5 }, (_, i) => run(i + 1)), run(6, 2)];
+    benchmarks.forEach((benchmark, i) => benchmark.metrics.output_tokens_per_second!.successful.mean = 1000 + Math.min(i, 4));
     fixture.componentRef.setInput('runs', benchmarks);
     fixture.detectChanges();
     const box = fixture.nativeElement.querySelector('.quartile-box') as HTMLElement;
@@ -190,7 +201,22 @@ describe('Benchmark comparison', () => {
     select.value = '4'; select.dispatchEvent(new Event('change'));
     await fixture.whenStable();
     expect(fixture.componentInstance.charts().map(chart => chart.fixed)).toEqual(['Concurrency fixed at 16', 'TP fixed at 2']);
-    expect(fixture.componentInstance.selected().map(run => run.id).sort()).toEqual([2, 3, 4]);
+    expect(fixture.componentInstance.selected().map(run => run.id).sort()).toEqual([3, 4]);
+  });
+
+  it('shows the reference line and changes only the active parameter in the table', async () => {
+    const component = fixture.componentInstance;
+    expect(fixture.nativeElement.querySelector('.reference-line')).not.toBeNull();
+    const picker: HTMLSelectElement = fixture.nativeElement.querySelector('.parameter-picker select');
+    picker.value = 'max_concurrency'; picker.dispatchEvent(new Event('change'));
+    await fixture.whenStable();
+    expect(component.activeChart()?.key).toBe('max_concurrency');
+    expect(component.selected().map(row => row.id)).toEqual([5, 1, 3]);
+    expect(fixture.nativeElement.querySelectorAll('figure')).toHaveLength(1);
+    expect(fixture.nativeElement.querySelectorAll('tbody tr')).toHaveLength(3);
+    expect(component.change(63)).toBe(50);
+    component.metric.set('ttft');
+    expect(component.changeLabel(.34)).toContain('-50%');
   });
 
   it('retains the reference during refresh and falls back if it is deleted', () => {
@@ -202,7 +228,7 @@ describe('Benchmark comparison', () => {
     fixture.componentRef.setInput('runs', [run(1)]);
     fixture.detectChanges();
     expect(component.baseline()?.id).toBe(1);
-    expect(fixture.nativeElement.querySelectorAll('.comparison-note')).toHaveLength(2);
+    expect(fixture.nativeElement.querySelectorAll('.comparison-note')).toHaveLength(1);
   });
 
   it('handles empty and legacy data without invented comparisons', () => {
@@ -216,7 +242,7 @@ describe('Benchmark comparison', () => {
   });
 
   it('sorts the table newest first independently of chart grouping', () => {
-    expect(fixture.componentInstance.sortedRuns().map(run => run.id)).toEqual([5, 3, 2, 1]);
+    expect(fixture.componentInstance.sortedRuns().map(run => run.id)).toEqual([2, 1]);
     expect(fixture.nativeElement.querySelector('th[aria-sort="descending"]').textContent).toContain('Date');
   });
 
@@ -232,11 +258,11 @@ describe('Benchmark comparison', () => {
     const button: HTMLButtonElement = fixture.nativeElement.querySelector('button[aria-label="Sort Output ascending"]');
     button.click();
     await fixture.whenStable();
-    expect(component.sortedRuns().map(run => run.id)).toEqual([1, 5, 2, 3]);
+    expect(component.sortedRuns().map(run => run.id)).toEqual([1, 2]);
     expect(button.closest('th')!.getAttribute('aria-sort')).toBe('ascending');
     button.click();
     await fixture.whenStable();
-    expect(component.sortedRuns().map(run => run.id)).toEqual([2, 5, 1, 3]);
+    expect(component.sortedRuns().map(run => run.id)).toEqual([2, 1]);
     expect(button.closest('th')!.getAttribute('aria-sort')).toBe('descending');
     expect(benchmarks.map(run => run.id)).toEqual([1, 2, 3, 4, 5]);
     expect(component.baseline()?.id).toBe(1);
@@ -244,13 +270,14 @@ describe('Benchmark comparison', () => {
 
   it('sorts parameter columns numerically and preserves the chosen order on metric changes', () => {
     const component = fixture.componentInstance;
+    component.parameter.set('max_concurrency');
     component.sortBy('max_concurrency');
-    expect(component.sortedRuns().map(run => run.id)).toEqual([5, 2, 1, 3]);
+    expect(component.sortedRuns().map(run => run.id)).toEqual([5, 1, 3]);
     component.sortBy('max_concurrency');
     component.metric.set('ttft');
-    expect(component.sortedRuns().map(run => run.id)).toEqual([3, 2, 1, 5]);
+    expect(component.sortedRuns().map(run => run.id)).toEqual([3, 1, 5]);
     component.sortBy('id');
-    expect(component.sortedRuns().map(run => run.id)).toEqual([1, 2, 3, 5]);
+    expect(component.sortedRuns().map(run => run.id)).toEqual([1, 3, 5]);
   });
 
   it('keeps explanations collapsed and gives each table column a sorting button', () => {
@@ -265,7 +292,7 @@ describe('Benchmark comparison', () => {
     fixture.componentRef.setInput('runs', [run(1, 1, 4, { metrics: { ...run(1).metrics, output_tokens_per_second: undefined } })]);
     fixture.detectChanges();
     expect(component.charts()[0].scale.span).toBeGreaterThan(0);
-    expect(fixture.nativeElement.querySelector('.missing').textContent).toContain('—');
+    expect(fixture.nativeElement.querySelector('.comparison-summary').textContent).toContain('—');
   });
 });
 
@@ -285,7 +312,8 @@ describe('Run boxplots', () => {
     const fixture = TestBed.createComponent(BenchmarkComparison);
     fixture.componentRef.setInput('runs', Array.from({ length: 200 }, (_, i) => run(i + 1)));
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelectorAll('.box-track')).toHaveLength(2);
+    expect(fixture.nativeElement.querySelectorAll('.box-track')).toHaveLength(0);
+    expect(fixture.nativeElement.querySelector('.comparison-note').textContent).toContain('at least two values');
     expect(fixture.nativeElement.querySelector('table')).toBeNull();
     expect(fixture.componentInstance.charts()[0].groups[0].box?.count).toBe(200);
     expect(fixture.componentInstance.charts()[0].minPlotWidth).toBeLessThan(200);

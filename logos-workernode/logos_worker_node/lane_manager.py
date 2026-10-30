@@ -63,8 +63,11 @@ def _placement_threshold_mb(row: dict[str, float], base_threshold_mb: float, gmu
     vLLM's startup gate (vllm/v1/worker/utils.py:request_memory) checks
     free >= gmu × total on each card individually, so on mixed-size nodes the
     GMU reservation must be sized against the row's own total rather than a
-    global minimum. Rows with an unknown total — or no GMU bound in play (kv
-    pinned) — fall back to the base (footprint-derived) threshold alone.
+    global minimum. Rows with an unknown total — or no GMU bound — fall back
+    to the base (footprint-derived) threshold alone. An explicit
+    kv_cache_memory_bytes pin does not skip this: that pin sizes the
+    steady-state KV pool, while request_memory still enforces gmu×total at
+    cold EngineCore init.
     """
     total_mb = float(row.get("total_mb", 0.0) or 0.0)
     if gmu is None or total_mb <= 0:
@@ -2733,30 +2736,35 @@ class LaneManager:
         # gating a 48 GB card on its 24 GB neighbour's reservation would
         # understate the requirement.
         #
-        # The effective GMU is what VllmProcessHandle._resolve_gmu passes to
-        # vLLM (see effective_gmu() for the shared definition): an explicit
-        # operator value verbatim (no clamping), else the auto-derivation
-        # floor, the minimum the clamped derivation can reach.
-        #
-        # When the lane pins kv_cache_memory_bytes, the *steady-state*
-        # footprint is weights + the explicit KV regardless of GMU: vLLM
-        # skips memory profiling for KV sizing and reserves exactly the
-        # pinned bytes (its "skipped memory profiling ... does not respect
-        # the gpu_memory_utilization config" log refers to that sizing step
-        # only). Gating placement on the GMU reservation would then demand
-        # free VRAM the lane never uses and wrongly reject small models (e.g.
-        # a 4B model needing ~6GB rejected for not having ~24GB free), so the
-        # bound is skipped here. The startup gate itself still applies to
-        # pinned lanes, so a pinned lane placed into tight free VRAM can
-        # still fail it at spawn — honouring the gate here would re-introduce
-        # the over-rejection above, so that trade-off is left to a follow-up.
-        kv_pinned = bool(lane_config.vllm_config is not None and lane_config.vllm_config.kv_cache_memory_bytes)
+        # Startup GMU matches VllmProcessHandle._resolve_gmu via
+        # resolve_startup_gmu (configured / derived / vLLM default 0.9).
+        # Always gate cold placement on that reservation, including when
+        # kv_cache_memory_bytes pins the steady-state KV pool: request_memory
+        # still refuses free < gmu×total at EngineCore init. Placement need is
+        # max(footprint, gmu×total) via _placement_threshold_mb.
         gmu: float | None = None
-        if not kv_pinned and any(float(row.get("total_mb", 0.0)) > 0 for row in allowed_rows):
-            gmu = effective_gmu(lane_config.vllm_config)
+        if lane_config.vllm_config is not None and any(float(row.get("total_mb", 0.0)) > 0 for row in allowed_rows):
+            profile = self._model_profiles.get_profile(lane_config.model) if self._model_profiles else None
+            kv_mb = 0.0
+            if lane_config.vllm_config.kv_cache_memory_bytes:
+                kv_mb = float(
+                    ModelProfileRegistry._parse_kv_cache_to_mb(lane_config.vllm_config.kv_cache_memory_bytes) or 0.0
+                )
+            # Prefer the spawn callback; fall back to the largest card in this
+            # snapshot so derivation still runs when the callback is unset (tests
+            # / early boot) instead of silently admitting at vLLM's 0.9 default.
+            per_gpu_total = float(self._per_gpu_vram_mb() or 0.0)
+            if per_gpu_total <= 0:
+                per_gpu_total = max(float(row.get("total_mb", 0.0) or 0.0) for row in allowed_rows)
+            gmu = effective_gmu(
+                lane_config.vllm_config,
+                profile=profile,
+                per_gpu_total_mb=per_gpu_total,
+                kv_cache_per_gpu_mb=kv_mb,
+            )
             logger.debug(
                 "Auto-placement lane '%s': per-GPU threshold is the estimate "
-                "(%.0fMB) plus the vLLM startup reservation (effective GMU "
+                "(%.0fMB) raised to the vLLM startup reservation (admission GMU "
                 "%.2f × per-card total)",
                 lane_id,
                 per_gpu_threshold_mb,
@@ -2894,7 +2902,22 @@ class LaneManager:
         tp_size = 1
         if lane_config.vllm_config:
             tp_size = lane_config.vllm_config.parallel_gpu_count
-        per_gpu_needed_mb = total_needed_mb / tp_size
+        footprint_per_gpu_mb = total_needed_mb / tp_size
+        gmu = None
+        if lane_config.vllm_config is not None:
+            profile = self._model_profiles.get_profile(lane_config.model) if self._model_profiles else None
+            kv_mb = 0.0
+            if lane_config.vllm_config.kv_cache_memory_bytes:
+                kv_mb = float(
+                    ModelProfileRegistry._parse_kv_cache_to_mb(lane_config.vllm_config.kv_cache_memory_bytes) or 0.0
+                )
+            per_gpu_total = float(self._per_gpu_vram_mb() or 0.0)
+            gmu = effective_gmu(
+                lane_config.vllm_config,
+                profile=profile,
+                per_gpu_total_mb=per_gpu_total,
+                kv_cache_per_gpu_mb=kv_mb,
+            )
 
         # Which GPU indices will this lane use?
         target_indices: set[int] | None = None
@@ -2930,8 +2953,10 @@ class LaneManager:
             if not (snapshot.telemetry_available or snapshot.nvidia_smi_available):
                 break
 
-            # Check free VRAM on target devices
+            # Check free VRAM on target devices against max(footprint, gmu×total).
             min_free_mb = float("inf")
+            per_gpu_needed_mb = footprint_per_gpu_mb
+            headroom_ok = True
             for fallback_idx, device in enumerate(snapshot.devices):
                 if device.kind not in ("nvidia", "metal"):
                     continue
@@ -2943,12 +2968,21 @@ class LaneManager:
                 if target_indices is not None and idx not in target_indices:
                     continue
                 free = float(device.memory_free_mb or 0.0)
+                total = float(device.memory_total_mb or 0.0)
+                need = _placement_threshold_mb(
+                    {"total_mb": total},
+                    footprint_per_gpu_mb,
+                    gmu,
+                )
+                per_gpu_needed_mb = max(per_gpu_needed_mb, need)
                 min_free_mb = min(min_free_mb, free)
+                if free < need:
+                    headroom_ok = False
 
             if min_free_mb == float("inf"):
                 break  # no matching devices found — skip gate
 
-            if min_free_mb >= per_gpu_needed_mb:
+            if headroom_ok:
                 logger.info(
                     "VRAM headroom OK for lane '%s' model=%s: " "min_free=%.0f MB >= needed=%.0f MB/GPU (attempt %d)",
                     lane_id,

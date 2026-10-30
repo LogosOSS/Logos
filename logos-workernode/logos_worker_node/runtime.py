@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from logos_worker_node.model_profiles import ModelProfileRegistry
 from logos_worker_node.models import (
     CapacitySummary,
     DeviceInfo,
@@ -20,7 +21,9 @@ from logos_worker_node.models import (
     DiskSummary,
     HostMemorySummary,
     WorkerRuntimeStatus,
+    merged_vllm_engine_overrides,
 )
+from logos_worker_node.vllm_process import resolve_startup_gmu
 
 logger = logging.getLogger(__name__)
 
@@ -319,8 +322,12 @@ async def build_runtime_status(app: FastAPI) -> WorkerRuntimeStatus:
 
     # Include model profiles if available
     model_profiles = None
-    if hasattr(app.state, "model_profiles") and app.state.model_profiles is not None:
-        model_profiles = app.state.model_profiles.get_all_profiles()
+    profiles_registry = getattr(app.state, "model_profiles", None)
+    if profiles_registry is not None:
+        model_profiles = profiles_registry.get_all_profiles()
+
+    configured = _configured_vllm_by_model(cfg)
+    startup_gmu = _startup_gmu_by_model(cfg, profiles_registry, devices)
 
     return WorkerRuntimeStatus(
         worker_name=cfg.worker.name,
@@ -342,4 +349,78 @@ async def build_runtime_status(app: FastAPI) -> WorkerRuntimeStatus:
         gpu_performance_score=cfg.worker.gpu_performance_score,
         sleep_mode_disabled=cfg.engines.vllm.disable_sleep_mode,
         node_health=node_health_dict,
+        configured_vllm_by_model=configured or None,
+        startup_gmu_by_model=startup_gmu or None,
     )
+
+
+def _configured_vllm_by_model(cfg) -> dict[str, dict]:
+    """Explicit per-model vLLM engine knobs via ``merged_vllm_engine_overrides``."""
+    models: list[str] = []
+    if getattr(cfg, "logos", None) is not None:
+        models = list(cfg.logos.configured_models or cfg.logos.capabilities_models or [])
+    out: dict[str, dict] = {}
+    for model_name in models:
+        merged = merged_vllm_engine_overrides(cfg, model_name)
+        published = {
+            key: value
+            for key, value in merged.items()
+            if key in {"gpu_memory_utilization", "tensor_parallel_size", "kv_cache_memory_bytes"}
+        }
+        if published:
+            out[model_name] = published
+    return out
+
+
+def _startup_gmu_by_model(cfg, profiles_registry, devices: DeviceSummary) -> dict[str, dict]:
+    """Per-model calculated startup GMU for orchestrator admission.
+
+    Uses the same ``resolve_startup_gmu`` helper as spawn. Each entry carries
+    ``gpu_memory_utilization`` and ``source`` (configured|derived|default).
+    """
+    models: list[str] = []
+    if getattr(cfg, "logos", None) is not None:
+        models = list(cfg.logos.configured_models or cfg.logos.capabilities_models or [])
+    if not models:
+        return {}
+    # Match GpuCollector.per_gpu_vram_mb, the callback used by the spawner.
+    totals = [float(dev.memory_total_mb or 0.0) for dev in devices.devices or []]
+    per_gpu_total = sum(totals) / len(totals) if totals else 0.0
+    out: dict[str, dict] = {}
+    for model_name in models:
+        overrides = merged_vllm_engine_overrides(cfg, model_name)
+        explicit = overrides.get("gpu_memory_utilization")
+        try:
+            explicit_f = float(explicit) if explicit is not None else None
+        except (TypeError, ValueError):
+            explicit_f = None
+        profile = profiles_registry.get_profile(model_name) if profiles_registry is not None else None
+        tp = 1
+        if "tensor_parallel_size" in overrides:
+            try:
+                tp = max(int(overrides["tensor_parallel_size"]), 1)
+            except (TypeError, ValueError):
+                tp = 1
+        elif profile is not None and getattr(profile, "tensor_parallel_size", None):
+            try:
+                tp = max(int(profile.tensor_parallel_size), 1)
+            except (TypeError, ValueError):
+                tp = 1
+        kv_mb = 0.0
+        kv_raw = overrides.get("kv_cache_memory_bytes") or ""
+        if kv_raw:
+            kv_mb = float(ModelProfileRegistry._parse_kv_cache_to_mb(str(kv_raw)) or 0.0)
+        loaded = getattr(profile, "loaded_vram_mb", None) if profile is not None else None
+        resolution = resolve_startup_gmu(
+            explicit_gmu=explicit_f,
+            loaded_vram_mb=loaded,
+            tensor_parallel_size=tp,
+            per_gpu_total_mb=per_gpu_total,
+            profile=profile,
+            kv_cache_per_gpu_mb=kv_mb,
+        )
+        out[model_name] = {
+            "gpu_memory_utilization": resolution.value_for_admission,
+            "source": resolution.source,
+        }
+    return out

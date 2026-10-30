@@ -563,22 +563,23 @@ exactly the bytes the checksums describe.
 At the pinned release, upstream's `install.sh` only checksums itself and
 then performs three further fetches: it sources `scripts/lib.sh` from the
 mutable `main` branch (executed code), selects the vllm-metal wheel from
-`/releases/latest`, and derives the vLLM core wheel URL from a release
-lookup. `install-macos.sh` therefore fetches all four artifacts —
-installer, `lib.sh`, vLLM core wheel, vllm-metal wheel — from the pinned
-tag, verifies each SHA256 *before* the installer runs, stages them, and
-rewrites exactly those statements in the installer to point at the staged
-copies (exact-string patch, fail-loud: if upstream changed a line, the
-install aborts instead of running a half-patched installer). The staged
-installer is kept as a plain file in its own directory: a `scripts/lib.sh`
-sibling would switch upstream into its source-checkout branch. The venv is
-still created by the upstream installer, which installs a matched
-(vllm, mlx, torch) set — the pinned release gives vLLM 0.29.0, the same
-release the CUDA image pins. PyPI carries no macOS vLLM wheel, and pulling
-that set apart in our own requirements file is how you get an unbootable
-lane. And the installer's version floor (`VLLM_METAL_MIN_VERSION`, asserted
-against the installed distribution on every run) makes the documented
-requirement enforceable instead of aspirational.
+`/releases/latest`, and discovers a vLLM core wheel from the matching vLLM
+release. `install-macos.sh` therefore fetches all four artifacts — installer,
+`lib.sh`, vLLM core wheel, vllm-metal wheel — from the pinned tag, verifies
+each SHA256 *before* the installer runs, stages them, and rewrites exactly
+those statements in the installer to point at the staged copies (exact-string
+patch, fail-loud: if upstream changed a line, the install aborts instead of
+running a half-patched installer). The bump workflow resolves both wheel
+filenames from the GitHub release asset list (any Python / macOS platform tag)
+so a retagged wheel does not require a workflow edit. The staged installer is
+kept as a plain file in its own directory: a `scripts/lib.sh` sibling would
+switch upstream into its source-checkout branch. The venv is still created by
+the upstream installer, which installs a matched (vllm, mlx, torch) set — the
+pinned release gives vLLM 0.32.0. PyPI carries no macOS vLLM wheel, and pulling
+that set apart in our own requirements file is how you get an unbootable lane.
+And the installer's version floor (`VLLM_METAL_MIN_VERSION`, asserted against
+the installed distribution on every run) makes the documented requirement
+enforceable instead of aspirational.
 
 That is why `MetalVllmProcessHandle` builds its own command line instead of
 filtering the CUDA one, and why `tests/test_metal_process.py` cross-checks the
@@ -589,7 +590,7 @@ is the one that does (below).
 
 Keep vllm-metal current. It moves fast and dev builds are published daily —
 but upstream prunes old dev releases, so the pin is the **stable** cut:
-v0.29.0 is the current stable release. Note that the two measurement sets in
+v0.32.0 is the current stable release. Note that the two measurement sets in
 this document come from different runtimes: the *Sizing* table was measured on
 vllm-metal 0.3.0.dev20260826 (a 36 GB M3 Pro), the *Embedding models* profile
 on v0.29.0 (a 32 GB M2 Pro). Re-measure on the runtime you actually deploy

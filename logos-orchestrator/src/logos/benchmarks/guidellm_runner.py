@@ -9,6 +9,7 @@ import ipaddress
 import json
 import os
 import shutil
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -437,8 +438,15 @@ async def run_benchmark_job(
 
     lease_task = asyncio.create_task(renew_lease())
     try:
+        snapshot = None
+        if settings.workload_id:
+            from logos.benchmarks import workloads
+
+            snapshot = workloads.load(settings.workload_id)
+            if snapshot["model_name"] != model or snapshot["request_count"] != samples:
+                raise ValueError("Snapshot model and request count must match the benchmark")
         guidellm_bin = shutil.which("guidellm")
-        if guidellm_bin is None:
+        if snapshot is None and guidellm_bin is None:
             raise RuntimeError("GuideLLM executable is not installed in the orchestrator")
 
         if worker_preparer is not None and not await worker_preparer():
@@ -471,64 +479,80 @@ async def run_benchmark_job(
             workdir = Path(directory)
             report_path = workdir / "benchmarks.json"
             scenario_path = workdir / "scenario.json"
-            scenario = build_scenario(
-                target=target,
-                model=model,
-                api_key=api_key,
-                samples=samples,
-                max_output_tokens=max_output_tokens,
-                report_path=report_path,
-                request_headers=request_headers,
-                settings=settings,
-            )
+            if snapshot is not None:
+                scenario = {
+                    "snapshot": {
+                        key: snapshot[key] for key in ("id", "name", "provenance", "request_count", "requests")
+                    },
+                    "target": target,
+                    "model": model,
+                    "api_key": api_key,
+                    "request_headers": request_headers,
+                    "concurrency": settings.concurrency if settings.profile == "concurrent" else 1,
+                    "seed": settings.seed,
+                    "report_path": str(report_path),
+                }
+                command = [sys.executable, str(Path(__file__).with_name("guidellm_requests.py")), str(scenario_path)]
+            else:
+                scenario = build_scenario(
+                    target=target,
+                    model=model,
+                    api_key=api_key,
+                    samples=samples,
+                    max_output_tokens=max_output_tokens,
+                    report_path=report_path,
+                    request_headers=request_headers,
+                    settings=settings,
+                )
+                command = [guidellm_bin, "run", "--config", str(scenario_path)]
             scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
             scenario_path.chmod(0o600)
-
-            env = os.environ.copy()
             process = await asyncio.create_subprocess_exec(
-                guidellm_bin,
-                "run",
-                "--config",
-                str(scenario_path),
+                *command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env,
+                env=os.environ.copy(),
+                start_new_session=True,
             )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=BENCHMARK_TIMEOUT_SECONDS,
-                )
-            except TimeoutError:
-                process.kill()
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=BENCHMARK_TIMEOUT_SECONDS)
+            except (TimeoutError, asyncio.CancelledError):
+                # GuideLLM uses worker processes. Stop the entire group before
+                # the caller restores a worker or releases its reservation.
+                import signal
+
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 await process.communicate()
-                raise RuntimeError("GuideLLM benchmark timed out after two hours")
-            except asyncio.CancelledError:
-                process.kill()
-                await process.communicate()
-                raise
+                if asyncio.current_task().cancelling():
+                    raise
+                raise RuntimeError("GuideLLM benchmark timed out after two hours") from None
             if process.returncode != 0:
                 output = (stderr or stdout).decode("utf-8", errors="replace")
                 if api_key:
                     output = output.replace(api_key, "[redacted]")
                 last_line = next((line.strip() for line in reversed(output.splitlines()) if line.strip()), "")
+                if snapshot is not None and not last_line.startswith(("Frozen response", "GuideLLM did not complete")):
+                    last_line = "Frozen-request measurement failed"
                 raise RuntimeError(f"GuideLLM exited with code {process.returncode}: {last_line[:500]}")
             if not report_path.is_file():
                 raise RuntimeError("GuideLLM did not create a benchmark report")
-
             report = json.loads(report_path.read_text(encoding="utf-8"))
             if serving_configuration_getter is not None:
-                serving_configuration = {
-                    **serving_configuration,
-                    **serving_configuration_getter(),
-                }
+                serving_configuration = {**serving_configuration, **serving_configuration_getter()}
             summary = successful_summary(
                 report,
                 model_provider_id=model_provider_id,
                 expected_samples=samples,
                 serving_configuration=serving_configuration,
-                dataset=settings.dataset,
+                dataset="requests/" + snapshot["id"] if snapshot is not None else settings.dataset,
             )
+            if snapshot is not None:
+                summary["configuration"]["workload"] = {
+                    key: snapshot[key] for key in ("id", "name", "provenance", "request_count")
+                }
 
         summary["configuration"]["requested_overrides"] = redact_secrets(
             settings.serving_overrides.model_dump(exclude_none=True)

@@ -78,6 +78,22 @@ public class NotificationService {
      */
     @Transactional
     public Long publish(PublishNotificationRequestDTO req) {
+        return publishEvent(req, null);
+    }
+
+    /** Serialize retries of one producer event before storing its notification. */
+    @Transactional
+    public Long publishOnce(PublishNotificationRequestDTO req, String eventKey) {
+        if (eventKey == null || eventKey.isBlank() || eventKey.length() > 180) {
+            throw new IllegalArgumentException("Invalid notification event key");
+        }
+        String scopedKey = "orchestrator:" + eventKey;
+        notifications.lockEventKey(scopedKey);
+        return notifications.findByEventKey(scopedKey).map(Notification::getId)
+            .orElseGet(() -> publishEvent(req, scopedKey));
+    }
+
+    private Long publishEvent(PublishNotificationRequestDTO req, String eventKey) {
         NotificationType type = NotificationType.fromValue(req.type())
             .orElseThrow(() -> new IllegalArgumentException("Unknown notification type: " + req.type()));
         if (req.title() == null || req.title().isBlank()) {
@@ -94,6 +110,7 @@ public class NotificationService {
         n.setTitle(req.title());
         n.setBody(req.body());
         n.setSource(source);
+        n.setEventKey(eventKey);
         n.setActorUserId(req.actorUserId());
         n.setCreatedAt(Instant.now());
         if (req.payload() != null && !req.payload().isEmpty()) {

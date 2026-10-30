@@ -26,7 +26,7 @@ for screenshots of the plan and both confirmation dialogs.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
 4. Expand **Schedule and test plan**.
 5. Select **Enable nightly runs…**, then confirm **Enable nightly runs**.
-6. Check that the card shows **Nightly runs activated**.
+6. Check that the card shows **Enabled · in nightly rotation**.
 
 The schedule persists after a page reload or browser close. To remove the pair
 from rotation, select **Disable nightly runs…** and confirm **Disable nightly runs**.
@@ -38,7 +38,7 @@ The card shows a plan for this pair, not a guaranteed reservation for tonight.
 The scheduler selects eligible pairs at runtime. Use **Manual benchmark** for the dataset editor and question previews.
 These controls configure manual runs. They do not alter the nightly workload.
 
-The next day, expand **Latest nightly results** and inspect each configuration's
+The next day, expand **Latest round results** and inspect each configuration's
 outcome, attempt and benchmark ID. Use the performance comparison below for
 successful measurements. A finished plan can contain failed configurations;
 review individual outcomes before comparing throughput.
@@ -46,7 +46,7 @@ review individual outcomes before comparing throughput.
 ## Results
 
 **Results** shows the run, model, changed parameters, measurement times and output throughput.
-New nightly variants link to their own baseline from the same plan.
+New nightly variants link to the production baseline from the same round.
 **Before** shows this baseline. **After** shows the measured result. **Change** shows the percentage difference.
 A dash means the value or baseline is unavailable. Historical timestamps are not reconstructed.
 Expand **Charts and comparison** or **Run details and saved configurations** for more information.
@@ -55,24 +55,32 @@ Expand **Charts and comparison** or **Run details and saved configurations** for
 
 Each night admits at most 2 enabled model/worker pairs, one after the other.
 Pairs without a previous attempt come first, followed by the oldest previous attempt.
-The pair ID determines the order when previous attempt dates match.
+The pair ID determines the initial order when previous attempt dates match.
+After a restored round, the pair waits behind the other admitted pair.
 The scheduler skips unavailable pairs before admission; they do not consume a slot.
 The scheduler excludes disabled pairs.
 
 The quota counts admitted pairs, including failed or cancelled plans. All
-parameter configurations and the bounded retry belong to the same pair's slot.
+parameter configurations, further rounds and bounded retries belong to the same pair's slot.
 The count persists across application restarts and disabling/re-enabling a
 schedule cannot reset it. The next Berlin calendar date has a fresh quota.
 
-The 07:50 admission cutoff can leave fewer than 2 pairs tested. Remaining
+The 08:00 admission cutoff can leave fewer than 2 pairs tested. Remaining
 pairs keep their priority for the next night. Recovery of an interrupted worker
 always happens before selection, even when tonight's quota is already full.
+
+After a successful round, the scheduler stores the candidate and restores production settings.
+It then gives the other admitted pair its turn.
+Further rounds use the same saved inputs and refine the candidate until 08:00.
+The daily quota limits distinct pairs, not rounds.
+A failed baseline or a round without successful variants does not schedule another round.
+Disabling a schedule stops further rounds. Pending recovery always takes priority.
 
 ## Time and failure policy
 
 All times use `Europe/Berlin`, including daylight-saving changes.
 
-- Start configurations and retries from 05:00 inclusive to 07:50 exclusive.
+- Start configurations and retries from 05:00 inclusive to 08:00 exclusive.
 - At 08:00, stop an active run with fewer than 50% of its measured requests
   successfully completed. Started requests and output tokens do not count
   toward this percentage. With 50 samples, at least 25 must have completed.
@@ -83,7 +91,7 @@ All times use `Europe/Berlin`, including daylight-saving changes.
   request completion stops the run. Transport and lease heartbeats do not
   count. This watchdog also applies after 08:00.
 - A stalled run gets at most 1 retry with the same configuration, after a
-  worker-lane restart, and only before 07:50. A second stall skips that
+  worker-lane restart, and only before 08:00. A second stall skips that
   configuration. Configuration errors are recorded and skipped without retry.
 - Preparation and warm-up have a separate 15-minute budget. Worker draining
   also has a 15-minute budget. Cleanup can finish after the nominal window.
@@ -93,7 +101,8 @@ every 15 s. These intervals do not guarantee an exact response time.
 
 ## Workload and parameter plan
 
-Each nightly plan starts with the current production configuration.
+Each round starts with the current production configuration.
+The table shows an initial round, not a limit on the tests for the night.
 If explicit positive values are known, then it tests `max_num_seqs` and
 `max_num_batched_tokens` at approximately 75% and 125% of their current values.
 It changes only 1 parameter at a time. With sequence limit 16 and batch-token
@@ -112,8 +121,11 @@ Automatic batch-token limits use trial values 2048 and 4096.
 Each trial sets both limits explicitly. A known limit remains fixed when the other limit is automatic.
 These values are test candidates, not inferred production defaults.
 The unchanged production configuration always runs first.
+Later rounds change the search radius around the saved candidate.
+The radii are 25%, 50%, 12.5%, 75%, 37.5%, 62.5% and 87.5%, then repeat.
+Worker hardware limits still apply. Repeated measurements remain possible.
 
-Every configuration uses GSM8K `main/test`, the `question` column, 50 requests,
+Without a saved request workload, every configuration uses GSM8K `main/test`, the `question` column, 50 requests,
 512 maximum output tokens, concurrent profile with concurrency 4, and seed 42.
 Quantization, context length and model weights are not search parameters.
 The fixed output cap is not itself an optimization parameter.
@@ -122,15 +134,130 @@ Completed GuideLLM reports are stored in `model_provider_benchmarks` and appear
 in the existing performance comparison. Internal inference requests use the
 existing `log_entry` logging path. The nightly control shows per-configuration
 outcomes, retries and benchmark IDs. Failed or incomplete runs are not stored
-as successful throughput measurements. This iteration does not replay
-production requests or automatically apply winning parameters.
+as successful throughput measurements. Logos does not automatically apply winning parameters to production.
+
+## Fixed request workloads
+
+Use **Request workload** to replace Hugging Face data for a nightly schedule.
+The manual benchmark editor remains independent.
+
+1. Collect successful requests with `FULL` logging.
+2. Open **Create a fixed dataset from FULL request logs**.
+3. Enter a name and 1–100 distinct request IDs for the same model.
+4. Select **Synthetic test requests** or **Production requests**.
+5. Select **Create dataset**.
+6. Check the selected dataset and select **Apply dataset**.
+
+The database stores an ordered copy of the inputs and inference settings.
+It excludes request headers, API keys, user identities and response bodies.
+Deletion of source logs does not remove this copy.
+Treat the saved inputs as private data with their own retention requirements.
+The content hash identifies the selected requests and their order.
+Unsupported inference controls and non-text content cause rejection.
+The feature rejects missing, failed, non-FULL or mixed-model source requests.
+Benchmark requests cannot become source data.
+
+GuideLLM measures every configuration on the complete snapshot with 4 concurrent requests.
+Each request retains its temperature, tools and output limits.
+If the source omits an output limit, then Logos adds no output limit.
+Worker context limits still apply. A truncated or incomplete response fails the configuration.
+GuideLLM measures throughput, request latency, TTFT and TPOT.
+The result distributions include the maximum observation, shown as p100.
+The saved results also contain token counts and completion reasons.
+A change of measurement engine starts a new optimization reference.
+They do not contain response text.
+
+## Deployment-specific request sources
+
+Dev can retain its manually selected, fixed 10-request pilot workload.
+Leave `LOGOS_NIGHTLY_REQUEST_USERNAME` empty on Dev.
+
+For Prod, set `LOGOS_NIGHTLY_REQUEST_USERNAME` to the exact username of the intended source user.
+Use the username from the Prod user record. Do not use a display name or a user ID from Dev.
+For workflow deployments, add this variable to the **Prod** GitHub environment.
+The deploy workflow copies it to the service configuration.
+The setting applies to all enabled nightly schedules in that deployment.
+The orchestrator reads its own configured database. It does not connect Dev to Prod.
+Deploy migration 069, the orchestrator and the user interface together.
+
+At the maintenance window start, Logos stores 1 source selection before calibration.
+The default cutoff is 05:00 Europe/Berlin.
+The selection contains the latest 50 successful FULL requests with stored inputs.
+Both request arrival and completion must occur at or before the cutoff.
+The recorded `log_entry.user_id` must match exactly 1 user with the configured username.
+Shared keys without an individual recorded caller cannot establish this identity.
+Benchmark replays, other users, failed requests and requests without FULL inputs cannot enter the selection.
+The order is request arrival, newest first. The request ID resolves equal arrival times.
+The source model does not restrict selection. All tested models use the same selected inputs.
+
+Each tested model measures its production configuration first, then the previous winner and batching variants.
+Every configuration uses all 50 saved requests with 4 concurrent requests.
+No request is replaced during a plan or after an application restart.
+Source-log deletion does not remove the saved inputs.
+New requests after the cutoff wait for the next night.
+The source selection persists separately from each model's workload hash.
+
+If fewer than 50 requests qualify, then the night has no request dataset.
+Unsupported request formats or a snapshot above 5 MB also block the selection.
+Chat Completions and native Messages requests can enter the selection.
+Messages replay retains the system prompt, thinking controls and client-side tool history.
+The benchmark does not execute client tools. Server-side tools and external MCP servers are rejected.
+Responses API requests and non-text content remain unsupported.
+The system reports this reason and does not substitute Hugging Face or another user's requests.
+A blocked selection stays fixed for that date. The next night makes a new selection.
+The user interface shows the configured source and its current selection error.
+Manual dataset changes are unavailable while this deployment policy is active.
+
+When the selected inputs change, Logos retains candidate parameters for the same source user and captured environment.
+It starts a new measurement reference and discards the old cohort's measured winner rate.
+Compare each candidate with that night's baseline. Do not compare raw throughput across different request cohorts.
+The fixed Dev pilot retains its reference across nights while its inputs and captured environment stay unchanged.
+
+## Iterative optimization and the fixed reference
+
+Each night measures production settings first, then the previous winner and its neighbouring batching settings.
+The first successful production measurement establishes the fixed reference for that workload and environment.
+The reference does not reuse measurements from another dataset or an earlier Hugging Face run.
+A change to the workload, captured hardware, worker version or other serving settings starts a separate series.
+Batching changes remain in the same series.
+The search state and reference persist across application restarts.
+
+A candidate must complete every request with the same completion reason as the nightly baseline.
+Each output token count must stay within 80–120% of its baseline count.
+The candidate's p95 request latency cannot exceed 110% of the nightly baseline.
+Among eligible candidates, Logos saves the highest observed aggregate throughput and its parameters.
+The historical winner remains until an eligible measurement exceeds its recorded throughput.
+These checks prevent selection through shorter or truncated answers. They do not measure answer quality.
+Production settings return after every plan. The winner guides the following search rounds.
+
+For request workloads, **Nightly progress** shows the best eligible throughput so far against the fixed reference.
+The initial point is 0%. Each subsequent point represents a nightly plan with completed measurements.
+The line increases only when a round records a better eligible result. Otherwise, the line stays flat.
+Each tooltip shows total improvement from the starting baseline and relative improvement from the previous point.
+For example, 40 → 42 → 44 tok/s gives 10% total improvement and 4.8% improvement from the previous point.
+Historical Hugging Face charts use their first comparable baseline, with the same captured test settings.
+Different workloads and captured environments have separate charts.
+These measurements do not establish statistical significance.
+Ten synthetic requests provide an integration pilot, not a representative thesis evaluation dataset.
+Use repeated measurements and a separate evaluation dataset before drawing performance conclusions.
+
+## Completion notifications
+
+After each round, Logos stores the report and candidate after worker restoration.
+It emits no completion event while another round can start.
+After the final restoration, Logos stores the final state and completion event in one transaction.
+The event includes the outcome, completed round count, total successful configuration count, reference and winner IDs.
+Logos retries failed notification delivery, including outside the maintenance window.
+A stable event key prevents duplicate notifications after a retry or application restart.
+Logos Admins receive **Benchmark ready** in their notification inbox.
+A recovery that still needs attention does not emit a completed event.
 
 ## Worker ownership and recovery
 
 One PostgreSQL advisory lock gives 1 scheduler control of each nightly batch.
 Each batch uses at most `LOGOS_MAINTENANCE_MAX_NODES` distinct workers.
 The lock excludes new manual benchmarks until the batch finishes cleanup. A persisted
-local-date claim prevents re-running a schedule after an application restart.
+local-date claim limits distinct pairs after an application restart. Restored rounds can continue within the same window.
 Existing manual benchmarks finish before nightly admission.
 
 The selected worker must be online, healthy and not calibrating.
@@ -223,11 +350,11 @@ The Performance tab reads the effective times from the status API.
 `LOGOS_CALIB_ENABLED=false` disables automatic calibration. It does not disable manual calibration.
 These shared variables control calibration and benchmarks.
 The window must end on the same day, more than 10 minutes after its start.
-New benchmark configurations stop 10 minutes before the window ends.
+New benchmark configurations stop when the window ends.
 
 Calibration has priority. A healthy worker with pending calibration blocks new benchmarks during the calibration window.
 Each worker gets at most 1 automatic calibration attempt per window.
-Benchmarks start only after these attempts finish and before 07:50.
+Benchmarks start only after these attempts finish and before 08:00.
 If new calibration work appears during a benchmark, the current run finishes first.
 The scheduler restores the worker and stops the remaining benchmark plan with `calibration_pending`.
 
@@ -373,8 +500,9 @@ last successful measurement. The current pair limit is the code constant
 | `scheduled` | Enabled and waiting in the rotation. Check the time window and other pairs' priority. |
 | `unavailable` | Admission skipped the pair. Read the report for worker, lane or capacity requirements. No nightly slot was consumed. |
 | `preparing` / `running` | The pair has a nightly slot. The scheduler reserves the worker and executes its plan. |
-| `completed` | The plan finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
-| `window_closed` | No further configuration can start after 07:50. |
+| `continuing` | Production settings are restored. Another round waits for its turn within this window. |
+| `completed` | The night finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
+| `window_closed` | No further configuration can start after 08:00. |
 | `window_closed_below_half` | The 08:00 check found fewer than 25 of 50 successful completions. |
 | `preparation_timeout` / `stalled` | Preparation exceeded its budget, or measurement stopped making progress. Inspect the attempt report. |
 | `recovery_required` | The original configuration is not ready. Resolve the worker error; keep the reservation and journal intact. |
@@ -383,7 +511,7 @@ last successful measurement. The current pair limit is the code constant
 
 A restart, a failed run or an opt-in change does not clear the nightly quota.
 If fewer than 2 pairs run, check eligibility, existing manual jobs, recovery
-and the 07:50 cutoff. One long pair can use the available admission window.
+and the 08:00 cutoff. One long round can use the available admission window.
 
 ## Validation
 
@@ -413,7 +541,7 @@ Before the first production activation, complete these steps:
 6. Test cancellation.
 7. Test retry after a stall.
 8. Verify restoration of the original configuration.
-9. Use a controlled test clock to verify the 07:50 cutoff.
+9. Use a controlled test clock to verify the 08:00 cutoff.
 10. Test both sides of the 08:00 completion threshold with that clock.
 11. Set the maintenance limit to `2`.
 12. Verify parallel runs on different workers and sequential runs on the same worker.

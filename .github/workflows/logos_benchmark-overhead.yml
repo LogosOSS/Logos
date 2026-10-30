@@ -88,17 +88,17 @@ jobs:
             postgres:17 psql "postgresql://postgres:root@host.docker.internal:5432/logosdb" -v ON_ERROR_STOP=1 -f /seed.sql
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Restore HF model cache
         # A cache miss is fine — the Prime step below downloads while the
         # network is still healthy; the benchmark run itself is offline.
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.hf-cache
           key: hf-all-MiniLM-L6-v2-v1-${{ runner.os }}

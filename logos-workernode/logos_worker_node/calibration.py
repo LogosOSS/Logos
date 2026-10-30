@@ -1150,6 +1150,8 @@ def _build_vllm_cmd(
     # caching therefore records an optimistic max_model_len that the serving
     # lane can't actually honor (vLLM rejects "needs X GiB > budget" at start).
     # Calibrate the same engine config that serves so the pair curve is exact.
+    # vLLM's own default is on, so a disabled setting must be passed explicitly
+    # (same as vllm_process._build_cmd); omitting the flag leaves caching on.
     enable_prefix_caching = bool(plan.get("enable_prefix_caching", True))
     # Probe with the same sleep support the serving lane has. For a model the
     # worker never puts to sleep, --enable-sleep-mode would swap vLLM's
@@ -1182,8 +1184,7 @@ def _build_vllm_cmd(
     ]
     if enable_sleep_mode:
         cmd.append("--enable-sleep-mode")
-    if enable_prefix_caching:
-        cmd.append("--enable-prefix-caching")
+    cmd.append("--enable-prefix-caching" if enable_prefix_caching else "--no-enable-prefix-caching")
     if explicit_gmu is not None:
         cmd.extend(["--gpu-memory-utilization", str(explicit_gmu)])
     if max_model_len:

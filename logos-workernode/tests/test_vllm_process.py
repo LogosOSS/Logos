@@ -54,6 +54,25 @@ def test_build_cmd_does_not_duplicate_enforce_eager(monkeypatch) -> None:
     assert cmd.count("--enforce-eager") == 1
 
 
+@pytest.mark.parametrize(
+    ("enabled", "flag"), [(True, "--enable-prefix-caching"), (False, "--no-enable-prefix-caching")]
+)
+def test_build_cmd_passes_prefix_caching_setting_explicitly(monkeypatch, enabled, flag) -> None:
+    # vLLM enables prefix caching by default; omitting the flag for a lane that
+    # disables it would silently leave it on.
+    handle = VllmProcessHandle("lane-test", 19000, WorkerConfig())
+    monkeypatch.setattr(handle, "_resolve_vllm_binary", lambda _configured: "/tmp/vllm")
+
+    lane = LaneConfig(
+        model="deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+        vllm=True,
+        vllm_config=VllmConfig(enable_prefix_caching=enabled),
+    )
+    cmd = handle._build_cmd(lane)
+    assert flag in cmd
+    assert sum(arg in {"--enable-prefix-caching", "--no-enable-prefix-caching"} for arg in cmd) == 1
+
+
 def test_build_cmd_includes_prompt_tokens_details_by_default(monkeypatch) -> None:
     # vLLM keeps usage.prompt_tokens_details (cached_tokens) off by default;
     # Logos lanes must enable it so consumers see the prefix-cache hit share

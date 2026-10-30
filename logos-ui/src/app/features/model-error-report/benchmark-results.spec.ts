@@ -112,15 +112,18 @@ function measured(id: number, rate: number, baseline: number, day: number, concu
 }
 
 describe('Nightly progress', () => {
-  it('orders completed nights and keeps the best measured variant, including regressions', () => {
+  it('starts at the earliest baseline and keeps the best result across completed nights', () => {
     const groups = benchmarkProgress([measured(3, 40, 3, 22), measured(4, 44, 3, 22), measured(5, 42, 3, 22),
       measured(1, 40, 1, 21), measured(2, 38, 1, 21)]);
     expect(groups).toHaveLength(1);
-    expect(groups[0].points.map(point => point.run.id)).toEqual([2, 4]);
-    expect(groups[0].points[0].gain).toBeCloseTo(-5);
+    expect(groups[0].reference.id).toBe(1);
+    expect(groups[0].points.map(point => point.run.id)).toEqual([1, 4]);
+    expect(groups[0].points[0].gain).toBe(0);
     expect(groups[0].points[1].gain).toBeCloseTo(10);
-    expect(groups[0].min).toBeLessThan(-5);
+    expect(groups[0].min).toBe(0);
     expect(groups[0].max).toBeGreaterThan(10);
+    expect(benchmarkProgress([measured(1, 40, 1, 21), measured(2, 38, 1, 21),
+      measured(3, 40, 3, 22), measured(5, 42, 3, 22), measured(4, 44, 3, 22)])[0].line).toBe(groups[0].line);
   });
 
   it('separates workloads and rejects changes to input generation within a comparison', () => {
@@ -132,16 +135,16 @@ describe('Nightly progress', () => {
     const groups = benchmarkProgress([measured(1, 40, 1, 21), measured(2, 44, 1, 21),
       measured(3, 40, 3, 22, 8), measured(4, 48, 3, 22, 8), changed, missing, failed, run(10, 99, 1)]);
     expect(groups).toHaveLength(2);
-    expect(groups.map(group => group.points.map(point => point.run.id))).toEqual([[4], [2]]);
+    expect(groups.map(group => group.points.map(point => point.run.id))).toEqual([[3, 4], [1, 2]]);
     expect(groups.every(group => !group.line.includes('NaN'))).toBe(true);
   });
 
-  it('renders one measurement without inventing a time series and removes deleted comparisons', () => {
+  it('renders the starting baseline and measured result and removes deleted comparisons', () => {
     const fixture = TestBed.createComponent(BenchmarkResults);
     fixture.componentRef.setInput('runs', [measured(1, 40, 1, 21), measured(2, 44, 1, 21)]);
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelectorAll('.progress-point')).toHaveLength(1);
-    expect(fixture.nativeElement.querySelector('polyline')).toBeNull();
+    expect(fixture.nativeElement.querySelectorAll('.progress-point')).toHaveLength(2);
+    expect(fixture.nativeElement.querySelector('polyline')).not.toBeNull();
     fixture.componentRef.setInput('runs', [measured(2, 44, 1, 21)]);
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('.benchmark-progress')).toBeNull();
@@ -160,6 +163,16 @@ describe('Top measured configuration', () => {
     expect(fixture.componentInstance.topRuns().map(top => top.run.id)).toEqual([2, 3]);
   });
 
+  it('does not rank an older faster workload against the latest recorded workload', () => {
+    const fixture = TestBed.createComponent(BenchmarkResults);
+    const old = measured(1, 100, 1, 20);
+    const recent = measured(2, 40, 2, 21);
+    recent.dataset = 'new/dataset';
+    recent.recorded_at = '2026-10-22T04:00:00Z';
+    fixture.componentRef.setInput('runs', [old, recent]);
+    expect(fixture.componentInstance.topRuns()[0].run.id).toBe(2);
+  });
+
   it('shows the winning saved parameters and recalculates after removal', () => {
     const fixture = TestBed.createComponent(BenchmarkResults);
     const winner = run(2, 50);
@@ -169,5 +182,58 @@ describe('Top measured configuration', () => {
     expect(fixture.componentInstance.topRuns()[0].parameters.find(item => item.key === 'enable_prefix_caching')?.value).toBe('Disabled');
     fixture.componentRef.setInput('runs', [run(1, 40)]);
     expect(fixture.componentInstance.topRuns()[0].run.id).toBe(1);
+  });
+});
+
+
+describe.each(['logos-replay', 'guidellm'])('Fixed request reference (%s)', (tool) => {
+  function replay(id: number, rate: number, baseline = id, eligible = true, workload = 'a') {
+    const row = run(id, rate, baseline);
+    row.sample_size = 10;
+    row.dataset = 'requests/' + workload;
+    row.configuration = { tool, workload: { id: workload, request_count: 10 },
+      nightly: { baseline_id: baseline, reference_id: 1, series_key: 'series', eligible_for_selection: eligible },
+      benchmark: { profile: { kind: 'concurrent' }, strategy: { max_concurrency: 4 } },
+      serving: { max_num_seqs: id === 1 ? 16 : 32, dtype: 'float16' },
+      measurement: { ended_at: `2026-10-${20 + id}T04:00:00Z` } };
+    row.metrics.request_totals = { successful: 10, total: 10, errored: 0, incomplete: 0 };
+    row.metrics.aggregate_output_tokens_per_second = rate;
+    return row;
+  }
+
+  it('keeps one reference and cumulative gains across nights without counting rejected trials', () => {
+    const groups = benchmarkProgress([replay(1, 40), replay(2, 60, 1), replay(3, 20, 3),
+      replay(4, 50, 3), replay(5, 100, 3, false), replay(6, 200, 3, true, 'other')]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].fixed).toBe(true);
+    expect(groups[0].points.map(point => point.gain)).toEqual([0, 50, 50]);
+    expect(groups[0].points.map(point => point.run.id)).toEqual([1, 2, 2]);
+    expect(new Set(groups[0].points.map(point => point.key)).size).toBe(3);
+  });
+
+  it('shows total growth from the baseline and relative improvement from the previous point', () => {
+    const rows = [replay(1, 40), replay(2, 42, 1), replay(3, 44), replay(4, 41)];
+    const chart = benchmarkProgress(rows)[0];
+    expect(chart.points.map(point => point.gain)).toEqual([0, expect.closeTo(5), expect.closeTo(10), expect.closeTo(10)]);
+    expect(chart.points.map(point => point.stepGain)).toEqual([null, expect.closeTo(5), expect.closeTo(100 * (44 / 42 - 1)), 0]);
+    expect(chart.points.map(point => point.previousRunId)).toEqual([null, 1, 2, 3]);
+    expect(chart.points.map(point => point.run.id)).toEqual([1, 2, 3, 3]);
+    const fixture = TestBed.createComponent(BenchmarkResults);
+    fixture.componentRef.setInput('runs', rows);
+    fixture.detectChanges();
+    const points = fixture.nativeElement.querySelectorAll('.progress-point') as NodeListOf<HTMLButtonElement>;
+    expect(points[2].getAttribute('aria-label')).toContain('10.0% total vs. starting baseline, 4.8% vs. previous point');
+    expect(points[2].textContent).toContain('+4.8% vs. previous point (run #2)');
+    expect(points[3].textContent).toContain('0.0% vs. previous point (run #3)');
+    expect(points[0].textContent).toContain('Starting baseline · 0%');
+  });
+
+  it('keeps a flat observation when a completed round does not improve the starting baseline', () => {
+    const baseline = replay(1, 40), worse = replay(2, 38, 1);
+    const chart = benchmarkProgress([worse, baseline])[0];
+    expect(chart.points.map(point => point.gain)).toEqual([0, 0]);
+    expect(chart.points[1].time).toBe(Date.parse('2026-10-22T04:00:00Z'));
+    expect(chart.points[1].run.id).toBe(1);
+    expect(chart.points[1].stepGain).toBe(0);
   });
 });

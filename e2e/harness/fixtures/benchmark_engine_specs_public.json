@@ -1,0 +1,95 @@
+{
+  "synthetic_only": true,
+  "timing_mode": "accelerated_functional",
+  "scientific_claims": false,
+  "note": "Frozen engine pins (TP/KV/ctx/GMU) separate from calibration model_profiles. Gemma-4b calib KV\u224830GiB vs engine pin\u224813GiB.",
+  "models": {
+    "Qwen/Qwen3.6-35B-A3B": {
+      "spec": {
+        "tensor_parallel_size": 2,
+        "kv_cache_memory_bytes": 4294967296,
+        "max_model_len": 262144,
+        "max_num_seqs": 99,
+        "max_num_batched_tokens": 2048,
+        "enforce_eager": false,
+        "dtype": "auto",
+        "block_size": 16,
+        "enable_prefix_caching": true,
+        "enable_chunked_prefill": true,
+        "reasoning_parser": "qwen3",
+        "default_chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "gpu_memory_utilization": "0.8177350427350427"
+    },
+    "google/gemma-3-12b-it": {
+      "spec": {
+        "tensor_parallel_size": 1,
+        "kv_cache_memory_bytes": 16106127360,
+        "max_model_len": 131072,
+        "max_num_seqs": 256,
+        "max_num_batched_tokens": 2048,
+        "enforce_eager": false,
+        "dtype": "auto",
+        "block_size": 16,
+        "enable_prefix_caching": true,
+        "enable_chunked_prefill": true,
+        "reasoning_parser": null,
+        "default_chat_template_kwargs": null
+      },
+      "gpu_memory_utilization": "0.8344525844525844"
+    },
+    "google/gemma-3-4b-it": {
+      "spec": {
+        "tensor_parallel_size": 1,
+        "kv_cache_memory_bytes": 13958643712,
+        "max_model_len": 131072,
+        "max_num_seqs": 256,
+        "max_num_batched_tokens": 2048,
+        "enforce_eager": false,
+        "dtype": "auto",
+        "block_size": 16,
+        "enable_prefix_caching": true,
+        "enable_chunked_prefill": true,
+        "reasoning_parser": null,
+        "default_chat_template_kwargs": null
+      },
+      "gpu_memory_utilization": "0.5"
+    },
+    "meta-llama/Llama-3.1-8B-Instruct": {
+      "spec": {
+        "tensor_parallel_size": 1,
+        "kv_cache_memory_bytes": 24696061952,
+        "max_model_len": 131072,
+        "max_num_seqs": 256,
+        "max_num_batched_tokens": 2048,
+        "enforce_eager": false,
+        "dtype": "auto",
+        "block_size": 16,
+        "enable_prefix_caching": true,
+        "enable_chunked_prefill": true,
+        "reasoning_parser": null,
+        "default_chat_template_kwargs": null
+      },
+      "gpu_memory_utilization": "0.8171143671143671"
+    },
+    "microsoft/Phi-4-reasoning": {
+      "spec": {
+        "tensor_parallel_size": 1,
+        "kv_cache_memory_bytes": 11811160064,
+        "max_model_len": 32768,
+        "max_num_seqs": 256,
+        "max_num_batched_tokens": 2048,
+        "enforce_eager": false,
+        "dtype": "auto",
+        "block_size": 16,
+        "enable_prefix_caching": true,
+        "enable_chunked_prefill": true,
+        "reasoning_parser": null,
+        "default_chat_template_kwargs": null
+      },
+      "gpu_memory_utilization": "0.8264346764346764"
+    }
+  }
+}
