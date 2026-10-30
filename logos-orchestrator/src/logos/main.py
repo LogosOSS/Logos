@@ -4937,7 +4937,7 @@ def _cloud_context_by_model() -> dict[str, dict[str, int]]:
 def _historic_max_context_by_model() -> dict[str, int]:
     """Model name -> widest context ever reported for it, from the database.
 
-    The durable counterpart of the live runtime snapshots: ``upsert_model_profiles``
+    The durable counterpart of the live runtime snapshots: ``persist_central_model_profile``
     keeps a high-water mark per (provider, model) in ``model_profiles`` on every
     worker snapshot, so this is still what a model's context is when no
     workernode is connected to say otherwise. Returns an empty mapping when the

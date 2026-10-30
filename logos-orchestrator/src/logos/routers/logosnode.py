@@ -92,6 +92,8 @@ _resync_rounds: dict[int, int] = {}
 _unsaved_samples: dict[int, tuple[Dict[str, Any], bool]] = {}
 # provider_id -> the task writing its statuses, one at a time
 _sample_writers: dict[int, asyncio.Task] = {}
+# providers already warned about a worker that predates central profiles
+_outdated_format_warned: set[int] = set()
 # provider_id -> runtime timestamp of its previous status
 _last_runtime_ts: dict[int, Any] = {}
 # provider_id -> monotonic time its last snapshot write started
@@ -396,7 +398,12 @@ def _persist_model_profiles(
     echo was rejected as outdated; the worker must be sent both.
     """
     if not is_central_profile_payload(model_profiles):
-        _mirror_local_profiles(db, provider_id, model_profiles)
+        if provider_id not in _outdated_format_warned:
+            _outdated_format_warned.add(provider_id)
+            logger.warning(
+                "Provider %s reports profiles in the pre-central format and is ignored; update its worker",
+                _resolve_provider_name(provider_id),
+            )
         return [], []
     now = time.monotonic()
     changed: list[str] = []
@@ -455,25 +462,6 @@ def _persist_model_profiles(
     for model_name, epoch in recorded.items():
         _recorded_calibrations[(provider_id, model_name)] = epoch
     return changed, rejected
-
-
-def _mirror_local_profiles(db: DBManager, provider_id: int, model_profiles: Dict[str, Any]) -> None:
-    """Mirror a worker that still keeps its own profile file."""
-    pending = {
-        model_name: (data, profile_digest(0, data), _profile_write_cache.generation(provider_id, model_name))
-        for model_name, data in model_profiles.items()
-        if isinstance(data, dict)
-    }
-    pending = {
-        model_name: entry
-        for model_name, entry in pending.items()
-        if not _profile_write_cache.unchanged(provider_id, model_name, entry[1])
-    }
-    if not pending:
-        return
-    db.upsert_model_profiles(provider_id, {model_name: data for model_name, (data, _, _) in pending.items()})
-    for model_name, (_, digest, generation) in pending.items():
-        _profile_write_cache.remember(provider_id, model_name, digest, generation=generation)
 
 
 def _load_effective_profiles(provider_id: int, model_names: list[str] | None = None) -> Dict[str, Dict[str, Any]]:
@@ -634,6 +622,7 @@ def _forget_provider_state(provider_id: int) -> None:
     _last_snapshot_at.pop(provider_id, None)
     _resync_rounds.pop(provider_id, None)
     _pending_resyncs.pop(provider_id, None)
+    _outdated_format_warned.discard(provider_id)
     for key in [key for key in _recorded_calibrations if key[0] == provider_id]:
         del _recorded_calibrations[key]
     _profile_write_cache.forget(provider_id)
@@ -658,7 +647,7 @@ def _capture_calibration_probe_log(provider_id: int, event: Dict[str, Any]) -> N
     ``LogosBridgeClient._record_calibration_probe_log`` on the worker side).
     Keeps only the most recent row per (provider_id, model_name) via
     ``upsert_calibration_probe_log``'s ON CONFLICT — mirrors how
-    ``upsert_model_profiles`` above keeps one row per (provider_id,
+    ``persist_central_model_profile`` keeps one row per (provider_id,
     model_name).
     """
     model_name = str(event.get("model") or "").strip()

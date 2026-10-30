@@ -50,7 +50,6 @@ class _FakeDB:
         self.session = _FakeSession()
         self.accept = accept
         self.new_revision = new_revision
-        self.legacy_upserts: list = []
         self.persisted: list = []
         self.calibrations: list = []
         self.reported_keys: list = []
@@ -67,9 +66,6 @@ class _FakeDB:
 
     def __exit__(self, *exc):
         return False
-
-    def upsert_model_profiles(self, provider_id, profiles):
-        self.legacy_upserts.append((provider_id, profiles))
 
     def persist_central_model_profile(
         self, provider_id, model_name, profile, reported, revision, key_hash, overridden_fields=None
@@ -147,21 +143,16 @@ def _fresh_caches(monkeypatch):
     monkeypatch.setattr(logosnode_mod, "_recorded_calibrations", {})
 
 
-def test_profiles_from_a_worker_with_a_local_file_are_only_mirrored():
+def test_profiles_from_a_worker_without_central_sync_are_ignored(monkeypatch, caplog):
     db = _FakeDB()
-    changed, rejected = logosnode_mod._persist_model_profiles(db, 1, {"org/model": {"base_residency_mb": 1.0}})
-    assert (changed, rejected) == ([], [])
-    assert db.legacy_upserts == [(1, {"org/model": {"base_residency_mb": 1.0}})]
+    monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-1")
+    monkeypatch.setattr(logosnode_mod, "_outdated_format_warned", set())
+    old_format = {"org/model": {"base_residency_mb": 1.0}}
+    with caplog.at_level("WARNING"):
+        assert logosnode_mod._persist_model_profiles(db, 1, old_format) == ([], [])  # noqa: SLF001
+        assert logosnode_mod._persist_model_profiles(db, 1, old_format) == ([], [])  # noqa: SLF001
     assert db.persisted == []
-
-
-def test_mirror_writes_only_profiles_that_changed():
-    db = _FakeDB()
-    first = {"a": {"base_residency_mb": 1.0}, "b": {"base_residency_mb": 2.0}}
-    logosnode_mod._persist_model_profiles(db, 1, first)
-    logosnode_mod._persist_model_profiles(db, 1, {"a": {"base_residency_mb": 1.0}, "b": {"base_residency_mb": 3.0}})
-    logosnode_mod._persist_model_profiles(db, 1, {"a": {"base_residency_mb": 1.0}, "b": {"base_residency_mb": 3.0}})
-    assert db.legacy_upserts == [(1, first), (1, {"b": {"base_residency_mb": 3.0}})]
+    assert len([r for r in caplog.records if "pre-central format" in r.getMessage()]) == 1
 
 
 def test_overrides_reach_the_typed_columns_but_not_the_stored_profile():

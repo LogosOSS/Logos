@@ -368,7 +368,6 @@ def _upsert_model_profile_sql(
 
 
 # Built once: these run for every changed profile of every worker status.
-_MIRROR_PROFILE_SQL = _upsert_model_profile_sql()
 _PERSIST_CENTRAL_PROFILE_SQL = _upsert_model_profile_sql(
     extra={
         "profile": "CAST(:profile AS jsonb)",
@@ -1797,42 +1796,6 @@ class DBManager:
         self.session.commit()
         return int(result[0]) if result is not None else 0
 
-    def upsert_model_profiles(
-        self,
-        provider_id: int,
-        profiles: Dict[str, Dict[str, Any]],
-    ) -> int:
-        """Upsert model profiles from worker runtime into the model_profiles table.
-
-        ``max_reported_context_length`` is maintained as the historic maximum
-        (see ``_upsert_model_profile_sql``): a later calibration that reports
-        a narrower window cannot shrink the widest window this model has ever
-        been reported at. That high-water mark is what the orchestrator falls
-        back to for a model's context when every workernode is offline.
-
-        Args:
-            provider_id: Provider ID (FK to providers.id)
-            profiles: Dict of model_name -> profile dict (from runtime_payload.model_profiles)
-
-        Returns:
-            Number of profiles upserted.
-        """
-        if not profiles:
-            return 0
-
-        sql = text(_MIRROR_PROFILE_SQL)
-        count = 0
-        for model_name, data in profiles.items():
-            if not isinstance(data, dict):
-                continue
-            self.session.execute(
-                sql,
-                {"provider_id": provider_id, "model_name": str(model_name), **_model_profile_column_params(data)},
-            )
-            count += 1
-        self.session.commit()
-        return count
-
     def persist_central_model_profile(
         self,
         provider_id: int,
@@ -2360,7 +2323,7 @@ class DBManager:
         """Model name -> widest context ever reported for it, across providers.
 
         Reads the ``max_reported_context_length`` high-water mark
-        :meth:`upsert_model_profiles` maintains and reduces each model to the
+        :meth:`persist_central_model_profile` maintains and reduces each model to the
         maximum over every provider that has ever reported it. Only models with
         a positive (i.e. actually reported) window are returned; a model that
         was never calibrated to a known context is absent, so callers treat a
@@ -2395,7 +2358,7 @@ class DBManager:
         """Upsert a calibration probe log from a worker's calibration_probe_log event.
 
         Keeps only the most recent row per (provider_id, model_name) — same
-        ON CONFLICT DO UPDATE pattern as upsert_model_profiles above.
+        ON CONFLICT DO UPDATE pattern as persist_central_model_profile.
 
         Args:
             provider_id: Provider ID (FK to providers.id) — the worker node.
