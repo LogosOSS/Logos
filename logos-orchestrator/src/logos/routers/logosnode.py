@@ -526,9 +526,7 @@ def _update_reported_calibration_keys(
                 busy = _models_in_calibration(provider_id)
                 models = [name for name in calibration_key_hashes if name not in busy]
                 # Switched off, a calibration that stopped fitting still goes.
-                adopted = db.adopt_shared_calibrations(
-                    provider_id, models, adopt=shared_profiles_enabled()
-                )
+                adopted = db.adopt_shared_calibrations(provider_id, models, adopt=shared_profiles_enabled())
         except Exception:
             # Sharing is an optimisation; it must not keep a worker from
             # starting or from receiving its profiles.
