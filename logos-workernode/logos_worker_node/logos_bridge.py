@@ -2334,6 +2334,13 @@ class LogosBridgeClient:
                     )
                     log_text = await self._read_calibration_log_text(model_name, log_dir)
                     self._record_calibration_probe_log(model_name, result, log_text)
+                    if getattr(result, "node_unhealthy_reason", None):
+                        logger.warning(
+                            "[Calibration] Node degraded (%s) — ending the session; "
+                            "the remaining models are calibrated by a later session",
+                            result.node_unhealthy_reason,
+                        )
+                        break
 
                 session.current_model = None
         except asyncio.CancelledError:

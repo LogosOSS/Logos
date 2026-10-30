@@ -86,7 +86,9 @@ _STALL_MARKER = ENGINE_WARMUP_STALLED.needle
 _STALL_REPEATS = 3
 # While a JIT compiler runs, the ready deadline may slip by up to this much.
 _COMPILE_EXTENSION_S = 1200.0
-_COMPILER_PROCESSES = frozenset({"nvcc", "cicc", "ptxas", "cc1plus", "ninja"})
+_COMPILER_PROCESSES = frozenset(
+    {"nvcc", "cicc", "ptxas", "cc1", "cc1plus", "gcc", "g++", "cc", "c++", "ld", "collect2", "ninja"}
+)
 # A model whose probes hit the ready timeout this often in a row is stuck, not
 # slow: another KV size would only wait out the same timeout again.
 _MAX_CONSECUTIVE_READY_TIMEOUTS = 2
@@ -100,6 +102,8 @@ _GPU_HEALTH_INTERVAL_S = DEFAULT_POLL_INTERVAL_S / 4
 # The probe's process tree is rescanned at most this often; the scan reads every
 # process in /proc.
 _COMPILER_CHECK_INTERVAL_S = 10.0
+# The probe log is re-read for stall warnings at most this often.
+_LOG_CHECK_INTERVAL_S = 10.0
 _GPU_HEALTH_MARKER = "gpu health:"
 _SLEEP_TIMEOUT_S = 120.0
 _VLLM_STOP_TIMEOUT_S = 30.0
@@ -1669,6 +1673,7 @@ class ProbeWatchdog:
         self._started = time.perf_counter()
         # Warnings at the log's end when the stall was first seen.
         self._first_seen: int | None = None
+        self._last_log_check = float("-inf")
 
     def compiling(self) -> bool:
         return self._compiler()
@@ -1677,6 +1682,10 @@ class ProbeWatchdog:
         unhealthy = self._gpu()
         if unhealthy is not None:
             raise GpuHealthError(*unhealthy)
+        now = time.monotonic()
+        if now - self._last_log_check < _LOG_CHECK_INTERVAL_S:
+            return
+        self._last_log_check = now
         warnings = _trailing_warnings(self._log_path, self._log_offset)
         if warnings < _STALL_REPEATS or self._compiler():
             self._first_seen = None

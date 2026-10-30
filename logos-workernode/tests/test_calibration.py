@@ -4082,9 +4082,19 @@ def _watchdog(tmp_path: Path, monkeypatch, compiling=False, gpu=None):
 
     log = tmp_path / "probe.log"
     _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
+    clock = {"now": 0.0}
+    monkeypatch.setattr(calibration.time, "monotonic", lambda: clock["now"])
     monkeypatch.setattr(calibration, "_compiler_running", lambda pid: compiling)
     monkeypatch.setattr(calibration, "_GpuHealthWatch", lambda **_: lambda: gpu)
-    return calibration.ProbeWatchdog(MagicMock(pid=4242), log, 0, None), log
+    watchdog = calibration.ProbeWatchdog(MagicMock(pid=4242), log, 0, None)
+    original_check = watchdog.check
+
+    def check():
+        clock["now"] += calibration._LOG_CHECK_INTERVAL_S
+        original_check()
+
+    watchdog.check = check
+    return watchdog, log
 
 
 def test_probe_watchdog_needs_a_further_warning_after_it_first_saw_the_stall(tmp_path: Path, monkeypatch):
@@ -4117,6 +4127,23 @@ def test_probe_watchdog_does_not_report_a_stall_while_a_compiler_runs(tmp_path: 
         f.write(_SHM_LINE.format(minute=25) + "\n")
     watchdog.check()
     assert watchdog.compiling()
+
+
+def test_probe_watchdog_reads_the_log_only_once_per_interval(tmp_path: Path, monkeypatch):
+    from logos_worker_node import calibration
+
+    reads = []
+    monkeypatch.setattr(calibration, "_trailing_warnings", lambda *a: reads.append(1) or 0)
+    monkeypatch.setattr(calibration, "_GpuHealthWatch", lambda **_: lambda: None)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(calibration.time, "monotonic", lambda: clock["now"])
+    watchdog = calibration.ProbeWatchdog(MagicMock(pid=1), tmp_path / "probe.log", 0, None)
+    for _ in range(5):
+        watchdog.check()
+    assert len(reads) == 1
+    clock["now"] += calibration._LOG_CHECK_INTERVAL_S
+    watchdog.check()
+    assert len(reads) == 2
 
 
 def test_probe_watchdog_raises_the_gpu_error(tmp_path: Path, monkeypatch):
