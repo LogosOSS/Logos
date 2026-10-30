@@ -3665,11 +3665,11 @@ def test_probe_stalled_needs_only_warnings_at_the_end_of_the_log(tmp_path):
     log = tmp_path / "probe.log"
     warmup = "(Worker_TP0 pid=1) INFO 10-21 04:21:34 [kernel_warmup.py:291] Warming up FlashInfer attention."
     _write_log(log, [warmup, _SHM_LINE.format(minute=22), _SHM_LINE.format(minute=23)])
-    assert not _probe_stalled(log, 1)
+    assert not _probe_stalled(log, lambda: False)
     _write_log(log, [warmup] + [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
-    assert _probe_stalled(log, 1)
+    assert _probe_stalled(log, lambda: False)
     _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)] + ["INFO: Application startup complete."])
-    assert not _probe_stalled(log, 1)
+    assert not _probe_stalled(log, lambda: False)
 
 
 def test_probe_stalled_is_false_while_a_compiler_runs(tmp_path, monkeypatch):
@@ -3677,10 +3677,23 @@ def test_probe_stalled_is_false_while_a_compiler_runs(tmp_path, monkeypatch):
 
     log = tmp_path / "probe.log"
     _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
-    monkeypatch.setattr(calibration, "_compiler_running", lambda *_: True)
-    assert not calibration._probe_stalled(log, 1)
-    monkeypatch.setattr(calibration, "_compiler_running", lambda *_: False)
-    assert calibration._probe_stalled(log, 1)
+    assert not calibration._probe_stalled(log, lambda: True)
+    assert calibration._probe_stalled(log, lambda: False)
+
+
+def test_compiler_watch_rescans_only_after_the_interval(monkeypatch):
+    from logos_worker_node import calibration
+
+    scans = []
+    monkeypatch.setattr(calibration, "_compiler_running", lambda pid: scans.append(pid) or len(scans) == 1)
+    now = [100.0]
+    monkeypatch.setattr(calibration.time, "monotonic", lambda: now[0])
+    watch = calibration._CompilerWatch(42)
+    assert watch() and watch()
+    assert scans == [42]
+    now[0] += calibration._COMPILER_CHECK_INTERVAL_S
+    assert not watch()
+    assert scans == [42, 42]
 
 
 def _fake_proc(root: Path, processes: dict[int, tuple[str, int]]) -> Path:
@@ -3722,7 +3735,7 @@ def test_compiler_running_handles_spaces_in_comm_and_a_missing_proc(tmp_path):
 def test_probe_stalled_without_a_log_file_is_false(tmp_path):
     from logos_worker_node.calibration import _probe_stalled
 
-    assert not _probe_stalled(tmp_path / "missing.log", 1)
+    assert not _probe_stalled(tmp_path / "missing.log", lambda: False)
 
 
 def test_wait_ready_aborts_early_when_the_stall_check_fires(monkeypatch):

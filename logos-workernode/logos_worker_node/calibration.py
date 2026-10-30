@@ -92,6 +92,9 @@ _READY_TIMEOUT_MARKER = "ready timeout:"
 # While waiting for a probe, nvidia-smi is polled this often; a GPU reading as
 # wedged on this many checks in a row aborts the calibration.
 _GPU_HEALTH_INTERVAL_S = 15.0
+# The probe's process tree is rescanned at most this often; the scan reads every
+# process in /proc.
+_COMPILER_CHECK_INTERVAL_S = 10.0
 _GPU_HEALTH_STRIKES = 2
 _GPU_HEALTH_MARKER = "gpu health:"
 _SLEEP_TIMEOUT_S = 120.0
@@ -1597,7 +1600,23 @@ def _compiler_running(root_pid: int, proc_root: Path = Path("/proc")) -> bool:
     return False
 
 
-def _probe_stalled(log_path: Path, root_pid: int) -> bool:
+class _CompilerWatch:
+    """Rate-limited _compiler_running for one probe; reuses the last answer between scans."""
+
+    def __init__(self, root_pid: int) -> None:
+        self._root_pid = root_pid
+        self._last = float("-inf")
+        self._running = False
+
+    def __call__(self) -> bool:
+        now = time.monotonic()
+        if now - self._last >= _COMPILER_CHECK_INTERVAL_S:
+            self._last = now
+            self._running = _compiler_running(self._root_pid)
+        return self._running
+
+
+def _probe_stalled(log_path: Path, compiler_running: Callable[[], bool]) -> bool:
     """True once the log's last lines are only the shared-memory warning."""
     try:
         with log_path.open("rb") as f:
@@ -1608,7 +1627,7 @@ def _probe_stalled(log_path: Path, root_pid: int) -> bool:
     lines = [line for line in tail.splitlines() if line.strip()]
     if len(lines) < _STALL_REPEATS or not all(_STALL_NEEDLE in line for line in lines[-_STALL_REPEATS:]):
         return False
-    return not _compiler_running(root_pid)
+    return not compiler_running()
 
 
 def _append_log_marker(log_path: Path, text: str) -> None:
@@ -2813,9 +2832,10 @@ def _calibrate_model_probe(
         )
         t0 = time.perf_counter()
         try:
+            compiler_running = _CompilerWatch(proc.pid)
 
             def _stall_check() -> bool:
-                if not _probe_stalled(log_path, proc.pid):
+                if not _probe_stalled(log_path, compiler_running):
                     return False
                 _mark_stalled(log_path)
                 return True
@@ -2827,7 +2847,7 @@ def _calibrate_model_probe(
                 gpu_indices,
                 cancel_event=cancel_event,
                 stall_check=_stall_check,
-                busy_check=lambda: _compiler_running(proc.pid),
+                busy_check=compiler_running,
                 health_check=_GpuHealthWatch(),
             )
             # This attempt actually came up — anchor the cold-load
