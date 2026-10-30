@@ -45,6 +45,9 @@ export function buildBatch(settings: BenchmarkSettings, samples: number, sweeps:
   if (new Set(sweeps.map(sweep => sweep.key)).size !== sweeps.length) throw new Error('Choose each parameter only once.');
   let configurations: BatchConfiguration[] = [{ ...structuredClone(settings), samples }];
   for (const sweep of sweeps) {
+    if (settings.workload_id && ['samples', 'seed', 'max_output_tokens'].includes(sweep.key)) {
+      throw new Error('Saved request datasets preserve their request count and inference settings. Remove this sweep.');
+    }
     if (!worker && isServing(sweep.key)) throw new Error('vLLM parameters require a Logos worker.');
     const values = sweepValues(sweep);
     if (configurations.length * values.length > 1000) throw new Error('Use at most 1,000 configurations per batch.');

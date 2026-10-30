@@ -115,6 +115,7 @@ public class ProviderPerformanceController {
         if (request.seed() != null) settings.put("seed", request.seed());
         if (request.servingOverrides() != null) settings.put("serving_overrides", request.servingOverrides());
         if (request.batch() != null) settings.put("batch", request.batch());
+        if (request.workloadId() != null) settings.put("workload_id", request.workloadId());
         return settings;
     }
 
@@ -177,6 +178,12 @@ public class ProviderPerformanceController {
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> nightlyStatus(@RequestBody Map<String, Object> body) {
         return nightlyResponse("status", body);
+    }
+
+    @PostMapping("/model_benchmarks/workloads/create")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> createWorkload(@RequestBody Map<String, Object> body) {
+        return nightlyResponse("workloads", body);
     }
 
     @PostMapping("/model_benchmarks/nightly/configure")

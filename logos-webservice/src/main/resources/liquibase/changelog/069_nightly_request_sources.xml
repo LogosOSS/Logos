@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="069-nightly-request-sources" author="logos">
+        <sql><![CDATA[
+            CREATE TABLE nightly_request_sources (
+                day DATE NOT NULL,
+                username TEXT NOT NULL,
+                user_id INTEGER,
+                cutoff TIMESTAMPTZ NOT NULL,
+                requests JSONB,
+                error TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (day, username),
+                CHECK ((requests IS NULL) <> (error IS NULL)),
+                CHECK (requests IS NULL OR (jsonb_typeof(requests) = 'array' AND jsonb_array_length(requests) = 50))
+            );
+            CREATE INDEX idx_log_entry_recent_full_user ON log_entry(user_id, timestamp_request DESC, id DESC)
+                WHERE privacy_level = 'FULL' AND result_status = 'success' AND input_payload IS NOT NULL
+                AND environment IS DISTINCT FROM 'model-provider-benchmark';
+        ]]></sql>
+        <rollback><sql>DROP INDEX idx_log_entry_recent_full_user; DROP TABLE nightly_request_sources;</sql></rollback>
+    </changeSet>
+</databaseChangeLog>

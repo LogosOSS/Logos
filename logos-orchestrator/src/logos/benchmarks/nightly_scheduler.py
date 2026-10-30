@@ -8,6 +8,7 @@ import logging
 from starlette.requests import Request
 
 from logos.benchmarks import nightly_store as store
+from logos.benchmarks import optimization, recent_requests, workloads
 from logos.benchmarks.guidellm_runner import extract_serving_configuration
 from logos.benchmarks.maintenance import AUTOMATIC_CALIBRATION
 from logos.benchmarks.nightly import (
@@ -60,6 +61,9 @@ class NightlyScheduler:
             await asyncio.sleep(15)
 
     async def _cycle(self):
+        recent_requests.freeze(local_now(), include_requests=False)
+        store.finalize_continuations(local_now())
+        await store.deliver_completion_events()
         claims = []
         if self.maintenance:
             completed = await self.maintenance.reconcile()
@@ -118,10 +122,13 @@ class NightlyScheduler:
                         not can_start(local_now())
                         or store.has_active_benchmarks()
                         or (self.calibration and self.calibration.benchmarks_must_wait())
-                        or store.claimed_today(day) >= MAX_PAIRS_PER_NIGHT
                     ):
                         break
-                    if not row["enabled"] or row["last_run_date"] == day:
+                    if not row["enabled"]:
+                        continue
+                    if row["last_run_date"] == day and row.get("status") != "continuing":
+                        continue
+                    if row["last_run_date"] != day and store.claimed_today(day) >= MAX_PAIRS_PER_NIGHT:
                         continue
                     if len(selected) >= maintenance_node_limit():
                         deferred.append(row)
@@ -282,7 +289,7 @@ class NightlyScheduler:
                     return False
                 store.finish_recovery_jobs(jobs)
                 await self.restore(pair_id, recovery)
-                store.save(pair_id, "interrupted_recovered", row["report"], None)
+                store.finish(pair_id, "interrupted_recovered", row["report"], recovery.get("search"))
                 benchmark_reservations.release(-pair_id)
                 return True
             finally:
@@ -340,6 +347,7 @@ class NightlyScheduler:
     async def _run_schedule(self, pair_id, connection):
         report = []
         recovery = None
+        search = None
         state = "completed"
         try:
             target, snapshot, lane = self.target_lane(pair_id)
@@ -347,6 +355,19 @@ class NightlyScheduler:
             lanes = (snapshot.get("runtime") or {}).get("lanes", [])
             current = extract_serving_configuration(snapshot, model)
             plan = parameter_plan(current)
+            schedule = store.status(pair_id)
+            if recent_requests.username() or schedule.get("workload_id"):
+                workload = (
+                    recent_requests.for_model(target, local_now())
+                    if recent_requests.username()
+                    else workloads.load(schedule["workload_id"], target["model_id"])
+                )
+                if recent_requests.username():
+                    store.bind_workload(pair_id, workload["id"])
+                search = optimization.context(current, snapshot, workload, schedule.get("optimizer") or {})
+                plan = optimization.plan(
+                    current, search, round_index=optimization.round_index(search["state"], local_now().date())
+                )
             recovery = {
                 "provider_id": pid,
                 "model": model,
@@ -354,6 +375,7 @@ class NightlyScheduler:
                 "vllm_config": copy.deepcopy(lane["lane_config"].get("vllm_config") or {}),
                 "lane_config": copy.deepcopy(lane["lane_config"]),
                 "mutated": False,
+                **({"search": search} if search else {}),
             }
             # Journal first; a process restart must not lose the original settings.
             store.save(pair_id, "preparing", report, recovery)
@@ -386,6 +408,8 @@ class NightlyScheduler:
                         job_id, task = await self.submit(pair_id, settings)
                         result = await task
                         if result:
+                            if search and index == 0 and search["reference_id"] is None:
+                                search["reference_id"] = result
                             baseline_id = (
                                 result
                                 if index == 0
@@ -398,9 +422,16 @@ class NightlyScheduler:
                                     None,
                                 )
                             )
-                            store.record_comparison(
-                                result, baseline_id, settings.serving_overrides.model_dump(exclude_none=True), current
+                            comparison_args = (
+                                result,
+                                baseline_id,
+                                settings.serving_overrides.model_dump(exclude_none=True),
+                                current,
                             )
+                            if search:
+                                store.record_comparison(*comparison_args, search=search)
+                            else:
+                                store.record_comparison(*comparison_args)
                         outcome = {
                             "configuration": index + 1,
                             "attempt": attempt + 1,
@@ -445,7 +476,20 @@ class NightlyScheduler:
                 except Exception as exc:
                     state = "recovery_required"
                     report.append({"status": state, "reason": str(exc)[:1000]})
-            store.save(pair_id, state, report, recovery)
+            if recovery is None:
+                baseline_ok = any(item.get("configuration") == 1 and item.get("status") == "success" for item in report)
+                successful = sum(item.get("status") == "success" for item in report)
+                if (
+                    state == "completed"
+                    and baseline_ok
+                    and successful > 1
+                    and can_start(local_now())
+                    and store.status(pair_id)["enabled"]
+                ):
+                    state = "continuing"
+                store.finish(pair_id, state, report, search)
+            else:
+                store.save(pair_id, state, report, recovery)
         return recovery is None
 
     async def submit(self, pair_id, settings):

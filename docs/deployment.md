@@ -154,6 +154,11 @@ To see the latest deployment, run `docker exec logos-node-manager node-manager s
 
 ## Nightly benchmarks
 
+To retain a fixed Dev workload, leave `LOGOS_NIGHTLY_REQUEST_USERNAME` empty.
+To freeze 50 recent requests on Prod, set this variable to the exact Prod username.
+See [deployment-specific request sources](admin/nightly-benchmarks.md#deployment-specific-request-sources) for selection and failure rules.
+This setting reads the deployment's own database. It does not copy Prod requests to Dev.
+
 Nightly benchmarks require updates to the webservice, orchestrator, web application and selected workers.
 The webservice applies changelog `065_nightly_benchmarks.xml` before the new scheduler starts.
 Workers report `supports_benchmark_restart` in their runtime status.
@@ -174,13 +179,16 @@ Unavailable pairs do not consume a place in that night's limit.
 Failed or cancelled plans consume a place after admission.
 The limit persists across restarts and changes to activation.
 
-New configurations and retries start between 05:00 and 07:50 in `Europe/Berlin`.
+New configurations and retries start between 05:00 and 08:00 in `Europe/Berlin`.
 At 08:00, a run continues only if at least 50% of its requests completed successfully.
 A run stops after 5 minutes without output content or a successful request completion.
-A stalled configuration gets at most 1 retry before 07:50.
+A stalled configuration gets at most 1 retry before 08:00.
 The existing 2-hour measurement timeout also applies.
 
-The scheduler restores the original worker configuration after the plan.
+The scheduler restores the original worker configuration after each round.
+The admitted pairs rotate through further rounds until 08:00.
+The daily limit counts distinct pairs. It does not limit the number of rounds.
+Completion is reported only after the final restoration.
 If restoration fails, the worker remains reserved and further plans stop until recovery succeeds.
 The recovery journal stays in PostgreSQL until the original configuration is ready.
 Do not delete the journal to release a worker.
@@ -194,7 +202,7 @@ Before activation:
 5. Check that another worker still accepts production requests.
 
 Automatic calibration runs first, from 05:00 to 08:00 in `Europe/Berlin` by default.
-Benchmarks use the remaining time and start no new configuration after 07:50.
+Benchmarks use the remaining time and start no new configuration after 08:00.
 `LOGOS_MAINTENANCE_MAX_NODES` limits simultaneous maintenance workers, including manual starts. The default `1` keeps runs sequential.
 Apply `065_nightly_benchmarks.xml` and update workers for the `get_calibration_status` command.
 The coordinator releases calibration claims only after worker confirmation.

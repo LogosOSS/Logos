@@ -611,6 +611,8 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
     configurations = data.batch.configurations if data.batch else [data]
     checked_datasets = {}
     for settings in configurations:
+        if settings.workload_id:
+            continue
         key = (settings.dataset, settings.subset, settings.split)
         if key not in checked_datasets:
             checked_datasets[key] = await dataset_metadata(*key)
@@ -635,6 +637,18 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
         if not NIGHTLY_CONTEXT.get() and not nightly_store.manual_admission(db, provider_id):
             raise HTTPException(status_code=409, detail="Maintenance capacity or the selected worker is reserved")
         provider_type = _normalize_provider_type(str(target.get("provider_type") or ""))
+        for settings in configurations:
+            if settings.workload_id:
+                from logos.benchmarks import workloads
+
+                if provider_type != "logosnode":
+                    raise HTTPException(status_code=400, detail="Request replay requires a Logos worker")
+                try:
+                    workload = workloads.load(settings.workload_id, target["model_id"])
+                    if settings.samples != workload["request_count"]:
+                        raise ValueError("Sample size must equal the frozen request count")
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
         if any(s.serving_overrides.model_dump(exclude_none=True) for s in configurations) and (
             provider_type != "logosnode" or _main._capacity_planner is None
         ):
@@ -843,7 +857,7 @@ async def internal_cancel_model_benchmark(job_id: int, request: Request):
 @router.post("/internal/model_benchmarks/jobs/{job_id}/v1/{path:path}", tags=["admin"])
 async def internal_model_benchmark_completion(job_id: int, path: str, request: Request):
     """Execute one signed benchmark request without a user API key."""
-    if path.strip("/") != "chat/completions":
+    if path.strip("/") not in {"chat/completions", "messages"}:
         raise HTTPException(status_code=404, detail="Unsupported benchmark operation")
 
     try:

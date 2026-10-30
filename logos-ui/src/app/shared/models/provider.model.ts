@@ -91,6 +91,8 @@ export interface GuideLlmMetrics {
     errored: number;
     total: number;
   };
+  aggregate_output_tokens_per_second?: number;
+  request_latency_ms?: GuideLlmStatusDistributionSummary;
   request_latency?: GuideLlmStatusDistributionSummary;
   time_to_first_token_ms?: GuideLlmStatusDistributionSummary;
   time_per_output_token_ms?: GuideLlmStatusDistributionSummary;

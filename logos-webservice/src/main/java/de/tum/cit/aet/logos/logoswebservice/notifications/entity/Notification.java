@@ -46,6 +46,9 @@ public class Notification {
     @Column(nullable = false)
     private String source;
 
+    @Column(length = 200)
+    private String eventKey;
+
     private Integer actorUserId;
 
     @Column(nullable = false)
@@ -57,6 +60,7 @@ public class Notification {
     public String getBody() { return body; }
     public String getPayload() { return payload; }
     public String getSource() { return source; }
+    public String getEventKey() { return eventKey; }
     public Integer getActorUserId() { return actorUserId; }
     public Instant getCreatedAt() { return createdAt; }
 
@@ -66,6 +70,7 @@ public class Notification {
     public void setBody(String body) { this.body = body; }
     public void setPayload(String payload) { this.payload = payload; }
     public void setSource(String source) { this.source = source; }
+    public void setEventKey(String eventKey) { this.eventKey = eventKey; }
     public void setActorUserId(Integer actorUserId) { this.actorUserId = actorUserId; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
 }

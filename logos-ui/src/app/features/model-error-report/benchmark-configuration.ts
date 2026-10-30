@@ -16,11 +16,28 @@ const NOT_CAPTURED = 'Not captured';
 
 type JsonPath = readonly (string | number)[];
 
+/** Frozen inputs keep the same comparison rules across measurement engines. */
+export function isSavedRequestBenchmark(run: ModelProviderBenchmark): boolean {
+  return typeof field(run.configuration['workload'], 'id') === 'string';
+}
+
 export function benchmarkConfigurationItems(
   benchmark: ModelProviderBenchmark,
 ): readonly BenchmarkConfigurationItem[] {
   const configuration = benchmark.configuration;
 
+  if (isSavedRequestBenchmark(benchmark)) {
+    return [
+      item('dataset', 'Dataset', benchmark.dataset),
+      item('workload_name', 'Request workload', field(configuration['workload'], 'name')),
+      item('provenance', 'Provenance', field(configuration['workload'], 'provenance')),
+      item('sample_size', 'Sample size', benchmark.sample_size),
+      item('profile', 'Profile', first(configuration, [['benchmark', 'profile', 'kind']])),
+      item('max_concurrency', 'Max concurrency', first(configuration, [['benchmark', 'strategy', 'max_concurrency']])),
+      item('max_output_tokens', 'Output limits', 'From source requests'),
+      item('streaming', 'Streaming', true),
+    ];
+  }
   return [
     item('dataset', 'Dataset', benchmark.dataset),
     item('subset', 'Subset', first(configuration, [
@@ -103,9 +120,10 @@ export function servingConfigurationItems(
 
 export function benchmarkConfigurationRows(
   benchmark: ModelProviderBenchmark,
+  includeMissing = true,
 ): readonly BenchmarkConfigurationRow[] {
-  const benchmarkItems = benchmarkConfigurationItems(benchmark);
-  const servingItems = servingConfigurationItems(benchmark);
+  const benchmarkItems = benchmarkConfigurationItems(benchmark).filter(item => includeMissing || item.captured);
+  const servingItems = servingConfigurationItems(benchmark).filter(item => includeMissing || item.captured);
   const rowCount = Math.max(benchmarkItems.length, servingItems.length);
 
   return Array.from({ length: rowCount }, (_, index) => ({

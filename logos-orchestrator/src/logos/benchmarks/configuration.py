@@ -51,6 +51,7 @@ class BenchmarkSettings(BaseModel):
     concurrency: int = Field(default=1, ge=1, le=32)
     seed: int = Field(default=42, ge=0, le=2147483647)
     serving_overrides: ServingOverrides = Field(default_factory=ServingOverrides)
+    workload_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class BenchmarkRunSettings(BenchmarkSettings):

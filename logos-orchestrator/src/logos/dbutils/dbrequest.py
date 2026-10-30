@@ -18,6 +18,15 @@ class NightlyStatusRequest(BaseModel):
 class NightlyUpdateRequest(NightlyStatusRequest):
     enabled: StrictBool
     expected_enabled: StrictBool
+    workload_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    expected_workload_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+class BenchmarkWorkloadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    log_ids: list[Annotated[int, Field(gt=0)]] = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=128)
+    provenance: Literal["synthetic", "production"]
 
 
 class WebSearchRequest(BaseModel):

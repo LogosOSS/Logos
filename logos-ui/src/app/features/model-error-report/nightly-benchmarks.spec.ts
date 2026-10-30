@@ -13,13 +13,40 @@ describe('Nightly benchmark confirmation', () => {
     control.pairId = 31;
     control.providerName = 'Worker A';
     control.state.set({ enabled: false, status: 'disabled', report: [], recovery_required: false,
-      window: { start: '05:00', end: '08:00', benchmark_start_cutoff: '07:50', timezone: 'Europe/Berlin' } });
+      window: { start: '05:00', end: '08:00', benchmark_start_cutoff: '08:00', timezone: 'Europe/Berlin' } });
   });
   afterEach(() => { control.ngOnDestroy(); http.verify(); });
+
+  it('changes the dataset with the saved dataset as its compare-and-set expectation', async () => {
+    control.selectedWorkload = 'a'.repeat(64);
+    control.sourceEdited = true;
+    const operation = control.saveSource();
+    const request = http.expectOne('/api/logosdb/model_benchmarks/nightly/configure');
+    expect(request.request.body).toMatchObject({ enabled: false, expected_enabled: false,
+      workload_id: 'a'.repeat(64), expected_workload_id: null });
+    request.flush({ enabled: false, status: 'disabled', report: [], recovery_required: false, workload_id: 'a'.repeat(64) });
+    await Promise.resolve();
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush({ enabled: false, status: 'disabled', report: [], recovery_required: false, workload_id: 'a'.repeat(64) });
+    await operation;
+    expect(control.sourceEdited).toBe(false);
+  });
+
+  it('does not replace a workload while worker recovery is pending', async () => {
+    control.state.update(value => ({ ...value!, recovery_required: true }));
+    await control.saveSource();
+    http.expectNone('/api/logosdb/model_benchmarks/nightly/configure');
+  });
 
   it('explains worker reservation and restoration', () => {
     expect(control.confirmationMessage).toContain('cannot serve production requests');
     expect(control.confirmationMessage).toContain('Original settings are restored');
+  });
+
+  it('keeps dataset changes unavailable when the deployment freezes one user’s recent requests', async () => {
+    control.state.update(value => ({ ...value!, workload_policy: { kind: 'recent_user', username: 'source.user', request_count: 50 } }));
+    expect(control.automaticSource).toBe(true);
+    await control.saveSource();
+    http.expectNone('/api/logosdb/model_benchmarks/nightly/configure');
   });
 
   it('does not activate with missing server window settings', () => {
@@ -85,10 +112,10 @@ describe('Shared maintenance window display', () => {
     TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
     const control = TestBed.runInInjectionContext(() => new NightlyBenchmarks());
     control.state.set({ enabled: false, status: 'disabled', report: [], recovery_required: false,
-      window: { start: '06:00', end: '09:00', benchmark_start_cutoff: '08:50', timezone: 'UTC' } });
+      window: { start: '06:00', end: '09:00', benchmark_start_cutoff: '09:00', timezone: 'UTC' } });
     control.review();
     expect(control.confirmationMessage).toContain('06:00–09:00 UTC');
-    expect(control.statusLabel('window_closed')).toContain('08:50');
+    expect(control.statusLabel('window_closed')).toContain('09:00');
     expect(control.statusLabel('window_closed_below_half')).toContain('09:00');
     control.ngOnDestroy();
   });
