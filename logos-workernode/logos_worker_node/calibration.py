@@ -77,8 +77,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _READY_TIMEOUT_S = 600.0
-# A probe that only logs vLLM's "no shared memory block" warning for this many
-# polls in a row, with no compiler running, is hung rather than busy.
+# A probe whose log ends in this many consecutive "no shared memory block"
+# warnings, with no compiler running, is hung rather than busy.
 _STALL_NEEDLE = "No available shared memory broadcast block found"
 _STALL_MARKER = "engine warmup stalled"
 _STALL_REPEATS = 3
@@ -1616,11 +1616,11 @@ class _CompilerWatch:
         return self._running
 
 
-def _probe_stalled(log_path: Path, compiler_running: Callable[[], bool]) -> bool:
-    """True once the log's last lines are only the shared-memory warning."""
+def _probe_stalled(log_path: Path, offset: int, compiler_running: Callable[[], bool]) -> bool:
+    """True once this probe's log segment (from ``offset``) ends in only the shared-memory warning."""
     try:
         with log_path.open("rb") as f:
-            f.seek(max(0, f.seek(0, os.SEEK_END) - 16384))
+            f.seek(max(offset, f.seek(0, os.SEEK_END) - 16384))
             tail = f.read().decode("utf-8", errors="replace")
     except OSError:
         return False
@@ -1639,7 +1639,11 @@ def _append_log_marker(log_path: Path, text: str) -> None:
 
 
 def _mark_stalled(log_path: Path) -> None:
-    _append_log_marker(log_path, f"{_STALL_MARKER}: no vLLM output for ~{_STALL_REPEATS} min and no compiler running")
+    _append_log_marker(
+        log_path,
+        f"{_STALL_MARKER}: the last {_STALL_REPEATS} log lines are only the shared-memory warning "
+        "and no compiler is running",
+    )
 
 
 def wait_ready(
@@ -2835,7 +2839,7 @@ def _calibrate_model_probe(
             compiler_running = _CompilerWatch(proc.pid)
 
             def _stall_check() -> bool:
-                if not _probe_stalled(log_path, compiler_running):
+                if not _probe_stalled(log_path, _spawn_log_offset, compiler_running):
                     return False
                 _mark_stalled(log_path)
                 return True
