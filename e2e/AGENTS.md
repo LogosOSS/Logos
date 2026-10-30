@@ -5,7 +5,8 @@ GPU-less end-to-end suite in four tiers. See `README.md` for the tier table and 
 Key facts for agents:
 
 - Nothing in the worker or orchestrator is stubbed; only the layer *below* the worker is simulated (`nvidia-smi`, `nvcc`, the `vllm` binary) via `gpusim`, because every GPU-compatibility decision is read from that text boundary.
-- **The stack is started separately on purpose** (`harness.stack.compose up`) — the tests skip with instructions when it is down; they do not own its lifecycle. Don't add setup/teardown to the suites.
+- **The stack is started separately on purpose** (`harness.stack.compose up`) — the tests skip with instructions when it is down; they do not own its lifecycle. Don't add setup/teardown to the suites. Orchestrator restart for lifecycle isolation also stays outside pytest (`harness.stack.run_phased_benchmark` / `bootstrap_benchmark --prepare-lifecycle`).
+- Dual-Ada residency simulation CI must call `python -m harness.stack.run_phased_benchmark` (traffic → external prepare/restart → lifecycle+report + merged JUnit), not a single monolith pytest that restarts compose.
 - Tier 4 (Playwright) lives in `../logos-ui/e2e` and goes through Traefik rather than straight at the UI container — production serves UI and API on one origin, and separate origins would hide CORS/cookie/same-origin-WebSocket problems.
 
 ```bash
@@ -15,5 +16,7 @@ uv pip install --python .venv/bin/python -r ../logos-workernode/requirements.txt
 .venv/bin/python -m pytest tests/gpu -v                     # tier 1, no Docker
 .venv/bin/python -m harness.stack.compose up                # tiers 2+3
 .venv/bin/python -m pytest tests/node tests/client -v
+# Benchmark topology (after compose up --benchmark-topology + bootstrap):
+# .venv/bin/python -m harness.stack.run_phased_benchmark --report …/result.json --junit …/junit.xml
 .venv/bin/python -m harness.stack.compose down
 ```

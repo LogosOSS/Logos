@@ -96,7 +96,7 @@ class AdminClient:
     def scheduler_state(self) -> dict[str, Any]:
         response = self._client.get(
             "/logosdb/scheduler_state",
-            headers={"Authorization": f"Bearer {self._admin_key}"},
+            headers={"Authorization": f"Bearer {self._internal_secret}"},
         )
         response.raise_for_status()
         return response.json()
@@ -186,6 +186,23 @@ class AdminClient:
         return response.json().get("lanes") or []
 
     # -- writes -----------------------------------------------------------
+
+    def delete_lane(self, provider_id: int, lane_id: str) -> dict[str, Any]:
+        """Unload a lane via the real operator ``lanes/delete`` management API.
+
+        Catalogue edits (``model_provider``) do not destroy preexisting engines;
+        this is the honest cleanup path for lifecycle isolation.
+        """
+        response = self._client.post(
+            "/logosdb/providers/logosnode/lanes/delete",
+            json={
+                "logos_key": self._admin_key,
+                "provider_id": int(provider_id),
+                "lane_id": str(lane_id),
+            },
+        )
+        response.raise_for_status()
+        return response.json() if response.content else {"ok": True, "lane_id": lane_id}
 
     def register_node(
         self,

@@ -7,8 +7,11 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -32,7 +35,7 @@ class BackgroundRefreshedCacheTest {
         executor.shutdownNow();
     }
 
-    private BackgroundRefreshedCache cache(java.util.concurrent.Executor refreshExecutor) {
+    private BackgroundRefreshedCache cache(Executor refreshExecutor) {
         return new BackgroundRefreshedCache("test", REFRESH_AFTER_MS, MAX_STALE_MS, clock, refreshExecutor);
     }
 
@@ -53,21 +56,53 @@ class BackgroundRefreshedCacheTest {
         BackgroundRefreshedCache cache = cache(executor);
         cache.get("k", () -> 100L);
         clock.advanceMillis(REFRESH_AFTER_MS + 1);
+        CountDownLatch loading = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         AtomicInteger loads = new AtomicInteger();
 
-        for (int i = 0; i < 3; i++) {
-            Object value = CompletableFuture.supplyAsync(() -> cache.get("k", () -> {
-                loads.incrementAndGet();
-                await(release);
-                return 200L;
-            })).get(2, TimeUnit.SECONDS);
-            assertThat(value).isEqualTo(100L);
+        try {
+            for (int i = 0; i < 3; i++) {
+                Object value = CompletableFuture.supplyAsync(() -> cache.get("k", () -> {
+                    loads.incrementAndGet();
+                    loading.countDown();
+                    await(release);
+                    return 200L;
+                })).get(2, TimeUnit.SECONDS);
+                // Expired value must answer without waiting for the background load.
+                assertThat(value).isEqualTo(100L);
+            }
+            assertThat(loading.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(loads).hasValue(1);
+        } finally {
+            release.countDown();
         }
-        assertThat(loads).hasValue(1);
-
-        release.countDown();
         assertThat(waitFor(() -> Long.valueOf(200L).equals(cache.view().get("k").value()))).isTrue();
+    }
+
+    /**
+     * {@code refreshInBackground} only enqueues work. A get that answers from an
+     * expired value returns before the executor necessarily runs the loader.
+     */
+    @Test
+    void aBackgroundRefreshStaysQueuedUntilTheExecutorRunsIt() {
+        List<Runnable> queue = new ArrayList<>();
+        BackgroundRefreshedCache cache = cache(queue::add);
+        cache.get("k", () -> 100L);
+        clock.advanceMillis(REFRESH_AFTER_MS + 1);
+        AtomicInteger loads = new AtomicInteger();
+
+        assertThat(cache.<Long>get("k", () -> {
+            loads.incrementAndGet();
+            return 200L;
+        })).isEqualTo(100L);
+
+        assertThat(loads).hasValue(0);
+        assertThat(queue).hasSize(1);
+
+        queue.get(0).run();
+
+        assertThat(loads).hasValue(1);
+        assertThat(cache.view().get("k").value()).isEqualTo(200L);
     }
 
     @Test

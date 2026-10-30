@@ -298,6 +298,19 @@ class PriorityQueueManager:
                 high=len(self._queues[model_id][Priority.HIGH]),
             )
 
+    def get_oldest_queued_at(self, model_id: int, provider_id: int) -> float | None:
+        """Oldest arrival eligible for this provider, regardless of request priority."""
+        with self._lock:
+            return min(
+                (
+                    entry.enqueue_time.timestamp()
+                    for queue in self._queues.get(model_id, {}).values()
+                    for *_, entry in queue
+                    if entry.provider_affinity in (None, provider_id)
+                ),
+                default=None,
+            )
+
     def get_queued_by_api_key(self, model_id: int) -> Dict[int, int]:
         """How many queued entries for ``model_id`` belong to each caller key.
 

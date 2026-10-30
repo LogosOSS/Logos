@@ -15,7 +15,11 @@ import pytest
 from harness.clients.admin import AdminClient
 from harness.stack import compose
 
-STACK_HINT = "Stack not running. Start it with: python -m harness.stack.compose up"
+STACK_HINT = (
+    "Stack not running. Start it with: python -m harness.stack.compose up "
+    "(or E2E_COMPOSE_PROJECT=logos-e2e-bench E2E_ORCHESTRATOR_PORT=18190 "
+    "E2E_DB_PORT=15432 python -m harness.stack.compose up --benchmark-topology)"
+)
 
 
 def pytest_collection_modifyitems(config, items):
@@ -36,7 +40,7 @@ def stack():
 
 @pytest.fixture(scope="session")
 def orchestrator_url(stack) -> str:
-    return stack.ORCHESTRATOR_URL
+    return stack.orchestrator_url()
 
 
 @pytest.fixture(scope="session")
