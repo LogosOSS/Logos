@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -21,7 +22,10 @@ from logos.dbutils.dbrequest import (
 )
 from logos.logosnode_registry import LogosNodeRuntimeRegistry, ProviderSession
 from logos.model_profile_store import ProfileWriteCache
+from logos.model_profile_sync import profile_sync
 from logos.routers import logosnode as logosnode_mod
+
+sync_mod = sys.modules["logos.model_profile_sync"]
 
 _CALIBRATED = {
     "base_residency_mb": 15000.0,
@@ -139,18 +143,19 @@ class _FakeRegistry:
 
 @pytest.fixture(autouse=True)
 def _fresh_caches(monkeypatch):
-    monkeypatch.setattr(logosnode_mod, "_profile_write_cache", ProfileWriteCache())
-    monkeypatch.setattr(logosnode_mod, "_recorded_calibrations", {})
+    monkeypatch.setattr(profile_sync, "write_cache", ProfileWriteCache())
+    monkeypatch.setattr(profile_sync, "recorded_calibrations", {})
 
 
 def test_profiles_from_a_worker_without_central_sync_are_ignored(monkeypatch, caplog):
     db = _FakeDB()
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-1")
-    monkeypatch.setattr(logosnode_mod, "_outdated_format_warned", set())
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: "gpu-1")
+    monkeypatch.setattr(profile_sync, "outdated_format_warned", set())
     old_format = {"org/model": {"base_residency_mb": 1.0}}
     with caplog.at_level("WARNING"):
-        assert logosnode_mod._persist_model_profiles(db, 1, old_format) == ([], [])  # noqa: SLF001
-        assert logosnode_mod._persist_model_profiles(db, 1, old_format) == ([], [])  # noqa: SLF001
+        assert profile_sync.persist_model_profiles(db, 1, old_format) == ([], [])  # noqa: SLF001
+        assert profile_sync.persist_model_profiles(db, 1, old_format) == ([], [])  # noqa: SLF001
     assert db.persisted == []
     assert len([r for r in caplog.records if "pre-central format" in r.getMessage()]) == 1
 
@@ -163,7 +168,7 @@ def test_overrides_reach_the_typed_columns_but_not_the_stored_profile():
         "overridden_fields": ["max_context_length"],
         "sync_revision": 0,
     }
-    logosnode_mod._persist_model_profiles(db, 1, {"org/model": echoed})
+    profile_sync.persist_model_profiles(db, 1, {"org/model": echoed})
     assert db.persisted[0][2] == {"base_residency_mb": 1.0}
     assert db.reported == {"base_residency_mb": 1.0, "max_context_length": 131072}
 
@@ -171,22 +176,22 @@ def test_overrides_reach_the_typed_columns_but_not_the_stored_profile():
 def test_central_echo_is_stored_without_sync_metadata():
     db = _FakeDB()
     echoed = {"base_residency_mb": 1.0, "sync_revision": 3, "calibration_stale": False}
-    logosnode_mod._persist_model_profiles(db, 1, {"org/model": echoed})
+    profile_sync.persist_model_profiles(db, 1, {"org/model": echoed})
     assert db.persisted == [(1, "org/model", {"base_residency_mb": 1.0}, 3, None)]
 
 
 def test_unchanged_echo_is_written_once():
     db = _FakeDB()
     echoed = {"base_residency_mb": 1.0, "sync_revision": 3}
-    logosnode_mod._persist_model_profiles(db, 1, {"org/model": echoed})
-    logosnode_mod._persist_model_profiles(db, 1, {"org/model": dict(echoed)})
+    profile_sync.persist_model_profiles(db, 1, {"org/model": echoed})
+    profile_sync.persist_model_profiles(db, 1, {"org/model": dict(echoed)})
     assert len(db.persisted) == 1
 
 
 def test_rejected_echo_is_retried_and_records_no_calibration():
     db = _FakeDB(accept=False)
-    logosnode_mod._persist_model_profiles(db, 1, {"org/model": dict(_CALIBRATED)})
-    changed, rejected = logosnode_mod._persist_model_profiles(db, 1, {"org/model": dict(_CALIBRATED)})
+    profile_sync.persist_model_profiles(db, 1, {"org/model": dict(_CALIBRATED)})
+    changed, rejected = profile_sync.persist_model_profiles(db, 1, {"org/model": dict(_CALIBRATED)})
     assert (changed, rejected) == ([], ["org/model"])
     assert len(db.persisted) == 2
     assert db.calibrations == []
@@ -198,26 +203,26 @@ def test_rejected_echoes_share_one_resync_push(monkeypatch):
     async def _push(provider_id, model_names=None, calibration_key_hashes=None):
         pushed.append((provider_id, model_names))
 
-    monkeypatch.setattr(logosnode_mod, "_push_model_profiles", _push)
-    monkeypatch.setattr(logosnode_mod, "_pending_resyncs", {})
-    monkeypatch.setattr(logosnode_mod, "_RESYNC_DELAY_SECONDS", 0)
+    monkeypatch.setattr(profile_sync, "push_profiles", _push)
+    monkeypatch.setattr(profile_sync, "pending_resyncs", {})
+    monkeypatch.setattr(sync_mod, "_RESYNC_DELAY_SECONDS", 0)
 
     async def _scenario():
-        logosnode_mod._schedule_model_profile_resync(1, ["a"])
-        logosnode_mod._schedule_model_profile_resync(1, ["b", "a"])
-        logosnode_mod._schedule_model_profile_resync(2, ["c"])
+        profile_sync._schedule_resync(1, ["a"])
+        profile_sync._schedule_resync(1, ["b", "a"])
+        profile_sync._schedule_resync(2, ["c"])
         await asyncio.gather(*list(main_mod._background_tasks))
-        logosnode_mod._schedule_model_profile_resync(1, ["a"])
+        profile_sync._schedule_resync(1, ["a"])
         await asyncio.gather(*list(main_mod._background_tasks))
 
     asyncio.run(_scenario())
     assert sorted(pushed) == [(1, ["a"]), (1, ["a", "b"]), (2, ["c"])]
-    assert logosnode_mod._pending_resyncs == {}
+    assert profile_sync.pending_resyncs == {}
 
 
 def test_fresh_calibration_is_snapshotted_once_and_pushed_back():
     db = _FakeDB(new_revision=1)
-    changed, rejected = logosnode_mod._persist_model_profiles(db, 1, {"org/model": dict(_CALIBRATED)})
+    changed, rejected = profile_sync.persist_model_profiles(db, 1, {"org/model": dict(_CALIBRATED)})
     assert (changed, rejected) == (["org/model"], [])
     provider_id, model_name, snapshot, key, key_hash, calibrated_at = db.calibrations[0]
     assert (provider_id, model_name, key_hash) == (1, "org/model", "H1")
@@ -229,7 +234,7 @@ def test_fresh_calibration_is_snapshotted_once_and_pushed_back():
     assert key["gpu_name"] == "RTX A4000"
     assert calibrated_at.timestamp() == 1790000000.0
 
-    again, _ = logosnode_mod._persist_model_profiles(db, 1, {"org/model": dict(_CALIBRATED)})
+    again, _ = profile_sync.persist_model_profiles(db, 1, {"org/model": dict(_CALIBRATED)})
     assert again == []
     assert len(db.calibrations) == 1
 
@@ -237,7 +242,7 @@ def test_fresh_calibration_is_snapshotted_once_and_pushed_back():
 def test_push_is_skipped_for_workers_without_the_sync_action(monkeypatch):
     registry = _FakeRegistry(supported=False)
     monkeypatch.setattr(main_mod, "_logosnode_registry", registry)
-    asyncio.run(logosnode_mod._push_model_profiles(1))
+    asyncio.run(profile_sync.push_profiles(1))
     assert registry.sent == []
 
 
@@ -246,8 +251,10 @@ def test_push_sends_effective_profiles(monkeypatch):
     db = _FakeDB()
     monkeypatch.setattr(main_mod, "_logosnode_registry", registry)
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-1")
-    asyncio.run(logosnode_mod._push_model_profiles(1, ["org/model"], {"org/model": "H1"}))
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: "gpu-1")
+    asyncio.run(profile_sync.push_profiles(1, ["org/model"], {"org/model": "H1"}))
     assert db.reported_keys == [(1, {"org/model": "H1"})]
     provider_id, action, params = registry.sent[0]
     assert action == "sync_model_profiles"
@@ -264,16 +271,20 @@ def test_push_failure_keeps_the_session(monkeypatch):
     registry.send_command = _broken
     monkeypatch.setattr(main_mod, "_logosnode_registry", registry)
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: _FakeDB())
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: _FakeDB())
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-1")
-    asyncio.run(logosnode_mod._push_model_profiles(1))
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: "gpu-1")
+    asyncio.run(profile_sync.push_profiles(1))
 
 
 def test_startup_endpoint_stores_the_reported_keys_and_returns_profiles(monkeypatch):
     db = _FakeDB()
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_require_tls_request", lambda request: None)
     monkeypatch.setattr(logosnode_mod, "_logosnode_provider_for_key", lambda key: {"id": 5})
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-5")
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: "gpu-5")
     data = LogosNodeModelProfilesRequest(shared_key="k", calibration_key_hashes={"org/model": "H1"})
     result = asyncio.run(logosnode_mod.logosnode_model_profiles(data, request=None))
     assert db.reported_keys == [(5, {"org/model": "H1"})]
@@ -288,8 +299,9 @@ def test_clear_unsupported_pushes_the_model(monkeypatch):
         pushed.append((provider_id, model_names))
 
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_require_root_access", lambda key: None)
-    monkeypatch.setattr(logosnode_mod, "_push_model_profiles", _push)
+    monkeypatch.setattr(profile_sync, "push_profiles", _push)
     data = LogosNodeClearUnsupportedRequest(logos_key="k", provider_id=1, model_name="org/model")
     result = asyncio.run(logosnode_mod.logosnode_clear_unsupported(data))
     assert result["sync_revision"] == 4
@@ -304,8 +316,9 @@ def test_invalidation_pushes_every_affected_node(monkeypatch):
         pushed.append((provider_id, model_names))
 
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_require_root_access", lambda key: None)
-    monkeypatch.setattr(logosnode_mod, "_push_model_profiles", _push)
+    monkeypatch.setattr(profile_sync, "push_profiles", _push)
     data = LogosNodeInvalidateCalibrationRequest(logos_key="k", calibration_id=9, reason="wrong footprint")
     result = asyncio.run(logosnode_mod.logosnode_invalidate_calibration(data))
     assert db.invalidated == [(9, "wrong footprint")]
@@ -323,23 +336,24 @@ def test_reset_is_a_central_change_pushed_to_the_worker(monkeypatch):
         pushed.append((provider_id, model_names))
 
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_require_root_access", lambda key: None)
-    monkeypatch.setattr(logosnode_mod, "_push_model_profiles", _push)
-    logosnode_mod._recorded_calibrations[(1, "org/model")] = 1.0
-    logosnode_mod._profile_write_cache.remember(1, "org/model", "d")
+    monkeypatch.setattr(profile_sync, "push_profiles", _push)
+    profile_sync.recorded_calibrations[(1, "org/model")] = 1.0
+    profile_sync.write_cache.remember(1, "org/model", "d")
     data = LogosNodeResetProfilesRequest(logos_key="k", provider_id=1, model_names=["org/model"])
     result = asyncio.run(logosnode_mod.logosnode_reset_profiles(data))
     assert db.reset == (1, ["org/model"])
     assert result == {"provider_id": 1, "reset": ["org/model"], "shared_profiles": True}
     assert pushed == [(1, ["org/model"])]
-    assert (1, "org/model") not in logosnode_mod._recorded_calibrations
-    assert not logosnode_mod._profile_write_cache.unchanged(1, "org/model", "d")
+    assert (1, "org/model") not in profile_sync.recorded_calibrations
+    assert not profile_sync.write_cache.unchanged(1, "org/model", "d")
 
 
 def test_profiles_of_one_status_are_committed_once():
     db = _FakeDB()
     echoes = {name: {"base_residency_mb": 1.0, "sync_revision": 0} for name in ("a", "b", "c")}
-    logosnode_mod._persist_model_profiles(db, 1, echoes)
+    profile_sync.persist_model_profiles(db, 1, echoes)
     assert len(db.persisted) == 3
     assert db.session.commits == 1
 
@@ -353,11 +367,11 @@ def test_a_rolled_back_status_is_not_remembered_as_stored():
 
     db = _FailingDB()
     with pytest.raises(RuntimeError):
-        logosnode_mod._persist_model_profiles(db, 1, {"org/model": dict(_CALIBRATED)})
+        profile_sync.persist_model_profiles(db, 1, {"org/model": dict(_CALIBRATED)})
     assert db.session.commits == 0
-    assert logosnode_mod._recorded_calibrations == {}
+    assert profile_sync.recorded_calibrations == {}
     retry = _FakeDB()
-    logosnode_mod._persist_model_profiles(retry, 1, {"org/model": dict(_CALIBRATED)})
+    profile_sync.persist_model_profiles(retry, 1, {"org/model": dict(_CALIBRATED)})
     assert len(retry.persisted) == 1
     assert len(retry.calibrations) == 1
 
@@ -366,7 +380,7 @@ def test_a_loaded_lane_rewrites_its_row_only_once_per_flush_interval(monkeypatch
     """Every status of a loaded lane bumps the measurement counters; those
     alone are written lazily, a real change at once."""
     clock = [1000.0]
-    monkeypatch.setattr(logosnode_mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(sync_mod.time, "monotonic", lambda: clock[0])
     db = _FakeDB()
 
     def _echo(count: int, loaded: float = 15000.0) -> dict:
@@ -377,14 +391,14 @@ def test_a_loaded_lane_rewrites_its_row_only_once_per_flush_interval(monkeypatch
             "sync_revision": 2,
         }
 
-    logosnode_mod._persist_model_profiles(db, 1, {"org/model": _echo(1)})
+    profile_sync.persist_model_profiles(db, 1, {"org/model": _echo(1)})
     clock[0] += 60
-    logosnode_mod._persist_model_profiles(db, 1, {"org/model": _echo(2)})
+    profile_sync.persist_model_profiles(db, 1, {"org/model": _echo(2)})
     assert len(db.persisted) == 1
-    logosnode_mod._persist_model_profiles(db, 1, {"org/model": _echo(3, loaded=17000.0)})
+    profile_sync.persist_model_profiles(db, 1, {"org/model": _echo(3, loaded=17000.0)})
     assert len(db.persisted) == 2
-    clock[0] += logosnode_mod._profile_write_cache._flush_seconds  # noqa: SLF001
-    logosnode_mod._persist_model_profiles(db, 1, {"org/model": _echo(4, loaded=17000.0)})
+    clock[0] += profile_sync.write_cache._flush_seconds  # noqa: SLF001
+    profile_sync.persist_model_profiles(db, 1, {"org/model": _echo(4, loaded=17000.0)})
     assert len(db.persisted) == 3
 
 
@@ -394,15 +408,15 @@ def test_resyncs_back_off_while_the_worker_keeps_rejecting(monkeypatch):
     async def _resync(provider_id, delay=0.0):
         delays.append(delay)
 
-    monkeypatch.setattr(logosnode_mod, "_run_model_profile_resync", _resync)
-    monkeypatch.setattr(logosnode_mod, "_pending_resyncs", {})
-    monkeypatch.setattr(logosnode_mod, "_resync_rounds", {})
+    monkeypatch.setattr(profile_sync, "_run_resync", _resync)
+    monkeypatch.setattr(profile_sync, "pending_resyncs", {})
+    monkeypatch.setattr(profile_sync, "resync_rounds", {})
 
     async def _run():
         for _ in range(8):
-            logosnode_mod._schedule_model_profile_resync(1, ["org/model"])
+            profile_sync._schedule_resync(1, ["org/model"])
             await asyncio.sleep(0)
-            logosnode_mod._pending_resyncs.pop(1, None)
+            profile_sync.pending_resyncs.pop(1, None)
 
     asyncio.run(_run())
     assert delays == [5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 300.0, 300.0]
@@ -411,25 +425,25 @@ def test_resyncs_back_off_while_the_worker_keeps_rejecting(monkeypatch):
 def test_overridden_fields_are_passed_on_so_their_stored_values_survive():
     db = _FakeDB()
     echo = {"max_context_length": 32768, "overridden_fields": ["max_context_length"], "sync_revision": 1}
-    logosnode_mod._persist_model_profiles(db, 1, {"org/model": echo})
+    profile_sync.persist_model_profiles(db, 1, {"org/model": echo})
     assert db.persisted[0][2] == {}
     assert db.overridden == ["max_context_length"]
 
 
 def test_a_finished_session_leaves_no_bookkeeping_behind(monkeypatch):
-    for name in ("_last_runtime_ts", "_last_snapshot_at", "_resync_rounds", "_pending_resyncs"):
-        monkeypatch.setattr(logosnode_mod, name, {1: "x", 2: "y"})
-    logosnode_mod._recorded_calibrations.update({(1, "a"): 1.0, (2, "a"): 2.0})
-    logosnode_mod._profile_write_cache.remember(1, "a", "d")
-    logosnode_mod._profile_write_cache.remember(2, "a", "d")
+    for name in ("last_runtime_ts", "last_snapshot_at", "resync_rounds", "pending_resyncs"):
+        monkeypatch.setattr(profile_sync, name, {1: "x", 2: "y"})
+    profile_sync.recorded_calibrations.update({(1, "a"): 1.0, (2, "a"): 2.0})
+    profile_sync.write_cache.remember(1, "a", "d")
+    profile_sync.write_cache.remember(2, "a", "d")
 
-    logosnode_mod._forget_provider_state(1)
+    profile_sync.forget_provider(1)
 
-    for name in ("_last_runtime_ts", "_last_snapshot_at", "_resync_rounds", "_pending_resyncs"):
-        assert getattr(logosnode_mod, name) == {2: "y"}
-    assert logosnode_mod._recorded_calibrations == {(2, "a"): 2.0}
-    assert not logosnode_mod._profile_write_cache.unchanged(1, "a", "d")
-    assert logosnode_mod._profile_write_cache.unchanged(2, "a", "d")
+    for name in ("last_runtime_ts", "last_snapshot_at", "resync_rounds", "pending_resyncs"):
+        assert getattr(profile_sync, name) == {2: "y"}
+    assert profile_sync.recorded_calibrations == {(2, "a"): 2.0}
+    assert not profile_sync.write_cache.unchanged(1, "a", "d")
+    assert profile_sync.write_cache.unchanged(2, "a", "d")
 
 
 class _EndedSessionRegistry:
@@ -463,11 +477,11 @@ def test_only_a_session_without_successor_drops_the_bookkeeping(monkeypatch, new
     wipe the state the new session already builds up."""
     monkeypatch.setattr(main_mod, "_logosnode_registry", _EndedSessionRegistry(newer_session))
     monkeypatch.setattr(logosnode_mod, "_is_tls_websocket", lambda websocket: True)
-    monkeypatch.setattr(logosnode_mod, "_last_runtime_ts", {1: "ts"})
+    monkeypatch.setattr(profile_sync, "last_runtime_ts", {1: "ts"})
 
     asyncio.run(logosnode_mod.logosnode_session(_DisconnectingSocket(), token="t"))
 
-    assert (1 in logosnode_mod._last_runtime_ts) is newer_session
+    assert (1 in profile_sync.last_runtime_ts) is newer_session
 
 
 def test_a_reset_landing_between_commit_and_cache_update_is_not_masked():
@@ -477,13 +491,13 @@ def test_a_reset_landing_between_commit_and_cache_update_is_not_masked():
     class _ResetRacingDB(_FakeDB):
         def persist_central_model_profile(self, provider_id, model_name, *args):
             accepted = super().persist_central_model_profile(provider_id, model_name, *args)
-            logosnode_mod._profile_write_cache.forget(provider_id, model_name)
+            profile_sync.write_cache.forget(provider_id, model_name)
             return accepted
 
     echo = {"org/model": {"base_residency_mb": 1.0, "sync_revision": 3}}
-    logosnode_mod._persist_model_profiles(_ResetRacingDB(), 1, echo)
+    profile_sync.persist_model_profiles(_ResetRacingDB(), 1, echo)
     later = _FakeDB(accept=False)
-    _, rejected = logosnode_mod._persist_model_profiles(later, 1, echo)
+    _, rejected = profile_sync.persist_model_profiles(later, 1, echo)
     assert len(later.persisted) == 1
     assert rejected == ["org/model"]
 
@@ -493,12 +507,13 @@ def test_the_admin_endpoints_check_the_root_key_off_the_event_loop(monkeypatch):
     not stall it."""
     threads: list = []
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: _FakeDB())
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: _FakeDB())
     monkeypatch.setattr(logosnode_mod, "_require_root_access", lambda key: threads.append(threading.get_ident()))
 
     async def _push(provider_id, model_names=None, calibration_key_hashes=None):
         return None
 
-    monkeypatch.setattr(logosnode_mod, "_push_model_profiles", _push)
+    monkeypatch.setattr(profile_sync, "push_profiles", _push)
 
     async def _run():
         loop_thread = threading.get_ident()
@@ -519,8 +534,10 @@ def test_the_admin_endpoints_check_the_root_key_off_the_event_loop(monkeypatch):
 def test_a_reported_key_lets_the_node_adopt_a_shared_calibration(monkeypatch):
     db = _FakeDB()
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-5")
-    logosnode_mod._update_reported_calibration_keys(5, {"org/model": "H1"}, {"org/model": 2})
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: "gpu-5")
+    profile_sync.update_reported_keys(5, {"org/model": "H1"}, {"org/model": 2})
     assert db.slice_counts == {"org/model": 2}
     assert db.adopted == [(5, ["org/model"], True)]
 
@@ -529,18 +546,21 @@ def test_sharing_can_be_switched_off(monkeypatch):
     db = _FakeDB()
     monkeypatch.setenv("LOGOS_SHARED_PROFILES", "0")
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
-    logosnode_mod._update_reported_calibration_keys(5, {"org/model": "H1"}, {"org/model": 2})
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
+    profile_sync.update_reported_keys(5, {"org/model": "H1"}, {"org/model": 2})
     assert db.reported_keys
     assert db.adopted == [(5, ["org/model"], False)]  # a misfit calibration is still dropped
-    assert logosnode_mod._offer_calibrations_to_siblings(5, ["org/model"]) == {}
+    assert profile_sync.offer_to_siblings_now(5, ["org/model"]) == {}
 
 
 def test_a_fresh_calibration_is_offered_to_the_nodes_of_its_key(monkeypatch):
     db = _FakeDB()
     db.sibling_adopters = {"org/model": [(7, 21), (8, None)]}
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: f"gpu-{pid}")
-    assert logosnode_mod._offer_calibrations_to_siblings(5, ["org/model", "other"]) == {
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: f"gpu-{pid}")
+    assert profile_sync.offer_to_siblings_now(5, ["org/model", "other"]) == {
         7: ["org/model"],
         8: ["org/model"],
     }
@@ -550,31 +570,36 @@ def test_a_node_calibrating_the_model_is_not_offered_one(monkeypatch):
     db = _FakeDB()
     db.sibling_adopters = {"org/model": [(7, 21), (8, 21)]}
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: f"gpu-{pid}")
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: f"gpu-{pid}")
     monkeypatch.setattr(
-        logosnode_mod, "_models_in_calibration", lambda pid: frozenset({"org/model"}) if pid == 7 else frozenset()
+        profile_sync, "models_in_calibration", lambda pid: frozenset({"org/model"}) if pid == 7 else frozenset()
     )
-    assert logosnode_mod._offer_calibrations_to_siblings(5, ["org/model"]) == {8: ["org/model"]}
+    assert profile_sync.offer_to_siblings_now(5, ["org/model"]) == {8: ["org/model"]}
 
 
 def test_a_reconnecting_node_does_not_adopt_the_model_it_is_calibrating(monkeypatch):
     db = _FakeDB()
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-5")
-    monkeypatch.setattr(logosnode_mod, "_models_in_calibration", lambda pid: frozenset({"org/busy"}))
-    logosnode_mod._update_reported_calibration_keys(5, {"org/busy": "H1", "org/idle": "H2"}, {})
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: "gpu-5")
+    monkeypatch.setattr(profile_sync, "models_in_calibration", lambda pid: frozenset({"org/busy"}))
+    profile_sync.update_reported_keys(5, {"org/busy": "H1", "org/idle": "H2"}, {})
     assert db.adopted == [(5, ["org/idle"], True)]
 
 
 def test_a_reset_says_whether_calibration_sharing_is_on(monkeypatch):
     db = _FakeDB()
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_require_root_access", lambda key: None)
 
     async def _push(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(logosnode_mod, "_push_model_profiles", _push)
+    monkeypatch.setattr(profile_sync, "push_profiles", _push)
     data = LogosNodeResetProfilesRequest(logos_key="k", provider_id=1, model_names=["org/model"])
     assert asyncio.run(logosnode_mod.logosnode_reset_profiles(data))["shared_profiles"] is True
     monkeypatch.setenv("LOGOS_SHARED_PROFILES", "0")
@@ -584,7 +609,7 @@ def test_a_reset_says_whether_calibration_sharing_is_on(monkeypatch):
 def test_the_calibration_duration_is_stored_with_the_snapshot(monkeypatch):
     db = _FakeDB()
     echoed = dict(_CALIBRATED, calibration_duration_s=412.5)
-    logosnode_mod._persist_model_profiles(db, 1, {"org/model": echoed})
+    profile_sync.persist_model_profiles(db, 1, {"org/model": echoed})
     assert db.durations == [412.5]
 
 
@@ -593,13 +618,13 @@ def test_a_rejected_shared_calibration_is_pushed_to_every_node_that_lost_it(monk
     db.reject_result = [(1, "org/model"), (2, "org/model")]
     pushed: list = []
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: f"gpu-{pid}")
-    monkeypatch.setattr(
-        logosnode_mod, "_schedule_model_profile_push", lambda pid, names=None: pushed.append((pid, names))
-    )
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: f"gpu-{pid}")
+    monkeypatch.setattr(profile_sync, "schedule_push", lambda pid, names=None: pushed.append((pid, names)))
 
     async def _run():
-        await logosnode_mod._handle_calibration_rejected(2, {"model": "org/model", "details": "11"})
+        await profile_sync.handle_calibration_rejected(2, {"model": "org/model", "details": "11"})
 
     asyncio.run(_run())
     assert db.rejected == [(2, "org/model", 11)]
@@ -609,7 +634,8 @@ def test_a_rejected_shared_calibration_is_pushed_to_every_node_that_lost_it(monk
 def test_a_rejection_without_a_calibration_id_is_ignored(monkeypatch):
     db = _FakeDB()
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
-    asyncio.run(logosnode_mod._handle_calibration_rejected(2, {"model": "org/model", "details": "n/a"}))
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
+    asyncio.run(profile_sync.handle_calibration_rejected(2, {"model": "org/model", "details": "n/a"}))
     assert db.rejected == []
 
 
@@ -627,7 +653,8 @@ def test_a_failing_adoption_never_keeps_a_worker_from_its_profiles(monkeypatch):
     rollbacks: list = []
     db.session.rollback = lambda: rollbacks.append(1)
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
-    logosnode_mod._update_reported_calibration_keys(5, {"org/model": "H1"}, {"org/model": 2})
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
+    profile_sync.update_reported_keys(5, {"org/model": "H1"}, {"org/model": 2})
     assert db.reported_keys == [(5, {"org/model": "H1"})]
     assert rollbacks == [1]
 
@@ -648,11 +675,11 @@ def test_a_linked_snapshot_lifts_the_protection_of_a_finished_model(monkeypatch)
         "_logosnode_registry",
         SimpleNamespace(snapshots_linked=lambda pid, models: lifted.append((pid, models))),
     )
-    logosnode_mod._snapshots_linked(5, ["org/model"])
+    profile_sync._snapshots_linked(5, ["org/model"])
     assert lifted == [(5, ["org/model"])]
     monkeypatch.setattr(main_mod, "_logosnode_registry", None)
-    logosnode_mod._snapshots_linked(5, ["org/model"])  # no registry: nothing to lift
-    assert logosnode_mod._models_in_calibration(5) == frozenset()
+    profile_sync._snapshots_linked(5, ["org/model"])  # no registry: nothing to lift
+    assert profile_sync.models_in_calibration(5) == frozenset()
 
 
 def _registry_with_sessions(*provider_ids):
@@ -674,7 +701,7 @@ def test_a_reservation_answers_with_the_profile_and_bars_adoption(monkeypatch):
     registry = _registry_with_sessions(5)
     monkeypatch.setattr(main_mod, "_logosnode_registry", registry)
     monkeypatch.setattr(
-        logosnode_mod, "_load_effective_profiles", lambda pid, names=None: {"org/model": {"sync_revision": 4}}
+        profile_sync, "load_effective_profiles", lambda pid, names=None: {"org/model": {"sync_revision": 4}}
     )
     reserve = _reservation_endpoint(monkeypatch)
     assert reserve() == {"profiles": {"org/model": {"sync_revision": 4}}}
@@ -689,14 +716,16 @@ def test_a_node_that_reserved_a_model_is_not_offered_one_before_its_events_arriv
     db = _FakeDB()
     db.sibling_adopters = {"org/model": [(7, 21), (8, 21)]}
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: f"gpu-{pid}")
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: f"gpu-{pid}")
 
-    assert logosnode_mod._offer_calibrations_to_siblings(5, ["org/model"]) == {  # noqa: SLF001
+    assert profile_sync.offer_to_siblings_now(5, ["org/model"]) == {  # noqa: SLF001
         7: ["org/model"],
         8: ["org/model"],
     }
     registry.reserve_calibration(7, "org/model")
-    assert logosnode_mod._offer_calibrations_to_siblings(5, ["org/model"]) == {8: ["org/model"]}  # noqa: SLF001
+    assert profile_sync.offer_to_siblings_now(5, ["org/model"]) == {8: ["org/model"]}  # noqa: SLF001
 
 
 def test_a_reservation_waits_for_an_adoption_in_flight_and_answers_after_it(monkeypatch):
@@ -715,13 +744,15 @@ def test_a_reservation_waits_for_an_adoption_in_flight_and_answers_after_it(monk
     registry = _registry_with_sessions(5)
     monkeypatch.setattr(main_mod, "_logosnode_registry", registry)
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: _SlowAdoption())
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: _SlowAdoption())
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-5")
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: "gpu-5")
     monkeypatch.setattr(
-        logosnode_mod, "_load_effective_profiles", lambda pid, names=None: {"org/model": {"adopted": state["adopted"]}}
+        profile_sync, "load_effective_profiles", lambda pid, names=None: {"org/model": {"adopted": state["adopted"]}}
     )
     reserve = _reservation_endpoint(monkeypatch)
     adopting = threading.Thread(
-        target=lambda: logosnode_mod._update_reported_calibration_keys(5, {"org/model": "H"}, {})  # noqa: SLF001
+        target=lambda: profile_sync.update_reported_keys(5, {"org/model": "H"}, {})  # noqa: SLF001
     )
     adopting.start()
     assert started.wait(5)
@@ -746,8 +777,10 @@ def test_once_reserved_the_hello_adoption_leaves_the_model_alone(monkeypatch):
     monkeypatch.setattr(main_mod, "_logosnode_registry", registry)
     db = _FakeDB()
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-5")
-    logosnode_mod._update_reported_calibration_keys(5, {"org/busy": "H1", "org/idle": "H2"}, {})  # noqa: SLF001
+    monkeypatch.setattr(sync_mod, "_resolve_provider_name", lambda pid: "gpu-5")
+    profile_sync.update_reported_keys(5, {"org/busy": "H1", "org/idle": "H2"}, {})  # noqa: SLF001
     assert db.adopted == [(5, ["org/idle"], True)]
 
 
@@ -778,6 +811,7 @@ def test_a_reservation_stores_the_workers_key_before_judging_the_profile(monkeyp
 
     db = _Db()
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
+    monkeypatch.setattr(sync_mod, "DBManager", lambda: db)
     monkeypatch.setattr(main_mod, "_logosnode_registry", _registry_with_sessions(5))
     monkeypatch.setattr(logosnode_mod, "_require_tls_request", lambda request: None)
     monkeypatch.setattr(logosnode_mod, "_logosnode_provider_for_key", lambda key: {"id": 5})
