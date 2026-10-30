@@ -1,7 +1,7 @@
 ---
 name: Logos - Residency Simulation Benchmark
 
-# GPU-less functional simulation of residency policies (demand / lru) via the
+# GPU-less synthetic simulation of residency policies (demand / lru / simple) via the
 # E2E benchmark topology (real orchestrator + worker, fake vLLM below). Posts
 # an idempotent PR comment. Times are not GPU performance; synthetic only.
 on:
@@ -45,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        residency_policy: [demand, lru]
+        residency_policy: [demand, lru, simple]
         include:
           - residency_policy: demand
             compose_project: logos-e2e-sim-demand
@@ -59,7 +59,14 @@ jobs:
             db_port: "15532"
             ui_port: "18291"
             keycloak_port: "18295"
+          - residency_policy: simple
+            compose_project: logos-e2e-sim-simple
+            orchestrator_port: "18390"
+            db_port: "15632"
+            ui_port: "18391"
+            keycloak_port: "18395"
     env:
+      LOGOS_SIM_REQUIRE_PERFORMANCE: "1"
       E2E_RESIDENCY_POLICY: ${{ matrix.residency_policy }}
       E2E_COMPOSE_PROJECT: ${{ matrix.compose_project }}
       E2E_ORCHESTRATOR_PORT: ${{ matrix.orchestrator_port }}
@@ -148,6 +155,19 @@ jobs:
             --junit "../benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/junit.xml"
         working-directory: e2e
 
+      - name: Run short synthetic performance comparison
+        run: |
+          export E2E_PERF_IMAGE_PROJECT="$E2E_COMPOSE_PROJECT"
+          .venv/bin/python -m harness.stack.compose down --benchmark-topology
+          .venv/bin/python -m harness.stack.run_performance_benchmark \
+            --project "logos-e2e-perf-ci-${{ matrix.residency_policy }}" \
+            --policy "${{ matrix.residency_policy }}" --seed 42 \
+            --requests-per-pattern 25 \
+            --out "../benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/performance.json"
+          .venv/bin/python ../benchmarks/residency_simulation/attach_performance.py \
+            "$E2E_SIM_REPORT_PATH"
+        working-directory: e2e
+
       - name: Fail closed on missing / empty simulation report
         run: |
           python benchmarks/residency_simulation/pr_comment.py \
@@ -217,7 +237,7 @@ jobs:
           set +e
           ROOT="benchmarks/residency_simulation/reports"
           mkdir -p "$ROOT"
-          for policy in demand lru; do
+          for policy in demand lru simple; do
             dest="$ROOT/$policy"
             mkdir -p "$dest"
             src=""
@@ -247,6 +267,7 @@ jobs:
           LOGOS_SIM_REPORT_DIR: ${{ github.workspace }}/benchmarks/residency_simulation/reports
           LOGOS_SIM_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LOGOS_BENCH_PR_COMMENT_DRY_RUN: "1"
+          LOGOS_SIM_REQUIRE_PERFORMANCE: "1"
         run: |
           set +e
           mkdir -p benchmarks/residency_simulation/reports

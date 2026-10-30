@@ -98,6 +98,8 @@ def _compose(
     files = ["-f", str(COMPOSE_FILE)]
     if use_bench:
         files.extend(["-f", str(BENCHMARK_TOPOLOGY_FILE)])
+    if os.environ.get("E2E_PERFORMANCE_OVERLAY"):
+        files.extend(["-f", os.environ["E2E_PERFORMANCE_OVERLAY"]])
     cmd = ["docker", "compose", *files, "-p", project_name(), *profile, *args]
     run_env = {**os.environ, **env} if env else None
     return subprocess.run(cmd, check=check, text=True, capture_output=capture, env=run_env)

@@ -450,6 +450,16 @@ class CapacityPlanner:
             except (TypeError, ValueError):
                 return float(default)
 
+        self._cycle_seconds = _envf("LOGOS_CAPACITY_CYCLE_S", self._cycle_seconds)
+        self.LANE_COLD_WAITER_TENURE_SECONDS = _envf(
+            "LOGOS_LANE_COLD_WAITER_TENURE_S", type(self).LANE_COLD_WAITER_TENURE_SECONDS
+        )
+        self.WAKE_FAILURE_COOLDOWN_SECONDS = _envf(
+            "LOGOS_WAKE_FAILURE_COOLDOWN_S", type(self).WAKE_FAILURE_COOLDOWN_SECONDS
+        )
+        self.LOAD_FAILURE_COOLDOWN_SECONDS = _envf(
+            "LOGOS_LOAD_FAILURE_COOLDOWN_S", type(self).LOAD_FAILURE_COOLDOWN_SECONDS
+        )
         self.IDLE_SLEEP_L1 = _envf("LOGOS_IDLE_SLEEP_L1_S", type(self).IDLE_SLEEP_L1)
         self.DRAIN_COMPETITIVE_RATIO = _envf("LOGOS_DRAIN_COMPETITIVE_RATIO", type(self).DRAIN_COMPETITIVE_RATIO)
         self.WAKE_COMPETITIVE_RATIO = _envf("LOGOS_WAKE_COMPETITIVE_RATIO", type(self).WAKE_COMPETITIVE_RATIO)

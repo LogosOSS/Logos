@@ -227,10 +227,10 @@ def test_sha_html_escaped_in_markdown():
 
 def test_markdown_tables_include_lifecycle(tmp_path: Path):
     junit = {"tests": 2, "failures": 0, "errors": 0, "skipped": 0}
-    reports = {"demand": _valid("demand"), "lru": _valid("lru")}
+    reports = {policy: _valid(policy) for policy in ("demand", "lru", "simple")}
     md = build_markdown(
         reports,
-        junit_by_policy={"demand": junit, "lru": junit},
+        junit_by_policy={policy: junit for policy in ("demand", "lru", "simple")},
         source_sha=SHA,
         run_url="https://example.test/run/1",
     )
@@ -241,3 +241,62 @@ def test_markdown_tables_include_lifecycle(tmp_path: Path):
     assert "workflow run" in md
     assert "not GPU performance" in md
     assert "0 |" in md  # real zeros (e.g. failures column) distinct from NA rows
+
+
+def _performance(policy="demand"):
+    return {
+        "synthetic": True,
+        "source_sha": SHA,
+        "time_factor": 10,
+        "matrix_complete": True,
+        "cases": [
+            {
+                "policy": policy,
+                "pattern": pattern,
+                "seed": 42,
+                "workload_sha256": "a" * 64,
+                "summary": {
+                    "submitted": 25,
+                    "completed": 25,
+                    "failures": 0,
+                    "vram_observations": 10,
+                    "vram_violations": 0,
+                    **{
+                        f"{metric}_{q}": value
+                        for metric in ("ttft_s", "ttlt_s", "time_to_outcome_s")
+                        for q, value in (("p50", 1), ("p95", 2), ("p99", 3))
+                    },
+                },
+            }
+            for pattern in ("burst", "poisson", "sequential", "mixed")
+        ],
+    }
+
+
+def test_performance_gate_rejects_partial_matrix_and_missing_latencies():
+    from report import validate_performance
+
+    perf = _performance()
+    assert validate_performance(perf, "demand", SHA) == []
+    perf["matrix_complete"] = False
+    assert validate_performance(perf, "demand", SHA)
+    perf["matrix_complete"] = True
+    del perf["cases"][0]["summary"]["ttft_s_p99"]
+    assert validate_performance(perf, "demand", SHA)
+
+
+def test_required_performance_cannot_be_replaced_by_functional_report(monkeypatch):
+    monkeypatch.setenv("LOGOS_SIM_REQUIRE_PERFORMANCE", "1")
+    verdict, reasons = gate_policy_report(_valid(), {"tests": 1, "failures": 0, "errors": 0})
+    assert verdict == "FAIL" and any("performance" in reason for reason in reasons)
+
+
+def test_comment_includes_simulated_latency_comparison():
+    reports = {
+        policy: {**_valid(policy), "performance": _performance(policy)} for policy in ("demand", "lru", "simple")
+    }
+    junit = {policy: {"tests": 1, "failures": 0, "errors": 0} for policy in reports}
+    text = build_markdown(reports, junit_by_policy=junit, policy_reasons={})
+    assert "TTFT p50/p95/p99" in text
+    assert "No GPU performance or energy claim" in text
+    assert "`simple`" in text

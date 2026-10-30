@@ -43,7 +43,7 @@ def _valid(policy: str) -> dict:
 
 
 def _seed_reports(root: Path) -> None:
-    for policy in ("demand", "lru"):
+    for policy in ("demand", "lru", "simple"):
         d = root / policy
         d.mkdir(parents=True)
         (d / "result.json").write_text(json.dumps(_valid(policy)), encoding="utf-8")

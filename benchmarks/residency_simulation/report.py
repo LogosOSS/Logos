@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA_VERSION = 1
-REQUIRED_POLICIES: Tuple[str, ...] = ("demand", "lru")
+REQUIRED_POLICIES: Tuple[str, ...] = ("demand", "lru", "simple")
 REQUIRED_PATTERNS: Tuple[str, ...] = ("burst", "poisson", "sequential", "mixed")
 MIN_SUBMITTED_PER_PATTERN = 5
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -200,6 +201,49 @@ def validate_policy_report(
     return reasons
 
 
+def validate_performance(data: Any, policy: str, sha: str) -> List[str]:
+    """Reject absent, incomplete or inconsistent short synthetic measurements."""
+    if not isinstance(data, dict):
+        return ["performance report missing"]
+    reasons = []
+    if data.get("synthetic") is not True or data.get("source_sha") != sha:
+        reasons.append("performance identity mismatch")
+    speed = data.get("time_factor")
+    if not isinstance(speed, (int, float)) or not math.isfinite(speed) or speed <= 0:
+        reasons.append("invalid performance time factor")
+    cases = data.get("cases") or []
+    if data.get("matrix_complete") is not True:
+        reasons.append("performance matrix incomplete")
+    if {case.get("pattern") for case in cases} != set(REQUIRED_PATTERNS):
+        reasons.append("performance patterns incomplete")
+    seen = set()
+    for case in cases:
+        key = (case.get("pattern"), case.get("seed"))
+        if key in seen:
+            reasons.append("duplicate performance case")
+        seen.add(key)
+        if case.get("policy") != policy:
+            reasons.append("performance policy mismatch")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(case.get("workload_sha256", ""))):
+            reasons.append("performance workload digest missing")
+        summary = case.get("summary") or {}
+        if (
+            summary.get("submitted", 0) < 5
+            or summary.get("completed") != summary.get("submitted")
+            or summary.get("failures") != 0
+        ):
+            reasons.append("performance requests incomplete")
+        if summary.get("vram_violations") != 0 or summary.get("vram_observations", 0) < 1:
+            reasons.append("performance VRAM evidence invalid")
+        for metric in ("ttft_s", "ttlt_s", "time_to_outcome_s"):
+            values = [summary.get(f"{metric}_{q}") for q in ("p50", "p95", "p99")]
+            if any(not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in values):
+                reasons.append("performance latency missing or invalid")
+            elif values != sorted(values):
+                reasons.append("performance latency quantiles unordered")
+    return reasons
+
+
 def gate_policy_report(
     data: Dict[str, Any],
     junit: Optional[Dict[str, Any]] = None,
@@ -210,6 +254,10 @@ def gate_policy_report(
 ) -> Tuple[str, List[str]]:
     """Return ``(PASS|FAIL, reasons)``."""
     reasons = validate_policy_report(data, expected_policy=expected_policy, expected_sha=expected_sha)
+    if "performance" in data or os.environ.get("LOGOS_SIM_REQUIRE_PERFORMANCE") == "1":
+        reasons.extend(
+            validate_performance(data.get("performance"), data.get("residency_policy"), data.get("source_sha"))
+        )
     if require_junit and junit is None:
         reasons.append("junit required but missing")
     if junit is not None:
@@ -277,7 +325,7 @@ def build_markdown(
     run_display = f"[workflow run]({run_url})" if run_url else NA
 
     lines: List[str] = [
-        f"## {icon} {overall} — GPU-less residency simulation (functional)",
+        f"## {icon} {overall}: GPU-less residency simulation",
         "",
         "GPU-simulated functional exercise of residency policies against the "
         "real orchestrator and worker with a fake vLLM below the worker. "
@@ -335,6 +383,37 @@ def build_markdown(
             f"{_cell_int(data, 'vram', 'observation_count')} | "
             f"{_cell_int(data, 'vram', 'violations')} | {verdict} |"
         )
+
+    if any((policy_reports.get(policy) or {}).get("performance") for policy in REQUIRED_POLICIES):
+        lines += [
+            "",
+            "### Synthetic performance (short CI run)",
+            "",
+            "Latencies are simulated seconds: observed wall time multiplied by the reported factor. "
+            "Prefill and concurrency contain explicit estimates. No GPU performance or energy claim.",
+            "",
+            "| Policy | Pattern | Seed | Factor | Completion | TTFT p50/p95/p99 | TTLT p50/p95/p99 | "
+            "Cold | Sleep | Wake | 507 | VRAM violations |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+
+        def latency(summary, metric):
+            return "/".join(
+                f"{summary[f'{metric}_{q}']:.2f}" if isinstance(summary.get(f"{metric}_{q}"), (int, float)) else NA
+                for q in ("p50", "p95", "p99")
+            )
+
+        for policy in REQUIRED_POLICIES:
+            perf = (policy_reports.get(policy) or {}).get("performance") or {}
+            for case in perf.get("cases", []):
+                summary = case.get("summary") or {}
+                lines.append(
+                    f"| `{policy}` | `{case.get('pattern')}` | {case.get('seed')} | {perf.get('time_factor')} | "
+                    f"{summary.get('completed')}/{summary.get('submitted')} | {latency(summary, 'ttft_s')} | "
+                    f"{latency(summary, 'ttlt_s')} | {summary.get('cold_load', NA)} | {summary.get('sleep', NA)} | "
+                    f"{summary.get('wake', NA)} | {summary.get('wake_rejected', NA)} | "
+                    f"{summary.get('vram_violations', NA)} |"
+                )
 
     detail_lines: List[str] = []
     for policy in REQUIRED_POLICIES:
@@ -431,6 +510,20 @@ def load_aggregate(root: Path) -> Tuple[
             reasons[policy] = gate_reasons
         else:
             reasons.setdefault(policy, [])
+
+    workloads = {}
+    settings = set()
+    for policy, data in reports.items():
+        perf = (data or {}).get("performance") or {}
+        if not perf:
+            continue
+        settings.add((perf.get("timing_profile_sha256"), perf.get("time_factor"), perf.get("rate_per_simulated_s")))
+        for case in perf.get("cases", []):
+            key = (case.get("pattern"), case.get("seed"))
+            workloads.setdefault(key, set()).add(case.get("workload_sha256"))
+    if len(settings) > 1 or any(len(values) > 1 for values in workloads.values()):
+        for policy in REQUIRED_POLICIES:
+            reasons.setdefault(policy, []).append("performance workloads or timing settings differ across policies")
 
     # Cross-leg SHA agreement.
     unique = {s.lower() for s in seen_shas}

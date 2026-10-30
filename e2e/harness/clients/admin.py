@@ -96,7 +96,7 @@ class AdminClient:
     def scheduler_state(self) -> dict[str, Any]:
         response = self._client.get(
             "/logosdb/scheduler_state",
-            headers={"Authorization": f"Bearer {self._admin_key}"},
+            headers={"Authorization": f"Bearer {self._internal_secret}"},
         )
         response.raise_for_status()
         return response.json()

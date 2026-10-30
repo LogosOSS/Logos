@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, urlparse
 
 from harness.fake_vllm.protocol import chat_completion_payload, models_payload
 from harness.gpusim import state as gpustate
+from harness.gpusim.performance import PerformanceTiming, record_event
 from harness.gpusim.scenario import VllmScript
 
 #: Simulated protocol version reported at ``/version`` and ``vllm --version``.
@@ -154,6 +155,10 @@ class Lane:
     """Mutable serving state for the one model this process hosts."""
 
     def __init__(self, model: str, script: VllmScript, vram_mb: float) -> None:
+        self.timing = PerformanceTiming(model) if os.environ.get("LOGOS_SIM_TIMING_PROFILE") else None
+        if self.timing:
+            script.ready_after_s = self.timing.values["cold_start_s"] / self.timing.speed
+            script.slow_wake_s = self.timing.values["wake_s"] / self.timing.speed
         self.model = model
         self.script = script
         self.vram_mb = vram_mb
@@ -172,7 +177,11 @@ class Lane:
 
     @property
     def ready(self) -> bool:
-        return time.time() - self.started_at >= self.script.ready_after_s
+        ready = time.time() - self.started_at >= self.script.ready_after_s
+        if ready and self.timing and not self.timing.ready_recorded:
+            self.timing.ready_recorded = True
+            record_event("cold_load", self)
+        return ready
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -332,6 +341,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, {"error": {"message": str(exc), "type": "gpusim_state_error"}})
                 return
         lane.sleeping = True
+        record_event("sleep", lane)
         self._send(200, {"is_sleeping": True, "level": level})
 
     def _handle_wake(self, lane: Lane) -> None:
@@ -348,12 +358,14 @@ class Handler(BaseHTTPRequestHandler):
                 # under OOM, and do not commit a partial TP restore.
                 message = str(exc)
                 oom = "exceeds physical" in message or "wake restore" in message
+                record_event("wake_rejected" if oom else "wake_error", lane)
                 self._send(
                     507 if oom else 500,
                     {"error": {"message": message, "type": "out_of_memory" if oom else "gpusim_state_error"}},
                 )
                 return
         lane.sleeping = False
+        record_event("wake", lane)
         self._send(200, {"is_sleeping": False})
 
     # -- payloads ---------------------------------------------------------
@@ -371,6 +383,9 @@ class Handler(BaseHTTPRequestHandler):
         if lane.sleeping:
             self._send(503, {"error": {"message": "engine is sleeping", "type": "service_unavailable"}})
             return
+
+        if lane.timing:
+            return lane.timing.complete(self, lane, path, body)
 
         lane.requests_total += 1
         prompt_tokens = 16
@@ -476,6 +491,8 @@ class Handler(BaseHTTPRequestHandler):
         Only the series ``get_backend_metrics`` parses are emitted; anything
         else would be dead weight the worker skips anyway.
         """
+        if lane.timing:
+            return lane.timing.metrics(lane)
         labels = f'{{model_name="{lane.model}"}}'
         ttft_count = max(lane.requests_total, 0)
         lines = [
@@ -620,6 +637,7 @@ def run(
         stopping.set()
         print(f"INFO [api_server.py:1700] Received signal {signum}, shutting down", flush=True)
         _release()
+        record_event("stop", lane)
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, _on_signal)

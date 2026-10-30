@@ -24,7 +24,7 @@ LOGOS_RESIDENCY_POLICY: ${E2E_RESIDENCY_POLICY:-demand}
 {
   "schema_version": 1,
   "source_sha": "<exactly 40 hex chars; must equal git rev-parse HEAD / E2E_SIM_SOURCE_SHA>",
-  "residency_policy": "demand" | "lru",
+  "residency_policy": "demand" | "lru" | "simple",
   "synthetic": true,
   "scientific_claims": false,
   "patterns": [
@@ -67,3 +67,15 @@ LOGOS_SIM_REPORT_DIR=/tmp/sim-reports \
 LOGOS_BENCH_PR_COMMENT_DRY_RUN=1 \
   python benchmarks/residency_simulation/pr_comment.py
 ```
+
+
+The optional `performance` object contains the independent short performance
+matrix. CI requires it through `LOGOS_SIM_REQUIRE_PERFORMANCE=1`. Its source SHA,
+policy, complete matrix, per-case workload hash, finite latency quantiles and
+nonempty VRAM evidence are validated. The aggregate rejects different timing
+profiles, factors, offered rates or workload hashes across policy legs.
+Raw outcomes and lifecycle events stay in `performance.cases`; summaries include
+TTFT, TTLT and time-to-outcome p50/p95/p99, cold loads, sleeps, wakes, rejected
+wakes (507), lane switches and VRAM violations. Timing provenance and assumptions
+are retained with the measurements. The short CI matrix is distinct from the
+longer local matrix documented in `e2e/tests/benchmark/README.md`.
