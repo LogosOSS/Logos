@@ -13,7 +13,6 @@ from logos.model_profile_store import (
     persistable_profile,
     profile_digest,
     reported_profile,
-    shared_profile_max_age_days,
     shared_profiles_enabled,
 )
 
@@ -176,12 +175,3 @@ def test_sharing_is_on_by_default_and_switchable(monkeypatch):
         assert shared_profiles_enabled() is False
     monkeypatch.setenv("LOGOS_SHARED_PROFILES", "1")
     assert shared_profiles_enabled() is True
-
-
-def test_the_adoption_age_limit_falls_back_to_thirty_days(monkeypatch):
-    monkeypatch.delenv("LOGOS_SHARED_PROFILE_MAX_AGE_DAYS", raising=False)
-    assert shared_profile_max_age_days() == 30
-    monkeypatch.setenv("LOGOS_SHARED_PROFILE_MAX_AGE_DAYS", "7")
-    assert shared_profile_max_age_days() == 7
-    monkeypatch.setenv("LOGOS_SHARED_PROFILE_MAX_AGE_DAYS", "soon")
-    assert shared_profile_max_age_days() == 30

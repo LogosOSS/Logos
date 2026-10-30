@@ -95,11 +95,11 @@ class _FakeDB:
         self.reported_keys.append((provider_id, key_hashes))
         self.slice_counts = slice_gpu_counts
 
-    def adopt_shared_calibrations(self, provider_id, model_names, max_age_days, adopt=True):
-        self.adopted.append((provider_id, model_names, max_age_days, adopt))
+    def adopt_shared_calibrations(self, provider_id, model_names, adopt=True):
+        self.adopted.append((provider_id, model_names, adopt))
         return self.adoptions if adopt else []
 
-    def adopt_shared_calibration_for_siblings(self, provider_id, model_name, max_age_days, skip=None):
+    def adopt_shared_calibration_for_siblings(self, provider_id, model_name, skip=None):
         return [(p, c) for p, c in self.sibling_adopters.get(model_name, []) if skip is None or not skip(p)]
 
     def reject_shared_calibration(self, provider_id, model_name, calibration_id):
@@ -541,7 +541,7 @@ def test_a_reported_key_lets_the_node_adopt_a_shared_calibration(monkeypatch):
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-5")
     logosnode_mod._update_reported_calibration_keys(5, {"org/model": "H1"}, {"org/model": 2})
     assert db.slice_counts == {"org/model": 2}
-    assert db.adopted == [(5, ["org/model"], 30, True)]
+    assert db.adopted == [(5, ["org/model"], True)]
 
 
 def test_sharing_can_be_switched_off(monkeypatch):
@@ -550,7 +550,7 @@ def test_sharing_can_be_switched_off(monkeypatch):
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
     logosnode_mod._update_reported_calibration_keys(5, {"org/model": "H1"}, {"org/model": 2})
     assert db.reported_keys
-    assert db.adopted == [(5, ["org/model"], 30, False)]  # a misfit calibration is still dropped
+    assert db.adopted == [(5, ["org/model"], False)]  # a misfit calibration is still dropped
     assert logosnode_mod._offer_calibrations_to_siblings(5, ["org/model"]) == {}
 
 
@@ -582,7 +582,7 @@ def test_a_reconnecting_node_does_not_adopt_the_model_it_is_calibrating(monkeypa
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-5")
     monkeypatch.setattr(logosnode_mod, "_models_in_calibration", lambda pid: frozenset({"org/busy"}))
     logosnode_mod._update_reported_calibration_keys(5, {"org/busy": "H1", "org/idle": "H2"}, {})
-    assert db.adopted == [(5, ["org/idle"], 30, True)]
+    assert db.adopted == [(5, ["org/idle"], True)]
 
 
 def test_a_reset_says_whether_calibration_sharing_is_on(monkeypatch):
@@ -639,7 +639,7 @@ def test_gpu_counts_from_the_worker_are_kept_only_when_positive_integers():
 
 def test_a_failing_adoption_never_keeps_a_worker_from_its_profiles(monkeypatch):
     class _BrokenAdoption(_FakeDB):
-        def adopt_shared_calibrations(self, provider_id, model_names, max_age_days):
+        def adopt_shared_calibrations(self, provider_id, model_names):
             raise RuntimeError("sql error")
 
     db = _BrokenAdoption()
@@ -655,7 +655,7 @@ def test_the_sharing_setting_can_be_read_without_changing_it(monkeypatch):
     monkeypatch.setattr(logosnode_mod, "_require_root_access", lambda key: None)
     data = LogosKeyModel(logos_key="k")
     result = asyncio.run(logosnode_mod.logosnode_calibration_sharing(data))
-    assert result == {"shared_profiles": True, "max_age_days": 30}
+    assert result == {"shared_profiles": True}
     monkeypatch.setenv("LOGOS_SHARED_PROFILES", "0")
     assert asyncio.run(logosnode_mod.logosnode_calibration_sharing(data))["shared_profiles"] is False
 
@@ -725,7 +725,7 @@ def test_a_reservation_waits_for_an_adoption_in_flight_and_answers_after_it(monk
     state = {"adopted": False}
 
     class _SlowAdoption(_FakeDB):
-        def adopt_shared_calibrations(self, provider_id, model_names, max_age_days, adopt=True):
+        def adopt_shared_calibrations(self, provider_id, model_names, adopt=True):
             started.set()
             release.wait(5)
             state["adopted"] = True
@@ -767,7 +767,7 @@ def test_once_reserved_the_hello_adoption_leaves_the_model_alone(monkeypatch):
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-5")
     logosnode_mod._update_reported_calibration_keys(5, {"org/busy": "H1", "org/idle": "H2"}, {})  # noqa: SLF001
-    assert db.adopted == [(5, ["org/idle"], 30, True)]
+    assert db.adopted == [(5, ["org/idle"], True)]
 
 
 def test_a_reservation_stores_the_workers_key_before_judging_the_profile(monkeypatch):

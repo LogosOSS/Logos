@@ -58,7 +58,6 @@ from logos.model_profile_store import (
     persistable_profile,
     profile_digest,
     reported_profile,
-    shared_profile_max_age_days,
     shared_profiles_enabled,
 )
 from logos.role_auth import require_logos_admin_key
@@ -528,7 +527,7 @@ def _update_reported_calibration_keys(
                 models = [name for name in calibration_key_hashes if name not in busy]
                 # Switched off, a calibration that stopped fitting still goes.
                 adopted = db.adopt_shared_calibrations(
-                    provider_id, models, shared_profile_max_age_days(), adopt=shared_profiles_enabled()
+                    provider_id, models, adopt=shared_profiles_enabled()
                 )
         except Exception:
             # Sharing is an optimisation; it must not keep a worker from
@@ -569,7 +568,6 @@ def _offer_calibrations_to_siblings(provider_id: int, model_names: list[str]) ->
             for sibling, calibration_id in db.adopt_shared_calibration_for_siblings(
                 provider_id,
                 model_name,
-                shared_profile_max_age_days(),
                 skip=lambda sibling, model_name=model_name: model_name in _models_in_calibration(sibling),
             ):
                 adopters.setdefault(sibling, []).append(model_name)
@@ -1290,7 +1288,7 @@ async def logosnode_invalidate_calibration(data: LogosNodeInvalidateCalibrationR
 async def logosnode_calibration_sharing(data: LogosKeyModel):
     """Whether nodes may adopt each other's calibrations; changes nothing."""
     await asyncio.to_thread(_require_root_access, data.logos_key)
-    return {"shared_profiles": shared_profiles_enabled(), "max_age_days": shared_profile_max_age_days()}
+    return {"shared_profiles": shared_profiles_enabled()}
 
 
 @router.post("/logosdb/providers/logosnode/model-profiles/reset", tags=["logosnode"])

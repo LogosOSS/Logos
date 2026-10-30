@@ -2050,7 +2050,7 @@ class DBManager:
         self.session.commit()
 
     def adopt_shared_calibrations(
-        self, provider_id: int, model_names: List[str], max_age_days: int, adopt: bool = True
+        self, provider_id: int, model_names: List[str], adopt: bool = True
     ) -> List[Tuple[str, int]]:
         """Give a node another node's calibration for each model it fits.
 
@@ -2060,7 +2060,7 @@ class DBManager:
         """
         adopted = []
         for model_name in self._adoption_candidates(provider_id, model_names):
-            _, calibration_id = self._adopt_shared_calibration(provider_id, model_name, max_age_days, adopt)
+            _, calibration_id = self._adopt_shared_calibration(provider_id, model_name, adopt)
             if calibration_id is not None:
                 adopted.append((model_name, calibration_id))
         self.session.commit()
@@ -2095,7 +2095,6 @@ class DBManager:
         self,
         provider_id: int,
         model_name: str,
-        max_age_days: int,
         skip: Optional[Callable[[int], bool]] = None,
     ) -> List[Tuple[int, Optional[int]]]:
         """Offer a node's fresh calibration to every other node of its key.
@@ -2122,7 +2121,7 @@ class DBManager:
             sibling = int(row.provider_id)
             if skip is not None and skip(sibling):
                 continue
-            did_change, calibration_id = self._adopt_shared_calibration(sibling, model_name, max_age_days)
+            did_change, calibration_id = self._adopt_shared_calibration(sibling, model_name)
             if did_change:
                 changed.append((sibling, calibration_id))
         self.session.commit()
@@ -2144,7 +2143,7 @@ class DBManager:
         ).fetchone()
 
     def _adopt_shared_calibration(
-        self, provider_id: int, model_name: str, max_age_days: int, adopt: bool = True
+        self, provider_id: int, model_name: str, adopt: bool = True
     ) -> Tuple[bool, Optional[int]]:
         """Drop a shared calibration the node's GPUs no longer fit, else adopt one.
 
@@ -2168,7 +2167,6 @@ class DBManager:
                   AND invalidated_at IS NULL
                   AND source_provider_id IS DISTINCT FROM :provider_id
                   AND NOT (CAST(:provider_id AS integer) = ANY(rejected_by))
-                  AND calibrated_at >= CURRENT_TIMESTAMP - make_interval(days => :max_age_days)
                   AND CASE WHEN profile->>'tensor_parallel_size' ~ '^[0-9]+$'
                            THEN (profile->>'tensor_parallel_size')::int ELSE 1 END <= :slice_gpu_count
                 ORDER BY calibrated_at DESC
@@ -2179,7 +2177,6 @@ class DBManager:
                     "model_name": model_name,
                     "key_hash": hint.calibration_key_hash,
                     "provider_id": provider_id,
-                    "max_age_days": int(max_age_days),
                     "slice_gpu_count": int(hint.slice_gpu_count),
                 },
             ).fetchone()

@@ -61,13 +61,6 @@ def shared_profiles_enabled() -> bool:
     return os.environ.get("LOGOS_SHARED_PROFILES", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def shared_profile_max_age_days() -> int:
-    try:
-        return max(1, int(os.environ.get("LOGOS_SHARED_PROFILE_MAX_AGE_DAYS", "30")))
-    except ValueError:
-        return 30
-
-
 def is_central_profile_payload(profiles: Mapping[str, Any]) -> bool:
     """True when the worker keeps no local store and syncs with the database."""
     return any(isinstance(p, dict) and "sync_revision" in p for p in profiles.values())

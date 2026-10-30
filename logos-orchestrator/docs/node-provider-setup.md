@@ -189,11 +189,9 @@ Nodes with the same calibration key share calibrations. A node that has none
 for a model adopts the newest valid one measured on another node, as soon as
 it connects or that node finishes calibrating, and skips its own calibration.
 An adopted calibration shows `calibration_origin: shared`. It is only used if
-the node has at least as many GPUs as its tensor-parallel size and it is not
-older than the age limit: 30 days by default, or the number of days set in
-`LOGOS_SHARED_PROFILE_MAX_AGE_DAYS` (at least 1). A shared calibration
-that stops fitting (e.g. after re-pinning to fewer GPUs) is dropped, also with
-sharing switched off.
+the node has at least as many GPUs as its tensor-parallel size. A shared
+calibration that stops fitting (e.g. after re-pinning to fewer GPUs) is
+dropped, also with sharing switched off.
 
 Before a worker calibrates a model it reserves it with Logos
 (`POST /logosdb/providers/logosnode/calibration-reservation`, shared key).
