@@ -24,6 +24,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 /**
  * Public inference gateway for {@code /v1/**}, {@code /openai/**}, {@code /jobs/**}.
@@ -75,7 +76,12 @@ public class InferenceGatewayController {
     }
 
     @RequestMapping({"/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**"})
-    public ResponseEntity<StreamingResponseBody> handle(HttpServletRequest request) throws IOException {
+    public ResponseEntity<StreamingResponseBody> handle(HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
+        return GatewayClientFlush.flushingTo(response, route(request));
+    }
+
+    private ResponseEntity<StreamingResponseBody> route(HttpServletRequest request) throws IOException {
         // Taken before the key lookup: waiting for a database connection or a
         // budget refresh is part of what the caller waited for, and the log
         // row should show it.
