@@ -3902,12 +3902,12 @@ def test_a_single_shared_memory_warning_is_not_classified_as_a_stall():
     assert _classify_fatal_load_error(_SHM_LINE.format(minute=22)) is None
 
 
-def _search_with_ready_timeouts(tmp_path: Path, side_effect):
+def _search_with_ready_timeouts(tmp_path: Path, side_effect, log_text="Warming up FlashInfer attention.\n"):
     log_dir = tmp_path / "calibration_logs"
     log_dir.mkdir()
     log_path = log_dir / "org__stuck-model.log"
     patches = _patch_calibration_infra(wait_ready_side_effect=side_effect, gpu_vram_total_mb=24000.0)
-    patches["spawn"] = _spawn_writing_log(log_path, "Warming up FlashInfer attention.\n")
+    patches["spawn"] = _spawn_writing_log(log_path, log_text)
     managers = {k: p.__enter__() for k, p in patches.items()}
     try:
         result = calibrate_model(
@@ -3949,18 +3949,24 @@ def test_a_different_failure_between_timeouts_resets_the_count(tmp_path: Path):
             raise VllmReadyTimeout("vLLM not ready after 600s")
         raise RuntimeError("vLLM exited (code=1)")
 
-    result, managers, _ = _search_with_ready_timeouts(tmp_path, alternate)
+    result, managers, log_path = _search_with_ready_timeouts(tmp_path, alternate)
 
+    log = log_path.read_text()
     assert result.observed_reason != "repeated-ready-timeout"
     assert managers["spawn"].call_count > 2
+    assert log.count("[LOGOS] ready timeout:") == log.count("(in a row: 1)") > 1
+    assert "(in a row: 2)" not in log
 
 
 def test_a_stall_abort_is_not_counted_as_a_ready_timeout(tmp_path: Path):
     from logos_worker_node.calibration import VllmEngineStalled
 
-    result, managers, _ = _search_with_ready_timeouts(tmp_path, VllmEngineStalled("engine warmup stalled: test"))
+    result, managers, log_path = _search_with_ready_timeouts(tmp_path, VllmEngineStalled("engine warmup stalled: test"))
 
-    assert result.observed_reason != "repeated-ready-timeout"
+    assert result.observed_reason == "engine-warmup-stalled"
+    assert result.retryable_fatal_reason == "engine-warmup-stalled"
+    assert managers["spawn"].call_count == 1
+    assert "ready timeout:" not in log_path.read_text()
 
 
 def test_a_stall_abort_is_marked_in_the_log_only_after_vllm_has_stopped(tmp_path: Path):
@@ -3994,6 +4000,64 @@ def test_a_stall_abort_is_marked_in_the_log_only_after_vllm_has_stopped(tmp_path
     assert marked_when_stopped and not any(marked_when_stopped)
     assert "[LOGOS] engine warmup stalled" in log_path.read_text()
     assert result.retryable_fatal_reason == "engine-warmup-stalled"
+
+
+def test_cancel_wins_over_a_gpu_health_abort(monkeypatch):
+    from logos_worker_node import calibration
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    cancel = threading.Event()
+    cancel.set()
+
+    def unhealthy():
+        raise calibration.GpuHealthError("gpu-error", "GPU1.power='ERR!'")
+
+    monkeypatch.setattr(calibration, "_get", lambda *a, **k: (503, None))
+    with pytest.raises(RuntimeError, match="cancelled"):
+        calibration.wait_ready("http://x", 600.0, proc, cancel_event=cancel, watchdog=_Watchdog(check=unhealthy))
+
+
+def test_a_node_log_pattern_wins_over_a_gpu_health_abort(tmp_path: Path):
+    from logos_worker_node.calibration import GpuHealthError
+
+    result, managers, log_path = _search_with_ready_timeouts(
+        tmp_path,
+        GpuHealthError("gpu-error", "GPU1.power='ERR!'"),
+        log_text="OSError: [Errno 5] Input/output error\n",
+    )
+
+    assert result.node_unhealthy_reason == "filesystem-eio"
+    assert managers["spawn"].call_count == 1
+    assert "[LOGOS] gpu health: gpu-error" in log_path.read_text()
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs a Linux /proc")
+def test_compiler_running_sees_a_real_compiler_below_the_probe_only(tmp_path: Path):
+    import shutil
+    import subprocess
+    import sys
+
+    from logos_worker_node.calibration import _compiler_running
+
+    fake_compiler = tmp_path / "ninja"
+    shutil.copy(shutil.which("sleep"), fake_compiler)
+    probe = subprocess.Popen(
+        [sys.executable, "-c", "import subprocess, sys; subprocess.run([sys.argv[1], '30'])", str(fake_compiler)]
+    )
+    unrelated_compiler = subprocess.Popen([str(fake_compiler), "30"])
+    idle = subprocess.Popen(["sleep", "30"])
+    try:
+        deadline = time.monotonic() + 10
+        while not _compiler_running(probe.pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert _compiler_running(probe.pid)
+        assert not _compiler_running(idle.pid)
+        assert not _compiler_running(unrelated_compiler.pid)
+    finally:
+        for process in (probe, unrelated_compiler, idle):
+            process.kill()
+            process.wait()
 
 
 def test_probe_watchdog_raises_typed_errors(tmp_path: Path, monkeypatch):
