@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -3893,18 +3894,27 @@ class _Sensor:
         return SensorResult(state=state, detail=f"detail for {state}")
 
 
+def _poll(watch, clock):
+    """One poll, then wait for the sensor thread it started and advance the clock."""
+    from logos_worker_node import calibration
+
+    answer = watch()
+    if watch._thread is not None:
+        watch._thread.join()
+    clock["now"] += calibration._GPU_HEALTH_INTERVAL_S
+    return answer
+
+
 def test_gpu_health_watch_needs_consecutive_bad_reads(monkeypatch):
     from logos_worker_node import calibration
 
     clock = {"now": 0.0}
     monkeypatch.setattr(calibration.time, "monotonic", lambda: clock["now"])
     watch = calibration._GpuHealthWatch(_Sensor("ok", "gpu-error", "ok", "gpu-error", "gpu-error"))
-    seen = []
-    for _ in range(5):
-        seen.append(watch())
-        clock["now"] += calibration._GPU_HEALTH_INTERVAL_S
-    assert seen[:4] == [None, None, None, None]
-    assert seen[4] == ("gpu-error", "detail for gpu-error")
+    # A poll starts a check and collects the previous one, so answers lag by one poll.
+    seen = [_poll(watch, clock) for _ in range(6)]
+    assert seen[:5] == [None, None, None, None, None]
+    assert seen[5] == ("gpu-error", "detail for gpu-error")
 
 
 def test_gpu_health_watch_is_rate_limited(monkeypatch):
@@ -3916,17 +3926,62 @@ def test_gpu_health_watch_is_rate_limited(monkeypatch):
     watch = calibration._GpuHealthWatch(sensor)
     for _ in range(10):
         watch()
+        if watch._thread is not None:
+            watch._thread.join()
         clock["now"] += 1.0
     assert sensor.calls == 1
 
 
-def test_gpu_health_watch_ignores_a_sensor_that_raises(monkeypatch):
+def test_gpu_health_watch_ignores_a_sensor_that_raises():
     from logos_worker_node import calibration
 
     def boom():
         raise OSError("no nvidia-smi")
 
-    assert calibration._GpuHealthWatch(boom)() is None
+    watch = calibration._GpuHealthWatch(boom)
+    assert watch() is None
+    watch._thread.join()
+    assert watch() is None
+
+
+def test_gpu_health_watch_does_not_wait_for_a_blocked_sensor():
+    from logos_worker_node import calibration
+
+    release = threading.Event()
+
+    def blocked():
+        release.wait(5.0)
+        raise OSError("never answers in time")
+
+    watch = calibration._GpuHealthWatch(blocked)
+    started = time.monotonic()
+    assert watch() is None
+    assert watch() is None
+    assert time.monotonic() - started < 1.0
+    release.set()
+    watch._thread.join()
+
+
+def test_gpu_health_watch_checks_only_the_probes_gpus(monkeypatch):
+    from logos_worker_node import calibration, node_health
+
+    seen = []
+
+    def fake_check(indices):
+        seen.append(indices)
+        return node_health.SensorResult(state="ok")
+
+    monkeypatch.setattr(node_health, "check_gpu", fake_check)
+    watch = calibration._GpuHealthWatch(gpu_indices=[2, 3])
+    watch()
+    watch._thread.join()
+    assert seen == [[2, 3]]
+
+
+def test_gpu_health_strikes_fit_inside_one_watchdog_tick():
+    from logos_worker_node import calibration, gpu_watchdog
+
+    assert calibration._GPU_HEALTH_STRIKES * calibration._GPU_HEALTH_INTERVAL_S <= gpu_watchdog.DEFAULT_POLL_INTERVAL_S
 
 
 def test_wait_ready_aborts_with_gpu_health_error(monkeypatch):

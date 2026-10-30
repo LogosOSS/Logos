@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
+from logos_worker_node.gpu_watchdog import DEFAULT_POLL_INTERVAL_S
 from logos_worker_node.vllm_compat import (
     _BAKED_QUANT_METHODS_FILENAME,
     _FATAL_LOAD_ERROR_PATTERNS,
@@ -89,13 +90,15 @@ _COMPILER_PROCESSES = frozenset({"nvcc", "cicc", "ptxas", "cc1plus", "ninja"})
 # slow: another KV size would only wait out the same timeout again.
 _MAX_CONSECUTIVE_READY_TIMEOUTS = 2
 _READY_TIMEOUT_MARKER = "ready timeout:"
-# While waiting for a probe, nvidia-smi is polled this often; a GPU reading as
-# wedged on this many checks in a row aborts the calibration.
-_GPU_HEALTH_INTERVAL_S = 15.0
+# While waiting for a probe, the probe's GPUs are checked with nvidia-smi; a
+# GPU reading as wedged on this many checks in a row aborts the calibration.
+# The strikes must fit inside one watchdog tick, so the probe aborts well before
+# the watchdog's trigger_threshold ticks have elapsed and it reboots the host.
+_GPU_HEALTH_STRIKES = 2
+_GPU_HEALTH_INTERVAL_S = DEFAULT_POLL_INTERVAL_S / 4
 # The probe's process tree is rescanned at most this often; the scan reads every
 # process in /proc.
 _COMPILER_CHECK_INTERVAL_S = 10.0
-_GPU_HEALTH_STRIKES = 2
 _GPU_HEALTH_MARKER = "gpu health:"
 _SLEEP_TIMEOUT_S = 120.0
 _VLLM_STOP_TIMEOUT_S = 30.0
@@ -1537,27 +1540,48 @@ class GpuHealthError(RuntimeError):
 
 
 class _GpuHealthWatch:
-    """Rate-limited node_health GPU sensor that needs consecutive bad reads."""
+    """Rate-limited GPU sensor for one probe that needs consecutive bad reads.
 
-    def __init__(self, check: Callable[[], Any] | None = None) -> None:
+    nvidia-smi can block for its whole timeout on a stuck driver, so the sensor
+    runs on a worker thread and a poll only collects the finished answer.
+    """
+
+    def __init__(self, check: Callable[[], Any] | None = None, gpu_indices: list[int] | None = None) -> None:
         self._check = check
+        self._gpu_indices = gpu_indices
         self._last = float("-inf")
         self._strikes = 0
+        self._thread: threading.Thread | None = None
+        self._result: Any = None
+        self._lock = threading.Lock()
 
-    def __call__(self) -> tuple[str, str] | None:
-        now = time.monotonic()
-        if now - self._last < _GPU_HEALTH_INTERVAL_S:
-            return None
-        self._last = now
+    def _run(self) -> None:
         check = self._check
         if check is None:
-            from logos_worker_node.node_health import _check_gpu  # noqa: PLC0415
+            from logos_worker_node.node_health import check_gpu  # noqa: PLC0415
 
-            check = _check_gpu
+            def check() -> Any:
+                return check_gpu(self._gpu_indices)
+
         try:
             result = check()
         except Exception:  # noqa: BLE001
             logger.debug("GPU health check raised", exc_info=True)
+            return
+        with self._lock:
+            self._result = result
+
+    def __call__(self) -> tuple[str, str] | None:
+        with self._lock:
+            result, self._result = self._result, None
+        if self._thread is not None and not self._thread.is_alive():
+            self._thread = None
+        now = time.monotonic()
+        if self._thread is None and now - self._last >= _GPU_HEALTH_INTERVAL_S:
+            self._last = now
+            self._thread = threading.Thread(target=self._run, name="calibration-gpu-health", daemon=True)
+            self._thread.start()
+        if result is None:
             return None
         if result.state == "ok":
             self._strikes = 0
@@ -2852,7 +2876,7 @@ def _calibrate_model_probe(
                 cancel_event=cancel_event,
                 stall_check=_stall_check,
                 busy_check=compiler_running,
-                health_check=_GpuHealthWatch(),
+                health_check=_GpuHealthWatch(gpu_indices=gpu_indices),
             )
             # This attempt actually came up — anchor the cold-load
             # measurement at ITS spawn, not before the outer call: the
