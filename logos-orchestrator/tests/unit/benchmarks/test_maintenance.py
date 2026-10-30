@@ -348,6 +348,7 @@ async def test_automatic_calibration_starts_two_workers_and_stops_both_at_window
 
     monkeypatch.setenv("LOGOS_MAINTENANCE_MAX_NODES", "2")
     registry, facade = MagicMock(), MagicMock()
+    registry.is_cordoned.return_value = False
     registry.send_command = AsyncMock()
     facade.provider_ids.return_value = [1, 2, 3]
     service = CalibrationOrchestrator(registry, facade)
@@ -569,6 +570,7 @@ def test_automatic_calibration_skips_workers_without_the_status_command():
 
     registry, facade = MagicMock(), MagicMock()
     facade.provider_ids.return_value = [1, 2]
+    registry.is_cordoned.return_value = False
     registry.supports_action.side_effect = lambda pid, action: pid == 2 or action != "get_calibration_status"
     service = CalibrationOrchestrator(registry, facade)
     service._is_in_window = lambda: True
