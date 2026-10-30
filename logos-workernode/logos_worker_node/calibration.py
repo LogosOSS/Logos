@@ -2016,6 +2016,11 @@ class CalibrationResult:
     # `success=False` with a generic error — those are still worth retrying
     # next window. ``unsupported_reason`` is the FatalLoadErrorPattern code.
     unsupported_reason: str | None = None
+    # Set when calibrate_model bails on a fatal load error that is not persisted
+    # (``FatalLoadErrorPattern.persist`` False): the model is not marked
+    # unsupported, a later session retries it, but this session tries no other
+    # tensor-parallel size because the same hang would only cost another probe.
+    retryable_fatal_reason: str | None = None
     # Set when calibrate_model bails because the NODE is in a degraded
     # state (filesystem EIO, read-only mount, etc. — see
     # ``_NODE_LEVEL_TRANSIENT_PATTERNS``). Distinct from
@@ -2749,6 +2754,7 @@ def _calibrate_model_probe(
         # read as permanently blacklisted elsewhere (DB, orchestrator, UI).
         if _retryable_fatal_box:
             pat = _retryable_fatal_box[0]
+            partial.retryable_fatal_reason = pat.reason_code
             partial.error = f"retryable fatal error ({pat.reason_code}): {pat.description}"
             return
         if not _unsupported_box:
@@ -4429,7 +4435,14 @@ def calibrate_with_tp_escalation(
         # no longer present in result.error, so the reason code is the only
         # reliable fatal predicate (and it covers every pattern in
         # vllm_compat._FATAL_LOAD_ERROR_PATTERNS, not just two of them).
-        return result.unsupported_reason is not None
+        # A non-persisted fatal error and a degraded node end this session's
+        # attempts as well: another tp would hit the same hang or broken node,
+        # and only a later session retries.
+        return (
+            result.unsupported_reason is not None
+            or result.retryable_fatal_reason is not None
+            or result.node_unhealthy_reason is not None
+        )
 
     def _is_capacity_exhausted(result: CalibrationResult) -> bool:
         """True when weights/kv don't fit anywhere in the kv search range

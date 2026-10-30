@@ -737,6 +737,75 @@ def test_calibrate_with_tp_escalation_stops_on_fatal_error_surfaced_after_wideni
     assert result.tensor_parallel_size == 8
 
 
+def test_calibrate_with_tp_escalation_stops_at_the_first_retryable_fatal_error(tmp_path):
+    """A non-persisted fatal error (a hung probe) is retried by a later
+    session, but no other tp is probed in this one: the same hang would only
+    cost another probe."""
+
+    def side_effect(plan, **kw):
+        tp = plan.get("tensor_parallel_size", 1)
+        seen_tps.append(tp)
+        return CalibrationResult(
+            model="big-model",
+            tensor_parallel_size=tp,
+            gpu_devices="",
+            kv_cache_sent_mb=0.0,
+            success=False,
+            error="retryable fatal error (engine-warmup-stalled): vLLM stopped producing output",
+            retryable_fatal_reason="engine-warmup-stalled",
+        )
+
+    seen_tps: list[int] = []
+    with patch("logos_worker_node.calibration.calibrate_model", side_effect=side_effect):
+        result = calibrate_with_tp_escalation(
+            {"model": "big-model", "_hf_max_tp_ceiling": 2, "tensor_parallel_size": 1},
+            vllm_binary="vllm",
+            port=11499,
+            log_dir=tmp_path,
+            sleep_level=0,
+            ready_timeout_s=60.0,
+            available_gpus=8,
+        )
+
+    assert seen_tps == [2]
+    assert not result.success
+    assert result.unsupported_reason is None
+    assert result.retryable_fatal_reason == "engine-warmup-stalled"
+
+
+def test_calibrate_with_tp_escalation_stops_when_the_node_is_unhealthy(tmp_path):
+    """A degraded node (e.g. a wedged GPU) ends the session's attempts: another
+    tp would run on the same node."""
+
+    def side_effect(plan, **kw):
+        tp = plan.get("tensor_parallel_size", 1)
+        seen_tps.append(tp)
+        return CalibrationResult(
+            model="big-model",
+            tensor_parallel_size=tp,
+            gpu_devices="",
+            kv_cache_sent_mb=0.0,
+            success=False,
+            error="node degraded (gpu-error): GPU1.power='ERR!'",
+            node_unhealthy_reason="gpu-error",
+        )
+
+    seen_tps: list[int] = []
+    with patch("logos_worker_node.calibration.calibrate_model", side_effect=side_effect):
+        result = calibrate_with_tp_escalation(
+            {"model": "big-model", "_hf_max_tp_ceiling": 2, "tensor_parallel_size": 1},
+            vllm_binary="vllm",
+            port=11499,
+            log_dir=tmp_path,
+            sleep_level=0,
+            ready_timeout_s=60.0,
+            available_gpus=8,
+        )
+
+    assert seen_tps == [2]
+    assert result.node_unhealthy_reason == "gpu-error"
+
+
 def test_calibrate_with_tp_escalation_skips_original_tp_fallback_on_capacity_exhaustion(tmp_path):
     """A genuine VRAM shortfall at max tp (weights/kv don't fit anywhere in
     the kv search range) must not fall back to a merely-defaulted original
@@ -3853,6 +3922,7 @@ def test_two_ready_timeouts_in_a_row_stop_the_kv_search(tmp_path: Path):
     assert not result.success
     assert result.observed_reason == "repeated-ready-timeout"
     assert result.unsupported_reason is None
+    assert result.retryable_fatal_reason == "repeated-ready-timeout"
     assert "repeated-ready-timeout" in result.error
     assert managers["spawn"].call_count == 2
     assert log_path.read_text().count("[logos] ready timeout:") == 2
