@@ -3821,15 +3821,25 @@ def test_probe_stalled_without_a_log_file_is_false(tmp_path):
     assert not _probe_stalled(tmp_path / "missing.log", 0, lambda: False)
 
 
-def test_wait_ready_aborts_early_when_the_stall_check_fires(monkeypatch):
+class _Watchdog:
+    def __init__(self, compiling=lambda: False, check=lambda: None):
+        self.compiling = compiling
+        self.check = check
+
+
+def test_wait_ready_aborts_early_when_the_watchdog_reports_a_stall(monkeypatch):
     from logos_worker_node import calibration
 
     proc = MagicMock()
     proc.poll.return_value = None
     monkeypatch.setattr(calibration, "_get", lambda *a, **k: (503, None))
     monkeypatch.setattr(calibration.time, "sleep", lambda _: None)
-    with pytest.raises(TimeoutError, match="engine warmup stalled"):
-        calibration.wait_ready("http://x", 600.0, proc, stall_check=lambda: True)
+
+    def stalled():
+        raise calibration.VllmEngineStalled("engine warmup stalled: test")
+
+    with pytest.raises(calibration.VllmEngineStalled, match="engine warmup stalled"):
+        calibration.wait_ready("http://x", 600.0, proc, watchdog=_Watchdog(check=stalled))
 
 
 def test_wait_ready_keeps_waiting_past_the_deadline_while_busy(monkeypatch):
@@ -3852,7 +3862,7 @@ def test_wait_ready_keeps_waiting_past_the_deadline_while_busy(monkeypatch):
     monkeypatch.setattr(calibration.time, "sleep", sleep)
     monkeypatch.setattr(calibration, "_get", lambda *a, **k: (503, None))
     with pytest.raises(TimeoutError, match="not ready after"):
-        calibration.wait_ready("http://x", 4.0, proc, busy_check=busy_check)
+        calibration.wait_ready("http://x", 4.0, proc, watchdog=_Watchdog(compiling=busy_check))
     assert clock["now"] > 1000.0 + 4.0
     assert busy["left"] < 0
 
@@ -3867,16 +3877,16 @@ def test_wait_ready_deadline_is_hard_even_when_always_busy(monkeypatch):
     monkeypatch.setattr(calibration.time, "sleep", lambda s: clock.update(now=clock["now"] + s))
     monkeypatch.setattr(calibration, "_get", lambda *a, **k: (503, None))
     with pytest.raises(TimeoutError):
-        calibration.wait_ready("http://x", 10.0, proc, busy_check=lambda: True)
+        calibration.wait_ready("http://x", 10.0, proc, watchdog=_Watchdog(compiling=lambda: True))
     assert clock["now"] <= 10.0 + calibration._COMPILE_EXTENSION_S + 5.0
 
 
 def test_stall_marker_is_classified_as_retryable_and_observed(tmp_path):
-    from logos_worker_node.calibration import _classify_observed_transient_error, _mark_stalled
+    from logos_worker_node.calibration import _STALL_MARKER, _append_log_marker, _classify_observed_transient_error
 
     log = tmp_path / "probe.log"
     _write_log(log, [_SHM_LINE.format(minute=22)])
-    _mark_stalled(log)
+    _append_log_marker(log, f"{_STALL_MARKER}: test")
     text = log.read_text()
     observed = _classify_observed_transient_error(text)
     assert observed is not None and observed.reason_code == "engine-warmup-stalled"
@@ -3925,7 +3935,7 @@ def test_two_ready_timeouts_in_a_row_stop_the_kv_search(tmp_path: Path):
     assert result.retryable_fatal_reason == "repeated-ready-timeout"
     assert "repeated-ready-timeout" in result.error
     assert managers["spawn"].call_count == 2
-    assert log_path.read_text().count("[logos] ready timeout:") == 2
+    assert log_path.read_text().count("[LOGOS] ready timeout:") == 2
 
 
 def test_a_different_failure_between_timeouts_resets_the_count(tmp_path: Path):
@@ -3946,9 +3956,61 @@ def test_a_different_failure_between_timeouts_resets_the_count(tmp_path: Path):
 
 
 def test_a_stall_abort_is_not_counted_as_a_ready_timeout(tmp_path: Path):
-    result, managers, _ = _search_with_ready_timeouts(tmp_path, TimeoutError("vLLM engine warmup stalled after 180s"))
+    from logos_worker_node.calibration import VllmEngineStalled
+
+    result, managers, _ = _search_with_ready_timeouts(tmp_path, VllmEngineStalled("engine warmup stalled: test"))
 
     assert result.observed_reason != "repeated-ready-timeout"
+
+
+def test_a_stall_abort_is_marked_in_the_log_only_after_vllm_has_stopped(tmp_path: Path):
+    from logos_worker_node.calibration import VllmEngineStalled
+
+    log_dir = tmp_path / "calibration_logs"
+    log_dir.mkdir()
+    log_path = log_dir / "org__stuck-model.log"
+    patches = _patch_calibration_infra(
+        wait_ready_side_effect=VllmEngineStalled("engine warmup stalled: test"), gpu_vram_total_mb=24000.0
+    )
+    patches["spawn"] = _spawn_writing_log(log_path, "Warming up FlashInfer attention.\n")
+    managers = {k: p.__enter__() for k, p in patches.items()}
+    marked_when_stopped = []
+    managers["stop"].side_effect = lambda *_: marked_when_stopped.append(
+        "engine warmup stalled" in log_path.read_text()
+    )
+    try:
+        result = calibrate_model(
+            {"model": "org/stuck-model"},
+            vllm_binary="vllm",
+            port=11499,
+            log_dir=log_dir,
+            sleep_level=1,
+            ready_timeout_s=60.0,
+        )
+    finally:
+        for p in patches.values():
+            p.__exit__(None, None, None)
+
+    assert marked_when_stopped and not any(marked_when_stopped)
+    assert "[LOGOS] engine warmup stalled" in log_path.read_text()
+    assert result.retryable_fatal_reason == "engine-warmup-stalled"
+
+
+def test_probe_watchdog_raises_typed_errors(tmp_path: Path, monkeypatch):
+    from logos_worker_node import calibration
+
+    log = tmp_path / "probe.log"
+    _write_log(log, [_SHM_LINE.format(minute=m) for m in (22, 23, 24)])
+    proc = MagicMock(pid=4242)
+    monkeypatch.setattr(calibration, "_compiler_running", lambda pid: False)
+    monkeypatch.setattr(calibration, "_GpuHealthWatch", lambda **_: lambda: None)
+    with pytest.raises(calibration.VllmEngineStalled, match="engine warmup stalled"):
+        calibration.ProbeWatchdog(proc, log, 0, None).check()
+    monkeypatch.setattr(calibration, "_GpuHealthWatch", lambda **_: lambda: ("gpu-error", "detail"))
+    with pytest.raises(calibration.GpuHealthError):
+        calibration.ProbeWatchdog(proc, log, 0, None).check()
+    monkeypatch.setattr(calibration, "_compiler_running", lambda pid: True)
+    assert calibration.ProbeWatchdog(proc, log, 0, None).compiling()
 
 
 class _Sensor:
@@ -3981,7 +4043,7 @@ def test_gpu_health_watch_needs_consecutive_bad_reads(monkeypatch):
     clock = {"now": 0.0}
     monkeypatch.setattr(calibration.time, "monotonic", lambda: clock["now"])
     watch = calibration._GpuHealthWatch(_Sensor("ok", "gpu-error", "ok", "gpu-error", "gpu-error"))
-    # A poll starts a check and collects the previous one, so answers lag by one poll.
+    # A poll collects the previous check, so answers lag by one poll.
     seen = [_poll(watch, clock) for _ in range(6)]
     assert seen[:5] == [None, None, None, None, None]
     assert seen[5] == ("gpu-error", "detail for gpu-error")
@@ -4061,8 +4123,12 @@ def test_wait_ready_aborts_with_gpu_health_error(monkeypatch):
     proc.poll.return_value = None
     monkeypatch.setattr(calibration, "_get", lambda *a, **k: (503, None))
     monkeypatch.setattr(calibration.time, "sleep", lambda _: None)
+
+    def unhealthy():
+        raise calibration.GpuHealthError("gpu-error", "GPU1.power='ERR!'")
+
     with pytest.raises(calibration.GpuHealthError) as error:
-        calibration.wait_ready("http://x", 600.0, proc, health_check=lambda: ("gpu-error", "GPU1.power='ERR!'"))
+        calibration.wait_ready("http://x", 600.0, proc, watchdog=_Watchdog(check=unhealthy))
     assert error.value.reason_code == "gpu-error"
 
 
@@ -4075,4 +4141,4 @@ def test_gpu_error_during_a_probe_aborts_the_calibration_without_blacklisting(tm
     assert result.node_unhealthy_reason == "gpu-error"
     assert result.unsupported_reason is None
     assert managers["spawn"].call_count == 1
-    assert "[logos] gpu health: gpu-error: GPU1.power='ERR!'" in log_path.read_text()
+    assert "[LOGOS] gpu health: gpu-error: GPU1.power='ERR!'" in log_path.read_text()
