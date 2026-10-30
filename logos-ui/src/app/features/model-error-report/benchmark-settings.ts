@@ -1,3 +1,4 @@
+import { isSavedRequestBenchmark } from './benchmark-configuration';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 
 export interface BenchmarkSettings {
@@ -83,8 +84,8 @@ export function settingsFromBenchmark(benchmark: ModelProviderBenchmark): Benchm
   if (serving.hf_overrides && typeof serving.hf_overrides === 'object') overrides['hf_overrides'] = structuredClone(serving.hf_overrides);
   return {
     ...DEFAULT_BENCHMARK_SETTINGS,
-    dataset: config.tool === 'logos-replay' ? DEFAULT_BENCHMARK_SETTINGS.dataset : benchmark.dataset,
-    ...(config.tool === 'logos-replay' && config.workload?.id ? { workload_id: config.workload.id } : {}),
+    dataset: isSavedRequestBenchmark(benchmark) ? DEFAULT_BENCHMARK_SETTINGS.dataset : benchmark.dataset,
+    ...(isSavedRequestBenchmark(benchmark) && config.workload?.id ? { workload_id: config.workload.id } : {}),
     subset: data.load_kwargs?.name ?? DEFAULT_BENCHMARK_SETTINGS.subset,
     split: data.load_kwargs?.split ?? DEFAULT_BENCHMARK_SETTINGS.split,
     text_column: spec.data_column_mapper?.column_mappings?.text_column ?? DEFAULT_BENCHMARK_SETTINGS.text_column,

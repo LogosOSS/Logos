@@ -1,5 +1,5 @@
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
-import { benchmarkConfigurationItems, servingConfigurationItems } from './benchmark-configuration';
+import { benchmarkConfigurationItems, servingConfigurationItems, isSavedRequestBenchmark } from './benchmark-configuration';
 
 export type ComparisonParameter = 'tensor_parallel_size' | 'max_concurrency' | 'max_num_seqs' | 'max_num_batched_tokens';
 
@@ -19,7 +19,7 @@ export function canCompare(run: ModelProviderBenchmark): boolean {
   const totals = run.metrics.request_totals;
   const complete = run.sample_size > 0 && totals?.successful === run.sample_size && totals.total === run.sample_size
     && totals.errored === 0 && totals.incomplete === 0;
-  if (run.configuration['tool'] === 'logos-replay') {
+  if (isSavedRequestBenchmark(run)) {
     const workload = record(run.configuration['workload']);
     return complete && typeof workload['id'] === 'string' && workload['request_count'] === run.sample_size
       && parameterValue(run, 'max_concurrency') !== null;
@@ -46,7 +46,7 @@ function record(value: unknown): Record<string, unknown> {
 
 function signature(run: ModelProviderBenchmark, parameter: ComparisonParameter | 'batching'): string {
   const settings = comparisonSettings(run);
-  if (run.configuration['tool'] === 'logos-replay') {
+  if (isSavedRequestBenchmark(run)) {
     const serving = { ...record(run.configuration['serving']) };
     delete serving['command'];
     delete serving[parameter];
@@ -57,6 +57,7 @@ function signature(run: ModelProviderBenchmark, parameter: ComparisonParameter |
     const nightly = record(run.configuration['nightly']);
     return canonical({ provider: run.model_provider_id, model: run.model_id,
       workload: record(run.configuration['workload'])['id'], series: nightly['series_key'],
+      engine: run.configuration['tool'], version: record(run.configuration['metadata'])['guidellm_version'],
       serving, benchmark: run.configuration['benchmark'] });
   }
   delete settings[parameter];

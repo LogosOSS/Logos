@@ -186,12 +186,12 @@ describe('Top measured configuration', () => {
 });
 
 
-describe('Fixed request reference', () => {
+describe.each(['logos-replay', 'guidellm'])('Fixed request reference (%s)', (tool) => {
   function replay(id: number, rate: number, baseline = id, eligible = true, workload = 'a') {
     const row = run(id, rate, baseline);
     row.sample_size = 10;
     row.dataset = 'requests/' + workload;
-    row.configuration = { tool: 'logos-replay', workload: { id: workload, request_count: 10 },
+    row.configuration = { tool, workload: { id: workload, request_count: 10 },
       nightly: { baseline_id: baseline, reference_id: 1, series_key: 'series', eligible_for_selection: eligible },
       benchmark: { profile: { kind: 'concurrent' }, strategy: { max_concurrency: 4 } },
       serving: { max_num_seqs: id === 1 ? 16 : 32, dtype: 'float16' },
