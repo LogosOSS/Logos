@@ -36,6 +36,7 @@ from logos.benchmarks.reservations import benchmark_reservations
 from logos.context_budget import estimate_prompt_tokens
 from logos.monitoring import prometheus_metrics as prom
 from logos.queue.priority_queue import Priority
+from logos.residency_policy import configured_residency_policy
 from logos.terminal_logging import style_model, style_provider
 from logos.timeouts import global_timeout_s
 
@@ -111,6 +112,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             on_capacity_needed,
         )
         self._ettft_enabled = ettft_enabled
+        self._residency_policy = configured_residency_policy()
         # Whether an operator locked a worker (set by main once the capacity
         # planner exists). Nothing wakes or loads a lane there on its own, so
         # only a lane already awake can serve a request.
@@ -131,6 +133,14 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 logger.info("ECCS weight overrides: %s", self._weight_overrides)
             except (json.JSONDecodeError, ValueError, TypeError):
                 logger.warning("Invalid ECCS_WEIGHT_OVERRIDE, ignoring: %s", _override_raw)
+
+    def _uses_ettft_routing(self) -> bool:
+        return getattr(self, "_residency_policy", "demand") != "simple"
+
+    @staticmethod
+    def _simple_candidate_key(candidate: tuple) -> tuple:
+        model_id, provider_id, _ptype, score, _priority, estimate = candidate
+        return (-score, estimate.tier not in {ReadinessTier.WARM, ReadinessTier.BUSY}, provider_id, model_id)
 
     def _log_decision(
         self,
@@ -455,7 +465,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         random break those). Multi-model RESOURCE keeps the range-scaled
         corrected score. With ETTFT off, both paths reduce to ``weight``.
         """
-        if not self._ettft_enabled:
+        if not self._ettft_enabled or not self._uses_ettft_routing():
             return weight
         if named_model_peers:
             return -expected_wait_s
@@ -601,7 +611,12 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 # lane on the worker that already holds this stream's KV.
                 # Named-model peer ranking omits the bonus so stickiness
                 # cannot outrank a strictly lower true expected_wait_s.
-                if not named_model_peers and affinity.get(model_id) == provider_id and ettft.tier == ReadinessTier.WARM:
+                if (
+                    self._uses_ettft_routing()
+                    and not named_model_peers
+                    and affinity.get(model_id) == provider_id
+                    and ettft.tier == ReadinessTier.WARM
+                ):
                     ranking += affinity_bonus
                     logger.debug(
                         "Prefix affinity bonus %.2f for model=%s worker=%s",
@@ -634,7 +649,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 len(scored),
             )
 
-        if scored and self._ettft_enabled:
+        if scored and self._ettft_enabled and self._uses_ettft_routing():
             mode = "named-model-wait" if named_model_peers else "multi-model-corrected"
             logger.info(
                 "ETTFT ranking (%s): %s",
@@ -647,6 +662,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 ),
             )
 
+        if not self._uses_ettft_routing():
+            scored.sort(key=self._simple_candidate_key)
         return scored
 
     def _record_scheduling_metrics(self, model_id: int, provider_id: int, ettft: "EttftEstimate") -> None:
@@ -1031,7 +1048,11 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         # before walking the list. Same-score warm logosnode workers
         # are weighted by gpu_performance_score so the faster GPU
         # absorbs proportionally more traffic.
-        scored = self._weighted_shuffle_tied(scored)
+        scored = (
+            self._weighted_shuffle_tied(scored)
+            if self._uses_ettft_routing()
+            else sorted(scored, key=self._simple_candidate_key)
+        )
         for idx, (
             model_id,
             provider_id,

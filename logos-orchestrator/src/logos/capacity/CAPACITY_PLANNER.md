@@ -561,3 +561,36 @@ All constants are defined as class variables on `CapacityPlanner` in `capacity_p
 | [`vram_ledger.py`](vram_ledger.py) | Atomic VRAM reservation ledger; per-GPU tracking |
 | [`../../../tests/unit/capacity/test_capacity_planner.py`](../../../tests/unit/capacity/test_capacity_planner.py) | Unit tests covering all major decision paths |
 | [`../../../tests/smoke/test_capacity_planner_smoke.py`](../../../tests/smoke/test_capacity_planner_smoke.py) | End-to-end smoke tests against a live deployment |
+
+
+## Residency strategies
+
+`LOGOS_RESIDENCY_POLICY` accepts `demand` (default), `lru`, and `simple`.
+Unknown values fall back to `demand`. The startup log and scheduler-state
+response expose the selected strategy.
+
+`demand` uses estimated time to first token for routing, effective demand
+for residency ordering and victims, competitive wake/load gates, and busy-lane
+draining. `lru` keeps routing, demand ordering and draining, chooses victims
+by their idle age with sleep preferred over stop, and disables the competitive
+wake/load gates.
+
+`simple` routes to a ready deployment in stable provider-ID order and then to
+the first ready lane by lane ID. Wait estimates remain available as diagnostic
+annotations but do not rank deployments. Classification still determines the
+model for requests that do not name one. Residency activations follow the oldest
+currently waiting request across workers, regardless of queue size or historical
+demand. Infeasible activations can be skipped so independent work can proceed.
+Workers are considered by provider ID. One activation per worker is planned per
+cycle so a later activation cannot reuse the same stale victim snapshot.
+
+The simple strategy does not create speculative demand replicas, apply demand
+ratio gates, or drain busy lanes to force a model switch. It reclaims idle lanes
+by LRU, preferring sleep to stop. The final sleep/stop check aborts if work arrived
+since planning. Explicit operator drains remain available. Queue priority inside
+a model is unchanged; FIFO applies to model residency actions. Explicit warmup
+hints remain supported on free capacity, behind requests already waiting.
+
+All strategies share VRAM and host-RAM accounting, placement feasibility,
+pinned KV-cache checks, operator locks, minimum tenure and failure cooldowns.
+These checks preserve correctness while the scheduling strategy changes.

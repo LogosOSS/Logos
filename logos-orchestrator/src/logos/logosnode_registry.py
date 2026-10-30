@@ -19,6 +19,7 @@ from fastapi import WebSocket
 from logos.benchmarks.nightly import LEASE_CHECK, NIGHTLY_CONTEXT
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.monitoring import prometheus_metrics as prom
+from logos.residency_policy import configured_residency_policy
 from logos.terminal_logging import (
     BOLD,
     CYAN,
@@ -411,6 +412,7 @@ class LogosNodeRuntimeRegistry:
         on_capabilities_changed: Callable[[int, list[str]], None] | None = None,
         latency_store: LatencyStore | None = None,
     ) -> None:
+        self._residency_policy = configured_residency_policy()
         self._tickets: dict[str, AuthTicket] = {}
         self._sessions: dict[int, ProviderSession] = {}
         # peek_runtime_snapshot memo: provider_id -> (snapshot_version, dict).
@@ -1847,6 +1849,9 @@ class LogosNodeRuntimeRegistry:
             candidates.append(lane)
         if not candidates:
             return None
+        if getattr(self, "_residency_policy", "demand") == "simple":
+            candidates = [lane for lane in candidates if lane.get("runtime_state") in {"loaded", "running"}]
+            return min(candidates, key=lambda lane: str(lane.get("lane_id", "")), default=None)
         candidates.sort(key=_lane_sort_key)
         return candidates[0]
 

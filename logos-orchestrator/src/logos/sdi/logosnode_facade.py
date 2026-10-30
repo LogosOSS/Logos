@@ -193,6 +193,18 @@ class LogosNodeSchedulingDataFacade:
                 return self.queue_manager.get_total_depth_by_deployment(model_id, provider_id)
         return 0
 
+    def get_oldest_queued_at_by_model_name(self, model_name: str, provider_id: int) -> float | None:
+        """Oldest eligible scheduler arrival for a model on this worker."""
+        provider = self._providers.get(int(provider_id))
+        if provider is None:
+            return None
+        times = [
+            self.queue_manager.get_oldest_queued_at(mid, provider_id)
+            for mid, name in provider._model_id_to_name.items()
+            if name == model_name
+        ]
+        return min((at for at in times if at is not None), default=None)
+
     # A tracked request older than this is not counted as in flight: every
     # request releases its tracking when it ends, so an entry this old was
     # leaked, and it must not keep a lane awake forever.
