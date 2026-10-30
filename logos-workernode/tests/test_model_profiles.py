@@ -208,12 +208,18 @@ def test_estimate_vram_fallback_zero_when_nothing_known():
 def test_estimate_base_residency_returns_stored_value():
     """estimate_base_residency_mb returns base_residency_mb; no name/disk fallback."""
     p = ModelProfileRecord(base_residency_mb=6000.0)
-    assert p.estimate_base_residency_mb("org/model-7b") == 6000.0
+    assert p.estimate_base_residency_mb() == 6000.0
 
 
 def test_estimate_base_residency_returns_none_when_unknown():
     p = ModelProfileRecord()
-    assert p.estimate_base_residency_mb("org/model-7b") is None
+    assert p.estimate_base_residency_mb() is None
+
+
+def test_optional_int_keeps_only_positive_numbers():
+    from logos_worker_node.model_profiles import _optional_int
+
+    assert [_optional_int(v) for v in (None, 0, -3, "x", "7", 7.9, 12)] == [None, None, None, None, 7, 7, 12]
 
 
 # ---------------------------------------------------------------------------

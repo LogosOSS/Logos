@@ -33,6 +33,7 @@ from logos_worker_node import perf_trace as worker_perf
 from logos_worker_node import prometheus_metrics as prom
 from logos_worker_node.lane_manager import _lane_id_from_config, _normalize_lane_id
 from logos_worker_node.metal import is_metal_backend
+from logos_worker_node.model_profiles import SYNC_MODEL_PROFILES_ACTION
 from logos_worker_node.models import (
     LaneConfig,
     LaneEvent,
@@ -41,8 +42,10 @@ from logos_worker_node.models import (
     model_can_sleep,
     model_uses_sharded_checkpoint,
 )
+from logos_worker_node.profile_utils import calibration_gpu_slice, parse_gpu_indices
 from logos_worker_node.request_content import MULTIPART_PAYLOAD_KEY, httpx_request_parts
 from logos_worker_node.runtime import build_runtime_status
+from logos_worker_node.vllm_compat import DEFAULT_VLLM
 from logos_worker_node.vllm_metrics_export import collect_vllm_metrics_text
 
 logger = logging.getLogger("logos_worker_node.logos_bridge")
@@ -649,7 +652,7 @@ class LogosBridgeClient:
                     "start_calibration_session",
                     "stop_calibration_session",
                     "get_calibration_status",
-                    "sync_model_profiles",
+                    SYNC_MODEL_PROFILES_ACTION,
                 ],
             },
         )
@@ -1079,7 +1082,7 @@ class LogosBridgeClient:
                 status = await lane_manager.reconfigure_lane(lane_id, updates)
             return status.model_dump(mode="json")
 
-        if action == "sync_model_profiles":
+        if action == SYNC_MODEL_PROFILES_ACTION:
             return self._handle_sync_model_profiles(params)
         if action == "start_calibration_session":
             return await self._handle_start_calibration_session(params)
@@ -1115,7 +1118,7 @@ class LogosBridgeClient:
         self._announce_calibrated_capabilities()
         lane_manager = getattr(self._app.state, "lane_manager", None)
         if lane_manager is not None:
-            lane_manager._mark_status_dirty()  # noqa: SLF001
+            lane_manager.mark_status_dirty()
         return {"ok": True, "replaced": replaced}
 
     def _announce_calibrated_capabilities(self) -> None:
@@ -1170,10 +1173,9 @@ class LogosBridgeClient:
         if self._vllm_quant_methods is not None:
             return self._vllm_quant_methods
         from logos_worker_node.calibration import query_vllm_quantization_methods  # noqa: PLC0415
-        from logos_worker_node.vllm_compat import _DEFAULT_VLLM  # noqa: PLC0415
 
         try:
-            self._vllm_quant_methods = await asyncio.to_thread(query_vllm_quantization_methods, _DEFAULT_VLLM)
+            self._vllm_quant_methods = await asyncio.to_thread(query_vllm_quantization_methods, DEFAULT_VLLM)
         except Exception:  # noqa: BLE001
             logger.warning(
                 "[Precheck] vLLM quantization registry query failed for %s — quantization check skipped",
@@ -1262,12 +1264,7 @@ class LogosBridgeClient:
         calibration_probe_logs, where it would replace the node's last real
         calibration row. Never raises.
         """
-        from logos_worker_node.calibration import (  # noqa: PLC0415
-            _max_tp_for_plan,
-            calibration_gpu_slice,
-            parse_gpu_indices,
-            query_gpu_vram,
-        )
+        from logos_worker_node.calibration import _max_tp_for_plan, query_gpu_vram  # noqa: PLC0415
         from logos_worker_node.hf_model_info import (  # noqa: PLC0415
             MIN_VIABLE_CONTEXT_TOKENS,
             REASON_INSUFFICIENT_VRAM_FOR_MIN_KV,
@@ -1519,7 +1516,7 @@ class LogosBridgeClient:
         return result
 
     @staticmethod
-    def _resolve_config_path() -> Path:
+    def resolve_config_path() -> Path:
         """The worker's config.yml — same resolution the calibration
         session loop uses (LOGOS_WORKER_NODE_CONFIG env, then /app or CWD)."""
         config_path_str = os.environ.get("LOGOS_WORKER_NODE_CONFIG", "").strip()
@@ -1538,7 +1535,7 @@ class LogosBridgeClient:
         try:
             from logos_worker_node.calibration import plans_from_config  # noqa: PLC0415
 
-            config_path = self._resolve_config_path()
+            config_path = self.resolve_config_path()
             if not config_path.exists():
                 return {}
             plan = next((p for p in plans_from_config(config_path) if p.get("model") == model_name), None)
@@ -1851,8 +1848,9 @@ class LogosBridgeClient:
     def _list_uncalibrated_models(self, log_skips: bool = True) -> list[str]:
         """Pick configured models that still need calibration.
 
-        Mirrors the previous server-side selection logic so behaviour is
-        unchanged — only the location of the decision moves to the worker.
+        The orchestrator's candidate lists (``main.py``,
+        ``calibration_orchestrator.py``) apply the same core test without
+        the worker-only checks (sleep level, config).
         Models that cannot sleep on this worker are judged on their non-sleep
         fields alone, because their sleep fields stay null by design; models
         flagged calibration_unsupported are skipped entirely.
@@ -1944,7 +1942,7 @@ class LogosBridgeClient:
             )
 
             snapshot = await gpu_collector.get_snapshot()
-            config_path = self._resolve_config_path()
+            config_path = self.resolve_config_path()
             plans = plans_from_config(config_path) if config_path.exists() else []
             # Resolving an unknown vLLM version may fork a subprocess.
             keys = await asyncio.to_thread(node_calibration_keys, self._app.state.config, plans, list(snapshot.devices))
@@ -1983,9 +1981,9 @@ class LogosBridgeClient:
         # and this is what confirms the session inside it.
         if lane_manager is not None:
             try:
-                lane_manager._mark_status_dirty()  # noqa: SLF001
+                lane_manager.mark_status_dirty()
             except Exception:  # noqa: BLE001
-                logger.debug("[Calibration] _mark_status_dirty failed", exc_info=True)
+                logger.debug("[Calibration] mark_status_dirty failed", exc_info=True)
         try:
             from logos_worker_node.calibration import (  # noqa: PLC0415
                 _CALIBRATION_PORT,
@@ -1998,7 +1996,6 @@ class LogosBridgeClient:
             )
             from logos_worker_node.calibration_metal import calibrate_model_metal  # noqa: PLC0415
             from logos_worker_node.config import get_state_dir  # noqa: PLC0415
-            from logos_worker_node.vllm_compat import _DEFAULT_VLLM  # noqa: PLC0415
 
             cfg = self._app.state.config
             model_profiles = self._app.state.model_profiles
@@ -2014,7 +2011,7 @@ class LogosBridgeClient:
             _mc = model_cache if (model_cache is not None and getattr(model_cache, "enabled", False)) else None
 
             # Resolve plans once — the kv-cache ceilings come from config.yml.
-            config_path = self._resolve_config_path()
+            config_path = self.resolve_config_path()
             all_plans = plans_from_config(config_path) if config_path.exists() else []
             plan_by_model = {p["model"]: p for p in all_plans}
 
@@ -2215,7 +2212,7 @@ class LogosBridgeClient:
                             None,
                             lambda p=plan: calibrate_model_metal(
                                 p,
-                                vllm_binary=_DEFAULT_VLLM,
+                                vllm_binary=DEFAULT_VLLM,
                                 port=_CALIBRATION_PORT,
                                 log_dir=log_dir,
                                 ready_timeout_s=_READY_TIMEOUT_S,
@@ -2229,7 +2226,7 @@ class LogosBridgeClient:
                             None,
                             lambda p=plan, sl=model_sleep_level: calibrate_with_tp_escalation(
                                 p,
-                                vllm_binary=_DEFAULT_VLLM,
+                                vllm_binary=DEFAULT_VLLM,
                                 port=_CALIBRATION_PORT,
                                 log_dir=log_dir,
                                 sleep_level=sl,
@@ -2290,9 +2287,9 @@ class LogosBridgeClient:
                     # we're on the event loop.
                     if lane_manager is not None:
                         try:
-                            lane_manager._mark_status_dirty()  # noqa: SLF001
+                            lane_manager.mark_status_dirty()
                         except Exception:  # noqa: BLE001
-                            logger.debug("[Calibration] _mark_status_dirty failed", exc_info=True)
+                            logger.debug("[Calibration] mark_status_dirty failed", exc_info=True)
 
                     # When the calibrated TP is >1, pre-shard the
                     # checkpoint now while the GPU is free, so the lane that
@@ -2354,7 +2351,7 @@ class LogosBridgeClient:
                 except Exception:  # noqa: BLE001
                     logger.debug("[Calibration] end_calibration_session failed", exc_info=True)
                 try:
-                    lane_manager._mark_status_dirty()  # noqa: SLF001
+                    lane_manager.mark_status_dirty()
                 except Exception:  # noqa: BLE001
                     pass
             if self._active_calibration_session is session:
@@ -2381,7 +2378,6 @@ class LogosBridgeClient:
             from pathlib import Path  # noqa: PLC0415
 
             from logos_worker_node import sharded_checkpoint as sc  # noqa: PLC0415
-            from logos_worker_node.vllm_compat import _DEFAULT_VLLM  # noqa: PLC0415
 
             vc_engine = cfg.engines.vllm if cfg.engines else None
             if vc_engine is None:
@@ -2411,7 +2407,7 @@ class LogosBridgeClient:
             # sharded_conversion_failed event. Ask first so the skip stays a
             # skip. Off the event loop: the check can probe a separate-venv
             # interpreter for its version.
-            rejection = await loop.run_in_executor(None, lambda: sc.rejection_state(target, vllm_binary=_DEFAULT_VLLM))
+            rejection = await loop.run_in_executor(None, lambda: sc.rejection_state(target, vllm_binary=DEFAULT_VLLM))
             if rejection == "skip":
                 logger.info(
                     "[Calibration] sharded checkpoint for %s (tp=%d) was rejected by this vLLM — "
@@ -2438,7 +2434,7 @@ class LogosBridgeClient:
                     model=model_name,
                     tensor_parallel_size=tp,
                     cache_root=cache_root,
-                    vllm_binary=_DEFAULT_VLLM,
+                    vllm_binary=DEFAULT_VLLM,
                     hf_home=hf_home,
                     gpu_devices=gpu_devices,
                     dtype=dtype,

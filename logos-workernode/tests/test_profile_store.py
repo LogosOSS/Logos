@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from logos_worker_node.calibration import CalibrationResult, _build_vllm_cmd, merge_profile, result_to_profile_dict
+from logos_worker_node.calibration import CalibrationResult, _build_vllm_cmd, result_to_profile_dict
+from logos_worker_node.profile_utils import merge_profile
 
 # ---------------------------------------------------------------------------
 # Merging: a measurement updates a profile, it does not replace it

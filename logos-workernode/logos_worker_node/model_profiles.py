@@ -28,7 +28,13 @@ import time
 from dataclasses import dataclass, fields
 from typing import Any
 
+from logos_worker_node.profile_utils import merge_profile
+
 logger = logging.getLogger(__name__)
+
+SYNC_MODEL_PROFILES_ACTION = "sync_model_profiles"
+ORIGIN_LOCAL = "local"
+ORIGIN_SHARED = "shared"
 
 _EMA_ALPHA = 0.3  # weight for new measurement vs historical average
 
@@ -235,7 +241,7 @@ class ModelProfileRecord:
             return self.base_residency_mb
         return 0.0
 
-    def estimate_base_residency_mb(self, model_name: str | None = None) -> float | None:
+    def estimate_base_residency_mb(self) -> float | None:
         """Return base_residency_mb if known. No estimation fallback."""
         return self.base_residency_mb
 
@@ -1008,14 +1014,12 @@ class ModelProfileRegistry:
         Logos snapshots it from the next runtime status and replies with the
         snapshot's calibration_id.
         """
-        from logos_worker_node.calibration import merge_profile  # noqa: PLC0415
-
         with self._lock:
             prior = self._profiles.get(model_name)
             merged = merge_profile(prior.to_dict() if prior is not None else None, measured)
             record = _record_from_dict(merged)
             record.calibration_id = None
-            record.calibration_origin = "local"
+            record.calibration_origin = ORIGIN_LOCAL
             record.calibration_stale = False
             key = self._calibration_keys.get(model_name)
             record.calibration_key = dict(key[0]) if key is not None else None
@@ -1029,11 +1033,15 @@ _RECORD_FIELDS = frozenset(field.name for field in fields(ModelProfileRecord))
 
 def _awaits_snapshot(profile: ModelProfileRecord) -> bool:
     """A local calibration Logos has not linked to a snapshot yet."""
-    return profile.calibration_origin == "local" and profile.calibration_id is None
+    return profile.calibration_origin == ORIGIN_LOCAL and profile.calibration_id is None
 
 
 def _optional_int(value: Any) -> int | None:
-    return int(value) if value else None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _optional_float(value: Any) -> float | None:

@@ -12,6 +12,7 @@ from logos.model_profile_store import (
     material_profile,
     persistable_profile,
     profile_digest,
+    profile_needs_calibration,
     reported_profile,
     shared_profiles_enabled,
 )
@@ -175,3 +176,39 @@ def test_sharing_is_on_by_default_and_switchable(monkeypatch):
         assert shared_profiles_enabled() is False
     monkeypatch.setenv("LOGOS_SHARED_PROFILES", "1")
     assert shared_profiles_enabled() is True
+
+
+_MEASURED = {
+    "base_residency_mb": 5000.0,
+    "sleeping_residual_mb": 100.0,
+    "sleep_l1_transient_host_ram_mb": 50.0,
+    "residency_source": "calibrated",
+    "kv_cache_to_max_model_len_pairs": [{"kv_mb": 1.0, "max_model_len": 2}],
+}
+
+
+def test_a_complete_calibration_needs_no_calibration():
+    assert profile_needs_calibration(_MEASURED) is False
+
+
+def test_every_missing_measurement_needs_calibration():
+    assert profile_needs_calibration(None) is True
+    assert profile_needs_calibration({**_MEASURED, "base_residency_mb": None}) is True
+    assert profile_needs_calibration({**_MEASURED, "sleeping_residual_mb": None}) is True
+    assert profile_needs_calibration({**_MEASURED, "kv_cache_to_max_model_len_pairs": None}) is True
+    assert profile_needs_calibration({**_MEASURED, "calibration_stale": True}) is True
+    assert profile_needs_calibration({**_MEASURED, "min_kv_cache_mb": 8.0, "max_kv_cache_mb": 8.0}) is True
+
+
+def test_an_hf_estimate_still_needs_calibration():
+    assert profile_needs_calibration({**_MEASURED, "residency_source": "hf"}) is True
+    assert profile_needs_calibration({**_MEASURED, "residency_source": "hf", "calibration_unsupported": True}) is False
+
+
+def test_a_model_that_cannot_sleep_is_judged_without_sleep_fields():
+    profile = {**_MEASURED, "sleeping_residual_mb": None, "sleep_l1_transient_host_ram_mb": None}
+    assert profile_needs_calibration({**profile, "sleep_mode_disabled": True}) is False
+
+
+def test_an_unsupported_model_is_never_a_candidate():
+    assert profile_needs_calibration({"calibration_unsupported": True}) is False

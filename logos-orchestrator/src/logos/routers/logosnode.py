@@ -681,6 +681,13 @@ def _central_hf_token() -> str:
     return os.getenv("HF_TOKEN", "").strip()
 
 
+# Admin endpoints (called by the UI and the webservice) answer with a plain
+# string; worker-facing ones raise HTTPException, which the app turns into the
+# OpenAI error body.
+def _admin_error(status_code: int, message: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"error": message})
+
+
 def _is_tls_request(request: Request) -> bool:
     if _logosnode_insecure_dev_mode_enabled():
         return True
@@ -1005,7 +1012,7 @@ async def logosnode_status(data: LogosNodeStatusRequest):
     try:
         return await _main._logosnode_registry.get_runtime_snapshot(data.provider_id)
     except LogosNodeOfflineError as exc:
-        return JSONResponse(status_code=503, content={"error": str(exc)})
+        return _admin_error(503, str(exc))
 
 
 @router.post("/logosdb/providers/logosnode/devices", tags=["logosnode"])
@@ -1014,7 +1021,7 @@ async def logosnode_devices(data: LogosNodeStatusRequest):
     try:
         return {"devices": await _main._logosnode_registry.get_devices(data.provider_id)}
     except LogosNodeOfflineError as exc:
-        return JSONResponse(status_code=503, content={"error": str(exc)})
+        return _admin_error(503, str(exc))
 
 
 @router.post("/logosdb/providers/logosnode/lanes", tags=["logosnode"])
@@ -1023,7 +1030,7 @@ async def logosnode_lanes(data: LogosNodeStatusRequest):
     try:
         return {"lanes": await _main._logosnode_registry.get_lanes(data.provider_id)}
     except LogosNodeOfflineError as exc:
-        return JSONResponse(status_code=503, content={"error": str(exc)})
+        return _admin_error(503, str(exc))
 
 
 @router.post("/logosdb/providers/logosnode/lanes/apply", tags=["logosnode"])
@@ -1065,7 +1072,7 @@ async def logosnode_delete_lane(data: LogosNodeDeleteLaneRequest):
         try:
             attempt = await _main._capacity_planner.forget_restored_lane(data.provider_id, data.lane_id)
         except RestoreRecordError as exc:
-            return JSONResponse(status_code=503, content={"error": str(exc)})
+            return _admin_error(503, str(exc))
     dispatched = []
     planner = _main._capacity_planner
     try:
@@ -1117,12 +1124,9 @@ async def logosnode_calibrate_uncalibrated(data: LogosNodeStatusRequest):
     await asyncio.to_thread(_require_root_access, data.logos_key)
     snap = _main._logosnode_registry.peek_runtime_snapshot(data.provider_id)
     if snap is None:
-        return JSONResponse(status_code=503, content={"error": "Worker not connected"})
+        return _admin_error(503, "Worker not connected")
     if not snap.get("first_status_received"):
-        return JSONResponse(
-            status_code=503,
-            content={"error": "Worker has not sent its first status yet"},
-        )
+        return _admin_error(503, "Worker has not sent its first status yet")
     models = _find_uncalibrated_models_on_provider(data.provider_id)
     if not models:
         return {
@@ -1143,14 +1147,14 @@ async def logosnode_calibrate_uncalibrated(data: LogosNodeStatusRequest):
         )
     except LogosNodeOfflineError as exc:
         logger.warning("Admin calibrate-uncalibrated: provider=%s offline: %s", pname, exc)
-        return JSONResponse(status_code=503, content={"error": "Worker not connected"})
+        return _admin_error(503, "Worker not connected")
     except LogosNodeCommandError as exc:
         logger.warning(
             "Admin calibrate-uncalibrated: start_calibration_session refused on provider=%s: %s",
             pname,
             exc,
         )
-        return JSONResponse(status_code=409, content={"error": str(exc)})
+        return _admin_error(409, str(exc))
     logger.info(
         "Admin calibrate-uncalibrated: session started on provider=%s (%d candidate model(s))",
         pname,
@@ -1174,7 +1178,7 @@ async def logosnode_stop_calibration(data: LogosNodeStatusRequest):
     await asyncio.to_thread(_require_root_access, data.logos_key)
     snap = _main._logosnode_registry.peek_runtime_snapshot(data.provider_id)
     if snap is None:
-        return JSONResponse(status_code=503, content={"error": "Worker not connected"})
+        return _admin_error(503, "Worker not connected")
     pname = _resolve_provider_name(data.provider_id)
     try:
         result = await _main._logosnode_registry.send_command(
@@ -1184,14 +1188,14 @@ async def logosnode_stop_calibration(data: LogosNodeStatusRequest):
         )
     except LogosNodeOfflineError as exc:
         logger.warning("Admin stop-calibration: provider=%s offline: %s", pname, exc)
-        return JSONResponse(status_code=503, content={"error": "Worker not connected"})
+        return _admin_error(503, "Worker not connected")
     except LogosNodeCommandError as exc:
         logger.warning(
             "Admin stop-calibration: stop_calibration_session failed on provider=%s: %s",
             pname,
             exc,
         )
-        return JSONResponse(status_code=409, content={"error": str(exc)})
+        return _admin_error(409, str(exc))
     was_active = bool(result.get("was_active", False))
     current_model = result.get("current_model")
     logger.info(
@@ -1224,10 +1228,7 @@ async def logosnode_clear_unsupported(data: LogosNodeClearUnsupportedRequest):
 
     revision = await asyncio.to_thread(_clear)
     if revision is None:
-        return JSONResponse(
-            status_code=404,
-            content={"error": f"{data.model_name} is not marked unsupported on provider {data.provider_id}"},
-        )
+        return _admin_error(404, f"{data.model_name} is not marked unsupported on provider {data.provider_id}")
     _profile_write_cache.forget(data.provider_id, data.model_name)
     await _push_model_profiles(data.provider_id, [data.model_name])
     return {"provider_id": data.provider_id, "model_name": data.model_name, "sync_revision": revision}

@@ -1121,13 +1121,13 @@ def _make_app_for_calibration(tmp_path, *, vllm_disable_sleep=False, per_model_o
     app.state.config = cfg
     app.state.model_profiles = ModelProfileRegistry()
     app.state.model_cache = None
-    # Minimal lane_manager stub: event_log + destroy_all + _mark_status_dirty.
+    # Minimal lane_manager stub: event_log + destroy_all + mark_status_dirty.
     # The session driver records calibration_* events onto event_log directly
     # and marks status dirty after each model completes.
     lane_manager = type("LaneMgr", (), {})()
     lane_manager._event_log = []
     lane_manager._MAX_EVENT_LOG = 500
-    lane_manager._mark_status_dirty = lambda: None
+    lane_manager.mark_status_dirty = lambda: None
     lane_manager.destroy_all = AsyncMock(return_value=None)
     # Calibration-session GPU-slice guard: the session holds a
     # power-of-two slice and frees only the lanes on it, keeping leftover lanes.
@@ -3945,7 +3945,7 @@ def _central_client(tmp_path) -> LogosBridgeClient:
     def _mark_dirty():
         app.state.lane_manager._status_dirty_marks += 1
 
-    app.state.lane_manager._mark_status_dirty = _mark_dirty
+    app.state.lane_manager.mark_status_dirty = _mark_dirty
     cfg = LogosConfig(
         enabled=True,
         logos_url="https://logos.example",

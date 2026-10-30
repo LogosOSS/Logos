@@ -213,7 +213,7 @@ async def _load_central_profiles(
     instead of guessing; with the bridge disabled it starts empty.
     """
     snapshot = await gpu_collector.get_snapshot()
-    config_path = LogosBridgeClient._resolve_config_path()
+    config_path = LogosBridgeClient.resolve_config_path()
     plans = plans_from_config(config_path) if config_path.exists() else []
     model_profiles.set_calibration_keys(node_calibration_keys(cfg, plans, list(snapshot.devices)))
     model_profiles.set_slice_gpu_counts(node_slice_gpu_counts(cfg, plans, list(snapshot.devices)))

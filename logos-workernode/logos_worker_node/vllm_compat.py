@@ -592,7 +592,7 @@ _SCRUBBED_ENV_VARS = (
 
 # Default vLLM binary name (resolved through PATH when no absolute path is
 # configured).
-_DEFAULT_VLLM = "vllm"
+DEFAULT_VLLM = "vllm"
 
 # File the Dockerfile bakes next to the venv's bin/ listing the quantization
 # method names the installed vLLM recognizes (see
