@@ -16,12 +16,17 @@ const NOT_CAPTURED = 'Not captured';
 
 type JsonPath = readonly (string | number)[];
 
+/** Frozen inputs keep the same comparison rules across measurement engines. */
+export function isSavedRequestBenchmark(run: ModelProviderBenchmark): boolean {
+  return typeof field(run.configuration['workload'], 'id') === 'string';
+}
+
 export function benchmarkConfigurationItems(
   benchmark: ModelProviderBenchmark,
 ): readonly BenchmarkConfigurationItem[] {
   const configuration = benchmark.configuration;
 
-  if (configuration['tool'] === 'logos-replay') {
+  if (isSavedRequestBenchmark(benchmark)) {
     return [
       item('dataset', 'Dataset', benchmark.dataset),
       item('workload_name', 'Request workload', field(configuration['workload'], 'name')),

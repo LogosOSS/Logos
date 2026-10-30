@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -21,6 +22,99 @@ from logos.benchmarks.guidellm_runner import (
     send_warmup_request,
     successful_summary,
 )
+
+
+async def test_saved_requests_use_guidellm_and_persist_only_the_safe_summary(monkeypatch):
+    runner = importlib.import_module("logos.benchmarks.guidellm_runner")
+    dbmanager = importlib.import_module("logos.dbutils.dbmanager")
+    workloads = importlib.import_module("logos.benchmarks.workloads")
+    from logos.benchmarks.configuration import BenchmarkSettings
+
+    inserted = []
+    snapshot = {
+        "id": "a" * 64,
+        "name": "Saved requests",
+        "provenance": "synthetic",
+        "model_name": "org/model",
+        "request_count": 1,
+        "requests": [
+            {
+                "source_log_id": 9,
+                "body": {
+                    "messages": [{"role": "user", "content": "Private input"}],
+                    "temperature": 0.2,
+                },
+            }
+        ],
+    }
+
+    class DB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def update_job_status(self, *args, **kwargs):
+            pass
+
+        def insert_model_provider_benchmark(self, **summary):
+            inserted.append(summary)
+            return 42
+
+    async def subprocess(*command, **kwargs):
+        assert Path(command[1]).name == "guidellm_requests.py"
+        assert kwargs["start_new_session"] is True
+        config_path = Path(command[2])
+        assert config_path.stat().st_mode & 0o777 == 0o600
+        config = json.loads(config_path.read_text())
+        assert config["snapshot"] == snapshot and config["concurrency"] == 4
+        assert "max_output_tokens" not in config
+        Path(config["report_path"]).write_text(
+            json.dumps(
+                {
+                    "metadata": {"guidellm_version": "0.8.1"},
+                    "benchmarks": [
+                        {
+                            "start_time": 1,
+                            "end_time": 2,
+                            "metrics": {"request_totals": {"total": 1, "successful": 1, "errored": 0, "incomplete": 0}},
+                            "config": {"profile": {"kind": "concurrent"}, "strategy": {"max_concurrency": 4}},
+                        }
+                    ],
+                }
+            )
+        )
+
+        class Process:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        return Process()
+
+    monkeypatch.setattr(dbmanager, "DBManager", DB)
+    monkeypatch.setattr(workloads, "load", lambda _: snapshot)
+    monkeypatch.setattr(runner, "send_warmup_request", AsyncMock())
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", subprocess)
+    result = await runner.run_benchmark_job(
+        job_id=1,
+        model_provider_id=2,
+        target="http://127.0.0.1:8080",
+        model="org/model",
+        api_key="private-key",
+        samples=1,
+        max_output_tokens=512,
+        serving_configuration={},
+        settings=BenchmarkSettings(workload_id=snapshot["id"], profile="concurrent", concurrency=4),
+    )
+    assert result == 42
+    assert inserted[0]["configuration"]["tool"] == "guidellm"
+    assert inserted[0]["configuration"]["workload"]["id"] == snapshot["id"]
+    assert inserted[0]["dataset"] == "requests/" + snapshot["id"]
+    assert "Private input" not in json.dumps(inserted, default=str)
+    assert "private-key" not in json.dumps(inserted, default=str)
 
 
 @pytest.mark.asyncio

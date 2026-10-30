@@ -20,9 +20,9 @@ describe('Saved request benchmark selection', () => {
     TestBed.configureTestingModule({ providers: [{ provide: ModelManagementService, useValue: service }] });
   });
 
-  it('reopens a saved replay without fetching Hugging Face or changing its concurrent load', async () => {
+  it.each(['logos-replay', 'guidellm'])('reopens %s saved requests without fetching Hugging Face or changing its concurrent load', async (tool) => {
     const draft = settingsFromBenchmark({ dataset: 'requests/' + workload.id, configuration: {
-      tool: 'logos-replay', workload, benchmark: { profile: { kind: 'concurrent' }, strategy: { max_concurrency: 4 } },
+      tool, workload, benchmark: { profile: { kind: 'concurrent' }, strategy: { max_concurrency: 4 } },
     } } as unknown as ModelProviderBenchmark);
     expect(draft.workload_id).toBe(workload.id);
     expect(draft.dataset).toBe('openai/gsm8k');

@@ -16,6 +16,7 @@ def context(current, snapshot, workload, previous):
     runtime = snapshot.get("runtime") or {}
     identity = {
         "workload": workload["id"],
+        "measurement_engine": "guidellm",
         "serving": {key: value for key, value in current.items() if key not in BATCHING_KEYS | {"command"}},
         "devices": runtime.get("devices"),
         "worker_version": runtime.get("version_checksum") or runtime.get("service_version"),
