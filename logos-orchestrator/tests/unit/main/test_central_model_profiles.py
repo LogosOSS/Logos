@@ -53,7 +53,6 @@ class _FakeDB:
         self.legacy_upserts: list = []
         self.persisted: list = []
         self.calibrations: list = []
-        self.imports: list = []
         self.reported_keys: list = []
         self.cleared: list = []
         self.invalidated: list = []
@@ -86,10 +85,6 @@ class _FakeDB:
         self.calibrations.append((provider_id, model_name, snapshot, key, key_hash, calibrated_at))
         self.durations = getattr(self, "durations", []) + [duration_s]
         return self.new_revision
-
-    def import_legacy_model_profiles(self, provider_id, profiles, unsupported):
-        self.imports.append((provider_id, profiles, unsupported))
-        return len(profiles)
 
     def update_reported_calibration_keys(self, provider_id, key_hashes, slice_gpu_counts=None):
         self.reported_keys.append((provider_id, key_hashes))
@@ -282,19 +277,14 @@ def test_push_failure_keeps_the_session(monkeypatch):
     asyncio.run(logosnode_mod._push_model_profiles(1))
 
 
-def test_startup_endpoint_imports_legacy_file_and_returns_profiles(monkeypatch):
+def test_startup_endpoint_stores_the_reported_keys_and_returns_profiles(monkeypatch):
     db = _FakeDB()
     monkeypatch.setattr(logosnode_mod, "DBManager", lambda: db)
     monkeypatch.setattr(logosnode_mod, "_require_tls_request", lambda request: None)
     monkeypatch.setattr(logosnode_mod, "_logosnode_provider_for_key", lambda key: {"id": 5})
     monkeypatch.setattr(logosnode_mod, "_resolve_provider_name", lambda pid: "gpu-5")
-    data = LogosNodeModelProfilesRequest(
-        shared_key="k",
-        calibration_key_hashes={"org/model": "H1"},
-        legacy_import={"model_profiles": {"org/model": {"base_residency_mb": 1.0}}, "unsupported_models": {}},
-    )
+    data = LogosNodeModelProfilesRequest(shared_key="k", calibration_key_hashes={"org/model": "H1"})
     result = asyncio.run(logosnode_mod.logosnode_model_profiles(data, request=None))
-    assert db.imports == [(5, {"org/model": {"base_residency_mb": 1.0}}, {})]
     assert db.reported_keys == [(5, {"org/model": "H1"})]
     assert result["profiles"]["org/model"]["sync_revision"] == 2
 

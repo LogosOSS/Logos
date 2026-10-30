@@ -397,7 +397,6 @@ class LogosBridgeClient:
         self,
         calibration_key_hashes: dict[str, str],
         slice_gpu_counts: dict[str, int],
-        legacy_import: dict[str, Any] | None,
     ) -> dict[str, dict[str, Any]]:
         """This node's profiles from Logos, the only place they are stored."""
         url = f"{self._logos_base_url()}/logosdb/providers/logosnode/model-profiles"
@@ -406,8 +405,6 @@ class LogosBridgeClient:
             "calibration_key_hashes": calibration_key_hashes,
             "slice_gpu_counts": slice_gpu_counts,
         }
-        if legacy_import is not None:
-            payload["legacy_import"] = legacy_import
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, json=payload)
         if resp.status_code >= 400:

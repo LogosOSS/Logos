@@ -4125,9 +4125,8 @@ async def test_startup_fetch_posts_keys_and_legacy_files(tmp_path, monkeypatch):
             return _Resp()
 
     monkeypatch.setattr("logos_worker_node.logos_bridge.httpx.AsyncClient", lambda timeout=15.0: _Http())
-    legacy = {"model_profiles": {}, "unsupported_models": {"org/bad": "invalid-repo-id"}}
 
-    profiles = await client.fetch_model_profiles({"org/ready": "h"}, {"org/ready": 2}, legacy)
+    profiles = await client.fetch_model_profiles({"org/ready": "h"}, {"org/ready": 2})
 
     assert profiles == {"org/ready": {"base_residency_mb": 5.0, "sync_revision": 1}}
     url, body = posted[0]
@@ -4136,7 +4135,6 @@ async def test_startup_fetch_posts_keys_and_legacy_files(tmp_path, monkeypatch):
         "shared_key": "secret",
         "calibration_key_hashes": {"org/ready": "h"},
         "slice_gpu_counts": {"org/ready": 2},
-        "legacy_import": legacy,
     }
 
 
@@ -4161,7 +4159,7 @@ async def test_startup_fetch_rejects_an_orchestrator_without_central_profiles(tm
 
     monkeypatch.setattr("logos_worker_node.logos_bridge.httpx.AsyncClient", lambda timeout=15.0: _Http())
     with pytest.raises(RuntimeError, match="HTTP 404"):
-        await client.fetch_model_profiles({}, {}, None)
+        await client.fetch_model_profiles({}, {})
 
 
 @pytest.mark.asyncio

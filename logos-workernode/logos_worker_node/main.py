@@ -26,7 +26,6 @@ from logos_worker_node.config import get_state_dir, load_config
 from logos_worker_node.gpu import GpuMetricsCollector
 from logos_worker_node.gpu_watchdog import GpuWatchdog
 from logos_worker_node.lane_manager import LaneManager, _lane_id_from_config
-from logos_worker_node.legacy_profile_import import mark_legacy_profiles_migrated, read_legacy_profiles
 from logos_worker_node.logos_bridge import LogosBridgeClient
 from logos_worker_node.metal import MetalMetricsCollector, is_metal_backend
 from logos_worker_node.model_cache import ModelRamCache, _DisabledModelRamCache, create_model_cache
@@ -222,13 +221,11 @@ async def _load_central_profiles(
         logger.info("Logos bridge disabled — starting without model profiles")
         return
 
-    state_dir = get_state_dir()
-    legacy_import = read_legacy_profiles(state_dir)
     delay = 5.0
     while True:
         try:
             profiles = await logos_bridge.fetch_model_profiles(
-                model_profiles.calibration_key_hashes(), model_profiles.slice_gpu_counts(), legacy_import
+                model_profiles.calibration_key_hashes(), model_profiles.slice_gpu_counts()
             )
             break
         except Exception as exc:  # noqa: BLE001
@@ -241,8 +238,6 @@ async def _load_central_profiles(
             delay = min(delay * 2, 60.0)
     model_profiles.replace_from_sync(profiles)
     logger.info("Loaded %d model profile(s) from Logos", len(profiles))
-    if legacy_import is not None:
-        mark_legacy_profiles_migrated(state_dir)
 
 
 def _resolve_worker_cache_root(cfg) -> str:

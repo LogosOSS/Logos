@@ -5077,7 +5077,7 @@ def _wipe_calibration_and_weights_via_ssh(
     holds the files / GPU). The profiles themselves live in Logos and are reset
     there (:func:`_reset_profiles_via_rest`). Per node it removes:
       - any ``{workernode_dir}/data/model_profiles.yml*`` a pre-central worker
-        left behind, so it is never handed over to Logos again.
+        left behind.
       - ``{workernode_dir}/data/calibration_logs/`` — the per-model logs plus
         the calibration black/whitelist files
         (``calibration_failed_commands.txt`` / ``calibration_succeeded_commands.txt``).

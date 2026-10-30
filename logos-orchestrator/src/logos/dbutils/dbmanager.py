@@ -24,12 +24,7 @@ from logos.dbutils.types import (
     infer_cloud_provider_type,
     normalize_provider_type,
 )
-from logos.model_profile_store import (
-    CALIBRATION_FIELDS,
-    SYNC_METADATA_FIELDS,
-    base_residency_agrees,
-    calibration_snapshot,
-)
+from logos.model_profile_store import CALIBRATION_FIELDS, base_residency_agrees
 
 # Backwards-compatible re-export (temporary; remove once all imports are migrated)
 __all__ = [
@@ -2236,68 +2231,6 @@ class DBManager:
             {"id": int(snapshot.id)},
         )
         return True, int(snapshot.id)
-
-    def import_legacy_model_profiles(
-        self,
-        provider_id: int,
-        profiles: Dict[str, Dict[str, Any]],
-        unsupported: Dict[str, str],
-    ) -> int:
-        """Take over a worker's local profile file on its first central start.
-
-        Imported calibrations have no key, so they serve but count as stale
-        until the next calibration window re-measures them.
-        """
-        already_central = self.session.execute(
-            text(
-                "SELECT 1 FROM model_profiles mp WHERE mp.provider_id = :provider_id AND "
-                + _CENTRAL_PROFILE_ROW
-                + " LIMIT 1"
-            ),
-            {"provider_id": provider_id},
-        ).fetchone()
-        if already_central is not None:
-            return 0
-        merged: Dict[str, Dict[str, Any]] = {}
-        for model_name, data in profiles.items():
-            if isinstance(data, dict):
-                merged[str(model_name)] = {k: v for k, v in data.items() if k not in SYNC_METADATA_FIELDS}
-        for model_name, reason in unsupported.items():
-            entry = merged.setdefault(str(model_name), {})
-            entry["calibration_unsupported"] = True
-            entry["calibration_unsupported_reason"] = reason
-        # A central change (e.g. a reset) committed since the check above
-        # owns the row; the import must not write over it.
-        upsert = text(
-            _upsert_model_profile_sql(
-                extra={"profile": "CAST(:profile AS jsonb)"},
-                conflict_set={"profile": "EXCLUDED.profile"},
-                where="model_profiles.profile = '{}'::jsonb AND model_profiles.sync_revision = 0",
-            )
-        )
-        imported = 0
-        for model_name, data in merged.items():
-            written = self.session.execute(
-                upsert,
-                {
-                    "provider_id": provider_id,
-                    "model_name": model_name,
-                    **_model_profile_column_params(data),
-                    "profile": _json_for_jsonb(data),
-                },
-            ).rowcount
-            if not written:
-                continue
-            imported += 1
-            calibrated_at = _epoch_to_datetime(data.get("last_measured_epoch"))
-            if data.get("residency_source") != "calibrated" or calibrated_at is None:
-                continue
-            calibration_id, _ = self._insert_calibration_snapshot(
-                provider_id, model_name, calibration_snapshot(data), None, None, calibrated_at
-            )
-            self._link_calibration(provider_id, model_name, calibration_id)
-        self.session.commit()
-        return imported
 
     def clear_calibration_unsupported(self, provider_id: int, model_name: str) -> Optional[int]:
         """Drop a node's unsupported verdict; returns the new sync_revision."""

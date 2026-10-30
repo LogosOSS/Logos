@@ -176,10 +176,6 @@ it starts any lane. While Logos is unreachable, or does not offer that
 endpoint yet, the worker waits and retries (backoff up to 60 s), so update
 the Logos server before the workers.
 
-A worker whose `data/` directory still holds a `model_profiles.yml` or
-`calibration_logs/calibration_unsupported_models.txt` hands both to Logos on
-its first start and renames them to `*.migrated`.
-
 A calibration is tied to the GPU class, vLLM version and worker configuration
 it was measured under. When any of them changes, the profile keeps serving
 but is reported with `calibration_stale: true`, and the next calibration

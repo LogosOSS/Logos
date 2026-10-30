@@ -321,8 +321,8 @@ class _FakeBridge:
         self.profiles = profiles
         self.calls: list = []
 
-    async def fetch_model_profiles(self, key_hashes, slice_gpu_counts, legacy_import):
-        self.calls.append((key_hashes, legacy_import))
+    async def fetch_model_profiles(self, key_hashes, slice_gpu_counts):
+        self.calls.append(key_hashes)
         if len(self.calls) <= self.failures:
             raise RuntimeError("Logos unreachable")
         return self.profiles
@@ -340,12 +340,11 @@ def _central_cfg(enabled: bool) -> AppConfig:
 
 
 @pytest.mark.asyncio
-async def test_central_profiles_wait_for_logos_and_hand_over_the_legacy_files(tmp_path, monkeypatch) -> None:
+async def test_central_profiles_wait_for_logos(tmp_path, monkeypatch) -> None:
     """No lane may start without profiles: the worker retries until Logos
-    answers, then hands its old profile file over exactly once."""
+    answers."""
     from logos_worker_node.model_profiles import ModelProfileRegistry
 
-    (tmp_path / "model_profiles.yml").write_text("model_profiles:\n  org/model:\n    base_residency_mb: 5.0\n")
     sleeps: list = []
 
     async def _sleep(seconds):
@@ -361,13 +360,9 @@ async def test_central_profiles_wait_for_logos_and_hand_over_the_legacy_files(tm
     await worker_main._load_central_profiles(_central_cfg(True), bridge, registry, _FakeGpuCollector(1))  # noqa: SLF001
 
     assert sleeps == [5.0, 10.0]
-    key_hashes, legacy = bridge.calls[0]
-    assert set(key_hashes) == {"org/model"}
-    assert legacy == {"model_profiles": {"org/model": {"base_residency_mb": 5.0}}, "unsupported_models": {}}
+    assert set(bridge.calls[0]) == {"org/model"}
     profile = registry.get_profile("org/model")
     assert (profile.base_residency_mb, profile.sync_revision) == (7.0, 3)
-    assert not (tmp_path / "model_profiles.yml").exists()
-    assert (tmp_path / "model_profiles.yml.migrated").exists()
 
 
 @pytest.mark.asyncio

@@ -847,28 +847,12 @@ async def logosnode_auth(data: LogosNodeAuthRequest, request: Request):
 
 @router.post("/logosdb/providers/logosnode/model-profiles", tags=["logosnode"])
 async def logosnode_model_profiles(data: LogosNodeModelProfilesRequest, request: Request):
-    """Profiles a worker starts with, before it starts any lane.
-
-    ``legacy_import`` is the worker's former local file, used only once.
-    """
+    """Profiles a worker starts with, before it starts any lane."""
     _require_tls_request(request)
     provider = _logosnode_provider_for_key(data.shared_key)
     provider_id = int(provider["id"])
 
     def _load() -> Dict[str, Dict[str, Any]]:
-        if data.legacy_import is not None:
-            with DBManager() as db:
-                imported = db.import_legacy_model_profiles(
-                    provider_id,
-                    data.legacy_import.model_profiles,
-                    data.legacy_import.unsupported_models,
-                )
-            if imported:
-                logger.info(
-                    "Imported %d model profile(s) from the local file of provider %s",
-                    imported,
-                    _resolve_provider_name(provider_id),
-                )
         if data.calibration_key_hashes:
             _update_reported_calibration_keys(provider_id, data.calibration_key_hashes, data.slice_gpu_counts)
         return _load_effective_profiles(provider_id)
