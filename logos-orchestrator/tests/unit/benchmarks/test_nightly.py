@@ -15,7 +15,8 @@ from logos.benchmarks.progress import observe_response
         ("2026-10-20T04:59:59+02:00", False),
         ("2026-10-20T05:00:00+02:00", True),
         ("2026-10-20T07:49:59+02:00", True),
-        ("2026-10-20T07:50:00+02:00", False),
+        ("2026-10-20T07:50:00+02:00", True),
+        ("2026-10-20T07:59:59+02:00", True),
         ("2026-10-20T08:00:00+02:00", False),
         ("2026-10-20T03:00:00+00:00", True),
         ("2026-12-20T04:00:00+00:00", True),
@@ -139,6 +140,31 @@ def test_parameter_plan_changes_only_one_known_parameter_and_fixes_workload():
         assert run.model_dump(exclude={"serving_overrides"}) == plan[0].model_dump(exclude={"serving_overrides"})
     assert plan[0].samples == 50
     assert plan[0].max_output_tokens == 512
+
+
+@pytest.mark.parametrize("reason, completed", [("end_turn", 1), ("tool_use", 1), ("max_tokens", 0)])
+async def test_messages_progress_counts_output_and_one_complete_response(reason, completed):
+    import json
+
+    progress = nightly.RunProgress(50, measuring=True)
+    progress.last_progress = -1
+    nightly.PROGRESS[7] = progress
+
+    async def chunks():
+        yield b'event: ping\ndata: {"type":"ping"}\n\n'
+        assert progress.last_progress == -1
+        yield b'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Synthetic"}}\n\n'
+        assert progress.last_progress > 0
+        yield ("data: " + json.dumps({"type": "message_delta", "delta": {"stop_reason": reason}}) + "\n\n").encode()
+        yield b'data: {"type":"message_stop"}\n\n'
+        yield b'data: {"type":"message_stop"}\n\n'
+
+    try:
+        async for _ in observe_response(StreamingResponse(chunks()), 7).body_iterator:
+            pass
+        assert progress.completed == completed
+    finally:
+        nightly.PROGRESS.pop(7)
 
 
 def test_auto_batching_starts_unchanged_then_sets_both_limits():

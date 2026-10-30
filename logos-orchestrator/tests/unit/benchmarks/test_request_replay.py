@@ -26,6 +26,37 @@ async def test_truncated_or_unaccounted_streams_never_become_successes(reason, u
             await replay.measure_request(client, "http://worker/v1/chat/completions", {}, {}, 9)
 
 
+async def test_output_limit_error_identifies_the_source_and_stream_completion():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, text=response(reason="length")))
+    ) as client:
+        with pytest.raises(RuntimeError, match="source_log_id=9, finish_reason='length', stream_complete=True"):
+            await replay.measure_request(client, "http://worker/v1/chat/completions", {}, {}, 9)
+
+
+@pytest.mark.parametrize("field", ["max_tokens", "max_completion_tokens"])
+@pytest.mark.parametrize("limit", [None, True, 0, 11, 12, 13])
+async def test_explicit_output_budget_completes_only_at_the_exact_requested_limit(field, limit):
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, text=response(reason="length")))
+    ) as client:
+        if type(limit) is int and limit == 12:
+            measured = await replay.measure_request(client, "http://worker/v1/chat/completions", {field: limit}, {}, 9)
+            assert measured["finish_reason"] == "length"
+            assert measured["output_tokens"] == 12
+        else:
+            with pytest.raises(RuntimeError, match="incomplete"):
+                await replay.measure_request(client, "http://worker/v1/chat/completions", {field: limit}, {}, 9)
+
+
+async def test_explicit_output_budget_still_requires_stream_termination():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, text=response(reason="length", terminal=False)))
+    ) as client:
+        with pytest.raises(RuntimeError, match="stream_complete=False"):
+            await replay.measure_request(client, "http://worker/v1/chat/completions", {"max_tokens": 12}, {}, 9)
+
+
 async def test_replay_sends_every_input_once_without_injecting_an_output_cap(monkeypatch):
     sent = []
     original_client = httpx.AsyncClient
@@ -94,3 +125,41 @@ async def test_one_failure_cancels_and_awaits_sibling_streams(monkeypatch):
             settings=BenchmarkSettings(profile="concurrent", concurrency=2),
         )
     assert cleaned == [1]
+
+
+@pytest.mark.parametrize(
+    "reason,limit,succeeds",
+    [("end_turn", 8192, True), ("tool_use", 8192, True), ("max_tokens", 8192, False), ("max_tokens", 42, True)],
+)
+async def test_messages_stream_uses_native_usage_and_preserves_inference_controls(reason, limit, succeeds):
+    sent = []
+    events = [
+        {"type": "message_start", "message": {"usage": {"output_tokens": 0}}},
+        {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "Synthetic reasoning"}},
+        {"type": "message_delta", "delta": {"stop_reason": reason}, "usage": {"output_tokens": 42}},
+        {"type": "message_stop"},
+    ]
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, text="".join("data: " + json.dumps(event) + "\n\n" for event in events))
+
+    body = {
+        "model": "model",
+        "messages": [{"role": "user", "content": "Synthetic request"}],
+        "system": "Synthetic system",
+        "thinking": {"type": "adaptive"},
+        "max_tokens": limit,
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        if succeeds:
+            measured = await replay.measure_request(
+                client, "http://worker/v1/messages", body, {}, 7, operation="messages"
+            )
+            assert measured["output_tokens"] == 42
+            assert measured["native_finish_reason"] == reason
+            assert measured["ttft_ms"] is not None
+        else:
+            with pytest.raises(RuntimeError, match="incomplete"):
+                await replay.measure_request(client, "http://worker/v1/messages", body, {}, 7, operation="messages")
+    assert sent == [{**body, "stream": True}]

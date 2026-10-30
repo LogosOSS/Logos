@@ -245,8 +245,14 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-models.png` | `tobias.wasner` | `/models` | `roles/logos-admin.md` |
 | `logos-admin-nightly-enable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — activation dialog | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-benchmarks.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark controls and active nightly plan | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-automatic-source.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — automatic recent-user source policy | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-workload.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — request dataset form | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-results.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — fixed reference chart | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-benchmark-saved-requests.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark with a saved request dataset | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-benchmark-frozen-batch.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — frozen request batch plan and fixed settings | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-benchmark-comparison.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — selected parameter comparison with reference | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-benchmark-configuration.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — run details and expanded configuration | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-benchmark-glossary.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — glossary groups | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-nightly-disable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — deactivation dialog | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-model-details-delays.png` | `tobias.wasner` | `/models/<id>/details` — **Delays** tab of a model with requests at more than one reasoning effort (local or cloud provider) | `roles/logos-admin.md#models` |
 | `logos-admin-providers.png` | `tobias.wasner` | `/providers` | `roles/logos-admin.md` |

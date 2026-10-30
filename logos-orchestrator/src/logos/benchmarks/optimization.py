@@ -4,6 +4,7 @@ import copy
 import hashlib
 import math
 
+from logos.benchmarks.configuration import ServingOverrides
 from logos.benchmarks.nightly import parameter_plan
 from logos.benchmarks.workloads import canonical
 
@@ -30,25 +31,58 @@ def context(current, snapshot, workload, previous):
             }
             for device in (devices.get("devices", []) if isinstance(devices, dict) else devices)
         ]
+    source_selection = workload.get("source_selection")
+    if source_selection:
+        identity["source"] = {key: source_selection[key] for key in ("username", "user_id")}
+    environment_key = hashlib.sha256(
+        canonical({key: value for key, value in identity.items() if key != "workload"}).encode()
+    ).hexdigest()
     series_key = hashlib.sha256(canonical(identity).encode()).hexdigest()
     state = copy.deepcopy(previous) if previous.get("series_key") == series_key else {}
+    if not state and source_selection and previous.get("environment_key") == environment_key:
+        # A changed request cohort can reuse candidate parameters, never an older cohort's measured rate or reference.
+        state["best_parameters"] = copy.deepcopy(previous.get("best_parameters") or {})
+    state["environment_key"] = environment_key
     state["series_key"] = series_key
     state["workload_id"] = workload["id"]
+    if source_selection:
+        state["source"] = identity["source"]
     return {
         "state": state,
         "series_key": series_key,
         "reference_id": state.get("reference_id"),
         "workload_id": workload["id"],
+        "source_selection": source_selection,
         "workload": {key: workload[key] for key in ("id", "name", "request_count", "provenance")},
     }
 
 
-def plan(current, search):
+def round_index(state, day):
+    session = state.get("nightly_session") or {}
+    rounds = session.get("rounds", 0)
+    return rounds if session.get("date") == str(day) and type(rounds) is int and rounds >= 0 else 0
+
+
+def plan(current, search, *, round_index=0):
     """Measure production, the incumbent, then bounded neighbours of the incumbent."""
     baseline = parameter_plan(current)[0]
     best = search["state"].get("best_parameters") or {}
     center = {**current, **best}
     neighbours = parameter_plan(center)
+    if round_index:
+        radius = (0.25, 0.5, 0.125, 0.75, 0.375, 0.625, 0.875)[round_index % 7]
+        explicit = {
+            key: center[key] if isinstance(center.get(key), int) and center[key] > 0 else fallback
+            for key, fallback in (("max_num_seqs", 4), ("max_num_batched_tokens", 2048))
+        }
+        trials = []
+        for key in ("max_num_seqs", "max_num_batched_tokens"):
+            for factor in (1 - radius, 1 + radius):
+                candidate = {**explicit, key: max(1, int(explicit[key] * factor))}
+                if candidate["max_num_seqs"] > 65536 or candidate["max_num_batched_tokens"] < candidate["max_num_seqs"]:
+                    continue
+                trials.append(baseline.model_copy(update={"serving_overrides": ServingOverrides(**candidate)}))
+        neighbours = [neighbours[0], *trials]
     runs = [baseline]
     if best and best != baseline.serving_overrides.model_dump(exclude_none=True):
         runs.append(neighbours[0])
@@ -101,6 +135,8 @@ def eligible(candidate, baseline):
     for row in samples:
         original = base_samples[row["source_log_id"]]
         if row["finish_reason"] != original["finish_reason"] or row["finish_reason"] not in {"stop", "tool_calls"}:
+            return False
+        if row.get("native_finish_reason") != original.get("native_finish_reason"):
             return False
         tokens, before = row["output_tokens"], original["output_tokens"]
         if not (0.8 * before <= tokens <= 1.2 * before):

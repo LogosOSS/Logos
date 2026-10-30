@@ -64,6 +64,87 @@ def request_body(payload):
     return body
 
 
+def replay_request(payload):
+    """Preserve native Messages requests, including thinking and client-side tool history."""
+    if isinstance(payload, dict):
+        for field in ("tools", "messages"):
+            if payload.get(field) is not None and not isinstance(payload[field], list):
+                raise ValueError("Source messages and tools must be arrays")
+    native = isinstance(payload, dict) and (
+        bool(set(payload) & {"system", "thinking", "stop_sequences", "output_config"})
+        or any(isinstance(tool, dict) and "input_schema" in tool for tool in payload.get("tools", []) or [])
+        or any(
+            isinstance(message, dict)
+            and isinstance(message.get("content"), list)
+            and any(
+                isinstance(block, dict)
+                and block.get("type") in {"tool_use", "tool_result", "thinking", "redacted_thinking"}
+                for block in message["content"]
+            )
+            for message in payload.get("messages", []) or []
+        )
+    )
+    if not native:
+        if isinstance(payload, dict) and any(
+            not isinstance(tool, dict) or tool.get("type") != "function" for tool in payload.get("tools", []) or []
+        ):
+            raise ValueError("Server-side tools cannot enter a request replay")
+        return {"operation": "chat/completions", "body": request_body(payload)}
+    fields = {
+        "messages",
+        "system",
+        "thinking",
+        "max_tokens",
+        "temperature",
+        "top_p",
+        "top_k",
+        "stop_sequences",
+        "tools",
+        "tool_choice",
+        "output_config",
+        "context_management",
+    }
+    if set(payload) - fields - IGNORED_FIELDS:
+        raise ValueError("A Messages source request has unsupported inference controls")
+
+    def text_content(content):
+        if isinstance(content, str) or content is None:
+            return
+        if not isinstance(content, list):
+            raise ValueError("Unsupported Messages content")
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") not in {
+                "text",
+                "tool_use",
+                "tool_result",
+                "thinking",
+                "redacted_thinking",
+            }:
+                raise ValueError("Request snapshots currently support text and client-side tool content only")
+            if block["type"] == "tool_result":
+                text_content(block.get("content"))
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("Every source request must contain messages")
+    text_content(payload.get("system"))
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
+            raise ValueError("Unsupported Messages role")
+        text_content(message.get("content"))
+    for tool in payload.get("tools", []) or []:
+        if (
+            not isinstance(tool, dict)
+            or tool.get("type", "custom") != "custom"
+            or not isinstance(tool.get("input_schema"), dict)
+        ):
+            raise ValueError("Server-side tools cannot enter a request replay")
+    return {
+        "operation": "messages",
+        "body": {key: copy.deepcopy(value) for key, value in payload.items() if key in fields},
+    }
+
+
 def build_snapshot(rows, name, provenance):
     """Validate the entire selection; missing, failed or non-FULL rows never disappear silently."""
     if not 1 <= len(rows) <= MAX_REQUESTS:

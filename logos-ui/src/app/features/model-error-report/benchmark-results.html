@@ -1,7 +1,7 @@
-@if (topRuns().length) {
+@if (!activeProgress() && topRuns().length) {
   <section class="top-configurations" aria-label="Top configurations so far">
-    <h3><i class="pi pi-trophy" aria-hidden="true"></i> Top configuration so far</h3>
-    <p class="results-note">Best recorded run. Workloads may differ.</p>
+    <h3>Highest recorded throughput</h3>
+    <p class="results-note">Latest captured workload per provider. Older workloads are not ranked against it.</p>
     @for (top of topRuns(); track top.run.model_provider_id) {
       <article class="top-configuration">
         <div class="results-heading">
@@ -30,9 +30,10 @@
   </section>
 }
 @if (activeProgress(); as chart) {
-  <section class="benchmark-progress" aria-label="Nightly progress">
+  <details class="benchmark-progress" name="performance-analysis" open aria-label="Nightly progress">
+    <summary class="progress-summary"><h3>Nightly progress</h3><span>{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}% vs. reference #{{ chart.reference.id }}</span></summary>
     <div class="results-heading">
-      <h3>Nightly progress <small>{{ chart.fixed ? 'Best so far vs. fixed reference' : 'Best variant vs. nightly baseline' }}</small></h3>
+      <p class="results-note">Best so far vs. starting baseline</p>
       @if (progress().length > 1) {
         <select aria-label="Progress workload" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
           @for (group of progress(); track group.key) { <option [value]="group.key">{{ group.label }}</option> }
@@ -40,22 +41,32 @@
       }
     </div>
     <p class="results-note">{{ chart.context }}</p>
-    <div class="progress-plot" role="group" [attr.aria-label]="chart.fixed ? 'Best eligible throughput so far against a fixed reference' : 'Best successful variant against its nightly baseline'">
+    <dl class="results-summary">
+      <div><dt>Starting baseline #{{ chart.reference.id }}</dt><dd>{{ throughput(chart.reference) | number:'1.1-1' }} <small>tok/s</small></dd></div>
+      <div><dt>{{ chart.fixed ? 'Best eligible throughput' : 'Best recorded throughput' }} #{{ chart.latest.run.id }}</dt><dd>{{ throughput(chart.latest.run) | number:'1.1-1' }} <small>tok/s</small></dd></div>
+      <div><dt>Total improvement</dt><dd>{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}%</dd></div>
+    </dl>
+    <div class="progress-plot" role="group" aria-label="Best throughput so far against the starting baseline">
       <span class="progress-axis progress-axis--top">{{ chart.max | number:'1.0-1' }}%</span>
       <span class="progress-axis progress-axis--zero" [style.top.%]="chart.zero">0%</span>
-      <span class="progress-axis progress-axis--bottom">{{ chart.min | number:'1.0-1' }}%</span>
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
         <line x1="0" x2="100" [attr.y1]="chart.zero" [attr.y2]="chart.zero" class="progress-zero" />
         @if (chart.points.length > 1) { <polyline [attr.points]="chart.line" class="progress-line" /> }
       </svg>
-      @for (point of chart.points; track point.key ?? point.run.id) {
+      @for (point of chart.points; track point.key) {
         <button type="button" class="progress-point" [class.progress-point--last]="point.x > 80" [class.progress-point--first]="point.x < 20" [style.left.%]="point.x" [style.top.%]="point.y"
-          [attr.aria-label]="(chart.fixed ? 'Best so far run #' : 'Run #') + point.run.id + ', observed by ' + (point.time | date:'dd MMM yyyy, HH:mm') + ': ' + (point.gain | number:'1.1-1') + '% vs. baseline'"
-          ><span class="progress-tooltip">#{{ point.run.id }} · {{ point.gain > 0 ? '+' : '' }}{{ point.gain | number:'1.1-1' }}%<small>Observed by {{ point.time | date:'dd MMM yyyy, HH:mm' }}</small></span></button>
+          [attr.aria-label]="'Best run #' + point.run.id + ', observed by ' + (point.time | date:'dd MMM yyyy, HH:mm') + ': ' + (point.gain | number:'1.1-1') + '% total vs. starting baseline' + (point.stepGain === null ? ', starting baseline' : ', ' + (point.stepGain | number:'1.1-1') + '% vs. previous point')"
+          ><span class="progress-tooltip">Best run #{{ point.run.id }} · {{ throughput(point.run) | number:'1.1-1' }} tok/s
+            <small>{{ point.gain > 0 ? '+' : '' }}{{ point.gain | number:'1.1-1' }}% vs. starting baseline</small>
+            @if (point.stepGain === null) { <small>Starting baseline · 0%</small> }
+            @else { <small>{{ point.stepGain > 0 ? '+' : '' }}{{ point.stepGain | number:'1.1-1' }}% vs. previous point (run #{{ point.previousRunId }})</small> }
+            <small>Observed by {{ point.time | date:'dd MMM yyyy, HH:mm' }}</small>
+          </span></button>
       }
     </div>
     <div class="progress-dates"><span>{{ chart.first | date:'dd MMM yyyy, HH:mm' }}</span>@if (chart.first !== chart.last) { <span>{{ chart.last | date:'dd MMM yyyy, HH:mm' }}</span> }</div>
-  </section>
+    <p class="results-note">Starts at 0%. A new best result raises the line; other completed rounds keep it flat. Tooltips show the change from the previous point.</p>
+  </details>
 }
 <details class="run-history">
   <summary><h3>Benchmark runs <small>{{ rows().length }} results · output tok/s</small></h3></summary>

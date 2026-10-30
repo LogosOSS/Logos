@@ -36,7 +36,10 @@ def rows() -> list[dict]:
         return [
             dict(row)
             for row in db.session.execute(
-                text("SELECT * FROM nightly_benchmarks ORDER BY last_run_date NULLS FIRST, model_provider_id")
+                text(
+                    "SELECT * FROM nightly_benchmarks ORDER BY last_run_date NULLS FIRST, "
+                    "CASE WHEN status = 'continuing' THEN updated_at END NULLS FIRST, model_provider_id"
+                )
             ).mappings()
         ]
 
@@ -99,10 +102,10 @@ def set_enabled(pair_id: int, enabled: bool, expected: bool, workload_id=UNCHANG
                 "optimizer = CASE WHEN :change_workload AND workload_id IS DISTINCT FROM :workload_id "
                 "THEN '{}'::jsonb ELSE optimizer END, "
                 "status = CASE WHEN recovery IS NOT NULL THEN status "
-                "WHEN :enabled THEN 'scheduled' ELSE 'disabled' END "
+                "WHEN status = 'continuing' THEN status WHEN :enabled THEN 'scheduled' ELSE 'disabled' END "
                 "WHERE model_provider_id = :id AND enabled = :expected AND (NOT :enabled OR recovery IS NULL) "
                 "AND (NOT :change_workload OR (workload_id IS NOT DISTINCT FROM :expected_workload "
-                "AND recovery IS NULL AND status NOT IN ('running', 'preparing', 'recovery_required')))"
+                "AND recovery IS NULL AND status NOT IN ('running', 'preparing', 'continuing', 'recovery_required')))"
             ),
             {
                 "id": pair_id,
@@ -120,15 +123,16 @@ def set_enabled(pair_id: int, enabled: bool, expected: bool, workload_id=UNCHANG
 
 
 def claim(pair_id: int, day) -> bool:
-    """Claim one pair under the caller's cluster lock; failures still consume a slot."""
+    """Claim a new pair or another restored round; only distinct pairs consume the daily quota."""
     with DBManager() as db:
         claimed = bool(
             db.session.execute(
                 text(
                     "UPDATE nightly_benchmarks SET last_run_date = :day, status = 'running', report = '[]'::jsonb "
                     "WHERE model_provider_id = :id AND enabled AND recovery IS NULL "
-                    "AND (last_run_date IS NULL OR last_run_date < :day) "
-                    "AND (SELECT COUNT(*) FROM nightly_benchmarks WHERE last_run_date = :day) < :limit"
+                    "AND ((last_run_date = :day AND status = 'continuing') OR "
+                    "((last_run_date IS NULL OR last_run_date < :day) "
+                    "AND (SELECT COUNT(*) FROM nightly_benchmarks WHERE last_run_date = :day) < :limit))"
                 ),
                 {"id": pair_id, "day": day, "limit": MAX_PAIRS_PER_NIGHT},
             ).rowcount
@@ -136,6 +140,21 @@ def claim(pair_id: int, day) -> bool:
 
         db.session.commit()
         return claimed
+
+
+def bind_workload(pair_id, workload_id):
+    """Bind the admitted night's inputs without discarding its previous search parameters."""
+    with DBManager() as db:
+        changed = db.session.execute(
+            text(
+                "UPDATE nightly_benchmarks SET workload_id = :workload WHERE model_provider_id = :id "
+                "AND recovery IS NULL AND status = 'running'"
+            ),
+            {"id": pair_id, "workload": workload_id},
+        )
+        if not changed.rowcount:
+            raise ValueError("The nightly schedule is no longer available for source selection")
+        db.session.commit()
 
 
 def claimed_today(day) -> int:
@@ -459,6 +478,7 @@ def record_comparison(benchmark_id, baseline_id, parameters, original, search=No
                                     "reference_id": search["reference_id"],
                                     "series_key": search["series_key"],
                                     "workload_id": search["workload_id"],
+                                    "source_selection": search.get("source_selection"),
                                 }
                                 if search
                                 else {}
@@ -479,7 +499,8 @@ def finish(pair_id, state, report, search=None):
         row = (
             db.session.execute(
                 text(
-                    "SELECT n.last_run_date, mp.model_id, p.name AS provider_name FROM nightly_benchmarks n "
+                    "SELECT n.last_run_date, n.status, n.optimizer, mp.model_id, p.name AS provider_name "
+                    "FROM nightly_benchmarks n "
                     "JOIN model_provider mp ON mp.id = n.model_provider_id JOIN providers p ON p.id = mp.provider_id "
                     "WHERE n.model_provider_id = :id FOR UPDATE OF n"
                 ),
@@ -524,6 +545,14 @@ def finish(pair_id, state, report, search=None):
                     ),
                     {"id": run["id"], "nightly": json.dumps(comparison)},
                 )
+        if row["last_run_date"] is not None and row["status"] in {"running", "preparing", "recovery_required"}:
+            optimizer = optimizer if optimizer is not None else dict(row["optimizer"] or {})
+            session = dict(optimizer.get("nightly_session") or {})
+            if session.get("date") != str(row["last_run_date"]):
+                session = {"date": str(row["last_run_date"]), "rounds": 0, "successful_configurations": 0}
+            session["rounds"] += 1
+            session["successful_configurations"] += sum(item.get("status") == "success" for item in report)
+            optimizer["nightly_session"] = session
         db.session.execute(
             text(
                 "UPDATE nightly_benchmarks SET status = :state, report = CAST(:report AS jsonb), recovery = NULL, "
@@ -537,16 +566,20 @@ def finish(pair_id, state, report, search=None):
                 "optimizer": json.dumps(optimizer) if optimizer is not None else None,
             },
         )
-        if row["last_run_date"] is not None:
+        if row["last_run_date"] is not None and state != "continuing":
+            event_optimizer = optimizer or row["optimizer"] or {}
             payload = {
                 "model_provider_id": pair_id,
                 "model_id": row["model_id"],
                 "provider_name": row["provider_name"],
                 "date": str(row["last_run_date"]),
                 "status": state,
-                "successful_configurations": sum(item.get("status") == "success" for item in report),
-                "reference_id": (optimizer or {}).get("reference_id"),
-                "best_benchmark_id": (optimizer or {}).get("best_benchmark_id"),
+                "successful_configurations": event_optimizer.get("nightly_session", {}).get(
+                    "successful_configurations", sum(item.get("status") == "success" for item in report)
+                ),
+                "rounds": event_optimizer.get("nightly_session", {}).get("rounds", 1),
+                "reference_id": event_optimizer.get("reference_id"),
+                "best_benchmark_id": event_optimizer.get("best_benchmark_id"),
             }
             db.session.execute(
                 text(
@@ -557,6 +590,24 @@ def finish(pair_id, state, report, search=None):
                 {"event": f"nightly:{pair_id}:{row['last_run_date']}", "payload": json.dumps(payload)},
             )
         db.session.commit()
+
+
+def finalize_continuations(now):
+    """Publish the final result only after all restored rounds end, including after a restart."""
+    from logos.maintenance_window import MaintenanceWindow
+
+    with cluster_lock() as connection:
+        if connection is None:
+            return
+        for row in rows():
+            if row["status"] != "continuing" or row["recovery"] is not None:
+                continue
+            if (
+                not row["enabled"]
+                or row["last_run_date"] != now.date()
+                or not MaintenanceWindow.from_env().contains(now)
+            ):
+                finish(row["model_provider_id"], "completed" if row["enabled"] else "disabled", row["report"])
 
 
 async def deliver_completion_events():

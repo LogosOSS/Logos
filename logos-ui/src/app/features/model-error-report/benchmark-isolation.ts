@@ -1,7 +1,7 @@
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { benchmarkConfigurationItems, servingConfigurationItems } from './benchmark-configuration';
 
-export type ComparisonParameter = 'tensor_parallel_size' | 'max_concurrency';
+export type ComparisonParameter = 'tensor_parallel_size' | 'max_concurrency' | 'max_num_seqs' | 'max_num_batched_tokens';
 
 export function comparisonSettings(run: ModelProviderBenchmark): Record<string, string> {
   return Object.fromEntries([...benchmarkConfigurationItems(run), ...servingConfigurationItems(run)]

@@ -212,10 +212,10 @@
   gap: 20px;
 }
 
-.performance-card,
 .logs-panel { @include glass-surface; }
 
-.performance-card { padding: 24px; }
+
+.performance-card { padding: 20px; border: 1px solid rgb(var(--color-outline-200)); border-radius: 8px; background: rgb(var(--color-surface-0)); }
 
 .performance-card__header {
   display: flex;
@@ -255,14 +255,18 @@
   gap: 8px;
   padding: 16px;
   border-radius: 9px;
-  background: rgb(var(--color-surface-50) / var(--opacity-strong));
+  border-left: 1px solid rgb(var(--color-outline-200));
+  border-radius: 0;
+  background: transparent;
+
+  &:first-child { border-left: 0; }
 
   strong {
     margin-bottom: 4px;
     color: rgb(var(--color-typography-500));
     font-size: var(--model-detail-font-size);
     font-weight: var(--font-weight-semibold);
-    letter-spacing: var(--letter-spacing-wide);
+    letter-spacing: normal;
   }
 
   span {
@@ -280,6 +284,7 @@
 }
 
 .performance-card__footer {
+  overflow-wrap: anywhere;
   margin-top: 18px;
   color: rgb(var(--color-typography-500));
   font-size: var(--model-detail-font-size);

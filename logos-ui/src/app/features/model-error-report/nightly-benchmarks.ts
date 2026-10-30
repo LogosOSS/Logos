@@ -5,9 +5,10 @@ import { FormsModule } from '@angular/forms';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
 
 export interface NightlyStatus {
+  workload_policy?: { kind: 'selected' | 'recent_user'; username?: string; request_count?: number; ready?: boolean; error?: string | null };
   workload_id?: string | null;
   workloads?: { id: string; name: string; request_count: number; provenance: string }[];
-  optimizer?: { reference_id?: number; best_benchmark_id?: number; iterations?: number };
+  optimizer?: { reference_id?: number; best_benchmark_id?: number; iterations?: number; nightly_session?: { date: string; rounds: number; successful_configurations: number } };
   max_maintenance_nodes?: number;
   window?: { start: string; end: string; benchmark_start_cutoff: string; timezone: string };
   enabled: boolean;
@@ -98,7 +99,8 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   }
 
   get workload() { return this.state()?.workloads?.find(item => item.id === this.state()?.workload_id); }
-  get sourceLocked(): boolean { return this.saving() || !!this.state()?.recovery_required || ['running', 'preparing'].includes(this.state()?.status ?? ''); }
+  get automaticSource(): boolean { return this.state()?.workload_policy?.kind === 'recent_user'; }
+  get sourceLocked(): boolean { return this.automaticSource || this.saving() || !!this.state()?.recovery_required || ['running', 'preparing', 'continuing'].includes(this.state()?.status ?? ''); }
 
   async saveSource(): Promise<void> {
     const current = this.state();
@@ -154,7 +156,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   statusLabel(value: string): string {
     const labels: Record<string, string> = {
       scheduled: 'Waiting in nightly rotation', unavailable: 'Waiting for an available worker', preparing: 'Preparing worker', running: 'Benchmark in progress',
-      completed: 'Finished — see results', disabled: 'Deactivated', success: 'Successful', failed: 'Failed',
+      continuing: 'Ready for another optimization round', completed: 'Finished — see results', disabled: 'Deactivated', success: 'Successful', failed: 'Failed',
       stalled: 'Stopped after five minutes without progress', preparation_timeout: 'Preparation timed out',
       window_closed: this.window ? `No new runs after ${this.window.benchmark_start_cutoff}` : 'Benchmark start window closed', window_closed_below_half: this.window ? `Stopped at ${this.window.end} below 50% complete` : 'Stopped below 50% at the maintenance cutoff',
       calibration_pending: 'Waiting for calibration',
@@ -177,7 +179,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     const window = this.window;
     if (this.enabling && !window) return 'The maintenance window is unavailable. Refresh before enabling nightly runs.';
     return this.enabling
-      ? `Test ${this.modelName} on ${this.providerName} during ${window!.start}–${window!.end} ${window!.timezone}. The whole worker is reserved during testing and cannot serve production requests. Current settings are measured first, then batching variants. Original settings are restored afterwards.`
+      ? `Test ${this.modelName} on ${this.providerName} during ${window!.start}–${window!.end} ${window!.timezone}. The whole worker is reserved during testing and cannot serve production requests. Each round measures current settings, the saved candidate and batching variants. Model/worker pairs rotate through further rounds until the window ends. Original settings are restored after every round.`
       : `Disable nightly benchmarks for this model on ${this.providerName}? Future runs will stop. An active nightly run will be cancelled and its original settings restored before the worker returns to production.`;
   }
 

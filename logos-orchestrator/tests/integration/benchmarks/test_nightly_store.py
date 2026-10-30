@@ -2,7 +2,7 @@
 
 import os
 import uuid
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -54,10 +54,12 @@ def database(monkeypatch):
         for sql in tree.findall("{*}changeSet/{*}sql"):
             connection.execute(text(sql.text))
         connection.execute(text("CREATE TABLE notifications(id integer PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE users(id integer PRIMARY KEY, username text)"))
         connection.execute(
             text(
                 "CREATE TABLE log_entry(id integer PRIMARY KEY, model_id integer, privacy_level text, "
-                "result_status text, environment text, input_payload jsonb)"
+                "result_status text, environment text, input_payload jsonb, user_id integer, "
+                "timestamp_request timestamptz, timestamp_response timestamptz)"
             )
         )
         connection.execute(
@@ -69,6 +71,10 @@ def database(monkeypatch):
         workloads_migration = migration.with_name("068_benchmark_request_workloads.xml")
         for sql in ElementTree.parse(workloads_migration).findall("{*}changeSet/{*}sql"):
             connection.execute(text(sql.text))
+        for sql in ElementTree.parse(migration.with_name("069_nightly_request_sources.xml")).findall(
+            "{*}changeSet/{*}sql"
+        ):
+            connection.execute(text(sql.text))
 
     class Database(store.DBManager):
         def __enter__(self):
@@ -77,6 +83,9 @@ def database(monkeypatch):
 
     monkeypatch.setattr(store, "DBManager", Database)
     monkeypatch.setattr(store, "_init_engine", lambda: engine)
+    from logos.benchmarks import recent_requests
+
+    monkeypatch.setattr(recent_requests, "DBManager", Database)
     yield engine, Database
     engine.dispose()
     with admin.begin() as connection:
@@ -96,7 +105,8 @@ def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(dat
     with engine.begin() as connection:
         connection.execute(
             text(
-                "INSERT INTO log_entry VALUES (7, 11, 'FULL', 'success', '', "
+                "INSERT INTO log_entry(id, model_id, privacy_level, result_status, environment, input_payload) "
+                "VALUES (7, 11, 'FULL', 'success', '', "
                 '\'{"messages":[{"role":"user","content":"Synthetic prompt"}]}\')'
             )
         )
@@ -502,3 +512,36 @@ def test_maintenance_holders_name_every_kind_of_slot_holder(database):
         "model-a",
     )
     assert recovery["status"] == "restoring"
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+def test_continuous_rounds_keep_daily_claims_and_notify_only_after_the_final_restoration(database, disabled):
+    engine, _ = database
+    day = date(2026, 10, 29)
+    store.set_enabled(31, True, False)
+    assert store.claim(31, day)
+    report = [{"configuration": 1, "status": "success"}, {"configuration": 2, "status": "success"}]
+    store.finish(31, "continuing", report)
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 0
+    assert store.claim(31, day)
+    assert not store.claim(31, day)
+    assert store.claimed_today(day) == 1
+    store.finish(31, "continuing", report)
+    store.finalize_continuations(datetime.fromisoformat("2026-10-29T07:59:59+01:00"))
+    assert store.status(31)["status"] == "continuing"
+    assert store.status(31)["optimizer"]["nightly_session"]["rounds"] == 2
+    with pytest.raises(ValueError):
+        store.set_enabled(31, True, True, None, None)
+    if disabled:
+        store.set_enabled(31, False, True)
+    stamp = "2026-10-29T07:59:59+01:00" if disabled else "2026-10-29T08:00:00+01:00"
+    store.finalize_continuations(datetime.fromisoformat(stamp))
+    store.finalize_continuations(datetime.fromisoformat(stamp))
+    assert store.status(31)["status"] == ("disabled" if disabled else "completed")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 1
+        payload = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
+        assert payload["successful_configurations"] == 4
+        assert payload["rounds"] == 2
+    assert not store.claim(31, day)
