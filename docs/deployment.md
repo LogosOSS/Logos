@@ -125,7 +125,7 @@ When the new node manager answers, the workflow removes every image of the
 node manager that no container uses. It finds them by the label
 `io.logos.component=node-manager`, so images that piled up earlier go too.
 If the new node manager does not start, the old image stays on the host.
-Images from before the label existed have no label. Remove them once with 
+Images from before the label existed have no label. Remove them once with
 `docker rmi`. A host without the workflow keeps its old node manager images
 and needs the same command.
 
