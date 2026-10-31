@@ -530,6 +530,7 @@ async def test_released_queue_request_keeps_transport_access_during_benchmark(ac
     future = asyncio.get_running_loop().create_future()
     queue.enqueue(future, 1, request_id="released-production", api_key_id=12)
     facade = MagicMock()
+    facade.is_provider_cordoned.return_value = False
     facade.get_model_name.return_value = "queued-model"
     facade.get_model_status.return_value = SimpleNamespace(active_requests=0)
     facade.get_parallel_capacity.return_value = (1, None)

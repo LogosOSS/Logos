@@ -172,6 +172,7 @@ def _planner(
     registry = MagicMock()
     registry.has_received_first_status.return_value = True
     registry.is_calibrating.return_value = False
+    registry.is_cordoned.return_value = False
     registry.is_provider_online.return_value = True
     registry.peek_runtime_snapshot.return_value = snapshot or _two_gpu_snapshot(free0=48_000.0, free1=48_000.0)
 

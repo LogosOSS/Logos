@@ -23,7 +23,9 @@ from logos.dbutils.dbrequest import (
     LogosNodeCalibrationReservationRequest,
     LogosNodeClearUnsupportedRequest,
     LogosNodeDeleteLaneRequest,
+    LogosNodeDeploymentReport,
     LogosNodeInvalidateCalibrationRequest,
+    LogosNodeMaintenanceRequest,
     LogosNodeModelProfilesRequest,
     LogosNodeReconfigureLaneRequest,
     LogosNodeRegisterRequest,
@@ -61,6 +63,8 @@ from logos.model_profile_store import (
     shared_profile_max_age_days,
     shared_profiles_enabled,
 )
+from logos.notifications import emit_notification
+from logos.notifications.deployment import deployment_notification
 from logos.role_auth import require_logos_admin_key
 
 logger = logging.getLogger("LogosLogger")
@@ -907,6 +911,61 @@ async def logosnode_calibration_reservation(data: LogosNodeCalibrationReservatio
             return _load_effective_profiles(provider_id, [data.model_name])
 
     return {"profiles": await asyncio.to_thread(_reserve)}
+
+
+async def _maintenance_provider_id(data: LogosNodeMaintenanceRequest, request: Request) -> int:
+    """The node a node manager's key belongs to. TLS is required because the key travels in the body."""
+    _require_tls_request(request)
+    provider = await asyncio.to_thread(_logosnode_provider_for_key, data.shared_key)
+    return int(provider["id"])
+
+
+@router.post("/logosdb/providers/logosnode/node-maintenance/cordon", tags=["logosnode"])
+async def logosnode_maintenance_cordon(data: LogosNodeMaintenanceRequest, request: Request):
+    """Cordon the caller's node for the replacement of its container, or renew the cordon.
+
+    ``status`` is ``granted`` or ``denied``. While another node is being replaced, or this one calibrates, the answer
+    is ``denied`` with a ``reason`` and the caller asks again later. A granted answer says whether the node has
+    ``drained``; the caller replaces the container only after it did, and gives the cordon back with ``release``.
+    """
+    provider_id = await _maintenance_provider_id(data, request)
+    return _main._node_maintenance.request(provider_id, data.deployment_id)
+
+
+@router.post("/logosdb/providers/logosnode/node-maintenance/status", tags=["logosnode"])
+async def logosnode_maintenance_status(data: LogosNodeMaintenanceRequest, request: Request):
+    """What the orchestrator sees of the caller's node: online, its session, whether it has drained.
+
+    The caller uses it to see that the node reconnected after its container was replaced. The call renews the cordon
+    when the deployment holds it.
+    """
+    provider_id = await _maintenance_provider_id(data, request)
+    return _main._node_maintenance.status(provider_id, data.deployment_id)
+
+
+@router.post("/logosdb/providers/logosnode/node-maintenance/release", tags=["logosnode"])
+async def logosnode_maintenance_release(data: LogosNodeMaintenanceRequest, request: Request):
+    """End the cordon of the caller's node. Repeating the call is harmless."""
+    provider_id = await _maintenance_provider_id(data, request)
+    return _main._node_maintenance.release(provider_id, data.deployment_id)
+
+
+@router.post("/logosdb/providers/logosnode/node-maintenance/report", tags=["logosnode"])
+async def logosnode_maintenance_report(data: LogosNodeDeploymentReport, request: Request):
+    """Tell the Logos admins how a deployment of the caller's node ended.
+
+    Answers ``accepted`` once the notification reached the application server, and ``duplicate`` for a deployment that
+    was reported before. If the notification could not be delivered the answer is a 503, so the caller reports again.
+    """
+    provider_id = await _maintenance_provider_id(data, request)
+    maintenance = _main._node_maintenance
+    if not maintenance.claim_report(provider_id, data.deployment_id):
+        return {"status": "duplicate"}
+    notification = deployment_notification(maintenance.node_name(provider_id), data)
+    if not await emit_notification(**notification):
+        maintenance.unclaim_report(provider_id, data.deployment_id)
+        raise HTTPException(status_code=503, detail="The notification could not be delivered")
+    return {"status": "accepted"}
 
 
 @router.websocket("/logosdb/providers/logosnode/session")

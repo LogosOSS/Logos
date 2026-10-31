@@ -17,6 +17,7 @@ def scheduler(monkeypatch):
     registry.is_provider_online.return_value = True
     registry.has_received_first_status.return_value = True
     registry.is_calibrating.return_value = False
+    registry.is_cordoned.return_value = False
     registry.send_command = AsyncMock(return_value={"lanes": []})
     registry.active_provider_ids.return_value = [20, 21]
     registry.peek_runtime_snapshot.return_value = {
@@ -495,7 +496,7 @@ def test_locked_worker_is_excluded_from_preview_without_changing_its_schedule(sc
     assert scheduler.saved == []
 
 
-@pytest.mark.parametrize("condition", ["offline", "unhealthy", "calibrating"])
+@pytest.mark.parametrize("condition", ["offline", "unhealthy", "calibrating", "cordoned"])
 def test_single_worker_override_still_requires_healthy_idle_worker(scheduler, monkeypatch, condition):
     monkeypatch.setenv("LOGOS_MAINTENANCE_MAX_NODES", "1")
     scheduler.registry.active_provider_ids.return_value = [20]
@@ -503,6 +504,8 @@ def test_single_worker_override_still_requires_healthy_idle_worker(scheduler, mo
         scheduler.registry.is_provider_online.return_value = False
     elif condition == "calibrating":
         scheduler.registry.is_calibrating.return_value = True
+    elif condition == "cordoned":
+        scheduler.registry.is_cordoned.return_value = True
     else:
         scheduler.registry.peek_runtime_snapshot.return_value["runtime"]["node_health"] = {"healthy": False}
     with pytest.raises(RuntimeError, match="selected worker must be online and healthy"):

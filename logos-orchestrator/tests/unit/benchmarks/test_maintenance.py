@@ -348,6 +348,7 @@ async def test_automatic_calibration_starts_two_workers_and_stops_both_at_window
 
     monkeypatch.setenv("LOGOS_MAINTENANCE_MAX_NODES", "2")
     registry, facade = MagicMock(), MagicMock()
+    registry.is_cordoned.return_value = False
     registry.send_command = AsyncMock()
     facade.provider_ids.return_value = [1, 2, 3]
     service = CalibrationOrchestrator(registry, facade)
@@ -569,6 +570,7 @@ def test_automatic_calibration_skips_workers_without_the_status_command():
 
     registry, facade = MagicMock(), MagicMock()
     facade.provider_ids.return_value = [1, 2]
+    registry.is_cordoned.return_value = False
     registry.supports_action.side_effect = lambda pid, action: pid == 2 or action != "get_calibration_status"
     service = CalibrationOrchestrator(registry, facade)
     service._is_in_window = lambda: True
@@ -715,3 +717,19 @@ async def test_release_recovery_of_an_unchanged_lane_needs_no_worker(recovery):
     state["row"]["recovery"]["mutated"] = False
     service.registry.send_command.side_effect = LogosNodeCommandError("worker offline")
     assert await service.release_recovery(31) == {"released": True, "forced": False}
+
+
+def test_a_worker_with_a_benchmark_or_a_calibration_claim_is_busy(coordinator):
+    service, state = coordinator
+    assert service.busy_reason(1) is None
+
+    module.benchmark_reservations.reserve(1, "model", 7)
+    try:
+        assert service.busy_reason(1) == "benchmark_reserved"
+        assert service.busy_reason(2) is None
+    finally:
+        module.benchmark_reservations.release(7)
+
+    state["claim"] = {"provider_id": 2, "token": "t", "confirmed": True}
+    assert service.busy_reason(2) == "calibration_claimed"
+    assert service.busy_reason(1) is None

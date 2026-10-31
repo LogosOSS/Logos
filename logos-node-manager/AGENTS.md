@@ -1,6 +1,6 @@
 # AGENTS.md - logos-node-manager
 
-Logos-node-manager handling GPU worker node redeployments. The `max-parallel: 1` set in the `logos_deploy-dev.yml` and `logos_deploy-prod.yml` files in `../../.github/workflows` serializes hosts, so there are other GPU worker nodes that the orchestrator can route to, when a node is deploying a new version.
+Logos-node-manager handling GPU worker node redeployments. In `../.github/workflows/logos_deploy-dev.yml` and `logos_deploy-prod.yml`, `max-parallel: 1` runs one host at a time. For a worker without `drain: true`, the job lasts until the new container is verified, so the other worker nodes stay available to the orchestrator. A worker with `drain: true` (which needs `node-manager: true`) ends its job once the image is pulled, and the replacement continues on the host. For those workers `max-parallel: 1` serializes nothing; the orchestrator cordons one worker node at a time instead. A calibration or benchmark on another node is limited separately (`LOGOS_MAINTENANCE_MAX_NODES`).
 
 Sources of truth:
 - `README.md`
@@ -9,11 +9,12 @@ If the code does not align with what is written in `README.md`, check if there i
 
 ## Notes to agents
 
-- Do not flip the `node-manager` flag in the `logos_deploy-dev.yml` and `logos_deploy-prod.yml` files by yourself.
+- Do not flip the `node-manager` or the `drain` flag in the `logos_deploy-dev.yml` and `logos_deploy-prod.yml` files by yourself.
 - You are NOT allowed to dispatch deploys or touch real hosts.
 - Every step must be safe to repeat, because a restart can re-enter any phase.
 - ALWAYS save the record before an irreversible action.
 - Only clean up, if the record is finished.
+- Keep the workers without `drain: true` before the ones with it in the matrix, or give all of them the flag (see the comment above `matrix:`). This applies to a new matrix entry too. Do not change `max-parallel: 1`.
 
 ## Tests
 
