@@ -46,7 +46,7 @@ jobs:
             compose-file: ./logos-workernode/docker-compose.yml
             base-path: /opt/logos-workernode
             node-manager: true
-            drain: false
+            drain: true
     environment:
       name: ${{ matrix.environment }}
     steps:
