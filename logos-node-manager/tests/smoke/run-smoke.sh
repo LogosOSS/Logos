@@ -115,6 +115,8 @@ docker rmi "$REGISTRY/dummy-worker:v2" "$REGISTRY/dummy-worker:v3" "$REGISTRY/du
 
 log "Building the node manager image"
 docker build -q -t "$MANAGER_IMAGE" "$COMPONENT" >/dev/null || die "the build of the manager image failed"
+expect_equal "the manager image carries the label of the deploy workflows" "node-manager" \
+  "$(docker image inspect --format '{{ index .Config.Labels "io.logos.component" }}' "$MANAGER_IMAGE")"
 
 cp "$HERE/compose.yml" "$WORK/docker-compose.yml"
 # The login directory that the manager reads, with one made-up registry login. The local registry needs none.

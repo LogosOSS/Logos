@@ -138,13 +138,15 @@ removes the image it pulled, because no container runs it. The next try pulls it
 The manager removes an image by its ID (`docker rmi`), so an image that a container uses, or that has more than one
 name, stays. A problem during the removal is logged and does not change the result of the deployment.
 
-The manager does not remove its own image. The deploy workflow does this in the step "Update node manager". The step
-notes the ID of the image that the running manager uses. After the pull, only this ID identifies the old image. When the
-new manager answers `node-manager ping`, the step removes the old image with `docker rmi`. If the new manager does not
-start, the old image stays on the host.
+The manager does not remove its own image. The deploy workflow does this in the step "Update node manager". When the
+new manager answers `node-manager ping`, the step removes every image of the manager that no container uses
+(`docker image prune -a`, limited to the label `io.logos.component=node-manager`). A pull takes the name from the old
+image, so only the label finds it, and the same call removes images that piled up in earlier updates. An image that a
+container uses stays. If the new manager does not start, the old image stays on the host, so the previous version can
+run again.
 
-A problem during the removal does not fail the step. A host without the deploy workflow keeps its old manager images.
-Remove them by ID with `docker rmi`.
+A problem during the removal does not fail the step. Images built before the label existed have none: remove them once
+by ID with `docker rmi`. A host without the deploy workflow keeps its old manager images and needs the same command.
 
 ## Use
 
