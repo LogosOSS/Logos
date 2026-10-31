@@ -9,7 +9,8 @@ Rules kept here:
 
 * One lease at a time across the cluster, so at most one node is out of service for a planned replacement. A second
   node asks again until the first lease is released.
-* A node that runs a calibration session gets no lease: replacing its container would end the calibration.
+* A node that runs a calibration session, holds a calibration claim or hosts a benchmark gets no lease: replacing its
+  container would end that work. The manager asks again once the work is done.
 * A lease that its manager stops renewing expires, so a manager that dies cannot cordon a node for good.
 * "Drained" means no request is tracked for the node by the orchestrator (this includes requests that are scheduled
   but have not reached the worker yet) and none runs on the worker, and that this has held for a settle time. The
@@ -94,6 +95,9 @@ class NodeMaintenance:
         # Number of requests the orchestrator tracks for a node, from scheduling to completion. Set once the
         # scheduling facade exists.
         self.tracked_requests: Callable[[int], int] = lambda _provider_id: 0
+        # Why a node must not be cordoned although no session runs on it (a benchmark, a calibration claim), or None.
+        # Set once the maintenance coordinator exists.
+        self.busy_reason: Callable[[int], str | None] = lambda _provider_id: None
         # Called with the provider id after a lease was released, so requests held back for the node are considered
         # again. Set once the scheduler exists.
         self.on_released: Callable[[int], None] | None = None
@@ -254,6 +258,13 @@ class NodeMaintenance:
                 }
         if self._registry.is_calibrating(provider_id):
             return {"status": "denied", "reason": "calibrating"}
+        try:
+            busy = self.busy_reason(provider_id)
+        except Exception:  # noqa: BLE001 - without the answer a benchmark could be cut; the manager asks again
+            logger.warning("Could not tell whether worker %s is busy with maintenance", provider_id, exc_info=True)
+            return {"status": "denied", "reason": "maintenance_state_unknown"}
+        if busy is not None:
+            return {"status": "denied", "reason": busy}
         return None
 
     def _name(self, provider_id: int) -> str:

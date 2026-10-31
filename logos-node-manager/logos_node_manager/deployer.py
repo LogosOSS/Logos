@@ -370,6 +370,12 @@ class Deployer:
             return f"{reply.holder or 'another node'} is being replaced"
         if reply.reason == "calibrating":
             return "the node runs a calibration session"
+        if reply.reason == "calibration_claimed":
+            return "a calibration claim of the node is still open"
+        if reply.reason == "benchmark_reserved":
+            return "a benchmark holds lanes of the node"
+        if reply.reason == "maintenance_state_unknown":
+            return "the orchestrator could not read the maintenance state of the node"
         return reply.reason or "the orchestrator did not grant the cordon"
 
     @staticmethod

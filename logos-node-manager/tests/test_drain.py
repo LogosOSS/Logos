@@ -153,6 +153,22 @@ def test_a_node_that_runs_a_calibration_waits_and_says_why(draining_deployer, or
     assert "waiting for its turn: the node runs a calibration session" in notes(record, "draining")
 
 
+@pytest.mark.parametrize(
+    ("reason", "sentence"),
+    [
+        ("calibration_claimed", "a calibration claim of the node is still open"),
+        ("benchmark_reserved", "a benchmark holds lanes of the node"),
+        ("maintenance_state_unknown", "the orchestrator could not read the maintenance state of the node"),
+    ],
+)
+def test_a_node_held_back_by_other_maintenance_work_says_why(draining_deployer, orchestrator, store, reason, sentence):
+    orchestrator.cordon_replies = [CordonReply(granted=False, reason=reason), DRAINED]
+
+    record = draining_deployer.process(queued(store, "v2"))
+
+    assert f"waiting for its turn: {sentence}" in notes(record, "draining")
+
+
 def test_the_wait_for_the_drain_does_not_fill_the_record(draining_deployer, orchestrator, store):
     draining_deployer.settings = replace(draining_deployer.settings, drain_timeout_s=100_000)
     # Ten minutes of polling, with a different number of requests on every poll.

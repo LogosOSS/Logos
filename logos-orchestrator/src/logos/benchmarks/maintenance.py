@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 
 from logos.benchmarks import nightly_store as store
+from logos.benchmarks.reservations import benchmark_reservations
 from logos.maintenance_window import maintenance_node_limit
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,19 @@ UNSUPPORTED_COMMAND = "Unsupported bridge command"
 class MaintenanceCoordinator:
     def __init__(self, registry):
         self.registry = registry
+
+    def busy_reason(self, provider_id):
+        """Why a planned replacement of the worker's container has to wait, or None.
+
+        A benchmark that owns lanes of the worker, or a calibration claim that is not released yet, would be cut
+        short by the replacement. The claim outlives the worker's session until the worker confirms the end, so it
+        is asked for here and not only the live session.
+        """
+        if benchmark_reservations.provider_owner(provider_id) is not None:
+            return "benchmark_reserved"
+        if any(claim["provider_id"] == provider_id for claim in store.calibration_claims()):
+            return "calibration_claimed"
+        return None
 
     def live_calibration(self):
         return any(self.registry.is_calibrating(pid) for pid in self.registry.active_provider_ids())

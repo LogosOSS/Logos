@@ -166,6 +166,42 @@ def test_a_calibrating_node_gets_no_lease(maintenance, registry):
     assert not maintenance.is_cordoned(1)
 
 
+@pytest.mark.parametrize("reason", ["benchmark_reserved", "calibration_claimed"])
+def test_a_node_with_a_benchmark_or_a_calibration_claim_gets_no_lease(maintenance, reason):
+    maintenance.busy_reason = lambda provider_id: reason if provider_id == 1 else None
+
+    assert maintenance.request(1, "d1") == {"status": "denied", "reason": reason}
+    assert not maintenance.is_cordoned(1)
+    assert maintenance.request(2, "d2")["status"] == "granted"
+
+
+def test_the_node_gets_the_lease_once_the_work_on_it_is_done(maintenance):
+    busy = {"now": True}
+    maintenance.busy_reason = lambda _provider_id: "benchmark_reserved" if busy["now"] else None
+    assert maintenance.request(1, "d1")["status"] == "denied"
+
+    busy["now"] = False
+
+    assert maintenance.request(1, "d1")["status"] == "granted"
+
+
+def test_a_lease_that_is_held_is_kept_while_a_benchmark_shows_up(maintenance):
+    assert maintenance.request(1, "d1")["status"] == "granted"
+    maintenance.busy_reason = lambda _provider_id: "benchmark_reserved"
+
+    assert maintenance.request(1, "d1")["status"] == "granted"
+
+
+def test_a_node_gets_no_lease_when_the_busy_state_cannot_be_read(maintenance):
+    def broken(_provider_id):
+        raise RuntimeError("database unavailable")
+
+    maintenance.busy_reason = broken
+
+    assert maintenance.request(1, "d1") == {"status": "denied", "reason": "maintenance_state_unknown"}
+    assert not maintenance.is_cordoned(1)
+
+
 def test_an_unknown_node_is_not_cordoned(maintenance):
     assert not maintenance.is_cordoned(99)
 

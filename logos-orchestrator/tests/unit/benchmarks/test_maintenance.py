@@ -717,3 +717,19 @@ async def test_release_recovery_of_an_unchanged_lane_needs_no_worker(recovery):
     state["row"]["recovery"]["mutated"] = False
     service.registry.send_command.side_effect = LogosNodeCommandError("worker offline")
     assert await service.release_recovery(31) == {"released": True, "forced": False}
+
+
+def test_a_worker_with_a_benchmark_or_a_calibration_claim_is_busy(coordinator):
+    service, state = coordinator
+    assert service.busy_reason(1) is None
+
+    module.benchmark_reservations.reserve(1, "model", 7)
+    try:
+        assert service.busy_reason(1) == "benchmark_reserved"
+        assert service.busy_reason(2) is None
+    finally:
+        module.benchmark_reservations.release(7)
+
+    state["claim"] = {"provider_id": 2, "token": "t", "confirmed": True}
+    assert service.busy_reason(2) == "calibration_claimed"
+    assert service.busy_reason(1) is None

@@ -50,13 +50,13 @@ node.
 1. The manager asks the orchestrator for the cordon of its node. The orchestrator knows the node from the key of the
    worker (`NODE_KEY`), so the manager can cordon its own node and no other.
 2. The orchestrator grants the cordon to one node at a time. If another node is being replaced, or this node runs a
-   calibration session, the manager asks again every `POLL_INTERVAL_S`. This goes on until the cordon is granted or
+   calibration session, holds a calibration claim or hosts a benchmark, the manager asks again every `POLL_INTERVAL_S`. This goes on until the cordon is granted or
    `TURN_TIMEOUT_S` (2 hours) is over. In that case the deployment ends as `failed` (`drain_blocked`), and the
    container is not touched. The node serves as usual while it waits.
 3. A cordoned node gets no new requests. The scheduler sends them to another node that serves the model. If no other
    connected node serves a model, its requests wait in the queue of the orchestrator until the node is back. They wait for
    20 minutes, or for the `timeout_s` of the client if the client sets one. The capacity planner places nothing on a
-   cordoned node, and no calibration starts on it.
+   cordoned node, and no calibration or nightly benchmark starts on it.
 4. The manager asks until the node has drained. A node has drained when the orchestrator tracks no request for it (this
    includes a request that is scheduled but has not reached the worker) and the worker reports none, for 10 s in a row.
    Every call also renews the cordon, and takes it again if the orchestrator forgot it.
@@ -138,7 +138,7 @@ removes the image it pulled, because no container runs it. The next try pulls it
 The manager removes an image by its ID (`docker rmi`), so an image that a container uses, or that has more than one
 name, stays. A problem during the removal is logged and does not change the result of the deployment.
 
-The manager does not remove its own image. The deploy workflow does this in the step "Update node manager". When the
+The deploy workflow removes the image of the node manager in the step "Update node manager". When the
 new manager answers `node-manager ping`, the step removes every image of the manager that no container uses
 (`docker image prune -a`, limited to the label `io.logos.component=node-manager`). A pull takes the name from the old
 image, so only the label finds it, and the same call removes images that piled up in earlier updates. An image that a

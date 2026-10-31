@@ -1329,6 +1329,7 @@ async def start_pipeline():
     global _nightly_scheduler, _maintenance_coordinator
     _maintenance_coordinator = MaintenanceCoordinator(_logosnode_registry)
     _logosnode_registry.maintenance = _maintenance_coordinator
+    _node_maintenance.busy_reason = _maintenance_coordinator.busy_reason
     _logosnode_registry.subscribe_to_events(_calibration_orchestrator._on_provider_event)
     _nightly_scheduler = NightlyScheduler(
         _logosnode_registry, _capacity_planner, _calibration_orchestrator, _logosnode_registry.maintenance
