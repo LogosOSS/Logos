@@ -205,7 +205,6 @@ def _planner(providers: List[_MockProvider]) -> CapacityPlanner:
     planner._lane_idle_since = {}
     planner._lane_sleep_since = {}
     planner._lane_sleep_level = {}
-    planner._load_cooldown_seconds = 0.0
     planner._eviction_gate_v2 = True
     planner._stop_dedup_siblings = False
     return planner
@@ -493,9 +492,9 @@ class TestEstimateDemandActionCost:
         )
         assert result is not None
 
-    def test_a_sleeping_lane_is_unaffected_by_the_load_cooldown(self):
+    def test_a_sleeping_lane_is_unaffected_by_the_load_failure_cooldown(self):
         """Waking a lane that is already resident is not the load that failed,
-        and has its own cooldown."""
+        and uses the wake-failure path rather than the load-failure cooldown."""
         provider = _MockProvider(
             provider_id=1,
             name="A",

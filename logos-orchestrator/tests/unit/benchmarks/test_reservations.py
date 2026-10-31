@@ -471,7 +471,6 @@ def test_reclaim_selects_unreserved_alternative(lease):
     planner = object.__new__(CapacityPlanner)
     planner._facade = MagicMock()
     planner._facade.get_scheduler_queue_depth_by_model_name.return_value = 0
-    planner._lane_is_in_load_cooldown = MagicMock(return_value=False)
     target = SimpleNamespace(lane_id="target", model_name="target", gpu_devices=None)
     reserved = SimpleNamespace(lane_id="reserved", model_name="model")
     alternative = SimpleNamespace(

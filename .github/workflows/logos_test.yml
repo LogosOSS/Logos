@@ -57,6 +57,7 @@ jobs:
         run: |
           source .venv/bin/activate
           coverage run -m pytest
+          pytest --noconftest tests/integration/benchmarks/test_guidellm_requests.py -q
         working-directory: logos-orchestrator
 
       - name: Run worker-node Tests

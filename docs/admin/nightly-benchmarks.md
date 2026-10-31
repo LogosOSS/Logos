@@ -157,12 +157,14 @@ Unsupported inference controls and non-text content cause rejection.
 The feature rejects missing, failed, non-FULL or mixed-model source requests.
 Benchmark requests cannot become source data.
 
-Every configuration replays the complete snapshot with 4 concurrent requests.
+GuideLLM measures every configuration on the complete snapshot with 4 concurrent requests.
 Each request retains its temperature, tools and output limits.
 If the source omits an output limit, then Logos adds no output limit.
 Worker context limits still apply. A truncated or incomplete response fails the configuration.
-The measured throughput equals all output tokens divided by the complete replay duration.
-The saved results also contain request latency, TTFT, token counts and completion reasons.
+GuideLLM measures throughput, request latency, TTFT and TPOT.
+The result distributions include the maximum observation, shown as p100.
+The saved results also contain token counts and completion reasons.
+A change of measurement engine starts a new optimization reference.
 They do not contain response text.
 
 ## Deployment-specific request sources

@@ -1,0 +1,433 @@
+---
+name: Logos - Residency Simulation Benchmark
+
+# GPU-less synthetic simulation of residency policies (demand / lru / simple) via the
+# E2E benchmark topology (real orchestrator + worker, fake vLLM below). Posts
+# an idempotent PR comment. Times are not GPU performance; synthetic only.
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+    paths:
+      - "logos-workernode/**"
+      - "logos-orchestrator/**"
+      - "e2e/**"
+      - "db/**"
+      - ".dockerignore"
+      - "logos-webservice/src/main/resources/liquibase/**"
+      - "benchmarks/residency_simulation/**"
+      - ".github/workflows/logos_benchmark-simulation.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default read-only. Only the post job elevates pull-requests: write, and that
+# job never checks out or executes pull-request code — it posts a pre-rendered
+# markdown artifact with an inline github-script.
+permissions:
+  contents: read
+
+env:
+  UV_PYTHON: "3.13"
+
+jobs:
+  simulate:
+    name: Simulate (${{ matrix.residency_policy }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        residency_policy: [demand, lru, simple]
+        include:
+          - residency_policy: demand
+            compose_project: logos-e2e-sim-demand
+            orchestrator_port: "18190"
+            db_port: "15432"
+            ui_port: "18191"
+            keycloak_port: "18195"
+          - residency_policy: lru
+            compose_project: logos-e2e-sim-lru
+            orchestrator_port: "18290"
+            db_port: "15532"
+            ui_port: "18291"
+            keycloak_port: "18295"
+          - residency_policy: simple
+            compose_project: logos-e2e-sim-simple
+            orchestrator_port: "18390"
+            db_port: "15632"
+            ui_port: "18391"
+            keycloak_port: "18395"
+    env:
+      LOGOS_SIM_REQUIRE_PERFORMANCE: "1"
+      E2E_RESIDENCY_POLICY: ${{ matrix.residency_policy }}
+      E2E_COMPOSE_PROJECT: ${{ matrix.compose_project }}
+      E2E_ORCHESTRATOR_PORT: ${{ matrix.orchestrator_port }}
+      E2E_DB_PORT: ${{ matrix.db_port }}
+      E2E_UI_PORT: ${{ matrix.ui_port }}
+      E2E_KEYCLOAK_PORT: ${{ matrix.keycloak_port }}
+      E2E_BENCHMARK_TOPOLOGY: "1"
+      # Identity truth = PR head commit (not the ephemeral merge ref).
+      E2E_SIM_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      E2E_SIM_REPORT_PATH: ${{ github.workspace }}/benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/result.json
+      LOGOS_SIM_REPORT_DIR: ${{ github.workspace }}/benchmarks/residency_simulation/reports
+      LOGOS_SIM_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install E2E dependencies
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python -e .
+          uv pip install --python .venv/bin/python -r ../logos-workernode/requirements.txt
+        working-directory: e2e
+
+      - name: Prepare report directory
+        run: mkdir -p "benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}"
+
+      - name: Run GPU-sim topology unit tests (no stack)
+        # Fail-fast pins before compose. JUnit stays in junit-gpu.xml only —
+        # it must never substitute for the integrated junit.xml gate.
+        run: |
+          .venv/bin/python -m pytest \
+            tests/gpu/test_benchmark_topology.py \
+            -v --timeout=120 \
+            --junitxml="../benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/junit-gpu.xml"
+        working-directory: e2e
+
+      - name: Start benchmark-topology stack
+        id: stack_up
+        run: .venv/bin/python -m harness.stack.compose up --benchmark-topology
+        working-directory: e2e
+
+      - name: Bootstrap benchmark profiles
+        run: .venv/bin/python -m harness.stack.bootstrap_benchmark
+        working-directory: e2e
+
+      - name: Recreate orchestrator for the residency policy
+        # LOGOS_RESIDENCY_POLICY is read at container start; recreate so the
+        # matrix policy is guaranteed to be active before any traffic.
+        run: |
+          docker compose -p "$E2E_COMPOSE_PROJECT" \
+            -f harness/stack/docker-compose.e2e.yaml \
+            -f harness/stack/docker-compose.benchmark-topology.yaml \
+            up -d --force-recreate --no-deps logos-orchestrator
+          # Wait until the recreated orchestrator answers and both nodes reconnect;
+          # otherwise the stack assertions skip and the runner finds no stack.
+          .venv/bin/python -c "from harness.stack import compose; compose.wait_for_orchestrator(timeout_s=180.0); compose.wait_for_nodes(expected=2)"
+        working-directory: e2e
+
+      - name: Run topology stack assertions
+        run: |
+          .venv/bin/python -m pytest \
+            tests/node/test_benchmark_topology_stack.py \
+            -v --timeout=300 \
+            --junitxml="../benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/junit-stack.xml"
+        working-directory: e2e
+
+      - name: Run phased residency benchmark
+        # External runner owns the lifecycle-isolation restart between the
+        # traffic and lifecycle phases; tests never restart compose. It writes
+        # result.json and the merged junit.xml that pr_comment.py gates on.
+        run: |
+          .venv/bin/python -m harness.stack.run_phased_benchmark \
+            --report "$E2E_SIM_REPORT_PATH" \
+            --junit "../benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/junit.xml"
+        working-directory: e2e
+
+      - name: Run short synthetic performance comparison
+        run: |
+          export E2E_PERF_IMAGE_PROJECT="$E2E_COMPOSE_PROJECT"
+          .venv/bin/python -m harness.stack.compose down --benchmark-topology
+          .venv/bin/python -m harness.stack.run_performance_benchmark \
+            --project "logos-e2e-perf-ci-${{ matrix.residency_policy }}" \
+            --policy "${{ matrix.residency_policy }}" --seed 42 \
+            --requests-per-pattern 25 \
+            --out "../benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/performance.json"
+          .venv/bin/python ../benchmarks/residency_simulation/attach_performance.py \
+            "$E2E_SIM_REPORT_PATH"
+        working-directory: e2e
+
+      - name: Fail closed on missing / empty simulation report
+        run: |
+          python benchmarks/residency_simulation/pr_comment.py \
+            --check --policy-file "$E2E_SIM_REPORT_PATH"
+
+      - name: Collect compose logs
+        if: always()
+        run: |
+          mkdir -p "benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}"
+          for service in logos-db migrate seed logos-orchestrator node-ada-a node-ada-b; do
+            .venv/bin/python -m harness.stack.compose logs "$service" \
+              > "../benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}/${service}.log" 2>&1 || true
+          done
+        working-directory: e2e
+
+      - name: Upload simulation artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sim-report-${{ matrix.residency_policy }}
+          path: benchmarks/residency_simulation/reports/${{ matrix.residency_policy }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Tear down own compose project
+        if: always()
+        run: .venv/bin/python -m harness.stack.compose down --benchmark-topology
+        working-directory: e2e
+
+  # Read-only: download matrix artifacts, render comment.md, gate. Never holds
+  # a write token while executing pull-request Python.
+  aggregate:
+    name: Aggregate and render
+    needs: simulate
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Download matrix artifacts
+        # Tolerant: zero artifacts (startup death before upload) must not abort
+        # the job — normalize/render still produce a red comment body.
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: sim-report-*
+          path: benchmarks/residency_simulation/reports
+          merge-multiple: false
+
+      - name: Normalize artifact layout
+        if: always()
+        run: |
+          set +e
+          ROOT="benchmarks/residency_simulation/reports"
+          mkdir -p "$ROOT"
+          for policy in demand lru simple; do
+            dest="$ROOT/$policy"
+            mkdir -p "$dest"
+            src=""
+            if [ -f "$ROOT/sim-report-$policy/result.json" ] || [ -d "$ROOT/sim-report-$policy" ]; then
+              src="$ROOT/sim-report-$policy"
+            elif [ -d "$ROOT/$policy" ]; then
+              src=""
+            fi
+            if [ -n "$src" ] && [ -d "$src" ]; then
+              cp -a "$src/." "$dest/" 2>/dev/null || true
+            fi
+            if [ ! -f "$dest/result.json" ]; then
+              echo "missing artifact for $policy" > "$dest/MISSING.txt"
+            fi
+            # Intentionally do NOT copy junit-gpu.xml → junit.xml.
+            # Integrated-scenario evidence is only junit.xml.
+          done
+          find "$ROOT" -type f 2>/dev/null | sort || true
+          exit 0
+
+      - name: Render comment markdown
+        if: always()
+        id: render
+        env:
+          E2E_SIM_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          LOGOS_SIM_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          LOGOS_SIM_REPORT_DIR: ${{ github.workspace }}/benchmarks/residency_simulation/reports
+          LOGOS_SIM_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LOGOS_BENCH_PR_COMMENT_DRY_RUN: "1"
+          LOGOS_SIM_REQUIRE_PERFORMANCE: "1"
+        run: |
+          set +e
+          mkdir -p benchmarks/residency_simulation/reports
+          OUT=benchmarks/residency_simulation/reports/comment.md
+          python benchmarks/residency_simulation/pr_comment.py > "$OUT"
+          code=$?
+          # Drop leading GATE lines so the artifact is pure markdown.
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("benchmarks/residency_simulation/reports/comment.md")
+          if path.is_file():
+              lines = path.read_text(encoding="utf-8").splitlines()
+              while lines and lines[0].startswith("GATE "):
+                  lines.pop(0)
+              while lines and not lines[0].strip():
+                  lines.pop(0)
+              path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+          PY
+          if [ ! -s "$OUT" ]; then
+            {
+              echo "## ❌ FAIL — GPU-less residency simulation (functional)"
+              echo
+              echo "Simulation report missing (startup or artifact failure). **Times are not GPU performance.**"
+              echo
+              echo "**SHA:** \`${{ github.event.pull_request.head.sha }}\` · **Run:** [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+              echo
+              echo "<!-- logos-residency-simulation-bench -->"
+            } > "$OUT"
+            code=1
+          fi
+          echo "gate_exit=$code" >> "$GITHUB_OUTPUT"
+          echo "$code" > benchmarks/residency_simulation/reports/gate_exit.txt
+          exit 0
+
+      - name: Upload comment artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sim-comment
+          path: |
+            benchmarks/residency_simulation/reports/comment.md
+            benchmarks/residency_simulation/reports/gate_exit.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce aggregate gate
+        if: always()
+        run: |
+          code="${{ steps.render.outputs.gate_exit }}"
+          if [ -z "$code" ] && [ -f benchmarks/residency_simulation/reports/gate_exit.txt ]; then
+            code=$(cat benchmarks/residency_simulation/reports/gate_exit.txt)
+          fi
+          if [ -z "$code" ]; then
+            exit 1
+          fi
+          exit "$code"
+
+  # Write-only post: downloads the pre-rendered comment.md from this workflow.
+  # No checkout, no PR Python. Fork permission errors continue-on-error.
+  post-comment:
+    name: Post PR comment
+    needs: aggregate
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Download comment artifact
+        id: download_comment
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: sim-comment
+          path: sim-comment
+
+      - name: Post or update PR comment
+        if: always()
+        continue-on-error: true
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const anchor = '<!-- logos-residency-simulation-bench -->';
+            const headSha = context.payload.pull_request && context.payload.pull_request.head
+              ? context.payload.pull_request.head.sha
+              : context.sha;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const fallback = [
+              '## ❌ FAIL — GPU-less residency simulation (functional)',
+              '',
+              'Comment render artifact missing. Simulation did not produce a report.',
+              '**Times are not GPU performance.**',
+              '',
+              `**SHA:** \`${headSha}\` · **Run:** [workflow run](${runUrl})`,
+              '',
+              anchor,
+              '',
+            ].join('\n');
+
+            let body = fallback;
+            const candidates = [
+              'sim-comment/comment.md',
+              'sim-comment/reports/comment.md',
+              'comment.md',
+            ];
+            for (const candidate of candidates) {
+              if (fs.existsSync(candidate) && fs.statSync(candidate).size > 0) {
+                body = fs.readFileSync(candidate, 'utf8');
+                if (!body.includes(anchor)) {
+                  body = body.trimEnd() + '\n\n' + anchor + '\n';
+                }
+                break;
+              }
+            }
+            // Walk nested download layouts once more.
+            if (body === fallback && fs.existsSync('sim-comment')) {
+              const walk = (dir) => {
+                for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                  const full = path.join(dir, entry.name);
+                  if (entry.isDirectory()) {
+                    const hit = walk(full);
+                    if (hit) return hit;
+                  } else if (entry.name === 'comment.md') {
+                    return full;
+                  }
+                }
+                return null;
+              };
+              const found = walk('sim-comment');
+              if (found) {
+                body = fs.readFileSync(found, 'utf8');
+                if (!body.includes(anchor)) {
+                  body = body.trimEnd() + '\n\n' + anchor + '\n';
+                }
+              }
+            }
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request && context.payload.pull_request.number;
+            if (!issue_number) {
+              core.warning('No pull_request number — skip PR comment');
+              return;
+            }
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const mine = comments.filter(c =>
+              (c.body || '').includes(anchor) &&
+              c.user && c.user.login === 'github-actions[bot]'
+            );
+            if (mine.length) {
+              const target = mine[mine.length - 1];
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: target.id, body,
+              });
+              core.info(`PR comment updated (id=${target.id})`);
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+              core.info('PR comment created');
+            }

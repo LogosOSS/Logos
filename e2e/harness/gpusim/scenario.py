@@ -93,6 +93,11 @@ class GpuScenario:
         return cls(profiles=[profile] * count, **kwargs)
 
     @classmethod
+    def dual_rtx6000ada(cls, **kwargs: Any) -> "GpuScenario":
+        """Benchmark worker shape: two RTX 6000 Ada cards on one node."""
+        return cls.homogeneous("rtx6000ada", 2, **kwargs)
+
+    @classmethod
     def headless(cls, **kwargs: Any) -> "GpuScenario":
         """No GPUs and no working nvidia-smi — a developer laptop or a CI runner."""
         return cls(profiles=[], smi=SmiBehaviour(absent=True), **kwargs)
@@ -143,6 +148,9 @@ class VllmScript:
     refuse_sleep: bool = False
     #: Seconds ``/wake_up`` takes to answer.
     slow_wake_s: float = 0.0
+    #: Force an EngineCore-style OOM exit at startup (independent of free VRAM).
+    #: Keeps intentional OOM corpus paths when the GMU gate would otherwise pass.
+    oom_on_start: bool = False
     #: ``/health`` and ``/v1/models`` answer 200 while ``/is_sleeping`` never
     #: returns — the real wedge where the API server outlives its EngineCore.
     wedge_engine_core: bool = False
@@ -174,6 +182,7 @@ class VllmScript:
             "leak_vram": self.leak_vram,
             "refuse_sleep": self.refuse_sleep,
             "slow_wake_s": self.slow_wake_s,
+            "oom_on_start": self.oom_on_start,
             "wedge_engine_core": self.wedge_engine_core,
             "max_concurrency": self.max_concurrency,
             "max_concurrency_tokens": self.max_concurrency_tokens,

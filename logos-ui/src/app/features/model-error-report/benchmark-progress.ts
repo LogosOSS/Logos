@@ -1,3 +1,4 @@
+import { isSavedRequestBenchmark } from './benchmark-configuration';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { comparisonValue } from './benchmark-comparison';
 import { batchingSignature, comparisonSettings } from './benchmark-isolation';
@@ -19,7 +20,7 @@ export function benchmarkProgress(runs: readonly ModelProviderBenchmark[]) {
   const groups = new Map<string, { reference: ModelProviderBenchmark; points: Map<number, ProgressPoint> }>();
   for (const run of runs) {
     const nightly = run.configuration['nightly'] as { baseline_id?: number; reference_id?: number; eligible_for_selection?: boolean } | undefined;
-    const fixed = run.configuration['tool'] === 'logos-replay';
+    const fixed = isSavedRequestBenchmark(run);
     if (fixed && nightly?.eligible_for_selection !== true) continue;
     const baselineId = fixed ? nightly?.reference_id : nightly?.baseline_id;
     const baseline = baselineId === undefined ? undefined : byId.get(baselineId);
@@ -47,7 +48,7 @@ export function benchmarkProgress(runs: readonly ModelProviderBenchmark[]) {
     groups.set(key, group);
   }
   return [...groups.entries()].map(([key, group]) => {
-    const fixed = group.reference.configuration['tool'] === 'logos-replay';
+    const fixed = isSavedRequestBenchmark(group.reference);
     const time = completedAt(group.reference);
     const referenceRate = comparisonValue(group.reference, 'throughput')!;
     if (!Number.isFinite(time)) return null;

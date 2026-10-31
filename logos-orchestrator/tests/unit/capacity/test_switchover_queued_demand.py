@@ -211,7 +211,6 @@ def _planner(
     planner._lane_idle_since = {}
     planner._lane_sleep_since = {}
     planner._lane_sleep_level = {}
-    planner._load_cooldown_seconds = 0.0
     planner._eviction_gate_v2 = eviction_gate_v2
     planner._stop_dedup_siblings = False
     planner._cross_provider_dedup = False
