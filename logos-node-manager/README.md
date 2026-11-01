@@ -92,13 +92,17 @@ Only the ending is reported, never the phases in between. Those stay in the reco
 
 | Outcome | Notification | Content |
 |---|---|---|
-| `succeeded` | `deployment` | The tag, the node, how long the drain took, and how many requests were still running when the node was cordoned. |
-| `rolled_back` | `deployment_failed` | The reason, and that the previous version runs again. |
-| `failed` | `deployment_failed` | The reason, for example `drain_timeout` or `pull_failed`. A `rollback_failed` says that the node needs manual action. |
-| `unchanged` | `deployment` | The container already ran the image, so nothing was replaced. It is reported all the same: an admin who waits for the result of a deployment should get one, and silence would look like a failure. |
+| `succeeded` | `deployment` | The title names the node and the tag. The body says how many requests were still running when the node was cordoned, how long the drain took, how many models no other node served meanwhile, and the CI run. |
+| `rolled_back` | `deployment_failed` | The title says that the node was rolled back. The body gives the reason and the CI run. |
+| `failed` | `deployment_failed` | The reason, for example that the node did not drain or that the pull failed, and the CI run. A `rollback_failed` says in the title that the node needs manual action. |
+| `unchanged` | `deployment` | The title says that the node already runs the tag, so nothing was replaced. It is reported all the same: an admin who waits for the result of a deployment should get one, and silence would look like a failure. |
 
 The notification goes to the role Logos admin, one per node and deployment. A rollout over several nodes therefore sends
 one notification per node.
+
+The inbox shows two lines of the body, so the body holds the short facts only. For a failure it is the first sentence of
+the message of the manager, cut to 100 characters. The whole message is part of the payload of the notification, and the
+events of the deployment stay in `node-manager status --logs`.
 
 * There is no switch. The manager reports whenever it has `ORCHESTRATOR_URL` and `NODE_KEY`, with or without the drain.
   Without them it cannot reach the orchestrator, and it logs once at the start that nothing is reported.

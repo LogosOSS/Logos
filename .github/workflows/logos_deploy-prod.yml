@@ -46,22 +46,22 @@ jobs:
             compose-file: ./logos-workernode/docker-compose.yml
             base-path: /opt/logos-workernode
             node-manager: true
-            drain: false
+            drain: true
           - environment: "deimama"
             compose-file: ./logos-workernode/docker-compose.yml
             base-path: /opt/logos-workernode
             node-manager: true
-            drain: false
+            drain: true
           - environment: "deipapa"
             compose-file: ./logos-workernode/docker-compose.yml
             base-path: /opt/logos-workernode
             node-manager: true
-            drain: false
+            drain: true
           - environment: "hochbruegge-vm-1"
             compose-file: ./logos-workernode/docker-compose.yml
             base-path: /opt/logos-workernode
             node-manager: true
-            drain: false
+            drain: true
     environment:
       name: ${{ matrix.environment }}
     steps:
