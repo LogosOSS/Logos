@@ -80,7 +80,7 @@ class GatewayWorkflowAttributionTest {
         assertThat(attr.requestSlo()).isEqualTo("ux-high-prio");
 
         Integer logId = accounting.admitAndReserve(
-            f.key(), f.deployment(), REQUEST_BODY, "BILLING", attr);
+            f.key(), f.deployment(), REQUEST_BODY, "BILLING", null, null, attr);
         assertThat(logId).isNotNull();
 
         Map<String, Object> row = jdbc.queryForMap("""
