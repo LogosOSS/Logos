@@ -14,7 +14,8 @@ Rules kept here:
 * A lease that its manager stops renewing expires, so a manager that dies cannot cordon a node for good.
 * "Drained" means no request is tracked for the node by the orchestrator (this includes requests that are scheduled
   but have not reached the worker yet) and none runs on the worker, and that this has held for a settle time. The
-  settle time covers the lag between the two views.
+  settle time covers the lag between the two views. A node without any session counts as drained at once, because
+  nothing runs on it. A session whose heartbeat is old is judged like any other: the worker may still run requests.
 
 The leases live in memory. After an orchestrator restart they are gone, so every node is routable again; the manager
 asks again and never replaces a container without a fresh answer that the node has drained.
@@ -302,8 +303,10 @@ class NodeMaintenance:
         tracked = max(0, int(self.tracked_requests(provider_id)))
         worker = self._worker_in_flight(provider_id)
         now = self._clock()
-        if not self._registry.is_provider_online(provider_id):
-            # Nothing is routed to a node that is gone, and what ran on it is lost already.
+        if self._registry.peek_runtime_snapshot(provider_id) is None:
+            # No session exists any more. Nothing is routed to the node, and what ran on it is lost already. A session
+            # that only has an old heartbeat is not this case: the worker may still run requests, so it is judged by
+            # the counts and the settle time like any other node.
             return {"drained": True, "idle_for_s": 0.0, "in_flight": {"orchestrator": tracked, "worker": worker}}
         if tracked > 0 or worker > 0:
             lease.idle_since = None

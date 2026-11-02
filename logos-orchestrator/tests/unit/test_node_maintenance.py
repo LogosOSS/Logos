@@ -340,14 +340,51 @@ def test_a_new_request_restarts_the_settle_time(maintenance, registry, clock):
     assert maintenance.status(1, "d1")["drained"] is True
 
 
-def test_a_node_that_is_offline_has_nothing_to_drain(maintenance, registry):
-    registry.nodes[1]["online"] = False
+def test_a_node_whose_session_is_gone_has_nothing_to_drain(maintenance, registry):
+    del registry.nodes[1]
+    # A request that only waits for the node to come back does not run on it, so it does not hold the drain.
+    maintenance.tracked_requests = lambda provider_id: 3
 
     answer = maintenance.request(1, "d1")
 
     assert answer["status"] == "granted"
     assert answer["online"] is False
     assert answer["drained"] is True
+
+
+def test_a_stale_session_is_not_drained_while_the_orchestrator_tracks_a_request(maintenance, registry, clock):
+    # The session still exists, but its heartbeat is too old: the registry reports the node as offline.
+    registry.nodes[1]["online"] = False
+    maintenance.tracked_requests = lambda provider_id: 2 if provider_id == 1 else 0
+    maintenance.request(1, "d1")
+
+    clock.advance(60)
+
+    answer = maintenance.status(1, "d1")
+    assert answer["online"] is False
+    assert answer["drained"] is False
+    assert answer["in_flight"]["orchestrator"] == 2
+
+
+def test_a_stale_session_without_requests_counts_as_drained_only_after_the_settle_time(maintenance, registry, clock):
+    registry.nodes[1]["online"] = False
+
+    assert maintenance.request(1, "d1")["drained"] is False
+
+    clock.advance(SETTLE_S - 1)
+    assert maintenance.status(1, "d1")["drained"] is False
+    clock.advance(1)
+    assert maintenance.status(1, "d1")["drained"] is True
+
+
+def test_a_stale_session_that_goes_away_counts_as_drained_at_once(maintenance, registry):
+    registry.nodes[1]["online"] = False
+    maintenance.tracked_requests = lambda provider_id: 2 if provider_id == 1 else 0
+    assert maintenance.request(1, "d1")["drained"] is False
+
+    del registry.nodes[1]
+
+    assert maintenance.status(1, "d1")["drained"] is True
 
 
 def test_the_answer_carries_what_the_manager_needs_to_see_a_reconnect(maintenance, registry):
