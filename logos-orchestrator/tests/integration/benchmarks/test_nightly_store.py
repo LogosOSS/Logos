@@ -65,7 +65,7 @@ def database(monkeypatch):
         connection.execute(
             text(
                 "CREATE TABLE model_provider_benchmarks(id integer PRIMARY KEY, configuration jsonb, "
-                "metrics jsonb, sample_size integer)"
+                "metrics jsonb, sample_size integer, model_provider_id integer DEFAULT 31)"
             )
         )
         workloads_migration = migration.with_name("068_benchmark_request_workloads.xml")
@@ -111,6 +111,7 @@ def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(dat
             )
         )
     created = workloads.create([7], "Trial", "synthetic")
+    assert created["created_at"]
     assert workloads.create([7], "Same inputs, another name", "synthetic") == created
     store.set_enabled(31, False, False, created["id"], None)
     with pytest.raises(ValueError):
@@ -149,13 +150,19 @@ async def test_completion_event_survives_failed_delivery_and_deduplicates_finish
     assert delivery.call_args.kwargs["event_key"] == "nightly:31:2026-10-28"
 
 
-def test_finish_persists_winner_reference_and_chart_eligibility_atomically(database):
+@pytest.mark.parametrize("adopt", [False, True])
+def test_finish_persists_winner_reference_and_chart_eligibility_atomically(database, adopt):
     import json
 
     engine, _ = database
     store.set_enabled(31, True, False)
     store.claim(31, date(2026, 10, 28))
-    search = {"state": {"series_key": "series", "workload_id": "a" * 64}, "reference_id": 1}
+    search = {
+        "state": {"series_key": "series", "workload_id": "a" * 64},
+        "reference_id": 1,
+        "series_key": "series",
+        "workload_id": "a" * 64,
+    }
     with engine.begin() as connection:
         for identifier, throughput in [(1, 40), (2, 50)]:
             configuration = {
@@ -181,9 +188,16 @@ def test_finish_persists_winner_reference_and_chart_eligibility_atomically(datab
                 {"id": identifier, "config": json.dumps(configuration), "metrics": json.dumps(metrics)},
             )
     report = [{"configuration": i, "status": "success", "benchmark_id": i} for i in (1, 2)]
+    candidate = store.adoption_candidate(31, search, report)
+    assert candidate["benchmark_id"] == 2
+    assert store.adoption_candidate(32, search, report) is None
+    if adopt:
+        report.append({"status": "adopted", **candidate})
     store.finish(31, "completed", report, search)
     assert store.status(31)["optimizer"]["best_parameters"] == {"max_num_seqs": 32}
     assert store.status(31)["optimizer"]["reference_id"] == 1
+    if adopt:
+        assert store.status(31)["optimizer"]["production_adoption"]["benchmark_id"] == 2
     with engine.connect() as connection:
         assert (
             connection.execute(

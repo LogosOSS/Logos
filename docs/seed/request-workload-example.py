@@ -40,10 +40,29 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
         ]
         workload = build_snapshot(rows, "Coding pilot", "synthetic")
         cursor.execute(
-            "INSERT INTO benchmark_workloads(id, name, model_id, model_name, provenance, requests, request_count) "
-            "VALUES (%s, %s, %s, %s, %s, %s, 10) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name",
-            (workload["id"], workload["name"], model["id"], model["name"], "synthetic", Json(workload["requests"])),
+            "SELECT min(recorded_at) AS frozen_at FROM model_provider_benchmarks "
+            "WHERE model_provider_id = %s AND configuration->'metadata'->>'purpose' = 'docs-role-screenshots'",
+            (model["pair_id"],),
         )
+        frozen_at = cursor.fetchone()["frozen_at"]
+        cursor.execute(
+            "INSERT INTO benchmark_workloads "
+            "(id, name, model_id, model_name, provenance, requests, request_count, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 10, COALESCE(%s, now())) "
+            "ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name, "
+            "created_at=LEAST(benchmark_workloads.created_at, EXCLUDED.created_at) "
+            "RETURNING created_at",
+            (
+                workload["id"],
+                workload["name"],
+                model["id"],
+                model["name"],
+                "synthetic",
+                Json(workload["requests"]),
+                frozen_at,
+            ),
+        )
+        workload["created_at"] = cursor.fetchone()["created_at"].isoformat()
         cursor.execute(
             "SELECT * FROM model_provider_benchmarks WHERE model_provider_id = %s "
             "AND configuration->'metadata'->>'purpose' = 'docs-role-screenshots' ORDER BY recorded_at, id",
@@ -64,7 +83,7 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
             configuration = run["configuration"]
             configuration.update(
                 tool="logos-replay",
-                workload={key: workload[key] for key in ("id", "name", "provenance", "request_count")},
+                workload={key: workload[key] for key in ("id", "name", "provenance", "request_count", "created_at")},
             )
             nightly = configuration["nightly"]
             nightly.update(

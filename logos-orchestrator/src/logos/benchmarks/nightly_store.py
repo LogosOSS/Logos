@@ -519,7 +519,7 @@ def finish(pair_id, state, report, search=None):
         row = (
             db.session.execute(
                 text(
-                    "SELECT n.last_run_date, n.status, n.optimizer, mp.model_id, p.name AS provider_name "
+                    "SELECT n.last_run_date, n.status, n.optimizer, n.enabled, mp.model_id, p.name AS provider_name "
                     "FROM nightly_benchmarks n "
                     "JOIN model_provider mp ON mp.id = n.model_provider_id JOIN providers p ON p.id = mp.provider_id "
                     "WHERE n.model_provider_id = :id FOR UPDATE OF n"
@@ -548,6 +548,8 @@ def finish(pair_id, state, report, search=None):
             optimizer = select_state(search, runs, report)
             adopted = next((item for item in report if item.get("status") == "adopted"), None)
             if adopted:
+                if not row["enabled"]:
+                    raise RuntimeError("Nightly schedule disabled before adoption committed")
                 optimizer["production_adoption"] = adopted
             baseline_id = next(
                 (

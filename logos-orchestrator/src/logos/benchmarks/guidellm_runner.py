@@ -553,6 +553,11 @@ async def run_benchmark_job(
                 summary["configuration"]["workload"] = {
                     key: snapshot[key] for key in ("id", "name", "provenance", "request_count")
                 }
+                if snapshot.get("created_at"):
+                    created = snapshot["created_at"]
+                    summary["configuration"]["workload"]["created_at"] = (
+                        created.isoformat() if hasattr(created, "isoformat") else created
+                    )
 
         summary["configuration"]["requested_overrides"] = redact_secrets(
             settings.serving_overrides.model_dump(exclude_none=True)

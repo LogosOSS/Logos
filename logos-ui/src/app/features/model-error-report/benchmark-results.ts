@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input, signal } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
-import { benchmarkConfigurationItems, servingConfigurationItems } from './benchmark-configuration';
+import { benchmarkConfigurationItems, benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
 import { comparisonValue } from './benchmark-comparison';
 import { benchmarkProgress } from './benchmark-progress';
 import { batchingSignature } from './benchmark-isolation';
@@ -18,10 +18,7 @@ type ResultColumn = 'before' | 'after' | 'delta';
 })
 export class BenchmarkResults {
   throughput(run: ModelProviderBenchmark) { return comparisonValue(run, 'throughput'); }
-  datasetLabel(run: ModelProviderBenchmark): string {
-    const workload = run.configuration['workload'] as { name?: string } | undefined;
-    return workload?.name ?? run.dataset;
-  }
+  readonly datasetLabel = benchmarkDatasetLabel;
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
   readonly progress = computed(() => benchmarkProgress(this.runs()));
   readonly progressKey = signal('');

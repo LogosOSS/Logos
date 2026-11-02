@@ -12,6 +12,7 @@ import { NgClass } from '@angular/common';
 import { NightlyBenchmarks } from './nightly-benchmarks';
 import { BenchmarkRunFailure } from './benchmark-run-failure';
 import { BenchmarkResults } from './benchmark-results';
+import { benchmarkDatasetLabel } from './benchmark-configuration';
 import { BenchmarkComparison } from './benchmark-comparison';
 import { BenchmarkBatchEditor } from './benchmark-batch-editor';
 import { BenchmarkBatch } from './benchmark-batch';
@@ -1571,8 +1572,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   }
 
   benchmarkDatasetLabel(benchmark: ModelProviderBenchmark): string {
-    const workload = benchmark.configuration['workload'];
-    return this.isRecord(workload) && typeof workload['name'] === 'string' ? workload['name'] : benchmark.dataset;
+    return benchmarkDatasetLabel(benchmark);
   }
 
   benchmarkLatency(benchmark: ModelProviderBenchmark, percentile: 'p50' | 'p95' | 'p100'): string {

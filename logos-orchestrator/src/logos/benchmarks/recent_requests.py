@@ -147,12 +147,17 @@ def for_model(target, now):
             },
         )
         db.session.commit()
-        name = db.session.execute(
-            text("SELECT name FROM benchmark_workloads WHERE id = :id"), {"id": identifier}
-        ).scalar_one()
+        stored = (
+            db.session.execute(
+                text("SELECT name, created_at FROM benchmark_workloads WHERE id = :id"), {"id": identifier}
+            )
+            .mappings()
+            .one()
+        )
     return {
         "id": identifier,
-        "name": name,
+        "name": stored["name"],
+        "created_at": stored["created_at"].isoformat(),
         "model_name": target["model_name"],
         "request_count": 50,
         **content,
