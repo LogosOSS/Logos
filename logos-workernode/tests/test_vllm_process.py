@@ -1337,17 +1337,17 @@ def test_build_env_nccl_p2p_not_disabled_when_available(monkeypatch) -> None:
     assert "NCCL_P2P_DISABLE" not in env
 
 
-def test_build_env_rust_frontend_off_by_default(monkeypatch) -> None:
-    handle = VllmProcessHandle("lane-test", 19000, WorkerConfig(gpu_devices="all"))
+def test_build_env_rust_frontend_can_be_disabled(monkeypatch) -> None:
+    handle = VllmProcessHandle(
+        "lane-test", 19000, WorkerConfig(gpu_devices="all"), VllmEngineConfig(rust_frontend=False)
+    )
     lane = LaneConfig(model="m", vllm=True, vllm_config=VllmConfig())
     monkeypatch.delenv("HF_HOME", raising=False)
     assert "VLLM_USE_RUST_FRONTEND" not in handle._build_env(lane)
 
 
-def test_build_env_rust_frontend_enabled_and_overridable(monkeypatch) -> None:
-    handle = VllmProcessHandle(
-        "lane-test", 19000, WorkerConfig(gpu_devices="all"), VllmEngineConfig(rust_frontend=True)
-    )
+def test_build_env_rust_frontend_on_by_default_and_overridable(monkeypatch) -> None:
+    handle = VllmProcessHandle("lane-test", 19000, WorkerConfig(gpu_devices="all"))
     monkeypatch.delenv("HF_HOME", raising=False)
     lane = LaneConfig(model="m", vllm=True, vllm_config=VllmConfig())
     assert handle._build_env(lane)["VLLM_USE_RUST_FRONTEND"] == "1"

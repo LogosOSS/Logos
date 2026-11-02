@@ -274,9 +274,9 @@ class VllmEngineConfig(BaseModel):
         "NCCL P2P globally for all TP>1 lanes to prevent hangs.",
     )
     rust_frontend: bool = Field(
-        default=False,
+        default=True,
         description="Serve every vLLM lane through vLLM's experimental Rust frontend "
-        "(VLLM_USE_RUST_FRONTEND=1). Default false keeps the Python API server. "
+        "(VLLM_USE_RUST_FRONTEND=1). Set to false to keep the Python API server. "
         "A lane's env_overrides can still set the variable explicitly.",
     )
     nccl_debug: str = Field(
