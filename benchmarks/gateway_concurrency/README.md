@@ -191,7 +191,7 @@ unchanged.
 ### CI database storage
 
 The CI workflow applies `docker-compose.ci.yaml`, which puts its disposable
-PostgreSQL data on a 1 GiB tmpfs. Transaction, WAL, `fsync`, and synchronous
+PostgreSQL data on a 4 GiB tmpfs. Transaction, WAL, `fsync`, and synchronous
 commit settings remain enabled. This removes shared runner block-device latency
 from the gateway regression test; it does not measure durable-storage performance
 or establish production latency guarantees. The report records

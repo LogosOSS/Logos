@@ -158,6 +158,11 @@ jobs:
             < benchmarks/gateway_concurrency/seed_budget.sql
         working-directory: .
 
+      - name: Record database fixture size
+        run: |
+          docker exec logos-db df -h /var/lib/postgresql/data
+          docker exec logos-db psql -U postgres -d logosdb -v ON_ERROR_STOP=1 -c "SELECT pg_size_pretty(pg_database_size('logosdb'));"
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:

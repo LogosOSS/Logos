@@ -9,5 +9,5 @@ services:
       - type: tmpfs
         target: /var/lib/postgresql/data
         tmpfs:
-          size: 1073741824
+          size: 4294967296
           mode: 01777
