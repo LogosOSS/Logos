@@ -11,9 +11,9 @@ import json
 import logging
 from typing import Any, Iterable
 
+from logos_worker_node.gpu_slice import parse_gpu_indices
 from logos_worker_node.metal import is_metal_backend
 from logos_worker_node.models import AppConfig, DeviceInfo, MetalConfig, model_can_sleep
-from logos_worker_node.profile_utils import parse_gpu_indices
 from logos_worker_node.vllm_compat import DEFAULT_VLLM
 
 logger = logging.getLogger(__name__)

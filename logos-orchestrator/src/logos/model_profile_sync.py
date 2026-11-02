@@ -9,6 +9,7 @@ The state below assumes a single orchestrator process.
 import asyncio
 import datetime
 import logging
+import os
 import threading
 import time
 from typing import Any, Dict
@@ -89,6 +90,8 @@ class ModelProfileSyncService:
         self.last_runtime_ts: dict[int, Any] = {}
         # provider_id -> monotonic time its last snapshot write started
         self.last_snapshot_at: dict[int, float] = {}
+        if "LOGOS_SHARED_PROFILE_MAX_AGE_DAYS" in os.environ:
+            logger.warning("LOGOS_SHARED_PROFILE_MAX_AGE_DAYS is no longer used: shared calibrations have no age limit")
 
     async def capture_status(
         self,
@@ -426,13 +429,13 @@ class ModelProfileSyncService:
             )
 
     def models_in_calibration(self, provider_id: int) -> frozenset[str]:
-        lookup = getattr(_main._logosnode_registry, "models_in_calibration", None)
-        return lookup(provider_id) if lookup is not None else frozenset()
+        registry = _main._logosnode_registry
+        return registry.models_in_calibration(provider_id) if registry is not None else frozenset()
 
     def _snapshots_linked(self, provider_id: int, model_names: list[str]) -> None:
-        lift = getattr(_main._logosnode_registry, "snapshots_linked", None)
-        if lift is not None:
-            lift(provider_id, model_names)
+        registry = _main._logosnode_registry
+        if registry is not None:
+            registry.snapshots_linked(provider_id, model_names)
 
     def offer_to_siblings_now(self, provider_id: int, model_names: list[str]) -> Dict[int, list[str]]:
         """Let every other node of the same key adopt what this node just measured."""
@@ -514,8 +517,8 @@ class ModelProfileSyncService:
         self.resync_rounds.pop(provider_id, None)
         self.pending_resyncs.pop(provider_id, None)
         self.outdated_format_warned.discard(provider_id)
-        for key in [key for key in self.recorded_calibrations if key[0] == provider_id]:
-            del self.recorded_calibrations[key]
+        for key in [key for key in list(self.recorded_calibrations) if key[0] == provider_id]:
+            self.recorded_calibrations.pop(key, None)
         self.write_cache.forget(provider_id)
 
 

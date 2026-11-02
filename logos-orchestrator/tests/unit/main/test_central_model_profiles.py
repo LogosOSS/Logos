@@ -306,6 +306,7 @@ def test_clear_unsupported_pushes_the_model(monkeypatch):
     result = asyncio.run(logosnode_mod.logosnode_clear_unsupported(data))
     assert result["sync_revision"] == 4
     assert pushed == [(1, ["org/model"])]
+    assert db.session.commits == 1
 
 
 def test_invalidation_pushes_every_affected_node(monkeypatch):
@@ -322,6 +323,7 @@ def test_invalidation_pushes_every_affected_node(monkeypatch):
     data = LogosNodeInvalidateCalibrationRequest(logos_key="k", calibration_id=9, reason="wrong footprint")
     result = asyncio.run(logosnode_mod.logosnode_invalidate_calibration(data))
     assert db.invalidated == [(9, "wrong footprint")]
+    assert db.session.commits == 1
     assert pushed == [(1, ["org/model"]), (2, ["org/model"])]
     assert len(result["affected"]) == 2
 
@@ -344,6 +346,7 @@ def test_reset_is_a_central_change_pushed_to_the_worker(monkeypatch):
     data = LogosNodeResetProfilesRequest(logos_key="k", provider_id=1, model_names=["org/model"])
     result = asyncio.run(logosnode_mod.logosnode_reset_profiles(data))
     assert db.reset == (1, ["org/model"])
+    assert db.session.commits == 1
     assert result == {"provider_id": 1, "reset": ["org/model"], "shared_profiles": True}
     assert pushed == [(1, ["org/model"])]
     assert (1, "org/model") not in profile_sync.recorded_calibrations
@@ -540,6 +543,7 @@ def test_a_reported_key_lets_the_node_adopt_a_shared_calibration(monkeypatch):
     profile_sync.update_reported_keys(5, {"org/model": "H1"}, {"org/model": 2})
     assert db.slice_counts == {"org/model": 2}
     assert db.adopted == [(5, ["org/model"], True)]
+    assert db.session.commits == 2
 
 
 def test_sharing_can_be_switched_off(monkeypatch):
@@ -564,6 +568,7 @@ def test_a_fresh_calibration_is_offered_to_the_nodes_of_its_key(monkeypatch):
         7: ["org/model"],
         8: ["org/model"],
     }
+    assert db.session.commits == 2
 
 
 def test_a_node_calibrating_the_model_is_not_offered_one(monkeypatch):
@@ -628,6 +633,7 @@ def test_a_rejected_shared_calibration_is_pushed_to_every_node_that_lost_it(monk
 
     asyncio.run(_run())
     assert db.rejected == [(2, "org/model", 11)]
+    assert db.session.commits == 1
     assert pushed == [(1, ["org/model"]), (2, ["org/model"])]
 
 
@@ -824,3 +830,11 @@ def test_a_reservation_stores_the_workers_key_before_judging_the_profile(monkeyp
     answer = reserve(calibration_key_hash="NEW", slice_gpu_count=2)
     assert answer["profiles"]["org/model"]["calibration_stale"] is True
     assert (db.reported, db.slice_counts) == ("NEW", {"org/model": 2})
+    assert db.session.commits == 1
+
+
+def test_the_removed_age_limit_variable_is_reported(monkeypatch, caplog):
+    monkeypatch.setenv("LOGOS_SHARED_PROFILE_MAX_AGE_DAYS", "7")
+    with caplog.at_level("WARNING"):
+        type(profile_sync)()
+    assert any("LOGOS_SHARED_PROFILE_MAX_AGE_DAYS" in record.getMessage() for record in caplog.records)

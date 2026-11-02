@@ -30,7 +30,7 @@ Rules:
 
 ## Database pattern
 
-- `DBManager` (`dbutils/dbmanager.py`) is a context manager: `with DBManager() as db: ...`. Auto-commits on exit.
+- `DBManager` (`dbutils/dbmanager.py`) is a context manager: `with DBManager() as db: ...`. Rolls back on an error and closes the session on exit; callers commit.
 - All queries use parameterized raw SQL via `sqlalchemy.text()` with `:param_name` syntax.
 - DB methods return `(result_dict, status_code)` tuples — **always unpack** and return `JSONResponse(content=result, status_code=status)` from endpoints, never raw tuples.
 - For tests, `DBManager` is mocked/monkeypatched — never connect to a real DB in unit tests.

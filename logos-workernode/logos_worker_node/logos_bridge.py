@@ -31,6 +31,7 @@ except Exception:  # noqa: BLE001
 
 from logos_worker_node import perf_trace as worker_perf
 from logos_worker_node import prometheus_metrics as prom
+from logos_worker_node.gpu_slice import calibration_gpu_slice, parse_gpu_indices
 from logos_worker_node.lane_manager import _lane_id_from_config, _normalize_lane_id
 from logos_worker_node.metal import is_metal_backend
 from logos_worker_node.model_profiles import SYNC_MODEL_PROFILES_ACTION
@@ -42,7 +43,6 @@ from logos_worker_node.models import (
     model_can_sleep,
     model_uses_sharded_checkpoint,
 )
-from logos_worker_node.profile_utils import calibration_gpu_slice, parse_gpu_indices
 from logos_worker_node.request_content import MULTIPART_PAYLOAD_KEY, httpx_request_parts
 from logos_worker_node.runtime import build_runtime_status
 from logos_worker_node.vllm_compat import DEFAULT_VLLM

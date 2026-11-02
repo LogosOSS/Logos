@@ -77,7 +77,13 @@ def profile_needs_calibration(profile: Mapping[str, Any] | None) -> bool:
         return False
     sleep_na = bool(profile.get("sleep_mode_disabled"))
     min_kv, max_kv = profile.get("min_kv_cache_mb"), profile.get("max_kv_cache_mb")
-    collapsed_envelope = min_kv is not None and max_kv is not None and min_kv > 0 and min_kv == max_kv
+    collapsed_envelope = (
+        profile.get("residency_source") == "calibrated"
+        and min_kv is not None
+        and max_kv is not None
+        and min_kv > 0
+        and min_kv == max_kv
+    )
     return (
         profile.get("base_residency_mb") is None
         # An HF estimate is no measurement; the worker keeps such a model a

@@ -1,6 +1,6 @@
 """A VRAM snapshot that fails to persist must not drop the worker.
 
-``_capture_logosnode_provider_snapshot`` is awaited inside the worker
+``ModelProfileSyncService.capture_status`` is awaited inside the worker
 WebSocket ``status`` handler. If it raised, the exception would propagate out
 of that handler and the session would be detached — for every worker. That is
 the failure mode of starting the orchestrator before the webservice migration

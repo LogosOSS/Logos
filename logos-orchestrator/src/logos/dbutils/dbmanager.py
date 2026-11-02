@@ -338,55 +338,37 @@ _RESET_PROFILE_COLUMNS = tuple(
 )
 
 
-def _upsert_model_profile_sql(
-    extra: Optional[Dict[str, str]] = None,
-    conflict_set: Optional[Dict[str, str]] = None,
-    where: str = "",
-) -> str:
-    """INSERT ... ON CONFLICT for one model_profiles row.
-
-    ``extra`` maps further columns to value expressions. COALESCE keeps rows
-    that predate max_reported_context_length from staying NULL under GREATEST.
-    """
-    typed = list(_model_profile_column_params({}))
-    extra = extra or {}
-    columns = ["provider_id", "model_name", *typed, *extra, "updated_at"]
-    values = [f":{column}" for column in ["provider_id", "model_name", *typed]]
-    values += [*extra.values(), "CURRENT_TIMESTAMP"]
-    assignments = {column: f"EXCLUDED.{column}" for column in typed}
-    assignments["max_reported_context_length"] = (
-        "GREATEST(COALESCE(model_profiles.max_reported_context_length, 0), " "EXCLUDED.max_reported_context_length)"
+# Built once: it runs for every changed profile of every worker status. The
+# conflict update leaves sync_revision alone; its WHERE only accepts an echo of
+# the stored revision. COALESCE keeps rows that predate
+# max_reported_context_length from staying NULL under GREATEST.
+_PROFILE_TYPED_COLUMNS = tuple(_model_profile_column_params({}))
+_PERSIST_CENTRAL_PROFILE_SQL = (
+    "INSERT INTO model_profiles (provider_id, model_name, "
+    + ", ".join(_PROFILE_TYPED_COLUMNS)
+    + ", profile, calibration_key_hash, sync_revision, updated_at) VALUES (:provider_id, :model_name, "
+    + ", ".join(f":{column}" for column in _PROFILE_TYPED_COLUMNS)
+    + ", CAST(:profile AS jsonb), :calibration_key_hash, :sync_revision, CURRENT_TIMESTAMP) "
+    "ON CONFLICT (provider_id, model_name) DO UPDATE SET "
+    + ", ".join(
+        (
+            "max_reported_context_length = GREATEST("
+            "COALESCE(model_profiles.max_reported_context_length, 0), EXCLUDED.max_reported_context_length)"
+            if column == "max_reported_context_length"
+            else f"{column} = EXCLUDED.{column}"
+        )
+        for column in _PROFILE_TYPED_COLUMNS
     )
-    assignments.update(conflict_set or {})
-    assignments["updated_at"] = "CURRENT_TIMESTAMP"
-    sql = (
-        f"INSERT INTO model_profiles ({', '.join(columns)}) VALUES ({', '.join(values)}) "
-        "ON CONFLICT (provider_id, model_name) DO UPDATE SET "
-        + ", ".join(f"{column} = {value}" for column, value in assignments.items())
-    )
-    return f"{sql} WHERE {where}" if where else sql
-
-
-# Built once: these run for every changed profile of every worker status.
-_PERSIST_CENTRAL_PROFILE_SQL = _upsert_model_profile_sql(
-    extra={
-        "profile": "CAST(:profile AS jsonb)",
-        "calibration_key_hash": ":calibration_key_hash",
-        "sync_revision": ":sync_revision",
-    },
-    conflict_set={
-        # The echo leaves out what config.yml overrides; keep the measured
-        # value stored beneath, so dropping the override restores it.
-        "profile": (
-            "EXCLUDED.profile || COALESCE((SELECT jsonb_object_agg(kept.key, kept.value) "
-            "FROM jsonb_each(model_profiles.profile) AS kept "
-            "WHERE kept.key = ANY(CAST(:overridden_fields AS text[]))), '{}'::jsonb)"
-        ),
-        # An echo without a key must not erase the one hello
-        # reported; staleness and sharing are judged on it.
-        "calibration_key_hash": "COALESCE(EXCLUDED.calibration_key_hash, model_profiles.calibration_key_hash)",
-    },
-    where="model_profiles.sync_revision = EXCLUDED.sync_revision",
+    # The echo leaves out what config.yml overrides; keep the measured value
+    # stored beneath, so dropping the override restores it.
+    + ", profile = EXCLUDED.profile || COALESCE((SELECT jsonb_object_agg(kept.key, kept.value) "
+    "FROM jsonb_each(model_profiles.profile) AS kept "
+    "WHERE kept.key = ANY(CAST(:overridden_fields AS text[]))), '{}'::jsonb)"
+    # An echo without a key must not erase the one hello reported; staleness
+    # and sharing are judged on it.
+    ", calibration_key_hash = COALESCE(EXCLUDED.calibration_key_hash, model_profiles.calibration_key_hash)"
+    ", updated_at = CURRENT_TIMESTAMP "
+    "WHERE model_profiles.sync_revision = EXCLUDED.sync_revision"
 )
 
 

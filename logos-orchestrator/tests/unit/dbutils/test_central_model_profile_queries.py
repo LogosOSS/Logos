@@ -18,7 +18,6 @@ from logos.dbutils.dbmanager import (
     _RESET_PROFILE_COLUMNS,
     DBManager,
     _model_profile_column_params,
-    _upsert_model_profile_sql,
 )
 from logos.dbutils.dbrequest import LogosNodeModelProfilesRequest
 
@@ -56,14 +55,10 @@ def test_echo_without_a_key_hash_keeps_the_reported_one():
 
 
 def test_upsert_sql_guards_and_keeps_the_context_high_water_mark():
-    sql = _upsert_model_profile_sql(
-        extra={"sync_revision": ":sync_revision"},
-        conflict_set={"profile": "EXCLUDED.profile"},
-        where="model_profiles.sync_revision = EXCLUDED.sync_revision",
-    )
+    sql = _PERSIST_CENTRAL_PROFILE_SQL
     assert sql.endswith("WHERE model_profiles.sync_revision = EXCLUDED.sync_revision")
     assert "max_reported_context_length = GREATEST(COALESCE(model_profiles.max_reported_context_length, 0)" in sql
-    assert "profile = EXCLUDED.profile" in sql
+    assert "profile = EXCLUDED.profile ||" in sql
     assert ":sync_revision" in sql
     assert "sync_revision = EXCLUDED" not in sql.split(" WHERE ")[0]
 

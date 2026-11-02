@@ -51,8 +51,8 @@ from logos_worker_node.calibration import (
     select_calibration_gpus,
     warmup_inference,
 )
-from logos_worker_node.model_profiles import ModelProfileRegistry
-from logos_worker_node.profile_utils import calibration_gpu_slice, merge_profile, parse_gpu_indices
+from logos_worker_node.gpu_slice import calibration_gpu_slice, parse_gpu_indices
+from logos_worker_node.model_profiles import ModelProfileRegistry, merge_profile
 
 
 @pytest.fixture(autouse=True)

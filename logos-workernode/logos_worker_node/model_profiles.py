@@ -28,8 +28,6 @@ import time
 from dataclasses import dataclass, fields
 from typing import Any
 
-from logos_worker_node.profile_utils import merge_profile
-
 logger = logging.getLogger(__name__)
 
 SYNC_MODEL_PROFILES_ACTION = "sync_model_profiles"
@@ -995,6 +993,35 @@ _RECORD_FIELDS = frozenset(field.name for field in fields(ModelProfileRecord))
 def _awaits_snapshot(profile: ModelProfileRecord) -> bool:
     """A local calibration Logos has not linked to a snapshot yet."""
     return profile.calibration_origin == ORIGIN_LOCAL and profile.calibration_id is None
+
+
+# A null here is itself the measurement: the model must not sleep here, and a
+# stale value would hide that (it would also survive an enable_sleep_mode flip
+# back to true). For every other field None means "not measured" and keeps
+# what is already known.
+_PROBE_OWNED_PROFILE_FIELDS = frozenset({"sleeping_residual_mb"})
+
+
+def merge_profile(prior: dict[str, Any] | None, measured: dict[str, Any]) -> dict[str, Any]:
+    """Layer a fresh calibration result over the profile already on disk.
+
+    A calibration run measures what it can reach and leaves the rest ``None``:
+    the sleep host-RAM transients for a level it did not run, and every field
+    the probe does not look at at all (``disk_size_bytes``,
+    ``sleep_mode_disabled``, ``calibration_unsupported``, the operator's
+    overrides). Assigning the result over the entry wipes those — the flags
+    included, so a nosleep model loses the very marker that says its null
+    sleep fields are expected. A measured value replaces the stored one;
+    ``None`` means "not measured here" and keeps what was already known,
+    except for the fields in :data:`_PROBE_OWNED_PROFILE_FIELDS`, where a null
+    is itself the measurement.
+    """
+    merged = dict(prior or {})
+    for key, value in measured.items():
+        if value is None and key in merged and key not in _PROBE_OWNED_PROFILE_FIELDS:
+            continue
+        merged[key] = value
+    return merged
 
 
 def _optional_int(value: Any) -> int | None:

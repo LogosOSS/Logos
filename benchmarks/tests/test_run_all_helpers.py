@@ -529,3 +529,16 @@ def test_the_incomplete_calibration_flow_checks_the_arm_even_when_nothing_is_pen
                 )
             )
     stop.assert_not_called()
+
+
+def test_admin_base_from_url_keeps_the_host_only():
+    assert bm._admin_base_from_url("https://logos.example:8080/v1", 443) == "https://logos.example:443"
+    assert bm._admin_base_from_url("logos.example", 443) == "https://logos.example:443"
+    assert bm._admin_base_from_url("http://[::1]:8080", 8443) == "https://[::1]:8443"
+
+
+def test_admin_base_from_url_rejects_a_url_without_a_host():
+    with pytest.raises(ValueError):
+        bm._admin_base_from_url("http://[::1", 443)
+    with pytest.raises(ValueError):
+        bm._admin_base_from_url("", 443)

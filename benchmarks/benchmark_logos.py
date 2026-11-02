@@ -4362,8 +4362,13 @@ def _admin_base_from_url(logos_url: str, admin_port: int) -> str:
     """Build the admin/logosnode REST base (https://<host>:<admin_port>) from the
     user-facing logos URL. The /logosdb/providers/logosnode/* endpoints are served
     on the default HTTPS port (443) alongside the user-facing API."""
-    host = urlparse(logos_url if "://" in logos_url else f"//{logos_url}").hostname or ""
-    return f"https://{host}:{admin_port}"
+    try:
+        host = urlparse(logos_url if "://" in logos_url else f"//{logos_url}").hostname or ""
+    except ValueError:
+        host = ""
+    if not host:
+        raise ValueError(f"Cannot read a host from the Logos URL {logos_url!r}")
+    return f"https://[{host}]:{admin_port}" if ":" in host else f"https://{host}:{admin_port}"
 
 
 async def _poll_model_states(

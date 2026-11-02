@@ -176,6 +176,10 @@ it starts any lane. While Logos is unreachable, or does not offer that
 endpoint yet, the worker waits and retries (backoff up to 60 s), so update
 the Logos server before the workers.
 
+A worker that still keeps its own profile file (it predates central profiles)
+is not supported any more: its profiles are ignored and Logos logs one
+warning per provider. Update it; its old `model_profiles.yml` is not imported.
+
 A calibration is tied to the GPU class, vLLM version and worker configuration
 it was measured under. When any of them changes, the profile keeps serving
 but is reported with `calibration_stale: true`, and the next calibration

@@ -434,7 +434,7 @@ class CalibrationOrchestrator:
             if model_name in capacity_skip:
                 continue
             profile = profiles.get(model_name)
-            if profile_needs_calibration(profile.to_dict() if profile is not None else None):
+            if profile_needs_calibration(vars(profile) if profile is not None else None):
                 return True
         return False
 

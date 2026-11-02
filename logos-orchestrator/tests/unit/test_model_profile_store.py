@@ -200,6 +200,11 @@ def test_every_missing_measurement_needs_calibration():
     assert profile_needs_calibration({**_MEASURED, "min_kv_cache_mb": 8.0, "max_kv_cache_mb": 8.0}) is True
 
 
+def test_a_collapsed_envelope_counts_only_for_a_calibrated_profile():
+    envelope = {**_MEASURED, "min_kv_cache_mb": 8.0, "max_kv_cache_mb": 8.0}
+    assert profile_needs_calibration({**envelope, "residency_source": "measured"}) is False
+
+
 def test_an_hf_estimate_still_needs_calibration():
     assert profile_needs_calibration({**_MEASURED, "residency_source": "hf"}) is True
     assert profile_needs_calibration({**_MEASURED, "residency_source": "hf", "calibration_unsupported": True}) is False

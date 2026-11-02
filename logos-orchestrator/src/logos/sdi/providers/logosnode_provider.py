@@ -36,6 +36,9 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+_PROFILE_FIELDS = tuple(item.name for item in fields(ModelProfile) if item.name != "model_name")
+
+
 class LogosNodeDataProvider:
     """Unified local-provider SDI source for worker-backed lanes."""
 
@@ -703,7 +706,7 @@ class LogosNodeDataProvider:
         for model_name, data in raw_profiles.items():
             if not isinstance(data, dict):
                 continue
-            values = {item.name: data.get(item.name) for item in fields(ModelProfile) if item.name != "model_name"}
+            values = {name: data.get(name) for name in _PROFILE_FIELDS}
             values["measurement_count"] = int(data.get("measurement_count", 0) or 0)
             values["last_measured_epoch"] = float(data.get("last_measured_epoch", 0.0) or 0.0)
             profiles[str(model_name)] = ModelProfile(model_name=str(model_name), **values)

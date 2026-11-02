@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
-from logos_worker_node.profile_utils import calibration_gpu_slice, parse_gpu_indices
+from logos_worker_node.gpu_slice import calibration_gpu_slice, parse_gpu_indices
 from logos_worker_node.vllm_compat import (
     _BAKED_QUANT_METHODS_FILENAME,
     _FATAL_LOAD_ERROR_PATTERNS,
