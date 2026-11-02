@@ -25,7 +25,7 @@ The result of a deployment is one of these:
 | `succeeded` | The new container runs and is healthy. | 0 |
 | `unchanged` | The container already ran the requested image. | 0 |
 | `rolled_back` | The new container failed, or the manager itself failed three times in a row after the swap. The previous version runs again. | 10 |
-| `failed` | The deployment failed. See `failure` in the record: `pull_failed`, `drain_timeout` (the node did not drain), `drain_blocked` (the node never got its turn), `swap_failed`, `verify_failed` (no previous version to restore), `rollback_failed`, `internal_error`. | 11 |
+| `failed` | The deployment failed. See `failure` in the record: `pull_failed`, `drain_timeout` (the node did not drain), `drain_blocked` (the node never got its turn), `drain_unknown` (the orchestrator stopped answering after the cordon), `swap_failed`, `verify_failed` (no previous version to restore), `rollback_failed`, `internal_error`. | 11 |
 
 `deploy --wait` ends with exit code 12 if the wait runs out before the deployment ends. The deployment itself keeps
 running. Attach to it again with `node-manager wait <id>`. `deploy --until-pulled` ends with exit code 0 as soon as the
@@ -81,6 +81,12 @@ The manager skips the drain and replaces the container as before, with a note "d
 cannot ask the orchestrator: the address or the key is missing, the orchestrator does not know the endpoint (an older
 version) or the key, or it did not answer for `ORCHESTRATOR_RETRY_WINDOW_S` (2 minutes). An orchestrator problem must not
 stop the deployments that may repair it. `DRAIN_ENABLED=false` switches the whole phase off.
+
+This holds only until the cordon is granted. After that, requests may still run, and the manager never replaces the
+container without an answer that the node has drained. If the orchestrator stops answering, the manager keeps asking
+until `DRAIN_TIMEOUT_S` is over. An answer that asking again cannot change (for example an unknown key) ends it at once.
+The deployment then ends as `failed` (`drain_unknown`), and the running container was not touched. The manager gives the
+cordon back as far as the orchestrator answers. Otherwise it expires after 30 minutes.
 
 ### Reports
 

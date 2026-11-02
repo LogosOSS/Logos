@@ -278,8 +278,10 @@ class Deployer:
     def _drain(self, deployment: Deployment) -> None:
         """Cordon the node at the orchestrator and wait until the requests that run on it are done.
 
-        The cordon is held until the deployment ends. If the orchestrator cannot be asked, the deployment goes on
-        without a drain: an orchestrator problem must not stop the deployments that may repair it.
+        The cordon is held until the deployment ends. If the orchestrator cannot be asked before it granted the
+        cordon, the deployment goes on without a drain: an orchestrator problem must not stop the deployments that may
+        repair it. Once the cordon is granted, an orchestrator that stops answering ends the deployment instead,
+        because the requests that still run must not be cut.
         """
         if not self.settings.drain_enabled:
             self._advance(deployment, Phase.SWAPPING)
@@ -290,17 +292,13 @@ class Deployer:
                 deployment, Phase.SWAPPING, "draining skipped: the manager has no orchestrator address or node key"
             )
             return
-        try:
-            drained = self._wait_for_drain(deployment, client)
-        except OrchestratorUnavailable as exc:
-            logger.warning("Deployment %s: draining skipped: %s", deployment.id, exc)
-            self._advance(deployment, Phase.SWAPPING, f"draining skipped: {exc}")
-            return
-        if drained:
-            self._advance(deployment, Phase.SWAPPING, "the node has drained; replacing the container")
+        self._wait_for_drain(deployment, client)
 
-    def _wait_for_drain(self, deployment: Deployment, client: OrchestratorClient) -> bool:
-        """Ask for the cordon until the node has drained. False if the deployment ended instead.
+    def _wait_for_drain(self, deployment: Deployment, client: OrchestratorClient) -> None:
+        """Ask for the cordon until the node has drained, and end the phase.
+
+        The record always leaves this phase: it goes on to the swap, because the node has drained or because the drain
+        was skipped, or the deployment ends as failed.
 
         Every call asks for the cordon again, which the orchestrator answers with the state of the node. That is also
         what renews the cordon, and what takes it again if the orchestrator forgot it, for example after a restart.
@@ -314,7 +312,27 @@ class Deployer:
         drain = _Budget(self, self.settings.drain_timeout_s, deployment.cordoned_at) if deployment.cordoned_at else None
         while True:
             self._check_stop()
-            reply = self._ask(lambda: client.cordon(deployment.id))
+            try:
+                reply = self._ask(lambda: client.cordon(deployment.id))
+            except OrchestratorUnavailable as exc:
+                if deployment.cordoned_at is None or drain is None:
+                    # No cordon is held, so there is nothing to protect: go on without a drain.
+                    logger.warning("Deployment %s: draining skipped: %s", deployment.id, exc)
+                    self._advance(deployment, Phase.SWAPPING, f"draining skipped: {exc}")
+                    return
+                # The cordon is held and requests may still run. Without an answer the manager cannot know they are
+                # done, so it never replaces the container: it asks again until the drain limit, then gives up.
+                if exc.retryable and not drain.exhausted():
+                    self._progress(deployment, f"the orchestrator does not answer ({exc}); asking again")
+                    continue
+                self._finish(
+                    deployment,
+                    Outcome.FAILED,
+                    FailureKind.DRAIN_UNKNOWN,
+                    f"the orchestrator stopped answering after the cordon ({exc}), so the node may still have "
+                    "requests running. The running container was not touched.",
+                )
+                return
             if not reply.granted:
                 if deployment.cordoned_at is not None:
                     # The orchestrator forgot the cordon and another node holds it now.
@@ -333,7 +351,7 @@ class Deployer:
                         f"the node did not get its turn within {int(turn.limit_s)} s: {why}. "
                         "The running container was not touched.",
                     )
-                    return False
+                    return
                 self._progress(deployment, f"waiting for its turn: {why}")
                 self._pause()
                 continue
@@ -351,7 +369,8 @@ class Deployer:
                 # The worker session that goes away with the old container. The new container shows up as another one.
                 deployment.session_before = reply.session_id
                 self._event(deployment, f"the node has drained after {int(drain.used())} s")
-                return True
+                self._advance(deployment, Phase.SWAPPING, "the node has drained; replacing the container")
+                return
             if drain.exhausted():
                 self._finish(
                     deployment,
@@ -360,7 +379,7 @@ class Deployer:
                     f"the node did not drain within {int(drain.limit_s)} s: {self._in_flight_text(reply)} "
                     "still running. The cordon was lifted and the running container was not touched.",
                 )
-                return False
+                return
             self._progress(deployment, f"waiting for the node to drain: {self._in_flight_text(reply)} running")
             self._pause()
 

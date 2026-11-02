@@ -64,6 +64,9 @@ class FailureKind(str, Enum):
     DRAIN_TIMEOUT = "drain_timeout"
     # The node never got its turn: another node stayed in maintenance, or this one calibrated, for the whole limit.
     DRAIN_BLOCKED = "drain_blocked"
+    # The orchestrator stopped answering after it had cordoned the node, so nobody knows whether the requests are done.
+    # The cordon was given back as far as possible and the running container was not touched.
+    DRAIN_UNKNOWN = "drain_unknown"
     SWAP_FAILED = "swap_failed"
     VERIFY_FAILED = "verify_failed"
     ROLLBACK_FAILED = "rollback_failed"

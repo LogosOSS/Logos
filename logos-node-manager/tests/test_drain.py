@@ -266,16 +266,47 @@ def test_an_answer_that_asking_again_cannot_change_skips_the_drain_at_once(drain
     assert orchestrator.count("cordon") == 1
 
 
-def test_an_orchestrator_that_disappears_during_the_drain_does_not_stop_the_deployment(
-    draining_deployer, orchestrator, store
+def test_an_orchestrator_that_disappears_after_the_cordon_never_lets_the_container_be_replaced(
+    draining_deployer, orchestrator, docker, store
 ):
     orchestrator.cordon_replies = [BUSY, unreachable()]
 
     record = draining_deployer.process(queued(store, "v2"))
 
-    assert record.outcome is Outcome.SUCCEEDED
+    assert record.outcome is Outcome.FAILED
+    assert record.failure is FailureKind.DRAIN_UNKNOWN
     assert record.cordoned_at is not None
-    assert notes(record, "swapping") == ["draining skipped: connection refused"]
+    assert up_calls(docker) == [], "requests may still run, so the container is not touched"
+    assert not notes(record, "swapping")
+    assert "may still have requests running" in record.message
+    assert orchestrator.count("release") >= 1, "the cordon is given back as far as the orchestrator answers"
+
+
+def test_an_outage_after_the_cordon_is_waited_out_within_the_drain_limit(
+    draining_deployer, orchestrator, docker, store
+):
+    draining_deployer.settings = replace(draining_deployer.settings, drain_timeout_s=900)
+    # More failures than one retry window of 120 s holds (one try every 5 s).
+    orchestrator.cordon_replies = [BUSY] + [unreachable()] * 40 + [DRAINED]
+
+    record = draining_deployer.process(queued(store, "v2"))
+
+    assert record.outcome is Outcome.SUCCEEDED
+    assert not any("skipped" in note for note in notes(record, "swapping"))
+    assert len(up_calls(docker)) == 1
+
+
+def test_an_answer_that_asking_again_cannot_change_ends_the_deployment_after_the_cordon(
+    draining_deployer, orchestrator, docker, store
+):
+    orchestrator.cordon_replies = [BUSY, unreachable(retryable=False)]
+
+    record = draining_deployer.process(queued(store, "v2"))
+
+    assert record.outcome is Outcome.FAILED
+    assert record.failure is FailureKind.DRAIN_UNKNOWN
+    assert orchestrator.count("cordon") == 2
+    assert up_calls(docker) == []
 
 
 # ---------------------------------------------------------------------- The cordon is given back on every ending
