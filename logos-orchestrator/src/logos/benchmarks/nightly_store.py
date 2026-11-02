@@ -491,6 +491,26 @@ def record_comparison(benchmark_id, baseline_id, parameters, original, search=No
         db.session.commit()
 
 
+def adoption_candidate(pair_id, search, report):
+    """Read successful measurements for the reserved deployment before adoption."""
+    from logos.benchmarks import optimization
+
+    ids = [item["benchmark_id"] for item in report if item.get("status") == "success" and item.get("benchmark_id")]
+    if not ids:
+        return None
+    with DBManager() as db:
+        runs = list(
+            db.session.execute(
+                text(
+                    "SELECT id, configuration, metrics, sample_size FROM model_provider_benchmarks "
+                    "WHERE model_provider_id = :pair AND id = ANY(:ids)"
+                ),
+                {"pair": pair_id, "ids": ids},
+            ).mappings()
+        )
+    return optimization.adoption_candidate(search, runs, report)
+
+
 def finish(pair_id, state, report, search=None):
     """Commit restored state, the observed winner and its completion event together."""
     from logos.benchmarks.optimization import eligible, select_state
@@ -526,6 +546,9 @@ def finish(pair_id, state, report, search=None):
                 else []
             )
             optimizer = select_state(search, runs, report)
+            adopted = next((item for item in report if item.get("status") == "adopted"), None)
+            if adopted:
+                optimizer["production_adoption"] = adopted
             baseline_id = next(
                 (
                     item.get("benchmark_id")
@@ -580,6 +603,7 @@ def finish(pair_id, state, report, search=None):
                 "rounds": event_optimizer.get("nightly_session", {}).get("rounds", 1),
                 "reference_id": event_optimizer.get("reference_id"),
                 "best_benchmark_id": event_optimizer.get("best_benchmark_id"),
+                "production_adoption": event_optimizer.get("production_adoption"),
             }
             db.session.execute(
                 text(
@@ -629,7 +653,12 @@ async def deliver_completion_events():
             "benchmark_result_ready",
             "Nightly benchmark finished",
             f"{payload['provider_name']}: {payload['successful_configurations']} successful configurations. "
-            f"Status: {payload['status']}. Original worker settings restored.",
+            f"Status: {payload['status']}. "
+            + (
+                f"Production uses improved configuration #{payload['production_adoption']['benchmark_id']}."
+                if payload.get("production_adoption")
+                else "Production settings restored."
+            ),
             payload,
             [{"kind": "role", "role": "logos_admin"}],
             event_key=event["event_id"],

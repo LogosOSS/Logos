@@ -179,3 +179,46 @@ def select_state(search, runs, report):
     state["iterations"] = state.get("iterations", 0) + 1
     state["guardrails"] = {"output_token_ratio": [0.8, 1.2], "max_p95_latency_ratio": 1.1}
     return state
+
+
+def adoption_candidate(search, runs, report):
+    """Select only a measured improvement over this round's production baseline."""
+    baseline_id = next(
+        (row.get("benchmark_id") for row in report if row.get("configuration") == 1 and row.get("status") == "success"),
+        None,
+    )
+    baseline = next((run for run in runs if run["id"] == baseline_id), None)
+    if baseline is None or rate(baseline) is None:
+        return None
+    config = baseline["configuration"]
+    if (
+        config.get("nightly", {}).get("series_key") != search["series_key"]
+        or config.get("workload", {}).get("id") != search["workload_id"]
+    ):
+        return None
+    successful = {row.get("benchmark_id") for row in report if row.get("status") == "success"}
+    candidates = [
+        run
+        for run in runs
+        if run["id"] in successful
+        and run["id"] != baseline_id
+        and eligible(run, baseline)
+        and rate(run) > rate(baseline)
+    ]
+    if not candidates:
+        return None
+    winner = max(candidates, key=lambda run: (rate(run), -run["id"]))
+    parameters = winner["configuration"]["nightly"].get("parameters") or {}
+    if not parameters or set(parameters) - BATCHING_KEYS:
+        return None
+    overrides = ServingOverrides(**parameters)
+    if any(type(value) is not int or value <= 0 for value in parameters.values()):
+        return None
+    return {
+        "benchmark_id": winner["id"],
+        "baseline_id": baseline_id,
+        "workload_id": search["workload_id"],
+        "parameters": overrides.model_dump(exclude_none=True),
+        "throughput": rate(winner),
+        "baseline_throughput": rate(baseline),
+    }
