@@ -6,6 +6,7 @@ cannot act on another node. Like the other worker endpoints, they require TLS be
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -179,13 +180,14 @@ async def test_a_report_becomes_one_notification_for_the_logos_admins(service, e
 
 
 @pytest.mark.asyncio
-async def test_a_repeated_report_is_not_a_second_notification(service, emitted):
+async def test_a_repeated_report_carries_the_same_key_so_the_application_server_stores_it_once(service, emitted):
     await logosnode_mod.logosnode_maintenance_report(_report(), _request())
 
     answer = await logosnode_mod.logosnode_maintenance_report(_report(), _request())
 
-    assert answer == {"status": "duplicate"}
-    assert len(emitted) == 1
+    # The application server stores one notification per key, whatever the orchestrator remembers.
+    assert answer == {"status": "accepted"}
+    assert [call["event_key"] for call in emitted] == ["deployment:1:d1", "deployment:1:d1"]
 
 
 @pytest.mark.asyncio
@@ -194,6 +196,7 @@ async def test_the_same_deployment_id_on_two_nodes_is_two_notifications(service,
     await logosnode_mod.logosnode_maintenance_report(_report("key-b"), _request())
 
     assert [call["payload"]["node"] for call in emitted] == ["node-a", "node-b"]
+    assert [call["event_key"] for call in emitted] == ["deployment:1:d1", "deployment:2:d1"]
 
 
 @pytest.mark.asyncio
@@ -207,6 +210,35 @@ async def test_a_notification_that_was_not_delivered_can_be_reported_again(servi
 
     assert exc_info.value.status_code == 503
     assert answer == {"status": "accepted"}
+    assert emitted[0]["event_key"] == emitted[1]["event_key"]
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_during_a_slow_delivery_is_delivered_again_when_the_first_one_fails(service, monkeypatch):
+    """The manager gives up on a slow call and repeats it. The repeat must not be taken for a finished report."""
+    release_first = asyncio.Event()
+    calls: list[dict] = []
+
+    async def emit(**kwargs) -> bool:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            await release_first.wait()
+            return False
+        return True
+
+    monkeypatch.setattr(logosnode_mod, "emit_notification", emit)
+    first = asyncio.create_task(logosnode_mod.logosnode_maintenance_report(_report(), _request()))
+    while not calls:
+        await asyncio.sleep(0.01)
+
+    answer = await logosnode_mod.logosnode_maintenance_report(_report(), _request())
+    release_first.set()
+    with pytest.raises(HTTPException):
+        await first
+
+    assert answer == {"status": "accepted"}
+    assert len(calls) == 2
+    assert calls[0]["event_key"] == calls[1]["event_key"]
 
 
 @pytest.mark.asyncio

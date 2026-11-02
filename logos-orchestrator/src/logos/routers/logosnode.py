@@ -954,16 +954,15 @@ async def logosnode_maintenance_release(data: LogosNodeMaintenanceRequest, reque
 async def logosnode_maintenance_report(data: LogosNodeDeploymentReport, request: Request):
     """Tell the Logos admins how a deployment of the caller's node ended.
 
-    Answers ``accepted`` once the notification reached the application server, and ``duplicate`` for a deployment that
-    was reported before. If the notification could not be delivered the answer is a 503, so the caller reports again.
+    Answers ``accepted`` once the notification is stored at the application server. The notification is named by the
+    node and the deployment, and the application server stores one notification per name, so a repeated report is
+    harmless: it is answered ``accepted`` as well and adds no second inbox item. If the notification could not be
+    delivered the answer is a 503, so the caller reports again.
     """
     provider_id = await _maintenance_provider_id(data, request)
-    maintenance = _main._node_maintenance
-    if not maintenance.claim_report(provider_id, data.deployment_id):
-        return {"status": "duplicate"}
-    notification = deployment_notification(maintenance.node_name(provider_id), data)
-    if not await emit_notification(**notification):
-        maintenance.unclaim_report(provider_id, data.deployment_id)
+    notification = deployment_notification(_main._node_maintenance.node_name(provider_id), data)
+    event_key = f"deployment:{provider_id}:{data.deployment_id}"
+    if not await emit_notification(**notification, event_key=event_key):
         raise HTTPException(status_code=503, detail="The notification could not be delivered")
     return {"status": "accepted"}
 

@@ -113,8 +113,9 @@ events of the deployment stay in `node-manager status --logs`.
 * There is no switch. The manager reports whenever it has `ORCHESTRATOR_URL` and `NODE_KEY`, with or without the drain.
   Without them it cannot reach the orchestrator, and it logs once at the start that nothing is reported.
 * The call is `POST /logosdb/providers/logosnode/node-maintenance/report`. The orchestrator knows the node from the key,
-  so the manager can only report for its own node. A repeated report of the same deployment is answered with
-  `duplicate`, and sends nothing.
+  so the manager can only report for its own node. The notification is named by the node and the deployment, and the
+  application server stores one notification per name. A repeated report of the same deployment is answered like the
+  first one and adds no second notification, also after a restart of the orchestrator.
 * The report is made after the record says the deployment is over, and it never changes the outcome. An orchestrator that
   does not answer is asked again for 30 seconds, so that a report does not hold up the next deployment for long. After
   that the report is not tried again before the next start of the manager. The record keeps `reported_at` once the orchestrator has accepted it, so a stop between the
@@ -368,8 +369,7 @@ replaces the container at once, as a manual `docker compose up` does. With the d
   how the previous deployment ended" of the next run prints the events and the log of a failed container, and
   `node-manager status --logs` shows them on the host. The Logos admins also get a notification when the
   deployment ends (see "Reports").
-* **The reports are one per node.** There is no notification for a whole rollout, and the orchestrator remembers the
-  reports it accepted only in memory. After a restart of the orchestrator a repeated report would be sent again.
+* **The reports are one per node.** There is no notification for a whole rollout.
 * **A drain figure is an estimate.** The status of the worker is a few seconds old, and a request that the orchestrator
   and the worker both count is counted once, so the figure is the larger of the two counts.
 * **The version of the worker is not compared.** The check of the new worker is the new session and its first status. The
