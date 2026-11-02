@@ -11,7 +11,7 @@ import logging
 from dataclasses import replace
 
 import pytest
-from conftest import BUSY, DRAINED, NEW, NOT_BACK, RECONNECTED, UNHEALTHY, WAIT_FOR_TURN, queued
+from conftest import BUSY, DRAINED, NEW, NOT_BACK, OLD, RECONNECTED, REPO, UNHEALTHY, WAIT_FOR_TURN, queued
 
 from logos_node_manager.errors import Interrupted
 from logos_node_manager.orchestrator import CordonReply, NodeStatus, OrchestratorUnavailable
@@ -28,6 +28,56 @@ def notes(record, phase: str) -> list[str]:
 
 def up_calls(docker) -> list[tuple]:
     return [call for call in docker.calls if call[0] == "up"]
+
+
+# ---------------------------------------------------------------------- A deployment with nothing to replace
+
+
+def test_a_container_that_nothing_would_replace_ends_before_the_drain(draining_deployer, orchestrator, docker, store):
+    docker.registry[f"{REPO}:latest"] = OLD
+
+    record = draining_deployer.process(queued(store, "latest"))
+
+    assert record.outcome is Outcome.UNCHANGED
+    assert record.cordoned_at is None
+    assert orchestrator.count("cordon") == 0
+    assert up_calls(docker) == []
+    assert docker.container_info.id == "c-old"
+
+
+def the_configuration_changed(docker):
+    # The image is the same, but a variable or the compose file changed, so Compose recreates the container.
+    docker.compose_hash = "config-2"
+
+
+def nothing_is_known_about_the_configuration(docker):
+    # Without a hash on either side nobody can tell, so the node drains as it did before this check existed.
+    docker.hash_unknown = True
+    docker.container_info = replace(docker.container_info, config_hash=None)
+
+
+def the_container_is_stopped(docker):
+    # Compose has to start it again.
+    docker.container_info = replace(docker.container_info, running=False, status="exited")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [the_configuration_changed, nothing_is_known_about_the_configuration, the_container_is_stopped],
+    ids=lambda change: change.__name__,
+)
+def test_the_same_image_is_still_drained_when_compose_may_replace_or_start_the_container(
+    draining_deployer, orchestrator, docker, store, change
+):
+    docker.registry[f"{REPO}:latest"] = OLD
+    change(docker)
+    orchestrator.cordon_replies = [DRAINED]
+
+    record = draining_deployer.process(queued(store, "latest"))
+
+    assert record.outcome is Outcome.SUCCEEDED
+    assert orchestrator.count("cordon") == 1
+    assert len(up_calls(docker)) == 1
 
 
 # ---------------------------------------------------------------------- The normal way

@@ -13,7 +13,7 @@ A deployment is one request to run a given image tag. The daemon takes requests 
 | Phase | What happens |
 |---|---|
 | `pulling` | Notes the running container, then pulls the new image. If the pull fails, nothing else happens and the running container is not touched. |
-| `draining` | Asks the orchestrator to cordon the node and waits until the node has drained (see "Draining"). Without `DRAIN_ENABLED`, or without an orchestrator to ask, the phase passes at once. |
+| `draining` | Asks the orchestrator to cordon the node and waits until the node has drained (see "Draining"). Without `DRAIN_ENABLED`, or without an orchestrator to ask, the phase passes at once. If Compose would leave the running container alone, the deployment ends as `unchanged` here, before the cordon (see "Draining"). |
 | `swapping` | If the new image differs from the running one, keeps the running image under the name `<image>:previous`. Then runs `docker compose up -d --no-deps` for the worker service. Compose recreates the container when its image or its configuration changed. If nothing changed, the deployment ends as `unchanged`. |
 | `verifying` | Waits until the container is healthy and stays healthy for the stability window (60 s). It fails if the container exits, restarts, reports `unhealthy`, runs another image, or is not healthy after `VERIFY_TIMEOUT_S` (10 minutes by default, 11 minutes in the worker compose file). After a drain it also waits until the orchestrator sees the new worker (see "Draining"). |
 | `rolling_back` | Runs the previous image again. It points the compose image name back at it and recreates the container without a pull, then runs the same check. If the recreation fails, it tries again after 5 s and once more after 10 s, three attempts in all: a replacement that was cut off can leave containers behind that make the first attempt fail. |
@@ -46,6 +46,16 @@ prints it unless it is called with `--no-logs`.
 A deployment that drains does not cut the requests that run on the node. The manager works with the orchestrator,
 because only the orchestrator can keep new requests from reaching the node, and it sees every request on its way to the
 node.
+
+Before it asks for anything, the manager checks whether Compose would replace the container at all. If the container
+runs, runs the pulled image, and was made from the configuration that Compose would make it from now, nothing is
+replaced, and the deployment ends as `unchanged`. The node is not cordoned, does not wait for its turn, and keeps
+serving. The image alone does not decide this: Compose also recreates a container when a variable of the `.env` file,
+the compose file or the image name changed, so such a deployment drains and replaces the container as usual. The
+manager reads the hash of the configuration with `docker compose config --hash` and compares it with the hash that
+Compose put on the container. It only skips the drain if it can read both and they are equal. Compose can also
+recreate a container for reasons that the hash does not show, such as a changed network or volume. The next deployment
+with a change applies those. Otherwise, the steps are:
 
 1. The manager asks the orchestrator for the cordon of its node. The orchestrator knows the node from the key of the
    worker (`NODE_KEY`), so the manager can cordon its own node and no other.

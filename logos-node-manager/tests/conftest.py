@@ -73,8 +73,14 @@ class FakeDocker:
             exit_code=0,
             restart_count=0,
             health="healthy",
+            config_hash="config-1",
         )
         self._timeline: list[dict] = []
+        # What Compose computes for the worker service now. A container made from another value is recreated by ``up``,
+        # also when its image is the same.
+        self.compose_hash = "config-1"
+        # Compose cannot tell the hash: an old version, or a failing command.
+        self.hash_unknown = False
 
         # How a container behaves after it is created, as a list of field overrides handed out one per inspect call.
         # The last entry stays. The old image is the known good one, so a rollback always gets a working container.
@@ -163,7 +169,8 @@ class FakeDocker:
             return CommandResult(("up",), 1, stderr="No such image")
         timeline = self.old_image_timeline if image == OLD else self.new_container_timeline
         current = self.container_info
-        if current is not None and current.image_id == image and not recreate:
+        same_config = current is not None and current.config_hash == self.compose_hash
+        if current is not None and current.image_id == image and same_config and not recreate:
             if current.running:
                 return CommandResult(("up",), 0)  # nothing to change
             # Compose starts a stopped container in place; it does not create another one.
@@ -180,9 +187,13 @@ class FakeDocker:
             exit_code=0,
             restart_count=0,
             health="starting",
+            config_hash=self.compose_hash,
         )
         self._timeline = list(timeline)
         return CommandResult(("up",), 0)
+
+    def config_hash(self, tag: str) -> str | None:
+        return None if self.hash_unknown else self.compose_hash
 
     def container(self) -> ContainerInfo | None:
         if self.container_info is not None and self._timeline:

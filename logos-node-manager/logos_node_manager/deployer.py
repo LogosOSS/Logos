@@ -306,7 +306,35 @@ class Deployer:
                 deployment, Phase.SWAPPING, "draining skipped: the manager has no orchestrator address or node key"
             )
             return
+        if self._nothing_to_replace(deployment):
+            # No request has to be protected from a swap that does not happen: the node keeps serving.
+            self._finish_unchanged(deployment)
+            return
         self._wait_for_drain(deployment, client)
+
+    def _nothing_to_replace(self, deployment: Deployment) -> bool:
+        """Whether Compose would leave the running container alone, so that there is nothing to drain for.
+
+        That holds when the container runs, runs the pulled image, and was made from the configuration that Compose
+        would make it from now. The image alone is not enough: Compose also recreates the container when a variable of
+        the ``.env`` file, the compose file or the image name changed. Whatever cannot be read counts as "something may
+        change", and the node drains as it always did.
+        """
+        try:
+            current = self.docker.container()
+            expected = self.docker.config_hash(deployment.tag)
+        except DockerError:
+            return False
+        return (
+            current is not None
+            and current.running
+            and current.image_id == deployment.target_image_id
+            and current.config_hash is not None
+            and current.config_hash == expected
+        )
+
+    def _finish_unchanged(self, deployment: Deployment) -> None:
+        self._finish(deployment, Outcome.UNCHANGED, message=f"the container already runs {deployment.target_image_ref}")
 
     def _wait_for_drain(self, deployment: Deployment, client: OrchestratorClient) -> None:
         """Ask for the cordon until the node has drained, and end the phase.
@@ -524,9 +552,7 @@ class Deployer:
             and after.image_id == deployment.target_image_id
             and deployment.previous_running
         ):
-            self._finish(
-                deployment, Outcome.UNCHANGED, message=f"the container already runs {deployment.target_image_ref}"
-            )
+            self._finish_unchanged(deployment)
             return
 
         deployment.new_container_id = after.id

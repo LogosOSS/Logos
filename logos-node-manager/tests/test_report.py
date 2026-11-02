@@ -87,7 +87,6 @@ def test_a_failure_is_reported_with_its_kind_and_the_reason(reporting_deployer, 
 def test_a_deployment_that_changes_nothing_is_reported_too(reporting_deployer, orchestrator, docker, store):
     # An admin who waits for the result of a deployment gets one, also when the container already ran the image.
     docker.registry[f"{REPO}:latest"] = OLD
-    orchestrator.cordon_replies = [BUSY, DRAINED]
     record = finish(reporting_deployer, store, tag="latest")
 
     reporting_deployer.report_pending()
@@ -96,7 +95,7 @@ def test_a_deployment_that_changes_nothing_is_reported_too(reporting_deployer, o
     assert record.outcome is Outcome.UNCHANGED
     assert details["outcome"] == "unchanged"
     assert details["failure"] is None
-    assert details["drained_requests"] == 2, "the node was cordoned and drained all the same"
+    assert details["drained_requests"] is None, "the node was not cordoned: there was nothing to replace"
     assert store.load("run-1").reported_at is not None
 
 
