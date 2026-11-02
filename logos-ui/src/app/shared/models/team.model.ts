@@ -197,15 +197,15 @@ export type ObjectiveKey = 'latency' | 'quality' | 'price';
 /** Lifecycle of a detected workflow — active is shown by default; deprecated/ignored stay until soft-deleted. */
 export type AiWorkflowStatus = 'active' | 'deprecated' | 'ignored';
 
-/** A named step within a workflow, with its own SLA and optional tag. */
+/** A named step within a workflow, with its own SLO and optional tag. */
 export interface AiWorkflowStep {
   id: number;
   workflow_id: number;
   name: string;
   sort_order: number;
   tag?: string | null;
-  recommended_sla?: RecommendedSla | null;
-  confirmed_sla?: RecommendedSla | null;
+  recommended_slo?: RecommendedSlo | null;
+  confirmed_slo?: RecommendedSlo | null;
   objective_priority?: ObjectiveKey[];
   confirmed_objective_priority?: ObjectiveKey[] | null;
 }
@@ -307,7 +307,7 @@ export interface UpdateWorkflowPayload {
 }
 
 export interface UpdateWorkflowStepPayload {
-  confirmed_sla?: RecommendedSla | null;
+  confirmed_slo?: RecommendedSlo | null;
   confirmed_objective_priority?: ObjectiveKey[] | null;
   tag?: string | null;
   name?: string;
@@ -330,6 +330,13 @@ export interface WorkflowHistoricMetrics {
 
 export interface WorkflowCandidateMetrics {
   candidate_model: string;
+  sample_count?: number;
+  avg_queue_wait_ms?: number | null;
+  avg_ttft_ms?: number | null;
+  avg_latency_ms?: number | null;
+  p50_latency_ms?: number | null;
+  p95_latency_ms?: number | null;
+  models_seen?: string[];
   note?: string;
 }
 

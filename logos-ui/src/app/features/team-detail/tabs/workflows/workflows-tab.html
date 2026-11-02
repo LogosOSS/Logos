@@ -37,7 +37,7 @@
     diagram beside it when the agent finds a change. Workflows can have
     multiple steps with their own SLOs. Applications may send
     <code>X-Logos-Workflow-Tag</code> to attribute a request to a workflow (or
-    step), and/or <code>X-Logos-SLA</code> to set the SLO per request.
+    step), and/or <code>X-Logos-SLO</code> to set the SLO per request.
     Objective priority is an ordered list of latency, quality, and price
     (most important first). Confirmations can update an application key's
     queue priority; recommendations never take effect until you review them.
@@ -115,22 +115,12 @@
             <div class="workflow-head">
               <div class="workflow-title-row">
                 <h3 class="workflow-name">{{ wf.name }}</h3>
-                <div class="workflow-badges">
-                  <span
-                    class="status-badge status-badge--wf-{{ workflowStatus(wf) }}"
-                    [attr.title]="'Workflow status: ' + workflowStatus(wf)"
-                  >
-                    {{ workflowStatus(wf) }}
-                  </span>
-                  @if (wf.diagram_set_by_owner) {
-                    <span class="meta-chip" title="You edited this diagram; re-analyses keep it">Edited</span>
-                  }
-                  @if (wf.proposed_diagram_mermaid) {
-                    <span class="flag-badge" title="The latest analysis proposed a different diagram">
-                      Agent update
-                    </span>
-                  }
-                </div>
+                <span
+                  class="status-badge status-badge--wf-{{ workflowStatus(wf) }}"
+                  [attr.title]="'Workflow status: ' + workflowStatus(wf)"
+                >
+                  {{ workflowStatus(wf) }}
+                </span>
                 @if (wf.tag) {
                   <button
                     type="button"
@@ -145,6 +135,16 @@
                     }
                   </button>
                 }
+                <div class="workflow-badges">
+                  @if (wf.diagram_set_by_owner) {
+                    <span class="meta-chip" title="You edited this diagram; re-analyses keep it">Edited</span>
+                  }
+                  @if (wf.proposed_diagram_mermaid) {
+                    <span class="flag-badge" title="The latest analysis proposed a different diagram">
+                      Agent update
+                    </span>
+                  }
+                </div>
                 @if (canEdit && !isEditingDiagram(wf)) {
                   <button
                     type="button"
@@ -191,8 +191,8 @@
                   <button
                     type="button"
                     class="btn-secondary btn-sm btn-danger"
-                    [disabled]="workflowActionId() != null"
-                    (click)="softDeleteWorkflow(wf)"
+                    [disabled]="workflowActionId() != null || deleteLoading()"
+                    (click)="askDeleteWorkflow(wf)"
                   >
                     Delete
                   </button>
@@ -237,37 +237,37 @@
                           {{ step.tag }}
                         </button>
                       }
-                      @if (stepSla(step); as sla) {
+                      @if (stepSlo(step); as slo) {
                         <span
-                          class="sla-badge"
-                          [class.sla-badge--muted]="!step.confirmed_sla"
-                          [title]="step.confirmed_sla ? 'Confirmed SLA' : 'Recommended SLA (not confirmed)'"
+                          class="slo-badge"
+                          [class.slo-badge--muted]="!step.confirmed_slo"
+                          [title]="step.confirmed_slo ? 'Confirmed SLO' : 'Recommended SLO (not confirmed)'"
                         >
-                          {{ sla }}
+                          {{ slo }}
                         </span>
                       }
                       @if (canEdit) {
                         <select
                           class="field-select field-select--sm"
-                          [attr.aria-label]="'Confirm SLA for step ' + step.name"
-                          [ngModel]="stepConfirmSlaValue(step)"
-                          (ngModelChange)="setStepSlaPick(step.id, $event)"
+                          [attr.aria-label]="'Confirm SLO for step ' + step.name"
+                          [ngModel]="stepConfirmSloValue(step)"
+                          (ngModelChange)="setStepSloPick(step.id, $event)"
                           [disabled]="confirmingStepId() != null"
                         >
-                          @for (opt of slaOptions; track opt.value) {
+                          @for (opt of sloOptions; track opt.value) {
                             <option [value]="opt.value" [title]="opt.hint">{{ opt.label }}</option>
                           }
                         </select>
                         <button
                           type="button"
                           class="btn-primary btn-sm"
-                          [disabled]="confirmingStepId() != null || !stepConfirmSlaValue(step)"
-                          (click)="confirmStepSla(step)"
+                          [disabled]="confirmingStepId() != null || !stepConfirmSloValue(step)"
+                          (click)="confirmStepSlo(step)"
                         >
                           @if (confirmingStepId() === step.id) {
                             <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
                           }
-                          Confirm SLA
+                          Confirm SLO
                         </button>
                       }
                     </li>
@@ -339,9 +339,36 @@
                         </dd>
                       </div>
                     </dl>
-                    @if (bench.candidate_metrics?.note) {
+                    <h5 class="benchmark-result-title">
+                      Candidate
+                      @if (bench.candidate_model) {
+                        ({{ bench.candidate_model }})
+                      }
+                      @if (bench.candidate_metrics?.sample_count != null) {
+                        — {{ bench.candidate_metrics!.sample_count }} requests
+                      }
+                    </h5>
+                    @if ((bench.candidate_metrics?.sample_count ?? 0) > 0) {
+                      <dl class="benchmark-metrics">
+                        <div>
+                          <dt>Sample count</dt>
+                          <dd>{{ bench.candidate_metrics?.sample_count ?? '—' }}</dd>
+                        </div>
+                        <div>
+                          <dt>Avg TTFT</dt>
+                          <dd>{{ formatMs(bench.candidate_metrics?.avg_ttft_ms) }}</dd>
+                        </div>
+                        <div>
+                          <dt>p50 latency</dt>
+                          <dd>{{ formatMs(bench.candidate_metrics?.p50_latency_ms) }}</dd>
+                        </div>
+                        <div>
+                          <dt>p95 latency</dt>
+                          <dd>{{ formatMs(bench.candidate_metrics?.p95_latency_ms) }}</dd>
+                        </div>
+                      </dl>
+                    } @else if (bench.candidate_metrics?.note) {
                       <p class="benchmark-note">
-                        Candidate <strong>{{ bench.candidate_model }}</strong>:
                         {{ bench.candidate_metrics!.note }}
                       </p>
                     }
@@ -583,3 +610,17 @@
     }
   }
 </div>
+
+<app-modal-confirm
+  [visible]="deleteTarget() !== null"
+  (visibleChange)="$event || deleteTarget.set(null)"
+  [title]="'Delete workflow \'' + (deleteTarget()?.name ?? '') + '\'?'"
+  message="The workflow is soft-deleted and hidden from both the default list and the deprecated / ignored list. It is no longer available in this UI."
+  confirmLabel="Delete"
+  [loading]="deleteLoading()"
+  (confirmed)="confirmDeleteWorkflow()"
+>
+  @if (deleteError()) {
+    <app-error-message modal-error message="Failed to delete workflow, please try again." />
+  }
+</app-modal-confirm>

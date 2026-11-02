@@ -102,30 +102,32 @@ orchestrator serves the traffic as the SLO requires.
 
 #### Lifecycle
 
-Workflows start as **active**. Owners can **Deprecate** or **Ignore** one so
-it leaves the default list (toggle **Show deprecated / ignored** to see them
-again), **Restore** it to active, or **Delete** it (soft — it disappears from
-the list). Soft-deleted workflows are not shown even with the toggle on.
+Workflows start as **active**. Owners can **Deprecate** or **Ignore** a
+workflow so that it leaves the default list. Use the toggle **Show
+deprecated / ignored** to see those workflows again. Owners can **Restore** a
+workflow to active, or **Delete** it (soft delete). Soft-deleted workflows do
+not show, also when the toggle is on.
 
 #### Steps and tags
 
-A workflow may contain multiple **steps**, each with its own recommended (and
-confirmable) SLO. Applications attribute traffic by sending
-`X-Logos-Workflow-Tag` with the workflow or step tag (click the tag chip for a
-copy hint). Alternatively, a request can set its SLO directly with
-`X-Logos-SLA` (`ux-critical`, `ux-high-prio`, or `ux-background`).
+A workflow can contain more than one **step**. Each step has its own
+recommended SLO. Owners can confirm that SLO. Applications attribute traffic
+with `X-Logos-Workflow-Tag` and the workflow or step tag. To copy a tag to
+the clipboard, click its chip. A request can also set its SLO with `X-Logos-SLO`
+(`ux-critical`, `ux-high-prio`, or `ux-background`).
 
-A Logos Admin can **Propose tagging PR**: it queues an agent session that
-opens a pull request in the linked repository to add those headers at the
-call sites. It is not offered to App Admins, because the session pushes as
-the Logos agent's GitHub account.
+A Logos Admin can select **Propose tagging PR**. That action queues an agent
+session. The session opens a pull request in the linked repository. The pull
+request adds those headers at the call sites. App Admins do not see this
+action, because the session pushes as the Logos agent GitHub account.
 
 #### Compare model
 
-**Compare model** opens an inline benchmark: pick a candidate model from the
-catalogue, run compare, and see historic metrics for tagged traffic (sample
-count, latency percentiles, models seen) plus a note that live candidate
-metrics need traffic on that model.
+**Compare model** opens an inline benchmark. Select a candidate model from the
+catalogue. Then select **Run compare**. The panel shows historic metrics for
+tagged traffic (sample count, latency percentiles, models seen) next to
+candidate metrics from attributed requests on that model. Candidate metrics
+need attributed traffic on that model.
 
 A new analysis **proposes** changes and does not overwrite your decisions. If
 it recommends what you already accepted, overrode or rejected for a call site,

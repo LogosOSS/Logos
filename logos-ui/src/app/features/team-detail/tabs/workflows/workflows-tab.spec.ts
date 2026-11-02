@@ -23,12 +23,12 @@ describe('WorkflowsTabComponent review actions', () => {
   const getTeamWorkflows = vi.fn();
   const reviewRecommendation = vi.fn();
   const setRecommendationModel = vi.fn();
-  const setWorkflowDiagram = vi.fn();
-  const reviewWorkflowDiagramProposal = vi.fn();
   const updateWorkflow = vi.fn();
   const updateWorkflowStep = vi.fn();
   const runWorkflowBenchmark = vi.fn();
   const proposeWorkflowTaggingPr = vi.fn();
+  const setWorkflowDiagram = vi.fn();
+  const reviewWorkflowDiagramProposal = vi.fn();
   const getModels = vi.fn();
   const isDark = signal(false);
 
@@ -63,8 +63,8 @@ describe('WorkflowsTabComponent review actions', () => {
         workflow_id: 1,
         name: 'reply',
         sort_order: 0,
-        recommended_sla: 'ux-critical',
-        confirmed_sla: null,
+        recommended_slo: 'ux-critical',
+        confirmed_slo: null,
       },
     ],
   };
@@ -129,7 +129,7 @@ describe('WorkflowsTabComponent review actions', () => {
     updateWorkflow.mockResolvedValue({ ...activeWorkflow, status: 'deprecated' });
     updateWorkflowStep.mockResolvedValue({
       ...activeWorkflow.steps![0],
-      confirmed_sla: 'ux-critical',
+      confirmed_slo: 'ux-critical',
     });
     runWorkflowBenchmark.mockResolvedValue({
       id: 9,
@@ -146,7 +146,9 @@ describe('WorkflowsTabComponent review actions', () => {
       },
       candidate_metrics: {
         candidate_model: 'gpt-fast',
-        note: 'Historic sample only — re-run traffic with the candidate model to fill live metrics.',
+        sample_count: 4,
+        p50_latency_ms: 80,
+        p95_latency_ms: 150,
       },
     });
     proposeWorkflowTaggingPr.mockResolvedValue({
@@ -181,12 +183,12 @@ describe('WorkflowsTabComponent review actions', () => {
             getTeamWorkflows,
             reviewRecommendation,
             setRecommendationModel,
-            setWorkflowDiagram,
-            reviewWorkflowDiagramProposal,
             updateWorkflow,
             updateWorkflowStep,
             runWorkflowBenchmark,
             proposeWorkflowTaggingPr,
+            setWorkflowDiagram,
+            reviewWorkflowDiagramProposal,
           },
         },
         {
@@ -412,23 +414,6 @@ describe('WorkflowsTabComponent review actions', () => {
     });
   });
 
-  it('initializes Mermaid with the dark theme when Logos is dark', async () => {
-    isDark.set(true);
-    const component = setup();
-    await component.load();
-    component['diagramsDirty'] = true;
-    await component['renderDiagrams']();
-    expect(mermaid.initialize).toHaveBeenCalledWith(
-      expect.objectContaining({ theme: 'dark' }),
-    );
-
-    isDark.set(false);
-    await component['renderDiagrams']();
-    expect(mermaid.initialize).toHaveBeenCalledWith(
-      expect.objectContaining({ theme: 'neutral' }),
-    );
-  });
-
   it('deprecates and restores a workflow', async () => {
     const component = setup();
     await component.load();
@@ -438,20 +423,23 @@ describe('WorkflowsTabComponent review actions', () => {
     expect(updateWorkflow).toHaveBeenCalledWith(7, 2, { status: 'active' });
   });
 
-  it('soft-deletes a workflow', async () => {
+  it('soft-deletes a workflow after confirmation', async () => {
     const component = setup();
     await component.load();
-    await component.softDeleteWorkflow(activeWorkflow);
+    component.askDeleteWorkflow(activeWorkflow);
+    expect(component.deleteTarget()?.id).toBe(1);
+    await component.confirmDeleteWorkflow();
     expect(updateWorkflow).toHaveBeenCalledWith(7, 1, { deleted: true });
+    expect(component.deleteTarget()).toBeNull();
   });
 
-  it('confirms a step SLA', async () => {
+  it('confirms a step SLO', async () => {
     const component = setup();
     await component.load();
     const step = component.data()!.repositories[0].workflows[0].steps![0];
-    await component.confirmStepSla(step);
-    expect(updateWorkflowStep).toHaveBeenCalledWith(7, 101, { confirmed_sla: 'ux-critical' });
-    expect(component.data()!.repositories[0].workflows[0].steps![0].confirmed_sla).toBe('ux-critical');
+    await component.confirmStepSlo(step);
+    expect(updateWorkflowStep).toHaveBeenCalledWith(7, 101, { confirmed_slo: 'ux-critical' });
+    expect(component.data()!.repositories[0].workflows[0].steps![0].confirmed_slo).toBe('ux-critical');
   });
 
   it('runs a workflow benchmark against a candidate model', async () => {
@@ -499,5 +487,22 @@ describe('WorkflowsTabComponent review actions', () => {
     await component.proposeTaggingPr(activeWorkflow);
     expect(proposeWorkflowTaggingPr).toHaveBeenCalledWith(7, 1);
     expect(component.actionInfo()).toContain('Tagging');
+  });
+
+  it('initializes Mermaid with the dark theme when Logos is dark', async () => {
+    isDark.set(true);
+    const component = setup();
+    await component.load();
+    component['diagramsDirty'] = true;
+    await component['renderDiagrams']();
+    expect(mermaid.initialize).toHaveBeenCalledWith(
+      expect.objectContaining({ theme: 'dark' }),
+    );
+
+    isDark.set(false);
+    await component['renderDiagrams']();
+    expect(mermaid.initialize).toHaveBeenCalledWith(
+      expect.objectContaining({ theme: 'neutral' }),
+    );
   });
 });

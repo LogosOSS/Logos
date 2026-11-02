@@ -14,6 +14,7 @@ import { DecimalPipe, SlicePipe, TitleCasePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ErrorMessageComponent } from '../../../../shared/components/error-message/error-message';
 import { DataTableComponent } from '../../../../shared/components/data-table/data-table';
+import { ModalConfirmComponent } from '../../../../shared/components/modal/modal-confirm/modal-confirm';
 import { ModelProfileRadarComponent } from '../../../../shared/components/model-profile-radar/model-profile-radar';
 import { TeamManagementService } from '../../../../core/services/team-management.service';
 import { ModelManagementService } from '../../../../core/services/model-management.service';
@@ -83,6 +84,7 @@ function normalizePriority(raw: string[] | null | undefined, slo?: string): Obje
     TitleCasePipe,
     DataTableComponent,
     ErrorMessageComponent,
+    ModalConfirmComponent,
     ModelProfileRadarComponent,
   ],
   templateUrl: './workflows-tab.html',
@@ -131,7 +133,7 @@ export class WorkflowsTabComponent implements OnChanges, AfterViewChecked {
   showDeprecatedIgnored = signal(false);
   workflowActionId = signal<number | null>(null);
   confirmingStepId = signal<number | null>(null);
-  stepSlaPick = signal<Record<number, RecommendedSla>>({});
+  stepSloPick = signal<Record<number, RecommendedSlo>>({});
   /** Workflow id whose inline benchmark panel is open. */
   benchmarkOpenId = signal<number | null>(null);
   benchmarkCandidate = signal('');
@@ -139,6 +141,9 @@ export class WorkflowsTabComponent implements OnChanges, AfterViewChecked {
   benchmarkResult = signal<WorkflowBenchmark | null>(null);
   taggingPrId = signal<number | null>(null);
   tagCopied = signal<string | null>(null);
+  deleteTarget = signal<AiWorkflow | null>(null);
+  deleteLoading = signal(false);
+  deleteError = signal(false);
 
   readonly sloOptions = SLO_OPTIONS;
   readonly recCols = [
@@ -226,12 +231,12 @@ export class WorkflowsTabComponent implements OnChanges, AfterViewChecked {
     return [...(wf.steps ?? [])].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
   }
 
-  stepSla(step: AiWorkflowStep): RecommendedSla | null {
-    return step.confirmed_sla ?? step.recommended_sla ?? null;
+  stepSlo(step: AiWorkflowStep): RecommendedSlo | null {
+    return step.confirmed_slo ?? step.recommended_slo ?? null;
   }
 
-  stepConfirmSlaValue(step: AiWorkflowStep): string {
-    return this.stepSlaPick()[step.id] ?? this.stepSla(step) ?? '';
+  stepConfirmSloValue(step: AiWorkflowStep): string {
+    return this.stepSloPick()[step.id] ?? this.stepSlo(step) ?? '';
   }
 
   pendingRecs(): AiLlmCallRecommendation[] {
@@ -413,8 +418,8 @@ export class WorkflowsTabComponent implements OnChanges, AfterViewChecked {
     this.overrideSlo.update((m) => ({ ...m, [recId]: value as KeySlo }));
   }
 
-  setStepSlaPick(stepId: number, value: string): void {
-    this.stepSlaPick.update((m) => ({ ...m, [stepId]: value as RecommendedSla }));
+  setStepSloPick(stepId: number, value: string): void {
+    this.stepSloPick.update((m) => ({ ...m, [stepId]: value as RecommendedSlo }));
   }
 
   async setWorkflowStatus(wf: AiWorkflow, status: AiWorkflowStatus): Promise<void> {
@@ -432,34 +437,43 @@ export class WorkflowsTabComponent implements OnChanges, AfterViewChecked {
     }
   }
 
-  async softDeleteWorkflow(wf: AiWorkflow): Promise<void> {
-    if (!this.canEdit || this.workflowActionId() != null) return;
-    this.workflowActionId.set(wf.id);
+  askDeleteWorkflow(wf: AiWorkflow): void {
+    if (!this.canEdit) return;
+    this.deleteTarget.set(wf);
+    this.deleteError.set(false);
+  }
+
+  async confirmDeleteWorkflow(): Promise<void> {
+    const target = this.deleteTarget();
+    if (!target || this.deleteLoading()) return;
+    this.deleteLoading.set(true);
+    this.deleteError.set(false);
     this.actionError.set('');
     this.actionInfo.set('');
     try {
-      await this.teamService.updateWorkflow(this.teamId, wf.id, { deleted: true });
+      await this.teamService.updateWorkflow(this.teamId, target.id, { deleted: true });
+      this.deleteTarget.set(null);
       await this.load();
-    } catch (err: unknown) {
-      this.actionError.set(this.errDetail(err, 'Failed to delete workflow.'));
+    } catch {
+      this.deleteError.set(true);
     } finally {
-      this.workflowActionId.set(null);
+      this.deleteLoading.set(false);
     }
   }
 
-  async confirmStepSla(step: AiWorkflowStep): Promise<void> {
+  async confirmStepSlo(step: AiWorkflowStep): Promise<void> {
     if (!this.canEdit || this.confirmingStepId() != null) return;
-    const sla = this.stepSlaPick()[step.id] ?? step.confirmed_sla ?? step.recommended_sla;
-    if (!sla) return;
+    const slo = this.stepSloPick()[step.id] ?? step.confirmed_slo ?? step.recommended_slo;
+    if (!slo) return;
     this.confirmingStepId.set(step.id);
     this.actionError.set('');
     try {
       const saved = await this.teamService.updateWorkflowStep(this.teamId, step.id, {
-        confirmed_sla: sla,
+        confirmed_slo: slo,
       });
       this.patchStep(step.id, saved);
     } catch (err: unknown) {
-      this.actionError.set(this.errDetail(err, 'Failed to confirm step SLA.'));
+      this.actionError.set(this.errDetail(err, 'Failed to confirm step SLO.'));
     } finally {
       this.confirmingStepId.set(null);
     }
@@ -554,19 +568,6 @@ export class WorkflowsTabComponent implements OnChanges, AfterViewChecked {
     return this.allRecs().find((r) => r.id === recId);
   }
 
-  private applyWorkflow(saved: AiWorkflow): void {
-    const data = this.data();
-    if (!data) return;
-    for (const repo of data.repositories) {
-      const idx = repo.workflows.findIndex((w) => w.id === saved.id);
-      if (idx >= 0) {
-        repo.workflows[idx] = { ...repo.workflows[idx], ...saved };
-        this.data.set({ ...data });
-        return;
-      }
-    }
-  }
-
   private patchStep(stepId: number, saved: AiWorkflowStep): void {
     const data = this.data();
     if (!data) return;
@@ -578,6 +579,19 @@ export class WorkflowsTabComponent implements OnChanges, AfterViewChecked {
           steps[idx] = { ...steps[idx], ...saved };
           return;
         }
+      }
+    }
+  }
+
+  private applyWorkflow(saved: AiWorkflow): void {
+    const data = this.data();
+    if (!data) return;
+    for (const repo of data.repositories) {
+      const idx = repo.workflows.findIndex((w) => w.id === saved.id);
+      if (idx >= 0) {
+        repo.workflows[idx] = { ...repo.workflows[idx], ...saved };
+        this.data.set({ ...data });
+        return;
       }
     }
   }

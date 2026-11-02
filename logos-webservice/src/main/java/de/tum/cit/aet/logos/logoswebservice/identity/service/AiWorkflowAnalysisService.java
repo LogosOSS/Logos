@@ -94,7 +94,7 @@ public class AiWorkflowAnalysisService {
                   "name": "<short step name>",
                   "sort_order": 0,
                   "tag": "<stable kebab-case tag for X-Logos-Workflow-Tag>",
-                  "recommended_sla": "ux-critical" | "ux-high-prio" | "ux-background",
+                  "recommended_slo": "ux-critical" | "ux-high-prio" | "ux-background",
                   "objective_priority": ["latency" | "quality" | "price", "..."]
                 }
               ]
@@ -103,6 +103,7 @@ public class AiWorkflowAnalysisService {
           "recommendations": [
             {
               "workflow": "<matching workflows[].name>",
+              "step": "<optional matching workflows[].steps[].name>",
               "file_path": "path/from/repo/root.py",
               "start_line": 1,
               "end_line": 20,
@@ -129,7 +130,7 @@ public class AiWorkflowAnalysisService {
         ux-background → [price, quality, latency].
 
         Suggest stable kebab-case `tag` values on workflows and steps so applications
-        can send `X-Logos-Workflow-Tag` (and optionally `X-Logos-SLA`) to attribute
+        can send `X-Logos-Workflow-Tag` (and optionally `X-Logos-SLO`) to attribute
         traffic. Prefer short, unique tags derived from the workflow/step name.
 
         Repository: %s
@@ -145,7 +146,7 @@ public class AiWorkflowAnalysisService {
         Workflow tag (X-Logos-Workflow-Tag): %s
 
         Steps (send the step tag as X-Logos-Workflow-Tag when the call is that step;
-        also set X-Logos-SLA to the confirmed or recommended SLA when known):
+        also set X-Logos-SLO to the confirmed or recommended SLO when known):
         %s
 
         Repository: %s
@@ -609,7 +610,7 @@ public class AiWorkflowAnalysisService {
             }
         }
         workflowRepository.save(workflow);
-        return workflowToMap(workflow, stepRepository.findByWorkflowIdOrderBySortOrderAsc(workflow.getId()));
+        return workflowToMap(workflow);
     }
 
     @Transactional
@@ -618,17 +619,17 @@ public class AiWorkflowAnalysisService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "body is required");
         }
         AiWorkflowStep step = lockCurrentStep(teamId, stepId);
-        if (body.confirmedSla() != null) {
-            String sla = body.confirmedSla().trim();
-            if (sla.isEmpty()) {
-                step.setConfirmedSla(null);
+        if (body.confirmedSlo() != null) {
+            String slo = body.confirmedSlo().trim();
+            if (slo.isEmpty()) {
+                step.setConfirmedSlo(null);
             }
             else {
-                if (!VALID_SLOS.contains(sla)) {
+                if (!VALID_SLOS.contains(slo)) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "confirmed_sla must be ux-critical, ux-high-prio, or ux-background");
+                        "confirmed_slo must be ux-critical, ux-high-prio, or ux-background");
                 }
-                step.setConfirmedSla(sla);
+                step.setConfirmedSlo(slo);
             }
         }
         if (body.confirmedObjectivePriority() != null) {
@@ -641,6 +642,13 @@ public class AiWorkflowAnalysisService {
             String name = body.name().trim();
             if (name.isEmpty()) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "name must not be blank");
+            }
+            for (AiWorkflowStep sibling : stepRepository.findByWorkflowIdOrderBySortOrderAsc(step.getWorkflowId())) {
+                if (!sibling.getId().equals(step.getId())
+                        && name.equals(sibling.getName() == null ? "" : sibling.getName().trim())) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "a step with this name already exists on the workflow");
+                }
             }
             step.setName(name);
         }
@@ -677,11 +685,18 @@ public class AiWorkflowAnalysisService {
             }
         }
 
-        Map<String, Object> historicMetrics = computeHistoricMetrics(teamId, workflow.getId(), tags, sampleSize);
+        Map<String, Object> historicMetrics = computeHistoricMetrics(
+            teamId, workflow.getId(), tags, sampleSize, null);
+        Map<String, Object> candidateSample = computeHistoricMetrics(
+            teamId, workflow.getId(), tags, sampleSize, candidateModel);
         Map<String, Object> candidateMetrics = new LinkedHashMap<>();
         candidateMetrics.put("candidate_model", candidateModel);
-        candidateMetrics.put("note",
-            "Historic sample only — re-run traffic with the candidate model to fill live metrics.");
+        candidateMetrics.putAll(candidateSample);
+        int candidateCount = ((Number) candidateSample.getOrDefault("sample_count", 0)).intValue();
+        if (candidateCount == 0) {
+            candidateMetrics.put("note",
+                "No attributed requests found for this candidate model yet.");
+        }
 
         String historicJson = toJson(historicMetrics);
         String candidateJson = toJson(candidateMetrics);
@@ -728,7 +743,7 @@ public class AiWorkflowAnalysisService {
             : steps.stream()
                 .map(s -> "- " + s.getName()
                     + " | tag=" + s.getTag()
-                    + " | sla=" + (s.getConfirmedSla() != null ? s.getConfirmedSla() : s.getRecommendedSla()))
+                    + " | slo=" + (s.getConfirmedSlo() != null ? s.getConfirmedSlo() : s.getRecommendedSlo()))
                 .collect(Collectors.joining("\n"));
 
         String task = TAGGING_PR_TASK_TEMPLATE.formatted(
@@ -773,7 +788,8 @@ public class AiWorkflowAnalysisService {
     }
 
     private Map<String, Object> computeHistoricMetrics(int teamId, int workflowId,
-                                                       List<String> tags, int sampleSize) {
+                                                       List<String> tags, int sampleSize,
+                                                       String modelName) {
         List<Map<String, Object>> rows = jdbc.query(con -> {
             var ps = con.prepareStatement("""
                 SELECT le.queue_wait_ms,
@@ -800,6 +816,7 @@ public class AiWorkflowAnalysisService {
                         -- claimed: a tag can move to another workflow later.
                         OR (le.workflow_id IS NULL
                             AND cardinality(?) > 0 AND le.workflow_tag = ANY(?)))
+                   AND (?::text IS NULL OR COALESCE(le.model_name, m.name) = ?)
                  ORDER BY le.timestamp_request DESC NULLS LAST
                  LIMIT ?
                 """);
@@ -808,7 +825,9 @@ public class AiWorkflowAnalysisService {
             var tagArray = con.createArrayOf("text", tags.toArray());
             ps.setArray(3, tagArray);
             ps.setArray(4, tagArray);
-            ps.setInt(5, sampleSize);
+            ps.setString(5, modelName);
+            ps.setString(6, modelName);
+            ps.setInt(7, sampleSize);
             return ps;
         }, (rs, rowNum) -> {
             Map<String, Object> row = new LinkedHashMap<>();
@@ -943,52 +962,6 @@ public class AiWorkflowAnalysisService {
         }
         if (!foundTeamId.equals(teamId)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
-        }
-        return workflowRepository.findById(workflowId)
-            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found"));
-    }
-
-    /**
-     * Lock a workflow for an owner edit, after its repository — the same
-     * order and reason as {@link #lockCurrentRecommendation}: the agent ingest
-     * takes the repository lock before it reads the lifecycle and step SLAs
-     * it carries over, so an edit either lands before that read or waits for
-     * the new analysis. An edit to a workflow a newer analysis superseded is
-     * refused — the page is showing old workflows and must reload.
-     */
-    private AiWorkflow lockCurrentWorkflow(int teamId, int workflowId) {
-        if (!teamExists(teamId)) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Team not found");
-        }
-        // Identity only, by plain query: the entity is loaded after the lock,
-        // so a concurrent edit that held it is seen rather than overwritten.
-        Map<String, Object> owner = jdbc.query("""
-            SELECT a.id AS analysis_id, a.team_id, a.team_repository_id
-              FROM ai_workflows w
-              JOIN ai_workflow_analyses a ON a.id = w.analysis_id
-             WHERE w.id = ?
-            """, rs -> {
-                if (!rs.next()) {
-                    return null;
-                }
-                Map<String, Object> row = new HashMap<>();
-                row.put("analysis_id", rs.getObject("analysis_id"));
-                row.put("team_id", rs.getObject("team_id"));
-                row.put("team_repository_id", rs.getObject("team_repository_id"));
-                return row;
-            }, workflowId);
-        if (owner == null || !Integer.valueOf(teamId).equals(owner.get("team_id"))) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
-        }
-        Integer repoId = (Integer) owner.get("team_repository_id");
-        if (repoId != null) {
-            jdbc.query("SELECT id FROM team_repositories WHERE id = ? FOR UPDATE", rs -> null, repoId);
-            Integer latest = analysisRepository.findLatestSucceeded(repoId)
-                .map(AiWorkflowAnalysis::getId).orElse(null);
-            if (latest != null && !latest.equals(owner.get("analysis_id"))) {
-                throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "A newer analysis replaced this workflow; reload the Workflows tab");
-            }
         }
         return workflowRepository.findById(workflowId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found"));
@@ -1215,6 +1188,10 @@ public class AiWorkflowAnalysisService {
         return m;
     }
 
+    private Map<String, Object> workflowToMap(AiWorkflow workflow) {
+        return workflowToMap(workflow, stepRepository.findByWorkflowIdOrderBySortOrderAsc(workflow.getId()));
+    }
+
     private Map<String, Object> workflowToMap(AiWorkflow workflow, List<AiWorkflowStep> steps) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", workflow.getId());
@@ -1239,8 +1216,8 @@ public class AiWorkflowAnalysisService {
         m.put("name", step.getName());
         m.put("sort_order", step.getSortOrder());
         m.put("tag", step.getTag());
-        m.put("recommended_sla", step.getRecommendedSla());
-        m.put("confirmed_sla", step.getConfirmedSla());
+        m.put("recommended_slo", step.getRecommendedSlo());
+        m.put("confirmed_slo", step.getConfirmedSlo());
         m.put("objective_priority", ObjectivePriority.asStringList(step.getObjectivePriority()));
         m.put("confirmed_objective_priority",
             step.getConfirmedObjectivePriority() != null
@@ -1316,7 +1293,8 @@ public class AiWorkflowAnalysisService {
 
     /**
      * Same repository-then-row lock as recommendations: ingest copies
-     * owner-edited diagrams from the previous analysis under the repository
+     * owner edits (diagrams, lifecycle, tags, step SLOs) from the previous
+     * analysis under the repository
      * lock, so an edit either lands first or waits for the new analysis. An
      * edit on a workflow a newer analysis superseded is refused.
      */

@@ -74,5 +74,5 @@
     <include file="liquibase/changelog/067_requested_model_is_gated.xml"/>
     <include file="liquibase/changelog/068_benchmark_request_workloads.xml"/>
     <include file="liquibase/changelog/069_nightly_request_sources.xml"/>
-    <include file="liquibase/changelog/070_sla_workflow_improvements.xml"/>
+    <include file="liquibase/changelog/070_slo_workflow_improvements.xml"/>
 </databaseChangeLog>

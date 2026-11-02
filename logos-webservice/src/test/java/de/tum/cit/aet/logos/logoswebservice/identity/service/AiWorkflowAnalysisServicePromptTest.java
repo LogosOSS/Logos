@@ -19,6 +19,8 @@ class AiWorkflowAnalysisServicePromptTest {
             "manual queue template must request workflow steps");
         assertTrue(task.contains("X-Logos-Workflow-Tag"),
             "manual queue template must mention workflow tags");
+        assertTrue(task.contains("\"step\""),
+            "manual queue template must request recommendation step names");
         String formatted = task.formatted("acme/app", "https://github.com/acme/app", "src");
         assertTrue(formatted.contains("objective_priority"));
         assertTrue(formatted.contains("Repository: acme/app"));

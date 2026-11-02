@@ -30,10 +30,11 @@ public class ExportImportService {
         "log_entry", "token_types", "usage_tokens", "token_prices", "jobs"
     );
     private static final Set<String> TABLE_WHITELIST = Set.copyOf(TABLES);
+
     /** Tables added after exports already existed; an export without one restores it empty. */
     private static final Set<String> OPTIONAL_TABLES = Set.of(
-        "team_provider_budgets", "ai_workflow_steps", "ai_workflow_benchmarks",
-        "application_key_queue_ranks"
+        "team_provider_budgets",
+        "ai_workflow_steps", "ai_workflow_benchmarks", "application_key_queue_ranks"
     );
 
     private static final List<String> SEQUENCE_TABLES = List.of(

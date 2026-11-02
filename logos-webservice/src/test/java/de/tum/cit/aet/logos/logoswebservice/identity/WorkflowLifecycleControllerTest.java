@@ -67,7 +67,7 @@ class WorkflowLifecycleControllerTest {
             RETURNING id
             """, Integer.class, analysisId);
         Integer stepId = jdbc.queryForObject("""
-            INSERT INTO ai_workflow_steps (workflow_id, name, tag, recommended_sla)
+            INSERT INTO ai_workflow_steps (workflow_id, name, tag, recommended_slo)
             VALUES (?, 'score', 'checkout-score', 'ux-critical')
             RETURNING id
             """, Integer.class, workflowId);
@@ -133,26 +133,26 @@ class WorkflowLifecycleControllerTest {
         mvc.perform(patch("/admin/teams/2001/workflow-steps/" + ids[1])
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
-                .content("{\"confirmed_sla\":\"ux-background\"}"))
+                .content("{\"confirmed_slo\":\"ux-background\"}"))
            .andExpect(status().isConflict());
     }
 
     @Test
-    void workflowStep_confirmSlaValidatesAndIsTeamScoped() throws Exception {
+    void workflowStep_confirmSloValidatesAndIsTeamScoped() throws Exception {
         int stepId = seedWorkflowWithStep()[1];
 
         mvc.perform(patch("/admin/teams/2001/workflow-steps/" + stepId)
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
-                .content("{\"confirmed_sla\":\"ux-background\"}"))
+                .content("{\"confirmed_slo\":\"ux-background\"}"))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$.recommended_sla").value("ux-critical"))
-           .andExpect(jsonPath("$.confirmed_sla").value("ux-background"));
+           .andExpect(jsonPath("$.recommended_slo").value("ux-critical"))
+           .andExpect(jsonPath("$.confirmed_slo").value("ux-background"));
 
         mvc.perform(patch("/admin/teams/2001/workflow-steps/" + stepId)
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
-                .content("{\"confirmed_sla\":\"urgent\"}"))
+                .content("{\"confirmed_slo\":\"urgent\"}"))
            .andExpect(status().isBadRequest());
 
         mvc.perform(patch("/admin/teams/2001/workflow-steps/" + stepId)
@@ -172,14 +172,37 @@ class WorkflowLifecycleControllerTest {
         mvc.perform(patch("/admin/teams/2002/workflow-steps/" + stepId)
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
-                .content("{\"confirmed_sla\":\"ux-critical\"}"))
+                .content("{\"confirmed_slo\":\"ux-critical\"}"))
            .andExpect(status().isNotFound());
 
         mvc.perform(patch("/admin/teams/2001/workflow-steps/" + stepId)
                 .with(TestJwt.testUser())
                 .contentType("application/json")
-                .content("{\"confirmed_sla\":\"ux-critical\"}"))
+                .content("{\"confirmed_slo\":\"ux-critical\"}"))
            .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void renameStep_rejectsAConflictingTrimmedName() throws Exception {
+        int[] ids = seedWorkflowWithStep();
+        Integer otherStep = jdbc.queryForObject("""
+            INSERT INTO ai_workflow_steps (workflow_id, name, tag, recommended_slo)
+            VALUES (?, 'summarize', 'checkout-summarize', 'ux-background')
+            RETURNING id
+            """, Integer.class, ids[0]);
+
+        mvc.perform(patch("/admin/teams/2001/workflow-steps/" + otherStep)
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"name\":\"  score  \"}"))
+           .andExpect(status().isConflict());
+
+        mvc.perform(patch("/admin/teams/2001/workflow-steps/" + otherStep)
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"name\":\"  summarize-2  \"}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.name").value("summarize-2"));
     }
 
     @Test
@@ -194,7 +217,7 @@ class WorkflowLifecycleControllerTest {
             RETURNING id
             """, Integer.class, ids[0]);
         jdbc.update("""
-            INSERT INTO ai_workflow_steps (workflow_id, name, tag, recommended_sla)
+            INSERT INTO ai_workflow_steps (workflow_id, name, tag, recommended_slo)
             VALUES (?, 'score', 'checkout-2-score', 'ux-background')
             """, sibling);
 
@@ -264,10 +287,41 @@ class WorkflowLifecycleControllerTest {
                     .content("{\"candidate_model\":\"gpt-fast\"}"))
                .andExpect(status().isOk())
                // Its predecessor's two requests plus the one no workflow claimed.
-               .andExpect(jsonPath("$.historic_metrics.sample_count").value(3));
+               .andExpect(jsonPath("$.historic_metrics.sample_count").value(3))
+               .andExpect(jsonPath("$.candidate_metrics.sample_count").value(0))
+               .andExpect(jsonPath("$.candidate_metrics.note").exists());
         }
         finally {
             jdbc.update("DELETE FROM log_entry WHERE request_id LIKE 'wf-bench-%'");
+        }
+    }
+
+    @Test
+    void benchmark_reportsCandidateMetricsWhenAttributedTrafficExists() throws Exception {
+        int workflowId = seedWorkflowWithStep()[0];
+        String insertLog = """
+            INSERT INTO log_entry (
+                request_id, team_id, workflow_id, workflow_tag, model_name,
+                timestamp_request, timestamp_response
+            ) VALUES (?, 2001, ?, 'checkout', ?, now(), now() + interval '100 milliseconds')
+            """;
+        try {
+            jdbc.update(insertLog, "wf-cand-1", workflowId, "gpt-fast");
+            jdbc.update(insertLog, "wf-cand-2", workflowId, "gpt-fast");
+            jdbc.update(insertLog, "wf-cand-3", workflowId, "gpt-slow");
+
+            mvc.perform(post("/admin/teams/2001/workflows/" + workflowId + "/benchmark")
+                    .with(TestJwt.logosAdmin())
+                    .contentType("application/json")
+                    .content("{\"candidate_model\":\"gpt-fast\"}"))
+               .andExpect(status().isOk())
+               .andExpect(jsonPath("$.historic_metrics.sample_count").value(3))
+               .andExpect(jsonPath("$.candidate_metrics.candidate_model").value("gpt-fast"))
+               .andExpect(jsonPath("$.candidate_metrics.sample_count").value(2))
+               .andExpect(jsonPath("$.candidate_metrics.note").doesNotExist());
+        }
+        finally {
+            jdbc.update("DELETE FROM log_entry WHERE request_id LIKE 'wf-cand-%'");
         }
     }
 

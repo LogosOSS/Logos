@@ -206,7 +206,7 @@ public class GatewayCloudAccounting {
      * As {@link #admitAndReserve(GatewayKey, GatewayDeployment, byte[], String, Instant, String)},
      * also storing the workflow attribution the request carries.
      *
-     * @param attribution the workflow, step and SLA the request is attributed to
+     * @param attribution optional workflow / SLO headers resolved for this request
      */
     @Transactional
     public Integer admitAndReserve(GatewayKey key, GatewayDeployment deployment,
@@ -240,7 +240,7 @@ public class GatewayCloudAccounting {
             .addValue("workflow_tag", attr.workflowTag())
             .addValue("workflow_id", attr.workflowId())
             .addValue("workflow_step_id", attr.workflowStepId())
-            .addValue("request_sla", attr.requestSla());
+            .addValue("request_slo", attr.requestSlo());
         KeyHolder keys = new GeneratedKeyHolder();
         jdbc.update("""
             INSERT INTO log_entry (
@@ -249,7 +249,7 @@ public class GatewayCloudAccounting {
                 model_id, provider_id, request_id,
                 result_status, cost_finalized, settled_cost_micro_cents,
                 privacy_level, input_payload, reasoning_effort,
-                workflow_tag, workflow_id, workflow_step_id, request_sla
+                workflow_tag, workflow_id, workflow_step_id, request_slo
             ) VALUES (
                 :arrived, :admitted,
                 :api_key_id, :team_id, :user_id, :environment,
@@ -257,7 +257,7 @@ public class GatewayCloudAccounting {
                 NULL, TRUE, :settled,
                 CAST(:privacy_level AS logging_enum), CAST(:input_payload AS jsonb),
                 CAST(:reasoning_effort AS TEXT),
-                :workflow_tag, :workflow_id, :workflow_step_id, :request_sla
+                :workflow_tag, :workflow_id, :workflow_step_id, :request_slo
             )
             """, params, keys, new String[] {"id"});
         Number id = keys.getKey();
