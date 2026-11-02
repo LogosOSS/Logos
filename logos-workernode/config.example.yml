@@ -180,6 +180,10 @@ engines:
     # Destination: "stdout", "stderr", or an absolute file path. Empty = FlashInfer default.
     flashinfer_logdest: stderr
 
+    # Serve lanes through vLLM's experimental Rust frontend (VLLM_USE_RUST_FRONTEND=1).
+    # Requires a vLLM build that ships it; off keeps the Python API server.
+    rust_frontend: false
+
     # NCCL distributed communication logging (multi-GPU tensor-parallel lanes).
     # nccl_debug values: "" (off) | VERSION | WARN | INFO | TRACE
     nccl_debug: WARN

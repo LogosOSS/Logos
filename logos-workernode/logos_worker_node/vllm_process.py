@@ -2500,6 +2500,9 @@ class VllmProcessHandle:
             if self._vllm_engine_config.nccl_debug_subsys:
                 env["NCCL_DEBUG_SUBSYS"] = self._vllm_engine_config.nccl_debug_subsys
 
+        if self._vllm_engine_config.rust_frontend:
+            env["VLLM_USE_RUST_FRONTEND"] = "1"
+
         # Per-model environment overrides (e.g. VLLM_USE_V1=0 for models
         # whose head dimensions exceed V1 attention kernel limits on SM 7.5).
         if vc.env_overrides:

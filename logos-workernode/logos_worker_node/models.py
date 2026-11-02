@@ -273,6 +273,12 @@ class VllmEngineConfig(BaseModel):
         "communication is available. Default false (PCIe-only topology) disables "
         "NCCL P2P globally for all TP>1 lanes to prevent hangs.",
     )
+    rust_frontend: bool = Field(
+        default=False,
+        description="Serve every vLLM lane through vLLM's experimental Rust frontend "
+        "(VLLM_USE_RUST_FRONTEND=1). Default false keeps the Python API server. "
+        "A lane's env_overrides can still set the variable explicitly.",
+    )
     nccl_debug: str = Field(
         default="",
         description="NCCL debug log level (e.g. INFO, WARN, VERSION). Empty = disabled.",
