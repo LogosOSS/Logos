@@ -53,5 +53,57 @@ class MeasurementOrderTest(unittest.TestCase):
         self.assertEqual(events, ["latency", "budget", "overload", "failover"])
 
 
+class BudgetWarmupTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fixed_warmup_precedes_database_window_and_is_reported_separately(self):
+        budget = benchmark.budget_admission
+        calls = []
+
+        async def worker(client, url, headers, start, deadline, rows):
+            phase = "warmup" if len(calls) < 2 else "measured"
+            calls.append(phase)
+            rows.append(
+                {
+                    "sent_at_s": 0,
+                    "total_ms": 10000 if phase == "warmup" else 2,
+                    "status": 200,
+                    "ok": True,
+                    "error": None,
+                }
+            )
+
+        def clock():
+            self.assertEqual(calls, ["warmup", "warmup"])
+            return "2026-01-01T00:00:00Z"
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.dict(
+                    os.environ,
+                    {
+                        "LOGOS_BENCH_GW_BUDGET_CONCURRENCY": "2",
+                        "LOGOS_BENCH_GW_BUDGET_BASELINE": "0",
+                        "LOGOS_BENCH_GW_BUDGET_WARMUP_S": "15",
+                        "LOGOS_BENCH_GW_BUDGET_LOGOS_P50_MAX_MS": "5",
+                        "LOGOS_BENCH_GW_BUDGET_LOGOS_P99_MAX_MS": "50",
+                    },
+                )
+            )
+            stack.enter_context(
+                patch.object(budget.gw, "post_chat_completion", AsyncMock(return_value=Mock(status_code=200)))
+            )
+            stack.enter_context(patch.object(budget, "budget_query_snapshot", return_value={}))
+            stack.enter_context(patch.object(budget, "_worker", side_effect=worker))
+            stack.enter_context(patch.object(budget, "_db_now", side_effect=clock))
+            stack.enter_context(
+                patch.object(budget, "logos_time", return_value={"n": 2, "logos": {"p50_ms": 2, "p99_ms": 60}})
+            )
+            result = await budget.run()
+        self.assertEqual(result["warmup"], {"duration_s": 15, "requests": 2, "failed": 0})
+        self.assertEqual(result["requests"], 2)
+        self.assertEqual(result["load"]["max_ms"], 2)
+        self.assertTrue(result["threshold"]["exceeded"])
+        self.assertEqual(calls, ["warmup", "warmup", "measured", "measured"])
+
+
 if __name__ == "__main__":
     unittest.main()
