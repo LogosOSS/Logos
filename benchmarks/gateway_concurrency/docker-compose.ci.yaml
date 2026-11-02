@@ -1,0 +1,13 @@
+# Ephemeral storage for CI latency checks, never for a persistent deployment.
+# Keep PostgreSQL transaction and WAL settings intact while excluding the
+# hosted runner's shared block-device latency from the gateway regression gate.
+services:
+  logos-db:
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - type: tmpfs
+        target: /var/lib/postgresql/data
+        tmpfs:
+          size: 1073741824
+          mode: 01777

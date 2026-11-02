@@ -186,3 +186,14 @@ in `budget.warmup`, before opening the database measurement window.
 `LOGOS_BENCH_GW_BUDGET_WARMUP_S` controls this fixed preparation interval.
 Measured windows are not retried or filtered, and the p50/p99 thresholds are
 unchanged.
+
+
+### CI database storage
+
+The CI workflow applies `docker-compose.ci.yaml`, which puts its disposable
+PostgreSQL data on a 1 GiB tmpfs. Transaction, WAL, `fsync`, and synchronous
+commit settings remain enabled. This removes shared runner block-device latency
+from the gateway regression test; it does not measure durable-storage performance
+or establish production latency guarantees. The report records
+`env.database_storage=tmpfs-ci-ephemeral`. Normal development and production
+compose configurations retain their persistent storage.

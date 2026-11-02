@@ -211,6 +211,7 @@ def run() -> int:
                 "gateway_url": gw.gateway_url(),
                 "upstream_url": gw.upstream_url(),
                 "model": gw.model_name(),
+                "database_storage": os.environ.get("LOGOS_BENCH_GW_DB_STORAGE", "operator-managed"),
             },
         }
         paths = write_reports(result, str(out_dir))
