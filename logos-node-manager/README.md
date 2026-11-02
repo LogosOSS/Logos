@@ -264,7 +264,7 @@ All settings are environment variables with the prefix `NODE_MANAGER_`.
 | `ORCHESTRATOR_URL`, `NODE_KEY` | empty | The address of the orchestrator and the key of the worker. The worker compose file passes `LOGOS_URL` and `LOGOS_API_KEY` of the `.env`. The drain needs them, and the report of the end of a deployment (see "Reports") as well. |
 | `DRAIN_TIMEOUT_S` | 900 | How long the node may take to drain, counted from the grant of the cordon. |
 | `TURN_TIMEOUT_S` | 7200 | How long the manager waits for the cordon while another node is being replaced. |
-| `ORCHESTRATOR_RETRY_WINDOW_S` | 120 | How long an orchestrator that does not answer is asked again before the drain is skipped. |
+| `ORCHESTRATOR_RETRY_WINDOW_S` | 120 | How long the manager asks one call again while the orchestrator does not answer. Before the cordon is granted, the drain is skipped after that. After the cordon is granted, the manager asks again until `DRAIN_TIMEOUT_S` is over. |
 | `ORCHESTRATOR_TIMEOUT_S` | 15 | The time limit of one call to the orchestrator. |
 | `RECONNECT_TIMEOUT_S` | 300 | How long the new worker may take to show up at the orchestrator after the Docker checks passed. |
 | `LOG_LEVEL` | `INFO` | |
