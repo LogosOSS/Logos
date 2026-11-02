@@ -44,7 +44,6 @@ The older Process/Profile hierarchy (`process`, `profiles`, `profile_model_permi
 ### Git workflow (MANDATORY, CI-enforced)
 
 - **PR title**: a short, descriptive title that starts with a capital letter — e.g. `Add team management endpoints`. No `` `Logos`: `` prefix.
-- **Commit messages**: `Logos: Description starting with capital letter (#issue_number)`.
 - **Branch names**: `feature/logos/description` or `logos/description`.
 - Never merge to `main` without a PR. After opening a PR, check `gh pr checks` and fix failures immediately.
 - **Every PR that changes the UI must include full-page desktop AND mobile screenshots** in the PR description (never committed to the repo). The exact capture/hosting procedure is the `ui-screenshots` skill (see below).
