@@ -187,7 +187,7 @@ jobs:
               docker compose -f ${{ matrix.base-path }}/${{ steps.extract-basename.outputs.basename }} --env-file=${{ matrix.base-path }}/.env "$@"
             }
             compose pull logos-node-manager
-            compose up -d --force-recreate logos-node-manager
+            compose up -d logos-node-manager
             for attempt in $(seq 1 30); do
               if docker exec logos-node-manager node-manager ping; then
                 # Only now, when the new node manager answers: if it did not start, the old image would still be on
