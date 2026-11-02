@@ -468,10 +468,7 @@ class Deployer:
         """Seconds from a time saved in a record to now; 0 if there is none or it cannot be read."""
         if not stamp:
             return 0.0
-        try:
-            return max(0.0, (datetime.fromisoformat(self._now()) - datetime.fromisoformat(stamp)).total_seconds())
-        except ValueError:
-            return 0.0
+        return self._seconds_between(stamp, self._now())
 
     def _release_cordon(self, deployment: Deployment) -> None:
         """Give the cordon back. Every ending passes here; a deployment that never held the cordon does nothing."""
@@ -689,6 +686,7 @@ class Deployer:
         }
 
     def _seconds_between(self, start: str, end: str) -> float:
+        """Seconds from one time saved in a record to a later one; 0 if one cannot be read or the end is earlier."""
         try:
             return max(0.0, (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds())
         except ValueError:
