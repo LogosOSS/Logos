@@ -89,9 +89,6 @@ def compute_calibration_key(
         "sleep_enabled": (not metal) and model_can_sleep(cfg, model_name),
         "plan_hash": plan_hash(plan),
     }
-    if not metal and cfg.engines and cfg.engines.vllm.rust_frontend:
-        # Only when enabled, so keys of nodes on the Python API server stay as they are.
-        key["rust_frontend"] = True
     if metal and cfg.engines:
         key["metal"] = _metal_engine_settings(cfg.engines.metal)
     if not metal:
