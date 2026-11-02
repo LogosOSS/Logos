@@ -4,11 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from tests.unit.main.test_effort_rejection_retry import ANSWER_CHUNKS, PAYLOAD, _context, _scheduling
+from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline, _read_stream_response
 
 import logos as main
 from logos.logosnode_registry import LogosNodeCommandError
-from tests.unit.main.test_effort_rejection_retry import ANSWER_CHUNKS, PAYLOAD, _context, _scheduling
-from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline, _read_stream_response
 
 
 @pytest.mark.asyncio

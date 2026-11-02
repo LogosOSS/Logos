@@ -176,11 +176,9 @@ def run() -> int:
         print("== latency diff ==")
         latency_result: Dict[str, Any] = asyncio.run(latency_diff.run())
 
-        print("== concurrency ramp ==")
-        concurrency_result: Dict[str, Any] = asyncio.run(load_generator.run())
-
-        # Before the failover leg: that one kills a replica, and the budget
-        # leg should measure a stack at full strength.
+        # Measure admission before the deliberate overload and replica kill.
+        # Executor saturation and its recovery are separate experiments, not
+        # part of the steady-load latency gate.
         budget_result: Dict[str, Any]
         if skip_budget:
             print("== budget admission (skipped: LOGOS_BENCH_GW_SKIP_BUDGET=1) ==")
@@ -188,6 +186,9 @@ def run() -> int:
         else:
             print("== budget admission ==")
             budget_result = asyncio.run(budget_admission.run())
+
+        print("== concurrency ramp ==")
+        concurrency_result: Dict[str, Any] = asyncio.run(load_generator.run())
 
         failover_result: Optional[Dict[str, Any]]
         if skip_failover:

@@ -174,3 +174,15 @@ See the module docstrings in `run_benchmark.py`, `gateway_client.py`,
 `budget_admission.py` for the full list of tunables (concurrency steps, sample counts, durations, the
 informational `LOGOS_GATEWAY_ASYNC_MAX_SIZE`/`_QUEUE_CAPACITY` used to
 annotate the report against the webservice's actual config).
+
+### CI measurement order
+
+The budget-admission latency gate runs after the interleaved latency warmup
+and before the concurrency ramp and failover experiments. The ramp deliberately
+saturates the executor; measuring admission immediately afterwards mixes
+recovery from overload into the steady-load result. Budget measurement also
+uses a fixed 15-second warmup at its measured concurrency, recorded separately
+in `budget.warmup`, before opening the database measurement window.
+`LOGOS_BENCH_GW_BUDGET_WARMUP_S` controls this fixed preparation interval.
+Measured windows are not retried or filtered, and the p50/p99 thresholds are
+unchanged.
