@@ -1923,7 +1923,7 @@ async def _streaming_response(
                 "stream_options": {"include_usage": True},
             }
 
-        def _new_logosnode_chunk_iter():
+        def _new_logosnode_chunk_iter(lane_id):
             # The stamp lands on the actual WebSocket send, not here: session
             # acquisition and the send lock run before it, and a pre-token
             # retry calls this again, so each attempt re-stamps and the final
@@ -1933,7 +1933,7 @@ async def _streaming_response(
                 action="infer_stream",
                 request_id=request_id,
                 params={
-                    "lane_id": context.lane_id,
+                    "lane_id": lane_id,
                     "payload": stream_payload,
                     "request_path": request_path,
                 },
@@ -1998,7 +1998,15 @@ async def _streaming_response(
                         # cleanup while the disconnect is being handled. The
                         # chunks are read through _chunks_with_arrival so the
                         # arrival instant is captured off the client's pace.
-                        async with aclosing(_chunks_with_arrival(_new_logosnode_chunk_iter())) as wrapped:
+                        lane_id = context.lane_id
+                        if attempt:
+                            lane = await _logosnode_registry.select_lane_for_model(
+                                provider_id, context.model_name, request_id=request_id
+                            )
+                            if not lane or not lane.get("lane_id"):
+                                raise LogosNodeCommandError("No routable lane available for stream retry")
+                            lane_id = str(lane["lane_id"])
+                        async with aclosing(_chunks_with_arrival(_new_logosnode_chunk_iter(lane_id))) as wrapped:
                             async for chunk, arrival in wrapped:
                                 if not produced and not effort_retried and _is_effort_rejection_body(chunk):
                                     held_rejection = chunk

@@ -204,6 +204,7 @@ def _planner(
         get_committed_mb=lambda pid: 0.0,
         has_overlapping_reservation=lambda *a, **k: False,
         get_gpu_effective_available_mb=lambda pid, g, f: f,
+        get_gpu_consumable_available_mb=lambda pid, g, f: f,
         cleanup_stale=lambda **k: 0,
     )
     planner._host_ram_ledger = SimpleNamespace(cleanup_stale=lambda **k: 0)

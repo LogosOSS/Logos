@@ -41,6 +41,7 @@ from logos.terminal_logging import (
     render_section,
     wrap_plain,
 )
+from logos.timeouts import _LOGOSNODE_STREAM_TIMEOUT_SECONDS
 
 from .demand_tracker import DemandTracker
 from .host_ram_ledger import HostRamLedger
@@ -500,6 +501,7 @@ class CapacityPlanner:
         # (see _settle_cold_mark). The mark is cleared when none is left.
         self._cold_mark_holds: dict[tuple[int, str], int] = {}
         self._cold_mark_settlers: set[asyncio.Task] = set()
+        self._demand_drain_tasks: dict[tuple[int, str], asyncio.Task] = {}
 
         # Track how a lane was loaded: True = cold load, False = wake from sleep
         self._lane_was_cold_loaded: dict[tuple[int, str], bool] = {}
@@ -1387,6 +1389,45 @@ class CapacityPlanner:
                 return False
         return True
 
+    def _start_demand_drain(self, action: CapacityPlanAction) -> bool:
+        """Drain one busy victim without blocking unrelated planner actions.
+
+        The admission mark remains held for the configured stream budget,
+        instead of being removed and retaken every short planner attempt.
+        Existing requests are never killed to reclaim their GPU memory.
+        """
+        tasks = getattr(self, "_demand_drain_tasks", None)
+        if tasks is None:
+            tasks = self._demand_drain_tasks = {}
+        key = (action.provider_id, action.lane_id)
+        if key in tasks:
+            return False
+        budget = max(self.DRAIN_TIMEOUT_SECONDS, float(_LOGOSNODE_STREAM_TIMEOUT_SECONDS))
+        action = copy.copy(action)
+        action.params = {**(action.params or {}), "_drain_budget_s": budget}
+
+        async def run() -> None:
+            try:
+                deadline = time.monotonic() + budget
+                async with asyncio.timeout(budget):
+                    async with self._lane_lock(*key):
+                        if not self._is_plannable(action.provider_id):
+                            return
+                        await self._execute_action_with_confirmation(action, deadline=deadline)
+            except TimeoutError:
+                logger.warning("Demand drain reached its request budget: lane=%s", action.lane_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Demand drain failed for lane=%s", action.lane_id)
+            finally:
+                tasks.pop(key, None)
+                if self._tick_event is not None:
+                    self._tick_event.set()
+
+        tasks[key] = asyncio.create_task(run())
+        return True
+
     async def stop(self) -> None:
         """Stop the planner."""
         if self._task and not self._task.done():
@@ -1396,6 +1437,12 @@ class CapacityPlanner:
             except asyncio.CancelledError:
                 pass
             logger.info("Capacity planner stopped")
+        drains = list(getattr(self, "_demand_drain_tasks", {}).values())
+        for task in drains:
+            task.cancel()
+        if drains:
+            await asyncio.gather(*drains, return_exceptions=True)
+            self._demand_drain_tasks.clear()
 
     async def _run_loop(self) -> None:
         # Initial delay to let system settle.
@@ -1702,6 +1749,12 @@ class CapacityPlanner:
         validated = self._validate_vram_budget(all_actions)
 
         for action in validated:
+            key = (action.provider_id, action.lane_id)
+            if key in getattr(self, "_demand_drain_tasks", {}):
+                continue
+            if (action.params or {}).get("_drain_target_model"):
+                self._start_demand_drain(action)
+                continue
             try:
                 # Acquire per-lane lock so concurrent operations on the same
                 # lane are serialized, but unrelated lanes remain unblocked.
@@ -6078,6 +6131,7 @@ class CapacityPlanner:
                             drain_action = "stop"
                             drain_reason = f"Demand drain: stop for {model_name}"
                             drain_params = {"_stop_penalty": 1}
+                        drain_params["_drain_target_model"] = model_name
                         actions.append(
                             CapacityPlanAction(
                                 action=drain_action,
@@ -6653,11 +6707,31 @@ class CapacityPlanner:
                                 )
                                 continue  # re-enter loop, re-evaluate
 
-                async with self._lane_lock(reclaim.provider_id, reclaim.lane_id):
-                    ok = await self._execute_action_with_confirmation(
-                        reclaim,
-                        timeout_seconds=min(remaining, 45.0),
+                # Keep admission closed while finite active generations finish.
+                # Reopening the victim every 60 seconds lets fresh work defeat
+                # each retry even though this request still has capacity budget.
+                # The same deadline bounds the lane-lock wait, drain and command.
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return False
+                try:
+                    async with asyncio.timeout(remaining):
+                        async with self._lane_lock(reclaim.provider_id, reclaim.lane_id):
+                            remaining = max(0.0, deadline - time.time())
+                            reclaim.params = {**(reclaim.params or {}), "_drain_budget_s": remaining}
+                            ok = await self._execute_action_with_confirmation(
+                                reclaim,
+                                timeout_seconds=min(remaining, 45.0),
+                                deadline=time.monotonic() + remaining,
+                            )
+                except TimeoutError:
+                    logger.info(
+                        "Request reclaim deadline expired for worker=%s model=%s lane=%s",
+                        provider_id,
+                        target.model_name,
+                        reclaim.lane_id,
                     )
+                    return False
                 if not ok:
                     # Execution failed (cooldown race, drain timeout, or worker error).
                     # Re-enter the loop so the deadline guard and updated lane state
@@ -9946,7 +10020,7 @@ class CapacityPlanner:
                 used_mb = float(dev.get("memory_used_mb", 0) or 0)
                 if total_mb > 0 and used_mb >= 0:
                     free_mb = max(total_mb - used_mb, 0.0)
-            free_mb = self._vram_ledger.get_gpu_effective_available_mb(
+            free_mb = self._vram_ledger.get_gpu_consumable_available_mb(
                 provider_id,
                 dev_id,
                 free_mb,
@@ -10518,15 +10592,26 @@ class CapacityPlanner:
                         drained = await self._drain_lane(
                             action.provider_id,
                             action.lane_id,
-                            timeout_seconds=self._step_budget(deadline, 60.0),
+                            timeout_seconds=self._step_budget(
+                                deadline, float((action.params or {}).get("_drain_budget_s", 60.0))
+                            ),
                         )
                     else:
                         drained = self._lane_is_idle_now(action.provider_id, action.lane_id)
                     if not drained:
                         logger.warning(
-                            "Cannot sleep lane %s for reclaim: " "active requests did not drain within 60s",
+                            "Cannot sleep lane %s for reclaim: active requests exceeded the drain budget",
                             action.lane_id,
                         )
+                        return False
+                    target_model = (action.params or {}).get("_drain_target_model")
+                    if (
+                        target_model
+                        and self._get_queue_depth_for_model(
+                            action.provider_id, target_model, self._safe_get_lanes(action.provider_id)
+                        )
+                        <= 0
+                    ):
                         return False
                     if await self._locked_since_planning(action):
                         return False
@@ -10883,7 +10968,9 @@ class CapacityPlanner:
                     drained = await self._drain_lane(
                         action.provider_id,
                         action.lane_id,
-                        timeout_seconds=self._step_budget(deadline, 60.0),
+                        timeout_seconds=self._step_budget(
+                            deadline, float((action.params or {}).get("_drain_budget_s", 60.0))
+                        ),
                     )
                 else:
                     drained = self._lane_is_idle_now(action.provider_id, action.lane_id)
@@ -10892,6 +10979,15 @@ class CapacityPlanner:
                         "Cannot stop lane %s: active requests did not drain within timeout",
                         action.lane_id,
                     )
+                    return False
+                target_model = (action.params or {}).get("_drain_target_model")
+                if (
+                    target_model
+                    and self._get_queue_depth_for_model(
+                        action.provider_id, target_model, self._safe_get_lanes(action.provider_id)
+                    )
+                    <= 0
+                ):
                     return False
                 if await self._locked_since_planning(action):
                     return False

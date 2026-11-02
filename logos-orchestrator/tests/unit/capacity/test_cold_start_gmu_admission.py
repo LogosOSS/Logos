@@ -89,13 +89,14 @@ def _planner(
         source = raw_free_before_ledger if raw_free_before_ledger is not None else free
 
         def _free(pid: int) -> dict[int, float]:
-            return {gpu: ledger.get_gpu_effective_available_mb(pid, gpu, float(mb)) for gpu, mb in source.items()}
+            return {gpu: ledger.get_gpu_consumable_available_mb(pid, gpu, float(mb)) for gpu, mb in source.items()}
 
         planner._get_per_gpu_free = _free  # noqa: E731
     else:
         planner._get_per_gpu_free = lambda pid: dict(free)  # noqa: E731
         planner._vram_ledger = SimpleNamespace(
             get_gpu_effective_available_mb=lambda pid, g, f: f,
+            get_gpu_consumable_available_mb=lambda pid, g, f: f,
             get_committed_mb=lambda pid: 0.0,
         )
     planner._get_per_gpu_total = lambda pid: dict(totals)  # noqa: E731

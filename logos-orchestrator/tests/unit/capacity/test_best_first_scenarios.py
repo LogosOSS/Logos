@@ -1771,6 +1771,7 @@ class TestWakeTargetSelfEviction:
             get_committed_mb=lambda pid: 0.0,
             has_overlapping_reservation=lambda *a, **k: False,
             get_gpu_effective_available_mb=lambda pid, g, f: f,
+            get_gpu_consumable_available_mb=lambda pid, g, f: f,
         )
         planner._get_queue_depth_across_deployments = lambda *_: 0
         planner._build_load_params = lambda *a, **k: {}
@@ -1813,6 +1814,7 @@ class TestBalanceWake:
             get_committed_mb=lambda pid: 0.0,
             has_overlapping_reservation=lambda *a, **k: False,
             get_gpu_effective_available_mb=lambda pid, g, f: f,
+            get_gpu_consumable_available_mb=lambda pid, g, f: f,
         )
         planner._demand.get_ranked_models.return_value = [ranked]
         planner._demand.get_score.return_value = ranked[1]

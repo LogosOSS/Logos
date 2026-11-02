@@ -181,6 +181,37 @@ def delete_model_lanes_on_providers(
     )
 
 
+def retain_single_model_lane(
+    admin: AdminClient, model: str, provider_id: int, *, timeout_s: float = 60.0
+) -> list[tuple[int, str]]:
+    """Remove surplus replicas during external setup, preserving one real engine.
+
+    Traffic may leave several replicas of the lifecycle target. A wake request
+    can use any of them, so the same-PID test needs a single target beforehand.
+    Prefer an awake engine; never unload the survivor or alter its sleep state.
+    """
+    lanes = [lane for lane in admin.node_lanes(provider_id) if lane.get("model") == model]
+    if len(lanes) <= 1:
+        return []
+    survivor = min(lanes, key=lambda lane: (lane.get("sleep_state") != "awake", str(lane.get("lane_id"))))
+    survivor_id = str(survivor.get("lane_id") or "")
+    if not survivor_id or any(not lane.get("lane_id") for lane in lanes):
+        raise RuntimeError(f"cannot isolate target with missing lane IDs: {lanes}")
+    deleted = []
+    for lane in lanes:
+        lane_id = str(lane["lane_id"])
+        if lane_id != survivor_id:
+            admin.delete_lane(provider_id, lane_id)
+            deleted.append((provider_id, lane_id))
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        remaining = [lane for lane in admin.node_lanes(provider_id) if lane.get("model") == model]
+        if len(remaining) == 1 and remaining[0].get("lane_id") == survivor_id:
+            return deleted
+        time.sleep(0.5)
+    raise TimeoutError(f"single-target setup incomplete: survivor={survivor_id}; lanes={remaining}")
+
+
 def _wait_capabilities_exclude(
     admin: AdminClient,
     provider_ids: list[int],
@@ -231,7 +262,8 @@ def prepare_lifecycle_isolation(
     3. Delete preexisting target engines on every *other* provider through the
        real ``/logosdb/providers/logosnode/lanes/delete`` API. Catalogue
        removal never unloads a running/sleeping lane; idle-settle is unreliable
-       under retain-last-active.
+       under retain-last-active. Retain just one target replica on the keep
+       provider so the wake probe cannot select a different existing engine.
 
     When ``refresh_orchestrator_cache=True`` this performs a compose restart —
     call only from the external runner / ``--prepare-lifecycle`` CLI, never from
@@ -263,6 +295,8 @@ def prepare_lifecycle_isolation(
     for model in models:
         if others:
             deleted.extend(delete_model_lanes_on_providers(admin, model, others))
+
+    deleted.extend(retain_single_model_lane(admin, target_model, keep))
 
     orch_restarted = False
     if refresh_orchestrator_cache:
@@ -320,6 +354,8 @@ def prepare_lifecycle_isolation(
     if remaining:
         raise RuntimeError(f"lifecycle isolation incomplete; foreign lanes remain: {remaining}")
 
+    deleted.extend(retain_single_model_lane(admin, target_model, keep))
+
     return {
         "keep_provider_id": keep,
         "foreign_provider_ids": others,
@@ -329,7 +365,7 @@ def prepare_lifecycle_isolation(
         "foreign_nodes_recreated_without_models": foreign_services,
         "setup": (
             "restrict_model_provider+foreign_node_recreate_without_capabilities"
-            "+lanes_delete_pre_post_orch_restart+settle"
+            "+lanes_delete_pre_post_orch_restart+settle+single_target_replica"
         ),
     }
 
