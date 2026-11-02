@@ -172,22 +172,41 @@ def test_an_old_record_is_not_announced_late(reporting_deployer, orchestrator, s
 # ---------------------------------------------------------------------- When the orchestrator cannot be asked
 
 
-def test_an_orchestrator_that_is_down_leaves_the_ending_for_the_next_start(
-    make_deployer, drain_settings, orchestrator, store, caplog
+def test_a_report_that_fails_is_tried_again_after_a_pause_and_never_holds_up_the_loop(
+    make_deployer, drain_settings, orchestrator, store, clock, caplog
 ):
     deployer = make_deployer(settings=drain_settings, orchestrator=orchestrator)
     finish(deployer, store)
     orchestrator.report_replies = [OrchestratorUnavailable("connection refused", retryable=True)]
+    before = clock.now
 
     with caplog.at_level("WARNING"):
         deployer.report_pending()
 
     assert store.load("run-1").reported_at is None
     assert "the ending was not reported" in caplog.text
-    attempts = orchestrator.count("report")
-    assert attempts > 1, "asked again within the retry window"
+    assert orchestrator.count("report") == 1, "one try per pass"
+    assert clock.now == before, "the pass does not wait, so the next deployment is not held up"
+
+    clock.sleep(14)
     deployer.report_pending()
-    assert orchestrator.count("report") == attempts, "not again before the next start"
+    assert orchestrator.count("report") == 1, "not before the pause is over"
+
+    clock.sleep(1)
+    orchestrator.report_replies = []
+    deployer.report_pending()
+    assert orchestrator.count("report") == 2
+    assert store.load("run-1").reported_at is not None
+
+
+def test_an_ending_that_was_not_reported_is_reported_after_a_restart(
+    make_deployer, drain_settings, orchestrator, store
+):
+    deployer = make_deployer(settings=drain_settings, orchestrator=orchestrator)
+    finish(deployer, store)
+    orchestrator.report_replies = [OrchestratorUnavailable("connection refused", retryable=True)]
+    deployer.report_pending()
+    assert store.load("run-1").reported_at is None
 
     restarted = make_deployer(settings=drain_settings, orchestrator=orchestrator)
     orchestrator.report_replies = []
@@ -196,26 +215,27 @@ def test_an_orchestrator_that_is_down_leaves_the_ending_for_the_next_start(
     assert store.load("run-1").reported_at is not None
 
 
-def test_a_report_is_asked_again_for_30_seconds_whatever_the_window_of_the_drain(
-    make_deployer, drain_settings, orchestrator, store
-):
-    deployer = make_deployer(
-        settings=replace(drain_settings, orchestrator_retry_window_s=120), orchestrator=orchestrator
-    )
-    finish(deployer, store)
-    orchestrator.report_replies = [OrchestratorUnavailable("connection refused", retryable=True)]
+def test_an_ending_is_reported_without_reading_the_records_again(reporting_deployer, orchestrator, store, monkeypatch):
+    reporting_deployer.report_pending()  # The look at the records when the manager starts: nothing ended yet.
+    reads: list[str] = []
+    read_all = store.all
+    monkeypatch.setattr(store, "all", lambda: reads.append("read") or read_all())
 
-    deployer.report_pending()
+    finish(reporting_deployer, store)
+    for _ in range(3):
+        reporting_deployer.report_pending()
 
-    # One try every poll interval (5 s) from second 0 to second 30.
-    assert orchestrator.count("report") == 7
+    assert orchestrator.count("report") == 1
+    assert reads == []
 
 
-def test_a_refusal_is_not_asked_again(make_deployer, drain_settings, orchestrator, store):
+def test_a_refusal_is_not_asked_again(make_deployer, drain_settings, orchestrator, store, clock):
     deployer = make_deployer(settings=drain_settings, orchestrator=orchestrator)
     finish(deployer, store)
     orchestrator.report_replies = [OrchestratorUnavailable("the orchestrator answered 404", retryable=False)]
 
+    deployer.report_pending()
+    clock.sleep(10_000)
     deployer.report_pending()
 
     assert orchestrator.count("report") == 1

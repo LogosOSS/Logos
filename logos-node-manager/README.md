@@ -116,11 +116,14 @@ events of the deployment stay in `node-manager status --logs`.
   so the manager can only report for its own node. The notification is named by the node and the deployment, and the
   application server stores one notification per name. A repeated report of the same deployment is answered like the
   first one and adds no second notification, also after a restart of the orchestrator.
-* The report is made after the record says the deployment is over, and it never changes the outcome. An orchestrator that
-  does not answer is asked again for 30 seconds, so that a report does not hold up the next deployment for long. After
-  that the report is not tried again before the next start of the manager. The record keeps `reported_at` once the orchestrator has accepted it, so a stop between the
-  end and the report does not lose it. The manager reports an ending again after a restart only for one hour. This keeps
-  the old records from being announced all at once when a manager that did not report yet is updated.
+* The report is made after the record says the deployment is over, and it never changes the outcome. Each pass of the
+  manager makes one try for a report that is due and goes on, so a report that fails does not hold up the next
+  deployment. An orchestrator that does not answer is asked again after 15 seconds, then after 30, 60, 120 and 240
+  seconds, and then every 5 minutes. The manager stops when the report was accepted, when the orchestrator refuses it
+  in a way that asking again will not change, or when the ending is more than one hour old. The record keeps
+  `reported_at` once the orchestrator has accepted it, so a stop between the end and the report does not lose it. After a
+  restart the manager looks at the records once and reports the endings that were not reported, again only for one
+  hour. This keeps the old records from being announced all at once when a manager that did not report yet is updated.
 
 ### What the check can see
 
