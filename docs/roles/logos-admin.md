@@ -275,6 +275,17 @@ Eligible improvements over the current baseline apply automatically after the wo
 Otherwise, production settings return after each round. The pairs take turns until the window ends.
 The dataset keeps its original freeze date across runs. Its content hash remains in the configuration details.
 **Benchmark ready** appears once after the final production configuration is confirmed.
+Select **Benchmark ready** to open the exact measurement, its result and its changed parameters.
+The **Benchmark runs** table groups runs by dataset. Select a column heading to change the order.
+Each sortable column cycles through the initial order, ascending order and descending order.
+
+![Benchmark notification with a link to its captured measurement](../static/img/roles/logos-admin-benchmark-notification.png)
+
+The linked result stays selected when newer benchmark runs appear.
+If the measurement is deleted, then the page identifies the unavailable benchmark.
+
+![Selected benchmark with its result and changed parameters](../static/img/roles/logos-admin-benchmark-linked-result.png)
+
 
 ![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
 

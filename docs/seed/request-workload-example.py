@@ -6,6 +6,7 @@ import os
 import psycopg2
 from psycopg2.extras import Json, RealDictCursor
 
+from logos.benchmarks.completion import description, result
 from logos.benchmarks.optimization import context
 from logos.benchmarks.workloads import build_snapshot
 
@@ -115,5 +116,25 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
         cursor.execute(
             "UPDATE nightly_benchmarks SET workload_id=%s, optimizer=%s WHERE model_provider_id=%s",
             (workload["id"], Json(optimizer), model["pair_id"]),
+        )
+        # Link an earlier measured result so the example proves it does not open the latest run.
+        example = runs[len(runs) // 2]
+        payload = {
+            "model_id": model["id"],
+            "model_provider_id": model["pair_id"],
+            **result([example], [{"benchmark_id": example["id"], "status": "success"}]),
+        }
+        event_key = f"docs-benchmark-result:{model['pair_id']}"
+        cursor.execute("DELETE FROM notifications WHERE event_key = %s", (event_key,))
+        cursor.execute(
+            "INSERT INTO notifications(type, title, body, payload, source, event_key) "
+            "VALUES ('benchmark_result_ready', 'Nightly benchmark finished', %s, %s, 'orchestrator', %s) RETURNING id",
+            ("Illustrative saved request measurement." + description(payload), Json(payload), event_key),
+        )
+        notification_id = cursor.fetchone()["id"]
+        cursor.execute(
+            "INSERT INTO notification_recipients(notification_id, recipient_kind, recipient_role) "
+            "VALUES (%s, 'role', 'logos_admin')",
+            (notification_id,),
         )
         print(json.dumps({"workload": workload["id"], "reference": reference, "illustrative_runs": len(runs)}))

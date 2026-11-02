@@ -673,6 +673,7 @@
 
             <div class="empty-state">
               <h2>No benchmark results available</h2>
+              @if (linkedBenchmarkId(); as benchmarkId) { <p>Benchmark #{{ benchmarkId }} is no longer available.</p> }
               <p>Run a benchmark to measure throughput and response times.</p>
               <button type="button" class="benchmark-run-button" (click)="performanceView.set('run')">Configure a benchmark</button>
             </div>
@@ -683,7 +684,7 @@
               <app-error-message variant="banner" [message]="error" />
             }
 
-            <app-benchmark-results [runs]="performance()" />
+            <app-benchmark-results [runs]="performance()" [selectedRunId]="linkedBenchmarkId()" />
             <details class="performance-detail-section" name="performance-analysis"><summary>Charts and comparison</summary>
               <app-benchmark-comparison [runs]="performance()" />
             </details>

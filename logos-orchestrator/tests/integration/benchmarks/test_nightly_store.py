@@ -199,6 +199,9 @@ def test_finish_persists_winner_reference_and_chart_eligibility_atomically(datab
     if adopt:
         assert store.status(31)["optimizer"]["production_adoption"]["benchmark_id"] == 2
     with engine.connect() as connection:
+        payload = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
+        assert payload["benchmark_id"] == 2
+        assert payload["changes"] == [{"parameter": "max_num_seqs", "before": None, "after": 32}]
         assert (
             connection.execute(
                 text(

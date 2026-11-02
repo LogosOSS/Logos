@@ -48,6 +48,11 @@ review individual outcomes before comparing throughput.
 **Results** shows the run, model, changed parameters, measurement times and output throughput.
 New nightly variants link to the production baseline from the same round.
 **Before** shows this baseline. **After** shows the measured result. **Change** shows the percentage difference.
+The **Benchmark runs** table groups measurements by dataset identity and shows each saved dataset name.
+Runs from different comparison references remain together when they use the same frozen dataset.
+Select **Run**, **Measured from → to**, **Before**, **After** or **Change** to sort within each dataset.
+Each sort control cycles through the initial order, ascending order and descending order.
+The third selection restores the initial order. Missing measurements remain last.
 A dash means the value or baseline is unavailable. Historical timestamps are not reconstructed.
 Expand **Charts and comparison** or **Run details and saved configurations** for more information.
 
@@ -268,6 +273,11 @@ The event includes the outcome, completed round count, total successful configur
 Logos retries failed notification delivery, including outside the maintenance window.
 A stable event key prevents duplicate notifications after a retry or application restart.
 Logos Admins receive **Benchmark ready** in their notification inbox.
+The notification retains the concrete benchmark identifier and its parameter changes.
+Select the notification to open that benchmark in **Model Details → Performance → Results**.
+The page selects its dataset and shows the result, baseline, percentage change and changed parameters.
+This link remains available after the notification is read.
+If the measurement is deleted, then the page identifies the unavailable benchmark.
 A recovery that still needs attention does not emit a completed event.
 
 ## Worker ownership and recovery

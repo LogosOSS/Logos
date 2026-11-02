@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
-import { ActivatedRoute, provideRouter } from '@angular/router';
+import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
+import { BehaviorSubject } from 'rxjs';
 import { HttpClient, provideHttpClient } from '@angular/common/http';
 import { ModelManagementService } from '../../core/services/model-management.service';
 import { ModelBenchmarkPair, ModelBenchmarkRun, ModelBenchmarkResponse, ModelProviderBenchmark } from '../../shared/models/provider.model';
@@ -29,6 +30,25 @@ describe('Benchmark runner', () => {
     component.modelId.set(1);
   });
   afterEach(() => { component.ngOnDestroy(); vi.restoreAllMocks(); });
+
+  it('opens benchmark links when only query parameters change and when another model reuses the route', async () => {
+    const params = new BehaviorSubject(convertToParamMap({ id: '1' }));
+    const query = new BehaviorSubject(convertToParamMap({ tab: 'access' }));
+    Object.assign(TestBed.inject(ActivatedRoute), { paramMap: params, queryParamMap: query });
+    component.modelId.set(null);
+    const fetch = vi.spyOn(component, 'fetchModel').mockResolvedValue();
+    await component.ngOnInit();
+    expect(component.activeTab()).toBe('access');
+    query.next(convertToParamMap({ tab: 'performance', benchmark: '115' }));
+    expect(component.linkedBenchmarkId()).toBe(115);
+    expect(component.performanceView()).toBe('results');
+    expect(component.activeTab()).toBe('performance');
+    params.next(convertToParamMap({ id: '2' }));
+    expect(fetch.mock.calls.map(call => call[0])).toEqual([1, 2]);
+    component.ngOnDestroy();
+    query.next(convertToParamMap({ benchmark: '124' }));
+    expect(component.linkedBenchmarkId()).toBe(115);
+  });
 
   it('shows replay latency in milliseconds and legacy latency in seconds without losing recorded values', () => {
     const distribution = { successful: { max: 3000, percentiles: { p50: 1200, p95: 2500, p99: 2900 } } };

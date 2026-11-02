@@ -57,7 +57,7 @@
                 type="button"
                 class="item"
                 [class.item--unread]="!item.read"
-                (click)="markRead(item)"
+                (click)="openNotification(item)"
                 [attr.aria-label]="(item.read ? '' : 'Unread: ') + item.title"
               >
                 <span class="item__icon" [class]="'item__icon item__icon--' + meta(item.type).tone" aria-hidden="true">
@@ -68,6 +68,7 @@
                   @if (item.body) {
                     <span class="item__body">{{ item.body }}</span>
                   }
+                  @if (target(item)) { <span class="item__meta">View benchmark results →</span> }
                   <span class="item__meta">{{ meta(item.type).label }} · {{ age(item.created_at) }}</span>
                 </span>
                 @if (!item.read) {

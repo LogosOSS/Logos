@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, input, signal } from '@angular/core';
+import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, effect, ElementRef, input, signal, viewChild } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { benchmarkConfigurationItems, benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
@@ -6,7 +6,7 @@ import { comparisonValue } from './benchmark-comparison';
 import { benchmarkProgress } from './benchmark-progress';
 import { batchingSignature } from './benchmark-isolation';
 
-type ResultColumn = 'before' | 'after' | 'delta';
+type ResultColumn = 'runId' | 'measuredFrom' | 'before' | 'after' | 'delta';
 
 @Component({
   selector: 'app-benchmark-results',
@@ -20,12 +20,21 @@ export class BenchmarkResults {
   throughput(run: ModelProviderBenchmark) { return comparisonValue(run, 'throughput'); }
   readonly datasetLabel = benchmarkDatasetLabel;
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
+  readonly selectedRunId = input<number | null>(null);
+  readonly selectedRow = computed(() => this.rows().find(row => row.run.id === this.selectedRunId()) ?? null);
+  private readonly selectedResult = viewChild<ElementRef<HTMLElement>>('selectedResult');
+  private focusedRunId: number | null = null;
   readonly progress = computed(() => benchmarkProgress(this.runs()));
   readonly progressKey = signal('');
-  readonly activeProgress = computed(() => this.progress().find(group => group.key === this.progressKey()) ?? this.progress()[0]);
+  readonly activeProgress = computed(() => {
+    const reference = (this.selectedRow()?.run.configuration['nightly'] as { reference_id?: number } | undefined)?.reference_id;
+    return this.progress().find(group => group.key === this.progressKey())
+      ?? this.progress().find(group => group.reference.id === reference) ?? this.progress()[0];
+  });
   readonly showAll = signal(false);
   readonly sort = signal<{ key: ResultColumn; direction: 'ascending' | 'descending' } | null>(null);
   readonly columns: readonly { key: ResultColumn; label: string }[] = [
+    { key: 'runId', label: 'Run' }, { key: 'measuredFrom', label: 'Measured from → to' },
     { key: 'before', label: 'Before' }, { key: 'after', label: 'After' }, { key: 'delta', label: 'Change' },
   ];
   readonly sortedRows = computed(() => {
@@ -38,11 +47,44 @@ export class BenchmarkResults {
       return sort.direction === 'ascending' ? left - right : right - left;
     });
   });
-  readonly visibleRows = computed(() => this.showAll() ? this.sortedRows() : this.sortedRows().slice(0, 5));
+  readonly datasetGroups = computed(() => {
+    const groups = new Map<string, { key: string; label: string; rows: ReturnType<BenchmarkResults['rows']> }>();
+    // Dataset order stays newest first; sorting changes the runs within each dataset.
+    for (const row of this.rows()) {
+      const workload = row.run.configuration['workload'] as { id?: string } | undefined;
+      const key = workload?.id ? `requests:${workload.id}` : row.run.dataset;
+      if (!groups.has(key)) groups.set(key, { key, label: benchmarkDatasetLabel(row.run), rows: [] });
+    }
+    for (const row of this.sortedRows()) {
+      const workload = row.run.configuration['workload'] as { id?: string } | undefined;
+      groups.get(workload?.id ? `requests:${workload.id}` : row.run.dataset)!.rows.push(row);
+    }
+    return [...groups.values()].map(group => ({ ...group,
+      visible: this.showAll() ? group.rows : group.rows.slice(0, 5) }));
+  });
+  readonly visibleRows = computed(() => this.datasetGroups().flatMap(group => group.visible));
+  readonly hasMore = computed(() => this.datasetGroups().some(group => group.rows.length > 5));
+
+  constructor() {
+    effect(() => {
+      if (this.selectedRunId() !== null) { this.showAll.set(true); this.progressKey.set(''); }
+    });
+    afterRenderEffect(() => {
+      const element = this.selectedResult()?.nativeElement;
+      const id = this.selectedRunId();
+      if (id === null) this.focusedRunId = null;
+      if (element && id !== this.focusedRunId) {
+        element.scrollIntoView?.({ block: 'center' });
+        element.focus({ preventScroll: true });
+        this.focusedRunId = id;
+      }
+    });
+  }
 
   sortBy(key: ResultColumn): void {
-    this.sort.update(previous => ({ key,
-      direction: previous?.key === key && previous.direction === 'descending' ? 'ascending' : 'descending' }));
+    this.sort.update(previous => previous?.key === key
+      ? previous.direction === 'ascending' ? { key, direction: 'descending' } : null
+      : { key, direction: 'ascending' });
   }
 
   readonly topRuns = computed(() => {
@@ -77,12 +119,14 @@ export class BenchmarkResults {
     const before = !isBaseline && baseline ? comparisonValue(baseline, 'throughput') : null;
     const after = comparisonValue(run, 'throughput');
     const measurement = run.configuration['measurement'] as { started_at?: string; ended_at?: string } | undefined;
+    const measured = measurement?.started_at ? Date.parse(measurement.started_at) : NaN;
     const requested = run.configuration['requested_overrides'] as Record<string, unknown> | undefined;
     const label = (key: string) => key === 'max_num_seqs' ? 'Sequences' : key === 'max_num_batched_tokens' ? 'Batch tokens' : key;
     const changes = nightly ? Object.entries(nightly?.parameters ?? {}).filter(([key, value]) => value !== nightly?.original?.[key])
       .map(([key, value]) => `${label(key)}: ${nightly?.original?.[key] || 'auto'} → ${value}`)
       : Object.entries(requested ?? {}).map(([key, value]) => `${label(key)} → ${typeof value === 'object' ? JSON.stringify(value) : value}`);
-    return { run, before, after, isBaseline, measurement, changes,
+    return { run, runId: run.id, measuredFrom: Number.isFinite(measured) ? measured : null,
+      before, after, isBaseline, measurement, changes,
       currentSettings: !nightly && requested !== undefined && Object.keys(requested).length === 0,
       kind: nightly ? (isBaseline ? 'Nightly baseline' : 'Nightly variant') : 'Benchmark',
       delta: before !== null && before > 0 && after !== null ? (after / before - 1) * 100 : null };

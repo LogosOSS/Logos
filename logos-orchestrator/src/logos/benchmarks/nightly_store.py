@@ -513,6 +513,7 @@ def adoption_candidate(pair_id, search, report):
 
 def finish(pair_id, state, report, search=None):
     """Commit restored state, the observed winner and its completion event together."""
+    from logos.benchmarks.completion import result
     from logos.benchmarks.optimization import eligible, select_state
 
     with DBManager() as db:
@@ -546,6 +547,7 @@ def finish(pair_id, state, report, search=None):
                 else []
             )
             optimizer = select_state(search, runs, report)
+            optimizer["last_round_result"] = result(runs, report)
             adopted = next((item for item in report if item.get("status") == "adopted"), None)
             if adopted:
                 if not row["enabled"]:
@@ -606,6 +608,8 @@ def finish(pair_id, state, report, search=None):
                 "reference_id": event_optimizer.get("reference_id"),
                 "best_benchmark_id": event_optimizer.get("best_benchmark_id"),
                 "production_adoption": event_optimizer.get("production_adoption"),
+                "benchmark_id": None,
+                **event_optimizer.get("last_round_result", {}),
             }
             db.session.execute(
                 text(
@@ -638,6 +642,7 @@ def finalize_continuations(now):
 
 async def deliver_completion_events():
     """Retry persisted events; the application server deduplicates each event key."""
+    from logos.benchmarks.completion import description
     from logos.notifications import emit_notification
 
     with DBManager() as db:
@@ -660,7 +665,8 @@ async def deliver_completion_events():
                 f"Production uses improved configuration #{payload['production_adoption']['benchmark_id']}."
                 if payload.get("production_adoption")
                 else "Production settings restored."
-            ),
+            )
+            + description(payload),
             payload,
             [{"kind": "role", "role": "logos_admin"}],
             event_key=event["event_id"],
