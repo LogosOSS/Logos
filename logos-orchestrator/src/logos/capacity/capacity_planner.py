@@ -10020,7 +10020,7 @@ class CapacityPlanner:
                 used_mb = float(dev.get("memory_used_mb", 0) or 0)
                 if total_mb > 0 and used_mb >= 0:
                     free_mb = max(total_mb - used_mb, 0.0)
-            free_mb = self._vram_ledger.get_gpu_effective_available_mb(
+            free_mb = self._vram_ledger.get_gpu_consumable_available_mb(
                 provider_id,
                 dev_id,
                 free_mb,
