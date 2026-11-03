@@ -39,7 +39,7 @@ export function keycloakIssuer(kc: Keycloak): string {
 
 /**
  * Fetches runtime config from /api/info and initializes the keycloak-js
- * singleton with check-sso + PKCE. Must run before the app renders.
+ * singleton with a redirect SSO check and PKCE before the app renders.
  */
 export async function initKeycloak(): Promise<Keycloak> {
   const res = await fetch('/api/info');
@@ -60,16 +60,11 @@ export async function initKeycloak(): Promise<Keycloak> {
   };
   const [url, realm] = splitIssuer(issuer);
   const kc = new Keycloak({ url, realm, clientId });
-  // The "iframe ... can escape its sandboxing" console warning is emitted by
-  // keycloak-js itself (keycloak.js #checkSsoSilently / #check3pCookiesSupported),
-  // which hardcodes sandbox="allow-scripts allow-same-origin" on its hidden
-  // iframes. It is benign here: those iframes load only the trusted IdP and our
-  // own same-origin /silent-check-sso.html. Removing it would require patching
-  // the dependency, so we leave the warning as-is.
+  // Use the top-level SSO redirect. A blocked third-party cookie iframe must not
+  // prevent application startup; PKCE and callback verification stay with Keycloak.
   await kc.init({
     onLoad: 'check-sso',
     pkceMethod: 'S256',
-    silentCheckSsoRedirectUri: window.location.origin + '/silent-check-sso.html',
     checkLoginIframe: false,
   });
   kc.onTokenExpired = () => { void kc.updateToken(30); };
