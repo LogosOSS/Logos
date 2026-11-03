@@ -107,13 +107,13 @@ describe('Benchmark result baseline', () => {
     const component = fixture.componentInstance;
     component.showAll.set(true);
     component.sortBy('delta');
-    expect(component.visibleRows().map(row => row.run.id)).toEqual([2, 3, 6, 4, 7, 5, 1]);
+    expect(component.visibleRows().map(row => row.run.id)).toEqual([2, 5, 3, 1, 6, 4, 7]);
     component.sortBy('delta');
-    expect(component.visibleRows().map(row => row.run.id)).toEqual([4, 6, 3, 2, 7, 5, 1]);
+    expect(component.visibleRows().map(row => row.run.id)).toEqual([4, 6, 5, 3, 1, 2, 7]);
     component.sortBy('before');
-    expect(component.visibleRows().map(row => row.run.id)).toEqual([4, 3, 2, 6, 7, 5, 1]);
+    expect(component.visibleRows().map(row => row.run.id)).toEqual([4, 3, 2, 1, 6, 5, 7]);
     component.sortBy('before');
-    expect(component.visibleRows().map(row => row.run.id)).toEqual([6, 4, 3, 2, 7, 5, 1]);
+    expect(component.visibleRows().map(row => row.run.id)).toEqual([6, 5, 4, 3, 2, 1, 7]);
   });
 
   it('keeps older runs available without expanding the initial result list', () => {
@@ -131,7 +131,7 @@ describe('Benchmark result baseline', () => {
     fixture.componentRef.setInput('runs', [run(1, 40, 1), run(2, 50, 1), run(3, 60), run(4, 80, 1, 2)]);
     const rows = fixture.componentInstance.rows();
     expect(rows.find(row => row.run.id === 2)?.delta).toBe(25);
-    expect(rows.find(row => row.run.id === 1)?.before).toBeNull();
+    expect(rows.find(row => row.run.id === 1)?.before).toBe(40);
     expect(rows.find(row => row.run.id === 3)?.before).toBeNull();
     expect(rows.find(row => row.run.id === 4)?.before).toBeNull();
   });

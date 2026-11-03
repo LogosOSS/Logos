@@ -83,7 +83,7 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
         for run in runs:
             configuration = run["configuration"]
             configuration.update(
-                tool="logos-replay",
+                tool="guidellm",
                 workload={key: workload[key] for key in ("id", "name", "provenance", "request_count", "created_at")},
             )
             nightly = configuration["nightly"]
@@ -91,6 +91,7 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
                 reference_id=reference, series_key=series, workload_id=workload["id"], eligible_for_selection=True
             )
             configuration["serving"] = {**production, **nightly.get("parameters", {})}
+            run["sample_size"] = 10
             metrics = run["metrics"]
             rate = (
                 metrics.get("aggregate_output_tokens_per_second")

@@ -530,8 +530,55 @@
               (click)="performanceView.set('results')">Results</button>
             <button type="button" [attr.aria-pressed]="performanceView() === 'run'"
               (click)="performanceView.set('run')">Run benchmark</button>
+            <button type="button" [attr.aria-pressed]="performanceView() === 'deployed'"
+              (click)="performanceView.set('deployed')">Currently deployed configuration</button>
+            <button type="button" [attr.aria-pressed]="performanceView() === 'measurements'"
+              (click)="performanceView.set('measurements'); refreshDelays()">Request measurements</button>
           </nav>
 
+          @if (performanceView() === 'deployed') {
+            @for (pair of deployedPairs(); track pair.model_provider_id) {
+              <app-deployed-configuration [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [runs]="performance()" />
+            } @empty { <p>No local worker configurations are available for this model.</p> }
+          }
+          @if (performanceView() === 'measurements') {
+          <div class="delays">
+            <div class="delays__header">
+              <div>
+                <h2 class="delays__title">Request measurements</h2>
+                <p class="delays__subtitle">
+                  Timing metadata only; no prompt or response content is used. Per provider and reasoning effort: the wait inside
+                  Logos before the provider call (key lookup, rate limit, budget check, scheduling), the
+                  provider time, and the time to the first token. For local models the effort is the one
+                  Logos sent after mapping it onto the levels the model supports.
+                </p>
+              </div>
+              <app-time-range-bar
+                [preset]="delayPreset()"
+                [offset]="delayOffset()"
+                (presetChange)="delayPreset.set($event)"
+                (offsetChange)="delayOffset.set($event)"
+              />
+              <button
+                type="button"
+                class="btn-copy-log"
+                aria-label="Refresh request delays"
+                (click)="refreshDelays()"
+              >
+                <i class="pi pi-refresh" aria-hidden="true"></i> Refresh
+              </button>
+            </div>
+            @if (modelId() !== null) {
+              <app-request-latency-panel
+                [start]="delayWindow().start"
+                [end]="delayWindow().end"
+                [scope]="delayScope()"
+                [refresh]="delayRefresh()"
+              />
+            }
+          </div>
+
+          }
           @for (pair of benchmarkPairs(); track pair.model_provider_id) {
             @if (latestBenchmarkRun(pair.model_provider_id); as run) {
               @if (isBenchmarkActive(run) || run.status === 'failed') {
@@ -684,7 +731,7 @@
               <app-error-message variant="banner" [message]="error" />
             }
 
-            <app-benchmark-results [runs]="performance()" [selectedRunId]="linkedBenchmarkId()" />
+            <app-benchmark-results [runs]="performance()" [selectedRunId]="linkedBenchmarkId()" [showProgress]="false" />
             <details class="performance-detail-section" name="performance-analysis"><summary>Charts and comparison</summary>
               <app-benchmark-comparison [runs]="performance()" />
             </details>
@@ -887,45 +934,12 @@
 
         }
 
-        <!-- Delays -->
-        @case ('delays') {
-
-          <div class="delays">
-            <div class="delays__header">
-              <div>
-                <h2 class="delays__title">Request delays</h2>
-                <p class="delays__subtitle">
-                  Where the time of a request goes, per provider and reasoning effort: the wait inside
-                  Logos before the provider call (key lookup, rate limit, budget check, scheduling), the
-                  provider time, and the time to the first token. For local models the effort is the one
-                  Logos sent after mapping it onto the levels the model supports.
-                </p>
-              </div>
-              <app-time-range-bar
-                [preset]="delayPreset()"
-                [offset]="delayOffset()"
-                (presetChange)="delayPreset.set($event)"
-                (offsetChange)="delayOffset.set($event)"
-              />
-              <button
-                type="button"
-                class="btn-copy-log"
-                aria-label="Refresh request delays"
-                (click)="refreshDelays()"
-              >
-                <i class="pi pi-refresh" aria-hidden="true"></i> Refresh
-              </button>
-            </div>
-            @if (modelId() !== null) {
-              <app-request-latency-panel
-                [start]="delayWindow().start"
-                [end]="delayWindow().end"
-                [scope]="delayScope()"
-                [refresh]="delayRefresh()"
-              />
-            }
-          </div>
-
+        @case ('improvement') {
+          <h2>Improvement over time</h2>
+          <p>Best eligible throughput compared with a fixed starting baseline under matching measurement conditions.</p>
+          @if (performanceLoading()) { <p role="status">Loading measurements…</p> }
+          @else if (performanceError()) { <app-error-message variant="banner" message="Could not load benchmark progress." /> }
+          @else { <app-benchmark-results [runs]="performance()" [showHistory]="false" /> }
         }
 
         <!-- Access -->

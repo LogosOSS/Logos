@@ -642,7 +642,7 @@ def finalize_continuations(now):
 
 async def deliver_completion_events():
     """Retry persisted events; the application server deduplicates each event key."""
-    from logos.benchmarks.completion import description
+    from logos.benchmarks.completion import description, status_description
     from logos.notifications import emit_notification
 
     with DBManager() as db:
@@ -658,11 +658,15 @@ async def deliver_completion_events():
         payload = event["payload"]
         delivered = await emit_notification(
             "benchmark_result_ready",
-            "Nightly benchmark finished",
+            (
+                "Nightly benchmark interrupted"
+                if payload["status"].startswith("interrupted")
+                else "Nightly benchmark finished"
+            ),
             f"{payload['provider_name']}: {payload['successful_configurations']} successful configurations. "
-            f"Status: {payload['status']}. "
+            f"{status_description(payload['status'])}. "
             + (
-                f"Production uses improved configuration #{payload['production_adoption']['benchmark_id']}."
+                f"Worker confirmed improved configuration #{payload['production_adoption']['benchmark_id']}."
                 if payload.get("production_adoption")
                 else "Production settings restored."
             )

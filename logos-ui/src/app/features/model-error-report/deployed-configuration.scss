@@ -1,0 +1,8 @@
+@use './performance-disclosure' as disclosure;
+.deployed { padding: 1rem 0; border-bottom: 1px solid rgb(var(--color-outline-200)); color: rgb(var(--color-typography-700)); overflow-wrap: anywhere; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .5rem; }
+h3, h4 { color: rgb(var(--color-typography-100)); margin: .5rem 0; }
+p, dt, header span { font-size: .875rem; }
+.parameters, .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 1rem 0; }
+dt { color: rgb(var(--color-typography-500)); } dd { margin: .25rem 0 0; color: rgb(var(--color-typography-100)); }
+a { color: rgb(var(--color-primary-500)); } details { @include disclosure.section; }

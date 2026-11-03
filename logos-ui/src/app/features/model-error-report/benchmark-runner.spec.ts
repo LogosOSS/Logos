@@ -39,6 +39,11 @@ describe('Benchmark runner', () => {
     const fetch = vi.spyOn(component, 'fetchModel').mockResolvedValue();
     await component.ngOnInit();
     expect(component.activeTab()).toBe('access');
+    query.next(convertToParamMap({ tab: 'delays' }));
+    expect(component.activeTab()).toBe('performance');
+    expect(component.performanceView()).toBe('measurements');
+    query.next(convertToParamMap({ tab: 'improvement' }));
+    expect(component.activeTab()).toBe('improvement');
     query.next(convertToParamMap({ tab: 'performance', benchmark: '115' }));
     expect(component.linkedBenchmarkId()).toBe(115);
     expect(component.performanceView()).toBe('results');

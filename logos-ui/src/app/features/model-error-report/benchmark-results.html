@@ -7,6 +7,8 @@
       <div><dt>Result (tok/s)</dt><dd>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }}</dd></div>
       <div><dt>Change</dt><dd>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</dd></div>
     </dl>
+    <p>{{ row.comparisonNote }}</p>
+    @if (row.selectionNote) { <p>{{ row.selectionNote }}</p> }
     <h4>Changed parameters</h4>
     @for (change of row.changes; track change) { <p>{{ change }}</p> }
     @empty { <p>Current settings · no parameter changes</p> }
@@ -15,7 +17,7 @@
 } @else if (selectedRunId() !== null) {
   <p role="status">Benchmark #{{ selectedRunId() }} is no longer available. Other saved results are shown below.</p>
 }
-@if (!activeProgress() && topRuns().length) {
+@if (showHistory() && !activeProgress() && topRuns().length) {
   <section class="top-configurations" aria-label="Top configurations so far">
     <h3>Highest recorded throughput</h3>
     <p class="results-note">Latest captured workload per provider. Older workloads are not ranked against it.</p>
@@ -46,9 +48,10 @@
     }
   </section>
 }
+@if (showProgress()) {
 @if (activeProgress(); as chart) {
-  <details class="benchmark-progress" name="performance-analysis" open aria-label="Nightly progress">
-    <summary class="progress-summary"><h3>Nightly progress</h3><span class="disclosure-meta">{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}% vs. reference #{{ chart.reference.id }}</span></summary>
+  <details class="benchmark-progress" name="performance-analysis" open aria-label="Improvement over time">
+    <summary class="progress-summary"><h3>Improvement over time</h3><span class="disclosure-meta">{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}% vs. reference #{{ chart.reference.id }}</span></summary>
     <div class="results-heading">
       <p class="results-note">Best so far vs. starting baseline</p>
       @if (progress().length > 1) {
@@ -84,10 +87,12 @@
     <div class="progress-dates"><span>{{ chart.first | date:'dd MMM yyyy, HH:mm' }}</span>@if (chart.first !== chart.last) { <span>{{ chart.last | date:'dd MMM yyyy, HH:mm' }}</span> }</div>
     <p class="results-note">Starts at 0%. A new best result raises the line; other completed rounds keep it flat. Tooltips show the change from the previous point.</p>
   </details>
+} @else { <p class="results-note" role="status">No comparable completed rounds yet. A complete baseline and matching workload are required.</p> }
 }
+@if (showHistory()) {
 <details class="run-history" [open]="selectedRunId() !== null">
   <summary><h3>Benchmark runs <small>{{ rows().length }} results · output tok/s</small></h3></summary>
-  <p class="results-note">Each variant compared with its nightly baseline.</p>
+  <p class="results-note">Each run compared with its recorded nightly baseline. Starting measurements show 0% change.</p>
   <table>
     <thead><tr>
       @for (column of columns; track column.key) {
@@ -114,7 +119,7 @@
           </td>
           <td data-label="Before (tok/s)" class="numeric">{{ row.before === null ? '—' : (row.before | number:'1.1-1') }}</td>
           <td data-label="After (tok/s)" class="numeric"><strong>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }}</strong></td>
-          <td data-label="Change" class="numeric">{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</td>
+          <td data-label="Change" class="numeric">{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}<small>{{ row.comparisonNote }}</small></td>
         </tr>
       }
     </tbody>
@@ -124,3 +129,5 @@
     <button type="button" class="btn-secondary results-more" (click)="showAll.set(!showAll())">{{ showAll() ? 'Show fewer' : 'Show all ' + rows().length + ' runs' }}</button>
   }
 </details>
+
+}

@@ -46,3 +46,16 @@
   font-style: italic;
   color: rgb(var(--color-typography-700));
 }
+
+.latency-charts { margin-bottom: 1.5rem; color: rgb(var(--color-typography-700)); font-size: .875rem; }
+.latency-chart { padding: 1rem 0; border-bottom: 1px solid rgb(var(--color-outline-200)); }
+.latency-chart h3 { color: rgb(var(--color-typography-100)); font-size: 1rem; }
+.timing-metric { margin-top: 1rem; }
+.timing-row { display: grid; grid-template-columns: 2rem minmax(0, 1fr) 5rem; gap: .75rem; align-items: center; margin-top: .4rem; }
+.timing-row > span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.bar-track { background: rgb(var(--color-outline-200)); border-radius: .25rem; height: .6rem; }
+.bar { height: 100%; border-radius: inherit; }
+.bar.p50, .chart-legend .p50::before { background: rgb(var(--color-primary-500)); }
+.bar.p95, .chart-legend .p95::before { background: rgb(var(--color-typography-500)); }
+.chart-legend { display: flex; gap: 1rem; }
+.chart-legend span::before { content: ''; display: inline-block; width: .75rem; height: .75rem; margin-right: .4rem; border-radius: .2rem; }

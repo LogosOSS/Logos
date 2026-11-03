@@ -5,6 +5,7 @@ import { benchmarkConfigurationItems, benchmarkDatasetLabel, servingConfiguratio
 import { comparisonValue } from './benchmark-comparison';
 import { benchmarkProgress } from './benchmark-progress';
 import { batchingSignature } from './benchmark-isolation';
+import { benchmarkResultRow } from './benchmark-result-row';
 
 type ResultColumn = 'runId' | 'measuredFrom' | 'before' | 'after' | 'delta';
 
@@ -21,6 +22,8 @@ export class BenchmarkResults {
   readonly datasetLabel = benchmarkDatasetLabel;
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
   readonly selectedRunId = input<number | null>(null);
+  readonly showProgress = input(true);
+  readonly showHistory = input(true);
   readonly selectedRow = computed(() => this.rows().find(row => row.run.id === this.selectedRunId()) ?? null);
   private readonly selectedResult = viewChild<ElementRef<HTMLElement>>('selectedResult');
   private focusedRunId: number | null = null;
@@ -109,26 +112,6 @@ export class BenchmarkResults {
       workload: benchmarkConfigurationItems(run), parameters: servingConfigurationItems(run),
     }));
   });
-  readonly rows = computed(() => [...this.runs()].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at) || b.id - a.id).map(run => {
-    const nightly = run.configuration['nightly'] as {
-      baseline_id?: number; parameters?: Record<string, unknown>; original?: Record<string, unknown>;
-    } | undefined;
-    const baseline = this.runs().find(candidate => candidate.id === nightly?.baseline_id
-      && candidate.model_provider_id === run.model_provider_id);
-    const isBaseline = baseline?.id === run.id;
-    const before = !isBaseline && baseline ? comparisonValue(baseline, 'throughput') : null;
-    const after = comparisonValue(run, 'throughput');
-    const measurement = run.configuration['measurement'] as { started_at?: string; ended_at?: string } | undefined;
-    const measured = measurement?.started_at ? Date.parse(measurement.started_at) : NaN;
-    const requested = run.configuration['requested_overrides'] as Record<string, unknown> | undefined;
-    const label = (key: string) => key === 'max_num_seqs' ? 'Sequences' : key === 'max_num_batched_tokens' ? 'Batch tokens' : key;
-    const changes = nightly ? Object.entries(nightly?.parameters ?? {}).filter(([key, value]) => value !== nightly?.original?.[key])
-      .map(([key, value]) => `${label(key)}: ${nightly?.original?.[key] || 'auto'} → ${value}`)
-      : Object.entries(requested ?? {}).map(([key, value]) => `${label(key)} → ${typeof value === 'object' ? JSON.stringify(value) : value}`);
-    return { run, runId: run.id, measuredFrom: Number.isFinite(measured) ? measured : null,
-      before, after, isBaseline, measurement, changes,
-      currentSettings: !nightly && requested !== undefined && Object.keys(requested).length === 0,
-      kind: nightly ? (isBaseline ? 'Nightly baseline' : 'Nightly variant') : 'Benchmark',
-      delta: before !== null && before > 0 && after !== null ? (after / before - 1) * 100 : null };
-  }));
+  readonly rows = computed(() => [...this.runs()].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at) || b.id - a.id)
+    .map(run => benchmarkResultRow(run, this.runs())));
 }

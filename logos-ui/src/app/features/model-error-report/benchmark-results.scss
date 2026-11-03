@@ -93,3 +93,5 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
   .dataset-heading { display: block; border: 0; padding-bottom: 0; }
   .dataset-heading th { display: block; }
 }
+
+.numeric small { white-space: normal; min-width: 0; }

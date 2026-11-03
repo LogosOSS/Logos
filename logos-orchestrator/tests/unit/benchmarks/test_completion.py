@@ -36,3 +36,10 @@ def test_completion_links_to_the_adopted_result_even_with_a_faster_rejected_meas
 def test_completion_without_successful_measurements_has_no_invented_target():
     assert result([measurement(1, 40)], [{"benchmark_id": 1, "status": "failed"}]) == {}
     assert description({}) == ""
+
+
+def test_recovery_status_explains_interruption_and_successful_restoration():
+    from logos.benchmarks.completion import status_description
+
+    assert status_description("interrupted_recovered") == "Benchmark interrupted; worker configuration recovered"
+    assert "requires attention" in status_description("recovery_required")

@@ -12,6 +12,7 @@ import { NgClass } from '@angular/common';
 import { NightlyBenchmarks } from './nightly-benchmarks';
 import { BenchmarkRunFailure } from './benchmark-run-failure';
 import { BenchmarkResults } from './benchmark-results';
+import { DeployedConfiguration } from './deployed-configuration';
 import { benchmarkDatasetLabel } from './benchmark-configuration';
 import { BenchmarkComparison } from './benchmark-comparison';
 import { BenchmarkBatchEditor } from './benchmark-batch-editor';
@@ -59,7 +60,7 @@ type ModelErrorTab =
   | 'error_report'
   | 'complete_logs'
   | 'performance'
-  | 'delays'
+  | 'improvement'
   | 'access'
   | 'prices';
 
@@ -638,6 +639,7 @@ const GENERIC_CALIBRATION_ERROR_DETAIL_MAX_LINES = 80;
     BenchmarkBatchEditor,
     BenchmarkComparison,
     BenchmarkResults,
+    DeployedConfiguration,
     BenchmarkRunFailure,
     NightlyBenchmarks,
 
@@ -727,7 +729,8 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   readonly performanceLoading = signal(false);
   private performanceRequestVersion = 0;
   readonly performanceError = signal(false);
-  readonly performanceView = signal<'results' | 'run'>('results');
+  readonly deployedPairs = computed(() => this.benchmarkPairs().filter(pair => pair.provider_type === 'logosnode'));
+  readonly performanceView = signal<'results' | 'run' | 'deployed' | 'measurements'>('results');
   readonly linkedBenchmarkId = signal<number | null>(null);
   private navigation?: Subscription;
   readonly benchmarkStartingPairId = signal<number | null>(null);
@@ -856,7 +859,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     'error_report',
     'complete_logs',
     'performance',
-    'delays',
+    'improvement',
     'access',
     'prices',
   ];
@@ -865,7 +868,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     error_report: 'Error Report',
     complete_logs: 'Complete Logs',
     performance: 'Performance',
-    delays: 'Delays',
+    improvement: 'Improvement over time',
     access: 'Access',
     prices: 'Prices',
   };
@@ -884,8 +887,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
    * The Prices tab only exists for cloud models: a model served solely by
    * local (logosnode) providers has no catalogue pricing. Until a successful
    * response proves that, the tab stays visible so its loading and error
-   * states remain reachable. The Delays tab covers local and cloud providers
-   * alike, so every model has it.
+   * states remain reachable. Request measurements cover local and cloud providers alike.
    */
   readonly visibleTabs = computed<readonly ModelErrorTab[]>(() => {
     const hasCloudProvider = this.priceProviders().some(
@@ -1147,7 +1149,9 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   async ngOnInit(): Promise<void> {
     this.navigation = combineLatest([this.route.paramMap, this.route.queryParamMap]).subscribe(([params, query]) => {
       const id = Number(params.get('id'));
-      const tab = query.get('tab') as ModelErrorTab | null;
+      const requestedTab = query.get('tab');
+      const tab = (requestedTab === 'delays' ? 'performance' : requestedTab) as ModelErrorTab | null;
+      if (requestedTab === 'delays') this.performanceView.set('measurements');
       const benchmark = Number(query.get('benchmark'));
       const linked = Number.isSafeInteger(benchmark) && benchmark > 0 ? benchmark : null;
       if (linked !== this.linkedBenchmarkId()) this.selectedBenchmarkIds.set(new Map());
@@ -1472,7 +1476,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
       return;
     }
     const hasActiveRun = this.benchmarkRuns().some(run => this.isBenchmarkActive(run));
-    if (!hasActiveRun && this.activeTab() !== 'performance') {
+    if (!hasActiveRun && this.activeTab() !== 'performance' && this.activeTab() !== 'improvement') {
       return;
     }
     this.performancePollTimer = setTimeout(() => {
@@ -1494,10 +1498,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
 
   setTab(tab: ModelErrorTab): void {
     this.activeTab.set(tab);
-    if (tab === 'delays') {
-      this.refreshDelays();
-    }
-    if (tab === 'performance') {
+    if (tab === 'performance' || tab === 'improvement') {
       void this.loadPerformance(this.modelId(), true);
     } else {
       this.schedulePerformancePoll();

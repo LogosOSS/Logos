@@ -1,10 +1,12 @@
 """Admin-only nightly benchmark activation and status."""
 
 from fastapi import APIRouter, HTTPException, Request
+from sqlalchemy import text
 
 import logos.main as main
 from logos.benchmarks import nightly_store as store
 from logos.benchmarks import optimization, recent_requests, workloads
+from logos.benchmarks.deployment import deployment_snapshot
 from logos.benchmarks.guidellm_runner import extract_serving_configuration
 from logos.benchmarks.nightly import local_now, parameter_plan
 from logos.benchmarks.nightly_overview import overview
@@ -53,6 +55,24 @@ async def nightly_status(data: NightlyStatusRequest, request: Request):
     if search and not any(item["id"] == workload["id"] for item in result["workloads"]):
         result["workloads"].append(workloads.metadata(workload))
     result["model_id"] = target.get("model_id")
+    with DBManager() as db:
+        active_benchmark = db.session.execute(
+            text(
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE environment = 'model-provider-benchmark' "
+                "AND status IN ('pending', 'running') "
+                "AND (request_payload->>'provider_id')::integer = :provider_id)"
+            ),
+            {"provider_id": target["provider_id"]},
+        ).scalar()
+    result["deployment"] = deployment_snapshot(
+        snapshot,
+        target["model_name"],
+        online=main._logosnode_registry.is_provider_online(target["provider_id"]),
+        series_key=search["series_key"] if search else None,
+        maintenance=bool(active_benchmark)
+        or result["recovery_required"]
+        or result["status"] in {"preparing", "running", "recovery_required"},
+    )
     result["window"] = MaintenanceWindow.from_env().describe()
     result["timezone"] = result["window"]["timezone"]
     result["max_maintenance_nodes"] = maintenance_node_limit()

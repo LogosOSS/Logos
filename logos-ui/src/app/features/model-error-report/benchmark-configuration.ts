@@ -104,7 +104,7 @@ export function benchmarkConfigurationItems(
 }
 
 export function servingConfigurationItems(
-  benchmark: ModelProviderBenchmark,
+  benchmark: Pick<ModelProviderBenchmark, 'configuration'>,
 ): readonly BenchmarkConfigurationItem[] {
   const serving = servingConfiguration(benchmark.configuration);
 

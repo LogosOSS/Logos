@@ -17,7 +17,7 @@ import {
 } from '../../../core/services/notification.service';
 import { formatRelativeTime } from '../../utils/date';
 import { Router } from '@angular/router';
-import { notificationTarget } from '../../../core/services/notification-target';
+import { notificationBody, notificationTarget } from '../../../core/services/notification-target';
 
 const PAGE_SIZE = 15;
 /** Start loading the next page this close (px) to the end of the list. */
@@ -62,6 +62,7 @@ export class NotificationBell implements OnInit, OnDestroy {
   readonly meta = notificationMeta;
   readonly age = formatRelativeTime;
   readonly target = notificationTarget;
+  readonly body = notificationBody;
 
   constructor() {
     effect(() => {

@@ -1,0 +1,32 @@
+<section class="deployed" aria-label="Currently deployed configuration">
+  <header><h3>{{ providerName() }}</h3><span>Currently deployed configuration</span></header>
+  @if (error()) { <p role="alert">Could not verify the current worker configuration.</p> }
+  @else if (!state()) { <p role="status">Reading worker configuration…</p> }
+  @else if (!deployment()?.available) { <p role="status">Worker telemetry unavailable. The current configuration cannot be verified.</p> }
+  @else {
+    <p>Worker state: <strong>{{ deployment()?.lane_state ?? 'Unknown' }}</strong> · Observed {{ deployment()?.observed_at | date:'dd MMM yyyy, HH:mm:ss Z' }}</p>
+    @if (deployment()?.maintenance) { <p role="status">Benchmark or recovery in progress. These temporary settings are not confirmed as the production configuration.</p> }
+    <dl class="parameters">@for (parameter of parameters(); track parameter.key) { <div><dt>{{ parameter.label }}</dt><dd>{{ parameter.value }}</dd></div> }</dl>
+    @if (result(); as row) {
+      <h4>{{ measurement() ? 'Measured with these settings' : 'Historical measurement of these settings' }} · benchmark #{{ row.run.id }}</h4>
+      @if (!measurement()) { <p>The settings match, but the measurement environment or workload differs. These historical figures do not verify performance on the current worker.</p> }
+      <p>{{ datasetLabel(row.run) }} · {{ row.run.sample_size }} requests · {{ row.run.recorded_at | date:'dd MMM yyyy, HH:mm Z' }}</p>
+      <dl class="metrics">
+        <div><dt>Baseline #{{ row.baselineId ?? 'unavailable' }}</dt><dd>{{ row.before === null ? 'Not recorded' : (row.before | number:'1.1-1') + ' tok/s' }}</dd></div>
+        <div><dt>Measured throughput</dt><dd>{{ row.after === null ? 'Not recorded' : (row.after | number:'1.1-1') + ' tok/s' }}</dd></div>
+        <div><dt>Change</dt><dd>{{ row.delta === null ? 'Not comparable' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</dd></div>
+      </dl>
+      <p>{{ row.comparisonNote }}. This is a saved measurement, not a live throughput estimate.</p>
+      <a [routerLink]="['/models', row.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: row.run.id }">View this benchmark and its changes →</a>
+    } @else if (!deployment()?.maintenance) {
+      <p>No complete benchmark matches these reported settings. A historical winner does not verify the current deployment.</p>
+    }
+  }
+  @if (adoption(); as adopted) {
+    <details><summary>Last verified automatic adoption · benchmark #{{ adopted.benchmark_id }}</summary>
+      <p>Selected after a measured improvement and worker confirmation.</p>
+      <p>Baseline #{{ adopted.baseline_id }}: {{ adopted.baseline_throughput | number:'1.1-1' }} tok/s → #{{ adopted.benchmark_id }}: {{ adopted.throughput | number:'1.1-1' }} tok/s.</p>
+      <p>This historical adoption may differ from the settings currently reported above.</p>
+    </details>
+  } @else if (state()) { <p>No verified automatic adoption is recorded for this measurement series. A baseline or recorded winner is not an adoption.</p> }
+</section>

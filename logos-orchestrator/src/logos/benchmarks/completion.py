@@ -39,3 +39,14 @@ def description(payload):
         for item in payload.get("changes", [])
     )
     return f" Benchmark #{benchmark}. " + (changes + "." if changes else "No parameter changes.")
+
+
+def status_description(status):
+    """Explain interrupted executions without presenting recovery as benchmark completion."""
+    return {
+        "interrupted_recovered": "Benchmark interrupted; worker configuration recovered",
+        "interrupted_recovery": "Benchmark interrupted; worker recovery in progress",
+        "recovery_required": "Benchmark interrupted; worker recovery requires attention",
+        "interrupted": "Benchmark interrupted",
+        "completed": "Benchmark completed",
+    }.get(status, status.replace("_", " ").capitalize())
