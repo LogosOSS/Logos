@@ -550,6 +550,8 @@ class DBManager:
             "timestamp_provider_response",
             "request_complete_ts",
             "rate_limit_admitted",
+            "cache_hit",
+            "cache_entry_id",
             "available_vram_mb",
             "azure_rate_remaining_requests",
             "azure_rate_remaining_tokens",
@@ -5251,6 +5253,105 @@ class DBManager:
                                   AND is_active = true
                             """)
         return self.session.execute(sql, {"logos_key": logos_key}).fetchone() is not None
+
+    def get_answer_cache_entries(self, context_id: str) -> List[Dict[str, Any]]:
+        rows = self.session.execute(
+            text("""
+                 SELECT id, intent, answer_template, source, source_model_id, embedding
+                 FROM answer_cache
+                 WHERE context_id = :context_id
+                 ORDER BY id
+                 """),
+            {"context_id": context_id},
+        ).fetchall()
+        return [dict(row._mapping) for row in rows]
+
+    def get_intent_exemplars(self, context_id: str) -> List[Dict[str, Any]]:
+        rows = self.session.execute(
+            text("""
+                 SELECT id, intent, text, source, embedding
+                 FROM intent_exemplar
+                 WHERE context_id = :context_id OR context_id IS NULL
+                 ORDER BY id
+                 """),
+            {"context_id": context_id},
+        ).fetchall()
+        return [dict(row._mapping) for row in rows]
+
+    def insert_answer_cache_entry(
+        self,
+        *,
+        context_id: str,
+        question_raw: str,
+        question_normalized: str,
+        embedding: List[float],
+        intent: str,
+        answer_template: str,
+        source: str,
+        source_model_id: Optional[int] = None,
+        source_log_id: Optional[int] = None,
+    ) -> Optional[int]:
+        row = self.session.execute(
+            text("""
+                 INSERT INTO answer_cache (context_id, question_raw, question_normalized, embedding,
+                                           intent, answer_template, source, source_model_id, source_log_id)
+                 VALUES (:context_id, :question_raw, :question_normalized, CAST(:embedding AS REAL[]),
+                         :intent, :answer_template, :source, :source_model_id, :source_log_id)
+                 ON CONFLICT (context_id, question_normalized) DO NOTHING
+                 RETURNING id
+                 """),
+            {
+                "context_id": context_id,
+                "question_raw": question_raw,
+                "question_normalized": question_normalized,
+                "embedding": [float(x) for x in embedding],
+                "intent": intent,
+                "answer_template": answer_template,
+                "source": source,
+                "source_model_id": source_model_id,
+                "source_log_id": source_log_id,
+            },
+        ).fetchone()
+        self.session.commit()
+        return int(row._mapping["id"]) if row else None
+
+    def insert_intent_exemplar(
+        self,
+        *,
+        context_id: Optional[str],
+        intent: str,
+        text_value: str,
+        embedding: List[float],
+        source: str = "seed",
+    ) -> Optional[int]:
+        row = self.session.execute(
+            text("""
+                 INSERT INTO intent_exemplar (context_id, intent, text, embedding, source)
+                 VALUES (:context_id, :intent, :text_value, CAST(:embedding AS REAL[]), :source)
+                 ON CONFLICT DO NOTHING
+                 RETURNING id
+                 """),
+            {
+                "context_id": context_id,
+                "intent": intent,
+                "text_value": text_value,
+                "embedding": [float(x) for x in embedding],
+                "source": source,
+            },
+        ).fetchone()
+        self.session.commit()
+        return int(row._mapping["id"]) if row else None
+
+    def record_answer_cache_hit(self, entry_id: int) -> None:
+        self.session.execute(
+            text("""
+                 UPDATE answer_cache
+                 SET hit_count = hit_count + 1, last_hit_at = now()
+                 WHERE id = :entry_id
+                 """),
+            {"entry_id": int(entry_id)},
+        )
+        self.session.commit()
 
     def get_team(self, team_id: int) -> dict | None:
         row = self.session.execute(

@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="070-answer-cache" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="answer_cache"/></not>
+        </preConditions>
+        <createTable tableName="answer_cache">
+            <column name="id" type="INTEGER" autoIncrement="true">
+                <constraints primaryKey="true" primaryKeyName="pk_answer_cache"/>
+            </column>
+            <column name="context_id" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="question_raw" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="question_normalized" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="embedding" type="REAL[]">
+                <constraints nullable="false"/>
+            </column>
+            <column name="intent" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="answer_template" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="source" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="source_model_id" type="INTEGER">
+                <constraints nullable="true"
+                             foreignKeyName="fk_answer_cache_source_model"
+                             references="models(id)"
+                             deleteCascade="true"/>
+            </column>
+            <column name="source_log_id" type="INTEGER"/>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="hit_count" type="INTEGER" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="last_hit_at" type="TIMESTAMPTZ"/>
+        </createTable>
+        <sql><![CDATA[
+            ALTER TABLE answer_cache
+                ADD CONSTRAINT ck_answer_cache_source CHECK (source IN ('model', 'seed'));
+
+            ALTER TABLE answer_cache
+                ADD CONSTRAINT ck_answer_cache_source_model
+                CHECK ((source = 'model') = (source_model_id IS NOT NULL));
+
+            ALTER TABLE answer_cache
+                ADD CONSTRAINT ck_answer_cache_embedding_dim CHECK (array_length(embedding, 1) = 384);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_answer_cache_context_question
+                ON answer_cache (context_id, question_normalized);
+        ]]></sql>
+        <rollback>
+            <sql>DROP INDEX IF EXISTS uq_answer_cache_context_question;</sql>
+            <dropTable tableName="answer_cache"/>
+        </rollback>
+    </changeSet>
+
+    <changeSet id="070-intent-exemplar" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="intent_exemplar"/></not>
+        </preConditions>
+        <createTable tableName="intent_exemplar">
+            <column name="id" type="INTEGER" autoIncrement="true">
+                <constraints primaryKey="true" primaryKeyName="pk_intent_exemplar"/>
+            </column>
+            <column name="context_id" type="TEXT"/>
+            <column name="intent" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="text" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="embedding" type="REAL[]">
+                <constraints nullable="false"/>
+            </column>
+            <column name="source" type="TEXT" defaultValue="seed">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <sql><![CDATA[
+            ALTER TABLE intent_exemplar
+                ADD CONSTRAINT ck_intent_exemplar_source CHECK (source IN ('seed', 'auto'));
+
+            ALTER TABLE intent_exemplar
+                ADD CONSTRAINT ck_intent_exemplar_embedding_dim CHECK (array_length(embedding, 1) = 384);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_intent_exemplar_context_text
+                ON intent_exemplar (COALESCE(context_id, ''), text);
+        ]]></sql>
+        <rollback>
+            <sql>DROP INDEX IF EXISTS uq_intent_exemplar_context_text;</sql>
+            <dropTable tableName="intent_exemplar"/>
+        </rollback>
+    </changeSet>
+
+    <changeSet id="070-log-entry-cache-hit" author="logos">
+        <addColumn tableName="log_entry">
+            <column name="cache_hit" type="BOOLEAN"/>
+            <column name="cache_entry_id" type="INTEGER"/>
+        </addColumn>
+        <rollback>
+            <dropColumn tableName="log_entry" columnName="cache_entry_id"/>
+            <dropColumn tableName="log_entry" columnName="cache_hit"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>
