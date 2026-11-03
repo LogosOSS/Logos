@@ -1,5 +1,6 @@
 """Run against an explicitly supplied disposable PostgreSQL database."""
 
+import copy
 import os
 import uuid
 from datetime import date, datetime
@@ -7,7 +8,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.orm import Session
 
 from logos.benchmarks import nightly_store as store
@@ -562,3 +563,47 @@ def test_continuous_rounds_keep_daily_claims_and_notify_only_after_the_final_res
         assert payload["successful_configurations"] == 4
         assert payload["rounds"] == 2
     assert not store.claim(31, day)
+
+
+def test_selection_diagnostics_keep_workloads_separate_and_explain_rejected_faster_runs(database):
+    from sqlalchemy import text
+    from sqlalchemy.types import JSON
+
+    from logos.benchmarks.optimization import eligible
+
+    engine, _ = database
+    baseline = {
+        "id": 1,
+        "sample_size": 1,
+        "configuration": {"workload": {"id": "a"}, "nightly": {"baseline_id": 1, "series_key": "series"}},
+        "metrics": {
+            "aggregate_output_tokens_per_second": 40,
+            "request_totals": {"total": 1, "successful": 1, "errored": 0, "incomplete": 0},
+            "replay_samples": [{"source_log_id": 8, "output_tokens": 100, "finish_reason": "stop"}],
+            "request_latency_ms": {"successful": {"percentiles": {"p95": 1000}}},
+        },
+    }
+
+    faster = copy.deepcopy(baseline)
+    faster["id"] = 2
+    faster["metrics"]["aggregate_output_tokens_per_second"] = 50
+    faster["metrics"]["replay_samples"][0]["output_tokens"] = 20
+    other = copy.deepcopy(baseline)
+    other["id"] = 3
+    other["configuration"]["workload"]["id"] = "b"
+    with engine.begin() as connection:
+        statement = text(
+            "INSERT INTO model_provider_benchmarks(id, configuration, metrics, sample_size) "
+            "VALUES (:id, :configuration, :metrics, :sample_size)"
+        ).bindparams(
+            bindparam("configuration", type_=JSON),
+            bindparam("metrics", type_=JSON),
+        )
+        connection.execute(statement, [baseline, faster, other])
+    summary = store.selection_summary(31, "a")
+    assert eligible(baseline, baseline)
+    assert summary["best_observed"]["benchmark_id"] == 2
+    assert summary["best_eligible"]["benchmark_id"] == 1
+    assert summary["best_observed"]["issues"] == ["1 answer lengths differ by more than 20% from baseline"]
+    assert {item["benchmark_id"] for item in summary["comparisons"]} == {1, 2}
+    assert "source_log_id" not in str(summary)

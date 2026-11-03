@@ -511,10 +511,51 @@ def adoption_candidate(pair_id, search, report):
     return optimization.adoption_candidate(search, runs, report)
 
 
+def selection_summary(pair_id, workload_id=None):
+    """Return bounded comparison diagnostics without request or response content."""
+    from logos.benchmarks.optimization import eligibility_issues, rate
+
+    with DBManager() as db:
+        runs = list(
+            db.session.execute(
+                text(
+                    "SELECT id, configuration, metrics, sample_size FROM model_provider_benchmarks "
+                    "WHERE model_provider_id = :pair ORDER BY id DESC LIMIT 100"
+                ),
+                {"pair": pair_id},
+            ).mappings()
+        )
+    by_id = {run["id"]: run for run in runs}
+    if not workload_id and runs:
+        workload_id = runs[0]["configuration"].get("workload", {}).get("id")
+    comparisons = []
+    for run in runs:
+        if not workload_id or run["configuration"].get("workload", {}).get("id") != workload_id:
+            continue
+        nightly = run["configuration"].get("nightly") or {}
+        baseline = by_id.get(nightly.get("baseline_id"))
+        issues = eligibility_issues(run, baseline) if baseline else ["No comparison baseline was recorded"]
+        comparisons.append(
+            {
+                "benchmark_id": run["id"],
+                "baseline_id": nightly.get("baseline_id"),
+                "throughput": rate(run),
+                "issues": issues,
+            }
+        )
+    observed = [row for row in comparisons if row["throughput"] is not None]
+    eligible = [row for row in observed if not row["issues"]]
+    return {
+        "best_observed": max(observed, key=lambda row: row["throughput"], default=None),
+        "best_eligible": max(eligible, key=lambda row: row["throughput"], default=None),
+        "comparisons": comparisons,
+    }
+
+
 def finish(pair_id, state, report, search=None):
     """Commit restored state, the observed winner and its completion event together."""
     from logos.benchmarks.completion import result
-    from logos.benchmarks.optimization import eligible, select_state
+    from logos.benchmarks.optimization import eligibility_issues, select_state
 
     with DBManager() as db:
         row = (
@@ -564,7 +605,10 @@ def finish(pair_id, state, report, search=None):
             baseline = next((run for run in runs if run["id"] == baseline_id), None)
             for run in runs:
                 comparison = dict(run["configuration"].get("nightly") or {})
-                comparison["eligible_for_selection"] = bool(baseline and eligible(run, baseline))
+                comparison["selection_issues"] = (
+                    eligibility_issues(run, baseline) if baseline else ["No comparison baseline was recorded"]
+                )
+                comparison["eligible_for_selection"] = not comparison["selection_issues"]
                 db.session.execute(
                     text(
                         "UPDATE model_provider_benchmarks SET configuration = "

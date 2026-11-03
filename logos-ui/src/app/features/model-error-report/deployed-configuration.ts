@@ -8,6 +8,9 @@ import { NightlyStatus } from './nightly-benchmarks';
 import { benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
 import { benchmarkResultRow } from './benchmark-result-row';
 
+interface SelectionComparison { benchmark_id: number; baseline_id: number | null; throughput: number | null; issues: string[]; }
+interface DeploymentStatus extends NightlyStatus { deployment?: DeploymentSnapshot; selection?: { best_observed: SelectionComparison | null; best_eligible: SelectionComparison | null; comparisons: SelectionComparison[] }; }
+
 export interface DeploymentSnapshot {
   available: boolean;
   observed_at?: string;
@@ -48,7 +51,7 @@ export class DeployedConfiguration implements OnDestroy {
   readonly providerName = input.required<string>();
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
   private readonly http = inject(HttpClient);
-  readonly state = signal<(NightlyStatus & { deployment?: DeploymentSnapshot }) | null>(null);
+  readonly state = signal<DeploymentStatus | null>(null);
   readonly error = signal(false);
   readonly datasetLabel = benchmarkDatasetLabel;
   readonly deployment = computed(() => this.state()?.deployment);
@@ -57,6 +60,8 @@ export class DeployedConfiguration implements OnDestroy {
     this.runs().filter(run => run.model_provider_id === this.pairId()), false));
   readonly result = computed(() => this.historicalMeasurement() ? benchmarkResultRow(this.historicalMeasurement()!, this.runs()) : null);
   readonly parameters = computed(() => servingConfigurationItems({ configuration: { serving: this.deployment()?.configuration } }).filter(item => item.captured));
+  readonly keyParameters = computed(() => this.parameters().filter(item => ['max_num_seqs', 'max_num_batched_tokens'].includes(item.key)));
+  readonly selection = computed(() => this.state()?.selection);
   readonly adoption = computed(() => this.state()?.optimizer?.production_adoption);
   private timer?: ReturnType<typeof setTimeout>;
   private generation = 0;
@@ -69,7 +74,7 @@ export class DeployedConfiguration implements OnDestroy {
   private async load(id: number, generation: number): Promise<void> {
     clearTimeout(this.timer);
     try {
-      const state = await firstValueFrom(this.http.post<NightlyStatus & { deployment?: DeploymentSnapshot }>(
+      const state = await firstValueFrom(this.http.post<DeploymentStatus>(
         '/api/logosdb/model_benchmarks/nightly/status', { model_provider_id: id }));
       if (this.destroyed || generation !== this.generation) return;
       this.state.set(state); this.error.set(false);

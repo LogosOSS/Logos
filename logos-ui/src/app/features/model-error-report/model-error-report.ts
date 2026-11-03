@@ -60,7 +60,6 @@ type ModelErrorTab =
   | 'error_report'
   | 'complete_logs'
   | 'performance'
-  | 'improvement'
   | 'access'
   | 'prices';
 
@@ -730,7 +729,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   private performanceRequestVersion = 0;
   readonly performanceError = signal(false);
   readonly deployedPairs = computed(() => this.benchmarkPairs().filter(pair => pair.provider_type === 'logosnode'));
-  readonly performanceView = signal<'results' | 'run' | 'deployed' | 'measurements'>('results');
+  readonly performanceView = signal<'results' | 'run' | 'measurements'>('results');
   readonly linkedBenchmarkId = signal<number | null>(null);
   private navigation?: Subscription;
   readonly benchmarkStartingPairId = signal<number | null>(null);
@@ -801,11 +800,16 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     this.benchmarkSampleSize.set(COMPARISON_SAMPLE_SIZE);
   }
 
+  openBenchmarkSetup(): void {
+    this.performanceView.set('run');
+    document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   useBenchmarkConfiguration(benchmark: ModelProviderBenchmark): void {
     this.performanceView.set('run');
     this.benchmarkSettings.set(settingsFromBenchmark(benchmark));
     this.benchmarkSampleSize.set(Math.min(100, Math.max(1, benchmark.sample_size)));
-    document.getElementById('performance-view-controls')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   hasServingOverrides(): boolean {
@@ -859,7 +863,6 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     'error_report',
     'complete_logs',
     'performance',
-    'improvement',
     'access',
     'prices',
   ];
@@ -868,7 +871,6 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     error_report: 'Error Report',
     complete_logs: 'Complete Logs',
     performance: 'Performance',
-    improvement: 'Improvement over time',
     access: 'Access',
     prices: 'Prices',
   };
@@ -1150,7 +1152,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     this.navigation = combineLatest([this.route.paramMap, this.route.queryParamMap]).subscribe(([params, query]) => {
       const id = Number(params.get('id'));
       const requestedTab = query.get('tab');
-      const tab = (requestedTab === 'delays' ? 'performance' : requestedTab) as ModelErrorTab | null;
+      const tab = (requestedTab === 'delays' || requestedTab === 'improvement' ? 'performance' : requestedTab) as ModelErrorTab | null;
       if (requestedTab === 'delays') this.performanceView.set('measurements');
       const benchmark = Number(query.get('benchmark'));
       const linked = Number.isSafeInteger(benchmark) && benchmark > 0 ? benchmark : null;
@@ -1476,7 +1478,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
       return;
     }
     const hasActiveRun = this.benchmarkRuns().some(run => this.isBenchmarkActive(run));
-    if (!hasActiveRun && this.activeTab() !== 'performance' && this.activeTab() !== 'improvement') {
+    if (!hasActiveRun && this.activeTab() !== 'performance') {
       return;
     }
     this.performancePollTimer = setTimeout(() => {
@@ -1498,7 +1500,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
 
   setTab(tab: ModelErrorTab): void {
     this.activeTab.set(tab);
-    if (tab === 'performance' || tab === 'improvement') {
+    if (tab === 'performance') {
       void this.loadPerformance(this.modelId(), true);
     } else {
       this.schedulePerformancePoll();

@@ -1,5 +1,6 @@
 import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, effect, ElementRef, input, signal, viewChild } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
+import { RouterLink } from '@angular/router';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { benchmarkConfigurationItems, benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
 import { comparisonValue } from './benchmark-comparison';
@@ -12,7 +13,7 @@ type ResultColumn = 'runId' | 'measuredFrom' | 'before' | 'after' | 'delta';
 @Component({
   selector: 'app-benchmark-results',
   standalone: true,
-  imports: [DatePipe, DecimalPipe],
+  imports: [DatePipe, DecimalPipe, RouterLink],
   templateUrl: './benchmark-results.html',
   styleUrl: './benchmark-results.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -24,7 +24,7 @@
       <p>{{ datasetLabel(source) }} · {{ source.provenance }} · {{ source.request_count }} requests · 4 concurrent · source output limits</p>
       <p>The first successful production run fixes the reference. Every round uses this same saved workload.</p>
       @if (state()?.optimizer?.reference_id; as reference) {
-        <p>Fixed reference #{{ reference }} · best eligible measurement #{{ state()?.optimizer?.best_benchmark_id }} · {{ state()?.optimizer?.iterations }} completed iterations</p><p>Best measured result does not confirm the deployed configuration. See Currently deployed configuration.</p>
+        <p>Fixed reference #{{ reference }} · best eligible measurement #{{ state()?.optimizer?.best_benchmark_id }} · {{ state()?.optimizer?.iterations }} completed iterations</p><p>Best measured result does not confirm the deployed configuration. See Currently deployed.</p>
       }
     } @else { <p>Same workload · 50 requests · 4 concurrent · up to 512 output tokens</p> }
     <div class="nightly__parameters">

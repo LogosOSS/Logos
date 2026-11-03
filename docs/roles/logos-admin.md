@@ -181,8 +181,8 @@ Open the model's **Performance** tab to configure and start a benchmark.
 The orchestrator reserves the selected model lanes during a worker benchmark.
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
-The **Results** view groups saved runs by dataset.
-Open **Improvement over time** to inspect comparable nightly runs and their fixed reference.
+The **Performance** tab shows **Currently deployed** and **Timeline**.
+Expand **Benchmark runs** to read saved runs grouped by dataset.
 Without a nightly series, **Highest recorded throughput** shows the best result within each provider's latest captured workload.
 Older workloads are not ranked against it. Unknown controls do not establish a comparison.
 Manual benchmarks do not apply these parameters automatically. Nightly runs with saved request datasets can apply verified improvements.
@@ -202,34 +202,37 @@ A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
-The **Improvement over time** tab starts at 0% and shows total improvement against one starting baseline.
-The line increases when a completed round records a better result. Otherwise, the line stays flat.
-The starting baseline and best throughput labels show their run numbers.
-Saved request workloads use eligible results and their fixed reference.
-Historical Hugging Face series use the first comparable baseline and captured test settings.
-The chart separates runs with different captured workloads or other serving settings.
-Select a point to read its best run, throughput, time and total improvement.
-The tooltip also shows the relative improvement from the previous point.
+The **Timeline** starts with the first comparable baseline for the dataset.
+The vertical axis shows output tokens per second. Each subsequent point is a new throughput record.
+Slower runs do not add points. Each point keeps its actual measurement date and configuration.
+The chart separates datasets, providers and captured test settings. Worker releases can share a record history.
+Select a point to open its benchmark result.
+Expand **Record configurations** to read the dates and parameters.
+Saved-request variants must pass the response and latency checks before they enter the timeline.
 For example, 40 → 42 → 44 tok/s gives 10% total improvement and 4.8% improvement from the previous point.
 The chart does not show automatic parameter adoption or statistical significance.
-Return to **Performance → Results**. Expand **Benchmark runs** to see the latest 5 results per dataset.
+Expand **Benchmark runs** to see the latest 5 results per dataset.
 A baseline shows its own throughput and 0% change. Missing comparisons show why the baseline is unavailable. Select **Show all** to read older results.
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
 Select the same column again to reverse the order. Missing values stay at the end.
 
-![Improvement over time against the fixed reference](../static/img/roles/logos-admin-nightly-results.png)
+![Performance overview with current configuration and record timeline](../static/img/roles/logos-admin-nightly-results.png)
 
-Open **Performance → Currently deployed configuration** to read the settings reported by each connected worker.
-The view shows the worker state and the telemetry time.
+Read **Currently deployed** at the top of **Performance**.
+The summary shows throughput, baseline, change and the main batching parameters.
+Expand **Configuration & selection details** for all settings, the worker state and the telemetry time.
 The view identifies measurements with matching settings and the same measurement environment.
 Measurements from another environment appear with a historical label. They do not verify current performance.
 The measurement includes its benchmark number, baseline throughput, result throughput and percentage change.
 Temporary benchmark settings and recovery states do not establish the production configuration.
 An offline worker shows an unavailable state. A historical winner alone does not verify a deployment.
-The last verified automatic adoption appears separately, when available.
+The details also show the last confirmed adoption and reasons that exclude faster runs.
+A fresh comparison must verify a historical candidate before automatic adoption.
 
 ![Current worker configuration and its measured result](../static/img/roles/logos-admin-deployed-configuration.png)
 
+The configuration and measurement sections start closed.
+Select **Run benchmark** to open **Benchmark setup & nightly automation**.
 The large analysis sections open one at a time.
 Expand **Charts and comparison**. Select the **Reference run**, **Parameter** and **Metric**.
 The chart shows one parameter at a time, with a dashed reference line and measured changes.

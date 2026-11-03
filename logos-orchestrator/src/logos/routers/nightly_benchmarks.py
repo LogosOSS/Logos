@@ -73,6 +73,7 @@ async def nightly_status(data: NightlyStatusRequest, request: Request):
         or result["recovery_required"]
         or result["status"] in {"preparing", "running", "recovery_required"},
     )
+    result["selection"] = store.selection_summary(data.model_provider_id, result.get("workload_id"))
     result["window"] = MaintenanceWindow.from_env().describe()
     result["timezone"] = result["window"]["timezone"]
     result["max_maintenance_nodes"] = maintenance_node_limit()

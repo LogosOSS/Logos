@@ -99,6 +99,10 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
             )
             metrics["aggregate_output_tokens_per_second"] = rate
             metrics["request_totals"] = {"total": 10, "successful": 10, "errored": 0, "incomplete": 0}
+            metrics["replay_samples"] = [
+                {"source_log_id": index, "output_tokens": 100, "finish_reason": "stop"} for index in range(1, 11)
+            ]
+            metrics["request_latency_ms"] = {"successful": {"percentiles": {"p95": 1000}}}
             cursor.execute(
                 "UPDATE model_provider_benchmarks SET configuration=%s, metrics=%s, sample_size=10, dataset=%s "
                 "WHERE id=%s",
@@ -113,6 +117,12 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
             "best_throughput": best["metrics"]["aggregate_output_tokens_per_second"],
             "best_parameters": {"max_num_seqs": 20, "max_num_batched_tokens": 4096},
             "iterations": 3,
+            "production_adoption": {
+                "benchmark_id": best["id"],
+                "baseline_id": best["configuration"]["nightly"]["baseline_id"],
+                "throughput": best["metrics"]["aggregate_output_tokens_per_second"],
+                "baseline_throughput": 42,
+            },
         }
         cursor.execute(
             "UPDATE nightly_benchmarks SET workload_id=%s, optimizer=%s WHERE model_provider_id=%s",

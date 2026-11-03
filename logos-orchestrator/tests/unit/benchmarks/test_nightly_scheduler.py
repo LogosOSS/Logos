@@ -826,3 +826,41 @@ async def test_failed_baseline_does_not_schedule_unbounded_further_rounds(schedu
     scheduler.submit = submit
     assert await scheduler.run_schedule(31, MagicMock())
     assert scheduler.saved[-1][1] == "completed"
+
+
+async def test_completed_winner_is_durable_before_a_later_trial_is_interrupted(scheduler, monkeypatch):
+    target, snapshot, lane = scheduler.target_lane(31)
+    target["model_id"] = 1
+    scheduler.target_lane = lambda pair: (target, snapshot, lane)
+    monkeypatch.setattr(module.store, "status", lambda _: {"enabled": True, "workload_id": "a" * 64})
+    monkeypatch.setattr(
+        module.workloads,
+        "load",
+        lambda *args: {
+            "id": "a" * 64,
+            "name": "Saved requests",
+            "request_count": 10,
+            "provenance": "synthetic",
+        },
+    )
+    import copy
+
+    journals = []
+    monkeypatch.setattr(module.store, "save", lambda *args: journals.append(copy.deepcopy(args)))
+    module.store.adoption_candidate.side_effect = lambda pair, search, report: adoption() if len(report) >= 2 else None
+    submitted = 0
+
+    async def submit(*args):
+        nonlocal submitted
+        submitted += 1
+        if submitted == 3:
+            assert journals[-1][3]["adoption"]["benchmark_id"] == 2
+            raise NightlyStopped("interrupted")
+        return submitted, asyncio.create_task(asyncio.sleep(0, result=submitted))
+
+    scheduler.submit = submit
+    assert await scheduler.run_schedule(31, MagicMock())
+    assert submitted == 3
+    scheduler.restore.assert_awaited_once()
+    assert scheduler.restore.call_args.args[1]["adoption"]["benchmark_id"] == 2
+    assert any(item.get("status") == "adopted" for item in scheduler.saved[-1][2])

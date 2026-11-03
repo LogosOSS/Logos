@@ -43,7 +43,7 @@ describe('Benchmark runner', () => {
     expect(component.activeTab()).toBe('performance');
     expect(component.performanceView()).toBe('measurements');
     query.next(convertToParamMap({ tab: 'improvement' }));
-    expect(component.activeTab()).toBe('improvement');
+    expect(component.activeTab()).toBe('performance');
     query.next(convertToParamMap({ tab: 'performance', benchmark: '115' }));
     expect(component.linkedBenchmarkId()).toBe(115);
     expect(component.performanceView()).toBe('results');

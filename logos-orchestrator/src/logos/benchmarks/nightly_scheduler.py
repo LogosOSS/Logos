@@ -479,6 +479,13 @@ class NightlyScheduler:
                             "parameters": settings.serving_overrides.model_dump(exclude_none=True),
                         }
                         report.append(outcome)
+                        if search:
+                            adoption = store.adoption_candidate(pair_id, search, report)
+                            if adoption:
+                                validate_worker_overrides(
+                                    ServingOverrides(**adoption["parameters"]), worker_limits(snapshot, model)
+                                )
+                                recovery["adoption"] = adoption
                         store.save(pair_id, "running", report, recovery)
                         break
                     except NightlyStopped as exc:

@@ -517,68 +517,17 @@
           <div class="performance-header">
             <div>
               <h2>Performance</h2>
-              <p>Run a benchmark, then compare results across provider configurations.</p>
+              <p>Active configuration, benchmark records and request measurements.</p>
             </div>
-            <span class="performance-live">
-              <i class="pi pi-circle-fill" aria-hidden="true"></i>
-              Updates automatically
-            </span>
+            <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()" [attr.aria-expanded]="performanceView() === 'run'" aria-controls="benchmark-setup">Run benchmark</button>
           </div>
 
-          <nav id="performance-view-controls" class="performance-views" aria-label="Performance views">
-            <button type="button" [attr.aria-pressed]="performanceView() === 'results'"
-              (click)="performanceView.set('results')">Results</button>
-            <button type="button" [attr.aria-pressed]="performanceView() === 'run'"
-              (click)="performanceView.set('run')">Run benchmark</button>
-            <button type="button" [attr.aria-pressed]="performanceView() === 'deployed'"
-              (click)="performanceView.set('deployed')">Currently deployed configuration</button>
-            <button type="button" [attr.aria-pressed]="performanceView() === 'measurements'"
-              (click)="performanceView.set('measurements'); refreshDelays()">Request measurements</button>
-          </nav>
-
-          @if (performanceView() === 'deployed') {
+          <section class="deployment-overview" aria-label="Currently deployed">
+            <h3>Currently deployed</h3>
             @for (pair of deployedPairs(); track pair.model_provider_id) {
               <app-deployed-configuration [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [runs]="performance()" />
             } @empty { <p>No local worker configurations are available for this model.</p> }
-          }
-          @if (performanceView() === 'measurements') {
-          <div class="delays">
-            <div class="delays__header">
-              <div>
-                <h2 class="delays__title">Request measurements</h2>
-                <p class="delays__subtitle">
-                  Timing metadata only; no prompt or response content is used. Per provider and reasoning effort: the wait inside
-                  Logos before the provider call (key lookup, rate limit, budget check, scheduling), the
-                  provider time, and the time to the first token. For local models the effort is the one
-                  Logos sent after mapping it onto the levels the model supports.
-                </p>
-              </div>
-              <app-time-range-bar
-                [preset]="delayPreset()"
-                [offset]="delayOffset()"
-                (presetChange)="delayPreset.set($event)"
-                (offsetChange)="delayOffset.set($event)"
-              />
-              <button
-                type="button"
-                class="btn-copy-log"
-                aria-label="Refresh request delays"
-                (click)="refreshDelays()"
-              >
-                <i class="pi pi-refresh" aria-hidden="true"></i> Refresh
-              </button>
-            </div>
-            @if (modelId() !== null) {
-              <app-request-latency-panel
-                [start]="delayWindow().start"
-                [end]="delayWindow().end"
-                [scope]="delayScope()"
-                [refresh]="delayRefresh()"
-              />
-            }
-          </div>
-
-          }
+          </section>
           @for (pair of benchmarkPairs(); track pair.model_provider_id) {
             @if (latestBenchmarkRun(pair.model_provider_id); as run) {
               @if (isBenchmarkActive(run) || run.status === 'failed') {
@@ -619,92 +568,7 @@
             <p class="benchmark-runner__error" role="alert">{{ error }}</p>
           }
 
-          <div [hidden]="performanceView() !== 'run'">
-          @for (pair of benchmarkPairs(); track pair.model_provider_id) {
-            @if (pair.provider_type === 'logosnode') {
-              <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [modelName]="model.name" />
-            }
-          }
-          @if (selectedBenchmarkPair(); as pair) {
-            <section class="benchmark-runner" id="benchmark-runner" aria-label="Benchmark setup">
-              <header class="benchmark-runner__header">
-                <div>
-                  <h3>Manual benchmark</h3>
-                  <p>Choose where to run and how many requests to measure.</p>
-                </div>
-              </header>
-              <div class="benchmark-basics">
-                <label>Provider
-                  <select (change)="selectedBenchmarkPairId.set(+$any($event.target).value)">
-                    @for (option of benchmarkPairs(); track option.model_provider_id) {
-                      <option [value]="option.model_provider_id" [selected]="option.model_provider_id === pair.model_provider_id" [disabled]="benchmarkProviderUnavailable(option)">{{ benchmarkProviderLabel(option) }}</option>
-                    }
-                  </select>
-                </label>
-                <label>Sample size
-                  <input #sampleSize aria-label="Sample size" aria-describedby="benchmark-sample-help" type="number" min="1" max="100" step="1" [disabled]="!!benchmarkSettings().workload_id"
-                    [value]="benchmarkSampleSize()" (input)="setBenchmarkSampleSize(sampleSize.value)"
-                    (change)="sampleSize.value = benchmarkSampleSize().toString()" />
-                  <small id="benchmark-sample-help">{{ benchmarkSettings().workload_id ? 'All saved requests per run' : '1–100 requests per run' }}</small>
-                </label>
-              </div>
-
-              <details class="benchmark-settings-panel">
-                <summary>
-                  <strong>Dataset and settings</strong>
-                  <span>{{ benchmarkSettings().workload_id ? 'Frozen requests · source output limits' : benchmarkSettings().dataset + ' · ' + benchmarkSettings().max_output_tokens + ' max tokens' }} · {{ benchmarkSettings().profile === 'synchronous' ? 'Sequential' : benchmarkSettings().concurrency + ' concurrent requests' }}</span>
-                </summary>
-                @if (pair.provider_type === 'logosnode' && !benchmarkSettings().workload_id) {
-                  <button type="button" class="benchmark-preset" (click)="useComparisonBaseline()"
-                    title="Prepare GSM8K main/test, 50 requests, 512 max output tokens, seed 42, TP 1, PP 1 and concurrency 4. Other worker settings stay unchanged.">
-                    Load comparison preset
-                  </button>
-                }
-                <app-benchmark-settings-editor [pair]="pair"
-                  [settings]="benchmarkSettings()" (settingsChange)="benchmarkSettings.set($event)"
-                  (validChange)="benchmarkSettingsValid.set($event)" (limitsChange)="benchmarkWorkerLimits.set($event)"
-                  (sampleSizeChange)="benchmarkSampleSize.set($event)" />
-              </details>
-
-              <details class="benchmark-settings-panel">
-                <summary>
-                  <strong>Repeat or compare settings</strong>
-                  <span>{{ benchmarkBatch() ? benchmarkTotalRuns() + ' runs in this batch' : 'Optional · repeat runs or compare configurations' }}</span>
-                </summary>
-                <app-benchmark-batch-editor [settings]="benchmarkSettings()" [samples]="benchmarkSampleSize()"
-                  [worker]="pair.provider_type === 'logosnode'" [limits]="benchmarkWorkerLimits()"
-                  (planChange)="benchmarkBatch.set($event)" (validChange)="benchmarkBatchValid.set($event)" />
-              </details>
-
-              @if (!pair.endpoint_configured) {
-                <p class="benchmark-runner__error">Add an endpoint under Providers before running a benchmark.</p>
-              } @else if (benchmarkProviderUnavailable(pair)) {
-                <p class="benchmark-runner__error" role="status">This worker is unavailable. Choose an online worker to run a benchmark.</p>
-              }
-              @if (!benchmarkSettingsValid()) {
-                <p class="benchmark-runner__error" role="status">Check Dataset and settings before starting.</p>
-              }
-              @if (!benchmarkBatchValid()) {
-                <p class="benchmark-runner__error" role="status">Check Repeat or compare settings before starting.</p>
-              }
-              <footer class="benchmark-setup-footer">
-                <p>{{ benchmarkSampleLabel() }} per run · {{ benchmarkTotalRuns() }} {{ benchmarkTotalRuns() === 1 ? 'run' : 'runs' }}</p>
-                <button class="benchmark-run-button" type="button"
-                  (click)="benchmarkConfirmPairId.set(pair.model_provider_id)"
-                  [disabled]="!benchmarkSettingsValid() || !benchmarkBatchValid() || (hasServingOverrides() && pair.provider_type !== 'logosnode') || benchmarkStartingPairId() !== null || providerHasActiveBenchmark(pair.provider_id) || benchmarkProviderUnavailable(pair)">
-                  @if (benchmarkStartingPairId() !== null) { Starting… }
-                  @else if (providerHasActiveBenchmark(pair.provider_id)) { Running… }
-                  @else { {{ benchmarkBatch() ? 'Review batch' : 'Review benchmark' }} <i class="pi pi-arrow-right" aria-hidden="true"></i> }
-                </button>
-              </footer>
-            </section>
-          } @else {
-            <div class="empty-state"><h3>No provider available</h3><p>Add a provider for this model to run a benchmark.</p></div>
-          }
-
-          </div>
-
-          <div [hidden]="performanceView() !== 'results'">
+          <div>
           @if (performanceLoading()) {
 
             <div class="performance-message">Loading performance…</div>
@@ -722,7 +586,7 @@
               <h2>No benchmark results available</h2>
               @if (linkedBenchmarkId(); as benchmarkId) { <p>Benchmark #{{ benchmarkId }} is no longer available.</p> }
               <p>Run a benchmark to measure throughput and response times.</p>
-              <button type="button" class="benchmark-run-button" (click)="performanceView.set('run')">Configure a benchmark</button>
+              <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()">Configure a benchmark</button>
             </div>
 
           } @else {
@@ -731,7 +595,7 @@
               <app-error-message variant="banner" [message]="error" />
             }
 
-            <app-benchmark-results [runs]="performance()" [selectedRunId]="linkedBenchmarkId()" [showProgress]="false" />
+            <app-benchmark-results [runs]="performance()" [selectedRunId]="linkedBenchmarkId()" />
             <details class="performance-detail-section" name="performance-analysis"><summary>Charts and comparison</summary>
               <app-benchmark-comparison [runs]="performance()" />
             </details>
@@ -892,6 +756,132 @@
 
           </div>
 
+          <details id="benchmark-setup" class="performance-detail-section" [open]="performanceView() === 'run'" (toggle)="performanceView.set($any($event.target).open ? 'run' : 'results')">
+          <summary>Benchmark setup &amp; nightly automation</summary>
+          @for (pair of benchmarkPairs(); track pair.model_provider_id) {
+            @if (pair.provider_type === 'logosnode') {
+              <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [modelName]="model.name" />
+            }
+          }
+          @if (selectedBenchmarkPair(); as pair) {
+            <section class="benchmark-runner" id="benchmark-runner" aria-label="Benchmark setup">
+              <header class="benchmark-runner__header">
+                <div>
+                  <h3>Manual benchmark</h3>
+                  <p>Choose where to run and how many requests to measure.</p>
+                </div>
+              </header>
+              <div class="benchmark-basics">
+                <label>Provider
+                  <select (change)="selectedBenchmarkPairId.set(+$any($event.target).value)">
+                    @for (option of benchmarkPairs(); track option.model_provider_id) {
+                      <option [value]="option.model_provider_id" [selected]="option.model_provider_id === pair.model_provider_id" [disabled]="benchmarkProviderUnavailable(option)">{{ benchmarkProviderLabel(option) }}</option>
+                    }
+                  </select>
+                </label>
+                <label>Sample size
+                  <input #sampleSize aria-label="Sample size" aria-describedby="benchmark-sample-help" type="number" min="1" max="100" step="1" [disabled]="!!benchmarkSettings().workload_id"
+                    [value]="benchmarkSampleSize()" (input)="setBenchmarkSampleSize(sampleSize.value)"
+                    (change)="sampleSize.value = benchmarkSampleSize().toString()" />
+                  <small id="benchmark-sample-help">{{ benchmarkSettings().workload_id ? 'All saved requests per run' : '1–100 requests per run' }}</small>
+                </label>
+              </div>
+
+              <details class="benchmark-settings-panel">
+                <summary>
+                  <strong>Dataset and settings</strong>
+                  <span>{{ benchmarkSettings().workload_id ? 'Frozen requests · source output limits' : benchmarkSettings().dataset + ' · ' + benchmarkSettings().max_output_tokens + ' max tokens' }} · {{ benchmarkSettings().profile === 'synchronous' ? 'Sequential' : benchmarkSettings().concurrency + ' concurrent requests' }}</span>
+                </summary>
+                @if (pair.provider_type === 'logosnode' && !benchmarkSettings().workload_id) {
+                  <button type="button" class="benchmark-preset" (click)="useComparisonBaseline()"
+                    title="Prepare GSM8K main/test, 50 requests, 512 max output tokens, seed 42, TP 1, PP 1 and concurrency 4. Other worker settings stay unchanged.">
+                    Load comparison preset
+                  </button>
+                }
+                <app-benchmark-settings-editor [pair]="pair"
+                  [settings]="benchmarkSettings()" (settingsChange)="benchmarkSettings.set($event)"
+                  (validChange)="benchmarkSettingsValid.set($event)" (limitsChange)="benchmarkWorkerLimits.set($event)"
+                  (sampleSizeChange)="benchmarkSampleSize.set($event)" />
+              </details>
+
+              <details class="benchmark-settings-panel">
+                <summary>
+                  <strong>Repeat or compare settings</strong>
+                  <span>{{ benchmarkBatch() ? benchmarkTotalRuns() + ' runs in this batch' : 'Optional · repeat runs or compare configurations' }}</span>
+                </summary>
+                <app-benchmark-batch-editor [settings]="benchmarkSettings()" [samples]="benchmarkSampleSize()"
+                  [worker]="pair.provider_type === 'logosnode'" [limits]="benchmarkWorkerLimits()"
+                  (planChange)="benchmarkBatch.set($event)" (validChange)="benchmarkBatchValid.set($event)" />
+              </details>
+
+              @if (!pair.endpoint_configured) {
+                <p class="benchmark-runner__error">Add an endpoint under Providers before running a benchmark.</p>
+              } @else if (benchmarkProviderUnavailable(pair)) {
+                <p class="benchmark-runner__error" role="status">This worker is unavailable. Choose an online worker to run a benchmark.</p>
+              }
+              @if (!benchmarkSettingsValid()) {
+                <p class="benchmark-runner__error" role="status">Check Dataset and settings before starting.</p>
+              }
+              @if (!benchmarkBatchValid()) {
+                <p class="benchmark-runner__error" role="status">Check Repeat or compare settings before starting.</p>
+              }
+              <footer class="benchmark-setup-footer">
+                <p>{{ benchmarkSampleLabel() }} per run · {{ benchmarkTotalRuns() }} {{ benchmarkTotalRuns() === 1 ? 'run' : 'runs' }}</p>
+                <button class="benchmark-run-button" type="button"
+                  (click)="benchmarkConfirmPairId.set(pair.model_provider_id)"
+                  [disabled]="!benchmarkSettingsValid() || !benchmarkBatchValid() || (hasServingOverrides() && pair.provider_type !== 'logosnode') || benchmarkStartingPairId() !== null || providerHasActiveBenchmark(pair.provider_id) || benchmarkProviderUnavailable(pair)">
+                  @if (benchmarkStartingPairId() !== null) { Starting… }
+                  @else if (providerHasActiveBenchmark(pair.provider_id)) { Running… }
+                  @else { {{ benchmarkBatch() ? 'Review batch' : 'Review benchmark' }} <i class="pi pi-arrow-right" aria-hidden="true"></i> }
+                </button>
+              </footer>
+            </section>
+          } @else {
+            <div class="empty-state"><h3>No provider available</h3><p>Add a provider for this model to run a benchmark.</p></div>
+          }
+
+          </details>
+
+          <details class="performance-detail-section" [open]="performanceView() === 'measurements'">
+            <summary>Request measurements</summary>
+          <div class="delays">
+            <div class="delays__header">
+              <div>
+                <h2 class="delays__title">Request measurements</h2>
+                <p class="delays__subtitle">
+                  Timing metadata only; no prompt or response content is used. Per provider and reasoning effort: the wait inside
+                  Logos before the provider call (key lookup, rate limit, budget check, scheduling), the
+                  provider time, and the time to the first token. For local models the effort is the one
+                  Logos sent after mapping it onto the levels the model supports.
+                </p>
+              </div>
+              <app-time-range-bar
+                [preset]="delayPreset()"
+                [offset]="delayOffset()"
+                (presetChange)="delayPreset.set($event)"
+                (offsetChange)="delayOffset.set($event)"
+              />
+              <button
+                type="button"
+                class="btn-copy-log"
+                aria-label="Refresh request delays"
+                (click)="refreshDelays()"
+              >
+                <i class="pi pi-refresh" aria-hidden="true"></i> Refresh
+              </button>
+            </div>
+            @if (modelId() !== null) {
+              <app-request-latency-panel
+                [start]="delayWindow().start"
+                [end]="delayWindow().end"
+                [scope]="delayScope()"
+                [refresh]="delayRefresh()"
+              />
+            }
+          </div>
+
+          </details>
+
           <details class="performance-glossary" name="performance-analysis">
             <summary><span>Glossary &amp; abbreviations</span><small>Metrics and serving parameters</small></summary>
             <div class="glossary-sections">
@@ -932,14 +922,6 @@
           </details>
           </div>
 
-        }
-
-        @case ('improvement') {
-          <h2>Improvement over time</h2>
-          <p>Best eligible throughput compared with a fixed starting baseline under matching measurement conditions.</p>
-          @if (performanceLoading()) { <p role="status">Loading measurements…</p> }
-          @else if (performanceError()) { <app-error-message variant="banner" message="Could not load benchmark progress." /> }
-          @else { <app-benchmark-results [runs]="performance()" [showHistory]="false" /> }
         }
 
         <!-- Access -->
