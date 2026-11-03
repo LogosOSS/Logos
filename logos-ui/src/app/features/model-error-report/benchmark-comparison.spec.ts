@@ -141,7 +141,12 @@ describe('Benchmark comparison', () => {
     expect(fixture.nativeElement.querySelector('.single-value').style.bottom).not.toBe('');
     expect(fixture.nativeElement.querySelectorAll('tbody tr')).toHaveLength(4);
     expect(fixture.nativeElement.querySelectorAll('tbody .active-metric')).toHaveLength(4);
-    expect(fixture.nativeElement.querySelector('tbody').textContent).toContain('7.6');
+    // The table formats through the runtime locale (the component calls
+    // toLocaleString without a pinned locale), so build the expected fragment
+    // the same way instead of assuming a decimal point.
+    expect(fixture.nativeElement.querySelector('tbody').textContent).toContain(
+      (7.6).toLocaleString(undefined, { maximumFractionDigits: 2 }),
+    );
   });
 
   it.each([1, 4])('renders one repetition with concurrency %s as a visible point for every metric', concurrency => {
