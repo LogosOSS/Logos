@@ -176,7 +176,7 @@ def test_simple_bypasses_contention_ratio_for_waiting_request(monkeypatch, sleep
             )
         )
     planner = _planner(
-        provider, scores={COLD: 0.0, VICTIM_A: 1.5, VICTIM_B: 1.5}, snapshot=_two_gpu_snapshot(free0=5_000, free1=5_000)
+        provider, scores={COLD: 0.0, VICTIM_A: 1.5, VICTIM_B: 1.5}, snapshot=_two_gpu_snapshot(free0=5_500, free1=5_500)
     )
     planner._residency_policy = "simple"
     planner._facade.get_oldest_queued_at_by_model_name = lambda model, pid: 9_900 if model == COLD else None
