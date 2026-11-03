@@ -300,7 +300,10 @@ public class GatewayCloudForwarder {
             }
         }
 
-        /** Relays every chunk to {@code out}, in order, until the upstream ends. */
+        /**
+         * Relays every chunk to {@code out}, in order, until the upstream ends,
+         * flushing whenever it has caught up with the upstream.
+         */
         void transferTo(OutputStream out) throws IOException {
             attached = true;
             watchdog.interrupt();
@@ -323,6 +326,11 @@ public class GatewayCloudForwarder {
                 }
                 currentChunkAt = chunk.at();
                 out.write(chunk.bytes());
+                if (chunks.isEmpty()) {
+                    // Nothing else has arrived: send this chunk now rather than
+                    // leave it in the response buffer until more follows.
+                    out.flush();
+                }
             }
         }
 

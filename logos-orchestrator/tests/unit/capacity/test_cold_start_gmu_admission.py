@@ -89,13 +89,14 @@ def _planner(
         source = raw_free_before_ledger if raw_free_before_ledger is not None else free
 
         def _free(pid: int) -> dict[int, float]:
-            return {gpu: ledger.get_gpu_effective_available_mb(pid, gpu, float(mb)) for gpu, mb in source.items()}
+            return {gpu: ledger.get_gpu_consumable_available_mb(pid, gpu, float(mb)) for gpu, mb in source.items()}
 
         planner._get_per_gpu_free = _free  # noqa: E731
     else:
         planner._get_per_gpu_free = lambda pid: dict(free)  # noqa: E731
         planner._vram_ledger = SimpleNamespace(
             get_gpu_effective_available_mb=lambda pid, g, f: f,
+            get_gpu_consumable_available_mb=lambda pid, g, f: f,
             get_committed_mb=lambda pid: 0.0,
         )
     planner._get_per_gpu_total = lambda pid: dict(totals)  # noqa: E731
@@ -436,3 +437,21 @@ def test_wake_without_gmu_when_footprint_fits():
     )
     validated = planner._validate_vram_budget([_wake(gpu_devices="0")])  # noqa: SLF001
     assert [a.action for a in validated] == ["wake"]
+
+
+def test_startup_context_headroom_applies_when_gmu_dominates():
+    """A second engine must retain its startup reservation after CUDA init."""
+    planner = _planner(
+        free={0: 24935.0},
+        total={0: 49140.0},
+        profiles={MODEL: _profile(observed_gmu=None, loaded_mb=23720.0)},
+        startup_gmu={MODEL: {"gpu_memory_utilization": 0.5, "source": "configured"}},
+    )
+    assert planner._validate_vram_budget([_load(gpu_devices="0")]) == []  # noqa: SLF001
+    need = planner._cold_start_per_gpu_need_mb(23720.0, 49140.0, gmu=0.5)  # noqa: SLF001
+    assert need == 25070.0
+
+
+def test_startup_context_headroom_is_not_counted_twice_for_large_footprint():
+    planner = _planner(free={0: 40000.0})
+    assert planner._cold_start_per_gpu_need_mb(30000.0, 49140.0, gmu=0.5) == 30500.0  # noqa: SLF001

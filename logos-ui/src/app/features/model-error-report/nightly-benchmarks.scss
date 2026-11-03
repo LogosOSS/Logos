@@ -1,3 +1,4 @@
+@use './performance-disclosure' as disclosure;
 :host { display: block; width: 100%; margin-bottom: 1.5rem; }
 .nightly {
   border-bottom: 1px solid rgb(var(--color-outline-200)); padding: 1.25rem 0;
@@ -48,3 +49,5 @@ thead { color: rgb(var(--color-typography-500)); }
 summary { min-height: 44px; align-content: center; }
 button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }
 @media (max-width: 600px) { .nightly__schedule > div { grid-template-columns: 1fr; gap: .25rem; } }
+
+.nightly details { @include disclosure.section; }

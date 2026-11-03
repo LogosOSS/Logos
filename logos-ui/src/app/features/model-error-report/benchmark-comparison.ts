@@ -77,11 +77,12 @@ export class BenchmarkComparison {
     { key: 'throughput', label: 'Output', unit: 'tok/s' },
     { key: 'ttft', label: 'Mean TTFT', unit: 's' }, { key: 'ttlt', label: 'Mean TTLT', unit: 's' },
   ];
-  readonly sortKey = signal<RunSortKey>('recorded_at');
-  readonly sortDirection = signal<'ascending' | 'descending'>('descending');
+  readonly sort = signal<{ key: RunSortKey; direction: 'ascending' | 'descending' } | null>(null);
+  readonly sortKey = computed(() => this.sort()?.key ?? null);
+  readonly sortDirection = computed(() => this.sort()?.direction ?? 'descending');
   readonly sortedRuns = computed(() => [...this.selected()].sort((a, b) => {
-    const left = this.sortValue(a, this.sortKey());
-    const right = this.sortValue(b, this.sortKey());
+    const left = this.sortValue(a, this.sortKey() ?? 'recorded_at');
+    const right = this.sortValue(b, this.sortKey() ?? 'recorded_at');
     // Missing measurements stay last in either direction.
     if (left === null || right === null) return left === right ? b.id - a.id : left === null ? 1 : -1;
     return (left - right) * (this.sortDirection() === 'ascending' ? 1 : -1) || b.id - a.id;
@@ -156,8 +157,9 @@ export class BenchmarkComparison {
   }
 
   sortBy(key: RunSortKey): void {
-    this.sortDirection.set(this.sortKey() === key && this.sortDirection() === 'ascending' ? 'descending' : 'ascending');
-    this.sortKey.set(key);
+    this.sort.update(previous => previous?.key === key
+      ? previous.direction === 'ascending' ? { key, direction: 'descending' } : null
+      : { key, direction: 'ascending' });
   }
 
   sortValue(run: ModelProviderBenchmark, key: RunSortKey): number | null {
@@ -171,6 +173,7 @@ export class BenchmarkComparison {
   }
 
   sortLabel(key: RunSortKey): string {
+    if (this.sortKey() === key && this.sortDirection() === 'descending') return 'Restore initial order';
     const direction = this.sortKey() === key && this.sortDirection() === 'ascending' ? 'descending' : 'ascending';
     return `Sort ${this.columns.find(column => column.key === key)!.label} ${direction}`;
   }

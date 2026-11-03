@@ -1,3 +1,4 @@
+@use './performance-disclosure' as disclosure;
 .performance-glossary,
 .benchmark-configuration {
   border: 1px solid rgb(var(--color-outline-200) / var(--opacity-strong));
@@ -404,3 +405,5 @@
   .performance-workspace .metric { padding: .5rem .75rem; }
   .performance-workspace .metric:nth-child(odd) { border-left: 0; }
 }
+
+.performance-glossary, .benchmark-configuration { @include disclosure.section; > summary { padding-inline: 1rem; } }

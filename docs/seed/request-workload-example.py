@@ -6,6 +6,7 @@ import os
 import psycopg2
 from psycopg2.extras import Json, RealDictCursor
 
+from logos.benchmarks.completion import description, result
 from logos.benchmarks.optimization import context
 from logos.benchmarks.workloads import build_snapshot
 
@@ -40,10 +41,29 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
         ]
         workload = build_snapshot(rows, "Coding pilot", "synthetic")
         cursor.execute(
-            "INSERT INTO benchmark_workloads(id, name, model_id, model_name, provenance, requests, request_count) "
-            "VALUES (%s, %s, %s, %s, %s, %s, 10) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name",
-            (workload["id"], workload["name"], model["id"], model["name"], "synthetic", Json(workload["requests"])),
+            "SELECT min(recorded_at) AS frozen_at FROM model_provider_benchmarks "
+            "WHERE model_provider_id = %s AND configuration->'metadata'->>'purpose' = 'docs-role-screenshots'",
+            (model["pair_id"],),
         )
+        frozen_at = cursor.fetchone()["frozen_at"]
+        cursor.execute(
+            "INSERT INTO benchmark_workloads "
+            "(id, name, model_id, model_name, provenance, requests, request_count, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 10, COALESCE(%s, now())) "
+            "ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name, "
+            "created_at=LEAST(benchmark_workloads.created_at, EXCLUDED.created_at) "
+            "RETURNING created_at",
+            (
+                workload["id"],
+                workload["name"],
+                model["id"],
+                model["name"],
+                "synthetic",
+                Json(workload["requests"]),
+                frozen_at,
+            ),
+        )
+        workload["created_at"] = cursor.fetchone()["created_at"].isoformat()
         cursor.execute(
             "SELECT * FROM model_provider_benchmarks WHERE model_provider_id = %s "
             "AND configuration->'metadata'->>'purpose' = 'docs-role-screenshots' ORDER BY recorded_at, id",
@@ -64,7 +84,7 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
             configuration = run["configuration"]
             configuration.update(
                 tool="logos-replay",
-                workload={key: workload[key] for key in ("id", "name", "provenance", "request_count")},
+                workload={key: workload[key] for key in ("id", "name", "provenance", "request_count", "created_at")},
             )
             nightly = configuration["nightly"]
             nightly.update(
@@ -96,5 +116,25 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
         cursor.execute(
             "UPDATE nightly_benchmarks SET workload_id=%s, optimizer=%s WHERE model_provider_id=%s",
             (workload["id"], Json(optimizer), model["pair_id"]),
+        )
+        # Link an earlier measured result so the example proves it does not open the latest run.
+        example = runs[len(runs) // 2]
+        payload = {
+            "model_id": model["id"],
+            "model_provider_id": model["pair_id"],
+            **result([example], [{"benchmark_id": example["id"], "status": "success"}]),
+        }
+        event_key = f"docs-benchmark-result:{model['pair_id']}"
+        cursor.execute("DELETE FROM notifications WHERE event_key = %s", (event_key,))
+        cursor.execute(
+            "INSERT INTO notifications(type, title, body, payload, source, event_key) "
+            "VALUES ('benchmark_result_ready', 'Nightly benchmark finished', %s, %s, 'orchestrator', %s) RETURNING id",
+            ("Illustrative saved request measurement." + description(payload), Json(payload), event_key),
+        )
+        notification_id = cursor.fetchone()["id"]
+        cursor.execute(
+            "INSERT INTO notification_recipients(notification_id, recipient_kind, recipient_role) "
+            "VALUES (%s, 'role', 'logos_admin')",
+            (notification_id,),
         )
         print(json.dumps({"workload": workload["id"], "reference": reference, "illustrative_runs": len(runs)}))

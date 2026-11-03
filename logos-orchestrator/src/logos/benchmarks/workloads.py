@@ -178,7 +178,11 @@ def build_snapshot(rows, name, provenance):
 
 
 def metadata(snapshot):
-    return {key: snapshot[key] for key in ("id", "name", "model_id", "model_name", "provenance", "request_count")}
+    result = {key: snapshot[key] for key in ("id", "name", "model_id", "model_name", "provenance", "request_count")}
+    if snapshot.get("created_at"):
+        created = snapshot["created_at"]
+        result["created_at"] = created.isoformat() if hasattr(created, "isoformat") else created
+    return result
 
 
 def create(log_ids, name, provenance):
@@ -214,7 +218,7 @@ def create(log_ids, name, provenance):
         stored = (
             db.session.execute(
                 text(
-                    "SELECT id, name, model_id, model_name, provenance, request_count "
+                    "SELECT id, name, model_id, model_name, provenance, request_count, created_at "
                     "FROM benchmark_workloads WHERE id = :id"
                 ),
                 {"id": snapshot["id"]},
@@ -222,7 +226,7 @@ def create(log_ids, name, provenance):
             .mappings()
             .one()
         )
-        return dict(stored)
+        return metadata(stored)
 
 
 def load(workload_id, model_id=None):
@@ -250,10 +254,11 @@ def list_for_model(model_id):
 
     with DBManager() as db:
         return [
-            dict(row)
+            metadata(row)
             for row in db.session.execute(
                 text(
-                    "SELECT id, name, model_id, model_name, provenance, request_count FROM benchmark_workloads "
+                    "SELECT id, name, model_id, model_name, provenance, request_count, created_at "
+                    "FROM benchmark_workloads "
                     "WHERE model_id = :model_id ORDER BY created_at DESC LIMIT 50"
                 ),
                 {"model_id": model_id},

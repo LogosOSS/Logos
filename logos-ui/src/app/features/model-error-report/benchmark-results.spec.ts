@@ -12,6 +12,61 @@ function run(id: number, rate: number, baseline?: number, pair = 1): ModelProvid
 }
 
 describe('Benchmark result baseline', () => {
+  it('groups by the frozen dataset identity across references and keeps names readable', () => {
+    const fixture = TestBed.createComponent(BenchmarkResults);
+    const first = run(1, 40), later = run(2, 50), other = run(3, 30);
+    first.configuration = { workload: { id: 'a', name: 'Coding pilot' }, nightly: { reference_id: 1 } };
+    later.configuration = { workload: { id: 'a', name: 'Coding pilot' }, nightly: { reference_id: 2 } };
+    other.configuration = { workload: { id: 'b', name: 'Coding pilot' } };
+    fixture.componentRef.setInput('runs', [first, later, other]);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.datasetGroups().map(group => group.rows.map(row => row.run.id))).toEqual([[3], [2, 1]]);
+    expect(fixture.nativeElement.querySelectorAll('.dataset-heading')).toHaveLength(2);
+  });
+
+  it.each(['runId', 'measuredFrom', 'before', 'after', 'delta'] as const)('restores the initial order after three clicks on %s', key => {
+    const fixture = TestBed.createComponent(BenchmarkResults);
+    fixture.componentRef.setInput('runs', [run(1, 40), run(2, 30), run(3, 50)]);
+    const component = fixture.componentInstance;
+    const initial = component.visibleRows().map(row => row.run.id);
+    component.sortBy(key);
+    expect(component.sort()?.direction).toBe('ascending');
+    component.sortBy(key);
+    expect(component.sort()?.direction).toBe('descending');
+    component.sortBy(key);
+    expect(component.sort()).toBeNull();
+    expect(component.visibleRows().map(row => row.run.id)).toEqual(initial);
+  });
+
+  it('sorts by run and measured start time, with missing start times last', () => {
+    const fixture = TestBed.createComponent(BenchmarkResults);
+    const early = run(3, 40), late = run(1, 40), missing = run(2, 40);
+    early.configuration = { measurement: { started_at: '2026-11-01T05:00:00Z' } };
+    late.configuration = { measurement: { started_at: '2026-11-02T05:00:00Z' } };
+    fixture.componentRef.setInput('runs', [early, late, missing]);
+    const component = fixture.componentInstance;
+    component.sortBy('runId');
+    expect(component.visibleRows().map(row => row.run.id)).toEqual([1, 2, 3]);
+    component.sortBy('measuredFrom');
+    expect(component.visibleRows().map(row => row.run.id)).toEqual([3, 1, 2]);
+    component.sortBy('measuredFrom');
+    expect(component.visibleRows().map(row => row.run.id)).toEqual([1, 3, 2]);
+  });
+
+  it('reveals an older linked run together with its results and parameter changes', async () => {
+    const fixture = TestBed.createComponent(BenchmarkResults);
+    const baseline = run(1, 40, 1), selected = run(2, 50, 1);
+    fixture.componentRef.setInput('runs', [baseline, selected, ...Array.from({ length: 8 }, (_, i) => run(i + 3, 20))]);
+    fixture.componentRef.setInput('selectedRunId', 2);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const result = fixture.nativeElement.querySelector('.selected-result');
+    expect(result.textContent).toContain('Benchmark #2');
+    expect(result.textContent).toContain('Sequences: 4 → 8');
+    expect(result.textContent).toContain('+25.0%');
+    expect(fixture.nativeElement.querySelector('.run-history').open).toBe(true);
+    expect(fixture.nativeElement.querySelectorAll('.selected-run')).toHaveLength(1);
+  });
   it('starts collapsed and preserves the selected order when reopened', () => {
     const fixture = TestBed.createComponent(BenchmarkResults);
     fixture.componentRef.setInput('runs', [run(1, 50), run(2, 40)]);
@@ -21,15 +76,15 @@ describe('Benchmark result baseline', () => {
     expect(history.open).toBe(false);
     toggle.click();
     expect(history.open).toBe(true);
-    (history.querySelectorAll('.sortable button')[1] as HTMLButtonElement).click();
+    (history.querySelectorAll('.sortable button')[3] as HTMLButtonElement).click();
     fixture.detectChanges();
-    expect(history.querySelectorAll('th')[4].getAttribute('aria-sort')).toBe('descending');
-    expect(fixture.componentInstance.visibleRows().map(row => row.run.id)).toEqual([1, 2]);
+    expect(history.querySelectorAll('th')[4].getAttribute('aria-sort')).toBe('ascending');
+    expect(fixture.componentInstance.visibleRows().map(row => row.run.id)).toEqual([2, 1]);
     toggle.click();
     expect(history.open).toBe(false);
     toggle.click();
     expect(history.open).toBe(true);
-    expect(fixture.componentInstance.visibleRows().map(row => row.run.id)).toEqual([1, 2]);
+    expect(fixture.componentInstance.visibleRows().map(row => row.run.id)).toEqual([2, 1]);
   });
 
   it('sorts all measurements before limiting the list, with invalid values last in both directions', () => {
@@ -38,11 +93,11 @@ describe('Benchmark result baseline', () => {
       run(5, 50), run(6, NaN), run(7, Infinity)]);
     const component = fixture.componentInstance;
     component.sortBy('after');
-    expect(component.visibleRows().map(row => row.run.id)).toEqual([1, 5, 4, 3, 2]);
+    expect(component.visibleRows().map(row => row.run.id)).toEqual([2, 4, 3, 5, 1]);
     component.showAll.set(true);
-    expect(component.visibleRows().map(row => row.run.id)).toEqual([1, 5, 4, 3, 2, 7, 6]);
-    component.sortBy('after');
     expect(component.visibleRows().map(row => row.run.id)).toEqual([2, 4, 3, 5, 1, 7, 6]);
+    component.sortBy('after');
+    expect(component.visibleRows().map(row => row.run.id)).toEqual([1, 5, 4, 3, 2, 7, 6]);
   });
 
   it('sorts baseline values and percentage gains numerically, including losses and missing baselines', () => {
@@ -52,23 +107,23 @@ describe('Benchmark result baseline', () => {
     const component = fixture.componentInstance;
     component.showAll.set(true);
     component.sortBy('delta');
-    expect(component.visibleRows().map(row => row.run.id)).toEqual([4, 6, 3, 2, 7, 5, 1]);
-    component.sortBy('delta');
     expect(component.visibleRows().map(row => row.run.id)).toEqual([2, 3, 6, 4, 7, 5, 1]);
-    component.sortBy('before');
-    expect(component.visibleRows().map(row => row.run.id)).toEqual([6, 4, 3, 2, 7, 5, 1]);
+    component.sortBy('delta');
+    expect(component.visibleRows().map(row => row.run.id)).toEqual([4, 6, 3, 2, 7, 5, 1]);
     component.sortBy('before');
     expect(component.visibleRows().map(row => row.run.id)).toEqual([4, 3, 2, 6, 7, 5, 1]);
+    component.sortBy('before');
+    expect(component.visibleRows().map(row => row.run.id)).toEqual([6, 4, 3, 2, 7, 5, 1]);
   });
 
   it('keeps older runs available without expanding the initial result list', () => {
     const fixture = TestBed.createComponent(BenchmarkResults);
     fixture.componentRef.setInput('runs', Array.from({ length: 7 }, (_, i) => run(i + 1, 40)));
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelectorAll('tbody tr')).toHaveLength(5);
+    expect(fixture.nativeElement.querySelectorAll('tbody tr:not(.dataset-heading)')).toHaveLength(5);
     fixture.nativeElement.querySelector('.results-more').click();
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelectorAll('tbody tr')).toHaveLength(7);
+    expect(fixture.nativeElement.querySelectorAll('tbody tr:not(.dataset-heading)')).toHaveLength(7);
   });
 
   it('compares only the explicitly linked baseline on the same deployment', () => {

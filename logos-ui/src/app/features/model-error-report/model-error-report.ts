@@ -12,6 +12,7 @@ import { NgClass } from '@angular/common';
 import { NightlyBenchmarks } from './nightly-benchmarks';
 import { BenchmarkRunFailure } from './benchmark-run-failure';
 import { BenchmarkResults } from './benchmark-results';
+import { benchmarkDatasetLabel } from './benchmark-configuration';
 import { BenchmarkComparison } from './benchmark-comparison';
 import { BenchmarkBatchEditor } from './benchmark-batch-editor';
 import { BenchmarkBatch } from './benchmark-batch';
@@ -23,7 +24,7 @@ import {
 } from '@angular/cdk/scrolling';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
+import { combineLatest, firstValueFrom, Subscription } from 'rxjs';
 
 import { ModelManagementService } from '../../core/services/model-management.service';
 import { Model } from '../../shared/models/model.model';
@@ -775,6 +776,8 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   private performanceRequestVersion = 0;
   readonly performanceError = signal(false);
   readonly performanceView = signal<'results' | 'run'>('results');
+  readonly linkedBenchmarkId = signal<number | null>(null);
+  private navigation?: Subscription;
   readonly benchmarkStartingPairId = signal<number | null>(null);
   readonly benchmarkCancellingJobId = signal<number | null>(null);
   readonly benchmarkStartError = signal<string | null>(null);
@@ -881,7 +884,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     return [...grouped.entries()].map(([modelProviderId, benchmarks]) => ({
       modelProviderId,
       benchmarks,
-      selected: benchmarks.find(benchmark => benchmark.id === selectedIds.get(modelProviderId)) ?? benchmarks[0]!,
+      selected: benchmarks.find(benchmark => benchmark.id === (selectedIds.get(modelProviderId) ?? this.linkedBenchmarkId())) ?? benchmarks[0]!,
     }));
   });
   private performancePollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1190,23 +1193,29 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   // ==========================================================================
 
   async ngOnInit(): Promise<void> {
-    const id = Number(
-      this.route.snapshot.paramMap.get('id')
-    );
-
-    this.modelId.set(id);
-
-    // Model rows deep-link to the access tab (?tab=access); only known tabs
-    // override the default, everything else falls back to complete logs.
-    const tabParam = this.route.snapshot.queryParamMap.get('tab') as ModelErrorTab | null;
-    if (tabParam != null && this.tabs.includes(tabParam)) {
-      this.activeTab.set(tabParam);
-    }
-
-    await this.fetchModel(id);
+    this.navigation = combineLatest([this.route.paramMap, this.route.queryParamMap]).subscribe(([params, query]) => {
+      const id = Number(params.get('id'));
+      const tab = query.get('tab') as ModelErrorTab | null;
+      const benchmark = Number(query.get('benchmark'));
+      const linked = Number.isSafeInteger(benchmark) && benchmark > 0 ? benchmark : null;
+      if (linked !== this.linkedBenchmarkId()) this.selectedBenchmarkIds.set(new Map());
+      this.linkedBenchmarkId.set(linked);
+      if (this.linkedBenchmarkId() !== null) {
+        this.activeTab.set('performance');
+        this.performanceView.set('results');
+      } else if (tab !== null && this.tabs.includes(tab)) {
+        this.activeTab.set(tab);
+      }
+      if (this.modelId() !== id) {
+        this.modelId.set(id);
+        this.performance.set([]);
+        void this.fetchModel(id);
+      }
+    });
   }
 
   ngOnDestroy(): void {
+    this.navigation?.unsubscribe();
     this.destroyed = true;
     this.clearPerformancePoll();
     if (this.logCopiedResetTimer !== null) {
@@ -1226,6 +1235,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     try {
       const models =
         await this.modelService.getModels();
+      if (this.destroyed || this.modelId() !== id) return;
 
       const foundModel = models.find(
         model => model.id === id
@@ -1255,7 +1265,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     } catch {
       this.loadError.set(true);
     } finally {
-      this.loading.set(false);
+      if (this.modelId() === id) this.loading.set(false);
     }
   }
 
@@ -1619,8 +1629,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   }
 
   benchmarkDatasetLabel(benchmark: ModelProviderBenchmark): string {
-    const workload = benchmark.configuration['workload'];
-    return this.isRecord(workload) && typeof workload['name'] === 'string' ? workload['name'] : benchmark.dataset;
+    return benchmarkDatasetLabel(benchmark);
   }
 
   benchmarkLatency(benchmark: ModelProviderBenchmark, percentile: 'p50' | 'p95' | 'p100'): string {

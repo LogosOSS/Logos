@@ -16,6 +16,27 @@ const NOT_CAPTURED = 'Not captured';
 
 type JsonPath = readonly (string | number)[];
 
+export interface RequestDataset {
+  name?: string;
+  created_at?: string;
+}
+
+/** The freeze date belongs to the saved dataset, never to an individual benchmark run. */
+export function requestDatasetLabel(workload: RequestDataset | undefined, fallback = 'Saved requests'): string {
+  const name = workload?.name?.trim() || fallback;
+  const created = workload?.created_at ? new Date(workload.created_at) : null;
+  if (!created || !Number.isFinite(created.getTime())) return name;
+  const date = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(created);
+  return name.includes(date) ? name : `${name} · frozen ${date}`;
+}
+
+export function benchmarkDatasetLabel(run: ModelProviderBenchmark): string {
+  return requestDatasetLabel(run.configuration['workload'] as RequestDataset | undefined,
+    isSavedRequestBenchmark(run) ? 'Saved requests' : run.dataset);
+}
+
 /** Frozen inputs keep the same comparison rules across measurement engines. */
 export function isSavedRequestBenchmark(run: ModelProviderBenchmark): boolean {
   return typeof field(run.configuration['workload'], 'id') === 'string';

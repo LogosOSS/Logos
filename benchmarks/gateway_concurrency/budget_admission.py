@@ -41,6 +41,7 @@ Environment (all optional, defaults in parentheses):
   LOGOS_BENCH_GW_BUDGET_CONCURRENCY    (16)
   LOGOS_BENCH_GW_BUDGET_DURATION_S     (2 x cache TTL + 10)
   LOGOS_BENCH_GW_BUDGET_BASELINE       (10)     sequential baseline requests
+  LOGOS_BENCH_GW_BUDGET_WARMUP_S       (15)     fixed concurrent warmup before measurement
   LOGOS_BENCH_GW_BUDGET_WINDOW_S       (5)      width of a latency window
   LOGOS_BENCH_GW_BUDGET_LOGOS_P50_MAX_MS  (unset)  threshold on the median time in Logos
   LOGOS_BENCH_GW_BUDGET_LOGOS_P99_MAX_MS  (unset)  threshold on the p99 time in Logos
@@ -271,6 +272,7 @@ async def run() -> Dict[str, Any]:
     ttl = cache_ttl_s()
     duration_s = _env_int("LOGOS_BENCH_GW_BUDGET_DURATION_S", 2 * ttl + 10)
     baseline_n = _env_int("LOGOS_BENCH_GW_BUDGET_BASELINE", 10)
+    warmup_s = _env_int("LOGOS_BENCH_GW_BUDGET_WARMUP_S", 15)
     window_s = _env_int("LOGOS_BENCH_GW_BUDGET_WINDOW_S", 5)
     key_id = _env_int("LOGOS_BENCH_GW_BUDGET_API_KEY_ID", 502)
     p50_max_ms = _env_float_opt("LOGOS_BENCH_GW_BUDGET_LOGOS_P50_MAX_MS")
@@ -302,6 +304,16 @@ async def run() -> Dict[str, Any]:
             else:
                 baseline_failures.append(f"baseline {i}: {r.error}")
 
+        # Warm the same concurrent path we measure, for a fixed duration.
+        # Never retry a measured window until it passes or discard its tail.
+        warmup_rows: List[Dict[str, Any]] = []
+        warmup_start = time.perf_counter()
+        await asyncio.gather(
+            *(
+                _worker(client, url, headers, warmup_start, warmup_start + warmup_s, warmup_rows)
+                for _ in range(concurrency)
+            )
+        )
         rows: List[Dict[str, Any]] = []
         load_since = _db_now()
         t_start = time.perf_counter()
@@ -355,6 +367,11 @@ async def run() -> Dict[str, Any]:
         "failed": len(rows) - len(ok_ms),
         "n_5xx": n_5xx,
         "status_counts": status_counts,
+        "warmup": {
+            "duration_s": warmup_s,
+            "requests": len(warmup_rows),
+            "failed": sum(not r["ok"] for r in warmup_rows),
+        },
         "baseline": summarize(baseline_ms),
         "baseline_failures": baseline_failures[:10],
         "load": load,

@@ -196,3 +196,49 @@ def test_prepare_failure_junit_has_error_and_keeps_traffic(tmp_path: Path):
     names = {c.get("name") for s in root for c in s.findall("testcase")}
     assert "ok" in names
     assert "prepare_lifecycle" in names
+
+
+@pytest.mark.parametrize("awake_first", [True, False])
+def test_lifecycle_setup_retains_awake_target_and_removes_other_replica(awake_first):
+    from harness.stack.bootstrap_benchmark import retain_single_model_lane
+
+    awake = {"model": "target", "lane_id": "target-2", "sleep_state": "awake", "pid": 703}
+    sleeping = {"model": "target", "lane_id": "target-1", "sleep_state": "sleeping", "pid": 467}
+    other = {"model": "pressure", "lane_id": "pressure-1", "sleep_state": "awake"}
+
+    class Admin:
+        def __init__(self):
+            self.lanes = ([awake, sleeping] if awake_first else [sleeping, awake]) + [other]
+
+        def node_lanes(self, provider_id):
+            assert provider_id == 1
+            return self.lanes
+
+        def delete_lane(self, provider_id, lane_id):
+            assert provider_id == 1
+            self.lanes = [lane for lane in self.lanes if lane["lane_id"] != lane_id]
+
+    admin = Admin()
+    assert retain_single_model_lane(admin, "target", 1) == [(1, "target-1")]
+    assert admin.lanes == [awake, other]
+    assert retain_single_model_lane(admin, "target", 1) == []
+
+
+def test_lifecycle_setup_does_not_accept_unconfirmed_replica_deletion(monkeypatch):
+    from harness.stack import bootstrap_benchmark as bootstrap
+
+    class Admin:
+        def node_lanes(self, provider_id):
+            return [
+                {"model": "target", "lane_id": "one", "sleep_state": "awake"},
+                {"model": "target", "lane_id": "two", "sleep_state": "sleeping"},
+            ]
+
+        def delete_lane(self, provider_id, lane_id):
+            pass
+
+    ticks = iter([0.0, 0.0, 2.0])
+    monkeypatch.setattr(bootstrap.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(bootstrap.time, "sleep", lambda _: None)
+    with pytest.raises(TimeoutError, match="single-target setup incomplete"):
+        bootstrap.retain_single_model_lane(Admin(), "target", 1, timeout_s=1.0)

@@ -48,6 +48,11 @@ review individual outcomes before comparing throughput.
 **Results** shows the run, model, changed parameters, measurement times and output throughput.
 New nightly variants link to the production baseline from the same round.
 **Before** shows this baseline. **After** shows the measured result. **Change** shows the percentage difference.
+The **Benchmark runs** table groups measurements by dataset identity and shows each saved dataset name.
+Runs from different comparison references remain together when they use the same frozen dataset.
+Select **Run**, **Measured from → to**, **Before**, **After** or **Change** to sort within each dataset.
+Each sort control cycles through the initial order, ascending order and descending order.
+The third selection restores the initial order. Missing measurements remain last.
 A dash means the value or baseline is unavailable. Historical timestamps are not reconstructed.
 Expand **Charts and comparison** or **Run details and saved configurations** for more information.
 
@@ -69,7 +74,7 @@ The 08:00 admission cutoff can leave fewer than 2 pairs tested. Remaining
 pairs keep their priority for the next night. Recovery of an interrupted worker
 always happens before selection, even when tonight's quota is already full.
 
-After a successful round, the scheduler stores the candidate and restores production settings.
+After a successful round, the scheduler stores the candidate and confirms the next production configuration.
 It then gives the other admitted pair its turn.
 Further rounds use the same saved inputs and refine the candidate until 08:00.
 The daily quota limits distinct pairs, not rounds.
@@ -134,7 +139,8 @@ Completed GuideLLM reports are stored in `model_provider_benchmarks` and appear
 in the existing performance comparison. Internal inference requests use the
 existing `log_entry` logging path. The nightly control shows per-configuration
 outcomes, retries and benchmark IDs. Failed or incomplete runs are not stored
-as successful throughput measurements. Logos does not automatically apply winning parameters to production.
+as successful throughput measurements. For saved request datasets, Logos automatically applies eligible improvements over the current production baseline.
+Hugging Face runs retain the original production settings.
 
 ## Fixed request workloads
 
@@ -153,6 +159,10 @@ It excludes request headers, API keys, user identities and response bodies.
 Deletion of source logs does not remove this copy.
 Treat the saved inputs as private data with their own retention requirements.
 The content hash identifies the selected requests and their order.
+The user interface shows the saved dataset name and its original freeze date.
+Repeated use of the same dataset retains its name, identifier and freeze date.
+A new benchmark date or comparison reference does not change the dataset date.
+The full content hash remains available in the configuration details.
 Unsupported inference controls and non-text content cause rejection.
 The feature rejects missing, failed, non-FULL or mixed-model source requests.
 Benchmark requests cannot become source data.
@@ -228,7 +238,20 @@ The candidate's p95 request latency cannot exceed 110% of the nightly baseline.
 Among eligible candidates, Logos saves the highest observed aggregate throughput and its parameters.
 The historical winner remains until an eligible measurement exceeds its recorded throughput.
 These checks prevent selection through shorter or truncated answers. They do not measure answer quality.
-Production settings return after every plan. The winner guides the following search rounds.
+After each completed plan, Logos selects the fastest eligible measurement from that plan.
+If it exceeds the current production baseline, then Logos applies its sequence and batch-token limits.
+Logos compares measurements from the same frozen dataset and environment.
+An older throughput record alone cannot trigger adoption.
+If no eligible configuration improves throughput, then the original production settings return.
+The fixed reference remains unchanged after adoption. The next round measures the adopted settings first.
+
+The recovery journal records adoption intent before the worker configuration changes.
+The worker must confirm the configuration, restart and model readiness before production traffic resumes.
+If adoption fails, then Logos restores the original configuration.
+If rollback fails, then the worker remains reserved until recovery succeeds.
+After an application restart, recovery completes the recorded adoption or restores the original settings.
+A disabled schedule cancels pending adoption.
+The round report identifies an adopted benchmark or an adoption failure.
 
 For request workloads, **Nightly progress** shows the best eligible throughput so far against the fixed reference.
 The initial point is 0%. Each subsequent point represents a nightly plan with completed measurements.
@@ -243,13 +266,18 @@ Use repeated measurements and a separate evaluation dataset before drawing perfo
 
 ## Completion notifications
 
-After each round, Logos stores the report and candidate after worker restoration.
+After each round, Logos stores the report and candidate after the worker confirms its production configuration.
 It emits no completion event while another round can start.
-After the final restoration, Logos stores the final state and completion event in one transaction.
+After the final configuration check, Logos stores the final state and completion event in one transaction.
 The event includes the outcome, completed round count, total successful configuration count, reference and winner IDs.
 Logos retries failed notification delivery, including outside the maintenance window.
 A stable event key prevents duplicate notifications after a retry or application restart.
 Logos Admins receive **Benchmark ready** in their notification inbox.
+The notification retains the concrete benchmark identifier and its parameter changes.
+Select the notification to open that benchmark in **Model Details → Performance → Results**.
+The page selects its dataset and shows the result, baseline, percentage change and changed parameters.
+This link remains available after the notification is read.
+If the measurement is deleted, then the page identifies the unavailable benchmark.
 A recovery that still needs attention does not emit a completed event.
 
 ## Worker ownership and recovery
@@ -269,7 +297,7 @@ New requests cannot use these exceptions. The exceptions end when each request f
 Other workers remain available. Normal capacity-planner and manual lane mutations cannot alter the
 reserved node.
 
-Original settings are journaled before mutation and restored after the plan,
+Original settings are journaled before mutation and restored when no eligible improvement exists,
 on cancellation and before a retry. Cleanup restarts the lane even when the
 settings did not change. A failed restart that removed the lane can recreate it
 from its original configuration. If restoration fails, the reservation and
@@ -282,7 +310,7 @@ Recovery uses a separate execution lock to detect an interrupted nightly run.
 A live execution, an unrelated job, or a manual benchmark claim prevents recovery.
 The scheduler blocks further requests from an interrupted job and requests fresh worker status.
 It marks the job as failed only after the worker confirms that its requests ended.
-The original worker configuration is then restored. Unknown worker status keeps the recovery journal active.
+The journal selects the production configuration. Unknown worker status keeps the recovery journal active.
 Job age alone never permits recovery.
 
 Recovery waits only for the lane it restores, and for other lanes of the same model.
@@ -324,7 +352,7 @@ The nightly schedule and recovery journal use the same PostgreSQL database.
 Benchmark runs do not restore local profile files.
 
 Apply `058_central_model_profiles.xml` and the nightly migration before workers connect.
-Imported profiles are stale until calibration succeeds.
+A calibration measured under another hardware, vLLM or configuration key is stale until the next calibration succeeds.
 Automatic calibration runs first during the maintenance window.
 Benchmarks use the remaining time.
 
@@ -500,7 +528,7 @@ last successful measurement. The current pair limit is the code constant
 | `scheduled` | Enabled and waiting in the rotation. Check the time window and other pairs' priority. |
 | `unavailable` | Admission skipped the pair. Read the report for worker, lane or capacity requirements. No nightly slot was consumed. |
 | `preparing` / `running` | The pair has a nightly slot. The scheduler reserves the worker and executes its plan. |
-| `continuing` | Production settings are restored. Another round waits for its turn within this window. |
+| `continuing` | The production configuration is confirmed. Another round waits for its turn within this window. |
 | `completed` | The night finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
 | `window_closed` | No further configuration can start after 08:00. |
 | `window_closed_below_half` | The 08:00 check found fewer than 25 of 50 successful completions. |

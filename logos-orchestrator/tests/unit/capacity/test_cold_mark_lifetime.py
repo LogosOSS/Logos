@@ -499,3 +499,100 @@ async def test_a_sleep_cancelled_before_its_command_is_sent_releases_the_lane(wo
     assert worker.registry._sessions[PROVIDER_ID].pending_commands == {}  # noqa: SLF001
     assert not worker.cold()
     assert await worker.selected() == IDLE_LANE
+
+
+async def test_request_reclaim_keeps_admission_closed_for_long_finite_request(worker, monkeypatch):
+    import time
+    from types import MethodType
+
+    planner = _planner(worker)
+    planner._drain_lane = MethodType(CapacityPlanner._drain_lane, planner)
+    clock = [time.time()]
+    started = clock[0]
+    worker.lanes[IDLE_LANE]["active_requests"] = 1
+    await worker.publish()
+    real_sleep = asyncio.sleep
+
+    async def advance(seconds, *args, **kwargs):
+        assert worker.cold()
+        clock[0] += seconds
+        if clock[0] - started >= 90:
+            worker.lanes[IDLE_LANE]["active_requests"] = 0
+            await worker.publish()
+        await real_sleep(0)
+
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    monkeypatch.setattr(asyncio, "sleep", advance)
+    action = _action("sleep_l1")
+    action.params = {"_drain_budget_s": 120.0}
+    assert await planner._execute_action_with_confirmation(action)
+    assert 90 <= clock[0] - started < 120
+    assert not worker.cold()
+    assert worker.lanes[IDLE_LANE]["sleep_state"] == "sleeping"
+
+
+async def test_request_reclaim_still_respects_shorter_shared_deadline(worker):
+    import time
+
+    planner = _planner(worker)
+    budgets = []
+
+    async def drain(provider_id, lane_id, timeout_seconds=60.0):
+        budgets.append(timeout_seconds)
+        return False
+
+    planner._drain_lane = drain
+    action = _action("sleep_l1")
+    action.params = {"_drain_budget_s": 120.0}
+    assert not await planner._execute_action_with_confirmation(action, deadline=time.monotonic() + 10)
+    assert 0 < budgets[0] <= 10
+    assert not worker.cold()
+    assert worker.lanes[IDLE_LANE]["sleep_state"] == "awake"
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_demand_drain_runs_once_without_blocking_cycle_and_releases_on_exit(worker, cancel):
+    planner = _planner(worker)
+    planner._tick_event = asyncio.Event()
+    planner._task = None
+    planner._is_plannable = lambda pid: True
+    planner._get_queue_depth_for_model = lambda *args: 3
+    planner._safe_get_lanes = lambda pid: []
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def drain(provider_id, lane_id, timeout_seconds=60.0):
+        assert worker.cold()
+        assert timeout_seconds > 60
+        entered.set()
+        await finish.wait()
+        return True
+
+    planner._drain_lane = drain
+    action = _action("sleep_l1")
+    action.params = {"_drain_target_model": "other-model"}
+    assert planner._start_demand_drain(action)
+    assert not planner._start_demand_drain(action)
+    await entered.wait()
+    assert worker.cold()
+    task = next(iter(planner._demand_drain_tasks.values()))
+    if cancel:
+        await planner.stop()
+        assert worker.lanes[IDLE_LANE]["sleep_state"] == "awake"
+    else:
+        finish.set()
+        await task
+        assert worker.lanes[IDLE_LANE]["sleep_state"] == "sleeping"
+    assert not worker.cold()
+    assert not planner._demand_drain_tasks
+    assert planner._tick_event.is_set()
+
+
+async def test_demand_drain_does_not_sleep_victim_when_target_queue_disappears(worker):
+    planner = _planner(worker)
+    planner._get_queue_depth_for_model = lambda *args: 0
+    planner._safe_get_lanes = lambda pid: []
+    action = _action("sleep_l1")
+    action.params = {"_drain_target_model": "other-model", "_drain_budget_s": 120}
+    assert not await planner._execute_action_with_confirmation(action)
+    assert worker.lanes[IDLE_LANE]["sleep_state"] == "awake"
+    assert not worker.cold()
