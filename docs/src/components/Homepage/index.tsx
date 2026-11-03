@@ -40,6 +40,8 @@ const GUIDES: GuideCard[] = [
 export default function Homepage(): React.JSX.Element {
   const logo = useBaseUrl("/img/logos-logo.svg");
   const architecture = useBaseUrl("/img/system-design/top-level.svg");
+  const trailer = useBaseUrl("/video/logos-trailer.mp4");
+  const trailerPoster = useBaseUrl("/video/logos-trailer-poster.jpg");
 
   return (
     <div className={styles.page}>
@@ -62,6 +64,25 @@ export default function Homepage(): React.JSX.Element {
             </Link>
           </div>
         </div>
+      </section>
+
+      <section className={styles.section}>
+        <h2 className={styles.sectionHeading}>Logos in 60 s</h2>
+        <p className={styles.sectionSubtitle}>
+          The video shows the API, the policies, the GPU workers, the
+          statistics, the budgets, and the coding agents.
+        </p>
+        <video
+          className={styles.trailer}
+          src={trailer}
+          poster={trailerPoster}
+          controls
+          playsInline
+          preload="metadata"
+          width={1920}
+          height={1080}
+          aria-label="Logos product trailer, 60 s, with music"
+        />
       </section>
 
       <section className={styles.section}>

@@ -57,6 +57,15 @@ defined technical name, and keep the same term for the same thing across the
 page. All pages are in STE. Write every new or changed text in STE, and keep
 the heading anchors that other pages link to.
 
+## Homepage trailer
+
+The homepage plays `static/video/logos-trailer.mp4` (60 s, 1920×1080, with
+music). The source files are in `trailer/`: the animated page, the render
+script, the music synthesizer, the screenshot capture script and the 2x
+screenshots. Re-render the video after you change the trailer, the music or a
+screenshot that the trailer shows. The procedure is in
+[`trailer/README.md`](trailer/README.md).
+
 ## System design diagrams
 
 Structural diagrams for the developer guide live under

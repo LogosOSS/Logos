@@ -220,3 +220,14 @@
   color: var(--logos-muted);
   font-size: 0.95rem;
 }
+
+.trailer {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  border-radius: 14px;
+  border: 1px solid var(--logos-border);
+  background: #120a26;
+  box-shadow: 0 18px 50px rgba(76, 29, 149, 0.18);
+}
