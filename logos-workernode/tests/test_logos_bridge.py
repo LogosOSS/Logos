@@ -1275,6 +1275,51 @@ async def test_start_calibration_session_routes_metal_backend_to_metal_probe(tmp
 
 
 @pytest.mark.asyncio
+async def test_calibration_session_ends_when_a_model_reports_a_degraded_node(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOGOS_WORKER_BACKEND", "metal")
+    from logos_worker_node import config as _wcfg
+    from logos_worker_node.calibration import CalibrationResult
+    from logos_worker_node.hf_model_info import HfModelMetadata
+
+    monkeypatch.setattr(_wcfg, "STATE_DIR", tmp_path)
+    app = _make_app_for_calibration(tmp_path)
+    cfg = LogosConfig(
+        enabled=True,
+        logos_url="https://logos.example",
+        shared_key="secret",
+        configured_models=["first/model", "second/model"],
+    )
+    client = LogosBridgeClient(app, cfg)
+    monkeypatch.setattr(
+        "logos_worker_node.hf_model_info.fetch_hf_model_metadata",
+        lambda *a, **k: HfModelMetadata(source="hf"),
+    )
+    calibrated: list[str] = []
+
+    def _degraded_node(plan, **kwargs):
+        calibrated.append(plan["model"])
+        return CalibrationResult(
+            model=plan["model"],
+            tensor_parallel_size=1,
+            gpu_devices="",
+            kv_cache_sent_mb=0.0,
+            success=False,
+            error="node degraded (gpu-error): GPU1.power='ERR!'",
+            node_unhealthy_reason="gpu-error",
+        )
+
+    monkeypatch.setattr("logos_worker_node.calibration_metal.calibrate_model_metal", _degraded_node)
+    monkeypatch.setattr("logos_worker_node.calibration.plans_from_config", lambda _p: [])
+
+    await client._handle_start_calibration_session({"sleep_level": 1})  # noqa: SLF001
+    await _drain_session(client)
+
+    assert calibrated == ["first/model"]
+    events = [e.event for e in app.state.lane_manager._event_log]
+    assert "calibration_session_finished" in events
+
+
+@pytest.mark.asyncio
 async def test_start_calibration_session_refuses_when_one_in_progress(tmp_path):
     """A second start_calibration_session while the first is still running
     must be rejected. Caller is expected to stop_calibration_session first

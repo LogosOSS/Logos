@@ -43,16 +43,24 @@ def test_evaluate_node_health_flags_gpu_error_field():
         f"{_HEALTHY_GPU_ROW.format(idx=2)}\n"
     )
     with patch.object(subprocess, "check_output", return_value=csv_output):
-        result = node_health._check_gpu()
+        result = node_health.check_gpu()
 
     assert result.state == "gpu-error"
     assert "GPU1" in result.detail
 
 
+def test_check_gpu_queries_only_the_requested_gpus():
+    with patch.object(subprocess, "check_output", return_value=_HEALTHY_GPU_ROW.format(idx=2) + "\n") as query:
+        assert node_health.check_gpu([2, 3]).state == "ok"
+        assert "--id=2,3" in query.call_args.args[0]
+        node_health.check_gpu()
+        assert not any(arg.startswith("--id") for arg in query.call_args.args[0])
+
+
 def test_evaluate_node_health_flags_gpu_na_field():
     csv_output = "0, N/A, N/A, N/A, N/A, N/A, N/A\n" + _HEALTHY_GPU_ROW.format(idx=1) + "\n"
     with patch.object(subprocess, "check_output", return_value=csv_output):
-        result = node_health._check_gpu()
+        result = node_health.check_gpu()
     # 'N/A' alone (no 'Error' substring) triggers gpu-na, not gpu-error.
     assert result.state == "gpu-na"
     assert "GPU0" in result.detail
@@ -61,7 +69,7 @@ def test_evaluate_node_health_flags_gpu_na_field():
 def test_evaluate_node_health_clean_gpu_csv_is_ok():
     csv_output = "\n".join(_HEALTHY_GPU_ROW.format(idx=i) for i in (0, 1)) + "\n"
     with patch.object(subprocess, "check_output", return_value=csv_output):
-        result = node_health._check_gpu()
+        result = node_health.check_gpu()
     assert result.state == "ok"
 
 
@@ -76,7 +84,7 @@ def test_evaluate_node_health_flags_err_token_on_power():
         "1, 81920, 12345, 70000, ERR!, ERR!, 40\n"
     )
     with patch.object(subprocess, "check_output", return_value=csv_output):
-        result = node_health._check_gpu()
+        result = node_health.check_gpu()
     assert result.state == "gpu-error"
     assert "GPU1.power" in result.detail or "GPU1.fan" in result.detail
 
@@ -90,7 +98,7 @@ def test_evaluate_node_health_na_on_telemetry_only_is_ok():
         "0, 81920, 12345, 70000, 150.5, [N/A], 55\n"
     )
     with patch.object(subprocess, "check_output", return_value=csv_output):
-        result = node_health._check_gpu()
+        result = node_health.check_gpu()
     assert result.state == "ok"
 
 
@@ -162,7 +170,7 @@ def test_evaluate_node_health_handles_nvidia_smi_timeout():
         "check_output",
         side_effect=subprocess.TimeoutExpired(cmd=["nvidia-smi"], timeout=10),
     ):
-        result = node_health._check_gpu()
+        result = node_health.check_gpu()
     assert result.state == "gpu-query-timeout"
 
 
