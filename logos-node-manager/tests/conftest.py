@@ -2,7 +2,8 @@
 
 ``FakeDocker`` simulates the part of the Docker engine that a deployment sees: one worker container, local images with
 or without a name, a registry to pull from, and a script for how a freshly created container behaves over time.
-``FakeClock`` makes the waits in the checks cost no real time.
+``FakeOrchestrator`` answers the calls about the cordon of the node from a script. ``FakeClock`` makes the waits in the
+checks cost no real time.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from logos_node_manager.config import Settings
 from logos_node_manager.deployer import Deployer
 from logos_node_manager.docker_ops import ContainerInfo
 from logos_node_manager.errors import DockerError
+from logos_node_manager.orchestrator import CordonReply, NodeStatus
 from logos_node_manager.runner import CommandResult
 from logos_node_manager.state import Deployment, StateStore
 
@@ -23,6 +25,14 @@ REPO = "registry.example/logos/logos-workernode-vllm"
 OLD = "sha256:" + "0" * 12 + "aaaa"
 NEW = "sha256:" + "1" * 12 + "bbbb"
 ANCIENT = "sha256:" + "2" * 12 + "cccc"
+
+# What the orchestrator can answer to a request for the cordon. The worker session that runs before the swap is "old".
+DRAINED = CordonReply(granted=True, drained=True, session_id="session-old")
+BUSY = CordonReply(granted=True, drained=False, session_id="session-old", in_flight_orchestrator=2, in_flight_worker=1)
+WAIT_FOR_TURN = CordonReply(granted=False, reason="another_node_in_maintenance", holder="node-b")
+# What it sees of the node after the swap: a new session, with its first status.
+RECONNECTED = NodeStatus(online=True, first_status_received=True, session_id="session-new")
+NOT_BACK = NodeStatus(online=False, first_status_received=False, session_id=None)
 
 HEALTHY = [{"health": "starting"}, {"health": "healthy"}]
 CRASHED = [{"status": "exited", "running": False, "exit_code": 1, "health": "unhealthy"}]
@@ -63,8 +73,14 @@ class FakeDocker:
             exit_code=0,
             restart_count=0,
             health="healthy",
+            config_hash="config-1",
         )
         self._timeline: list[dict] = []
+        # What Compose computes for the worker service now. A container made from another value is recreated by ``up``,
+        # also when its image is the same.
+        self.compose_hash = "config-1"
+        # Compose cannot tell the hash: an old version, or a failing command.
+        self.hash_unknown = False
 
         # How a container behaves after it is created, as a list of field overrides handed out one per inspect call.
         # The last entry stays. The old image is the known good one, so a rollback always gets a working container.
@@ -153,7 +169,8 @@ class FakeDocker:
             return CommandResult(("up",), 1, stderr="No such image")
         timeline = self.old_image_timeline if image == OLD else self.new_container_timeline
         current = self.container_info
-        if current is not None and current.image_id == image and not recreate:
+        same_config = current is not None and current.config_hash == self.compose_hash
+        if current is not None and current.image_id == image and same_config and not recreate:
             if current.running:
                 return CommandResult(("up",), 0)  # nothing to change
             # Compose starts a stopped container in place; it does not create another one.
@@ -170,15 +187,65 @@ class FakeDocker:
             exit_code=0,
             restart_count=0,
             health="starting",
+            config_hash=self.compose_hash,
         )
         self._timeline = list(timeline)
         return CommandResult(("up",), 0)
+
+    def config_hash(self, tag: str) -> str | None:
+        return None if self.hash_unknown else self.compose_hash
 
     def container(self) -> ContainerInfo | None:
         if self.container_info is not None and self._timeline:
             override = self._timeline.pop(0) if len(self._timeline) > 1 else self._timeline[0]
             self.container_info = replace(self.container_info, **override)
         return self.container_info
+
+
+class FakeOrchestrator:
+    """The orchestrator as the deployer sees it.
+
+    Each kind of call has a script: a list of replies or exceptions, handed out one per call. The last entry stays, so
+    a script of one entry answers the same every time. An empty script answers like a node that is ready.
+    """
+
+    def __init__(self) -> None:
+        self.cordon_replies: list = []
+        self.status_replies: list = []
+        self.release_replies: list = []
+        self.report_replies: list = []
+        self.calls: list[tuple] = []
+        # The details of every report, by deployment id.
+        self.reports: list[tuple[str, dict]] = []
+
+    @staticmethod
+    def _next(script: list, default):
+        if not script:
+            return default
+        reply = script.pop(0) if len(script) > 1 else script[0]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    def cordon(self, deployment_id: str) -> CordonReply:
+        self.calls.append(("cordon", deployment_id))
+        return self._next(self.cordon_replies, DRAINED)
+
+    def status(self, deployment_id: str) -> NodeStatus:
+        self.calls.append(("status", deployment_id))
+        return self._next(self.status_replies, RECONNECTED)
+
+    def release(self, deployment_id: str) -> None:
+        self.calls.append(("release", deployment_id))
+        self._next(self.release_replies, None)
+
+    def report(self, deployment_id: str, details: dict) -> None:
+        self.calls.append(("report", deployment_id))
+        self._next(self.report_replies, None)
+        self.reports.append((deployment_id, details))
+
+    def count(self, call: str) -> int:
+        return len([entry for entry in self.calls if entry[0] == call])
 
 
 @pytest.fixture
@@ -201,6 +268,26 @@ def settings(tmp_path) -> Settings:
 
 
 @pytest.fixture
+def drain_settings(settings) -> Settings:
+    """Settings of a host that drains: an orchestrator to ask, and short limits."""
+    return replace(
+        settings,
+        drain_enabled=True,
+        orchestrator_url="https://logos.example",
+        node_key="the-secret-node-key",
+        drain_timeout_s=60,
+        turn_timeout_s=120,
+        orchestrator_retry_window_s=20,
+        reconnect_timeout_s=30,
+    )
+
+
+@pytest.fixture
+def orchestrator() -> FakeOrchestrator:
+    return FakeOrchestrator()
+
+
+@pytest.fixture
 def store(settings) -> StateStore:
     return StateStore(settings.state_dir)
 
@@ -217,7 +304,7 @@ def make_deployer(settings, store, docker, clock):
     def build(**overrides) -> Deployer:
         options = {"clock": clock, "sleep": clock.sleep, "now": lambda: "2026-01-01T00:00:00.000000+00:00"}
         options.update(overrides)
-        return Deployer(settings, docker, store, **options)
+        return Deployer(options.pop("settings", settings), docker, store, **options)
 
     return build
 
@@ -225,6 +312,12 @@ def make_deployer(settings, store, docker, clock):
 @pytest.fixture
 def deployer(make_deployer) -> Deployer:
     return make_deployer()
+
+
+@pytest.fixture
+def draining_deployer(make_deployer, drain_settings, orchestrator) -> Deployer:
+    """A deployer on a host that drains, talking to the scripted orchestrator."""
+    return make_deployer(settings=drain_settings, orchestrator=orchestrator)
 
 
 def queued(store: StateStore, tag: str = "v2", deployment_id: str = "run-1") -> Deployment:
