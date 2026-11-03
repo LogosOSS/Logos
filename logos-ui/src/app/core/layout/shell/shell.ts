@@ -128,10 +128,10 @@ export class Shell {
         item.roles.includes(role as UserRole) &&
         (!item.requiresAgent || this.agentAvailable()) &&
         (!keyGatedPaths.includes(item.path) || showKeyGated) &&
-        // Teamless callers have no models to request or vote on; only
-        // logos_admin (who manages the catalog itself) keeps the entry.
+        // Teamless callers have no models to request or vote on; 
+        // logos_admin and app_admin keep the entry.
         // Mirrors hasTeamGuard, the route-level boundary.
-        (!item.requiresTeam || role === 'logos_admin' || hasTeams),
+        (!item.requiresTeam || role === 'logos_admin' || role === 'app_admin' || hasTeams),
     );
     return (['system', 'management', 'personal'] as const)
       .map((key) => ({
