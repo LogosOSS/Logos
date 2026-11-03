@@ -491,15 +491,36 @@ def record_comparison(benchmark_id, baseline_id, parameters, original, search=No
         db.session.commit()
 
 
+def adoption_candidate(pair_id, search, report):
+    """Read successful measurements for the reserved deployment before adoption."""
+    from logos.benchmarks import optimization
+
+    ids = [item["benchmark_id"] for item in report if item.get("status") == "success" and item.get("benchmark_id")]
+    if not ids:
+        return None
+    with DBManager() as db:
+        runs = list(
+            db.session.execute(
+                text(
+                    "SELECT id, configuration, metrics, sample_size FROM model_provider_benchmarks "
+                    "WHERE model_provider_id = :pair AND id = ANY(:ids)"
+                ),
+                {"pair": pair_id, "ids": ids},
+            ).mappings()
+        )
+    return optimization.adoption_candidate(search, runs, report)
+
+
 def finish(pair_id, state, report, search=None):
     """Commit restored state, the observed winner and its completion event together."""
+    from logos.benchmarks.completion import result
     from logos.benchmarks.optimization import eligible, select_state
 
     with DBManager() as db:
         row = (
             db.session.execute(
                 text(
-                    "SELECT n.last_run_date, n.status, n.optimizer, mp.model_id, p.name AS provider_name "
+                    "SELECT n.last_run_date, n.status, n.optimizer, n.enabled, mp.model_id, p.name AS provider_name "
                     "FROM nightly_benchmarks n "
                     "JOIN model_provider mp ON mp.id = n.model_provider_id JOIN providers p ON p.id = mp.provider_id "
                     "WHERE n.model_provider_id = :id FOR UPDATE OF n"
@@ -526,6 +547,12 @@ def finish(pair_id, state, report, search=None):
                 else []
             )
             optimizer = select_state(search, runs, report)
+            optimizer["last_round_result"] = result(runs, report)
+            adopted = next((item for item in report if item.get("status") == "adopted"), None)
+            if adopted:
+                if not row["enabled"]:
+                    raise RuntimeError("Nightly schedule disabled before adoption committed")
+                optimizer["production_adoption"] = adopted
             baseline_id = next(
                 (
                     item.get("benchmark_id")
@@ -580,6 +607,9 @@ def finish(pair_id, state, report, search=None):
                 "rounds": event_optimizer.get("nightly_session", {}).get("rounds", 1),
                 "reference_id": event_optimizer.get("reference_id"),
                 "best_benchmark_id": event_optimizer.get("best_benchmark_id"),
+                "production_adoption": event_optimizer.get("production_adoption"),
+                "benchmark_id": None,
+                **event_optimizer.get("last_round_result", {}),
             }
             db.session.execute(
                 text(
@@ -612,6 +642,7 @@ def finalize_continuations(now):
 
 async def deliver_completion_events():
     """Retry persisted events; the application server deduplicates each event key."""
+    from logos.benchmarks.completion import description
     from logos.notifications import emit_notification
 
     with DBManager() as db:
@@ -629,7 +660,13 @@ async def deliver_completion_events():
             "benchmark_result_ready",
             "Nightly benchmark finished",
             f"{payload['provider_name']}: {payload['successful_configurations']} successful configurations. "
-            f"Status: {payload['status']}. Original worker settings restored.",
+            f"Status: {payload['status']}. "
+            + (
+                f"Production uses improved configuration #{payload['production_adoption']['benchmark_id']}."
+                if payload.get("production_adoption")
+                else "Production settings restored."
+            )
+            + description(payload),
             payload,
             [{"kind": "role", "role": "logos_admin"}],
             event_key=event["event_id"],

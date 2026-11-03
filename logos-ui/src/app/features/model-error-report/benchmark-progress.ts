@@ -1,4 +1,4 @@
-import { isSavedRequestBenchmark } from './benchmark-configuration';
+import { benchmarkDatasetLabel, isSavedRequestBenchmark } from './benchmark-configuration';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { comparisonValue } from './benchmark-comparison';
 import { batchingSignature, comparisonSettings } from './benchmark-isolation';
@@ -77,8 +77,8 @@ export function benchmarkProgress(runs: readonly ModelProviderBenchmark[]) {
     const reference = group.reference;
     return { key, fixed, reference, latest, first, last, min, max, zero: y(0), points: plotted,
       line: plotted.map(point => `${point.x},${point.y}`).join(' '),
-      label: `${group.reference.provider_name} · ${group.reference.dataset} · #${group.reference.id}`,
-      context: fixed ? `${group.reference.provider_name} · fixed reference #${group.reference.id} · ${group.reference.sample_size} saved requests · source output limits` : `${group.reference.provider_name} · ${group.reference.dataset} · ${settings['max_concurrency']} parallel · ≤${settings['max_output_tokens']} output tokens · ${group.reference.sample_size} requests`,
+      label: `${benchmarkDatasetLabel(reference)} · ${reference.provider_name} · reference #${reference.id}`,
+      context: fixed ? `${benchmarkDatasetLabel(reference)} · ${reference.provider_name} · fixed reference #${reference.id} · ${reference.sample_size} saved requests · source output limits` : `${reference.provider_name} · ${reference.dataset} · ${settings['max_concurrency']} parallel · ≤${settings['max_output_tokens']} output tokens · ${reference.sample_size} requests`,
     };
   }).filter((group): group is NonNullable<typeof group> => group !== null).sort((a, b) => b.last - a.last);
 }

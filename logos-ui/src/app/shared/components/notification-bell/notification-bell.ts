@@ -16,6 +16,8 @@ import {
   notificationMeta,
 } from '../../../core/services/notification.service';
 import { formatRelativeTime } from '../../utils/date';
+import { Router } from '@angular/router';
+import { notificationTarget } from '../../../core/services/notification-target';
 
 const PAGE_SIZE = 15;
 /** Start loading the next page this close (px) to the end of the list. */
@@ -41,6 +43,7 @@ const LOAD_MORE_THRESHOLD_PX = 80;
 export class NotificationBell implements OnInit, OnDestroy {
   notifications = inject(NotificationService);
   private host = inject(ElementRef<HTMLElement>);
+  private router = inject(Router);
 
   open = signal(false);
   unreadOnly = signal(false);
@@ -58,6 +61,7 @@ export class NotificationBell implements OnInit, OnDestroy {
 
   readonly meta = notificationMeta;
   readonly age = formatRelativeTime;
+  readonly target = notificationTarget;
 
   constructor() {
     effect(() => {
@@ -140,6 +144,14 @@ export class NotificationBell implements OnInit, OnDestroy {
       if (generation === this.generation) this.error.set('Could not load notifications.');
     } finally {
       if (generation === this.generation) this.loading.set(false);
+    }
+  }
+
+  async openNotification(item: AppNotification): Promise<void> {
+    const target = notificationTarget(item);
+    await this.markRead(item);
+    if (target && await this.router.navigate(target.commands, { queryParams: target.queryParams })) {
+      this.open.set(false);
     }
   }
 

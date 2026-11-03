@@ -1,3 +1,20 @@
+@if (selectedRow(); as row) {
+  <section #selectedResult class="selected-result" tabindex="-1" aria-label="Selected benchmark result">
+    <h3>Benchmark #{{ row.run.id }}</h3>
+    <p>{{ datasetLabel(row.run) }} · {{ row.run.provider_name }} · {{ row.kind }}</p>
+    <dl class="results-summary">
+      <div><dt>Baseline (tok/s)</dt><dd>{{ row.before === null ? '—' : (row.before | number:'1.1-1') }}</dd></div>
+      <div><dt>Result (tok/s)</dt><dd>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }}</dd></div>
+      <div><dt>Change</dt><dd>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</dd></div>
+    </dl>
+    <h4>Changed parameters</h4>
+    @for (change of row.changes; track change) { <p>{{ change }}</p> }
+    @empty { <p>Current settings · no parameter changes</p> }
+    <p>Measured {{ (row.measurement?.started_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }} → {{ (row.measurement?.ended_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }}</p>
+  </section>
+} @else if (selectedRunId() !== null) {
+  <p role="status">Benchmark #{{ selectedRunId() }} is no longer available. Other saved results are shown below.</p>
+}
 @if (!activeProgress() && topRuns().length) {
   <section class="top-configurations" aria-label="Top configurations so far">
     <h3>Highest recorded throughput</h3>
@@ -31,7 +48,7 @@
 }
 @if (activeProgress(); as chart) {
   <details class="benchmark-progress" name="performance-analysis" open aria-label="Nightly progress">
-    <summary class="progress-summary"><h3>Nightly progress</h3><span>{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}% vs. reference #{{ chart.reference.id }}</span></summary>
+    <summary class="progress-summary"><h3>Nightly progress</h3><span class="disclosure-meta">{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}% vs. reference #{{ chart.reference.id }}</span></summary>
     <div class="results-heading">
       <p class="results-note">Best so far vs. starting baseline</p>
       @if (progress().length > 1) {
@@ -68,20 +85,23 @@
     <p class="results-note">Starts at 0%. A new best result raises the line; other completed rounds keep it flat. Tooltips show the change from the previous point.</p>
   </details>
 }
-<details class="run-history">
+<details class="run-history" [open]="selectedRunId() !== null">
   <summary><h3>Benchmark runs <small>{{ rows().length }} results · output tok/s</small></h3></summary>
   <p class="results-note">Each variant compared with its nightly baseline.</p>
   <table>
-    <thead><tr><th>Run</th><th>Changed parameters</th><th>Measured from → to</th>
+    <thead><tr>
       @for (column of columns; track column.key) {
+        @if (column.key === 'measuredFrom') { <th>Changed parameters</th> }
         <th class="sortable" [attr.aria-sort]="sort()?.key === column.key ? sort()!.direction : 'none'">
           <button type="button" (click)="sortBy(column.key)">{{ column.label }} <span aria-hidden="true">{{ sort()?.key === column.key ? (sort()!.direction === 'ascending' ? '↑' : '↓') : '↕' }}</span></button>
         </th>
       }
     </tr></thead>
-    <tbody>
-      @for (row of visibleRows(); track row.run.id) {
-        <tr>
+    @for (group of datasetGroups(); track group.key) {
+    <tbody [attr.aria-label]="group.label">
+      <tr class="dataset-heading"><th scope="rowgroup" colspan="6">{{ group.label }} <small>{{ group.rows.length }} {{ group.rows.length === 1 ? 'run' : 'runs' }}</small></th></tr>
+      @for (row of group.visible; track row.run.id) {
+        <tr [class.selected-run]="row.run.id === selectedRunId()">
           <td data-label="Run"><strong>#{{ row.run.id }} · {{ row.kind }}</strong><small>{{ row.run.provider_name }}</small></td>
           <td data-label="Changed parameters">
             @if (row.isBaseline || row.currentSettings) { Current settings }
@@ -98,8 +118,9 @@
         </tr>
       }
     </tbody>
+    }
   </table>
-  @if (rows().length > 5) {
+  @if (hasMore()) {
     <button type="button" class="btn-secondary results-more" (click)="showAll.set(!showAll())">{{ showAll() ? 'Show fewer' : 'Show all ' + rows().length + ' runs' }}</button>
   }
 </details>

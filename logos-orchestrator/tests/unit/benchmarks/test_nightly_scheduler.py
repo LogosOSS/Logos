@@ -64,6 +64,7 @@ def scheduler(monkeypatch):
         pid, "*", owner
     )
     monkeypatch.setattr(module.store, "record_comparison", MagicMock())
+    monkeypatch.setattr(module.store, "adoption_candidate", MagicMock(return_value=None))
     monkeypatch.setattr(module.store, "finalize_continuations", MagicMock())
     service.saved = []
     monkeypatch.setattr(module.store, "save", lambda *args: service.saved.append(args))
@@ -75,6 +76,117 @@ def scheduler(monkeypatch):
     monkeypatch.setattr(module.store, "deliver_completion_events", AsyncMock())
     yield service
     benchmark_reservations.release(-31)
+
+
+def adoption():
+    return {"benchmark_id": 2, "baseline_id": 1, "parameters": {"max_num_seqs": 20, "max_num_batched_tokens": 5120}}
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_improvement_is_journaled_and_confirmed_before_production_is_released(scheduler, monkeypatch, fails):
+    target, snapshot, lane = scheduler.target_lane(31)
+    target["model_id"] = 1
+    scheduler.target_lane = lambda pair: (target, snapshot, lane)
+    monkeypatch.setattr(module.store, "status", lambda _: {"enabled": True, "workload_id": "a" * 64})
+    monkeypatch.setattr(
+        module.workloads,
+        "load",
+        lambda *args: {
+            "id": "a" * 64,
+            "name": "Saved requests",
+            "request_count": 10,
+            "provenance": "synthetic",
+        },
+    )
+    module.store.adoption_candidate.return_value = adoption()
+
+    async def submit(*args):
+        return 1, asyncio.create_task(asyncio.sleep(0, result=1))
+
+    scheduler.submit = submit
+    calls = []
+
+    async def restore(pair, journal):
+        assert not benchmark_reservations.allows(20, "model", "production")
+        calls.append(dict(journal))
+        if fails and journal.get("adoption"):
+            raise RuntimeError("New configuration could not start")
+
+    scheduler.restore.side_effect = restore
+    finish = module.store.finish
+
+    def commit(*args):
+        assert not benchmark_reservations.allows(20, "model", "production")
+        finish(*args)
+
+    monkeypatch.setattr(module.store, "finish", commit)
+    assert await scheduler.run_schedule(31, MagicMock())
+    assert calls[0]["adoption"]["benchmark_id"] == 2
+    report = scheduler.saved[-1][2]
+    if fails:
+        assert "adoption" not in calls[1]
+        assert any(row["status"] == "adoption_failed" for row in report)
+        assert not any(row["status"] == "adopted" for row in report)
+    else:
+        assert any(row["status"] == "adopted" for row in report)
+    assert benchmark_reservations.allows(20, "model", "production")
+
+
+async def test_adopted_parameters_keep_unrelated_lane_settings_and_use_worker_flags(scheduler):
+    scheduler.restore = module.NightlyScheduler.restore.__get__(scheduler)
+    original = {
+        "max_num_seqs": 16,
+        "extra_args": ["--max-num-batched-tokens=4096", "--trust-remote-code"],
+        "dtype": "auto",
+    }
+    expected = {
+        "max_num_seqs": 20,
+        "extra_args": ["--trust-remote-code", "--max-num-batched-tokens", "5120"],
+        "dtype": "auto",
+    }
+    journal = {
+        "provider_id": 20,
+        "model": "model",
+        "lane_id": "lane",
+        "vllm_config": original,
+        "lane_config": {"vllm_config": original},
+        "adoption": adoption(),
+    }
+    scheduler.registry.send_command.side_effect = [
+        {"lanes": [{"lane_id": "lane"}]},
+        {"restarted": True, "lane_config": {"vllm_config": expected}},
+    ]
+    scheduler.planner.prepare_benchmark_lane = AsyncMock(return_value=True)
+    await scheduler.restore(31, journal)
+    assert scheduler.registry.send_command.await_args_list[1].args[2]["updates"]["vllm_config"] == expected
+    assert journal["vllm_config"] == original
+
+
+async def test_disabled_schedule_discards_pending_adoption_during_recovery(scheduler, monkeypatch):
+    monkeypatch.setattr(module.store, "status", lambda _: {"enabled": False})
+    journal = {"provider_id": 20, "adoption": adoption()}
+    report = [{"status": "adopted", **adoption()}]
+    await scheduler.settle(31, journal, report)
+    assert "adoption" not in journal
+    assert not report
+    scheduler.restore.assert_awaited_once_with(31, journal)
+
+
+async def test_confirmation_failure_keeps_worker_reserved_until_original_settings_return(scheduler):
+    scheduler.restore.side_effect = [RuntimeError("Adoption failed"), RuntimeError("Rollback failed")]
+    journal = {"provider_id": 20, "adoption": adoption()}
+    report = []
+    with pytest.raises(RuntimeError, match="Rollback failed"):
+        await scheduler.settle(31, journal, report)
+    assert "adoption" not in journal
+    assert report[0]["status"] == "adoption_failed"
+
+
+async def test_pending_adoption_is_completed_after_restart(scheduler):
+    journal = {"provider_id": 20, "adoption": adoption()}
+    report = []
+    await scheduler.settle(31, journal, report)
+    assert report == [{"status": "adopted", **adoption()}]
 
 
 async def test_stall_retries_same_configuration_once_then_moves_on(scheduler):

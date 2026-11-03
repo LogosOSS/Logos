@@ -2,6 +2,8 @@ import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import {
   benchmarkConfigurationItems,
   benchmarkConfigurationRows,
+  benchmarkDatasetLabel,
+  requestDatasetLabel,
   servingCommand,
   servingConfigurationItems,
 } from './benchmark-configuration';
@@ -22,6 +24,24 @@ const makeBenchmark = (
     request_totals: { successful: 5, incomplete: 0, errored: 0, total: 5 },
   },
   recorded_at: '2026-08-27T10:56:13Z',
+});
+
+describe('Frozen dataset labels', () => {
+  it('keeps the original dataset date across later benchmark runs and reference changes', () => {
+    const workload = { id: 'a'.repeat(64), name: 'Coding pilot v2', created_at: '2026-10-29T23:30:00Z' };
+    const first = makeBenchmark({ workload, nightly: { reference_id: 113 } });
+    const later = { ...first, id: 124, recorded_at: '2026-11-02T05:00:00Z',
+      configuration: { workload, nightly: { reference_id: 124 } } };
+    expect(benchmarkDatasetLabel(first)).toBe('Coding pilot v2 · frozen 2026-10-30');
+    expect(benchmarkDatasetLabel(later)).toBe(benchmarkDatasetLabel(first));
+  });
+
+  it('preserves historical names without inventing a date or exposing the hash as a name', () => {
+    const historic = makeBenchmark({ workload: { id: 'a'.repeat(64), name: 'Pilot · 2026-10-29' } });
+    expect(benchmarkDatasetLabel(historic)).toBe('Pilot · 2026-10-29');
+    expect(benchmarkDatasetLabel(makeBenchmark({ workload: { id: 'a'.repeat(64) } }))).toBe('Saved requests');
+    expect(requestDatasetLabel({ name: 'Pilot', created_at: 'unknown' })).toBe('Pilot');
+  });
 });
 
 describe('benchmarkConfigurationItems', () => {

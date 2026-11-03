@@ -3,6 +3,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 
 import { AppNotification, NotificationService } from '../../../core/services/notification.service';
 import { NotificationBell } from './notification-bell';
+import { provideRouter, Router } from '@angular/router';
 
 /**
  * The popover's behaviour against a fake service: opening loads the first
@@ -45,7 +46,7 @@ describe('NotificationBell', () => {
     service.list.mockResolvedValue({ content: [item(2), item(1, true)], total_elements: 2, total_pages: 1, number: 0, last: true });
     await TestBed.configureTestingModule({
       imports: [NotificationBell],
-      providers: [{ provide: NotificationService, useValue: service }],
+      providers: [provideRouter([]), { provide: NotificationService, useValue: service }],
     }).compileComponents();
     fixture = TestBed.createComponent(NotificationBell);
     bell = fixture.componentInstance;
@@ -84,6 +85,28 @@ describe('NotificationBell', () => {
     await bell.markRead(bell.items()[0]);
     expect(service.markRead).toHaveBeenCalled();
     expect(bell.items()[0].read).toBe(true);
+  });
+
+  for (const read of [false, true]) {
+    it(`opens the exact benchmark and closes the panel for a ${read ? 'read' : 'new'} notification`, async () => {
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+      const notification = { ...item(9, read), type: 'benchmark_result_ready',
+        payload: { model_id: 1, benchmark_id: 115, best_benchmark_id: 99 } };
+      service.list.mockResolvedValue({ content: [notification], last: true });
+      await bell.toggle();
+      await bell.openNotification(notification);
+      expect(navigate).toHaveBeenCalledWith(['/models', 1, 'details'], {
+        queryParams: { tab: 'performance', benchmark: 115 },
+      });
+      expect(bell.open()).toBe(false);
+    });
+  }
+
+  it('keeps benchmark navigation available when marking it read fails', async () => {
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    service.markRead.mockRejectedValue(new Error('offline'));
+    await bell.openNotification({ ...item(9), type: 'benchmark_result_ready', payload: { model_id: 1, benchmark_id: 115 } });
+    expect(navigate).toHaveBeenCalled();
   });
 
   it('fetches the next page when scrolled to the end, and only then', async () => {

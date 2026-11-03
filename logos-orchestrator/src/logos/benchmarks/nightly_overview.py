@@ -37,7 +37,7 @@ def overview(schedules, scheduler, now, *, recovery_pending=False, claimed_count
                 state, reason = "blocked", "Nightly rotation waits for the reserved worker"
             elif row["last_run_date"] == next_day:
                 state, reason = (
-                    ("next", "Another optimization round in this window; production settings restored between rounds")
+                    ("next", "Another optimization round in this window; production configuration confirmed")
                     if row.get("status") == "continuing"
                     else (
                         ("recent", "Already tested in this window")
