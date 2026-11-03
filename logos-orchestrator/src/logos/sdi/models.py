@@ -6,7 +6,7 @@ to raw dictionaries with better IDE support and type checking.
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -490,39 +490,7 @@ class ModelProfile:
         return _base_residency_from_bytes(disk_size_bytes)
 
     def to_dict(self) -> dict:
-        return {
-            "model_name": self.model_name,
-            "loaded_vram_mb": self.loaded_vram_mb,
-            "sleeping_residual_mb": self.sleeping_residual_mb,
-            "disk_size_bytes": self.disk_size_bytes,
-            "base_residency_mb": self.base_residency_mb,
-            "kv_budget_mb": self.kv_budget_mb,
-            "min_kv_cache_mb": self.min_kv_cache_mb,
-            "max_kv_cache_mb": self.max_kv_cache_mb,
-            "kv_cache_to_max_model_len_pairs": self.kv_cache_to_max_model_len_pairs,
-            "engine": self.engine,
-            "observed_gpu_memory_utilization": self.observed_gpu_memory_utilization,
-            "min_gpu_memory_utilization_to_load": self.min_gpu_memory_utilization_to_load,
-            "tensor_parallel_size": self.tensor_parallel_size,
-            "enforce_eager_at_calibration": self.enforce_eager_at_calibration,
-            "kv_per_token_bytes": self.kv_per_token_bytes,
-            "num_key_value_heads": self.num_key_value_heads,
-            "max_context_length": self.max_context_length,
-            "min_context_fraction": self.min_context_fraction,
-            "measurement_count": self.measurement_count,
-            "last_measured_epoch": self.last_measured_epoch,
-            "residency_source": self.residency_source,
-            "sleep_l1_transient_host_ram_mb": self.sleep_l1_transient_host_ram_mb,
-            "sleep_l2_transient_host_ram_mb": self.sleep_l2_transient_host_ram_mb,
-            "cold_load_time_s": self.cold_load_time_s,
-            "wake_from_sleep_time_s": self.wake_from_sleep_time_s,
-            "host_ram_mb": self.host_ram_mb,
-            "host_ram_residual_mb": self.host_ram_residual_mb,
-            "sleep_mode_disabled": self.sleep_mode_disabled,
-            "calibration_unsupported": self.calibration_unsupported,
-            "calibration_unsupported_reason": self.calibration_unsupported_reason,
-            "calibration_stale": self.calibration_stale,
-        }
+        return {item.name: getattr(self, item.name) for item in fields(self)}
 
 
 @dataclass

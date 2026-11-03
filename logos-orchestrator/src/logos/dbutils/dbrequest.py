@@ -119,18 +119,12 @@ class LogosNodeStatusRequest(LogosKeyModel):
 _MAX_PROFILE_MODELS = 1000
 
 
-class LogosNodeLegacyProfileImport(BaseModel):
-    model_profiles: dict[str, dict[str, Any]] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
-    unsupported_models: dict[str, str] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
-
-
 class LogosNodeModelProfilesRequest(BaseModel):
     shared_key: str
     # model name -> calibration key hash the worker computes for it right now
     calibration_key_hashes: dict[str, str] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
     # model name -> GPUs the node can calibrate and serve the model on
     slice_gpu_counts: dict[str, int] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
-    legacy_import: LogosNodeLegacyProfileImport | None = None
 
 
 class LogosNodeCalibrationReservationRequest(BaseModel):

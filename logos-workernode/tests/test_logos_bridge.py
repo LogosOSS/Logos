@@ -1121,13 +1121,13 @@ def _make_app_for_calibration(tmp_path, *, vllm_disable_sleep=False, per_model_o
     app.state.config = cfg
     app.state.model_profiles = ModelProfileRegistry()
     app.state.model_cache = None
-    # Minimal lane_manager stub: event_log + destroy_all + _mark_status_dirty.
+    # Minimal lane_manager stub: event_log + destroy_all + mark_status_dirty.
     # The session driver records calibration_* events onto event_log directly
     # and marks status dirty after each model completes.
     lane_manager = type("LaneMgr", (), {})()
     lane_manager._event_log = []
     lane_manager._MAX_EVENT_LOG = 500
-    lane_manager._mark_status_dirty = lambda: None
+    lane_manager.mark_status_dirty = lambda: None
     lane_manager.destroy_all = AsyncMock(return_value=None)
     # Calibration-session GPU-slice guard: the session holds a
     # power-of-two slice and frees only the lanes on it, keeping leftover lanes.
@@ -3945,7 +3945,7 @@ def _central_client(tmp_path) -> LogosBridgeClient:
     def _mark_dirty():
         app.state.lane_manager._status_dirty_marks += 1
 
-    app.state.lane_manager._mark_status_dirty = _mark_dirty
+    app.state.lane_manager.mark_status_dirty = _mark_dirty
     cfg = LogosConfig(
         enabled=True,
         logos_url="https://logos.example",
@@ -4125,9 +4125,8 @@ async def test_startup_fetch_posts_keys_and_legacy_files(tmp_path, monkeypatch):
             return _Resp()
 
     monkeypatch.setattr("logos_worker_node.logos_bridge.httpx.AsyncClient", lambda timeout=15.0: _Http())
-    legacy = {"model_profiles": {}, "unsupported_models": {"org/bad": "invalid-repo-id"}}
 
-    profiles = await client.fetch_model_profiles({"org/ready": "h"}, {"org/ready": 2}, legacy)
+    profiles = await client.fetch_model_profiles({"org/ready": "h"}, {"org/ready": 2})
 
     assert profiles == {"org/ready": {"base_residency_mb": 5.0, "sync_revision": 1}}
     url, body = posted[0]
@@ -4136,7 +4135,6 @@ async def test_startup_fetch_posts_keys_and_legacy_files(tmp_path, monkeypatch):
         "shared_key": "secret",
         "calibration_key_hashes": {"org/ready": "h"},
         "slice_gpu_counts": {"org/ready": 2},
-        "legacy_import": legacy,
     }
 
 
@@ -4161,7 +4159,7 @@ async def test_startup_fetch_rejects_an_orchestrator_without_central_profiles(tm
 
     monkeypatch.setattr("logos_worker_node.logos_bridge.httpx.AsyncClient", lambda timeout=15.0: _Http())
     with pytest.raises(RuntimeError, match="HTTP 404"):
-        await client.fetch_model_profiles({}, {}, None)
+        await client.fetch_model_profiles({}, {})
 
 
 @pytest.mark.asyncio

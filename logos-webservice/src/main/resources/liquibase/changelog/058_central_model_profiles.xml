@@ -70,9 +70,11 @@
         </rollback>
     </changeSet>
 
-    <!-- model_profiles is written on every worker status. Every query keys
+    <!-- model_profiles is written on every worker status. The hot queries key
          on provider_id, which the (provider_id, model_name) unique index
-         already serves; these three indexes are never read. -->
+         already serves; the model-wide reads (historic maximum, shared
+         calibrations) are rare and scan the table; these three indexes are
+         never read. -->
     <changeSet id="057-model-profiles-drop-unused-indexes" author="logos">
         <sql><![CDATA[
             DROP INDEX IF EXISTS idx_model_profiles_provider;
