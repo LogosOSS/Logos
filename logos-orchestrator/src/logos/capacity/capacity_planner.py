@@ -4002,7 +4002,7 @@ class CapacityPlanner:
 
         Tries every combination of `tp` GPUs. For each combination, computes
         the per-GPU deficit using the cold-start free check (resident footprint
-        plus ``PER_GPU_COLD_START_MB``, raised to the startup GMU reservation)
+        or startup GMU reservation, plus ``PER_GPU_COLD_START_MB``)
         and calls ``_find_eviction_set``. Returns the placement whose eviction
         set has the lowest maximum effective-demand score (sacrifice
         least-valued models first).
@@ -10182,8 +10182,9 @@ class CapacityPlanner:
     ) -> float:
         """Per-GPU free VRAM a cold vLLM start must see before spawn.
 
-        Takes the max of the resident footprint (weights + explicit KV, plus
-        cold-start headroom) and the startup GMU reservation. Wake paths must
+        Takes the max of the resident footprint (weights + explicit KV) and
+        the startup GMU reservation, then adds cold-start headroom. The new
+        CUDA context consumes memory before the engine checks its reservation. Wake paths must
         not call this — sleeping weights already hold the allocator pool and
         re-applying the GMU gate over-restricts wakes.
         """
@@ -10194,7 +10195,7 @@ class CapacityPlanner:
             gmu = self._startup_gmu_for_model(provider_id, model_name, profile)
         if gmu is None or gmu <= 0:
             return footprint_need
-        return max(footprint_need, float(gmu) * float(gpu_total_mb))
+        return max(float(footprint_per_gpu_mb), float(gmu) * float(gpu_total_mb)) + self.PER_GPU_COLD_START_MB
 
     def _select_cold_load_gpus(
         self,
