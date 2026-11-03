@@ -56,6 +56,7 @@ public class InferenceGatewayController {
     private final GatewayCloudForwarder cloudForwarder;
     private final GatewayCloudRateLimiter cloudRateLimiter;
     private final GatewayOrchestratorProxy orchestratorProxy;
+    private final GatewayWorkflowAttributionResolver workflowAttributionResolver;
     private final ObjectMapper objectMapper;
 
     public InferenceGatewayController(
@@ -65,6 +66,7 @@ public class InferenceGatewayController {
             GatewayCloudForwarder cloudForwarder,
             GatewayCloudRateLimiter cloudRateLimiter,
             GatewayOrchestratorProxy orchestratorProxy,
+            GatewayWorkflowAttributionResolver workflowAttributionResolver,
             ObjectMapper objectMapper) {
         this.enabled = enabled;
         this.authService = authService;
@@ -72,6 +74,7 @@ public class InferenceGatewayController {
         this.cloudForwarder = cloudForwarder;
         this.cloudRateLimiter = cloudRateLimiter;
         this.orchestratorProxy = orchestratorProxy;
+        this.workflowAttributionResolver = workflowAttributionResolver;
         this.objectMapper = objectMapper;
     }
 
@@ -135,9 +138,11 @@ public class InferenceGatewayController {
                 final Integer logId;
                 try {
                     cloudRateLimiter.enforce(ctx.key(), body);
+                    GatewayRequestAttribution attribution =
+                        workflowAttributionResolver.resolve(request, ctx.key().teamId());
                     logId = cloudAccounting.admitAndReserve(
                         ctx.key(), decision.deployment(), body, logLevel, arrivedAt,
-                        GatewayReasoningEffort.from(root));
+                        GatewayReasoningEffort.from(root), attribution);
                 } catch (ResponseStatusException e) {
                     cloudAccounting.recordRejected(ctx.key(), decision.deployment(), logLevel,
                         "HTTP " + e.getStatusCode().value() + ": " + e.getReason(),

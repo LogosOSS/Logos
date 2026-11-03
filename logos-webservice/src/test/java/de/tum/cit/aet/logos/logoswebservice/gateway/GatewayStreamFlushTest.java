@@ -70,6 +70,8 @@ class GatewayStreamFlushTest {
     private final AtomicBoolean upstreamSawClientReadSecondEvent = new AtomicBoolean();
 
     private final GatewayAuthService authService = mock(GatewayAuthService.class);
+    private final GatewayWorkflowAttributionResolver workflowAttributionResolver =
+        mock(GatewayWorkflowAttributionResolver.class);
     private final GatewayCloudAccounting cloudAccounting = mock(GatewayCloudAccounting.class);
     private final GatewayCloudRateLimiter cloudRateLimiter = mock(GatewayCloudRateLimiter.class);
 
@@ -91,10 +93,11 @@ class GatewayStreamFlushTest {
         GatewayKey key = new GatewayKey(1, "lg-test", "k", ApiKeyType.developer, 1, null, "test",
             false, null, 0, "BILLING");
         when(authService.requireActiveKey(any())).thenReturn(key);
-        when(cloudAccounting.admitAndReserve(any(), any(), any(), any(), any(), any())).thenReturn(1);
+        when(cloudAccounting.admitAndReserve(any(), any(), any(), any(), any(), any(), any())).thenReturn(1);
+        when(workflowAttributionResolver.resolve(any(), any())).thenReturn(GatewayRequestAttribution.EMPTY);
         controller = new InferenceGatewayController(true, authService, cloudAccounting,
             new GatewayCloudForwarder(new ObjectMapper()), cloudRateLimiter,
-            new GatewayOrchestratorProxy(upstreamBaseUrl()), new ObjectMapper());
+            new GatewayOrchestratorProxy(upstreamBaseUrl()), workflowAttributionResolver, new ObjectMapper());
 
         mvc = new AnnotationConfigWebApplicationContext();
         mvc.register(GatewayMvc.class);
