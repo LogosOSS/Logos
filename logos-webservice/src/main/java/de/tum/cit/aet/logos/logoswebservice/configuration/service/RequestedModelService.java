@@ -23,7 +23,11 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ModelAliasR
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ModelRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.RequestedModelRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.RequestedModelVoteRepository;
+import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.TeamMemberRepository;
+import de.tum.cit.aet.logos.logoswebservice.notifications.dto.NotificationTargetDTO;
+import de.tum.cit.aet.logos.logoswebservice.notifications.entity.NotificationType;
+import de.tum.cit.aet.logos.logoswebservice.notifications.service.NotificationService;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabilityClient;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabilityClient.HfReachabilityResult;
 
@@ -51,6 +55,10 @@ import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabil
  * when it is reachable); a repository the Hub does not know at all is
  * refused. Rows that predate the precheck are backfilled by
  * {@link RequestedModelHfStatusSweeper} at application start.
+ *
+ * The first time a row gets the gating verdict, a Logos admin notification
+ * ({@code gated_model_requested}) goes out with the vote — that is the
+ * admins' cue that a license acceptance is pending.
  *
  * Every vote names the team the model is wanted for; the first team to ask is
  * recorded on the row ({@code first_requesting_team}) and never overwritten —
@@ -97,6 +105,7 @@ public class RequestedModelService {
     private final ModelAliasRepository modelAliasRepository;
     private final TeamMemberRepository teamMemberRepository;
     private final OrchestratorHfReachabilityClient hfReachabilityClient;
+    private final NotificationService notificationService;
     private final TransactionTemplate transactionTemplate;
 
     public RequestedModelService(RequestedModelRepository requestedModelRepository,
@@ -105,6 +114,7 @@ public class RequestedModelService {
                                  ModelAliasRepository modelAliasRepository,
                                  TeamMemberRepository teamMemberRepository,
                                  OrchestratorHfReachabilityClient hfReachabilityClient,
+                                 NotificationService notificationService,
                                  TransactionTemplate transactionTemplate) {
         this.requestedModelRepository = requestedModelRepository;
         this.voteRepository = voteRepository;
@@ -112,6 +122,7 @@ public class RequestedModelService {
         this.modelAliasRepository = modelAliasRepository;
         this.teamMemberRepository = teamMemberRepository;
         this.hfReachabilityClient = hfReachabilityClient;
+        this.notificationService = notificationService;
         this.transactionTemplate = transactionTemplate;
     }
 
@@ -179,6 +190,11 @@ public class RequestedModelService {
      * member of it, and the first team to ask is recorded on the row (a row
      * that already carries one keeps it, so later teams only add votes).
      *
+     * When this vote is the one that first flags the row gated, a Logos
+     * admin notification ({@code gated_model_requested}) is published in the
+     * same transaction: a rolled-back vote notifies no one, and later votes
+     * for an already flagged model stay silent.
+     *
      * @throws IllegalArgumentException when no name is given, the name is not
      *     in {@code provider/model} form, it exceeds the maximum length, no
      *     team is given, or the caller is not a member of the given team
@@ -234,6 +250,7 @@ public class RequestedModelService {
             });
             // The precheck just answered: record its gating verdict with the
             // row.
+            Boolean previousGated = model.getIsGated();
             model.setIsGated(gated);
             // The first team to request the model is recorded with the row —
             // also filling in rows that predate the column. A row that
@@ -243,6 +260,19 @@ public class RequestedModelService {
                 model.setFirstRequestingTeam(teamId);
             }
             model = requestedModelRepository.save(model);
+
+            if (gated && !Boolean.TRUE.equals(previousGated)) {
+                // This vote is the one that flags the row gated: the Logos
+                // admins accept the license, so they are the ones who need to
+                // know. Published in this transaction, so a rolled-back vote
+                // notifies no one; a row that was already flagged stays quiet.
+                notificationService.publish(
+                    NotificationType.gated_model_requested,
+                    "Gated model requested",
+                    "Gated model " + normalized + " has been requested.",
+                    Map.of("model", normalized),
+                    List.of(NotificationTargetDTO.role(Role.LOGOS_ADMIN)));
+            }
 
             if (!voteRepository.existsByRequestedModelIdAndUserId(model.getId(), userId)) {
                 RequestedModelVote vote = new RequestedModelVote();

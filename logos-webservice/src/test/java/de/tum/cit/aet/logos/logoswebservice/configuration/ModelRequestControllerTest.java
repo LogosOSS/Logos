@@ -1,5 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.configuration;
 
+import java.util.Map;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
@@ -108,6 +110,82 @@ class ModelRequestControllerTest {
         assertThat(jdbc.queryForObject(
             "SELECT is_gated FROM requested_models WHERE name = 'meta-llama/llama-3.1-8b-instruct'",
             Boolean.class)).isTrue();
+    }
+
+    @Test
+    void vote_notifiesLogosAdminsWhenAGatedModelIsFirstRequested() throws Exception {
+        // A gated repository needs a license acceptance by a Logos admin, so
+        // the vote that first flags the row notifies that role.
+        Mockito.when(hfReachabilityClient.check("meta-llama/llama-3.1-8b-instruct"))
+            .thenReturn(new HfReachabilityResult(
+                HfReachabilityResult.STATUS_REJECTED, HfReachabilityResult.REASON_MODEL_GATED,
+                "Repository access requires an authorized HF_TOKEN."));
+
+        mvc.perform(post("/logosdb/add_model_request")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"name\": \"meta-llama/llama-3.1-8b-instruct\", \"team_id\": 2001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.is_gated").value(true));
+
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM notifications WHERE type = 'gated_model_requested'",
+            Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForList(
+            "SELECT title, body, source FROM notifications WHERE type = 'gated_model_requested'"))
+           .containsExactly(Map.of(
+               "title", "Gated model requested",
+               "body", "Gated model meta-llama/llama-3.1-8b-instruct has been requested.",
+               "source", "webservice"));
+        // The fan-out targets the Logos admin role, not any individual user.
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM notification_recipients r "
+                + "JOIN notifications n ON n.id = r.notification_id "
+                + "WHERE n.type = 'gated_model_requested' "
+                + "AND r.recipient_kind = 'role' AND r.recipient_role = 'logos_admin'",
+            Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void vote_notifiesOnlyOnceForAGatedModel() throws Exception {
+        // The notification goes out with the vote that first flags the row;
+        // later votes for the same model must not notify again.
+        Mockito.when(hfReachabilityClient.check("meta-llama/llama-3.1-8b-instruct"))
+            .thenReturn(new HfReachabilityResult(
+                HfReachabilityResult.STATUS_REJECTED, HfReachabilityResult.REASON_MODEL_GATED,
+                "Repository access requires an authorized HF_TOKEN."));
+
+        mvc.perform(post("/logosdb/add_model_request")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"name\": \"meta-llama/llama-3.1-8b-instruct\", \"team_id\": 2001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.is_gated").value(true));
+
+        mvc.perform(post("/logosdb/add_model_request")
+                .with(TestJwt.adminUser())
+                .contentType("application/json")
+                .content("{\"name\": \"meta-llama/llama-3.1-8b-instruct\", \"team_id\": 2001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.request_count").value(2));
+
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM notifications WHERE type = 'gated_model_requested'",
+            Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void vote_notifiesNothingForANonGatedModel() throws Exception {
+        // A reachable repository needs no license acceptance, so there is
+        // nothing to notify the Logos admins about.
+        mvc.perform(post("/logosdb/add_model_request")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"name\": \"openai/gpt-5\", \"team_id\": 2001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.is_gated").value(false));
+
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notifications", Integer.class)).isZero();
     }
 
     @Test
