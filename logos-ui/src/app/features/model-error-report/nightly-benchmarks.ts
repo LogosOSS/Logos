@@ -3,11 +3,12 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
+import { requestDatasetLabel } from './benchmark-configuration';
 
 export interface NightlyStatus {
   workload_policy?: { kind: 'selected' | 'recent_user'; username?: string; request_count?: number; ready?: boolean; error?: string | null };
   workload_id?: string | null;
-  workloads?: { id: string; name: string; request_count: number; provenance: string }[];
+  workloads?: { id: string; name: string; request_count: number; provenance: string; created_at?: string }[];
   optimizer?: { reference_id?: number; best_benchmark_id?: number; iterations?: number; nightly_session?: { date: string; rounds: number; successful_configurations: number } };
   max_maintenance_nodes?: number;
   window?: { start: string; end: string; benchmark_start_cutoff: string; timezone: string };
@@ -27,6 +28,7 @@ export interface NightlyStatus {
   styleUrl: './nightly-benchmarks.scss',
 })
 export class NightlyBenchmarks implements OnChanges, OnDestroy {
+  readonly datasetLabel = requestDatasetLabel;
   @Input({ required: true }) pairId!: number;
   @Input({ required: true }) providerName!: string;
   @Input({ required: true }) modelName!: string;
@@ -159,7 +161,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
       continuing: 'Ready for another optimization round', completed: 'Finished — see results', disabled: 'Deactivated', success: 'Successful', failed: 'Failed',
       stalled: 'Stopped after five minutes without progress', preparation_timeout: 'Preparation timed out',
       window_closed: this.window ? `No new runs after ${this.window.benchmark_start_cutoff}` : 'Benchmark start window closed', window_closed_below_half: this.window ? `Stopped at ${this.window.end} below 50% complete` : 'Stopped below 50% at the maintenance cutoff',
-      calibration_pending: 'Waiting for calibration',
+      calibration_pending: 'Waiting for calibration', adopted: 'Applied to production', adoption_failed: 'Adoption failed; restoring original settings',
       recovery_required: 'Worker recovery required', interrupted_recovered: 'Interrupted; worker restored',
       interrupted: 'Interrupted', cancelled: 'Cancelled', lease_lost: 'Maintenance ownership lost',
     };
@@ -179,7 +181,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     const window = this.window;
     if (this.enabling && !window) return 'The maintenance window is unavailable. Refresh before enabling nightly runs.';
     return this.enabling
-      ? `Test ${this.modelName} on ${this.providerName} during ${window!.start}–${window!.end} ${window!.timezone}. The whole worker is reserved during testing and cannot serve production requests. Each round measures current settings, the saved candidate and batching variants. Model/worker pairs rotate through further rounds until the window ends. Original settings are restored after every round.`
+      ? `Test ${this.modelName} on ${this.providerName} during ${window!.start}–${window!.end} ${window!.timezone}. The whole worker is reserved during testing and cannot serve production requests. Each round measures current settings, the saved candidate and batching variants. Model/worker pairs rotate through further rounds until the window ends. For a saved request dataset, a faster configuration is applied automatically only after complete answers, comparable output lengths, bounded p95 latency and worker readiness are verified. Otherwise, original settings return.`
       : `Disable nightly benchmarks for this model on ${this.providerName}? Future runs will stop. An active nightly run will be cancelled and its original settings restored before the worker returns to production.`;
   }
 

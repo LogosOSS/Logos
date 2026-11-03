@@ -182,7 +182,7 @@ The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirma
 The **Results** tab starts with the nightly reference and observed improvement when comparable nightly runs exist.
 Without a nightly series, **Highest recorded throughput** shows the best result within each provider's latest captured workload.
 Older workloads are not ranked against it. Unknown controls do not establish a comparison.
-The application does not apply these parameters automatically.
+Manual benchmarks do not apply these parameters automatically. Nightly runs with saved request datasets can apply verified improvements.
 
 To benchmark saved requests manually, open **Run benchmark → Dataset and settings**.
 Select the saved dataset under **Input dataset**. Logos fixes the sample size to its request count.
@@ -271,8 +271,21 @@ Enter the request IDs, name and provenance. Select **Create dataset**, then **Ap
 The dataset keeps its inputs when source logs are deleted.
 The first successful run establishes a new reference for this dataset.
 Each night measures production settings and searches around the previous winner.
-Production settings return after each round. The pairs take turns through further rounds until the window ends.
-**Benchmark ready** appears once after the final restoration.
+Eligible improvements over the current baseline apply automatically after the worker confirms its configuration and model readiness.
+Otherwise, production settings return after each round. The pairs take turns until the window ends.
+The dataset keeps its original freeze date across runs. Its content hash remains in the configuration details.
+**Benchmark ready** appears once after the final production configuration is confirmed.
+Select **Benchmark ready** to open the exact measurement, its result and its changed parameters.
+The **Benchmark runs** table groups runs by dataset. Select a column heading to change the order.
+Each sortable column cycles through the initial order, ascending order and descending order.
+
+![Benchmark notification with a link to its captured measurement](../static/img/roles/logos-admin-benchmark-notification.png)
+
+The linked result stays selected when newer benchmark runs appear.
+If the measurement is deleted, then the page identifies the unavailable benchmark.
+
+![Selected benchmark with its result and changed parameters](../static/img/roles/logos-admin-benchmark-linked-result.png)
+
 
 ![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
 

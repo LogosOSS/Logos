@@ -39,7 +39,8 @@ describe('Nightly benchmark confirmation', () => {
 
   it('explains worker reservation and restoration', () => {
     expect(control.confirmationMessage).toContain('cannot serve production requests');
-    expect(control.confirmationMessage).toContain('Original settings are restored');
+    expect(control.confirmationMessage).toContain('a faster configuration is applied automatically');
+    expect(control.confirmationMessage).toContain('Otherwise, original settings return');
   });
 
   it('keeps dataset changes unavailable when the deployment freezes one user’s recent requests', async () => {

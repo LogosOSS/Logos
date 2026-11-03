@@ -16,7 +16,12 @@ import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from logos.dbutils.dbmanager import DBManager, _upsert_model_profile_sql, derived_reported_context_length
+from logos.dbutils.dbmanager import (
+    _PERSIST_CENTRAL_PROFILE_SQL,
+    DBManager,
+    _model_profile_column_params,
+    derived_reported_context_length,
+)
 
 
 def _db():
@@ -80,37 +85,25 @@ def test_garbage_values_are_ignored():
 
 
 # ---------------------------------------------------------------------------
-# upsert_model_profiles — high-water mark
+# central persistence — high-water mark
 # ---------------------------------------------------------------------------
 
 
-def test_upsert_derives_and_binds_the_reported_length():
-    db = _db()
-    db.upsert_model_profiles(
-        7,
-        {"gemma-12b": {"calibration_max_model_len": 24576, "residency_source": "calibrated"}},
-    )
-
-    assert db.session.execute.call_count == 1
-    _sql, params = db.session.execute.call_args[0]
+def test_the_column_params_derive_the_reported_length():
+    params = _model_profile_column_params({"calibration_max_model_len": 24576, "residency_source": "calibrated"})
     assert params["max_reported_context_length"] == 24576
-    # The conflict clause keeps the larger of stored and freshly derived, so a
-    # later, narrower calibration cannot shrink the mark. The COALESCE is
+
+
+def test_the_conflict_clause_keeps_the_larger_length():
+    # A later, narrower calibration cannot shrink the mark. The COALESCE is
     # required: rows written before the column existed hold NULL, and
-    # GREATEST with a NULL argument returns NULL in Postgres. (Checked against
-    # the source rather than the sqlalchemy object: the unit-test conftest
-    # stubs sqlalchemy, so text() calls come back as None here.)
-    sql = _upsert_model_profile_sql()
-    assert "GREATEST(" in sql
-    assert "COALESCE(model_profiles.max_reported_context_length, 0)" in sql
+    # GREATEST with a NULL argument returns NULL in Postgres.
+    assert "GREATEST(" in _PERSIST_CENTRAL_PROFILE_SQL
+    assert "COALESCE(model_profiles.max_reported_context_length, 0)" in _PERSIST_CENTRAL_PROFILE_SQL
 
 
-def test_upsert_of_a_context_unknown_profile_binds_zero():
-    db = _db()
-    db.upsert_model_profiles(7, {"cloud-like": {"engine": "vllm"}})
-
-    _, params = db.session.execute.call_args[0]
-    assert params["max_reported_context_length"] == 0
+def test_a_context_unknown_profile_binds_zero():
+    assert _model_profile_column_params({"engine": "vllm"})["max_reported_context_length"] == 0
 
 
 # ---------------------------------------------------------------------------

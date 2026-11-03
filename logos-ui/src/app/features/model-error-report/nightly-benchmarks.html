@@ -14,14 +14,14 @@
   </div>
   <div class="nightly__preview">
     <strong>Adaptive testing until {{ window?.end ?? 'the window ends' }}</strong>
-    <p class="nightly__round-note">Baseline → batching variants → update candidate → next round. Initial values are shown below.</p>
+    <p class="nightly__round-note">Baseline → batching variants → apply verified improvement → next round. Initial values are shown below.</p>
     @if (automaticSource) {
       <p>Latest 50 successful FULL requests · {{ state()?.workload_policy?.username }} · 4 concurrent · source output limits</p>
       <p>Freeze once at {{ window?.start }} {{ window?.timezone }}, before calibration. Baseline and every variant use those same 50 inputs.</p>
       <p>New inputs start a separate measurement reference.</p>
       @if (state()?.workload_policy?.error; as failure) { <p role="alert">Dataset unavailable: {{ failure }}</p> }
     } @else if (workload; as source) {
-      <p>{{ source.name }} · {{ source.provenance }} · {{ source.request_count }} requests · 4 concurrent · source output limits</p>
+      <p>{{ datasetLabel(source) }} · {{ source.provenance }} · {{ source.request_count }} requests · 4 concurrent · source output limits</p>
       <p>The first successful production run fixes the reference. Every round uses this same saved workload.</p>
       @if (state()?.optimizer?.reference_id; as reference) {
         <p>Fixed reference #{{ reference }} · winner #{{ state()?.optimizer?.best_benchmark_id }} · {{ state()?.optimizer?.iterations }} completed iterations</p>
@@ -41,7 +41,7 @@
     <select id="nightly-workload-{{ pairId }}" [(ngModel)]="selectedWorkload" (ngModelChange)="sourceEdited = true" [disabled]="!state() || sourceLocked">
       <option [ngValue]="null">Hugging Face · GSM8K</option>
       @for (source of state()?.workloads ?? []; track source.id) {
-        <option [value]="source.id">{{ source.name }} · {{ source.request_count }} requests · {{ source.provenance }}</option>
+        <option [value]="source.id">{{ datasetLabel(source) }} · {{ source.request_count }} requests · {{ source.provenance }}</option>
       }
     </select>
     <button type="button" (click)="saveSource()" [disabled]="!sourceEdited || sourceLocked">Apply dataset</button>
@@ -68,7 +68,7 @@
     <ol class="nightly__steps">
       <li><strong>Prepare and measure the baseline</strong><p>Freeze the night's inputs, complete calibration, then test the production settings.</p></li>
       <li><strong>Test and refine</strong><p>Retest the saved candidate and vary the sequence and batch token limits. Only complete, comparable runs can update the candidate.</p></li>
-      <li><strong>Rotate and repeat</strong><p>Restore production settings, give the next model its turn, then start another round until the window ends.</p></li>
+      <li><strong>Rotate and repeat</strong><p>For saved request datasets, apply the fastest eligible improvement after worker confirmation. Otherwise, restore production settings. Give the next model its turn.</p></li>
     </ol>
     <details class="nightly__initial"><summary>Initial parameter values · {{ (state()?.plan?.length ?? 1) - 1 }} variants</summary>
       <div class="nightly__table-scroll"><table>
@@ -79,7 +79,7 @@
       </table></div>
       <p>This is the next round, not a limit on the total tests for the night.</p>
     </details>
-    <p>The whole worker is reserved during each round. Five minutes without progress stops a run. Completion is reported after the night's final restoration.</p>
+    <p>The whole worker is reserved during each round. Five minutes without progress stops a run. Completion is reported after the worker confirms its final production configuration.</p>
   </details>
   @if (state(); as status) {
     <small>Latest state: {{ statusLabel(status.status) }} @if (status.last_run_date) { · {{ status.last_run_date }} }</small>
@@ -93,7 +93,7 @@
             @if (result.reason) { — {{ result.reason }} }
           </li>
         }</ul>
-        <p>Successful measurements appear in the performance comparison below. Production settings are restored after every round.</p>
+        <p>Successful measurements appear in the performance comparison below. Saved request datasets can automatically improve production settings. Without an eligible improvement, the original settings return.</p>
       </details>
     }
   }

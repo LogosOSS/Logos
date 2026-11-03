@@ -243,7 +243,7 @@ describe('Benchmark comparison', () => {
 
   it('sorts the table newest first independently of chart grouping', () => {
     expect(fixture.componentInstance.sortedRuns().map(run => run.id)).toEqual([2, 1]);
-    expect(fixture.nativeElement.querySelector('th[aria-sort="descending"]').textContent).toContain('Date');
+    expect(fixture.nativeElement.querySelector('th[aria-sort="descending"]')).toBeNull();
   });
 
   it('toggles numeric metric sorting and keeps missing measurements last in both directions', async () => {
@@ -278,6 +278,16 @@ describe('Benchmark comparison', () => {
     expect(component.sortedRuns().map(run => run.id)).toEqual([3, 1, 5]);
     component.sortBy('id');
     expect(component.sortedRuns().map(run => run.id)).toEqual([1, 3, 5]);
+  });
+
+  it('restores the original comparison order after the third click', () => {
+    const component = fixture.componentInstance;
+    const initial = component.sortedRuns().map(run => run.id);
+    component.sortBy('id');
+    component.sortBy('id');
+    component.sortBy('id');
+    expect(component.sort()).toBeNull();
+    expect(component.sortedRuns().map(run => run.id)).toEqual(initial);
   });
 
   it('keeps explanations collapsed and gives each table column a sorting button', () => {

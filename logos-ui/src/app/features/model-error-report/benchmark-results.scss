@@ -1,3 +1,4 @@
+@use './performance-disclosure' as disclosure;
 :host { display: block; margin-bottom: 1.5rem; }
 .results-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 h3 { font-size: var(--model-detail-heading-size, 1rem); margin: 0; color: rgb(var(--color-typography-0)); }
@@ -74,9 +75,21 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
   .results-summary dd { margin: 0; font-size: 1rem; }
 }
 
-.progress-summary { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: .5rem 1rem; min-height: 44px; margin-bottom: .5rem; cursor: pointer; color: rgb(var(--color-typography-100)); }
+.progress-summary { display: flex; align-items: baseline; justify-content: flex-start; flex-wrap: wrap; gap: .5rem 1rem; min-height: 44px; margin-bottom: .5rem; cursor: pointer; color: rgb(var(--color-typography-100)); }
+.progress-summary > .disclosure-meta { margin-left: auto; }
 .progress-summary h3 { display: inline; }
-.progress-summary h3::before { content: '▸'; display: inline-block; margin-right: .4rem; font-size: .8125rem; }
-[open] > .progress-summary h3::before { content: '▾'; }
 .progress-summary span { color: rgb(var(--color-typography-500)); font-size: var(--model-detail-font-size, .875rem); font-variant-numeric: tabular-nums; }
 .progress-summary:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }
+
+.benchmark-progress, .run-history { @include disclosure.section; border-top: 1px solid rgb(var(--color-outline-200)); }
+.selected-result { margin: 1rem 0 1.5rem; padding: 1rem; border: 2px solid rgb(var(--color-primary-500)); border-radius: .5rem; color: rgb(var(--color-typography-100)); overflow-wrap: anywhere; }
+.selected-result h4 { margin: .75rem 0 .25rem; font: inherit; font-weight: 600; }
+.selected-result p { margin: .4rem 0; }
+.selected-run { background: rgb(var(--color-primary-500) / .08); }
+.dataset-heading th { padding: 1rem .75rem .5rem; color: rgb(var(--color-typography-100)); font-weight: 600; background: rgb(var(--color-surface-100)); overflow-wrap: anywhere; }
+.dataset-heading small { margin-left: .75rem; font-weight: 400; }
+@media (max-width: 767px) {
+  thead tr { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dataset-heading { display: block; border: 0; padding-bottom: 0; }
+  .dataset-heading th { display: block; }
+}

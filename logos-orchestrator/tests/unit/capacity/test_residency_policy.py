@@ -144,7 +144,7 @@ class TestLruRatioBypass:
                 VICTIM_B: _fairness_profile(40_000.0),
             },
             capabilities=[COLD, VICTIM_A, VICTIM_B],
-            available_vram_mb=10_000.0,
+            available_vram_mb=11_000.0,
             queue_depths={},  # speculative — ratio gate applies under demand
         )
 
@@ -156,7 +156,7 @@ class TestLruRatioBypass:
         planner = _fairness_planner(
             provider,
             scores={COLD: 1.0, VICTIM_A: 0.4, VICTIM_B: 0.4},
-            snapshot=_two_gpu_snapshot(free0=5_000.0, free1=5_000.0),
+            snapshot=_two_gpu_snapshot(free0=5_500.0, free1=5_500.0),
         )
         planner._residency_policy = "demand"
         planner._lane_loaded_at[(PROVIDER_ID, "v0")] = now - 60.0
@@ -171,7 +171,7 @@ class TestLruRatioBypass:
         planner = _fairness_planner(
             provider,
             scores={COLD: 1.0, VICTIM_A: 0.4, VICTIM_B: 0.4},
-            snapshot=_two_gpu_snapshot(free0=5_000.0, free1=5_000.0),
+            snapshot=_two_gpu_snapshot(free0=5_500.0, free1=5_500.0),
         )
         planner._residency_policy = "lru"
         planner._lane_loaded_at[(PROVIDER_ID, "v0")] = now - 60.0

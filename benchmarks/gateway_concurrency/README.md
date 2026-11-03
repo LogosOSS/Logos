@@ -174,3 +174,26 @@ See the module docstrings in `run_benchmark.py`, `gateway_client.py`,
 `budget_admission.py` for the full list of tunables (concurrency steps, sample counts, durations, the
 informational `LOGOS_GATEWAY_ASYNC_MAX_SIZE`/`_QUEUE_CAPACITY` used to
 annotate the report against the webservice's actual config).
+
+### CI measurement order
+
+The budget-admission latency gate runs after the interleaved latency warmup
+and before the concurrency ramp and failover experiments. The ramp deliberately
+saturates the executor; measuring admission immediately afterwards mixes
+recovery from overload into the steady-load result. Budget measurement also
+uses a fixed 15-second warmup at its measured concurrency, recorded separately
+in `budget.warmup`, before opening the database measurement window.
+`LOGOS_BENCH_GW_BUDGET_WARMUP_S` controls this fixed preparation interval.
+Measured windows are not retried or filtered, and the p50/p99 thresholds are
+unchanged.
+
+
+### CI database storage
+
+The CI workflow applies `docker-compose.ci.yaml`, which puts its disposable
+PostgreSQL data on a 4 GiB tmpfs. Transaction, WAL, `fsync`, and synchronous
+commit settings remain enabled. This removes shared runner block-device latency
+from the gateway regression test; it does not measure durable-storage performance
+or establish production latency guarantees. The report records
+`env.database_storage=tmpfs-ci-ephemeral`. Normal development and production
+compose configurations retain their persistent storage.

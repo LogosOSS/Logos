@@ -205,6 +205,7 @@ def _planner(
         get_committed_mb=lambda pid: 0.0,
         has_overlapping_reservation=lambda *a, **k: False,
         get_gpu_effective_available_mb=lambda pid, g, f: f,
+        get_gpu_consumable_available_mb=lambda pid, g, f: f,
         cleanup_stale=lambda **k: 0,
     )
     planner._host_ram_ledger = SimpleNamespace(cleanup_stale=lambda **k: 0)
@@ -417,7 +418,7 @@ class TestSumVsMaxCompetitiveRatio:
         # Two idle victims on GPUs 0 and 1; cold TP2 needs both.
         v0 = _lane(lane_id="v0", model_name=VICTIM_A, effective_vram_mb=40_000.0, gpu_devices="0")
         v1 = _lane(lane_id="v1", model_name=VICTIM_B, effective_vram_mb=40_000.0, gpu_devices="1")
-        free0, free1 = 5_000.0, 5_000.0
+        free0, free1 = 5_500.0, 5_500.0  # Include per-GPU startup context headroom.
         provider = _MockProvider(
             PROVIDER_ID,
             "W",
