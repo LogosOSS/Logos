@@ -1422,7 +1422,10 @@ export class ModelErrorReport implements OnInit, OnDestroy {
       if (run.result.stage === 'benchmarking') {
         const started = run.result.started_samples ?? 0;
         const total = run.result.total_samples ?? run.request.samples;
-        return `Running on ${run.request.provider_name} · request ${started}/${total}`;
+        const progress = run.result.completed_samples === undefined
+          ? `${started}/${total} requests started`
+          : `${run.result.completed_samples}/${total} requests completed`;
+        return `Running on ${run.request.provider_name} · ${progress}`;
       }
       return `Running on ${run.request.provider_name}`;
     }

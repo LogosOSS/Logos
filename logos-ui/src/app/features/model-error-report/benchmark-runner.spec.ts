@@ -150,6 +150,15 @@ describe('Benchmark runner', () => {
     })).toBe(expected);
   });
 
+  it('does not present all started requests as completed', () => {
+    expect(component.benchmarkStatusLabel({ ...run,
+      result: { stage: 'benchmarking', started_samples: 10, total_samples: 10 },
+    })).toContain('10/10 requests started');
+    expect(component.benchmarkStatusLabel({ ...run,
+      result: { stage: 'benchmarking', started_samples: 10, completed_samples: 6, total_samples: 10 },
+    })).toContain('6/10 requests completed');
+  });
+
   it('blocks repeated cancellation while cancellation is pending', async () => {
     const pending = deferred<unknown>();
     service.cancelBenchmark.mockReturnValue(pending.promise);
