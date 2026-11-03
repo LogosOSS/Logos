@@ -253,7 +253,7 @@ After an application restart, recovery completes the recorded adoption or restor
 A disabled schedule cancels pending adoption.
 The round report identifies an adopted benchmark or an adoption failure.
 
-For request workloads, **Nightly progress** shows the best eligible throughput so far against the fixed reference.
+For request workloads, the **Improvement over time** tab shows the best eligible throughput so far against the fixed reference.
 The initial point is 0%. Each subsequent point represents a nightly plan with completed measurements.
 The line increases only when a round records a better eligible result. Otherwise, the line stays flat.
 Each tooltip shows total improvement from the starting baseline and relative improvement from the previous point.
