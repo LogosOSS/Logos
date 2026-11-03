@@ -7,8 +7,8 @@
   @else {
     @if (result(); as row) {
       <div class="deployment-metrics">
-        <div><span>Measured throughput{{ measurement() ? '' : ' · historical' }}</span><strong>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }} <small>tok/s</small></strong></div>
-        <div><span>Baseline #{{ row.baselineId ?? 'unavailable' }}</span><strong>{{ row.before === null ? '—' : (row.before | number:'1.1-1') }} <small>tok/s</small></strong></div>
+        <div><span>Measured throughput{{ measurement() ? '' : (result()?.run?.configuration?.['nightly'] ? ' · historical' : ' · saved') }}</span><strong>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }} <small>tok/s</small></strong></div>
+        <div><span>{{ row.startingBaseline ? 'Starting baseline' : 'Baseline' }} #{{ row.baselineId ?? 'unavailable' }}</span><strong>{{ row.before === null ? '—' : (row.before | number:'1.1-1') }} <small>tok/s</small></strong></div>
         <div><span>Change</span><strong>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</strong></div>
       </div>
       <p class="deployment-caption"><a [routerLink]="['/models', row.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: row.run.id }">Benchmark #{{ row.run.id }} ↗</a> · {{ row.run.recorded_at | date:'dd MMM yyyy, HH:mm' }}</p>
@@ -19,7 +19,7 @@
     <details><summary>Configuration &amp; selection details</summary>
       @if (result(); as row) {
         <p>{{ datasetLabel(row.run) }} · {{ row.run.sample_size }} requests. {{ row.comparisonNote }}.</p>
-        <p>{{ measurement() ? 'Saved benchmark measurement, not live throughput.' : 'These settings match a historical run. The worker release or workload has since changed; a fresh comparison is required.' }}</p>
+        <p>{{ measurement() ? 'Saved benchmark measurement, not live throughput.' : 'These settings match a saved run. Its environment could not be verified against current telemetry; a fresh comparison is required.' }}</p>
       }
       <p>Worker {{ deployment()?.lane_state ?? 'Unknown' }} · checked {{ deployment()?.observed_at | date:'dd MMM yyyy, HH:mm:ss Z' }}</p>
       <dl class="parameters">@for (parameter of parameters(); track parameter.key) { <div><dt>{{ parameter.label }}</dt><dd>{{ parameter.value }}</dd></div> }</dl>

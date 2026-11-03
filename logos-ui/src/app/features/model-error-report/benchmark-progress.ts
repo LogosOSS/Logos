@@ -69,7 +69,8 @@ export function benchmarkProgress(runs: readonly ModelProviderBenchmark[]) {
     return { key, fixed: isSavedRequestBenchmark(reference), reference, latest, first, last, min, max,
       zero: y(referenceRate), points: plotted,
       line: plotted.map(point => `${point.x},${point.y}`).join(' '),
-      label: `${benchmarkDatasetLabel(reference)} · ${reference.provider_name}`,
+      label: `${benchmarkDatasetLabel(reference)} · ${reference.provider_name} · ${reference.configuration['tool'] === 'logos-replay' ? 'Legacy replay' : 'GuideLLM'}`,
+      runIds: ordered.filter(run => completedAt(run) >= first).map(run => run.id),
       context: `${benchmarkDatasetLabel(reference)} · ${reference.provider_name} · ${reference.sample_size} requests · ${settings['max_concurrency']} concurrent`,
     };
   }).sort((a, b) => b.last - a.last);

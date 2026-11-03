@@ -7,6 +7,8 @@ import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { NightlyStatus } from './nightly-benchmarks';
 import { benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
 import { benchmarkResultRow } from './benchmark-result-row';
+import { benchmarkProgress } from './benchmark-progress';
+import { comparisonValue } from './benchmark-comparison';
 
 interface SelectionComparison { benchmark_id: number; baseline_id: number | null; throughput: number | null; issues: string[]; }
 interface DeploymentStatus extends NightlyStatus { deployment?: DeploymentSnapshot; selection?: { best_observed: SelectionComparison | null; best_eligible: SelectionComparison | null; comparisons: SelectionComparison[] }; }
@@ -41,6 +43,18 @@ export function deployedMeasurement(deployment: DeploymentSnapshot | undefined, 
   }) ?? null;
 }
 
+/** A manual run can show its change from the explicitly labeled first dataset baseline. */
+export function deployedResult(run: ModelProviderBenchmark, runs: readonly ModelProviderBenchmark[]) {
+  const row = { ...benchmarkResultRow(run, runs), startingBaseline: false };
+  if (run.configuration['nightly'] || row.before !== null) return row;
+  const reference = benchmarkProgress(runs).find(chart => chart.runIds.includes(run.id))?.reference;
+  if (!reference) return row;
+  const before = comparisonValue(reference, 'throughput');
+  return { ...row, startingBaseline: true, before, baselineId: reference.id,
+    delta: before !== null && before > 0 && row.after !== null ? (row.after / before - 1) * 100 : null,
+    comparisonNote: `Historical comparison with the starting dataset baseline #${reference.id}` };
+}
+
 @Component({
   selector: 'app-deployed-configuration', standalone: true, imports: [DatePipe, DecimalPipe, RouterLink],
   templateUrl: './deployed-configuration.html', styleUrl: './deployed-configuration.scss',
@@ -58,7 +72,7 @@ export class DeployedConfiguration implements OnDestroy {
   readonly measurement = computed(() => deployedMeasurement(this.deployment(), this.runs().filter(run => run.model_provider_id === this.pairId())));
   readonly historicalMeasurement = computed(() => this.measurement() ?? deployedMeasurement(this.deployment(),
     this.runs().filter(run => run.model_provider_id === this.pairId()), false));
-  readonly result = computed(() => this.historicalMeasurement() ? benchmarkResultRow(this.historicalMeasurement()!, this.runs()) : null);
+  readonly result = computed(() => this.historicalMeasurement() ? deployedResult(this.historicalMeasurement()!, this.runs()) : null);
   readonly parameters = computed(() => servingConfigurationItems({ configuration: { serving: this.deployment()?.configuration } }).filter(item => item.captured));
   readonly keyParameters = computed(() => this.parameters().filter(item => ['max_num_seqs', 'max_num_batched_tokens'].includes(item.key)));
   readonly selection = computed(() => this.state()?.selection);

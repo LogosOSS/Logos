@@ -286,6 +286,16 @@ describe.each(['logos-replay', 'guidellm'])('Fixed request reference (%s)', (too
     expect(new Set(groups[0].points.map(point => point.key)).size).toBe(2);
   });
 
+  it('distinguishes legacy replay from GuideLLM measurements of the same dataset', () => {
+    const first = replay(1, 40), other = replay(3, 42);
+    other.configuration['tool'] = tool === 'guidellm' ? 'logos-replay' : 'guidellm';
+    const charts = benchmarkProgress([first, other]);
+    expect(charts).toHaveLength(2);
+    expect(new Set(charts.map(chart => chart.label)).size).toBe(2);
+    expect(charts.map(chart => chart.label).join(' ')).toContain('GuideLLM');
+    expect(charts.map(chart => chart.label).join(' ')).toContain('Legacy replay');
+  });
+
   it('shows total growth from the baseline and relative improvement from the previous point', () => {
     const rows = [replay(1, 40), replay(2, 42, 1), replay(3, 44), replay(4, 41)];
     const chart = benchmarkProgress(rows)[0];

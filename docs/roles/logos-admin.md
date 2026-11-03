@@ -226,6 +226,7 @@ Measurements from another environment appear with a historical label. They do no
 The measurement includes its benchmark number, baseline throughput, result throughput and percentage change.
 Temporary benchmark settings and recovery states do not establish the production configuration.
 An offline worker shows an unavailable state. A historical winner alone does not verify a deployment.
+Manual measurements can show their change from the first comparable dataset baseline. The summary labels this baseline as **Starting baseline**.
 The details also show the last confirmed adoption and reasons that exclude faster runs.
 A fresh comparison must verify a historical candidate before automatic adoption.
 
