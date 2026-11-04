@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { HttpClient } from '@angular/common/http';
@@ -15,6 +14,10 @@ import {
 import { TeamManagementService } from '../../core/services/team-management.service';
 import { PlatformUser } from '../../shared/models/platform-user.model';
 import { UserManagement } from './user-management';
+
+// Relative to the project root, where `ng test` runs: with coverage enabled the
+// bundled spec's `import.meta.url` no longer points at this directory.
+const SPEC_DIRECTORY = join(process.cwd(), 'src/app/features/user-management');
 
 function platformUser(overrides: Partial<PlatformUser> = {}): PlatformUser {
   return {
@@ -239,7 +242,7 @@ describe('import preview stylesheet', () => {
  * instead.
  */
 function readStyleSheet(): string {
-  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'user-management.scss'), 'utf8');
+  return readFileSync(join(SPEC_DIRECTORY, 'user-management.scss'), 'utf8');
 }
 
 /**
