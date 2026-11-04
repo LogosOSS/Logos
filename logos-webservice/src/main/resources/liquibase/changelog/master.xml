@@ -75,4 +75,6 @@
     <include file="liquibase/changelog/068_benchmark_request_workloads.xml"/>
     <include file="liquibase/changelog/069_nightly_request_sources.xml"/>
     <include file="liquibase/changelog/070_custom_permissions_team_boundary.xml"/>
+    <include file="liquibase/changelog/071_team_show_on_public_stats.xml"/>
+    <include file="liquibase/changelog/072_team_public_category.xml"/>
 </databaseChangeLog>
