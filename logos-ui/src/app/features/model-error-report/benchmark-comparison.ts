@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, input, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, LOCALE_ID, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { benchmarkConfigurationItems, servingConfigurationItems } from './benchmark-configuration';
@@ -66,6 +66,8 @@ export function fitChartScale(values: readonly (number | null)[]): ChartScale {
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class BenchmarkComparison {
+  // Numbers follow the application locale, like the `number` pipe elsewhere on the page.
+  private readonly locale = inject(LOCALE_ID);
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
   readonly metrics = COMPARISON_METRICS;
   readonly metric = signal<ComparisonMetric>('throughput');
@@ -137,7 +139,7 @@ export class BenchmarkComparison {
 
   changeLabel(value: number | null): string {
     const change = this.change(value);
-    return change === null ? 'Change unavailable' : `${change > 0 ? '+' : ''}${change.toLocaleString(undefined, { maximumFractionDigits: 1 })}% vs. reference`;
+    return change === null ? 'Change unavailable' : `${change > 0 ? '+' : ''}${change.toLocaleString(this.locale, { maximumFractionDigits: 1 })}% vs. reference`;
   }
 
   workloadLabel(run: ModelProviderBenchmark): string {
@@ -149,7 +151,7 @@ export class BenchmarkComparison {
 
   axisValue(value: number, scale: ChartScale): string {
     const digits = Math.min(20, Math.max(0, Math.ceil(-Math.log10(scale.span / 4)) + 1));
-    return value.toLocaleString(undefined, { maximumFractionDigits: digits });
+    return value.toLocaleString(this.locale, { maximumFractionDigits: digits });
   }
 
   boxLabel(box: NonNullable<ReturnType<typeof boxplot>>): string {
@@ -180,13 +182,13 @@ export class BenchmarkComparison {
 
   chartValue(value: number | null): string {
     return value === null || (value > 0 && value < 0.01) ? this.format(value)
-      : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+      : value.toLocaleString(this.locale, { maximumFractionDigits: 2 });
   }
 
   format(value: number | null): string {
     if (value === null) return '—';
     if (value > 0 && value < 0.001) return '<0.001';
-    return value.toLocaleString(undefined, { maximumFractionDigits: 3 });
+    return value.toLocaleString(this.locale, { maximumFractionDigits: 3 });
   }
 
   value(run: ModelProviderBenchmark, metric: ComparisonMetric): string {
