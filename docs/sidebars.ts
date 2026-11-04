@@ -22,6 +22,7 @@ const sidebars: SidebarsConfig = {
     { type: "doc", id: "developer/system-design", label: "System Design" },
     { type: "doc", id: "developer/architecture", label: "Architecture" },
     { type: "doc", id: "developer/local-setup", label: "Local Development" },
+    { type: "doc", id: "developer/test-instance", label: "TUM Test Instance" },
     { type: "doc", id: "context-windows", label: "Context Windows" },
   ],
   rolesSidebar: [

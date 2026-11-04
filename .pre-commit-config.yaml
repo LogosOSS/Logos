@@ -6,6 +6,8 @@ repos:
     rev: v5.0.0
     hooks:
       - id: check-added-large-files
+        # The homepage trailer video and its 2x source screenshots are binary assets.
+        exclude: '^docs/(static/video|trailer/shots)/'
       - id: check-ast
       - id: check-case-conflict
       - id: check-merge-conflict

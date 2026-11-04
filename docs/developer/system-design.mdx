@@ -11,7 +11,8 @@ together, how a typical deployment looks, what the core data model is, and how
 an inference request moves through the stack. The
 [Architecture](architecture.mdx) glossary defines the terms on this page.
 
-The diagrams are SVG exports. The editable sources are in
+The top-level diagram comes from a script (see below). The other diagrams are
+SVG exports. Their editable sources are in
 <a href={useBaseUrl('/img/system-design/system-design.drawio')}>system-design.drawio</a>
 (open it in [diagrams.net](https://app.diagrams.net/); each diagram has its own page).
 
@@ -32,13 +33,26 @@ providers** serve the cloud models.
 
 <img
   src={useBaseUrl('/img/system-design/top-level.svg')}
-  alt="Logos top-level design — clients, core node application server, identity, workers, and cloud providers"
+  alt="UML component diagram of Logos — every client request enters through the gateway (logos-rate-gateway, traefik) to the logos-webservice replicas, which call the cloud provider or logos-orchestrator and its GPU worker nodes"
   style={{width: '100%', height: 'auto', marginTop: '1rem', marginBottom: '0.5rem'}}
 />
 
-Editable source:
-<a href={useBaseUrl('/img/system-design/system-design.drawio')}>system-design.drawio</a>
-(page *Top-Level*).
+The diagram is a UML component diagram. A circle is an interface that a
+component provides. An arc is an interface that a component requires. The
+component names are the container names in `docker-compose.yaml`.
+
+Each request from a client goes through the gateway: first
+`logos-rate-gateway`, then `traefik`. Traefik sends the request to one of the
+`logos-webservice` replicas. Only `logos-webservice` runs as more than one
+replica (×N). The replicas share their cloud rate-limit window in
+`logos-redis`. The web service sends cloud requests directly to the cloud
+provider. It sends local and mixed requests to `logos-orchestrator`.
+
+The optional agent runner (`logos-agent`) is not in the diagram. Its
+`logos-agent-gateway` sends the requests of the agent sessions directly to
+`logos-orchestrator`. These requests do not go through the gateway. The
+script `static/img/system-design/top-level.py` makes the SVG. Edit the script
+and run it again to change the diagram.
 
 ## Deployment
 
