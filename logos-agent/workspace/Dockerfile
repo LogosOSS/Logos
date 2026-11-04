@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # so it comes from Adoptium rather than from the distribution. The service's
 # Maven wrapper (`./mvnw`) fetches Maven itself, so no separate Maven here.
 ARG JDK_VERSION=25
-RUN curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
+RUN curl --proto =https -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
       | gpg --dearmor -o /usr/share/keyrings/adoptium.gpg \
   && echo "deb [signed-by=/usr/share/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
       > /etc/apt/sources.list.d/adoptium.list \
@@ -45,7 +45,7 @@ RUN curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
   && rm -rf /var/lib/apt/lists/*
 
 # GitHub CLI, from the official apt repository.
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+RUN curl --proto =https -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
   && chmod a+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
   && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
