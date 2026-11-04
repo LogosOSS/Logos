@@ -413,7 +413,7 @@ public class PriceUpdaterService {
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> fetchModelData(HttpClient client, String modelName) {
+    Map<String, Object> fetchModelData(HttpClient client, String modelName) {
         for (String candidate : List.of(modelName, modelName.toLowerCase())) {
             try {
                 HttpRequest req = HttpRequest.newBuilder()

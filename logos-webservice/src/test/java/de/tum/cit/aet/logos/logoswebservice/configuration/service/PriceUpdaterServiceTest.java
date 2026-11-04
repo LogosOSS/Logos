@@ -6,6 +6,10 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -360,6 +364,28 @@ class PriceUpdaterServiceTest {
             new SavedPrice("billed_input_uncached", "token", 0, "batch", Math.round(1.0e-7 * 1e11)),
             new SavedPrice("billed_output_text", "token", 0, "batch", Math.round(6.0e-7 * 1e11))
         );
+    }
+
+    @Test
+    void anInterruptedFetchKeepsTheInterruptFlagAndReturnsNothing() throws Exception {
+        HttpClient client = mock(HttpClient.class);
+        when(client.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+            .thenThrow(new InterruptedException());
+        try {
+            assertThat(service.fetchModelData(client, "gpt-4o")).isNull();
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void aFailedFetchReturnsNothing() throws Exception {
+        HttpClient client = mock(HttpClient.class);
+        when(client.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+            .thenThrow(new IOException("connection reset"));
+        assertThat(service.fetchModelData(client, "gpt-4o")).isNull();
+        assertThat(Thread.currentThread().isInterrupted()).isFalse();
     }
 
     @Test

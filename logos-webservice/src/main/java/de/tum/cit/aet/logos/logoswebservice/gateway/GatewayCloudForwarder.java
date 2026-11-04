@@ -227,23 +227,29 @@ public class GatewayCloudForwarder {
         static final int MAX_CHUNKS = 1024;
         private static final int CHUNK_BYTES = 8192;
 
-        private record Chunk(byte[] bytes, Instant at, IOException error) {
+        /** One queued read, the end marker, or a read error; queue items are never compared. */
+        private static final class Chunk {
 
-            @Override
-            public boolean equals(Object other) {
-                return other instanceof Chunk chunk && java.util.Arrays.equals(bytes, chunk.bytes)
-                    && java.util.Objects.equals(at, chunk.at) && java.util.Objects.equals(error, chunk.error);
+            private final byte[] bytes;
+            private final Instant at;
+            private final IOException error;
+
+            Chunk(byte[] bytes, Instant at, IOException error) {
+                this.bytes = bytes;
+                this.at = at;
+                this.error = error;
             }
 
-            @Override
-            public int hashCode() {
-                return 31 * java.util.Objects.hash(at, error) + java.util.Arrays.hashCode(bytes);
+            byte[] bytes() {
+                return bytes;
             }
 
-            @Override
-            public String toString() {
-                return "Chunk[bytes=" + (bytes == null ? "null" : bytes.length + " bytes") + ", at=" + at
-                    + ", error=" + error + "]";
+            Instant at() {
+                return at;
+            }
+
+            IOException error() {
+                return error;
             }
         }
 
