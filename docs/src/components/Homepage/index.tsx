@@ -48,13 +48,13 @@ export default function Homepage(): React.JSX.Element {
       <section className={styles.hero}>
         <div className={styles.heroInner}>
           <img src={logo} alt="" className={styles.heroLogo} width={72} height={72} />
-          <p className={styles.heroBrand}>Logos</p>
+          <div className={styles.heroBrand}>Logos</div>
           <h1 className={styles.heroHeadline}>LLM engineering made easy</h1>
-          <p className={styles.heroSubtitle}>
+          <div className={styles.heroSubtitle}>
             OpenAI-compatible inference with logging, billing, policies, and
             self-hosted workers — documented for users, operators, and
             contributors.
-          </p>
+          </div>
           <div className={styles.heroCtas}>
             <Link className={styles.btnPrimary} to="/user/getting-started">
               Start with the User Guide
@@ -64,33 +64,28 @@ export default function Homepage(): React.JSX.Element {
             </Link>
           </div>
         </div>
-      </section>
-
-      <section className={styles.section}>
-        <h2 className={styles.sectionHeading}>Logos in 60 s</h2>
-        <p className={styles.sectionSubtitle}>
-          The video shows the API, the policies, the GPU workers, the
-          statistics, the budgets, and the coding agents.
-        </p>
-        <video
-          className={styles.trailer}
-          src={trailer}
-          poster={trailerPoster}
-          controls
-          playsInline
-          preload="metadata"
-          width={1920}
-          height={1080}
-          aria-label="Logos product trailer, 60 s, with music"
-        />
+        <div className={styles.heroVideo}>
+          <video
+            className={styles.trailer}
+            src={trailer}
+            poster={trailerPoster}
+            controls
+            playsInline
+            preload="metadata"
+            width={1920}
+            height={1080}
+            aria-label="Logos product trailer, 60 s, with music"
+          />
+          <div className={styles.heroVideoCaption}>Logos in 60 s</div>
+        </div>
       </section>
 
       <section className={styles.section}>
         <h2 className={styles.sectionHeading}>Choose a guide</h2>
-        <p className={styles.sectionSubtitle}>
+        <div className={styles.sectionSubtitle}>
           Four paths through the same platform — pick the one that matches
           what you are doing today.
-        </p>
+        </div>
         <div className={styles.cardGrid}>
           {GUIDES.map((guide) => (
             <Link key={guide.to} className={styles.card} to={guide.to}>
@@ -105,15 +100,16 @@ export default function Homepage(): React.JSX.Element {
       <section className={styles.sectionAlt}>
         <div className={styles.sectionAltInner}>
           <h2 className={styles.sectionHeading}>How Logos fits together</h2>
-          <p className={styles.sectionSubtitle}>
-            Clients hit one domain. The web service terminates the public
-            inference gateway; local and mixed traffic is proxied to the
-            orchestrator; workers dial out over WebSocket.
-          </p>
+          <div className={styles.sectionSubtitle}>
+            Each client request goes through one gateway to a web service
+            replica. The web service sends cloud requests to the cloud
+            provider and local requests to the orchestrator. The GPU workers
+            connect to the orchestrator over WebSocket.
+          </div>
           <Link className={styles.diagramLink} to="/developer/system-design">
             <img
               src={architecture}
-              alt="Logos top-level system design — clients, core node, workers, and cloud providers"
+              alt="UML component diagram of Logos: each client request goes through the gateway to the logos-webservice replicas"
               className={styles.diagram}
             />
           </Link>

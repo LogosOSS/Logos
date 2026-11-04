@@ -7,6 +7,7 @@ const config: Config = {
   tagline: "LLM engineering made easy",
   url: "https://logososs.github.io",
   baseUrl: "/Logos/",
+  favicon: "img/logos-logo.svg",
   organizationName: "LogosOSS",
   projectName: "Logos",
   onBrokenLinks: "throw",

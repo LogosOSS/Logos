@@ -134,6 +134,8 @@
   color: var(--logos-ink);
 }
 
+/* Subtitles are <div>s: Infima resets the margins of every <p> with an
+   ID-level selector, which would drop the auto margins that centre them. */
 .sectionSubtitle {
   margin: 0 auto 2rem;
   max-width: 36rem;
@@ -219,6 +221,20 @@
   text-align: center;
   color: var(--logos-muted);
   font-size: 0.95rem;
+}
+
+.heroVideo {
+  position: relative;
+  max-width: 960px;
+  margin: 2.5rem auto 0;
+}
+
+.heroVideoCaption {
+  margin-top: 0.75rem;
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--logos-muted);
 }
 
 .trailer {
