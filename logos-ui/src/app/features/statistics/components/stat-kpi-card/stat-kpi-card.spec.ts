@@ -1,10 +1,13 @@
 import { Component } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { StatKpiCardComponent } from './stat-kpi-card';
 import { SparklineComponent } from '../sparkline/sparkline';
+
+// Relative to the project root, where `ng test` runs: with coverage enabled the
+// bundled spec's `import.meta.url` no longer points at this directory.
+const SPEC_DIRECTORY = join(process.cwd(), 'src/app/features/statistics/components/stat-kpi-card');
 
 const kpiCardStyles = readStyleSheet('stat-kpi-card.scss');
 const statisticsStyles = readStyleSheet('../../statistics.scss');
@@ -71,7 +74,7 @@ describe('right-slot sizing contract', () => {
  * applies no layout — the specs pin CSS declarations as text instead.
  */
 function readStyleSheet(file: string): string {
-  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), file), 'utf8');
+  return readFileSync(join(SPEC_DIRECTORY, file), 'utf8');
 }
 
 /**

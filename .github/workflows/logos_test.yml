@@ -143,17 +143,21 @@ jobs:
         run: mvn -B test
         working-directory: logos-webservice
 
-      - name: Upload compiled classes
-        # The Java analysis of the quality job needs the bytecode.
+      - name: Upload compiled classes and coverage report
+        # The Java analysis of the quality job needs the bytecode; JaCoCo
+        # writes the coverage report during `mvn test`.
         uses: actions/upload-artifact@v7
         with:
-          name: webservice-classes
-          path: logos-webservice/target/classes
+          name: webservice-build
+          path: |
+            logos-webservice/target/classes
+            logos-webservice/target/test-classes
+            logos-webservice/target/site/jacoco/jacoco.xml
           retention-days: 1
 
   quality:
     name: SonarQube Cloud Analysis
-    needs: [test, test-webservice]
+    needs: [test, test-webservice, test-ui-export]
     # Pull requests from forks get no secrets, so the analysis cannot run there.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -170,11 +174,30 @@ jobs:
           name: orchestrator-coverage
           path: logos-orchestrator
 
-      - name: Download compiled classes
+      - name: Download web service build
         uses: actions/download-artifact@v8
         with:
-          name: webservice-classes
-          path: logos-webservice/target/classes
+          name: webservice-build
+          path: logos-webservice/target
+
+      - name: Download web application coverage report
+        uses: actions/download-artifact@v8
+        with:
+          name: ui-coverage
+          path: logos-ui/coverage/logos-ui
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          java-version: "25"
+          distribution: "temurin"
+          cache: "maven"
+          cache-dependency-path: logos-webservice/pom.xml
+
+      - name: Collect Java libraries
+        # Lets the Java analysis resolve the types the web service imports.
+        run: mvn -B -q dependency:copy-dependencies -DincludeScope=test -DoutputDirectory=target/dependency
+        working-directory: logos-webservice
 
       - name: Run analysis
         uses: SonarSource/sonarqube-scan-action@v8
@@ -200,8 +223,21 @@ jobs:
         working-directory: logos-ui
 
       - name: Run unit tests
-        run: npm test -- --watch=false
+        run: npm test -- --watch=false --coverage --coverage-reporters=lcov
         working-directory: logos-ui
+
+      - name: Prefix coverage paths
+        # The report lists files relative to logos-ui/; the analysis runs from
+        # the repository root.
+        run: sed -i 's#^SF:#SF:logos-ui/#' coverage/logos-ui/lcov.info
+        working-directory: logos-ui
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-coverage
+          path: logos-ui/coverage/logos-ui/lcov.info
+          retention-days: 1
 
       - name: Build static web export
         run: npm run build
