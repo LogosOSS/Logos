@@ -41,7 +41,7 @@ jobs:
       UPSTREAM: vllm-project/vllm-metal
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Same rationale as logos_update-vllm.yml: use the PAT when
           # configured so the push and PR are attributed to a real user and CI
@@ -182,8 +182,8 @@ jobs:
           set -euo pipefail
           work=$(mktemp -d)
 
-          curl -fsSL "https://raw.githubusercontent.com/${UPSTREAM}/${TAG}/install.sh"       -o "$work/install.sh"
-          curl -fsSL "https://raw.githubusercontent.com/${UPSTREAM}/${TAG}/scripts/lib.sh"   -o "$work/lib.sh"
+          curl --proto =https -fsSL "https://raw.githubusercontent.com/${UPSTREAM}/${TAG}/install.sh"       -o "$work/install.sh"
+          curl --proto =https -fsSL "https://raw.githubusercontent.com/${UPSTREAM}/${TAG}/scripts/lib.sh"   -o "$work/lib.sh"
 
           # Resolve wheel filenames from the release asset list rather than
           # hard-coding the Python / macOS platform tags (those flipped from
@@ -196,7 +196,7 @@ jobs:
             local names
             # One-liner keeps the YAML block scalar intact (a multi-line
             # python -c body at column 0 would close the run: | block).
-            names=$(curl -fsSL \
+            names=$(curl --proto =https -fsSL \
               -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${repo}/releases/tags/${tag}" \
@@ -218,14 +218,14 @@ jobs:
           METAL_WHEEL=$(pick_release_wheel "$UPSTREAM" "$TAG" \
             "^vllm_metal-${VERSION//./\\.}-.+-macosx_[0-9]+_[0-9]+_arm64\\.whl$" \
             "vllm-metal")
-          curl -fsSL "https://github.com/${UPSTREAM}/releases/download/${TAG}/${METAL_WHEEL}" -o "$work/$METAL_WHEEL"
+          curl --proto =https -fsSL "https://github.com/${UPSTREAM}/releases/download/${TAG}/${METAL_WHEEL}" -o "$work/$METAL_WHEEL"
 
           # The vLLM core wheel version is not always equal to the vllm-metal
           # version. Upstream's installer derives it from a release lookup; the
           # release notes name it, and .github/vllm-release-tag.commit records
           # it at the tag. Try that file first, fall back to the vllm-metal
           # version (they have matched so far, e.g. 0.29.0 <-> 0.29.0).
-          VLLM_TAG=$(curl -fsSL "https://raw.githubusercontent.com/${UPSTREAM}/${TAG}/.github/vllm-release-tag.commit" 2>/dev/null | tr -d ' \n\r' || true)
+          VLLM_TAG=$(curl --proto =https -fsSL "https://raw.githubusercontent.com/${UPSTREAM}/${TAG}/.github/vllm-release-tag.commit" 2>/dev/null | tr -d ' \n\r' || true)
           case "$VLLM_TAG" in
             v[0-9]*) : ;;
             *) VLLM_TAG="v$VERSION" ;;
@@ -236,7 +236,7 @@ jobs:
             "vLLM core")
           # GitHub release asset URLs encode '+' as %2B.
           CORE_URL="https://github.com/vllm-project/vllm/releases/download/${VLLM_TAG}/${CORE_WHEEL/+/%2B}"
-          curl -fsSL "$CORE_URL" -o "$work/$CORE_WHEEL"
+          curl --proto =https -fsSL "$CORE_URL" -o "$work/$CORE_WHEEL"
 
           {
             echo "installer_sha=$(sha256sum "$work/install.sh"        | cut -d' ' -f1)"

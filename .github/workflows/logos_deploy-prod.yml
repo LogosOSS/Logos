@@ -66,7 +66,7 @@ jobs:
       name: ${{ matrix.environment }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Extract compose file basename
         id: extract-basename
@@ -78,7 +78,7 @@ jobs:
           [ "${{ matrix.compose-file }}" -ef "$BASENAME" ] || cp "${{ matrix.compose-file }}" "$BASENAME"
 
       - name: Copy docker compose file to VM
-        uses: appleboy/scp-action@v1.0.0
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -158,7 +158,7 @@ jobs:
           DRAIN: ${{ matrix.drain }}
 
       - name: Copy .env file to VM
-        uses: appleboy/scp-action@v1.0.0
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -176,7 +176,7 @@ jobs:
       # that drains, for the pull.
       - name: Update node manager
         if: ${{ matrix.node-manager }}
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
         with:
@@ -225,7 +225,7 @@ jobs:
       # state of the node manager, which the deploy workflows never delete.
       - name: Show how the previous deployment ended
         if: ${{ matrix.node-manager }}
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -245,7 +245,7 @@ jobs:
 
       - name: Deploy through node manager
         if: ${{ matrix.node-manager }}
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           # Through the environment rather than into the script text: the tag
           # comes from whoever dispatched the workflow.
@@ -275,7 +275,7 @@ jobs:
 
       - name: Show node manager log
         if: ${{ (success() || failure()) && matrix.node-manager }}
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -289,7 +289,7 @@ jobs:
 
       - name: Pull new images
         if: ${{ !matrix.node-manager }}
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
           LOGOS_HARBOR_REGISTRY: ${{ vars.LOGOS_HARBOR_REGISTRY }}
@@ -314,7 +314,7 @@ jobs:
 
       - name: Deploy with docker compose
         if: ${{ !matrix.node-manager }}
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -363,7 +363,7 @@ jobs:
       # image that is two versions old.
       - name: Clean up old images
         if: ${{ !matrix.node-manager }}
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
           LOGOS_HARBOR_REGISTRY: ${{ vars.LOGOS_HARBOR_REGISTRY }}

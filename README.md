@@ -118,7 +118,7 @@ or hands local and mixed requests to `logos-orchestrator`, which schedules them 
 nodes. Workers dial out to the orchestrator over WebSocket, so they need no inbound ports.
 
 <p align="center">
-  <img src="docs/static/img/system-design/top-level.svg" alt="UML component diagram of Logos: every client request enters through the gateway to the logos-webservice replicas" width="820">
+  <img src="docs/static/img/system-design/top-level.svg" alt="UML component diagram of Logos: every client request enters through the Gateway to the Webservice replicas" width="820">
 </p>
 
 The [system design](https://logososs.github.io/Logos/developer/system-design) covers the deployment

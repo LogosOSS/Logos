@@ -28,7 +28,7 @@ jobs:
       name: ${{ matrix.environment }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Extract compose file basename
         id: extract-basename
@@ -40,7 +40,7 @@ jobs:
           [ "${{ matrix.compose-file }}" -ef "$BASENAME" ] || cp "${{ matrix.compose-file }}" "$BASENAME"
 
       - name: Copy docker compose file to VM
-        uses: appleboy/scp-action@v1.0.0
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -106,7 +106,7 @@ jobs:
           WORKSPACE_IMAGE_TAG: ${{ inputs.image-tag || 'latest' }}
 
       - name: Copy .env file to VM
-        uses: appleboy/scp-action@v1.0.0
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -119,7 +119,7 @@ jobs:
           target: ${{ matrix.base-path }}
 
       - name: Pull new images
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
           LOGOS_HARBOR_REGISTRY: ${{ vars.LOGOS_HARBOR_REGISTRY }}
@@ -143,7 +143,7 @@ jobs:
             docker compose -f ${{ matrix.base-path }}/${{ steps.extract-basename.outputs.basename }} --env-file=${{ matrix.base-path }}/.env pull
 
       - name: Deploy with docker compose
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -188,7 +188,7 @@ jobs:
             fi
 
       - name: Clean up old images
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
           LOGOS_HARBOR_REGISTRY: ${{ vars.LOGOS_HARBOR_REGISTRY }}
