@@ -5,7 +5,7 @@ import { batchingSignature, comparisonSettings } from './benchmark-isolation';
 
 function completedAt(run: ModelProviderBenchmark): number {
   const ended = (run.configuration['measurement'] as { ended_at?: string } | undefined)?.ended_at;
-  return ended ? Date.parse(ended) : NaN;
+  return ended ? Date.parse(ended) : Number.NaN;
 }
 
 /** Record history can span worker releases; adoption still requires a fresh comparison. */

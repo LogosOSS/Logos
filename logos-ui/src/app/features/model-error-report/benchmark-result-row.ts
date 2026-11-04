@@ -12,7 +12,7 @@ export function benchmarkResultRow(run: ModelProviderBenchmark, runs: readonly M
   const before = baseline ? comparisonValue(baseline, 'throughput') : null;
   const after = comparisonValue(run, 'throughput');
   const measurement = run.configuration['measurement'] as { started_at?: string; ended_at?: string } | undefined;
-  const measured = measurement?.started_at ? Date.parse(measurement.started_at) : NaN;
+  const measured = measurement?.started_at ? Date.parse(measurement.started_at) : Number.NaN;
   const requested = run.configuration['requested_overrides'] as Record<string, unknown> | undefined;
   const label = (key: string) => key === 'max_num_seqs' ? 'Sequences' : key === 'max_num_batched_tokens' ? 'Batch tokens' : key;
   const changes = nightly ? Object.entries(nightly.parameters ?? {}).filter(([key, value]) => value !== nightly.original?.[key])

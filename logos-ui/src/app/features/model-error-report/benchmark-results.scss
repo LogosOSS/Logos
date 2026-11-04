@@ -82,7 +82,7 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 .progress-summary span { color: rgb(var(--color-typography-500)); font-size: var(--model-detail-font-size, .875rem); font-variant-numeric: tabular-nums; }
 .progress-summary:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }
 
-.run-history { @include panel.expandable; }
+.run-history { @include panel.expandable; &[open] { @include panel.expanded; } }
 .selected-result { margin: 1rem 0 1.5rem; padding: 1rem; border: 2px solid rgb(var(--color-primary-500)); border-radius: .5rem; color: rgb(var(--color-typography-100)); overflow-wrap: anywhere; }
 .selected-result h4 { margin: .75rem 0 .25rem; font: inherit; font-weight: 600; }
 .selected-result p { margin: .4rem 0; }
