@@ -69,8 +69,10 @@ When `LOGOS_CAPACITY_PLANNER_ENABLED=true` (default) on the Logos server, sleep 
 
 | Idle duration | Action | Scope |
 |--------------|--------|-------|
-| 5min | Sleep level 1 | vLLM lanes with sleep mode enabled |
-| 10min in L1 sleep | Sleep level 2 | vLLM lanes already at level 1 |
+| 30 min (`LOGOS_IDLE_SLEEP_L1_S`, default 1800 s) | Sleep level 1 | vLLM lanes with sleep mode enabled |
+| 24 h in L1 sleep (effectively off) | Sleep level 2 | vLLM lanes already at level 1 |
+
+If another model needs the VRAM, the planner sleeps or stops an idle lane at once, without these timers.
 
 Lanes are woken automatically when demand is detected (exponential-decay demand score >= 1.0). New lanes can also be loaded preemptively when demand score >= 2.0, subject to VRAM budget validation.
 

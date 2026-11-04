@@ -169,45 +169,57 @@ class Svg:
 
 # --- 1. Top-level design: UML component diagram ------------------------------------
 def top_level():
-    s = Svg(1530, 860, "Logos top-level design (UML component diagram)", "UML component diagram of Logos")
+    s = Svg(1530, 850, "Logos top-level design (UML component diagram)", "UML component diagram of Logos")
     f = s.f
-    FX, FY, FW, FH = 360, 340, 1170, 515
-    s.frame(FX, FY, FW, FH, "«subsystem»", "Logos", name_x=1090)
-    s.wire("M 200 470 H 410 M 200 640 H 410")  # clients -> gateway
-    s.wire("M 115 200 V 245 M 115 285 V 425")  # Keycloak -> OIDC -> Logos UI
-    s.wire("M 130 265 H 745 V 420")  # OIDC -> logos-webservice
-    s.wire("M 800 255 V 287 M 800 313 V 420")  # cloud provider API
-    s.wire("M 610 520 H 720")  # gateway -> API routes -> webservice
-    s.wire("M 990 520 H 1270")  # webservice -> local request API -> orchestrator
-    s.wire("M 745 640 V 710")  # webservice -> rate-limit window -> redis
-    s.wire("M 965 640 V 765 H 1040")  # webservice -> persistence -> db
-    s.wire("M 1395 720 V 830 H 978 V 765")  # orchestrator -> persistence
-    s.wire("M 1130 275 V 315 H 1410 V 275 M 1395 315 V 395 M 1395 435 V 500")  # workers -> worker session
+
+    def stack(x, y, w, h):
+        """Two offset copies behind a component: the component runs as several instances."""
+        for o in (20, 10):
+            s.add(f'<rect x="{x + o}" y="{y - o}" width="{w}" height="{h}" fill="#fff" stroke="{INK}" stroke-width="2"/>')
+
+    s.frame(360, 345, 1170, 505, "«subsystem»", "Logos", name_x=510)
+    # Request path (accent): clients -> Gateway -> logos-webservice -> cloud or orchestrator -> workers
+    req = dict(color=SIGNAL, width=2.5)
+    s.wire("M 200 490 H 410 M 200 660 H 410", **req)
+    s.wire("M 610 525 H 720", **req)
+    s.wire("M 855 215 V 410", **req)
+    s.wire("M 1010 525 H 1270", **req)
+    s.wire("M 1365 255 V 430", **req)
+    # Supporting connections
+    s.wire("M 115 200 V 245 M 115 285 V 440")  # Keycloak -> OIDC -> Logos UI
+    s.wire("M 130 265 H 760 V 410")  # OIDC -> logos-webservice
+    s.wire("M 760 620 V 660 M 760 700 V 730")  # logos-webservice -> rate-limit window -> logos-redis
+    s.wire("M 950 620 V 640 H 1395 V 620 M 1125 640 V 670 M 1125 710 V 730")  # persistence
+    # External systems
     s.comp(0, 40, 230, 160, "«subsystem»", "Keycloak", "identity provider")
-    s.comp(630, 40, 340, 215, "«subsystem»", "Cloud AI provider", top=True)
-    s.comp(670, 125, 260, 110, "«component»", "Azure · OpenAI", "cloud models")
-    for x in (1000, 1280):
-        s.comp(x, 0, 260, 275, "«subsystem»", "GPU worker node", top=True)
-        s.comp(x + 18, 78, 224, 76, None, "logos-workernode", name_size=f + 2, icon=False)
-        s.comp(x + 18, 182, 224, 76, None, "vLLM lane", name_size=f + 2, icon=False)
-        s.wire(f"M {x + 130} 154 V 180", dashed=True, arrow=True)
-    s.comp(0, 420, 200, 100, "«subsystem»", "Logos UI", "browser")
-    s.comp(0, 590, 200, 100, "«subsystem»", "Application", "SDK · tool · agent")
-    s.comp(410, 420, 200, 380, "«component»", "Gateway", ["logos-rate-gateway", "traefik"])
-    s.comp(720, 420, 270, 220, "«component»", "logos-webservice", "inference gateway")
-    s.badge(734, 432, "× N")
-    s.comp(1270, 500, 250, 220, "«component»", "logos-orchestrator", "classify · schedule", name_size=f + 3)
-    s.comp(645, 710, 200, 90, "«component»", "logos-redis")
-    s.comp(1040, 725, 230, 90, "«component»", "logos-db", "PostgreSQL")
-    s.iface(275, 470, ["Management", "API"], 282, 414, socket="left")
-    s.iface(275, 640, ["OpenAI-", "compatible", "API"], 282, 560, socket="left")
+    s.comp(685, 0, 340, 215, "«subsystem»", "Cloud AI provider", top=True)
+    s.comp(725, 85, 260, 110, "«component»", "Azure · OpenAI", "Gemini · Bedrock")
+    stack(1220, 20, 290, 235)
+    s.comp(1220, 20, 290, 235, "«subsystem»", "GPU worker node", top=True)
+    s.badge(1232, 32, "× N")
+    s.comp(1250, 105, 230, 60, None, "logos-workernode", name_size=f + 2, icon=False)
+    s.comp(1250, 185, 230, 60, None, "vLLM lane", name_size=f + 2, icon=False)
+    s.wire("M 1365 165 V 183", dashed=True, arrow=True)
+    s.comp(0, 440, 200, 100, "«subsystem»", "Logos UI", "browser")
+    s.comp(0, 610, 200, 100, "«subsystem»", "Application", "SDK · tool · agent")
+    # Logos
+    s.comp(410, 440, 200, 270, "«component»", "Gateway", ["logos-rate-gateway", "traefik"])
+    stack(720, 430, 270, 190)
+    s.comp(720, 430, 270, 190, "«component»", "logos-webservice", "inference gateway")
+    s.badge(734, 442, "× N")
+    s.comp(1270, 430, 250, 190, "«component»", "logos-orchestrator", "classify · schedule", name_size=f + 3)
+    s.comp(660, 730, 200, 90, "«component»", "logos-redis")
+    s.comp(1010, 730, 230, 90, "«component»", "logos-db", "PostgreSQL")
+    # Interfaces
+    s.iface(275, 490, ["Management", "API"], 282, 434, socket="left")
+    s.iface(275, 660, ["OpenAI-", "compatible", "API"], 282, 580, socket="left")
     s.iface(115, 265, ["OpenID Connect"], 145, 305, anchor="start", socket="down")
-    s.iface(800, 300, ["Cloud provider API"], 826, 307, anchor="start", socket="down")
-    s.iface(665, 520, ["API", "routes"], 665, 566, socket="left")
-    s.iface(1130, 520, ["Local request API"], 1130, 487, socket="left")
-    s.iface(745, 676, ["Rate-limit window"], 770, 683, anchor="start", socket="up")
-    s.iface(1003, 765, ["Persistence"], 1160, 711, socket="left")
-    s.iface(1395, 415, ["Worker session", "(WebSocket)"], 1370, 410, anchor="end", socket="up")
+    s.iface(855, 300, ["Cloud provider API"], 880, 307, anchor="start", socket="down")
+    s.iface(665, 525, ["API", "routes"], 665, 571, socket="left")
+    s.iface(1140, 525, ["Local request API"], 1140, 492, socket="left")
+    s.iface(760, 690, ["Rate-limit window"], 785, 697, anchor="start", socket="up")
+    s.iface(1125, 690, ["Persistence"], 1150, 697, anchor="start", socket="up")
+    s.iface(1365, 300, ["Worker session", "(WebSocket)"], 1340, 297, anchor="end", socket="up")
     s.save("top-level.svg")
 
 

@@ -16,7 +16,7 @@ The dominant levers, in order of impact:
    long a demand signal waits before the planner even decides. Queued requests
    tickle the planner early (`hint_capacity_needed`), so the effective decision
    latency for a queued request is usually < 1 s.
-3. **`IDLE_SLEEP_L1` (120 s)** — how long a lane must idle before it is put to
+3. **`IDLE_SLEEP_L1` (1800 s, override `LOGOS_IDLE_SLEEP_L1_S`)** — how long a lane must idle before it is put to
    sleep. Directly controls how often a subsequent request pays the wake cost
    instead of hitting a hot lane.
 4. **Competitive ratios + tenure** (`WAKE/LOAD/DRAIN_COMPETITIVE_RATIO`,
@@ -34,8 +34,8 @@ The dominant levers, in order of impact:
 | Parameter | Default | Effect on switching speed |
 |---|---|---|
 | `cycle_seconds` (ctor, line 228) | 10 s | Planner wakes at most this often. Queued requests fire an event-driven tickle, so reaction to *new* demand is near-instant; periodic effects (idle sleep) wait up to one cycle. |
-| `IDLE_SLEEP_L1` (line 64) | 120 s | Idle time before sleep level 1 (frees KV cache, keeps weights). Shorter ⇒ VRAM is reclaimed sooner ⇒ next model loads faster, but more wake costs. |
-| `IDLE_SLEEP_L2` (line 78) | 86 400 s | Effectively disabled — sleep level 2 would discard fast-wake state. |
+| `IDLE_SLEEP_L1` | 1800 s (`LOGOS_IDLE_SLEEP_L1_S`) | Idle time before sleep level 1 (frees KV cache, keeps weights). Shorter ⇒ VRAM is reclaimed sooner ⇒ next model loads faster, but more wake costs. |
+| `IDLE_SLEEP_L2` | 86 400 s | Effectively disabled — sleep level 2 would discard fast-wake state. |
 | `TARGET_ACTION_COST_S` (line 107) | wake 2 s, load 90 s | Cost estimates used to *rank* candidate actions; bias which switch (wake vs. cold load) wins. |
 | `VICTIM_ACTION_COST_S` (line 108) | sleep_l1 1 s, sleep_l2 1.5 s, stop 30 s | Estimated cost of evicting the victim lane. |
 | `WAKE_COMPETITIVE_RATIO` (line 86) | 1.5 | Demand for the incoming model must beat the eviction set by 50 % before a wake-with-eviction happens. Higher ⇒ slower, more conservative switching. |
@@ -74,7 +74,7 @@ models with torch.compile + CUDA graphs).
 
 ## Practical recipes
 
-- **Benchmark "how fast can it switch"**: lower `IDLE_SLEEP_L1` (e.g. 30 s) to
+- **Benchmark "how fast can it switch"**: lower `LOGOS_IDLE_SLEEP_L1_S` (e.g. 30 s) to
   force frequent sleep/wake cycles, and set
   `status_refresh_interval_seconds: 1` + `gpu_poll_interval: 1` on the
   workernode so the telemetry (and the VRAM statistics, see
