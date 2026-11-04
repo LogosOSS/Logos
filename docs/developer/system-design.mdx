@@ -32,24 +32,25 @@ providers** serve the cloud models.
 
 <img
   src={useBaseUrl('/img/system-design/top-level.svg')}
-  alt="UML component diagram of Logos — every client request enters through the Gateway (Rate Gateway, Traefik) to the Webservice replicas, which call the cloud AI provider or the Orchestrator and its GPU nodes"
+  alt="UML component diagram of Logos — every client request enters through the Gateway (nginx, Traefik) to the Webservice replicas, which call the cloud AI provider or the Orchestrator and its GPU nodes"
   style={{width: '100%', height: 'auto', marginTop: '1rem', marginBottom: '0.5rem'}}
 />
 
 The diagram is a UML component diagram. A circle is an interface that a
 component provides. An arc is an interface that a component requires. A
 stack of boxes with the ×N label is a component that runs as more than one
-instance. The table below gives the container name of each component in
+instance. The second line of a component names its technology. The table below gives the container name of each component in
 `docker-compose.yaml`.
 
 | Component | Container |
 |---|---|
-| Gateway | `logos-rate-gateway` (Rate Gateway), `traefik` |
+| Identity Provider | `keycloak` (development only) |
+| Gateway | `logos-rate-gateway` (nginx), `traefik` |
 | Webservice | `logos-webservice` |
 | Orchestrator | `logos-orchestrator` |
-| Redis | `logos-redis` |
+| Cache | `logos-redis` |
 | Database | `logos-db` |
-| Worker Node | `logos-workernode` (on each GPU node) |
+| Worker Node, Lane | `logos-workernode` and its vLLM lanes (on each GPU node) |
 
 Each request from a client goes through the gateway: first
 `logos-rate-gateway`, then `traefik`. Traefik sends the request to one of the
