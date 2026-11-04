@@ -272,7 +272,7 @@ export class Providers implements OnInit, OnDestroy {
   });
 
   async ngOnInit(): Promise<void> {
-    this.fetchProviders();
+    void this.fetchProviders();
     try {
       const models = await this.modelService.getModels();
       this.allModels.set(models);
@@ -405,7 +405,7 @@ export class Providers implements OnInit, OnDestroy {
     }
     this.expandedId.set(provider.id);
     if (!this.providerModels()[provider.id]) {
-      this.loadProviderModels(provider.id);
+      void this.loadProviderModels(provider.id);
     }
   }
 

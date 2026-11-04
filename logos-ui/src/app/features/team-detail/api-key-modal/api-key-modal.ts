@@ -133,7 +133,7 @@ export class ApiKeyModalComponent implements OnChanges {
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['visible']?.currentValue && this.key) {
       this.initForm(this.key);
-      this.loadPermissions(this.key.id);
+      void this.loadPermissions(this.key.id);
     }
   }
 

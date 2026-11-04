@@ -307,9 +307,10 @@
 
     <div class="form-row-2">
       <div class="form-field">
-        <label class="field-label">Cloud Limits (requests / tokens per minute)</label>
+        <label class="field-label" for="create-key-cloud-rpm">Cloud Limits (requests / tokens per minute)</label>
         <div class="field-pair">
           <input
+            id="create-key-cloud-rpm"
             class="field-input"
             type="number"
             min="0"
@@ -321,9 +322,11 @@
             [disabled]="createLoading()"
           />
           <input
+            id="create-key-cloud-tpm"
             class="field-input"
             type="number"
             min="0"
+            aria-label="Cloud tokens per minute"
             [placeholder]="
               team?.default_cloud_tpm_limit ? (team?.default_cloud_tpm_limit ?? '').toString() : '∞'
             "
@@ -334,9 +337,10 @@
         </div>
       </div>
       <div class="form-field">
-        <label class="field-label">Local Limits (requests / tokens per minute)</label>
+        <label class="field-label" for="create-key-local-rpm">Local Limits (requests / tokens per minute)</label>
         <div class="field-pair">
           <input
+            id="create-key-local-rpm"
             class="field-input"
             type="number"
             min="0"
@@ -348,9 +352,11 @@
             [disabled]="createLoading()"
           />
           <input
+            id="create-key-local-tpm"
             class="field-input"
             type="number"
             min="0"
+            aria-label="Local tokens per minute"
             [placeholder]="
               team?.default_local_tpm_limit ? (team?.default_local_tpm_limit ?? '').toString() : '∞'
             "

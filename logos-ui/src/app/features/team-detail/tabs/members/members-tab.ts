@@ -183,9 +183,9 @@ export class MembersTabComponent {
     next.add(key.id);
     this.expandedKeyIds.set(next);
     if (!this.globalDataLoaded) {
-      if (!this.globalDataLoading) this.loadGlobalData(key);
+      if (!this.globalDataLoading) void this.loadGlobalData(key);
     } else if (key.use_custom_permissions && !this.keyPermCache.has(key.id)) {
-      this.loadKeyPerms(key.id);
+      void this.loadKeyPerms(key.id);
     }
   }
 
@@ -221,7 +221,7 @@ export class MembersTabComponent {
       this.globalDataLoaded = true;
 
       if (pending?.use_custom_permissions && !this.keyPermCache.has(pending.id)) {
-        this.loadKeyPerms(pending.id);
+        void this.loadKeyPerms(pending.id);
       }
     } finally {
       this.globalDataLoading = false;
@@ -337,14 +337,14 @@ export class MembersTabComponent {
     this.ownerSearch.set('');
     this.addOwnerError.set('');
     this.addOwnerOpen.set(true);
-    if (this.adminUsers().length === 0) this.fetchAdminUsers();
+    if (this.adminUsers().length === 0) void this.fetchAdminUsers();
   }
 
   openAddMember(): void {
     this.memberSearch.set('');
     this.addMemberError.set('');
     this.addMemberOpen.set(true);
-    if (this.allUsers().length === 0) this.fetchUsers();
+    if (this.allUsers().length === 0) void this.fetchUsers();
   }
 
   private async fetchAdminUsers(): Promise<void> {

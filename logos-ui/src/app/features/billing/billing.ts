@@ -8,7 +8,7 @@ import {
   ElementRef,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { BillingService, BudgetBucket } from '../../core/services/billing.service';
+import { BillingService, BudgetBucket, compareTimestamps } from '../../core/services/billing.service';
 import { ErrorMessageComponent } from '../../shared/components/error-message/error-message';
 import { DataTableComponent } from '../../shared/components/data-table/data-table';
 import {
@@ -253,7 +253,7 @@ export class Billing {
       return { rects: [], gridLines: [], xLabels: [], buckets: [], plotTop: 0, plotBottom: 0, barW: 0 };
     }
 
-    const bucketTimes = [...new Set(buckets.map((b) => b.bucket_ts))].sort();
+    const bucketTimes = [...new Set(buckets.map((b) => b.bucket_ts))].sort(compareTimestamps);
     const n = bucketTimes.length;
 
     const bars = bucketTimes.map((ts) => {
@@ -350,7 +350,7 @@ export class Billing {
     effect(() => {
       const preset = this.preset();
       const offset = this.offset();
-      this.loadData(preset, offset);
+      void this.loadData(preset, offset);
     });
 
     effect(() => {
@@ -388,7 +388,7 @@ export class Billing {
       return;
     }
     this.expandedTeamId.set(teamId);
-    if (!this.keysByTeamId()[teamId]) this.loadKeys(teamId);
+    if (!this.keysByTeamId()[teamId]) void this.loadKeys(teamId);
   }
 
   keysForTeam(teamId: number): KeyRow[] {

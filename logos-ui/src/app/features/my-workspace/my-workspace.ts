@@ -128,10 +128,11 @@ export class MyWorkspace implements OnInit {
   }
 
   copyKey(key: MyKey): void {
+    // A refused clipboard write (no permission, insecure context) leaves the button unchanged.
     navigator.clipboard.writeText(key.key_value).then(() => {
       this.copiedKeyId.set(key.id);
       setTimeout(() => this.copiedKeyId.set(null), 2000);
-    });
+    }, () => undefined);
   }
 
   isCopied(keyId: number): boolean {
