@@ -79,26 +79,7 @@ Open [http://localhost:4200](http://localhost:4200) and select **Sign in**. The 
 | `pech.vogel` | none | The no-team and no-access screens |
 
 A fresh stack has no teams, so `app_developer` accounts see nothing until they join one.
-
-<details>
-<summary><b>Three ways to give developers a team</b></summary>
-
-- **Manually** (default): sign in as `tobias.wasner` or another admin, create a team under **Teams**
-  and add the developer accounts as members. They get access on their next login.
-- **From a Keycloak group**: as `tobias.wasner`, create a team under **Teams** and set its
-  **Keycloak group**, in the create dialog or later on the team's **Settings** tab. Everyone who
-  carries that group or realm role joins the team on the next login and leaves it again once they
-  no longer carry it. The seeded realm offers `logos-dev` and `maiss-dev`.
-- **Automatically**: set `KEYCLOAK_AUTO_PROVISION_TEAMS=true` for `logos-webservice` in
-  `docker-compose.dev.yaml`. On the next login, every account with a team role (a role ending in
-  `-dev`, `-team` or `-group`, see `KEYCLOAK_TEAM_ROLE_SUFFIXES`) gets that team created and joined.
-  The seeded realm maps `logos-dev` → team **Logos** and `maiss-dev` → team **Maiss**.
-
-To add more dev accounts, edit `keycloak/tum-realm.json` and restart the `keycloak` container.
-On Linux, if `npm` reports `EACCES` errors, see the
-[npm documentation](https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally).
-
-</details>
+[Local development](https://logososs.github.io/Logos/developer/local-setup) shows 3 ways to give them a team.
 
 The interactive API reference is served at `/docs` (Swagger). A `GET /v1` returns 404 by design.
 
@@ -107,7 +88,7 @@ The interactive API reference is served at `/docs` (Swagger). A `GET /v1` return
 | Area | What it does |
 | --- | --- |
 | [OpenAI-compatible API](https://logososs.github.io/Logos/user/api-usage) | `/v1/chat/completions`, `/v1/responses`, embeddings and models, streaming included; one API key per team member or application |
-| [Audio](#audio-transcription-and-translation) | `/v1/audio/transcriptions` and `/v1/audio/translations` against cloud Whisper deployments or compatible worker backends |
+| [Audio](https://logososs.github.io/Logos/user/api-usage#audio-transcription-and-translation) | `/v1/audio/transcriptions` and `/v1/audio/translations` against cloud Whisper deployments or compatible worker backends |
 | [Batch processing](https://logososs.github.io/Logos/batch-processing) | The OpenAI Batch API (`/v1/files`, `/v1/batches`); runs at the provider's batch rate where possible, otherwise inside Logos at the lowest queue priority. The **Batches** page does the same without a script |
 | Async jobs | `POST /jobs/v1/chat/completions` returns `202` with a `Location` header; poll `GET /jobs/{job_id}` |
 | [Decision models](https://logososs.github.io/Logos/decision-models) | `POST /v1/systemone` answers typed questions (yes/no, choice, score) with calibrated probabilities |
@@ -161,49 +142,19 @@ classification, scheduling, context-resolution, forwarding and completion bounda
 
 ## Development
 
-### Prerequisites
-
-- Python 3.13 and [uv](https://docs.astral.sh/uv/)
-- Docker with Docker Compose
-- Node.js and npm for `logos-ui/` and `docs/`
-- [Artemis developer access](https://request.aet.cit.tum.de/) to push to this repository
-
-### Orchestrator dependencies
+You need Python 3.13 with [uv](https://docs.astral.sh/uv/), Docker with Docker Compose, Node.js
+for `logos-ui/` and `docs/`, and [Artemis developer access](https://request.aet.cit.tum.de/) to
+push to this repository.
 
 ```bash
-pip install uv                      # if uv is not installed yet
-cd logos-orchestrator
-uv sync --locked --python 3.13
+(cd logos-orchestrator && uv sync --locked --python 3.13) # orchestrator dependencies
+pre-commit install                                         # from the repository root
+pre-commit run --all-files                                 # the same checks as the lint CI job
 ```
 
-Run `uv sync --locked` in `logos-orchestrator/` for later syncs. The root `pyproject.toml` only
-configures formatting and is not the orchestrator package, so the warning about its missing
-`[project]` table is harmless. In PyCharm, use `logos-orchestrator/.venv/bin/python` as the
-interpreter; **Sync project** installs missing packages with uv.
-
-### Pre-commit hooks
-
-The [pre-commit](https://pre-commit.com/) configuration runs the same checks as the lint CI job
-(`.github/workflows/logos_lint.yml`):
-
-| Hook | Purpose |
-| --- | --- |
-| `pre-commit-hooks` | YAML/TOML syntax, large files, merge conflicts, end of file, trailing whitespace |
-| `autoflake` | Removes unused imports and variables |
-| `isort` | Sorts imports (`profile=black`, 120 columns) |
-| `black` | Formats Python (`line-length = 120`, `target = py313`) |
-| `flake8` | Lints against `.flake8` (E203 and W503 disabled for black) |
-
-```bash
-brew install pre-commit             # or: pip install pre-commit
-pre-commit install                  # from the repository root; runs the hooks on every commit
-pre-commit run --all-files          # what CI runs
-pre-commit run black --all-files    # a single hook
-```
-
-> [!IMPORTANT]
-> The lint CI job fails when a hook changes a file or reports a violation. Fix the issue instead of
-> committing with `--no-verify`; CI still fails.
+[Local development](https://logososs.github.io/Logos/developer/local-setup) covers the dev stack, the seeded accounts, the
+PyCharm setup and every pre-commit hook. The [TUM test instance](https://logososs.github.io/Logos/developer/test-instance)
+page covers SSH and database access to `logos-test.aet.cit.tum.de`.
 
 ### Conventions
 
@@ -213,116 +164,6 @@ pre-commit run black --all-files    # a single hook
 - **Branch names** follow `feature/logos/description` or `logos/description`.
 - Every pull request that changes the web application includes desktop and mobile screenshots.
 - More rules for contributors and coding agents are in [`AGENTS.md`](AGENTS.md).
-
-## TUM test instance
-
-The test instance runs at `logos-test.aet.cit.tum.de` and is reachable on port 443 for the web
-application, the Swagger reference ([`/docs`](https://logos-test.aet.cit.tum.de/docs)) and the
-completion API. Traefik routes by path: API paths (`/v1`, `/openai`, `/jobs`, `/api`, `/docs`, …)
-win, everything else serves the web application. Port `8080` remains a TLS alias for the completion
-API for existing clients.
-
-With access granted and the VPN active, connect with `ssh <tum-id>@logos-test.aet.cit.tum.de`.
-The instance lives in `/opt/logos`.
-
-<details>
-<summary><b>Database access through an SSH tunnel</b></summary>
-
-PostgreSQL is not reachable from outside the server. Tunnel through SSH, either in your database
-client or manually:
-
-```bash
-ssh -L 5433:127.0.0.1:5432 <tum-id>@logos-test.aet.cit.tum.de
-```
-
-Then connect to `localhost:5433`, database `logosdb`, user `postgres`, password `root`.
-
-In DBeaver, create a PostgreSQL connection. On the **SSH** tab, set host
-`logos-test.aet.cit.tum.de`, port `22`, your TUM ID as user name and public-key authentication with
-your private key (for example `~/.ssh/id_ed25519`). On the **Main** tab, set host `localhost`,
-port `5432`, database `logosdb`, user `postgres` and password `root`.
-
-</details>
-
-## Reference
-
-### Audio transcription and translation
-
-Logos implements the OpenAI-compatible multipart audio APIs:
-
-- `POST /v1/audio/transcriptions` transcribes audio in its original language.
-- `POST /v1/audio/translations` transcribes and translates audio into English.
-
-```bash
-curl https://logos-test.aet.cit.tum.de/v1/audio/transcriptions \
-  -H "Authorization: Bearer $LOGOS_API_KEY" \
-  -F "file=@./speech.wav" \
-  -F "model=whisper-1" \
-  -F "response_format=verbose_json" \
-  -F "timestamp_granularities[]=word"
-```
-
-<details>
-<summary><b>Providers, limits, logging and pricing</b></summary>
-
-The selected model must be available to the caller's API key. Cloud providers (including
-deployment-scoped Azure OpenAI Whisper endpoints) and compatible worker-node backends receive the
-original multipart fields and file metadata. JSON, verbose JSON, plain text, SRT and VTT responses
-are relayed with the upstream status and content type.
-
-Audio file contents and credentials are excluded from usage logs and durable async-job records;
-only the file name, media type and size are recorded.
-
-| Limit | Default | Setting |
-| --- | --- | --- |
-| Audio file (one per request) | 25 MiB (upstream Whisper limit) | `LOGOS_MAX_AUDIO_UPLOAD_BYTES` |
-| Each text form field | 64 KiB | `LOGOS_MAX_AUDIO_FORM_FIELD_BYTES` |
-| Total multipart request, checked before the file is spooled | 30 MiB | `LOGOS_MAX_AUDIO_REQUEST_BYTES` |
-
-When the provider reports duration-based usage, Logos stores millisecond precision and applies the
-provider's per-second catalogue price, so fractional audio duration is not discarded.
-
-</details>
-
-### Capacity planner
-
-| Setting | Default | Effect |
-| --- | --- | --- |
-| `LOGOS_CAPACITY_PLANNER_ENABLED` | `true` | Background loop (30 s cycles) that sleeps idle lanes, wakes lanes on demand and tunes vLLM GPU memory utilization. Set it in the `environment` of `logos-orchestrator`. |
-
-Worker nodes calibrate model VRAM profiles (memory when loaded and when sleeping) automatically.
-Logos stores the profiles in its database and sends them to each worker at startup, so the workers
-keep none on disk and need no extra configuration.
-
-### Nightly model benchmarks
-
-Automatic calibration runs first (05:00–08:00 Europe/Berlin by default); benchmarks use the
-remaining time. `LOGOS_MAINTENANCE_MAX_NODES` limits simultaneous maintenance workers, including
-manual starts: the default `1` keeps runs sequential, `2` permits 2 workers in parallel. Reserved
-workers do not serve normal requests.
-
-Logos admins add model/worker pairs to the nightly rotation under **Model Details → Performance**.
-Activation and deactivation both need confirmation, and schedules start disabled.
-
-<details>
-<summary><b>Rotation rules</b></summary>
-
-- Test at most **2 enabled pairs per night**, within the maintenance worker limit. Untested pairs
-  come first, then the oldest previous attempt. Unavailable pairs are skipped.
-- Start configurations between **05:00 and 07:50 Europe/Berlin**. At 08:00, continue only if at
-  least 50 % of the measured requests completed successfully.
-- Stop after **5 minutes without output or completed requests**. Retry a stalled configuration once
-  before 07:50, then skip it if it stalls again.
-- Compare the current settings with selected batching-parameter variants on a fixed dataset.
-- Restore the original worker configuration after the plan. Results are stored for review; a winning
-  configuration is never applied to production automatically.
-
-</details>
-
-The [nightly benchmark guide](https://logososs.github.io/Logos/admin/nightly-benchmarks) covers
-activation, selection, limits, deployment, recovery and the API. The
-[manual benchmark guide](logos-orchestrator/docs/benchmark-configuration.md) describes the dataset
-editor and benchmark batches.
 
 ## License
 
