@@ -46,7 +46,7 @@ with policy-based routing, scheduling, usage logging, billing and monitoring.
 
 ## Quick links
 
-| | |
+| Topic | Where to find it |
 | --- | --- |
 | Documentation | https://logososs.github.io/Logos/ |
 | Call the API | [User Guide → API usage](https://logososs.github.io/Logos/user/api-usage) |
@@ -160,8 +160,6 @@ page covers SSH and database access to `logos-test.aet.cit.tum.de`.
 
 - **Pull request titles** are short, descriptive and start with a capital letter, for example
   `Add team management endpoints`.
-- **Commit messages** follow `Logos: Description starting with capital letter (#issue_number)`.
-- **Branch names** follow `feature/logos/description` or `logos/description`.
 - Every pull request that changes the web application includes desktop and mobile screenshots.
 - More rules for contributors and coding agents are in [`AGENTS.md`](AGENTS.md).
 
