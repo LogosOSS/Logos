@@ -52,7 +52,7 @@ export default function Homepage(): React.JSX.Element {
   const trailerPoster = useBaseUrl("/video/logos-trailer-poster.jpg");
 
   return (
-    <div className={styles.page}>
+    <div className={`${styles.page} logos-home`}>
       <section className={styles.hero}>
         <div className={styles.heroSplit}>
           <div className={styles.heroText}>
