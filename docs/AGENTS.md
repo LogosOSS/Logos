@@ -119,6 +119,10 @@ allowed only when the UI change already merged without a docs update (debt
 cleanup); never defer the PNG refresh out of a UI PR that changes how a
 documented page looks.
 
+`seed/capture-screenshots.cjs` captures the shot matrix at the required 2x
+size (see the comment at its top for the seed steps and the run command). It
+skips shots that the screenshots stack cannot produce and keeps their old PNG.
+
 Capture technique (unlock `.main-content` scroll, wait for non-skeleton
 content, force light theme, use `localhost` not `127.0.0.1`) is the
 [`ui-screenshots`](../.agents/skills/ui-screenshots/SKILL.md) skill. Do **not**
@@ -282,7 +286,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 
 | File | Login as | Route / state | Documented in |
 |---|---|---|---|
-| `logos-admin-statistics.png` | `tobias.wasner` | `/statistics` | `roles/logos-admin.md` |
+| `logos-admin-statistics.png` | `tobias.wasner` | `/statistics?tab=requests` (the plain route opens **Local Providers**) | `roles/logos-admin.md` |
 | `logos-admin-statistics-lanes.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a lane locked (needs a connected worker: the e2e stack, `../e2e`, with a lane loaded) | `roles/logos-admin.md#idle-lanes-and-lane-locks` |
 | `logos-admin-statistics-worker-lock.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a worker locked with two lanes (e2e stack; capture the lane panel) | `roles/logos-admin.md#worker-locks` |
 | `logos-admin-statistics-requesters.png` | `tobias.wasner` | `/statistics?tab=requests` — **Requesters** list open | `roles/logos-admin.md` |
