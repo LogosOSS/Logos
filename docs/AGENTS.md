@@ -103,7 +103,9 @@ README), `deployment.svg`, `data-model.svg`, `request-flow.svg` and
 `../architecture.svg` (request routing and replication, on
 `developer/architecture.mdx`). Edit the script, not the SVG. Name components
 after the containers in `docker-compose.yaml` and
-`logos-workernode/docker-compose.yml`. Use UML notation (component, deployment,
+`logos-workernode/docker-compose.yml`. Exception: `top-level.svg` uses title-case
+names without the `logos-` prefix (Webservice, Orchestrator, Worker Node), and
+`developer/system-design.mdx` maps them to the containers in a table. Use UML notation (component, deployment,
 class and activity diagrams), white background, one accent colour, and short
 labels — not dense boxes. Keep the prose of `developer/system-design.mdx` and
 `developer/architecture.mdx` aligned with the diagrams.
