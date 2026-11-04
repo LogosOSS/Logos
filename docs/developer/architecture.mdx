@@ -64,17 +64,14 @@ and the [worker node guide](https://github.com/LogosOSS/Logos/blob/main/logos-wo
 ## Request Routing and Replication
 
 The structural diagrams (top-level, deployment, data model, inference paths)
-are on [System Design](./system-design). The diagram below shows the core
-node, the worker nodes and the cloud providers in one picture:
+are on [System Design](./system-design). The diagram below shows how a request
+goes through the gateway to the replicas of `logos-webservice`:
 
 <img
   src={useBaseUrl('/img/architecture.svg')}
-  alt="Logos architecture — core node, worker nodes, and cloud providers"
+  alt="Request routing: clients, gateway, load-balanced logos-webservice replicas with logos-redis, cloud provider, logos-orchestrator and GPU worker nodes"
   style={{width: '100%', height: 'auto'}}
 />
-
-Editable source: <a href={useBaseUrl('/img/architecture.drawio')}>architecture.drawio</a>
-(open it in [diagrams.net](https://app.diagrams.net/)).
 
 This design has three properties:
 
