@@ -366,7 +366,7 @@ _DEEPEN_STEP = 250
 _MAX_HISTORY_DEPTH = 5000
 
 
-def _deepen_until_merge_base(default: str) -> None:
+def _deepen_until_merge_base(default: str, base: str) -> None:
     """Make `git merge-base origin/<default> HEAD` resolvable, or fail.
 
     A reviewing session is handed a diff against the default branch
@@ -396,9 +396,15 @@ def _deepen_until_merge_base(default: str) -> None:
                 "the checkout cannot be diffed against the default branch"
             )
         deepened += _DEEPEN_STEP
-        # No refspec: deepens every shallow boundary at once, so the base's
-        # line and the default's line both grow, not just one.
-        run(["git", "fetch", f"--deepen={_DEEPEN_STEP}", "origin"], cwd=CHECKOUT)
+        # Each line by name and in a fetch of its own: the shallow clone
+        # tracks a single branch, so a bare `fetch --deepen` grows only that
+        # one, and a single fetch naming both stops deepening the second line
+        # once the first has reached the commits they share.
+        run(["git", "fetch", f"--deepen={_DEEPEN_STEP}", "origin", base], cwd=CHECKOUT)
+        run(
+            ["git", "fetch", f"--deepen={_DEEPEN_STEP}", "origin", f"{default}:refs/remotes/origin/{default}"],
+            cwd=CHECKOUT,
+        )
 
 
 def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -> None:
@@ -495,7 +501,7 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     # alone is still a usable working copy, and there is nothing to deepen
     # toward.
     if default_available:
-        _deepen_until_merge_base(default)
+        _deepen_until_merge_base(default, base_branch)
 
 
 def agent_login() -> str:
