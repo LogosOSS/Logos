@@ -209,7 +209,7 @@ def top_level():
     s.wire(f"M 1125 {690 + B} V 730")  # Database provides SQL
     # External systems
     s.comp(0, 40, 230, 160, "«subsystem»", "Identity Provider", "Keycloak")
-    s.comp(685, 40, 340, 175, "«subsystem»", "Cloud AI Provider", ["Azure · OpenAI", "Gemini · Bedrock"])
+    s.comp(685, 40, 340, 175, "«subsystem»", "Cloud AI Provider", "Azure · OpenAI")
     stack(1220, 20, 290, 265)
     s.comp(1220, 20, 290, 265, "«subsystem»", "GPU Node", top=True)
     s.badge(1232, 32, "× N")

@@ -27,10 +27,9 @@
 <text x="115.0" y="157.0" text-anchor="middle" font-size="20" font-weight="400" fill="#5f5688">Keycloak</text>
 <rect x="685" y="40" width="340" height="175" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <g transform="translate(993 51)" fill="#fff" stroke="#241c3b" stroke-width="1.6"><rect x="4" y="0" width="16" height="20"/><rect x="0" y="4" width="8" height="4"/><rect x="0" y="12" width="8" height="4"/></g>
-<text x="855.0" y="98.5" text-anchor="middle" font-size="20" font-weight="400" fill="#3b3160">«subsystem»</text>
-<text x="855.0" y="128.5" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">Cloud AI Provider</text>
-<text x="855.0" y="152.5" text-anchor="middle" font-size="20" font-weight="400" fill="#5f5688">Azure · OpenAI</text>
-<text x="855.0" y="176.5" text-anchor="middle" font-size="20" font-weight="400" fill="#5f5688">Gemini · Bedrock</text>
+<text x="855.0" y="110.5" text-anchor="middle" font-size="20" font-weight="400" fill="#3b3160">«subsystem»</text>
+<text x="855.0" y="140.5" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">Cloud AI Provider</text>
+<text x="855.0" y="164.5" text-anchor="middle" font-size="20" font-weight="400" fill="#5f5688">Azure · OpenAI</text>
 <rect x="1240" y="0" width="290" height="265" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <rect x="1230" y="10" width="290" height="265" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <rect x="1220" y="20" width="290" height="265" fill="#fff" stroke="#241c3b" stroke-width="2"/>
