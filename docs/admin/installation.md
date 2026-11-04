@@ -1,8 +1,8 @@
 ---
-title: Self-hosted Installation
+title: Self-Hosted Installation
 ---
 
-# Self-hosted installation
+# Self-Hosted Installation
 
 This guide shows how to deploy the complete Logos stack with Docker Compose.
 The stack contains the web UI, the API service, the orchestrator, PostgreSQL
@@ -25,7 +25,7 @@ cd Logos
 cp .env.example .env
 ```
 
-## Development deployment
+## Development Deployment
 
 The development compose file builds all services locally. It includes a
 development Keycloak realm:
@@ -47,7 +47,7 @@ Then open `http://localhost:4200/` and sign in with one of the seeded
 development accounts. `keycloak/tum-realm.json` defines these accounts and
 their roles. Do not use them in a production deployment.
 
-## Production deployment
+## Production Deployment
 
 For production, use `docker-compose.yaml`. Every image is on the public mirror
 at `ghcr.io/logososs`. The compose file pulls from this mirror
@@ -110,7 +110,7 @@ certificate through Let's Encrypt.
 After startup, verify the UI at `https://<your-domain>/`. Verify the API
 documentation at `https://<your-domain>/docs`.
 
-## Persistent data and upgrades
+## Persistent Data and Upgrades
 
 The production stack keeps the following data:
 

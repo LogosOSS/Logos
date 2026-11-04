@@ -1,4 +1,4 @@
-# Batch processing
+# Batch Processing
 
 Use batch processing when you send many requests and nobody waits for the
 answers. Logos serves the OpenAI Batch API for this purpose. Logos runs a batch
@@ -18,17 +18,17 @@ in one of two places:
 Both places use the same API. A script uploads a file, polls, and starts the
 next batch. The script does not need to know which place Logos used.
 
-- [What Logos serves](#what-logos-serves)
-- [Using it](#using-it)
-- [Where a batch runs](#where-a-batch-runs)
-- [What Logos enforces](#what-logos-enforces)
+- [Supported routes](#supported-routes)
+- [Batch lifecycle](#batch-lifecycle)
+- [Execution at the provider or in Logos](#execution-at-the-provider-or-in-logos)
+- [Permission, ownership and budget checks](#permission-ownership-and-budget-checks)
 - [Billing](#billing)
 - [Azure specifics](#azure-specifics)
-- [The batch page in the UI](#the-batch-page-in-the-ui)
-- [Limits and what is deliberately not supported](#limits-and-what-is-deliberately-not-supported)
-- [Alternative: the async job API](#alternative-the-async-job-api)
+- [Batches page](#batches-page)
+- [Limits and unsupported features](#limits-and-unsupported-features)
+- [Async job API](#async-job-api)
 
-## What Logos serves
+## Supported Routes
 
 | Operation | Route |
 | --- | --- |
@@ -48,7 +48,7 @@ Logos also serves every route under the `/openai/`, `/jobs/v1/` and
 Logos returns the objects and errors of the provider without change. The OpenAI
 SDKs therefore work with Logos without modification.
 
-## Using it
+## Batch Lifecycle
 
 ```python
 from openai import OpenAI
@@ -87,7 +87,7 @@ while batch.status not in ("completed", "failed", "expired", "cancelled"):
     batch = client.batches.retrieve(batch.id)
 ```
 
-## Where a batch runs
+## Execution at the Provider or in Logos
 
 Logos decides where a batch runs when you upload the **input file**. The file
 shows which models the batch needs, and this decides where the batch can go. The
@@ -151,7 +151,7 @@ running state. The runner continues this batch in its next pass
 (`LOGOS_BATCH_LOCAL_POLL_INTERVAL_S`, default 15 s). The same pass also starts a
 batch that a client submitted while the process was down.
 
-## What Logos enforces
+## Permission, Ownership and Budget Checks
 
 Permission to use a provider does not give permission for everything that the
 provider can do. Logos therefore does not pass requests through without checks:
@@ -211,7 +211,7 @@ releases the latch and tries again.
 Note: Logos books what the *result rows* report. The provider is the source of
 truth for the invoice. These rows are the attribution of the invoice by Logos.
 
-## Azure specifics
+## Azure Specifics
 
 Azure serves Batch at the resource level (`{resource}/openai/v1/batches`) and
 not under a deployment. Logos therefore addresses Batch there. For inference,
@@ -254,7 +254,7 @@ Sources: [Azure OpenAI global batch](https://learn.microsoft.com/en-us/azure/ai-
 [model region availability](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure-region-availability),
 [pricing](https://azure.microsoft.com/pricing/details/cognitive-services/openai-service/).
 
-## The batch page in the UI
+## Batches Page
 
 **Batches** under *Management* does the same three things without a script. Select
 one of your API keys, upload a `.jsonl` file, and look at the list. A running
@@ -272,7 +272,7 @@ ownership rule and the budget guard are therefore the same as for a script. The
 browser never sees the value of the key. It names a key by id, and the webservice
 refuses a key that is not yours.
 
-## Limits and what is deliberately not supported
+## Limits and Unsupported Features
 
 - **No cross-provider batches.** One batch runs in one place. If the models of a
   file are not all on one provider that has a Batch API, then Logos runs the
@@ -289,7 +289,7 @@ refuses a key that is not yours.
 - **`purpose` values other than `batch`** are refused. You cannot use the Files
   API as general storage through Logos.
 
-## Alternative: the async job API
+## Async Job API
 
 Use the async job API for work that can wait but is not large. It frees the
 client from the wait and does not need the machinery of the Batch API.

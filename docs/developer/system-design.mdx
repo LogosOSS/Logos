@@ -11,10 +11,9 @@ together, how a typical deployment looks, what the core data model is, and how
 an inference request moves through the stack. The
 [Architecture](architecture.mdx) glossary defines the terms on this page.
 
-The top-level diagram comes from a script (see below). The other diagrams are
-SVG exports. Their editable sources are in
-<a href={useBaseUrl('/img/system-design/system-design.drawio')}>system-design.drawio</a>
-(open it in [diagrams.net](https://app.diagrams.net/); each diagram has its own page).
+The script `static/img/system-design/generate.py` makes all diagrams on this
+page. To change a diagram, edit the script and run it again (see
+`docs/AGENTS.md`).
 
 ## Top-Level Design
 
@@ -50,9 +49,7 @@ provider. It sends local and mixed requests to `logos-orchestrator`.
 
 The optional agent runner (`logos-agent`) is not in the diagram. Its
 `logos-agent-gateway` sends the requests of the agent sessions directly to
-`logos-orchestrator`. These requests do not go through the gateway. The
-script `static/img/system-design/top-level.py` makes the SVG. Edit the script
-and run it again to change the diagram.
+`logos-orchestrator`. These requests do not go through the gateway.
 
 ## Deployment
 
@@ -60,18 +57,21 @@ A typical deployment has the entire core stack on one **core node**. It has
 zero or more **worker nodes** on GPU machines. The diagram uses the same
 «device» style as the Artemis documentation. The clients are on the left, the
 main server is in the center, and the specialized workers are on the right.
+The boxes are the containers of the compose files. Dashed boxes are optional
+profiles.
 
 <img
   src={useBaseUrl('/img/system-design/deployment.svg')}
-  alt="Logos deployment overview — user devices, core node services, worker nodes, and external systems"
+  alt="UML deployment diagram of Logos — user device, core node with its containers, GPU worker nodes, cloud AI provider and organisation IdP"
   style={{width: '100%', height: 'auto', marginTop: '1rem', marginBottom: '0.5rem'}}
 />
 
-- **Webservice ×N** — Traefik balances the load between the replicas. It is
-  safe to scale the Webservice for traffic with many cloud requests. Liquibase
-  takes a DB lock when it migrates.
-- **Orchestrator ×1** — it holds the live worker registry and schedules local
-  and mixed work. Keep a single instance.
+- **`logos-webservice` ×N** — Traefik balances the load between the replicas.
+  The replicas share their cloud rate limits in `logos-redis`. It is safe to
+  scale the web service for traffic with many cloud requests. Liquibase takes a
+  DB lock when it migrates.
+- **`logos-orchestrator` ×1** — it holds the live worker registry and schedules
+  local and mixed work. Keep a single instance.
 - **Worker nodes** open an **outbound WebSocket** to the orchestrator. The core
   does not connect into a worker. Thus NAT and locked-down GPU networks work
   without inbound ports.
@@ -123,12 +123,11 @@ checks. Then the traffic goes on one of two paths:
 
 <img
   src={useBaseUrl('/img/system-design/request-flow.svg')}
-  alt="Logos inference request flow — shared entry through rate-limit and Traefik, then pure-cloud vs local/mixed paths"
+  alt="UML activity diagram of an inference request — rate-limit gateway, traefik and logos-webservice, then the cloud-only path or the local and mixed path, then usage settlement in logos-db"
   style={{width: '100%', height: 'auto', marginTop: '1rem', marginBottom: '0.5rem'}}
 />
 
-This design has two properties (the same as in the older architecture
-diagram):
+This design has two properties:
 
 - **Workers are outbound-only.** Control messages (sleep, wake, calibrate, lane
   changes) and inference RPC use the WebSocket that the worker opened.
@@ -139,7 +138,7 @@ diagram):
 To scale the cloud capacity, set `LOGOS_WEBSERVICE_REPLICAS` on the core node
 ([deployment — inference gateway replicas](../deployment.md#inference-gateway-replicas)).
 
-## Related reading
+## Related Reading
 
 | Topic | Document |
 |---|---|

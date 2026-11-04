@@ -1,4 +1,4 @@
-# Logos deployment
+# Logos Deployment
 
 Logos deployments use pull. The project publishes prebuilt images to its Harbor
 registry (`${LOGOS_HARBOR_REGISTRY}/logos`). The tag `latest` follows `main`.
@@ -22,7 +22,7 @@ A deployment consists of:
   [agent runner reference](https://github.com/LogosOSS/Logos/blob/main/logos-agent/README.md)).
   It is opt-in. To enable it, set `COMPOSE_PROFILES=agent`.
 
-## Images and registry
+## Images and Registry
 
 | Image | Contents |
 |---|---|
@@ -84,7 +84,7 @@ pass `--build-arg GIT_SHA=$(git rev-parse HEAD)`. For a pull-request build, the
 version is the commit of the pull request. The image is that pull request merged
 into `main` as of the build.
 
-### Update a worker node with the node manager
+### Update a Worker Node with the Node Manager
 
 The node manager is an optional service on a worker host. It replaces the worker
 container with a new image. It then checks the new container. If the new
@@ -161,7 +161,7 @@ The node manager reserves the tag `previous`. Do not deploy that tag.
 
 To see the latest deployment, run `docker exec logos-node-manager node-manager status`.
 
-### Drain a worker node during an update
+### Drain a Worker Node During an Update
 
 By default, the node manager replaces the worker container at once. This stops
 the requests that run on the worker. The drain prevents this. With the drain,
@@ -224,7 +224,7 @@ These limits apply to the drain:
 
 For all limits, see the README of the node manager.
 
-## Nightly benchmarks
+## Nightly Benchmarks
 
 To retain a fixed Dev workload, leave `LOGOS_NIGHTLY_REQUEST_USERNAME` empty.
 To freeze 50 recent requests on Prod, set this variable to the exact Prod username.
@@ -284,7 +284,7 @@ The `LOGOS_MAINTENANCE_WINDOW_*` variables control both calibration and benchmar
 See the [nightly benchmark guide](admin/nightly-benchmarks.md)
 for activation, the fixed workload, parameter values, API requests and diagnostic states.
 
-## Security & rate limiting
+## Security & Rate Limiting
 
 The API surface of the orchestrator has tiers:
 
@@ -304,7 +304,7 @@ The API docs (`/docs`, `/redoc`, `/openapi.json`) publish the full endpoint map.
 They are **off by default**. Set `LOGOS_DOCS_ENABLED=1` in `.env` only where
 necessary (the dev compose enables it).
 
-### Layer 1: per-IP limits (nginx rate gateway, in-stack)
+### Layer 1: Per-IP Limits (nginx Rate Gateway, In-Stack)
 
 The `logos-rate-gateway` container is an nginx. Every public request (443 and
 8080) passes it first. It enforces a request budget **for each client IP**.
@@ -390,7 +390,7 @@ The dev compose runs the same gateway with higher defaults (300/600 and 50/100).
 This prevents throttling during local benchmarks. The direct ports 18080 and
 18082 bypass the gateway completely (for debugging).
 
-### Layer 2: per-service limits (Traefik)
+### Layer 2: Per-Service Limits (Traefik)
 
 Both compose files attach generous Traefik `rateLimit` middleware to the API
 routers (429 when exceeded). These limits count for each service and not for
@@ -421,7 +421,7 @@ The orchestrator enforces the request budgets for each API key on the model
 paths (from the `cloud_rl`/`local_rl` of the key). The limits in the stack are
 the backstop against abuse with unauthenticated requests or leaked keys.
 
-### Optional: an additional per-client brake in the nginx in front
+### Optional Per-Client Limits in the Upstream nginx
 
 The stack does not *need* limits for each client in the nginx ingress of the
 chair. The limits are now in the stack and move with the deployment. You can
@@ -448,7 +448,7 @@ Adjust the zone and the rate to the traffic of the deployment. Use
 `limit_req_status 429;` to keep the status code the same as the limits in the
 stack.
 
-## Apple Silicon (MLX) worker nodes
+## Apple Silicon (MLX) Worker Nodes
 
 MLX nodes do not use the compose-based deploy path above. Metal cannot pass into
 a container. Docker on macOS runs a Linux VM with no GPU passthrough, so a
@@ -470,7 +470,7 @@ The server therefore frees memory when it stops and restarts lanes.
 
 Full setup, sizing and troubleshooting: `logos-workernode/MACOS.md`.
 
-## Inference gateway replicas
+## Inference Gateway Replicas
 
 Public `/v1`, `/openai`, and `/jobs` traffic goes to **logos-webservice**. The
 service has no fixed `container_name`, so Compose can run more than one
@@ -556,7 +556,7 @@ Optional `.env` options:
 - A change to `LOGOS_DB_MAX_CONNECTIONS` or `LOGOS_DB_SHARED_BUFFERS` takes
   effect only after `logos-db` restarts.
 
-### Failover verification
+### Failover Verification
 
 A configuration with 2 replicas does not prove that a kill of one replica is
 harmless for every request. Run `scripts/gateway-failover-demo.sh` against a
@@ -588,7 +588,7 @@ COMPOSE_FILE=docker-compose.yaml \
   scripts/gateway-failover-demo.sh https://logos.example.org 30
 ```
 
-## Environment variables
+## Environment Variables
 
 All runtime configuration is in the `.env` file next to the compose file. The
 [`.env.example` in the repository](https://github.com/LogosOSS/Logos/blob/main/.env.example)

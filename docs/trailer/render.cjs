@@ -24,7 +24,8 @@ const FPS = Number(args.fps || 30);
 const OUT_DIR = path.resolve(__dirname, "../static/video");
 const OUT = path.join(OUT_DIR, args.out || "logos-trailer.mp4");
 const POSTER = path.join(OUT_DIR, "logos-trailer-poster.jpg");
-const POSTER_T = 4.6;
+// The poster shows the API scene: the homepage shows the logo next to the video.
+const POSTER_T = 9;
 
 (async () => {
   fs.mkdirSync(OUT_DIR, { recursive: true });

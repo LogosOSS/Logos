@@ -1,4 +1,4 @@
-# Context windows
+# Context Windows
 
 The context window of a model on Logos is not a property of the model. It is a property of the lane that serves the model. The capacity planner sizes the KV cache of a lane from the free VRAM on the node where the lane starts. The window follows from the KV cache size. The same model can have 262,144 tokens on one worker and a fraction of that on another worker. A re-calibration can also change the window while the model stays the same.
 
@@ -6,7 +6,7 @@ This has one result that shapes the rest of this page: **a single number cannot 
 
 This page describes the four places where this fact has an effect.
 
-## 1. What the API reports
+## 1. Context Window Fields in `/v1/models`
 
 `GET /v1/models` (and `/v1/models/{id}`) return up to four fields for each model. Logos omits a field when the value is unknown. A model with no known window keeps the same object as before. Logos combines these sources in this order:
 
@@ -28,7 +28,7 @@ The webservice (Spring) gets the first three values on `GET /internal/model_cont
 
 Source: `_served_context_window_stats()` in `logos/main.py`.
 
-## 2. Placement floor: do not create a narrow lane
+## 2. Minimum Context Window for Lane Placement
 
 The narrowest lane sets the window that Logos tells each client. Thus a worker can refuse to host a model below a share of the context length of the model. Set the floor **for each model in the `config.yml` of the worker**. The hardware of the worker decides which windows the worker can reach.
 
@@ -63,7 +63,7 @@ The first line is temporary. It goes away when VRAM becomes free. The second lin
 
 The floor never blocks a model with an unknown context length. The floor stops the planner from *choosing* a narrow window. It is not a gate on calibration. A separate gate does that: `_passes_minimum_load_feasibility` refuses to load a model that was never calibrated on that node. The exception is a Metal/MLX provider. A Metal/MLX provider uses override profiles from the operator, because calibration is not possible there by design.
 
-## 3. Context-aware routing: send long requests where they fit
+## 3. Context-Aware Routing
 
 `_prefer_deployments_with_context_room` (`logos/main.py`) estimates what a request needs. It removes the deployments that cannot serve the request.
 
@@ -86,7 +86,7 @@ Logos does not filter audio uploads. A transcription hint has a few words. It do
 
 ## 4. Clients
 
-### Claude Code: the `claude-logos` wrapper
+### Claude Code: The `claude-logos` Wrapper
 
 `logos-ui/public/claude-logos.sh` (and `.ps1` for Windows) is available at `<logos-url>/claude-logos.sh`. The AI Tools page installs it. At each start, the wrapper sends `GET /v1/models`, prints the window that it got, and exports the result into its own child process. The wrapper does not change anything outside itself. Thus plain `claude` continues to use an Anthropic subscription with no change.
 
@@ -119,7 +119,7 @@ Two results follow:
 
 **What happens when a session reaches the limit?** There are two steps, in this order. At `window − reserve − 13000`, Claude Code compacts the conversation by itself and continues. If a single turn grows past `window − reserve − 3000`, Claude Code does not send it. It asks for a `/compact` instead. Neither case is an error that the user must correct. The failure mode that these steps replace was a 400 from vLLM in the middle of a turn.
 
-#### The floor: 37,024 tokens
+#### Minimum Context Window: 37,024 Tokens
 
 The deductions above are fixed. Thus there is a window size below which Claude Code cannot run **at all**. This size is much higher than it seems. The opening prompt of Claude Code has the system prompt and the schemas of all its tools. It is approximately 13,000 tokens before the user types anything. Claude Code cannot compact it.
 

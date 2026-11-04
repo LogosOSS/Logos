@@ -24,7 +24,7 @@ curl https://logos.aet.cit.tum.de/v1/chat/completions \
 
 For the complete request and response schema, see the Swagger UI at `/docs`.
 
-## Audio transcription and translation
+## Audio Transcription and Translation
 
 Logos implements the OpenAI multipart audio APIs:
 

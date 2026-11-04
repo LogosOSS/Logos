@@ -2,12 +2,12 @@
 title: TUM Test Instance
 ---
 
-# TUM test instance
+# TUM Test Instance
 
 The test instance runs on `logos-test.aet.cit.tum.de`. You need the TUM VPN
 and SSH access to the server.
 
-## Web application and API
+## Web Application and API
 
 Port 443 serves the web application, the Swagger UI and the API. Traefik
 routes by path. API paths (`/v1`, `/openai`, `/jobs`, `/api`, `/docs`, and

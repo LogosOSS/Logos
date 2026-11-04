@@ -4,7 +4,7 @@ import type * as Preset from "@docusaurus/preset-classic";
 
 const config: Config = {
   title: "Logos",
-  tagline: "LLM engineering made easy",
+  tagline: "LLM orchestration and management",
   url: "https://logososs.github.io",
   baseUrl: "/Logos/",
   favicon: "img/logos-logo.svg",

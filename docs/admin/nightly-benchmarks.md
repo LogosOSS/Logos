@@ -2,7 +2,7 @@
 title: Nightly Benchmarks
 ---
 
-# Nightly benchmarks
+# Nightly Benchmarks
 
 Logos admins enable or disable a nightly schedule for each model/worker pair on
 **Model Details → Performance**. Both actions require confirmation. Schedules
@@ -14,7 +14,7 @@ Schedules are off by default and persist in PostgreSQL. The nightly plan is inde
 of the manual benchmark editor. Disabling a schedule cancels its active run and
 restores the worker before it returns to production.
 
-## Enable, inspect and disable a schedule
+## Enable, Inspect and Disable a Schedule
 
 See the [illustrated admin walkthrough](../roles/logos-admin.md#nightly-benchmarks)
 for screenshots of the plan and both confirmation dialogs.
@@ -56,7 +56,7 @@ The third selection restores the initial order. Missing measurements remain last
 A dash means the value or baseline is unavailable. Historical timestamps are not reconstructed.
 Expand **Charts and comparison** or **Run details and saved configurations** for more information.
 
-## Automatic pair rotation
+## Automatic Pair Rotation
 
 Each night admits at most 2 enabled model/worker pairs, one after the other.
 Pairs without a previous attempt come first, followed by the oldest previous attempt.
@@ -81,7 +81,7 @@ The daily quota limits distinct pairs, not rounds.
 A failed baseline or a round without successful variants does not schedule another round.
 Disabling a schedule stops further rounds. Pending recovery always takes priority.
 
-## Time and failure policy
+## Time and Failure Policy
 
 All times use `Europe/Berlin`, including daylight-saving changes.
 
@@ -104,7 +104,7 @@ All times use `Europe/Berlin`, including daylight-saving changes.
 The watchdog checks progress every 1 s. The scheduler checks eligible schedules
 every 15 s. These intervals do not guarantee an exact response time.
 
-## Workload and parameter plan
+## Workload and Parameter Plan
 
 Each round starts with the current production configuration.
 The table shows an initial round, not a limit on the tests for the night.
@@ -142,7 +142,7 @@ outcomes, retries and benchmark IDs. Failed or incomplete runs are not stored
 as successful throughput measurements. For saved request datasets, Logos automatically applies eligible improvements over the current production baseline.
 Hugging Face runs retain the original production settings.
 
-## Fixed request workloads
+## Fixed Request Workloads
 
 Use **Request workload** to replace Hugging Face data for a nightly schedule.
 The manual benchmark editor remains independent.
@@ -177,7 +177,7 @@ The saved results also contain token counts and completion reasons.
 A change of measurement engine starts a new optimization reference.
 They do not contain response text.
 
-## Deployment-specific request sources
+## Deployment-Specific Request Sources
 
 Dev can retain its manually selected, fixed 10-request pilot workload.
 Leave `LOGOS_NIGHTLY_REQUEST_USERNAME` empty on Dev.
@@ -223,7 +223,7 @@ It starts a new measurement reference and discards the old cohort's measured win
 Compare each candidate with that night's baseline. Do not compare raw throughput across different request cohorts.
 The fixed Dev pilot retains its reference across nights while its inputs and captured environment stay unchanged.
 
-## Iterative optimization and the fixed reference
+## Iterative Optimization and the Fixed Reference
 
 Each night measures production settings first, then the previous winner and its neighbouring batching settings.
 The first successful production measurement establishes the fixed reference for that workload and environment.
@@ -264,7 +264,7 @@ These measurements do not establish statistical significance.
 Ten synthetic requests provide an integration pilot, not a representative thesis evaluation dataset.
 Use repeated measurements and a separate evaluation dataset before drawing performance conclusions.
 
-## Completion notifications
+## Completion Notifications
 
 After each round, Logos stores the report and candidate after the worker confirms its production configuration.
 It emits no completion event while another round can start.
@@ -280,7 +280,7 @@ This link remains available after the notification is read.
 If the measurement is deleted, then the page identifies the unavailable benchmark.
 A recovery that still needs attention does not emit a completed event.
 
-## Worker ownership and recovery
+## Worker Ownership and Recovery
 
 One PostgreSQL advisory lock gives 1 scheduler control of each nightly batch.
 Each batch uses at most `LOGOS_MAINTENANCE_MAX_NODES` distinct workers.
@@ -320,7 +320,7 @@ The worker also refuses the restart while the lane still has requests.
 A lane pinned to its GPUs restarts while holding only that lane and those GPUs, so requests on other lanes finish normally.
 The orchestrator's own request counter does not delay a recovery.
 
-### Release a recovery
+### Release a Recovery
 
 A recovery that cannot finish keeps the maintenance slot.
 The **Maintenance** status on the statistics page offers **Release recovery** for it.
@@ -368,7 +368,7 @@ Stop the old orchestrator before the migration changes the maintenance tables. W
 Enable only the desired model/worker pairs after deployment. No schedules are
 enabled by the migration or by application startup.
 
-## Calibration priority and shared execution
+## Calibration Priority and Shared Execution
 
 Automatic calibration remains enabled by default, from 05:00 to 08:00 in `Europe/Berlin`.
 The `LOGOS_MAINTENANCE_WINDOW_START`, `LOGOS_MAINTENANCE_WINDOW_END` and `LOGOS_MAINTENANCE_TIMEZONE` variables define the shared window.
@@ -421,7 +421,7 @@ Then mark the affected job as failed and remove its matching `maintenance_benchm
 Keep every nightly recovery journal until the scheduler restores the original worker configuration,
 or release it with **Release recovery** (see [Release a recovery](#release-a-recovery)).
 
-## Maintenance capacity
+## Maintenance Capacity
 
 `LOGOS_MAINTENANCE_MAX_NODES=1` keeps maintenance sequential, including installations with only 1 worker.
 A larger positive integer permits parallel maintenance on different workers.
@@ -437,7 +437,7 @@ If all workers are reserved, normal requests must wait.
 All time limits, recovery checks and configuration restoration still apply.
 This setting does not enable schedules. Enable each intended model/worker pair separately.
 
-## Offline calibration recovery
+## Offline Calibration Recovery
 
 An offline worker keeps its durable calibration claim.
 The scheduler continues its cycle and checks other calibration claims.
@@ -489,13 +489,13 @@ COMMIT;
 A lock timeout aborts the transaction. Run `ROLLBACK` before another attempt.
 The next scheduler cycle reads the remaining claims from PostgreSQL.
 
-## Deployment recovery
+## Deployment Recovery
 
 A schedule retains its recovery journal independently of the model/provider
 deployment. Deleting a deployment must not delete the original settings needed
 to restore its worker. Schedules whose deployment no longer exists are disabled.
 
-## Status and activation API
+## Status and Activation API
 
 The webservice requires the `logos_admin` role for these endpoints. The web
 application uses the `/api` prefix; the webservice paths below omit that prefix.
@@ -521,7 +521,7 @@ contains the saved status; use the status endpoint for the parameter plan.
 last successful measurement. The current pair limit is the code constant
 `MAX_PAIRS_PER_NIGHT = 2`, not a UI or environment setting.
 
-## Operational states
+## Operational States
 
 | State | Meaning and next action |
 |---|---|
