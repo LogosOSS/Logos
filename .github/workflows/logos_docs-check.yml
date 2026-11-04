@@ -1,0 +1,28 @@
+name: Logos - Docs
+
+# Builds the documentation site for every pull request that touches it, so broken links
+# and anchors (onBrokenLinks / onBrokenAnchors: throw) fail the pull request instead of the
+# deployment after the merge. The built site is kept as the `logos-docs` artifact for one
+# day. To preview the pull request, unpack the artifact into a folder named Logos/,
+# run `npx http-server .` in the parent folder and open http://localhost:8080/Logos/.
+# The deployment to GitHub Pages stays in docs.yml.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - ".github/workflows/logos_docs-build.yml"
+      - ".github/workflows/logos_docs-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/logos_docs-build.yml
