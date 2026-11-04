@@ -50,7 +50,8 @@ instance. The second line of a component names its technology. The table below g
 | Orchestrator | `logos-orchestrator` |
 | Shared State | `logos-redis` |
 | Database | `logos-db` |
-| Worker Node, Lane | `logos-workernode` and its vLLM lanes (on each GPU node) |
+| Worker Node | `logos-workernode` (on each GPU node) |
+| Inference Process | one vLLM process of the worker node for one model, also called a lane |
 
 Each request from a client goes through the gateway: first
 `logos-rate-gateway`, then `traefik`. Traefik sends the request to one of the

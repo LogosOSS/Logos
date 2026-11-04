@@ -214,7 +214,7 @@ def top_level():
     s.comp(1220, 20, 290, 265, "«subsystem»", "GPU Node", top=True)
     s.badge(1232, 32, "× N")
     s.comp(1250, 100, 230, 75, None, "Worker Node", "FastAPI", name_size=f + 2, icon=False)
-    s.comp(1250, 195, 230, 75, None, "Lane", "vLLM", name_size=f + 2, icon=False)
+    s.comp(1250, 195, 230, 75, None, "Inference Process", "vLLM", name_size=f + 2, icon=False)
     s.wire("M 1365 175 V 193", dashed=True, arrow=True)
     s.comp(0, 440, 200, 100, "«subsystem»", "Logos UI", "Angular")
     s.comp(0, 610, 200, 100, "«subsystem»", "Application", "OpenAI SDK")
