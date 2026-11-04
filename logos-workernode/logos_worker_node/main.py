@@ -47,6 +47,15 @@ _LANE_MANAGER_SHUTDOWN_TIMEOUT = 90
 # event loop keeps only a weak reference to a task.
 _background_tasks: set[asyncio.Task] = set()
 
+
+def _run_in_background(coro) -> asyncio.Task:
+    """Start a coroutine nobody awaits and hold its task until it finishes."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
 # Host-RAM safety buffer the RAM cache plan must leave untouched: OS page
 # cache, malloc fragmentation, vLLM mm processor caches, monitoring agents,
 # and the spike during a single lane's cold load.
@@ -1244,9 +1253,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # Fire-and-forget: download missing weights in the background so the
             # worker boots into zero-lane mode immediately and serves the models
             # it already has while the rest stream in.
-            prefetch = asyncio.create_task(_prefetch_missing_models(missing, hf_home))
-            _background_tasks.add(prefetch)
-            prefetch.add_done_callback(_background_tasks.discard)
+            _run_in_background(_prefetch_missing_models(missing, hf_home))
 
     # ── Static lanes (pinned, never removed by the capacity planner) ──────
     static_lane_ids: set[str] = set()

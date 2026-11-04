@@ -1198,6 +1198,20 @@ class ClassificationCorrectingScheduler(BaseScheduler):
 
         return None
 
+    def _request_capacity(self, model_name: str, provider_id: int) -> None:
+        """Ask the capacity planner to wake or load a model, without waiting for it.
+
+        The task is held until it finishes: the event loop keeps only a weak
+        reference, so an untracked request could be collected mid-run.
+        """
+        task = asyncio.create_task(
+            self._on_capacity_needed(model_name, provider_id),
+            name=f"capacity-needed-{model_name}",
+        )
+        pending = self.__dict__.setdefault("_capacity_needed_tasks", set())
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
     async def _queue_and_wait(self, best_scored: tuple, request: SchedulingRequest) -> Optional[SchedulingResult]:
         """Queue on the best-scored candidate and wait for release."""
         model_id, provider_id, provider_type, score, priority_int, ettft = best_scored
@@ -1247,15 +1261,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         if self._on_capacity_needed and provider_type == "logosnode":
             model_name = self._logosnode.get_model_name(model_id, provider_id)
             if model_name:
-                # Hold the task until it finishes: the event loop keeps only a
-                # weak reference, so an untracked request could be collected mid-run.
-                task = asyncio.create_task(
-                    self._on_capacity_needed(model_name, provider_id),
-                    name=f"capacity-needed-{model_name}",
-                )
-                pending = self.__dict__.setdefault("_capacity_needed_tasks", set())
-                pending.add(task)
-                task.add_done_callback(pending.discard)
+                self._request_capacity(model_name, provider_id)
 
         try:
             timeout = (

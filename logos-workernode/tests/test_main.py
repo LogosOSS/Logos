@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from os import environ
 from pathlib import Path
@@ -381,3 +382,18 @@ async def test_central_profiles_skip_logos_when_the_bridge_is_disabled(tmp_path,
 
     assert bridge.calls == []
     assert set(registry.calibration_key_hashes()) == {"org/model"}
+
+
+async def test_a_background_task_is_held_until_it_finishes() -> None:
+    release = asyncio.Event()
+
+    async def prefetch() -> str:
+        await release.wait()
+        return "done"
+
+    task = worker_main._run_in_background(prefetch())  # noqa: SLF001
+
+    assert task in worker_main._background_tasks  # noqa: SLF001
+    release.set()
+    assert await task == "done"
+    assert task not in worker_main._background_tasks  # noqa: SLF001

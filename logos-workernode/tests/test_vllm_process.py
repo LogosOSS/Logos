@@ -2924,6 +2924,35 @@ async def test_stream_logs_stores_concurrency_factor_not_token_count(monkeypatch
     assert handle.max_concurrency == 8
 
 
+async def test_stream_logs_ends_as_cancelled_when_the_lane_stops(monkeypatch) -> None:
+    """Stopping the lane cancels the log task; it must end as cancelled, not as finished."""
+    handle = _handle_with_stub_binary(monkeypatch)
+    silent = asyncio.Event()
+
+    class _FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = self._stdout()
+
+        async def _stdout(self):
+            await silent.wait()
+            yield b""
+
+    handle._process = _FakeProcess()
+    task = asyncio.create_task(handle._stream_logs())
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+
+
+async def test_streaming_pull_yields_nothing() -> None:
+    handle = VllmProcessHandle("lane-test", 19000, WorkerConfig())
+
+    assert [progress async for progress in handle.pull_model_streaming("some/model")] == []
+
+
 def test_startup_failure_keeps_root_exception_before_shutdown_tail():
     handle = VllmProcessHandle("lane-test", 19000, WorkerConfig())
     handle._recent_logs.extend(
