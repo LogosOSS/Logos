@@ -131,7 +131,7 @@ Worker disconnects and orchestrator restarts stop the job. Batches do not resume
 ## Read the comparison charts
 
 Expand **Performance → Benchmark runs** to see runs, changed parameters, measurement times and throughput.
-Expand **Charts and comparison**.
+Expand **More analysis & details → Charts and comparison**.
 Select a **Reference run**, **Parameter** and **Metric** in **Parameter comparison**.
 The chart shows one parameter at a time: sequence limit, batch token limit, tensor parallelism or concurrent requests.
 Other captured settings must match the reference.

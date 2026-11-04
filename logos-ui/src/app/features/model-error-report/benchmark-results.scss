@@ -1,5 +1,6 @@
 @use './performance-disclosure' as disclosure;
-:host { display: block; margin-bottom: 1.5rem; }
+@use './performance-panel' as panel;
+:host { display: grid; gap: 12px; min-width: 0; }
 .results-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 h3 { font-size: var(--model-detail-heading-size, 1rem); margin: 0; color: rgb(var(--color-typography-0)); }
 .results-heading span, .results-note, small { color: rgb(var(--color-typography-500)); font-size: var(--model-detail-font-size, .875rem); }
@@ -44,7 +45,7 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 .top-configuration__details dt { color: rgb(var(--color-typography-500)); }
 @media (max-width: 767px) { .top-configuration__details { grid-template-columns: 1fr; } }
 
-.benchmark-progress { margin-bottom: 2rem; }
+
 .benchmark-progress h3 small { display: block; margin-top: .35rem; font-weight: 400; }
 .benchmark-progress select { max-width: 100%; padding: .6rem .75rem; border: 1px solid rgb(var(--color-outline-300)); border-radius: .5rem; background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-100)); font: inherit; font-size: var(--model-detail-font-size, .875rem); }
 .progress-plot { position: relative; height: 150px; margin: 1.5rem 1rem .75rem 3.5rem; }
@@ -81,7 +82,7 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 .progress-summary span { color: rgb(var(--color-typography-500)); font-size: var(--model-detail-font-size, .875rem); font-variant-numeric: tabular-nums; }
 .progress-summary:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }
 
-.run-history { @include disclosure.section; border-top: 1px solid rgb(var(--color-outline-200)); }
+.run-history { @include panel.expandable; }
 .selected-result { margin: 1rem 0 1.5rem; padding: 1rem; border: 2px solid rgb(var(--color-primary-500)); border-radius: .5rem; color: rgb(var(--color-typography-100)); overflow-wrap: anywhere; }
 .selected-result h4 { margin: .75rem 0 .25rem; font: inherit; font-weight: 600; }
 .selected-result p { margin: .4rem 0; }
@@ -96,11 +97,20 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 
 .numeric small { white-space: normal; min-width: 0; }
 
-.benchmark-progress { padding: 1.5rem 0; border-bottom: 1px solid rgb(var(--color-outline-200)); }
+.benchmark-progress { @include panel.surface; height: 100%; }
 .timeline-headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem 1rem; color: rgb(var(--color-typography-100)); }
-.timeline-headline > strong { font-size: 1.75rem; font-variant-numeric: tabular-nums; }
+.timeline-headline > strong { font-size: 1.5rem; font-variant-numeric: tabular-nums; }
 .timeline-headline > span { color: rgb(var(--color-primary-500)); }
-.progress-plot { height: 190px; margin-top: 2rem; }
-.timeline-records { @include disclosure.section; }
+.progress-plot { height: 130px; margin: 20px 8px 8px 44px; }
+.timeline-records { @include disclosure.section; margin-top: 8px; > summary { min-height: 40px; padding: 8px 0 0; font-size: var(--model-detail-font-size); } }
 .timeline-records a { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem 1rem; padding: .75rem 0; color: rgb(var(--color-primary-500)); text-decoration: none; }
 .timeline-records a span { color: rgb(var(--color-typography-500)); }
+
+.timeline-dataset { display: block; width: 100%; margin-top: 12px; }
+.timeline-context { margin: 12px 0 0; }
+.timeline-baseline { margin: 4px 0 0; }
+.progress-dates { margin-left: 44px; }
+.selected-result { margin: 0; }
+.top-configurations { @include panel.surface; }
+
+.benchmark-progress .results-heading { min-height: 36px; align-items: center; }

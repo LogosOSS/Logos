@@ -64,14 +64,14 @@ export class BenchmarkResults {
       groups.get(workload?.id ? `requests:${workload.id}` : row.run.dataset)!.rows.push(row);
     }
     return [...groups.values()].map(group => ({ ...group,
-      visible: this.showAll() ? group.rows : group.rows.slice(0, 5) }));
+      visible: this.showAll() ? group.rows : group.rows.filter((row, index) => index < 5 || row.run.id === this.selectedRunId()) }));
   });
   readonly visibleRows = computed(() => this.datasetGroups().flatMap(group => group.visible));
   readonly hasMore = computed(() => this.datasetGroups().some(group => group.rows.length > 5));
 
   constructor() {
     effect(() => {
-      if (this.selectedRunId() !== null) { this.showAll.set(true); this.progressKey.set(''); }
+      if (this.selectedRunId() !== null) this.progressKey.set('');
     });
     afterRenderEffect(() => {
       const element = this.selectedResult()?.nativeElement;

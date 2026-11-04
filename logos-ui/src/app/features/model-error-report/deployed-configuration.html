@@ -2,7 +2,7 @@
   <header><h4>{{ providerName() }}</h4><span class="worker-state">{{ !state() && !error() ? 'Checking…' : deployment()?.available ? (deployment()?.maintenance ? 'Benchmark in progress' : 'Active') : 'Unavailable' }}</span></header>
   @if (error()) { <p role="alert">Could not verify the worker configuration.</p> }
   @else if (!state()) { <p role="status">Reading worker configuration…</p> }
-  @else if (!deployment()?.available) { <p role="status">Worker offline · configuration unverified</p> }
+  @else if (!deployment()?.available) { <span class="sr-only" role="status">Worker telemetry unavailable · configuration unverified</span> }
   @else if (deployment()?.maintenance) { <p role="status">Temporary benchmark settings · production confirmation pending</p> }
   @else {
     @if (result(); as row) {

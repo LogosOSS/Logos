@@ -802,14 +802,14 @@ export class ModelErrorReport implements OnInit, OnDestroy {
 
   openBenchmarkSetup(): void {
     this.performanceView.set('run');
-    document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setTimeout(() => document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 
   useBenchmarkConfiguration(benchmark: ModelProviderBenchmark): void {
     this.performanceView.set('run');
     this.benchmarkSettings.set(settingsFromBenchmark(benchmark));
     this.benchmarkSampleSize.set(Math.min(100, Math.max(1, benchmark.sample_size)));
-    document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setTimeout(() => document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 
   hasServingOverrides(): boolean {
@@ -1413,21 +1413,21 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   }
 
   benchmarkStatusLabel(run: ModelBenchmarkRun): string {
-    if (run.status === 'pending') return `Queued for ${run.request.provider_name}`;
+    if (run.status === 'pending') return 'Queued';
     if (run.status === 'running') {
-      if (run.result.stage === 'preparing_worker') return `Preparing ${run.request.provider_name}`;
-      if (run.result.stage === 'reconfiguring_worker') return `Applying vLLM settings on ${run.request.provider_name} · model may restart`;
-      if (run.result.stage === 'waiting_for_model') return `Waiting for the model on ${run.request.provider_name} to become ready`;
-      if (run.result.stage === 'warming_up') return `Warming up ${run.request.provider_name}`;
+      if (run.result.stage === 'preparing_worker') return 'Preparing worker';
+      if (run.result.stage === 'reconfiguring_worker') return 'Applying vLLM settings · model may restart';
+      if (run.result.stage === 'waiting_for_model') return 'Waiting for model readiness';
+      if (run.result.stage === 'warming_up') return 'Warming up';
       if (run.result.stage === 'benchmarking') {
         const started = run.result.started_samples ?? 0;
         const total = run.result.total_samples ?? run.request.samples;
         const progress = run.result.completed_samples === undefined
           ? `${started}/${total} requests started`
           : `${run.result.completed_samples}/${total} requests completed`;
-        return `Running on ${run.request.provider_name} · ${progress}`;
+        return `Running · ${progress}`;
       }
-      return `Running on ${run.request.provider_name}`;
+      return 'Running';
     }
     if (run.status === 'success') return `Completed ${this.formatBenchmarkTimestamp(run.updated_at)}`;
     return `Failed ${this.formatBenchmarkTimestamp(run.updated_at)}`;

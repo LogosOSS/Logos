@@ -68,6 +68,8 @@ describe('Benchmark result baseline', () => {
     expect(result.textContent).toContain('+25.0%');
     expect(fixture.nativeElement.querySelector('.run-history').open).toBe(true);
     expect(fixture.nativeElement.querySelectorAll('.selected-run')).toHaveLength(1);
+    expect(fixture.nativeElement.querySelectorAll('tbody tr:not(.dataset-heading)')).toHaveLength(6);
+    expect(fixture.componentInstance.showAll()).toBe(false);
   });
   it('starts collapsed and preserves the selected order when reopened', () => {
     const fixture = TestBed.createComponent(BenchmarkResults);
@@ -222,7 +224,8 @@ describe('Nightly progress', () => {
     expect(fixture.nativeElement.querySelector('polyline')).not.toBeNull();
     fixture.componentRef.setInput('runs', [measured(2, 44, 1, 21)]);
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelector('.benchmark-progress')).toBeNull();
+    expect(fixture.nativeElement.querySelectorAll('.progress-point')).toHaveLength(0);
+    expect(fixture.nativeElement.querySelector('.benchmark-progress').textContent).toContain('complete baseline');
   });
 });
 

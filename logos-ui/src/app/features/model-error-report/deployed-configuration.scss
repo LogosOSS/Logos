@@ -1,17 +1,24 @@
 @use './performance-disclosure' as disclosure;
-.deployed { padding: 1.25rem 0; border-bottom: 1px solid rgb(var(--color-outline-200)); color: rgb(var(--color-typography-100)); overflow-wrap: anywhere; }
+:host { display: block; }
+:host + :host { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgb(var(--color-outline-200)); }
+.deployed { padding: 0; color: rgb(var(--color-typography-100)); overflow-wrap: anywhere; }
 header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 h4 { margin: 0; font-size: 1rem; }
 .worker-state { padding: .25rem .6rem; border-radius: 1rem; background: rgb(var(--color-surface-100)); color: rgb(var(--color-typography-500)); font-size: .875rem; }
 p { line-height: 1.5; }
-.deployment-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-top: 1.25rem; }
+.deployment-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-top: 12px; }
 .deployment-metrics span { display: block; margin-bottom: .4rem; color: rgb(var(--color-typography-500)); font-size: .875rem; }
-.deployment-metrics strong { font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+.deployment-metrics strong { font-size: 1.35rem; font-variant-numeric: tabular-nums; }
 .deployment-metrics small { font-size: .875rem; font-weight: 400; }
-.deployment-caption { color: rgb(var(--color-typography-500)); font-size: .875rem; }
-.key-parameters { display: flex; gap: .5rem 1.5rem; flex-wrap: wrap; }
+.deployment-caption { margin: 8px 0; color: rgb(var(--color-typography-500)); font-size: .875rem; }
+.key-parameters { margin: 8px 0 0; display: flex; gap: .5rem 1.5rem; flex-wrap: wrap; }
 .key-parameters strong { margin-left: .3rem; }
 .parameters { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 1rem 0; }
 dt { color: rgb(var(--color-typography-500)); } dd { margin: .25rem 0 0; }
 a { color: rgb(var(--color-primary-500)); } details { @include disclosure.section; }
 @media (max-width: 600px) { .deployment-metrics { gap: .75rem; } .deployment-metrics strong { font-size: 1.125rem; } .deployment-metrics span { min-height: 2.5em; } }
+
+.deployed > details > summary { padding: 8px 0 0; min-height: 40px; font-size: var(--model-detail-font-size); }
+
+.deployment-metrics > div { display: flex; flex-direction: column; }
+.deployment-metrics strong { margin-top: auto; }

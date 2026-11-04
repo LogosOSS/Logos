@@ -179,6 +179,11 @@ The bar chart shows p50 and p95 separately for each metric. Do not add these per
 
 Open the model's **Performance** tab to configure and start a benchmark.
 The orchestrator reserves the selected model lanes during a worker benchmark.
+The status card separates the provider, request progress and completed runs.
+**Requests started** does not mean that all responses are complete.
+Select **Stop benchmark** to cancel the active batch.
+
+![Running benchmark status and progress](../static/img/roles/logos-admin-benchmark-status.png)
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
 The **Performance** tab shows **Currently deployed** and **Timeline**.
@@ -233,7 +238,10 @@ A fresh comparison must verify a historical candidate before automatic adoption.
 ![Current worker configuration and its measured result](../static/img/roles/logos-admin-deployed-configuration.png)
 
 The configuration and measurement sections start closed.
+The desktop overview places **Currently deployed** and **Timeline** side by side.
+On small screens, these cards appear below each other.
 Select **Run benchmark** to open **Benchmark setup & nightly automation**.
+Expand **More analysis & details** for the comparison charts, saved configurations and glossary.
 The large analysis sections open one at a time.
 Expand **Charts and comparison**. Select the **Reference run**, **Parameter** and **Metric**.
 The chart shows one parameter at a time, with a dashed reference line and measured changes.

@@ -52,14 +52,14 @@
 @if (activeProgress(); as chart) {
   <section class="benchmark-progress" aria-label="Performance timeline">
     <div class="results-heading"><h3>Timeline</h3>
-      @if (progress().length > 1) {
-        <select aria-label="Timeline dataset" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
-          @for (group of progress(); track group.key) { <option [value]="group.key">{{ group.label }}</option> }
-        </select>
-      }
+      <div class="timeline-headline"><strong>{{ chart.latest.rate | number:'1.1-1' }} <small>tok/s</small></strong><span>+{{ chart.latest.gain | number:'1.1-1' }}%</span></div>
     </div>
-    <p class="results-note">{{ chart.context }}</p>
-    <div class="timeline-headline"><strong>{{ chart.latest.rate | number:'1.1-1' }} <small>tok/s</small></strong><span>+{{ chart.latest.gain | number:'1.1-1' }}% since baseline #{{ chart.reference.id }}</span></div>
+    @if (progress().length > 1) {
+      <select class="timeline-dataset" aria-label="Timeline dataset" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
+        @for (group of progress(); track group.key) { <option [value]="group.key">{{ group.label }}</option> }
+      </select>
+    } @else { <p class="results-note timeline-context">{{ datasetLabel(chart.reference) }}</p> }
+    <p class="results-note timeline-baseline">Since baseline #{{ chart.reference.id }}</p>
     <div class="progress-plot" role="group" aria-label="Throughput records over time in output tokens per second">
       <span class="progress-axis progress-axis--top">{{ chart.max | number:'1.0-1' }}</span>
       <span class="progress-axis progress-axis--zero" [style.top.%]="chart.zero">{{ throughput(chart.reference) | number:'1.1-1' }}</span>
@@ -78,15 +78,16 @@
       }
     </div>
     <div class="progress-dates"><span>{{ chart.first | date:'dd MMM yyyy' }}</span>@if (chart.first !== chart.last) { <span>{{ chart.last | date:'dd MMM yyyy' }}</span> }</div>
-    <p class="results-note">First baseline, then new records only. Select a point for its configuration and results.</p>
     <details class="timeline-records"><summary>Record configurations · {{ chart.points.length }}</summary>
+      <p class="results-note">First baseline, then new records only. Select a point for its configuration and results.</p>
       @for (point of chart.points; track point.key) {
         <a [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }"><strong>#{{ point.run.id }} · {{ point.rate | number:'1.1-1' }} tok/s</strong><span>{{ point.time | date:'dd MMM yyyy, HH:mm' }} · {{ point.configuration }}</span></a>
       }
+      <p class="results-note">{{ chart.context }}</p>
       <p class="results-note">Saved-request variants pass response and latency checks. Records can span worker releases; deployment requires a fresh comparison.</p>
     </details>
   </section>
-} @else { <p class="results-note" role="status">No comparable completed rounds yet. A complete baseline and matching workload are required.</p> }
+} @else { <section class="benchmark-progress"><h3>Timeline</h3><p class="results-note" role="status">No comparable completed rounds yet. A complete baseline and matching workload are required.</p></section> }
 }
 @if (showHistory()) {
 <details class="run-history" [open]="selectedRunId() !== null">

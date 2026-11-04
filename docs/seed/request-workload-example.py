@@ -16,7 +16,7 @@ if os.environ.get("LOGOS_DOCS_ENABLED") != "true":
 with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
     with db.cursor(cursor_factory=RealDictCursor) as cursor:
         cursor.execute(
-            "SELECT mp.id AS pair_id, m.id, m.name FROM model_provider mp "
+            "SELECT mp.id AS pair_id, mp.provider_id, p.name AS provider_name, m.id, m.name FROM model_provider mp "
             "JOIN providers p ON p.id = mp.provider_id JOIN models m ON m.id = mp.model_id "
             "WHERE p.name = 'Docs Local Worker' AND m.name = 'llama-3.1-8b-instruct'"
         )
@@ -148,4 +148,40 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
             "VALUES (%s, 'role', 'logos_admin')",
             (notification_id,),
         )
+        if os.environ.get("LOGOS_DOCS_ACTIVE_BENCHMARK") == "true":
+            # Status illustration only. A running row does not submit an inference task.
+            marker = "docs-performance-status"
+            cursor.execute("DELETE FROM jobs WHERE request_payload->>'purpose' = %s", (marker,))
+            cursor.execute(
+                "INSERT INTO jobs(status, environment, request_payload, result_payload) "
+                "VALUES ('running', 'model-provider-benchmark', %s, %s)",
+                (
+                    Json(
+                        {
+                            "purpose": marker,
+                            "model_provider_id": model["pair_id"],
+                            "provider_id": model["provider_id"],
+                            "provider_name": model["provider_name"],
+                            "model_id": model["id"],
+                            "model_name": model["name"],
+                            "dataset": "requests/" + workload["id"],
+                            "samples": 10,
+                            "subset": "main",
+                            "split": "test",
+                            "max_output_tokens": 512,
+                            "batch": {"configurations": [{}, {}], "repetitions": 1},
+                        }
+                    ),
+                    Json(
+                        {
+                            "stage": "benchmarking",
+                            "started_samples": 10,
+                            "total_samples": 10,
+                            "total_runs": 2,
+                            "completed_runs": 0,
+                            "run_index": 1,
+                        }
+                    ),
+                ),
+            )
         print(json.dumps({"workload": workload["id"], "reference": reference, "illustrative_runs": len(runs)}))

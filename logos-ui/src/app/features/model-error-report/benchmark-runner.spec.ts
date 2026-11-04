@@ -140,8 +140,8 @@ describe('Benchmark runner', () => {
   });
 
   it.each([
-    ['reconfiguring_worker', 'Applying vLLM settings on hochbruegge · model may restart'],
-    ['waiting_for_model', 'Waiting for the model on hochbruegge to become ready'],
+    ['reconfiguring_worker', 'Applying vLLM settings · model may restart'],
+    ['waiting_for_model', 'Waiting for model readiness'],
   ])('shows the %s preparation phase', (stage, expected) => {
     expect(component.benchmarkStatusLabel({
       ...run,

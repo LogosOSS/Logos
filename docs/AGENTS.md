@@ -227,6 +227,9 @@ Capture the **Performance** overview with the deployed result and record timelin
 Select **Run benchmark** before capture. Capture the activation dialog,
 confirm activation, then capture the active card and deactivation dialog.
 The example results are illustrative measurements, not a live GPU benchmark.
+For the running status card, run the seed with `LOGOS_DOCS_ACTIVE_BENCHMARK=true` inside the documentation container.
+This flag adds a status row only. It does not execute inference.
+After capture, delete jobs whose `request_payload->>'purpose'` equals `docs-performance-status`.
 Disable the schedule after capture and stop the example worker with Ctrl+C.
 Then stop the screenshots stack.
 
@@ -252,6 +255,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-benchmark-linked-result.png` | `tobias.wasner` | `/models/<id>/details?tab=performance&benchmark=<id>` — selected result and parameter changes | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-benchmark-saved-requests.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark with a saved request dataset | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-frozen-batch.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — frozen request batch plan and fixed settings | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-benchmark-status.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — illustrative running batch status with progress and stop action | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-confirmation.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark confirmation dialog | `admin/model-benchmarks.md#confirm-the-start` |
 | `logos-admin-benchmark-worker-settings.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — expanded vLLM controls and worker limits | `admin/model-benchmarks.md` |
 | `logos-admin-benchmark-comparison.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — selected parameter comparison with reference | `roles/logos-admin.md#model-benchmarks` |

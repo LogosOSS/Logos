@@ -1,18 +1,9 @@
 @use './performance-disclosure' as disclosure;
+@use './performance-panel' as panel;
 .benchmark-start-action { position: relative; justify-self: end; }
 .benchmark-pair__state progress { width: 100%; accent-color: rgb(var(--color-text-accent)); }
 
 [hidden] { display: none !important; }
-.performance-views {
-  display: flex; flex-wrap: wrap; max-width: 100%; gap: 4px; width: fit-content; padding: 4px; margin-bottom: 24px;
-  border: 1px solid rgb(var(--color-outline-200) / var(--opacity-strong)); border-radius: 10px; background: rgb(var(--color-surface-50));
-  button {
-    border: 1px solid transparent; border-radius: 7px; min-height: 44px; padding: 10px 20px; background: transparent; color: rgb(var(--color-typography-300)); font: inherit; font-weight: 500; cursor: pointer;
-    &:hover { background: rgb(var(--color-primary-500) / var(--opacity-soft)); }
-    &[aria-pressed='true'] { background: rgb(var(--color-primary-500) / var(--opacity-soft)); color: rgb(var(--color-text-accent)); border-color: rgb(var(--color-text-accent) / var(--opacity-strong)); font-weight: 600; }
-    &:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }
-  }
-}
 .benchmark-basics {
   display: grid; grid-template-columns: minmax(0, 2fr) minmax(140px, 1fr); gap: 24px; padding: 24px 0;
   label { display: flex; flex-direction: column; gap: 8px; color: rgb(var(--color-typography-100)); font-weight: 500; }
@@ -25,8 +16,18 @@
 }
 .benchmark-preset { margin: 16px; padding: 8px 12px; border: 1px solid rgb(var(--color-outline-200) / var(--opacity-strong)); border-radius: 7px; background: transparent; color: rgb(var(--color-text-accent)); cursor: pointer; font: inherit; }
 .benchmark-current-run {
-  display: grid; gap: 8px; padding: 16px 20px; margin-bottom: 20px; border: 1px solid rgb(var(--color-outline-200) / var(--opacity-strong)); border-left: 3px solid rgb(var(--color-primary-500)); border-radius: 8px; background: rgb(var(--color-surface-0));
+  @include panel.surface;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
 }
+.benchmark-current-run__content > h3 { margin: 0; font-size: var(--model-detail-heading-size); font-weight: 600; }
+.benchmark-current-run__content { display: grid; min-width: 0; gap: 8px; }
+.benchmark-current-run .benchmark-pair__state { display: grid; gap: 8px; }
+.benchmark-current-run .benchmark-pair__state small { white-space: normal; }
+.benchmark-current-run progress { display: block; width: min(100%, 360px); height: 6px; margin: 0; }
+.benchmark-current-run .benchmark-cancel-button { align-self: start; }
 .benchmark-confirmation-details {
   width: 100%; text-align: left;
   dl { display: grid; gap: 10px; margin: 0 0 16px; padding: 16px; background: rgb(var(--color-surface-50)); border-radius: 8px; }
@@ -36,12 +37,32 @@
   p { color: rgb(var(--color-typography-500)); font-size: var(--font-size-sm); margin: 0 0 12px; }
 }
 @media (max-width: 600px) {
-  .performance-views { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; button { min-width: 0; padding-inline: 10px; } }
   .benchmark-basics { grid-template-columns: 1fr; gap: 16px; }
   .benchmark-setup-footer { flex-direction: column; align-items: stretch; button { width: 100%; justify-content: center; } }
 }
 
-.performance-detail-section { border-top: 1px solid rgb(var(--color-outline-200)); padding: 0; }
-.performance-detail-section[open] > summary { margin-bottom: 1.25rem; }
-
-.performance-detail-section { @include disclosure.section; }
+.performance-detail-section { @include panel.expandable; }
+.performance-workspace { --performance-panel-padding: 20px; display: grid; gap: 12px; }
+.performance-header { align-items: center; margin: 0; }
+.performance-overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: stretch; }
+.performance-overview > app-benchmark-results { height: 100%; }
+.deployment-overview { @include panel.surface; }
+.deployment-overview > h3 { min-height: 36px; display: flex; align-items: center; margin: 0 0 12px; font-size: var(--model-detail-heading-size); font-weight: 600; }
+.performance-results { display: grid; min-width: 0; gap: 12px; }
+.performance-advanced__content { display: grid; }
+.performance-advanced .performance-analysis-item {
+  @include disclosure.section;
+  border: 0; border-radius: 0; background: transparent; margin: 0;
+  > summary { margin: 0; padding: 12px 0; min-height: 48px; border: 0; }
+  &[open] > summary { margin-bottom: 12px; }
+  + .performance-analysis-item { border-top: 1px solid rgb(var(--color-outline-200)); }
+}
+.performance-advanced .glossary-sections { padding: 0; }
+.performance-advanced .glossary-advanced { margin: 16px 0 0; }
+@media (max-width: 1100px) { .performance-overview { grid-template-columns: 1fr; } }
+@media (max-width: 720px) {
+  .performance-workspace { --performance-panel-padding: 16px; }
+  .performance-header { align-items: stretch; gap: 12px; }
+  .benchmark-current-run { grid-template-columns: 1fr; }
+  .benchmark-current-run .benchmark-cancel-button { justify-self: start; }
+}
