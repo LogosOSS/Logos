@@ -47,6 +47,7 @@
 .performance-overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: stretch; }
 .performance-overview > app-benchmark-results { height: 100%; }
 .deployment-overview { @include panel.surface; }
+.deployment-overview > app-deployed-configuration + app-deployed-configuration { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgb(var(--color-outline-200)); }
 .deployment-overview > h3 { min-height: 36px; display: flex; align-items: center; margin: 0 0 12px; font-size: var(--model-detail-heading-size); font-weight: 600; }
 .performance-results { display: grid; min-width: 0; gap: 12px; }
 .performance-advanced__content { display: grid; }
