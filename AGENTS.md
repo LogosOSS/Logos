@@ -43,7 +43,7 @@ The older Process/Profile hierarchy (`process`, `profiles`, `profile_model_permi
 
 ### Git workflow (MANDATORY)
 
-- **PR title**: a short, descriptive title that starts with a capital letter — e.g. `Add team management endpoints`. No `` `Logos`: `` prefix.
+- **PR title**: a short, descriptive title that starts with a capital letter — e.g. `Add team management endpoints`.
 - Never merge to `main` without a PR. After opening a PR, check `gh pr checks` and fix failures immediately.
 - **Every PR that changes the UI must include full-page desktop AND mobile screenshots** in the PR description (never committed to the repo). The exact capture/hosting procedure is the `ui-screenshots` skill (see below).
 - **Every PR that changes how a documented page looks** must also refresh the matching committed role-guide PNGs under `docs/static/img/roles/` in that same PR (layout, chrome, empty/error states, sidebar — anything a reader would notice). Follow `docs/AGENTS.md`: one shot per distinct UI state (tabs / steps / modals), no near-duplicate per-role pages, every PNG explained in the flow with UI-consistent names.
