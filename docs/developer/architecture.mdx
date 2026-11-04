@@ -61,15 +61,15 @@ the
 the [agent runner README](https://github.com/LogosOSS/Logos/blob/main/logos-agent/README.md),
 and the [worker node guide](https://github.com/LogosOSS/Logos/blob/main/logos-workernode/AGENTS.md).
 
-## Communication Paths and the Gateway Split
+## Request Routing and Replication
 
 The structural diagrams (top-level, deployment, data model, inference paths)
-are on [System Design](./system-design). The diagram below shows the same
-information about the gateway split in one picture:
+are on [System Design](./system-design). The diagram below shows the core
+node, the worker nodes and the cloud providers in one picture:
 
 <img
   src={useBaseUrl('/img/architecture.svg')}
-  alt="Logos architecture — core node, gateway split, worker nodes, and cloud providers"
+  alt="Logos architecture — core node, worker nodes, and cloud providers"
   style={{width: '100%', height: 'auto'}}
 />
 
@@ -87,13 +87,18 @@ This design has three properties:
   go to the web service. A small set of logosnode control routes need the live
   worker registry, so they stay on the orchestrator. The UI serves all other
   paths.
-- **Cloud and local split (Phase 1).** The web service authenticates a
-  pure-cloud named-model request. Then it sends the request directly to the
-  configured cloud provider. The web service also authenticates local and mixed
-  traffic. Then it sends this traffic through a proxy to the orchestrator.
-  To scale the web service, set `LOGOS_WEBSERVICE_REPLICAS` in the `.env` file of
-  the core node (see [deployment](../deployment.md#inference-gateway-replicas)).
-  Keep a single orchestrator instance.
+- **Replicated deployments give more resilience.** Logos can run more than one
+  replica of `logos-webservice`. Traefik balances the requests between the
+  replicas. If a replica stops, or if a deployment replaces it, then the other
+  replicas accept the new requests. The replicas need `logos-redis`, because
+  they share the cloud RPM and TPM limits there. The web service sends a cloud
+  request directly to the cloud provider. The orchestrator is not in this
+  path. Thus the cloud models stay available when a replica fails. A stream
+  that is open on the failed replica stops. The web service sends local and
+  mixed requests through a proxy to `logos-orchestrator`. Keep one instance of
+  the orchestrator. To set the number of replicas, use
+  `LOGOS_WEBSERVICE_REPLICAS` in the `.env` file of the core node (see
+  [inference gateway replicas](../deployment.md#inference-gateway-replicas)).
 
 ## Glossary
 
