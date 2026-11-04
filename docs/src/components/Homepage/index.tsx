@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useRef, useState } from "react";
 import Link from "@docusaurus/Link";
 import useBaseUrl from "@docusaurus/useBaseUrl";
 import styles from "./styles.module.css";
@@ -38,17 +38,22 @@ const GUIDES: GuideCard[] = [
 ];
 
 export default function Homepage(): React.JSX.Element {
-  const logo = useBaseUrl("/img/logos-logo.svg");
   const architecture = useBaseUrl("/img/system-design/top-level.svg");
   const trailer = useBaseUrl("/video/logos-trailer.mp4");
   const trailerPoster = useBaseUrl("/video/logos-trailer-poster.jpg");
+  // The native controls would cover the poster text on small screens, so they
+  // appear only after the reader starts the video.
+  const video = useRef<HTMLVideoElement>(null);
+  const [started, setStarted] = useState(false);
+  const play = () => {
+    setStarted(true);
+    void video.current?.play();
+  };
 
   return (
     <div className={styles.page}>
       <section className={styles.hero}>
         <div className={styles.heroInner}>
-          <img src={logo} alt="" className={styles.heroLogo} width={72} height={72} />
-          <div className={styles.heroBrand}>Logos</div>
           <h1 className={styles.heroHeadline}>LLM engineering made easy</h1>
           <div className={styles.heroSubtitle}>
             OpenAI-compatible inference with logging, billing, policies, and
@@ -65,23 +70,33 @@ export default function Homepage(): React.JSX.Element {
           </div>
         </div>
         <div className={styles.heroVideo}>
+          <div className={styles.videoFrame}>
           <video
+            ref={video}
             className={styles.trailer}
             src={trailer}
             poster={trailerPoster}
-            controls
+            controls={started}
             playsInline
             preload="metadata"
             width={1920}
             height={1080}
             aria-label="Logos product trailer, 60 s, with music"
           />
+          {!started && (
+            <button type="button" className={styles.playButton} onClick={play} aria-label="Play the Logos trailer">
+              <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
+                <path d="M8 5.5v13l11-6.5z" fill="currentColor" />
+              </svg>
+            </button>
+          )}
+          </div>
           <div className={styles.heroVideoCaption}>Logos in 60 s</div>
         </div>
       </section>
 
       <section className={styles.section}>
-        <h2 className={styles.sectionHeading}>Choose a guide</h2>
+        <h2 className={styles.sectionHeading}>Guides</h2>
         <div className={styles.sectionSubtitle}>
           Four paths through the same platform — pick the one that matches
           what you are doing today.
@@ -99,7 +114,7 @@ export default function Homepage(): React.JSX.Element {
 
       <section className={styles.sectionAlt}>
         <div className={styles.sectionAltInner}>
-          <h2 className={styles.sectionHeading}>How Logos fits together</h2>
+          <h2 className={styles.sectionHeading}>Architecture</h2>
           <div className={styles.sectionSubtitle}>
             Each client request goes through one gateway to a web service
             replica. The web service sends cloud requests to the cloud

@@ -61,9 +61,13 @@ const POSTER_T = 4.6;
 
   if (!args.out) {
     const poster = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
-    await poster.goto("file://" + path.join(__dirname, "trailer.html") + "?driven");
+    await poster.goto("file://" + path.join(__dirname, "trailer.html") + "?driven&poster");
     await poster.evaluate(() => window.trailerReady);
     await poster.evaluate((t) => window.renderAt(t), POSTER_T);
+    await poster.evaluate(() => {
+      const r = document.getElementById("intro-logo").getBoundingClientRect();
+      console.log(`poster logo centre: ${((r.top + r.height / 2) / 10.8).toFixed(1)}% from the top`);
+    });
     await poster.screenshot({ type: "jpeg", quality: 88, path: POSTER });
   }
   await browser.close();

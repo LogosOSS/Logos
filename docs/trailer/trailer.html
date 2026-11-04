@@ -519,6 +519,13 @@ window.DURATION = DURATION;
 window.trailerReady = Promise.all([...document.images].map((img) => (img.complete ? Promise.resolve() : new Promise((r) => { img.onload = img.onerror = r; }))))
   .then(() => document.fonts.ready);
 
+// Poster mode: the homepage puts its play button where the intro logo is, so
+// the poster leaves that spot empty and hides the progress bar.
+if (new URLSearchParams(location.search).has("poster")) {
+  document.getElementById("intro-logo").style.visibility = "hidden";
+  document.getElementById("progress").style.visibility = "hidden";
+}
+
 if (!new URLSearchParams(location.search).has("driven")) {
   // Preview: scale the 1920x1080 stage to fit the browser window.
   const fit = () => {

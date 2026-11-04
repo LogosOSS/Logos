@@ -2,7 +2,7 @@
 title: Operations and Troubleshooting
 ---
 
-# Operations and troubleshooting
+# Operations and Troubleshooting
 
 To read the service logs, use these commands:
 

@@ -44,7 +44,7 @@ copy the commit. With this information, you can find which workers have the
 update. If a worker cannot report a commit, the page shows `version: unknown`.
 The icon then shows the reason.
 
-### Maintenance status
+### Maintenance Status
 
 Above the workers, the **Maintenance** box shows what holds the maintenance
 slot. Calibration, benchmarks and nightly recovery share this slot. While one
@@ -76,7 +76,7 @@ The audit log records every release.
 
 The box updates together with the rest of the page.
 
-### Idle lanes and lane locks
+### Idle Lanes and Lane Locks
 
 The capacity planner puts a lane to sleep after the lane has no requests for
 30 minutes (`LOGOS_IDLE_SLEEP_L1_S`, see
@@ -102,7 +102,7 @@ The **Sleep** action on a locked lane still puts the lane to sleep. Use it only
 if you must make memory free at once. The planner then wakes the locked lane
 again.
 
-### Worker locks
+### Worker Locks
 
 To keep all lanes of a worker as they are, lock the worker. Above the lane list
 of the worker, click **Lock worker**. While the worker is locked, the capacity
@@ -118,7 +118,7 @@ restart goes to sleep again. To release the worker, click **Worker locked**.
 
 ![A locked worker with two lanes](/img/roles/logos-admin-statistics-worker-lock.png)
 
-### Parallel lane actions
+### Parallel Lane Actions
 
 A worker unloads a lane at once, also while it loads or wakes another lane. It
 loads two lanes at the same time only if they use different GPUs. If the only
@@ -173,7 +173,7 @@ Use the time range bar of the tab to select the period.
 
 ![Delays tab of a model](/img/roles/logos-admin-model-details-delays.png)
 
-### Model benchmarks
+### Model Benchmarks
 
 Open the model's **Performance** tab to configure and start a benchmark.
 The orchestrator reserves the selected model lanes during a worker benchmark.
@@ -234,7 +234,7 @@ Expand **Runtime terms and other serving parameters** for less common terms.
 
 ![Grouped benchmark glossary](../static/img/roles/logos-admin-benchmark-glossary.png)
 
-### Nightly benchmarks
+### Nightly Benchmarks
 
 The **Performance** tab provides nightly benchmarks for each model/worker pair.
 Calibration runs first. Benchmarks use the remaining time.

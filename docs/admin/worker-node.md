@@ -2,7 +2,7 @@
 title: Worker Nodes
 ---
 
-# Worker nodes
+# Worker Nodes
 
 A worker node runs local vLLM models. It opens an outbound connection to the
 Logos orchestrator over a secure WebSocket. It does not need an inbound

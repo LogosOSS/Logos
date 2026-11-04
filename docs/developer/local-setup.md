@@ -2,13 +2,13 @@
 title: Local Development
 ---
 
-# Local development
+# Local Development
 
 All blocks below start from the repository root (`Logos/`). Each block
 sets its own working directory. You can run the blocks in any order from a
 new checkout.
 
-## Development stack
+## Development Stack
 
 ```bash
 docker compose -f docker-compose.dev.yaml up --build
@@ -42,7 +42,7 @@ account is `password`.
 To add an account, edit `keycloak/tum-realm.json`. Then restart the
 `keycloak` container.
 
-## Give a developer a team
+## Give a Developer a Team
 
 A new stack has no teams. An `app_developer` account has no access until it
 is a member of a team. Use one of these 3 procedures.
@@ -117,7 +117,7 @@ npm start
 On Linux, `npm` can show `EACCES` permission errors. If this occurs, read the
 [npm documentation](https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally).
 
-## Pre-commit hooks
+## Pre-commit Hooks
 
 The pre-commit hooks do the same checks as the lint job in CI
 (`.github/workflows/logos_lint.yml`). Install the hooks once in each clone:

@@ -1,10 +1,10 @@
-# Passkey login
+# Passkey Login
 
 Logos supports **in-page passkey (WebAuthn) login**. The user does not go to
 a hosted login page. The "Sign in with a passkey" button on the login screen
 runs the WebAuthn ceremony in the app and signs the user in.
 
-## How it works
+## Implementation in `logos-ui`
 
 The implementation is in `logos-ui/src/app/core/auth/` (Angular). These files
 do the work:
@@ -34,7 +34,7 @@ Registration (`registerPasskey` in `passkey.ts`) uses the same flow. The steps
 are `challenge`, then `navigator.credentials.create(...)`, then
 `POST .../save`.
 
-## Keycloak prerequisites
+## Keycloak Prerequisites
 
 These items are on the Keycloak side. They are not in this repository.
 
@@ -56,7 +56,7 @@ value to the UI through `/api/info`. The default in the production compose
 file is `aet.cit.tum.de`. If the value is blank (dev), then `passkey.ts` uses
 the current hostname (for example `localhost`).
 
-## Notes / status
+## Status
 
 - WebAuthn needs a secure context. `localhost` is a secure context for dev.
   All other hosts need HTTPS (prod is behind Traefik TLS).
