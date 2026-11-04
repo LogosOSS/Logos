@@ -15,6 +15,13 @@ with policy-based routing, scheduling, usage logging, billing and monitoring.
 [![Documentation](https://github.com/LogosOSS/Logos/actions/workflows/docs.yml/badge.svg?branch=main)](https://logososs.github.io/Logos/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-7c3aed.svg)](LICENSE)
 
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=LogosOSS_Logos&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=LogosOSS_Logos)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=LogosOSS_Logos&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=LogosOSS_Logos)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=LogosOSS_Logos&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=LogosOSS_Logos)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=LogosOSS_Logos&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=LogosOSS_Logos)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=LogosOSS_Logos&metric=coverage)](https://sonarcloud.io/summary/new_code?id=LogosOSS_Logos)
+[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=LogosOSS_Logos&metric=duplicated_lines_density)](https://sonarcloud.io/summary/new_code?id=LogosOSS_Logos)
+
 [Documentation](https://logososs.github.io/Logos/) ·
 [User Guide](https://logososs.github.io/Logos/user/getting-started) ·
 [Administrator Guide](https://logososs.github.io/Logos/admin/installation) ·

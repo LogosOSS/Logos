@@ -91,6 +91,13 @@ jobs:
           coverage xml
         working-directory: logos-orchestrator
 
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: orchestrator-coverage
+          path: logos-orchestrator/coverage.xml
+          retention-days: 1
+
   test-node-manager:
     name: Test Node Manager
     runs-on: ubuntu-latest
@@ -135,6 +142,44 @@ jobs:
       - name: Run Tests
         run: mvn -B test
         working-directory: logos-webservice
+
+      - name: Upload compiled classes
+        # The Java analysis of the quality job needs the bytecode.
+        uses: actions/upload-artifact@v7
+        with:
+          name: webservice-classes
+          path: logos-webservice/target/classes
+          retention-days: 1
+
+  quality:
+    name: SonarQube Cloud Analysis
+    needs: [test, test-webservice]
+    # Pull requests from forks get no secrets, so the analysis cannot run there.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+        with:
+          # Full history lets the analysis attribute new code and blame lines.
+          fetch-depth: 0
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v8
+        with:
+          name: orchestrator-coverage
+          path: logos-orchestrator
+
+      - name: Download compiled classes
+        uses: actions/download-artifact@v8
+        with:
+          name: webservice-classes
+          path: logos-webservice/target/classes
+
+      - name: Run analysis
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   test-ui-export:
     name: Test UI Static Export
