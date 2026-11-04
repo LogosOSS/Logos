@@ -115,6 +115,24 @@ public class BatchService {
 
     /** An orchestrator answer, passed back to the browser as it came. */
     public record ProxiedResponse(int status, String contentType, byte[] body) {
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof ProxiedResponse response && status == response.status
+                && java.util.Objects.equals(contentType, response.contentType)
+                && java.util.Arrays.equals(body, response.body);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * java.util.Objects.hash(status, contentType) + java.util.Arrays.hashCode(body);
+        }
+
+        @Override
+        public String toString() {
+            return "ProxiedResponse[status=" + status + ", contentType=" + contentType + ", body="
+                + (body == null ? "null" : body.length + " bytes") + "]";
+        }
     }
 
     /**

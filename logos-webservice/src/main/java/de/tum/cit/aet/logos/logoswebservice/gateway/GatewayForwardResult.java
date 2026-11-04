@@ -1,6 +1,8 @@
 package de.tum.cit.aet.logos.logoswebservice.gateway;
 
+import java.util.Arrays;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * What a completed cloud forward reported about itself.
@@ -28,5 +30,24 @@ public record GatewayForwardResult(Map<String, Long> usage, byte[] responseBody,
 
     static GatewayForwardResult none() {
         return new GatewayForwardResult(Map.of(), null, null);
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        return other instanceof GatewayForwardResult result && Objects.equals(usage, result.usage)
+            && Arrays.equals(responseBody, result.responseBody) && Objects.equals(serviceTier, result.serviceTier)
+            && Objects.equals(timings, result.timings);
+    }
+
+    @Override
+    public int hashCode() {
+        return 31 * Objects.hash(usage, serviceTier, timings) + Arrays.hashCode(responseBody);
+    }
+
+    @Override
+    public String toString() {
+        return "GatewayForwardResult[usage=" + usage + ", responseBody="
+            + (responseBody == null ? "null" : responseBody.length + " bytes") + ", serviceTier=" + serviceTier
+            + ", timings=" + timings + "]";
     }
 }

@@ -226,7 +226,7 @@ public class ApiKeyAdminService {
         String label = String.join("-", parts)
             .replaceAll("[^a-z0-9\\-]", "-")
             .replaceAll("\\-+", "-")
-            .replaceAll("^\\-|\\-$", "");
+            .replaceAll("(?:^-)|(?:-$)", "");
         if (label.length() > 35) label = label.substring(0, 35);
         return "lg-" + label + "-" + ApiKeyFactory.generateToken();
     }

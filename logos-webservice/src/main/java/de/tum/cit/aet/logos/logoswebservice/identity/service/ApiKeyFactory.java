@@ -53,6 +53,6 @@ public class ApiKeyFactory {
         return name.toLowerCase()
             .replaceAll("[^a-z0-9\\-]", "-")
             .replaceAll("\\-+", "-")
-            .replaceAll("^\\-|\\-$", "");
+            .replaceAll("(?:^-)|(?:-$)", "");
     }
 }

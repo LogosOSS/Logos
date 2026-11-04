@@ -228,6 +228,23 @@ public class GatewayCloudForwarder {
         private static final int CHUNK_BYTES = 8192;
 
         private record Chunk(byte[] bytes, Instant at, IOException error) {
+
+            @Override
+            public boolean equals(Object other) {
+                return other instanceof Chunk chunk && java.util.Arrays.equals(bytes, chunk.bytes)
+                    && java.util.Objects.equals(at, chunk.at) && java.util.Objects.equals(error, chunk.error);
+            }
+
+            @Override
+            public int hashCode() {
+                return 31 * java.util.Objects.hash(at, error) + java.util.Arrays.hashCode(bytes);
+            }
+
+            @Override
+            public String toString() {
+                return "Chunk[bytes=" + (bytes == null ? "null" : bytes.length + " bytes") + ", at=" + at
+                    + ", error=" + error + "]";
+            }
         }
 
         private static final Chunk END = new Chunk(null, null, null);
@@ -252,6 +269,8 @@ public class GatewayCloudForwarder {
                 try {
                     Thread.sleep(attachTimeout);
                 } catch (InterruptedException e) {
+                    // A relay attached and stopped the watchdog.
+                    Thread.currentThread().interrupt();
                     return;
                 }
                 if (!attached) {
@@ -289,13 +308,15 @@ public class GatewayCloudForwarder {
                 endedAt = Instant.now();
                 last = new Chunk(null, null, e);
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 return;
             }
             if (!closed.get()) {
                 try {
                     chunks.put(last);
-                } catch (InterruptedException ignored) {
+                } catch (InterruptedException e) {
                     // Closed meanwhile; close() leaves its own end marker.
+                    Thread.currentThread().interrupt();
                 }
             }
         }

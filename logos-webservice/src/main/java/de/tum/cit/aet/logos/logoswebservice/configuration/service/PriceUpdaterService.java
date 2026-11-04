@@ -425,6 +425,10 @@ public class PriceUpdaterService {
                 if (resp.statusCode() == 200) {
                     return objectMapper.readValue(resp.body(), Map.class);
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("price_updater: interrupted while fetching '{}'", candidate);
+                return null;
             } catch (Exception e) {
                 log.warn("price_updater: HTTP error for '{}': {}", candidate, e.getMessage());
                 return null;
