@@ -1247,10 +1247,15 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         if self._on_capacity_needed and provider_type == "logosnode":
             model_name = self._logosnode.get_model_name(model_id, provider_id)
             if model_name:
-                asyncio.create_task(
+                # Hold the task until it finishes: the event loop keeps only a
+                # weak reference, so an untracked request could be collected mid-run.
+                task = asyncio.create_task(
                     self._on_capacity_needed(model_name, provider_id),
                     name=f"capacity-needed-{model_name}",
                 )
+                pending = self.__dict__.setdefault("_capacity_needed_tasks", set())
+                pending.add(task)
+                task.add_done_callback(pending.discard)
 
         try:
             timeout = (

@@ -3599,7 +3599,12 @@ class CapacityPlanner:
                 m,
                 self._facade.get_provider_name(provider_id) or provider_id,
             )
-            asyncio.create_task(self.prepare_lane_for_request(provider_id, m, timeout_seconds=30.0))
+            # Hold the task until it finishes: the event loop keeps only a weak
+            # reference, so an untracked retry could be collected mid-run.
+            task = asyncio.create_task(self.prepare_lane_for_request(provider_id, m, timeout_seconds=30.0))
+            retries = self.__dict__.setdefault("_pending_capacity_retries", set())
+            retries.add(task)
+            task.add_done_callback(retries.discard)
 
     def _find_eviction_set(
         self,

@@ -1564,8 +1564,9 @@ class VllmProcessHandle:
     async def pull_model_streaming(self, model_name: str) -> AsyncIterator[dict[str, Any]]:
         """Not supported by vLLM — yields nothing."""
         logger.info("[%s] Streaming pull not supported by vLLM", self.lane_id)
-        return
-        yield  # pragma: no cover — makes this an async generator
+        # An empty loop keeps this an async generator that yields nothing.
+        for progress in ():
+            yield progress
 
     async def get_loaded_models(self) -> list[dict[str, Any]]:
         """Query /v1/models for the currently served model."""
@@ -2834,7 +2835,9 @@ class VllmProcessHandle:
                                 self._max_concurrency,
                             )
         except asyncio.CancelledError:
-            pass
+            # Stopping the lane cancels this task; nothing awaits it, so the
+            # cancellation ends it as cancelled rather than as finished.
+            raise
         except Exception:
             logger.debug("[%s] vLLM log streaming ended", self.lane_id, exc_info=True)
 

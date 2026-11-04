@@ -35,6 +35,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -138,7 +139,11 @@ def _install_git_askpass(token: str) -> None:
     """
     if not token:
         return
-    helper = Path("/tmp") / "logos-git-askpass.sh"
+    # A fresh file of our own rather than a fixed name in the shared temp
+    # directory, which another process could have created first.
+    descriptor, name = tempfile.mkstemp(prefix="logos-git-askpass-", suffix=".sh")
+    os.close(descriptor)
+    helper = Path(name)
     helper.write_text(
         "#!/bin/sh\n"
         'case "$1" in\n'

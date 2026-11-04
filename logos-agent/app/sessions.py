@@ -336,6 +336,9 @@ class SessionManager:
         # container is removed in between.
         self._last_helper_output: dict[int, str] = {}
         self._scheduler_task: asyncio.Task | None = None
+        # Passes started out of band (see request_scheduler_pass), held until
+        # they finish: the event loop keeps only a weak reference to a task.
+        self._requested_passes: set[asyncio.Task] = set()
         self._stopping = asyncio.Event()
         # Serialises admission so two scheduler passes cannot both decide there
         # is room for the last slot.
@@ -710,6 +713,12 @@ class SessionManager:
         if self._cached_own_api_key_id is None:
             self._cached_own_api_key_id = await db.agent_key_id(settings.agent_api_key)
         return self._cached_own_api_key_id
+
+    def request_scheduler_pass(self) -> None:
+        """Run a scheduler pass now in the background instead of waiting for the next tick."""
+        task = asyncio.create_task(self.scheduler_pass())
+        self._requested_passes.add(task)
+        task.add_done_callback(self._requested_passes.discard)
 
     async def scheduler_pass(self) -> None:
         # Permissions first, then the measurement they describe: a key moved
@@ -2151,7 +2160,7 @@ class SessionManager:
             return None
         await db.add_event(new_id, EventKind.STATUS, {"status": "queued", "retry_of": session.get("id")})
         logger.info("session %s queued as another attempt at %s", new_id, ref or session.get("id"))
-        asyncio.create_task(self.scheduler_pass())
+        self.request_scheduler_pass()
         return new_id
 
     async def _react(self, session: dict[str, Any] | None, content: str) -> None:

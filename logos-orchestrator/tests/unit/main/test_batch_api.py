@@ -1261,9 +1261,9 @@ def test_result_file_ids_are_deterministic_and_distinguish_the_providers():
     # repeated poll upserts the one row; two providers minting the same file
     # id must yield two different ones, so one team's result can never be
     # reached through the other's id.
-    assert batch_api._logos_result_file_id(OPENAI_PROVIDER, "file-out") == batch_api._logos_result_file_id(
-        OPENAI_PROVIDER, "file-out"
-    )
+    first = batch_api._logos_result_file_id(OPENAI_PROVIDER, "file-out")
+    repeated = batch_api._logos_result_file_id(OPENAI_PROVIDER, "file-out")
+    assert first == repeated
     assert batch_api._logos_result_file_id(OPENAI_PROVIDER, "file-out") != batch_api._logos_result_file_id(
         AZURE_PROVIDER, "file-out"
     )
