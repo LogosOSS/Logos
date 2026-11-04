@@ -95,17 +95,28 @@ class Svg:
         )
         self.text(x + w / 2, y + self.f + 3, label, self.f, 700, "#fff")
 
-    def iface(self, x, y, label, lx, ly, anchor="middle", socket="left"):
-        """Provided interface (ball) with the required-interface socket around it."""
-        r = 20
-        arcs = {
-            "left": f"M {x - 4} {y - r} A {r} {r} 0 0 0 {x - 4} {y + r}",
-            "right": f"M {x + 4} {y - r} A {r} {r} 0 0 1 {x + 4} {y + r}",
-            "up": f"M {x - r} {y - 4} A {r} {r} 0 0 1 {x + r} {y - 4}",
-            "down": f"M {x - r} {y + 4} A {r} {r} 0 0 0 {x + r} {y + 4}",
-        }
-        self.add(f'<circle cx="{x}" cy="{y}" r="13" fill="#fff" stroke="{INK}" stroke-width="2"/>')
-        self.add(f'<path d="{arcs[socket]}" fill="none" stroke="{INK}" stroke-width="2"/>')
+    BALL, SOCKET = 15, 19  # Apollon: ball radius 15, socket = ball + 4 px gap
+    SIDES = {"left": (-1, 0), "right": (1, 0), "up": (0, -1), "down": (0, 1)}
+
+    def iface(self, x, y, label, lx, ly, anchor="middle", sockets=("left",)):
+        """Provided interface (ball) with one required-interface socket per requiring side.
+
+        As in Apollon, each socket is an arc around the ball centre with a 4 px gap. It spans
+        165 degrees, or 75 degrees if more than one component requires the interface.
+        """
+        span = math.radians(165 if len(sockets) == 1 else 75)
+        r = self.SOCKET
+        for side in sockets:
+            dx, dy = self.SIDES[side]
+            mid = math.atan2(dy, dx)
+            a0, a1 = mid - span / 2, mid + span / 2
+            x0, y0 = x + r * math.cos(a0), y + r * math.sin(a0)
+            x1, y1 = x + r * math.cos(a1), y + r * math.sin(a1)
+            self.add(
+                f'<path d="M {x0:.1f} {y0:.1f} A {r} {r} 0 0 1 {x1:.1f} {y1:.1f}" fill="none" '
+                f'stroke="{INK}" stroke-width="2"/>'
+            )
+        self.add(f'<circle cx="{x}" cy="{y}" r="{self.BALL}" fill="#fff" stroke="{INK}" stroke-width="2"/>')
         for i, line in enumerate(label):
             self.text(lx, ly + i * (self.f + 4), line, self.f + 1, 600, INK, anchor)
 
@@ -171,25 +182,32 @@ class Svg:
 def top_level():
     s = Svg(1530, 850, "Logos top-level design (UML component diagram)", "UML component diagram of Logos")
     f = s.f
+    B, S = Svg.BALL, Svg.SOCKET  # a provided line ends on the ball, a required line on the socket
 
     def stack(x, y, w, h):
         """Two offset copies behind a component: the component runs as several instances."""
         for o in (20, 10):
-            s.add(f'<rect x="{x + o}" y="{y - o}" width="{w}" height="{h}" fill="#fff" stroke="{INK}" stroke-width="2"/>')
+            s.add(
+                f'<rect x="{x + o}" y="{y - o}" width="{w}" height="{h}" fill="#fff" stroke="{INK}" stroke-width="2"/>'
+            )
 
     s.frame(360, 345, 1170, 505, "«subsystem»", "Logos", name_x=510)
     # Request path (accent): clients -> Gateway -> logos-webservice -> cloud or orchestrator -> workers
     req = dict(color=SIGNAL, width=2.5)
-    s.wire("M 200 490 H 410 M 200 660 H 410", **req)
-    s.wire("M 610 525 H 720", **req)
-    s.wire("M 855 215 V 410", **req)
-    s.wire("M 1010 525 H 1270", **req)
-    s.wire("M 1365 255 V 430", **req)
+    s.wire(f"M 200 490 H {275 - S} M {275 + B} 490 H 410", **req)  # Logos UI -> Management API
+    s.wire(f"M 200 660 H {275 - S} M {275 + B} 660 H 410", **req)  # Application -> OpenAI API
+    s.wire(f"M 610 525 H {665 - S} M {665 + B} 525 H 720", **req)  # Gateway -> HTTP
+    s.wire(f"M 855 410 V {300 + S} M 855 {300 - B} V 215", **req)  # webservice -> cloud provider API
+    s.wire(f"M 1010 525 H {1140 - S} M {1140 + B} 525 H 1270", **req)  # webservice -> local inference API
+    s.wire(f"M 1365 255 V {300 - S} M 1365 {300 + B} V 430", **req)  # worker -> worker session
     # Supporting connections
-    s.wire("M 115 200 V 245 M 115 285 V 440")  # Keycloak -> OIDC -> Logos UI
-    s.wire("M 130 265 H 760 V 410")  # OIDC -> logos-webservice
-    s.wire("M 760 620 V 660 M 760 700 V 730")  # logos-webservice -> rate-limit window -> logos-redis
-    s.wire("M 950 620 V 640 H 1395 V 620 M 1125 640 V 670 M 1125 710 V 730")  # persistence
+    s.wire(f"M 115 200 V {265 - B}")  # Keycloak provides OpenID Connect
+    s.wire(f"M 115 440 V {265 + S}")  # Logos UI requires it
+    s.wire(f"M 760 410 V 265 H {115 + S}")  # logos-webservice requires it
+    s.wire(f"M 760 620 V {690 - S} M 760 {690 + B} V 730")  # webservice -> shared rate limits -> redis
+    s.wire(f"M 950 620 V 690 H {1125 - S}")  # webservice requires SQL
+    s.wire(f"M 1395 620 V 690 H {1125 + S}")  # orchestrator requires SQL
+    s.wire(f"M 1125 {690 + B} V 730")  # logos-db provides SQL
     # External systems
     s.comp(0, 40, 230, 160, "«subsystem»", "Keycloak", "identity provider")
     s.comp(685, 0, 340, 215, "«subsystem»", "Cloud AI provider", top=True)
@@ -210,16 +228,16 @@ def top_level():
     s.comp(1270, 430, 250, 190, "«component»", "logos-orchestrator", "classify · schedule", name_size=f + 3)
     s.comp(660, 730, 200, 90, "«component»", "logos-redis")
     s.comp(1010, 730, 230, 90, "«component»", "logos-db", "PostgreSQL")
-    # Interfaces
-    s.iface(275, 490, ["Management", "API"], 282, 434, socket="left")
-    s.iface(275, 660, ["OpenAI-", "compatible", "API"], 282, 580, socket="left")
-    s.iface(115, 265, ["OpenID Connect"], 145, 305, anchor="start", socket="down")
-    s.iface(855, 300, ["Cloud provider API"], 880, 307, anchor="start", socket="down")
-    s.iface(665, 525, ["API", "routes"], 665, 571, socket="left")
-    s.iface(1140, 525, ["Local request API"], 1140, 492, socket="left")
-    s.iface(760, 690, ["Rate-limit window"], 785, 697, anchor="start", socket="up")
-    s.iface(1125, 690, ["Persistence"], 1150, 697, anchor="start", socket="up")
-    s.iface(1365, 300, ["Worker session", "(WebSocket)"], 1340, 297, anchor="end", socket="up")
+    # Interfaces: ball = provided, socket = required
+    s.iface(275, 490, ["Management", "API"], 282, 434)
+    s.iface(275, 660, ["OpenAI", "API"], 282, 604)
+    s.iface(115, 265, ["OpenID Connect"], 145, 310, anchor="start", sockets=("down", "right"))
+    s.iface(855, 300, ["Cloud provider API"], 882, 307, anchor="start", sockets=("down",))
+    s.iface(665, 525, ["HTTP"], 665, 575)
+    s.iface(1140, 525, ["Local inference API"], 1140, 492)
+    s.iface(760, 690, ["Shared", "rate limits"], 787, 686, anchor="start", sockets=("up",))
+    s.iface(1125, 690, ["SQL"], 1125, 664, sockets=("left", "right"))
+    s.iface(1365, 300, ["Worker session", "(WebSocket)"], 1340, 297, anchor="end", sockets=("up",))
     s.save("top-level.svg")
 
 
