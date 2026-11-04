@@ -32,36 +32,96 @@
     linear-gradient(165deg, var(--logos-hero-from), var(--logos-hero-to));
 }
 
-.heroInner {
-  max-width: 720px;
+.heroSplit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 3rem;
+  align-items: center;
+  max-width: 1200px;
   margin: 0 auto;
-  text-align: center;
 }
 
+@media (max-width: 996px) {
+  .heroSplit {
+    grid-template-columns: 1fr;
+    gap: 2.25rem;
+  }
+}
 
+.heroLogo {
+  display: block;
+  width: 72px;
+  height: 72px;
+  margin-bottom: 1.5rem;
+}
 
 .heroHeadline {
-  margin: 0 0 0.85rem;
+  margin: 0 0 1rem;
   font-family: var(--ifm-font-family-base);
-  font-size: clamp(2rem, 4vw, 2.75rem);
+  font-size: clamp(2rem, 3.6vw, 3rem);
   font-weight: 700;
   line-height: 1.15;
   color: var(--logos-ink);
 }
 
 .heroSubtitle {
-  margin: 0 auto 1.75rem;
-  max-width: 36rem;
+  margin: 0 0 1.25rem;
+  max-width: 32rem;
   font-size: 1.1rem;
   line-height: 1.55;
   color: var(--logos-muted);
+}
+
+.heroProof {
+  display: inline-block;
+  margin-bottom: 1.75rem;
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--logos-border);
+  border-radius: 999px;
+  background: var(--logos-card);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--logos-violet);
 }
 
 .heroCtas {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
+}
+
+.factBar {
+  display: flex;
+  flex-wrap: wrap;
   justify-content: center;
+  gap: 0.6rem 2rem;
+  padding: 1.1rem 1.5rem;
+  border-top: 1px solid var(--logos-border);
+  border-bottom: 1px solid var(--logos-border);
+  background: var(--logos-surface);
+  font-size: 0.92rem;
+  color: var(--logos-muted);
+}
+
+.fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fact::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--logos-violet);
+}
+
+.factBar a,
+.factBar a:hover {
+  color: var(--logos-muted) !important;
+  text-decoration: underline !important;
+  text-underline-offset: 3px;
 }
 
 .btnPrimary,
@@ -210,46 +270,7 @@
 }
 
 .heroVideo {
-  position: relative;
-  max-width: 960px;
-  margin: 2.5rem auto 0;
-}
-
-.videoFrame {
-  position: relative;
-}
-
-/* Sits exactly where the poster leaves the logo out (render.cjs, poster mode):
-   centre at 35 % of the height, 9.7 % of the width. */
-.playButton {
-  position: absolute;
-  left: 50%;
-  top: 35%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: max(9.7%, 40px);
-  aspect-ratio: 1;
-  padding: 0 0 0 4%;
-  border: 0;
-  border-radius: 26%;
-  background: linear-gradient(135deg, #7c3aed, #6366f6);
-  color: #fff;
-  box-shadow: 0 14px 40px rgba(124, 58, 237, 0.55);
-  cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.playButton svg {
-  width: 62%;
-  height: 62%;
-}
-
-.playButton:hover,
-.playButton:focus-visible {
-  transform: translate(-50%, -50%) scale(1.06);
-  box-shadow: 0 18px 48px rgba(124, 58, 237, 0.7);
+  min-width: 0;
 }
 
 .heroVideoCaption {

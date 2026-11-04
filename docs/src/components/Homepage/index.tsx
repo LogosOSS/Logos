@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React from "react";
 import Link from "@docusaurus/Link";
 import useBaseUrl from "@docusaurus/useBaseUrl";
 import styles from "./styles.module.css";
@@ -37,63 +37,68 @@ const GUIDES: GuideCard[] = [
   },
 ];
 
+const FACTS: { label: string; href?: string }[] = [
+  { label: "OpenAI-compatible API" },
+  { label: "Self-hosted vLLM workers" },
+  { label: "Azure and OpenAI providers" },
+  { label: "MIT License", href: "https://github.com/LogosOSS/Logos/blob/main/LICENSE" },
+  { label: "Built at TU Munich", href: "https://aet.cit.tum.de/projects/ai/logos/" },
+];
+
 export default function Homepage(): React.JSX.Element {
   const architecture = useBaseUrl("/img/system-design/top-level.svg");
+  const logo = useBaseUrl("/img/logos-logo.svg");
   const trailer = useBaseUrl("/video/logos-trailer.mp4");
   const trailerPoster = useBaseUrl("/video/logos-trailer-poster.jpg");
-  // The native controls would cover the poster text on small screens, so they
-  // appear only after the reader starts the video.
-  const video = useRef<HTMLVideoElement>(null);
-  const [started, setStarted] = useState(false);
-  const play = () => {
-    setStarted(true);
-    void video.current?.play();
-  };
 
   return (
     <div className={styles.page}>
       <section className={styles.hero}>
-        <div className={styles.heroInner}>
-          <h1 className={styles.heroHeadline}>LLM engineering made easy</h1>
-          <div className={styles.heroSubtitle}>
-            OpenAI-compatible inference with logging, billing, policies, and
-            self-hosted workers — documented for users, operators, and
-            contributors.
+        <div className={styles.heroSplit}>
+          <div className={styles.heroText}>
+            <img src={logo} alt="" className={styles.heroLogo} width={72} height={72} />
+            <h1 className={styles.heroHeadline}>LLM Orchestration and Management</h1>
+            <div className={styles.heroSubtitle}>
+              One OpenAI-compatible gateway for self-hosted GPU workers and
+              cloud providers, with request logs, billing, policies and team
+              budgets.
+            </div>
+            <div className={styles.heroProof}>
+              Chat Completions and Responses API
+            </div>
+            <div className={styles.heroCtas}>
+              <Link className={styles.btnPrimary} to="/user/getting-started">
+                Get Started
+              </Link>
+              <Link className={styles.btnGhost} to="/developer/system-design">
+                System Design
+              </Link>
+            </div>
           </div>
-          <div className={styles.heroCtas}>
-            <Link className={styles.btnPrimary} to="/user/getting-started">
-              Start with the User Guide
-            </Link>
-            <Link className={styles.btnGhost} to="/developer/system-design">
-              View system design
-            </Link>
+          <div className={styles.heroVideo}>
+            <video
+              className={styles.trailer}
+              src={trailer}
+              poster={trailerPoster}
+              controls
+              playsInline
+              preload="metadata"
+              width={1920}
+              height={1080}
+              aria-label="Logos product trailer, 60 s, with music"
+            />
+            <div className={styles.heroVideoCaption}>Logos in 60 s</div>
           </div>
-        </div>
-        <div className={styles.heroVideo}>
-          <div className={styles.videoFrame}>
-          <video
-            ref={video}
-            className={styles.trailer}
-            src={trailer}
-            poster={trailerPoster}
-            controls={started}
-            playsInline
-            preload="metadata"
-            width={1920}
-            height={1080}
-            aria-label="Logos product trailer, 60 s, with music"
-          />
-          {!started && (
-            <button type="button" className={styles.playButton} onClick={play} aria-label="Play the Logos trailer">
-              <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
-                <path d="M8 5.5v13l11-6.5z" fill="currentColor" />
-              </svg>
-            </button>
-          )}
-          </div>
-          <div className={styles.heroVideoCaption}>Logos in 60 s</div>
         </div>
       </section>
+
+      <div className={styles.factBar}>
+        {FACTS.map((fact) => (
+          <span key={fact.label} className={styles.fact}>
+            {fact.href ? <a href={fact.href}>{fact.label}</a> : fact.label}
+          </span>
+        ))}
+      </div>
 
       <section className={styles.section}>
         <h2 className={styles.sectionHeading}>Guides</h2>
