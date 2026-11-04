@@ -352,7 +352,7 @@ The nightly schedule and recovery journal use the same PostgreSQL database.
 Benchmark runs do not restore local profile files.
 
 Apply `058_central_model_profiles.xml` and the nightly migration before workers connect.
-Imported profiles are stale until calibration succeeds.
+A calibration measured under another hardware, vLLM or configuration key is stale until the next calibration succeeds.
 Automatic calibration runs first during the maintenance window.
 Benchmarks use the remaining time.
 

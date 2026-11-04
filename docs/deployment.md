@@ -121,6 +121,14 @@ ends, the node manager removes the image that is two versions old. It also
 removes the image of a release that does not run. If the rollback fails, the node
 manager removes no image.
 
+When the new node manager answers, the workflow removes every image of the
+node manager that no container uses. It finds them by the label
+`io.logos.component=node-manager`, so images that piled up earlier go too.
+If the new node manager does not start, the old image stays on the host.
+Images from before the label existed have no label. Remove them once with
+`docker rmi`. A host without the workflow keeps its old node manager images
+and needs the same command.
+
 The node manager writes the record of each deployment to the directory
 `node-manager/` in the worker directory. The image `logos-node-manager` is in the
 deployment registry and, for builds of `main`, in the public mirror.
@@ -130,17 +138,18 @@ worker service. Use the node manager instead.
 
 To use the node manager on a host without the deploy workflow, do these steps:
 
-1. If the registry needs a login, run `docker login` on the host.
+1. If the registry needs a login, run
+   `DOCKER_CONFIG=<worker directory>/.docker docker login <registry>` on the
+   host.
 2. Add `COMPOSE_PROFILES=node-manager` to the `.env` file of the worker.
 3. To pull a version tag, set `REGISTRY` in the `.env` file of the worker to
    the deployment registry (`<registry>/logos`). Then set `IMAGE_TAG`. The
    public mirror has only the tag `latest`.
 4. In the worker directory, run `docker compose up -d logos-node-manager`.
 
-The node manager keeps the login that existed when it started. If you run
-`docker login` again, run
-`docker compose up -d --force-recreate logos-node-manager`. The deploy
-workflows do this on each run.
+The node manager reads the login from the directory `.docker` of the worker
+directory. A new login is visible at once. The deploy workflows write the login
+to this directory on each run.
 
 To send a deploy request, run this command:
 
@@ -151,6 +160,69 @@ docker exec logos-node-manager node-manager deploy --id manual-1 --tag latest --
 The node manager reserves the tag `previous`. Do not deploy that tag.
 
 To see the latest deployment, run `docker exec logos-node-manager node-manager status`.
+
+### Drain a worker node during an update
+
+By default, the node manager replaces the worker container at once. This stops
+the requests that run on the worker. The drain prevents this. With the drain,
+the node manager first asks the orchestrator to cordon the worker. A cordoned
+worker gets no new requests. The requests that run on it finish. Then the node
+manager replaces the container.
+
+A worker drains if its entry in the matrix of the deploy workflow has
+`drain: true`, in addition to `node-manager: true`. For such a worker, the
+workflow does these steps:
+
+1. The workflow writes `NODE_MANAGER_DRAIN_ENABLED=true` to the `.env` file of
+   the worker.
+2. The workflow sends a deploy request to the node manager.
+3. The workflow waits until the image is on the host. Then the job ends.
+
+The drain, the replacement and the checks continue on the host. The job is green
+when the image is on the host. It does not show how the deployment ends.
+
+CAUTION: Give `drain: true` to every worker of the workflow, or put the workers
+without it first. A worker without the drain replaces its container at once,
+also if another worker still drains.
+
+The orchestrator lets only one worker at a time out of service. The node manager
+of a second worker waits for its turn. It waits for up to 2 hours. The worker
+serves requests as usual while it waits.
+
+For a cordoned worker, the orchestrator does these things:
+
+- It sends new requests to another worker that serves the model.
+- If no other worker serves the model, the requests wait in a queue. They wait
+  for 20 minutes, or for the `timeout_s` of the client. After this time, the
+  request fails with the status 503.
+- It places no model on the worker.
+
+The worker has drained if no request runs on it for 10 s. If the worker does not
+drain in 15 minutes, the node manager ends the deployment with the result
+`failed`. The cordon ends. The running container stays and serves again.
+
+After the replacement, the node manager waits until the orchestrator sees the new
+worker. If this does not happen in 5 minutes, the node manager starts the
+previous version again. If the node manager cannot ask the orchestrator, it
+replaces the container without the drain and writes a note in the record.
+
+To see how a deployment ended, use one of these methods:
+
+- Look at the step `Show how the previous deployment ended` in the next run of
+  the workflow. It prints the events of the last deployment on each worker.
+- Run `docker exec logos-node-manager node-manager status --logs` on the host.
+  The command also prints the log of a failed container.
+
+These limits apply to the drain:
+
+- The orchestrator keeps the cordon in memory. A restart of the orchestrator ends
+  all cordons. The node manager asks again before it replaces a container.
+- A model that only one worker serves has no worker during the update. Its
+  requests wait, as described above.
+- The models of the worker load again after the deployment. The next worker
+  can start before the first worker has its models back.
+
+For all limits, see the README of the node manager.
 
 ## Nightly benchmarks
 

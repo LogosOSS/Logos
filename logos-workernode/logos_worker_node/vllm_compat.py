@@ -287,6 +287,22 @@ class FatalLoadErrorPattern:
     persist: bool = True
 
 
+# Written to the probe log by calibration's stall abort. Retrying with another
+# KV size would hang the same way, but a later session may succeed (e.g. once
+# the JIT cache is warm), so it is never persisted.
+ENGINE_WARMUP_STALLED = FatalLoadErrorPattern(
+    needle="engine warmup stalled",
+    reason_code="engine-warmup-stalled",
+    description=(
+        "vLLM stopped producing output during engine warmup and no compiler "
+        "was running, so the probe was aborted instead of waiting out the "
+        "full ready timeout. A larger KV cache cannot fix this; a later "
+        "calibration session retries."
+    ),
+    domain="server_start",
+    persist=False,
+)
+
 _FATAL_LOAD_ERROR_PATTERNS: tuple[FatalLoadErrorPattern, ...] = (
     FatalLoadErrorPattern(
         needle="Invalid repository ID or local directory specified",
@@ -335,6 +351,7 @@ _FATAL_LOAD_ERROR_PATTERNS: tuple[FatalLoadErrorPattern, ...] = (
         # same run — never persist it as permanently unsupported.
         persist=False,
     ),
+    ENGINE_WARMUP_STALLED,
     FatalLoadErrorPattern(
         needle="is not supported for quantization method",
         reason_code="unsupported-quantization",
@@ -592,7 +609,7 @@ _SCRUBBED_ENV_VARS = (
 
 # Default vLLM binary name (resolved through PATH when no absolute path is
 # configured).
-_DEFAULT_VLLM = "vllm"
+DEFAULT_VLLM = "vllm"
 
 # File the Dockerfile bakes next to the venv's bin/ listing the quantization
 # method names the installed vLLM recognizes (see

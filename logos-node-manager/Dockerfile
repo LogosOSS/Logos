@@ -20,6 +20,10 @@ COPY pyproject.toml README.md ./
 COPY logos_node_manager ./logos_node_manager
 RUN pip install --no-cache-dir .
 
+# Marks every image of the manager. The deploy workflows remove the unused ones by this label after an update: once a
+# newer image is pulled, an older one has no name left, so the label is the only thing that still identifies it.
+LABEL io.logos.component="node-manager"
+
 # Runs as root on purpose: the Docker socket of the host belongs to root, and the manager's only job is to use it.
 ENTRYPOINT ["node-manager"]
 CMD ["run"]

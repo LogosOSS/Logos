@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <changeSet id="070-prune-custom-permissions-to-team-boundary" author="logos">
+        <comment>
+            Remove custom API-key grants which exceed the grants of the key's
+            owning team. New writes enforce this boundary in the service.
+        </comment>
+        <sql>
+            DELETE FROM api_key_model_permissions akmp
+            USING api_keys ak
+            WHERE akmp.api_key_id = ak.id
+              AND ak.team_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM team_model_permissions tmp
+                  WHERE tmp.team_id = ak.team_id AND tmp.model_id = akmp.model_id
+              );
+
+            DELETE FROM api_key_provider_permissions akpp
+            USING api_keys ak
+            WHERE akpp.api_key_id = ak.id
+              AND ak.team_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM team_provider_permissions tpp
+                  WHERE tpp.team_id = ak.team_id AND tpp.provider_id = akpp.provider_id
+              );
+        </sql>
+    </changeSet>
+</databaseChangeLog>
