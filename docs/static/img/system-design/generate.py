@@ -192,42 +192,41 @@ def top_level():
             )
 
     s.frame(360, 345, 1170, 505, "«subsystem»", "Logos", name_x=510)
-    # Request path (accent): clients -> Gateway -> logos-webservice -> cloud or orchestrator -> workers
-    req = dict(color=SIGNAL, width=2.5)
-    s.wire(f"M 200 490 H {275 - S} M {275 + B} 490 H 410", **req)  # Logos UI -> Management API
-    s.wire(f"M 200 660 H {275 - S} M {275 + B} 660 H 410", **req)  # Application -> OpenAI API
-    s.wire(f"M 610 525 H {665 - S} M {665 + B} 525 H 720", **req)  # Gateway -> HTTP
-    s.wire(f"M 855 410 V {300 + S} M 855 {300 - B} V 215", **req)  # webservice -> cloud provider API
-    s.wire(f"M 1010 525 H {1140 - S} M {1140 + B} 525 H 1270", **req)  # webservice -> local inference API
-    s.wire(f"M 1365 255 V {300 - S} M 1365 {300 + B} V 430", **req)  # worker -> worker session
+    # Request path: clients -> Gateway -> Webservice -> cloud provider or Orchestrator -> workers
+    s.wire(f"M 200 490 H {275 - S} M {275 + B} 490 H 410")  # Logos UI -> Management API
+    s.wire(f"M 200 660 H {275 - S} M {275 + B} 660 H 410")  # Application -> OpenAI API
+    s.wire(f"M 610 525 H {665 - S} M {665 + B} 525 H 720")  # Gateway -> HTTP
+    s.wire(f"M 855 410 V {300 + S} M 855 {300 - B} V 215")  # webservice -> cloud provider API
+    s.wire(f"M 1010 525 H {1140 - S} M {1140 + B} 525 H 1270")  # webservice -> local inference API
+    s.wire(f"M 1365 255 V {300 - S} M 1365 {300 + B} V 430")  # worker -> worker session
     # Supporting connections
     s.wire(f"M 115 200 V {265 - B}")  # Keycloak provides OpenID Connect
     s.wire(f"M 115 440 V {265 + S}")  # Logos UI requires it
-    s.wire(f"M 760 410 V 265 H {115 + S}")  # logos-webservice requires it
+    s.wire(f"M 760 410 V 265 H {115 + S}")  # Webservice requires it
     s.wire(f"M 760 620 V {690 - S} M 760 {690 + B} V 730")  # webservice -> shared rate limits -> redis
     s.wire(f"M 950 620 V 690 H {1125 - S}")  # webservice requires SQL
     s.wire(f"M 1395 620 V 690 H {1125 + S}")  # orchestrator requires SQL
-    s.wire(f"M 1125 {690 + B} V 730")  # logos-db provides SQL
+    s.wire(f"M 1125 {690 + B} V 730")  # Database provides SQL
     # External systems
     s.comp(0, 40, 230, 160, "«subsystem»", "Keycloak", "identity provider")
-    s.comp(685, 0, 340, 215, "«subsystem»", "Cloud AI provider", top=True)
+    s.comp(685, 0, 340, 215, "«subsystem»", "Cloud AI Provider", top=True)
     s.comp(725, 85, 260, 110, "«component»", "Azure · OpenAI", "Gemini · Bedrock")
     stack(1220, 20, 290, 235)
-    s.comp(1220, 20, 290, 235, "«subsystem»", "GPU worker node", top=True)
+    s.comp(1220, 20, 290, 235, "«subsystem»", "GPU Node", top=True)
     s.badge(1232, 32, "× N")
-    s.comp(1250, 105, 230, 60, None, "logos-workernode", name_size=f + 2, icon=False)
-    s.comp(1250, 185, 230, 60, None, "vLLM lane", name_size=f + 2, icon=False)
+    s.comp(1250, 105, 230, 60, None, "Worker Node", name_size=f + 2, icon=False)
+    s.comp(1250, 185, 230, 60, None, "vLLM Lane", name_size=f + 2, icon=False)
     s.wire("M 1365 165 V 183", dashed=True, arrow=True)
     s.comp(0, 440, 200, 100, "«subsystem»", "Logos UI", "browser")
     s.comp(0, 610, 200, 100, "«subsystem»", "Application", "SDK · tool · agent")
     # Logos
-    s.comp(410, 440, 200, 270, "«component»", "Gateway", ["logos-rate-gateway", "traefik"])
+    s.comp(410, 440, 200, 270, "«component»", "Gateway", ["Rate Gateway", "Traefik"])
     stack(720, 430, 270, 190)
-    s.comp(720, 430, 270, 190, "«component»", "logos-webservice", "inference gateway")
+    s.comp(720, 430, 270, 190, "«component»", "Webservice", "inference gateway")
     s.badge(734, 442, "× N")
-    s.comp(1270, 430, 250, 190, "«component»", "logos-orchestrator", "classify · schedule", name_size=f + 3)
-    s.comp(660, 730, 200, 90, "«component»", "logos-redis")
-    s.comp(1010, 730, 230, 90, "«component»", "logos-db", "PostgreSQL")
+    s.comp(1270, 430, 250, 190, "«component»", "Orchestrator", "classify · schedule", name_size=f + 3)
+    s.comp(660, 730, 200, 90, "«component»", "Redis")
+    s.comp(1010, 730, 230, 90, "«component»", "Database", "PostgreSQL")
     # Interfaces: ball = provided, socket = required
     s.iface(275, 490, ["Management", "API"], 282, 434)
     s.iface(275, 660, ["OpenAI", "API"], 282, 604)

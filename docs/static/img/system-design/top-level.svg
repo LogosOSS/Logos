@@ -7,12 +7,12 @@
 <g transform="translate(1494 357)" fill="#fff" stroke="#241c3b" stroke-width="1.6"><rect x="4" y="0" width="16" height="20"/><rect x="0" y="4" width="8" height="4"/><rect x="0" y="12" width="8" height="4"/></g>
 <text x="510" y="377" text-anchor="middle" font-size="20" font-weight="400" fill="#3b3160">«subsystem»</text>
 <text x="510" y="411" text-anchor="middle" font-size="28" font-weight="800" fill="#7c3aed">Logos</text>
-<path d="M 200 490 H 256 M 290 490 H 410" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
-<path d="M 200 660 H 256 M 290 660 H 410" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
-<path d="M 610 525 H 646 M 680 525 H 720" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
-<path d="M 855 410 V 319 M 855 285 V 215" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
-<path d="M 1010 525 H 1121 M 1155 525 H 1270" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
-<path d="M 1365 255 V 281 M 1365 315 V 430" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
+<path d="M 200 490 H 256 M 290 490 H 410" fill="none" stroke="#241c3b" stroke-width="2"/>
+<path d="M 200 660 H 256 M 290 660 H 410" fill="none" stroke="#241c3b" stroke-width="2"/>
+<path d="M 610 525 H 646 M 680 525 H 720" fill="none" stroke="#241c3b" stroke-width="2"/>
+<path d="M 855 410 V 319 M 855 285 V 215" fill="none" stroke="#241c3b" stroke-width="2"/>
+<path d="M 1010 525 H 1121 M 1155 525 H 1270" fill="none" stroke="#241c3b" stroke-width="2"/>
+<path d="M 1365 255 V 281 M 1365 315 V 430" fill="none" stroke="#241c3b" stroke-width="2"/>
 <path d="M 115 200 V 250" fill="none" stroke="#241c3b" stroke-width="2"/>
 <path d="M 115 440 V 284" fill="none" stroke="#241c3b" stroke-width="2"/>
 <path d="M 760 410 V 265 H 134" fill="none" stroke="#241c3b" stroke-width="2"/>
@@ -28,7 +28,7 @@
 <rect x="685" y="0" width="340" height="215" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <g transform="translate(993 11)" fill="#fff" stroke="#241c3b" stroke-width="1.6"><rect x="4" y="0" width="16" height="20"/><rect x="0" y="4" width="8" height="4"/><rect x="0" y="12" width="8" height="4"/></g>
 <text x="855.0" y="42" text-anchor="middle" font-size="20" font-weight="400" fill="#3b3160">«subsystem»</text>
-<text x="855.0" y="72" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">Cloud AI provider</text>
+<text x="855.0" y="72" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">Cloud AI Provider</text>
 <rect x="725" y="85" width="260" height="110" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <g transform="translate(953 96)" fill="#fff" stroke="#241c3b" stroke-width="1.6"><rect x="4" y="0" width="16" height="20"/><rect x="0" y="4" width="8" height="4"/><rect x="0" y="12" width="8" height="4"/></g>
 <text x="855.0" y="123.0" text-anchor="middle" font-size="20" font-weight="400" fill="#3b3160">«component»</text>
@@ -39,13 +39,13 @@
 <rect x="1220" y="20" width="290" height="235" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <g transform="translate(1478 31)" fill="#fff" stroke="#241c3b" stroke-width="1.6"><rect x="4" y="0" width="16" height="20"/><rect x="0" y="4" width="8" height="4"/><rect x="0" y="12" width="8" height="4"/></g>
 <text x="1365.0" y="62" text-anchor="middle" font-size="20" font-weight="400" fill="#3b3160">«subsystem»</text>
-<text x="1365.0" y="92" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">GPU worker node</text>
+<text x="1365.0" y="92" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">GPU Node</text>
 <rect x="1232" y="32" width="55" height="30" rx="15.0" fill="#7c3aed"/>
 <text x="1259.6" y="55" text-anchor="middle" font-size="20" font-weight="700" fill="#fff">× N</text>
 <rect x="1250" y="105" width="230" height="60" fill="#fff" stroke="#241c3b" stroke-width="2"/>
-<text x="1365.0" y="146.0" text-anchor="middle" font-size="22" font-weight="700" fill="#241c3b">logos-workernode</text>
+<text x="1365.0" y="146.0" text-anchor="middle" font-size="22" font-weight="700" fill="#241c3b">Worker Node</text>
 <rect x="1250" y="185" width="230" height="60" fill="#fff" stroke="#241c3b" stroke-width="2"/>
-<text x="1365.0" y="226.0" text-anchor="middle" font-size="22" font-weight="700" fill="#241c3b">vLLM lane</text>
+<text x="1365.0" y="226.0" text-anchor="middle" font-size="22" font-weight="700" fill="#241c3b">vLLM Lane</text>
 <path d="M 1365 165 V 183" fill="none" stroke="#241c3b" stroke-width="2" stroke-dasharray="8 6" marker-end="url(#open)"/>
 <rect x="0" y="440" width="200" height="100" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <g transform="translate(168 451)" fill="#fff" stroke="#241c3b" stroke-width="1.6"><rect x="4" y="0" width="16" height="20"/><rect x="0" y="4" width="8" height="4"/><rect x="0" y="12" width="8" height="4"/></g>
@@ -61,30 +61,30 @@
 <g transform="translate(578 451)" fill="#fff" stroke="#241c3b" stroke-width="1.6"><rect x="4" y="0" width="16" height="20"/><rect x="0" y="4" width="8" height="4"/><rect x="0" y="12" width="8" height="4"/></g>
 <text x="510.0" y="546.0" text-anchor="middle" font-size="20" font-weight="400" fill="#3b3160">«component»</text>
 <text x="510.0" y="576.0" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">Gateway</text>
-<text x="510.0" y="600.0" text-anchor="middle" font-size="20" font-weight="400" fill="#5f5688">logos-rate-gateway</text>
-<text x="510.0" y="624.0" text-anchor="middle" font-size="20" font-weight="400" fill="#5f5688">traefik</text>
+<text x="510.0" y="600.0" text-anchor="middle" font-size="20" font-weight="400" fill="#5f5688">Rate Gateway</text>
+<text x="510.0" y="624.0" text-anchor="middle" font-size="20" font-weight="400" fill="#5f5688">Traefik</text>
 <rect x="740" y="410" width="270" height="190" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <rect x="730" y="420" width="270" height="190" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <rect x="720" y="430" width="270" height="190" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <g transform="translate(958 441)" fill="#fff" stroke="#241c3b" stroke-width="1.6"><rect x="4" y="0" width="16" height="20"/><rect x="0" y="4" width="8" height="4"/><rect x="0" y="12" width="8" height="4"/></g>
 <text x="855.0" y="508.0" text-anchor="middle" font-size="20" font-weight="400" fill="#3b3160">«component»</text>
-<text x="855.0" y="538.0" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">logos-webservice</text>
+<text x="855.0" y="538.0" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">Webservice</text>
 <text x="855.0" y="562.0" text-anchor="middle" font-size="20" font-weight="400" fill="#5f5688">inference gateway</text>
 <rect x="734" y="442" width="55" height="30" rx="15.0" fill="#7c3aed"/>
 <text x="761.6" y="465" text-anchor="middle" font-size="20" font-weight="700" fill="#fff">× N</text>
 <rect x="1270" y="430" width="250" height="190" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <g transform="translate(1488 441)" fill="#fff" stroke="#241c3b" stroke-width="1.6"><rect x="4" y="0" width="16" height="20"/><rect x="0" y="4" width="8" height="4"/><rect x="0" y="12" width="8" height="4"/></g>
 <text x="1395.0" y="508.5" text-anchor="middle" font-size="20" font-weight="400" fill="#3b3160">«component»</text>
-<text x="1395.0" y="537.5" text-anchor="middle" font-size="23" font-weight="700" fill="#241c3b">logos-orchestrator</text>
+<text x="1395.0" y="537.5" text-anchor="middle" font-size="23" font-weight="700" fill="#241c3b">Orchestrator</text>
 <text x="1395.0" y="561.5" text-anchor="middle" font-size="20" font-weight="400" fill="#5f5688">classify · schedule</text>
 <rect x="660" y="730" width="200" height="90" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <g transform="translate(828 741)" fill="#fff" stroke="#241c3b" stroke-width="1.6"><rect x="4" y="0" width="16" height="20"/><rect x="0" y="4" width="8" height="4"/><rect x="0" y="12" width="8" height="4"/></g>
 <text x="760.0" y="770.0" text-anchor="middle" font-size="20" font-weight="400" fill="#3b3160">«component»</text>
-<text x="760.0" y="800.0" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">logos-redis</text>
+<text x="760.0" y="800.0" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">Redis</text>
 <rect x="1010" y="730" width="230" height="90" fill="#fff" stroke="#241c3b" stroke-width="2"/>
 <g transform="translate(1208 741)" fill="#fff" stroke="#241c3b" stroke-width="1.6"><rect x="4" y="0" width="16" height="20"/><rect x="0" y="4" width="8" height="4"/><rect x="0" y="12" width="8" height="4"/></g>
 <text x="1125.0" y="758.0" text-anchor="middle" font-size="20" font-weight="400" fill="#3b3160">«component»</text>
-<text x="1125.0" y="788.0" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">logos-db</text>
+<text x="1125.0" y="788.0" text-anchor="middle" font-size="24" font-weight="700" fill="#241c3b">Database</text>
 <text x="1125.0" y="812.0" text-anchor="middle" font-size="20" font-weight="400" fill="#5f5688">PostgreSQL</text>
 <path d="M 272.5 508.8 A 19 19 0 0 1 272.5 471.2" fill="none" stroke="#241c3b" stroke-width="2"/>
 <circle cx="275" cy="490" r="15" fill="#fff" stroke="#241c3b" stroke-width="2"/>
