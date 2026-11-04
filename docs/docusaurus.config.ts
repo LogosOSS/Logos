@@ -2,11 +2,14 @@ import { themes as prismThemes } from "prism-react-renderer";
 import type { Config } from "@docusaurus/types";
 import type * as Preset from "@docusaurus/preset-classic";
 
+const baseUrl = "/Logos/";
+
 const config: Config = {
   title: "Logos",
   tagline: "LLM engineering made easy",
   url: "https://logososs.github.io",
-  baseUrl: "/Logos/",
+  baseUrl,
+  favicon: "img/favicon.ico",
   organizationName: "LogosOSS",
   projectName: "Logos",
   onBrokenLinks: "throw",
@@ -36,6 +39,9 @@ const config: Config = {
         theme: { customCss: "./src/css/custom.css" },
       } satisfies Preset.Options,
     ],
+  ],
+  headTags: [
+    { tagName: "link", attributes: { rel: "icon", type: "image/svg+xml", href: `${baseUrl}img/logos-logo.svg` } },
   ],
   themeConfig: {
     colorMode: { respectPrefersColorScheme: true },
