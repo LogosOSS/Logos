@@ -183,9 +183,9 @@ export class MembersTabComponent {
     next.add(key.id);
     this.expandedKeyIds.set(next);
     if (!this.globalDataLoaded) {
-      if (!this.globalDataLoading) void this.loadGlobalData(key);
+      if (!this.globalDataLoading) this.loadGlobalData(key);
     } else if (key.use_custom_permissions && !this.keyPermCache.has(key.id)) {
-      void this.loadKeyPerms(key.id);
+      this.loadKeyPerms(key.id);
     }
   }
 
@@ -221,7 +221,7 @@ export class MembersTabComponent {
       this.globalDataLoaded = true;
 
       if (pending?.use_custom_permissions && !this.keyPermCache.has(pending.id)) {
-        void this.loadKeyPerms(pending.id);
+        this.loadKeyPerms(pending.id);
       }
     } finally {
       this.globalDataLoading = false;

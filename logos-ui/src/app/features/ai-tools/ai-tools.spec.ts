@@ -265,3 +265,39 @@ describe('the tool comparison', () => {
     expect(openCode.slice(0, shared.length)).toEqual(shared);
   });
 });
+
+describe('AiTools key and clipboard actions', () => {
+  let service: FakeMyKeysService;
+  let component: AiTools;
+
+  beforeEach(async () => {
+    service = new FakeMyKeysService();
+    await TestBed.configureTestingModule({
+      imports: [AiTools],
+      providers: [{ provide: MyKeysService, useValue: service }],
+    }).compileComponents();
+    component = TestBed.createComponent(AiTools).componentInstance;
+    await component.ngOnInit();
+  });
+
+  afterEach(() => {
+    TestBed.resetTestingModule();
+    vi.unstubAllGlobals();
+  });
+
+  it('loads the models of a key picked by its id', async () => {
+    const getKeyModels = vi.spyOn(service, 'getKeyModels');
+    component.selectKeyById(String(KEY.id));
+    await vi.waitFor(() => expect(getKeyModels).toHaveBeenCalledWith(KEY.id));
+    expect(component.selectedKey()).toEqual(KEY);
+  });
+
+  it('leaves the copy button unchanged when the clipboard refuses the write', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    component.copyCmd('npm install');
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('npm install'));
+    await Promise.resolve();
+    expect(component.copiedCmd()).toBeNull();
+  });
+});
