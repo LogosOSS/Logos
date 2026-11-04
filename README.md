@@ -104,12 +104,14 @@ The interactive API reference is served at `/docs` (Swagger). A `GET /v1` return
 
 ## Architecture
 
-Clients talk to one domain. The webservice terminates the public inference gateway and forwards
-local and mixed traffic to the orchestrator, which classifies, schedules and forwards each request.
-Worker nodes dial out over WebSocket; cloud providers are called over HTTPS.
+Every client request enters through one gateway (`logos-rate-gateway`, then `traefik`), which
+load-balances it onto one of the `logos-webservice` replicas, the only component that runs ×N. The
+web service authenticates the request and checks the budget, then calls the cloud provider directly
+or hands local and mixed requests to `logos-orchestrator`, which schedules them onto GPU worker
+nodes. Workers dial out to the orchestrator over WebSocket, so they need no inbound ports.
 
 <p align="center">
-  <img src="docs/static/img/system-design/top-level.svg" alt="Logos top-level design: clients, core node, worker nodes and cloud providers" width="820">
+  <img src="docs/static/img/system-design/top-level.svg" alt="UML component diagram of Logos: every client request enters through the gateway to the logos-webservice replicas" width="820">
 </p>
 
 The [system design](https://logososs.github.io/Logos/developer/system-design) covers the deployment
