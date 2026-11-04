@@ -203,7 +203,7 @@ def top_level():
     s.wire(f"M 115 200 V {265 - B}")  # Keycloak provides OpenID Connect
     s.wire(f"M 115 440 V {265 + S}")  # Logos UI requires it
     s.wire(f"M 760 410 V 265 H {115 + S}")  # Webservice requires it
-    s.wire(f"M 760 620 V {690 - S} M 760 {690 + B} V 730")  # Webservice -> shared rate limits -> Cache
+    s.wire(f"M 760 620 V {690 - S} M 760 {690 + B} V 730")  # Webservice -> rate limits, pub/sub -> Shared State
     s.wire(f"M 950 620 V 690 H {1125 - S}")  # webservice requires SQL
     s.wire(f"M 1395 620 V 690 H {1125 + S}")  # orchestrator requires SQL
     s.wire(f"M 1125 {690 + B} V 730")  # Database provides SQL
@@ -224,7 +224,7 @@ def top_level():
     s.comp(720, 430, 270, 190, "«component»", "Webservice", "Spring Boot")
     s.badge(734, 442, "× N")
     s.comp(1270, 430, 250, 190, "«component»", "Orchestrator", "FastAPI", name_size=f + 3)
-    s.comp(645, 730, 230, 90, "«component»", "Cache", "Redis")
+    s.comp(645, 730, 230, 90, "«component»", "Shared State", "Redis")
     s.comp(1010, 730, 230, 90, "«component»", "Database", "PostgreSQL")
     # Interfaces: ball = provided, socket = required
     s.iface(275, 490, ["Management", "API"], 282, 434)
@@ -233,7 +233,7 @@ def top_level():
     s.iface(855, 300, ["Cloud provider API"], 882, 307, anchor="start", sockets=("down",))
     s.iface(665, 525, ["HTTP"], 665, 575)
     s.iface(1140, 525, ["Local inference API"], 1140, 492)
-    s.iface(760, 690, ["Shared", "rate limits"], 787, 686, anchor="start", sockets=("up",))
+    s.iface(760, 690, ["Rate limits", "Pub/sub"], 787, 686, anchor="start", sockets=("up",))
     s.iface(1125, 690, ["SQL"], 1125, 664, sockets=("left", "right"))
     s.iface(1365, 316, ["Worker session", "(WebSocket)"], 1340, 314, anchor="end", sockets=("up",))
     s.save("top-level.svg")

@@ -48,7 +48,7 @@ instance. The second line of a component names its technology. The table below g
 | Gateway | `logos-rate-gateway` (nginx), `traefik` |
 | Webservice | `logos-webservice` |
 | Orchestrator | `logos-orchestrator` |
-| Cache | `logos-redis` |
+| Shared State | `logos-redis` |
 | Database | `logos-db` |
 | Worker Node, Lane | `logos-workernode` and its vLLM lanes (on each GPU node) |
 
@@ -56,8 +56,8 @@ Each request from a client goes through the gateway: first
 `logos-rate-gateway`, then `traefik`. Traefik sends the request to one of the
 `logos-webservice` replicas. On the core node, only `logos-webservice` runs
 as more than one replica (×N). One orchestrator can control many GPU worker
-nodes. The replicas share their cloud rate-limit window in
-`logos-redis`. The web service sends cloud requests directly to the cloud
+nodes. The replicas share two things in `logos-redis`: the sliding window
+of the cloud rate limits, and a pub/sub channel for notifications. The web service sends cloud requests directly to the cloud
 provider. It sends local and mixed requests to `logos-orchestrator`.
 
 The optional agent runner (`logos-agent`) is not in the diagram. Its
