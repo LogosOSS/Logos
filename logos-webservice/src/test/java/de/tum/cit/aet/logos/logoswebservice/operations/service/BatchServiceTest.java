@@ -188,6 +188,33 @@ class BatchServiceTest {
     }
 
     @Test
+    void ids_are_plain_path_segments() {
+        assertThat(BatchService.idSegment("batch_abc123")).isEqualTo("batch_abc123");
+        assertThat(BatchService.idSegment("file-lg-0123abcd")).isEqualTo("file-lg-0123abcd");
+        assertThat(BatchService.idSegment("file.v2:x")).isEqualTo("file.v2:x");
+        for (String bad : new String[] {null, "", ".", "..", "../internal", "a/b", "a\nb", "a b", "a?b", "a#b"}) {
+            assertThatThrownBy(() -> BatchService.idSegment(bad))
+                .as("id %s", bad)
+                .isInstanceOf(BatchService.InvalidIdException.class);
+        }
+    }
+
+    @Test
+    void an_invalid_id_is_rejected_before_any_orchestrator_call() {
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        ApiKeyRepository repository = mock(ApiKeyRepository.class);
+        BatchService service = service(restTemplate, repository, "http://127.0.0.1:1", "internal");
+
+        assertThatThrownBy(() -> service.getBatch(1, 5, "../files"))
+            .isInstanceOf(BatchService.InvalidIdException.class);
+        assertThatThrownBy(() -> service.cancelBatch(1, 5, "x/y"))
+            .isInstanceOf(BatchService.InvalidIdException.class);
+        assertThatThrownBy(() -> service.batchResults(1, 5, ".."))
+            .isInstanceOf(BatchService.InvalidIdException.class);
+        verifyNoInteractions(restTemplate, repository);
+    }
+
+    @Test
     void a_key_the_caller_does_not_own_is_rejected_before_any_orchestrator_call() {
         RestTemplate restTemplate = mock(RestTemplate.class);
         ApiKeyRepository repository = mock(ApiKeyRepository.class);

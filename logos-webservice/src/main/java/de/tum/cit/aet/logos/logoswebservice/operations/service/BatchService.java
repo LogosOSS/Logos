@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,6 +23,7 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriUtils;
 
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.ApiKey;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.ApiKeyRepository;
@@ -52,6 +54,13 @@ import jakarta.annotation.PostConstruct;
 public class BatchService {
 
     private static final Logger log = LoggerFactory.getLogger(BatchService.class);
+
+    /**
+     * Batch and file ids, Logos' own and the providers': letters, digits,
+     * {@code _ - . :}, starting with a letter or digit so that {@code .} and
+     * {@code ..} can never be one.
+     */
+    private static final Pattern ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}");
 
     private final RestTemplate restTemplate;
     private final ApiKeyRepository apiKeyRepository;
@@ -102,6 +111,13 @@ public class BatchService {
     /** Raised when the scoped credential could not be obtained from the orchestrator. */
     public static class CredentialExchangeException extends RuntimeException {
         public CredentialExchangeException(String message) {
+            super(message);
+        }
+    }
+
+    /** Raised when a batch or file id is not a single, plain path segment. */
+    public static class InvalidIdException extends RuntimeException {
+        public InvalidIdException(String message) {
             super(message);
         }
     }
@@ -195,16 +211,16 @@ public class BatchService {
     }
 
     public ProxiedResponse getBatch(int userId, int apiKeyId, String batchId) {
-        return call(userId, apiKeyId, HttpMethod.GET, "/v1/batches/" + batchId, null, null);
+        return call(userId, apiKeyId, HttpMethod.GET, "/v1/batches/" + idSegment(batchId), null, null);
     }
 
     public ProxiedResponse cancelBatch(int userId, int apiKeyId, String batchId) {
-        return call(userId, apiKeyId, HttpMethod.POST, "/v1/batches/" + batchId + "/cancel", null, null);
+        return call(userId, apiKeyId, HttpMethod.POST, "/v1/batches/" + idSegment(batchId) + "/cancel", null, null);
     }
 
     /** The result file of a finished batch, streamed back to the browser. */
     public ProxiedResponse batchResults(int userId, int apiKeyId, String outputFileId) {
-        return call(userId, apiKeyId, HttpMethod.GET, "/v1/files/" + outputFileId + "/content", null, null);
+        return call(userId, apiKeyId, HttpMethod.GET, "/v1/files/" + idSegment(outputFileId) + "/content", null, null);
     }
 
     /**
@@ -255,6 +271,18 @@ public class BatchService {
         HttpHeaders createHeaders = headers(createCredential, execution);
         createHeaders.setContentType(MediaType.APPLICATION_JSON);
         return exchange(HttpMethod.POST, "/v1/batches", new HttpEntity<>(body, createHeaders));
+    }
+
+    /**
+     * A caller-supplied id as one path segment of the orchestrator URL. The id
+     * is checked against {@link #ID} before any credential exchange, so it can
+     * neither leave the batch API's path nor carry line breaks into a log.
+     */
+    static String idSegment(String id) {
+        if (id == null || !ID.matcher(id).matches()) {
+            throw new InvalidIdException("Not a valid batch or file id.");
+        }
+        return UriUtils.encodePathSegment(id, StandardCharsets.UTF_8);
     }
 
     private ProxiedResponse call(int userId, int apiKeyId, HttpMethod method, String path,

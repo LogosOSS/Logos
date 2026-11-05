@@ -134,6 +134,8 @@ public class BatchController {
                 builder = builder.header("Content-Disposition", contentDisposition);
             }
             return builder.body(response.body());
+        } catch (BatchService.InvalidIdException exc) {
+            return ResponseEntity.status(400).body(Map.of("detail", exc.getMessage()));
         } catch (BatchService.KeyNotOwnedException exc) {
             return ResponseEntity.status(403).body(Map.of("detail", exc.getMessage()));
         } catch (BatchService.CredentialExchangeException exc) {

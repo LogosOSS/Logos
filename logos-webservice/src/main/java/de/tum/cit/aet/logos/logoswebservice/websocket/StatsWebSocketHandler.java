@@ -37,6 +37,9 @@ public class StatsWebSocketHandler extends TextWebSocketHandler {
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, SessionState> states = new ConcurrentHashMap<>();
+    // One monitor per open session: a WebSocketSession does not allow
+    // concurrent sends, and the scheduler and the message handler both send.
+    private final Map<String, Object> sendLocks = new ConcurrentHashMap<>();
 
     private final VramService vramService;
     private final RequestLogService requestLogService;
@@ -74,6 +77,7 @@ public class StatsWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         sessions.remove(session.getId());
         states.remove(session.getId());
+        sendLocks.remove(session.getId());
         log.debug("[ws/stats] Client disconnected ({} remaining)", sessions.size());
     }
 
@@ -128,6 +132,7 @@ public class StatsWebSocketHandler extends TextWebSocketHandler {
             if (!session.isOpen()) {
                 sessions.remove(entry.getKey());
                 states.remove(entry.getKey());
+                sendLocks.remove(entry.getKey());
                 continue;
             }
 
@@ -188,12 +193,14 @@ public class StatsWebSocketHandler extends TextWebSocketHandler {
     private void send(WebSocketSession session, Object payload) {
         try {
             String json = objectMapper.writeValueAsString(payload);
-            synchronized (session) {
+            if (!session.isOpen()) return;
+            synchronized (sendLocks.computeIfAbsent(session.getId(), id -> new Object())) {
                 if (session.isOpen()) session.sendMessage(new TextMessage(json));
             }
         } catch (IOException e) {
             sessions.remove(session.getId());
             states.remove(session.getId());
+            sendLocks.remove(session.getId());
         }
     }
 

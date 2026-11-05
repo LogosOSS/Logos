@@ -69,6 +69,25 @@ class StatsV2WebSocketHandlerTest {
         assertThat(captor.getValue().getPayload()).contains("\"type\":\"pong\"");
 
         handler.afterConnectionClosed(session, CloseStatus.NORMAL);
+        assertThat((java.util.Map<String, Object>) org.springframework.test.util.ReflectionTestUtils.getField(handler, "sendLocks"))
+            .doesNotContainKey("test-v2-ping-session");
+    }
+
+    @Test
+    void a_failed_send_forgets_the_session() throws Exception {
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("test-v2-broken-session");
+        when(session.isOpen()).thenReturn(true);
+        doThrow(new java.io.IOException("broken pipe")).when(session).sendMessage(any());
+
+        handler.afterConnectionEstablished(session);
+        handler.handleMessage(session, new TextMessage("{\"action\":\"ping\"}"));
+
+        for (String field : List.of("sessions", "states", "sendLocks")) {
+            assertThat((java.util.Map<String, Object>) org.springframework.test.util.ReflectionTestUtils.getField(handler, field))
+                .as(field)
+                .doesNotContainKey("test-v2-broken-session");
+        }
     }
 
     @Test
