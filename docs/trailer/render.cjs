@@ -30,7 +30,7 @@ const POSTER_T = 9;
 (async () => {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const music = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "logos-trailer-")), "music.wav");
-  execFileSync("python3", ["-I", path.join(__dirname, "music.py"), music], { stdio: "inherit" });
+  execFileSync("python3", ["-I", path.join(__dirname, "music.py"), music], { stdio: "inherit" }); // NOSONAR - developer tool: python3 comes from the developer's PATH
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 2 });
   await page.goto("file://" + path.join(__dirname, "trailer.html") + "?driven");
@@ -41,7 +41,7 @@ const POSTER_T = 9;
   const frames = Math.round((to - from) * FPS);
 
   const ffmpeg = spawn(
-    "ffmpeg",
+    "ffmpeg", // NOSONAR - developer tool: ffmpeg comes from the developer's PATH
     ["-loglevel", "error", "-y", "-f", "image2pipe", "-framerate", String(FPS), "-i", "-",
       "-ss", String(from), "-t", String(to - from), "-i", music,
       "-vf", "scale=1920:1080:flags=lanczos", "-c:v", "libx264", "-preset", "slow", "-crf", "18",

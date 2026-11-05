@@ -36,7 +36,7 @@ const APP_ADMIN = "alexandra.szuminska";
 const DEVELOPER = "henriette.huhn";
 
 function sql(query) {
-  return execFileSync("docker", ["exec", DB_CONTAINER, "psql", "-U", "postgres", "-d", "logosdb", "-Atc", query])
+  return execFileSync("docker", ["exec", DB_CONTAINER, "psql", "-U", "postgres", "-d", "logosdb", "-Atc", query]) // NOSONAR - developer tool: uses the docker CLI from the developer's PATH
     .toString()
     .trim();
 }

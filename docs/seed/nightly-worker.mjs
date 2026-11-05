@@ -13,7 +13,14 @@ const response = await fetch(`${origin}/logosdb/providers/logosnode/auth`, {
 });
 if (!response.ok) throw new Error(`Worker authentication failed: ${response.status}`);
 const { session_token } = await response.json();
-const ws = new WebSocket(`${origin.replace('http:', 'ws:')}/logosdb/providers/logosnode/session?token=${encodeURIComponent(session_token)}`);
+// The orchestrator issues URL-safe base64 session tokens; anything else is refused
+// so the response can only ever fill the token parameter of the fixed endpoint.
+if (typeof session_token !== 'string' || !/^[A-Za-z0-9_-]+$/.test(session_token)) {
+  throw new Error('Worker authentication returned an invalid session token');
+}
+const sessionUrl = new URL('/logosdb/providers/logosnode/session', origin.replace('http:', 'ws:'));
+sessionUrl.searchParams.set('token', session_token);
+const ws = new WebSocket(sessionUrl);
 let timer;
 ws.addEventListener('open', () => {
   const sendStatus = () => ws.send(JSON.stringify({

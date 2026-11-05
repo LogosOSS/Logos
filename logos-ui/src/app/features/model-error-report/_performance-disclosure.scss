@@ -27,7 +27,9 @@
     h3 { margin: 0; font: inherit; color: inherit; }
     small, > .disclosure-meta { color: rgb(var(--color-typography-500)); font-size: var(--model-detail-font-size, .875rem); font-weight: 400; }
     &:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }
+    // `:is([open] > *)` matches the summary of an open disclosure with the same
+    // specificity as `[open] > summary` on the including selector.
+    &:is([open] > *)::before { transform: rotate(45deg); }
+    &:is([open] > *)::after { content: none; }
   }
-  &[open] > summary::before { transform: rotate(45deg); }
-  &[open] > summary::after { content: none; }
 }
