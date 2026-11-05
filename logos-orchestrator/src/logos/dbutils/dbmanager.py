@@ -2217,6 +2217,101 @@ class DBManager:
         rows = self.session.execute(text(sql + " RETURNING model_name"), params).fetchall()
         return [str(r.model_name) for r in rows]
 
+    def get_node_config(self, provider_id: int) -> Dict[str, Any]:
+        """A node's configured models in list order, with its revision.
+
+        A node nobody configured yet has revision 0 and no entries.
+        """
+        state = self.session.execute(
+            text("SELECT config_revision, yaml_imported_at FROM node_config_state WHERE provider_id = :pid"),
+            {"pid": provider_id},
+        ).fetchone()
+        rows = self.session.execute(
+            text("""
+                SELECT model_name, capability, overrides FROM node_model_config
+                WHERE provider_id = :pid ORDER BY position, id
+            """),
+            {"pid": provider_id},
+        ).fetchall()
+        return {
+            "revision": int(state.config_revision) if state is not None else 0,
+            "yaml_imported": state is not None and state.yaml_imported_at is not None,
+            "entries": [
+                {"model_name": r.model_name, "capability": r.capability, "overrides": r.overrides} for r in rows
+            ],
+        }
+
+    def replace_node_config(
+        self,
+        provider_id: int,
+        entries: List[Dict[str, Any]],
+        expected_revision: int,
+        updated_by: Optional[int],
+        source: str,
+    ) -> Optional[int]:
+        """Replace a node's configured models; returns the new revision.
+
+        Returns None, and writes nothing, when expected_revision is not the
+        stored one. The first save also ends the YAML import for the node.
+        The caller commits.
+        """
+        self.session.execute(
+            text("INSERT INTO node_config_state (provider_id) VALUES (:pid) ON CONFLICT (provider_id) DO NOTHING"),
+            {"pid": provider_id},
+        )
+        row = self.session.execute(
+            text("""
+                UPDATE node_config_state
+                SET config_revision = config_revision + 1,
+                    yaml_imported_at = COALESCE(yaml_imported_at, CURRENT_TIMESTAMP)
+                WHERE provider_id = :pid AND config_revision = :expected
+                RETURNING config_revision
+            """),
+            {"pid": provider_id, "expected": expected_revision},
+        ).fetchone()
+        if row is None:
+            return None
+        self.session.execute(text("DELETE FROM node_model_config WHERE provider_id = :pid"), {"pid": provider_id})
+        for position, entry in enumerate(entries):
+            self.session.execute(
+                text("""
+                    INSERT INTO node_model_config
+                        (provider_id, model_name, position, capability, overrides, source, updated_by)
+                    VALUES (:pid, :model_name, :position, CAST(:capability AS jsonb), CAST(:overrides AS jsonb),
+                            :source, :updated_by)
+                """),
+                {
+                    "pid": provider_id,
+                    "model_name": entry["model_name"],
+                    "position": position,
+                    "capability": json.dumps(entry["capability"]),
+                    "overrides": json.dumps(entry["overrides"]),
+                    "source": source,
+                    "updated_by": updated_by,
+                },
+            )
+        return int(row.config_revision)
+
+    def claim_yaml_import(self, provider_id: int) -> bool:
+        """Let one caller import a worker's YAML; True when this call got it.
+
+        Refused once the node has been imported or configured. The caller
+        commits.
+        """
+        self.session.execute(
+            text("INSERT INTO node_config_state (provider_id) VALUES (:pid) ON CONFLICT (provider_id) DO NOTHING"),
+            {"pid": provider_id},
+        )
+        result = self.session.execute(
+            text("""
+                UPDATE node_config_state SET yaml_imported_at = CURRENT_TIMESTAMP
+                WHERE provider_id = :pid AND yaml_imported_at IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM node_model_config WHERE provider_id = :pid)
+            """),
+            {"pid": provider_id},
+        )
+        return result.rowcount == 1
+
     def invalidate_model_calibration(self, calibration_id: int, reason: str) -> List[Tuple[int, str]]:
         """Stop trusting a calibration and strip it from every node using it.
 
