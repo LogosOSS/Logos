@@ -97,12 +97,18 @@ def _private_dir(path: Path) -> Path:
 
     A shared temporary directory lets anyone pre-create the name: a symlink, a
     plain file or another user's directory there is rejected with ``OSError``
-    instead of being written through.
+    instead of being written through. An existing directory of this user that
+    others could write to may already hold planted symlinks and is rejected
+    too; one that others could only read or enter is narrowed to ``0700``.
     """
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
         raise OSError(f"{path} is not a directory owned by this user")
+    if info.st_mode & 0o022:
+        raise OSError(f"{path} is writable by other users")
+    if info.st_mode & 0o077:
+        path.chmod(0o700)
     return path
 
 

@@ -3243,3 +3243,27 @@ def test_private_dir_refuses_a_plain_file(tmp_path: Path) -> None:
 
     with pytest.raises(OSError):
         vllm_process._private_dir(target)
+
+
+def test_private_dir_narrows_an_existing_readable_directory(tmp_path: Path) -> None:
+    from logos_worker_node import vllm_process
+
+    target = tmp_path / "logs"
+    target.mkdir(mode=0o755)
+    target.chmod(0o755)
+
+    assert vllm_process._private_dir(target) == target
+    assert target.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o757, 0o777])
+def test_private_dir_refuses_a_directory_others_can_write(tmp_path: Path, mode: int) -> None:
+    from logos_worker_node import vllm_process
+
+    target = tmp_path / "logs"
+    target.mkdir()
+    target.chmod(mode)
+
+    with pytest.raises(OSError):
+        vllm_process._private_dir(target)
+    assert target.stat().st_mode & 0o777 == mode
