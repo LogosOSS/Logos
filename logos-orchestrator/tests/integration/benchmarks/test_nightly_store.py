@@ -126,9 +126,10 @@ def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(dat
 
 
 async def test_completion_event_survives_failed_delivery_and_deduplicates_finish(database, monkeypatch):
+    from importlib import import_module
     from unittest.mock import AsyncMock
 
-    import logos.notifications as notifications
+    notifications = import_module("logos.notifications")
 
     engine, _ = database
     store.set_enabled(31, True, False)
@@ -544,6 +545,7 @@ def test_continuous_rounds_keep_daily_claims_and_notify_only_after_the_final_res
         assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 0
     assert store.claim(31, day)
     assert not store.claim(31, day)
+
     assert store.claimed_today(day) == 1
     store.finish(31, "continuing", report)
     store.finalize_continuations(datetime.fromisoformat("2026-10-29T07:59:59+01:00"))
@@ -563,6 +565,33 @@ def test_continuous_rounds_keep_daily_claims_and_notify_only_after_the_final_res
         assert payload["successful_configurations"] == 4
         assert payload["rounds"] == 2
     assert not store.claim(31, day)
+
+
+def test_recovery_resumes_the_same_claim_and_records_one_final_event(database):
+    engine, _ = database
+    day = date(2026, 10, 29)
+    store.set_enabled(31, True, False)
+    report = [{"status": "success"}, {"status": "recovery_required", "reason": "GPU capacity unavailable"}]
+
+    for attempt in range(store.MAX_RECOVERY_RESUMES + 1):
+        assert store.claim(31, day)
+        assert store.claimed_today(day) == 1
+        store.save(31, "recovery_required", report, {"provider_id": 1})
+        store.finish(31, "interrupted_recovered", report, resume_after_recovery=True)
+        state = store.status(31)
+        assert not state["recovery_required"]
+        if attempt < store.MAX_RECOVERY_RESUMES:
+            assert state["status"] == "continuing"
+            with engine.connect() as connection:
+                assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 0
+
+    assert state["status"] == "interrupted_recovered"
+    assert not store.claim(31, day)
+    with engine.connect() as connection:
+        payload = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
+    assert payload["recovery_retry_limit_reached"]
+    assert payload["interruption_reason"] == "GPU capacity unavailable"
+    assert payload["rounds"] == 3
 
 
 def test_selection_diagnostics_keep_workloads_separate_and_explain_rejected_faster_runs(database):

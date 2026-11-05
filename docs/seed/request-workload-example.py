@@ -6,7 +6,7 @@ import os
 import psycopg2
 from psycopg2.extras import Json, RealDictCursor
 
-from logos.benchmarks.completion import description, result
+from logos.benchmarks.completion import notification_message, result
 from logos.benchmarks.optimization import context
 from logos.benchmarks.workloads import build_snapshot
 
@@ -133,14 +133,21 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
         payload = {
             "model_id": model["id"],
             "model_provider_id": model["pair_id"],
+            "provider_name": model["provider_name"],
+            "status": "interrupted_recovered",
+            "successful_configurations": 3,
+            "interruption_reason": "The GPU capacity check refused to load the model during restoration.",
+            "recovery_resumes": 2,
+            "recovery_retry_limit_reached": True,
             **result([example], [{"benchmark_id": example["id"], "status": "success"}]),
         }
+        title, body = notification_message(payload)
         event_key = f"docs-benchmark-result:{model['pair_id']}"
         cursor.execute("DELETE FROM notifications WHERE event_key = %s", (event_key,))
         cursor.execute(
             "INSERT INTO notifications(type, title, body, payload, source, event_key) "
-            "VALUES ('benchmark_result_ready', 'Nightly benchmark finished', %s, %s, 'orchestrator', %s) RETURNING id",
-            ("Illustrative saved request measurement." + description(payload), Json(payload), event_key),
+            "VALUES ('benchmark_result_ready', %s, %s, %s, 'orchestrator', %s) RETURNING id",
+            (title, body, Json(payload), event_key),
         )
         notification_id = cursor.fetchone()["id"]
         cursor.execute(

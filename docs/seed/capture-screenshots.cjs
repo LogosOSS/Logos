@@ -268,7 +268,7 @@ const SHOTS = [
     go: async (p, ids) => {
       await resultsView(p, ids);
       await p.locator('button[aria-label*="otification"]').first().click();
-      await p.getByText("Nightly benchmark finished", { exact: true }).first().waitFor();
+      await p.getByRole("link", { name: /View benchmark #/ }).first().waitFor();
     },
     // Later shots should not show the unread badge.
     after: (p) => p.getByText("Mark all as read").first().evaluate((b) => b.click()),

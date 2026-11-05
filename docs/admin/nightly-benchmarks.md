@@ -276,15 +276,20 @@ After the final configuration check, Logos stores the final state and completion
 The event includes the outcome, completed round count, total successful configuration count, reference and winner IDs.
 Logos retries failed notification delivery, including outside the maintenance window.
 A stable event key prevents duplicate notifications after a retry or application restart.
-Logos Admins receive **Benchmark ready** in their notification inbox.
-The notification retains the concrete benchmark identifier and its parameter changes.
-Select the notification to open that benchmark in **Model Details → Performance**.
+Logos Admins receive a notification with the nightly outcome.
+The notification shows the last interruption reason and the number of retry rounds.
+Select **View benchmark** with its number to open the measurement in **Model Details → Performance**.
 The page selects its dataset and shows the result, baseline, percentage change and changed parameters.
 This link remains available after the notification is read.
 If the measurement is deleted, then the page identifies the unavailable benchmark.
 A recovery that still needs attention does not emit a completed event.
 
 ## Worker Ownership and Recovery
+
+After automatic recovery, Logos can start a new round during the same maintenance window.
+Each model and worker pair can restart up to 2 times after recovery per night.
+After the limit, Logos ends testing for that pair when the worker returns to service.
+If the window ends or the schedule is disabled, then Logos completes recovery and stops testing.
 
 One PostgreSQL advisory lock gives 1 scheduler control of each nightly batch.
 Each batch uses at most `LOGOS_MAINTENANCE_MAX_NODES` distinct workers.

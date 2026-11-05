@@ -72,7 +72,9 @@ def scheduler(monkeypatch):
     monkeypatch.setattr(
         module.store,
         "finish",
-        lambda pair, state, report, search=None: service.saved.append((pair, state, report, None)),
+        MagicMock(
+            side_effect=lambda pair, state, report, search=None, **_: service.saved.append((pair, state, report, None))
+        ),
     )
     monkeypatch.setattr(module.store, "deliver_completion_events", AsyncMock())
     yield service
@@ -458,6 +460,25 @@ async def test_orphaned_nightly_job_is_fenced_drained_and_recovered(scheduler, r
     assert scheduler.saved[-1][1] == "interrupted_recovered"
     assert scheduler.saved[-1][3] is None
     assert not claimed
+
+
+@pytest.mark.parametrize(
+    "finished_at,day_offset,can_resume", [("07:59:59", 0, True), ("08:00:00", 0, False), ("05:30:00", 1, False)]
+)
+async def test_recovery_only_resumes_during_the_claimed_night(
+    scheduler, rotation, monkeypatch, finished_at, day_offset, can_resume
+):
+    from datetime import timedelta
+
+    rows, _ = rotation
+    now = datetime.fromisoformat(f"2026-10-13T{finished_at}+02:00")
+    monkeypatch.setattr(module, "local_now", lambda: now)
+    rows[0].update(recovery={"provider_id": 20}, last_run_date=now.date() - timedelta(days=day_offset))
+    scheduler.recovery_worker_idle = AsyncMock(return_value=True)
+
+    assert await scheduler.recover(rows[0], MagicMock())
+    scheduler.restore.assert_awaited_once()
+    assert module.store.finish.call_args.kwargs["resume_after_recovery"] is can_resume
 
 
 @pytest.mark.parametrize("blocker", ["execution", "manual", "task", "worker_busy", "lease"])

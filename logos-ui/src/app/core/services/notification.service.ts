@@ -55,7 +55,7 @@ export const NOTIFICATION_TYPE_META: Record<string, NotificationTypeMeta> = {
   budget_hit: { label: 'Budget reached', icon: 'pi-wallet', tone: 'warning' },
   new_models_available: { label: 'New models', icon: 'pi-sparkles', tone: 'primary' },
   model_access_requested: { label: 'Access request', icon: 'pi-key', tone: 'primary' },
-  benchmark_result_ready: { label: 'Benchmark ready', icon: 'pi-chart-bar', tone: 'primary' },
+  benchmark_result_ready: { label: 'Benchmark', icon: 'pi-chart-bar', tone: 'primary' },
   calibration_failed: { label: 'Calibration failed', icon: 'pi-exclamation-triangle', tone: 'error' },
 };
 

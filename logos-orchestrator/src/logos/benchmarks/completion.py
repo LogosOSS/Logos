@@ -14,6 +14,8 @@ def result(runs, report):
     selected = selected or max(measured, key=lambda run: (rate(run), -run["id"]))
     configuration = selected["configuration"]
     nightly = configuration.get("nightly", {})
+    baseline_id = nightly.get("baseline_id")
+    baseline = next((run for run in measured if run["id"] == baseline_id), None)
     before = nightly.get("original") or {}
     changes = [
         {"parameter": key, "before": before.get(key), "after": value}
@@ -22,7 +24,8 @@ def result(runs, report):
     ]
     return {
         "benchmark_id": selected["id"],
-        "baseline_id": nightly.get("baseline_id"),
+        "baseline_id": baseline_id,
+        "baseline_throughput": rate(baseline) if baseline else None,
         "workload_id": configuration.get("workload", {}).get("id"),
         "throughput": rate(selected),
         "changes": changes,
@@ -38,7 +41,11 @@ def description(payload):
         f"{item['parameter']}: {item['before'] if item['before'] is not None else 'auto'} → {item['after']}"
         for item in payload.get("changes", [])
     )
-    return f" Benchmark #{benchmark}. " + (changes + "." if changes else "No parameter changes.")
+    comparison = ""
+    if (baseline := payload.get("baseline_throughput")) and (throughput := payload.get("throughput")):
+        gain = (throughput / baseline - 1) * 100
+        comparison = f" {throughput:.1f} tok/s ({gain:+.1f}% vs. the same-round baseline of {baseline:.1f} tok/s)."
+    return f" Benchmark #{benchmark}.{comparison} " + (changes + "." if changes else "No parameter changes.")
 
 
 def status_description(status):
@@ -50,3 +57,26 @@ def status_description(status):
         "interrupted": "Benchmark interrupted",
         "completed": "Benchmark completed",
     }.get(status, status.replace("_", " ").capitalize())
+
+
+def notification_message(payload):
+    """Describe the night's outcome, including recovery and the measured result."""
+    status = payload["status"]
+    title = "Nightly benchmark interrupted" if status.startswith("interrupted") else "Nightly benchmark finished"
+    lines = [
+        f"{payload['provider_name']} · {payload['successful_configurations']} successful configurations",
+        f"{status_description(status)}.",
+    ]
+    if reason := payload.get("interruption_reason"):
+        lines.append(f"Last interruption: {reason.rstrip('.')}.")
+    if resumes := payload.get("recovery_resumes"):
+        lines.append(f"Retry rounds scheduled after recovery: {resumes}.")
+    if payload.get("recovery_retry_limit_reached"):
+        lines.append("The nightly retry limit was reached.")
+    if adoption := payload.get("production_adoption"):
+        lines.append(f"Worker confirmed improved configuration #{adoption['benchmark_id']}.")
+    else:
+        lines.append("Production settings restored.")
+    if measurement := description(payload).strip():
+        lines.append(measurement)
+    return title, "\n".join(lines)

@@ -38,6 +38,13 @@ def test_completion_without_successful_measurements_has_no_invented_target():
     assert description({}) == ""
 
 
+def test_completion_compares_throughput_with_this_rounds_baseline():
+    report = [{"benchmark_id": i, "status": "success"} for i in (1, 2)]
+    captured = result([measurement(1, 29.0), measurement(2, 29.5), measurement(99, 32.0)], report)
+    assert captured["benchmark_id"] == 2
+    assert "+1.7% vs. the same-round baseline of 29.0 tok/s" in description(captured)
+
+
 def test_recovery_status_explains_interruption_and_successful_restoration():
     from logos.benchmarks.completion import status_description
 
