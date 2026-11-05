@@ -6,7 +6,6 @@ health check requires a Keycloak token carrying the operator role.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import mimetypes
@@ -268,7 +267,7 @@ async def update_controls(body: ControlUpdate, principal: Principal = Depends(re
         logger.info("%s set the parallel ceiling to %s", principal.username, limit if limit is not None else "default")
     # A pause takes effect on the next pass anyway; running one now means the
     # operator sees it happen instead of waiting a tick for it.
-    asyncio.create_task(manager.scheduler_pass())
+    manager.request_scheduler_pass()
     return _control_state(state)
 
 
@@ -402,7 +401,7 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
     # Admission is the scheduler's job, but running a pass now means a session
     # created while the platform is idle starts in a second rather than at the
     # next tick.
-    asyncio.create_task(manager.scheduler_pass())
+    manager.request_scheduler_pass()
 
     row = await db.get_session(session_id)
     assert row is not None
@@ -489,7 +488,7 @@ async def retry_session(session_id: int, principal: Principal = Depends(require_
     logger.info("session %s queued as a retry of %s", new_id, session_id)
     # Same reason as a fresh session: a pass now means it starts in a second
     # rather than at the next tick.
-    asyncio.create_task(manager.scheduler_pass())
+    manager.request_scheduler_pass()
     created = await db.get_session(new_id)
     assert created is not None
     return SessionSummary(**_summary_fields(created))
