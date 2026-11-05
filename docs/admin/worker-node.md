@@ -2,7 +2,7 @@
 title: Worker Nodes
 ---
 
-# Worker nodes
+# Worker Nodes
 
 A worker node runs local vLLM models. It opens an outbound connection to the
 Logos orchestrator over a secure WebSocket. It does not need an inbound
@@ -34,6 +34,10 @@ The optional node manager can replace the worker container for you. It checks
 the new container. If the new container does not become healthy, the node
 manager starts the previous version again. For the steps, see
 [Update a worker node with the node manager](../deployment.md#update-a-worker-node-with-the-node-manager).
+
+The node manager can also drain the worker before it replaces the container.
+The requests that run on the worker then finish. For the steps, see
+[Drain a worker node during an update](../deployment.md#drain-a-worker-node-during-an-update).
 
 To run an image that you built yourself, build it from the worker directory.
 The worker directory is the build context. Put the values in the `.env` file

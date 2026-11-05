@@ -2,7 +2,7 @@
 title: Operations and Troubleshooting
 ---
 
-# Operations and troubleshooting
+# Operations and Troubleshooting
 
 To read the service logs, use these commands:
 
@@ -27,7 +27,17 @@ Also check the runtime status of the worker. Use the Logos UI, or use the
 `POST /logosdb/providers/logosnode/status` endpoint of the orchestrator (see
 the worker node guide).
 
-Disable the capacity planner only to find the cause of a scheduling problem:
+The capacity planner runs in the orchestrator every 30 s. It puts idle lanes
+to sleep, wakes lanes when requests arrive, and tunes the vLLM GPU memory
+utilization. It is on by default (`LOGOS_CAPACITY_PLANNER_ENABLED: "true"`).
+
+The worker nodes measure the VRAM profile of each model when it is loaded and
+when it sleeps. Logos stores the profiles in its database. It sends the
+profiles to each worker when the worker starts. The workers keep no profiles
+on disk and need no configuration for this.
+
+Disable the capacity planner only to find the cause of a scheduling problem.
+Set the variable in the `environment` of `logos-orchestrator`:
 
 ```yaml
 LOGOS_CAPACITY_PLANNER_ENABLED: "false"

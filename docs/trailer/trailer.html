@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Logos trailer</title>
+<!--
+  60 s product trailer for the documentation homepage.
+  Every visual state is a pure function of the time t (seconds): render.cjs calls
+  window.renderAt(t) for each frame and pipes the screenshots into ffmpeg.
+  Open this file in a browser to preview it; it plays in real time when it is not driven.
+-->
+<style>
+  :root {
+    --violet: #7c3aed;
+    --violet-light: #a78bfa;
+    --indigo: #6366f6;
+    --ink: #f5f3ff;
+    --muted: #c4b5fd;
+    --bg-from: #120a26;
+    --bg-to: #1d1140;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg-from); }
+  body {
+    font-family: Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  #stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: hidden; transform-origin: 0 0;
+    background: linear-gradient(160deg, var(--bg-from), var(--bg-to)); }
+  .glow { position: absolute; border-radius: 50%; filter: blur(120px); opacity: 0.55; }
+  #glow1 { width: 900px; height: 900px; background: #6d28d9; left: -250px; top: -300px; }
+  #glow2 { width: 800px; height: 800px; background: #4f46e5; right: -250px; bottom: -350px; opacity: 0.4; }
+
+  .scene { position: absolute; inset: 0; opacity: 0; }
+
+  /* Intro and outro */
+  .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+  .logo { width: 180px; height: 180px; border-radius: 48px; box-shadow: 0 30px 80px rgba(124,58,237,0.55); }
+  .brand { font-size: 128px; font-weight: 800; letter-spacing: -0.03em; margin-top: 36px; line-height: 1; }
+  .tagline { font-size: 52px; font-weight: 600; margin-top: 28px;
+    background: linear-gradient(90deg, #c4b5fd, #a5b4fc); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .subline { font-size: 30px; color: var(--muted); margin-top: 26px; font-weight: 400; }
+  .pills { display: flex; gap: 20px; margin-top: 56px; }
+  .pill { font-size: 26px; font-weight: 600; padding: 16px 30px; border-radius: 999px;
+    background: rgba(124,58,237,0.22); border: 1.5px solid rgba(167,139,250,0.55); color: #ede9fe; }
+  .url { font-size: 30px; margin-top: 52px; color: #ddd6fe;
+    padding: 14px 28px; border-radius: 14px; background: rgba(255,255,255,0.06); }
+
+  /* API scene */
+  .headline { position: absolute; left: 0; right: 0; top: 96px; text-align: center; }
+  .kicker { display: inline-block; font-size: 22px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--violet-light); }
+  .h1 { font-size: 72px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.08; margin-top: 14px; }
+  .code { position: absolute; left: 95px; top: 380px; width: 820px; height: 480px; padding: 96px 46px 40px;
+    border-radius: 24px; background: rgba(10,6,24,0.78); border: 1.5px solid rgba(167,139,250,0.3);
+    box-shadow: 0 40px 100px rgba(0,0,0,0.45);
+    font-size: 25px; line-height: 1.75; white-space: pre; color: #e9e5ff; }
+  .code .dots { position: absolute; top: 31px; left: 26px; display: flex; gap: 8px; }
+  .tabs { position: absolute; top: 18px; left: 100px; display: flex; gap: 10px; white-space: normal; }
+  .tab { font-size: 21px; font-weight: 600; padding: 8px 18px; border-radius: 10px; color: #a79fd0; border: 1.5px solid transparent; }
+  .tab.on { color: #fff; background: rgba(124,58,237,0.35); border-color: rgba(167,139,250,0.6); }
+  .code .dots i { width: 13px; height: 13px; border-radius: 50%; background: #3f3566; display: block; }
+  .tok-cmd { color: #a5b4fc; } .tok-str { color: #86efac; } .tok-flag { color: #f0abfc; } .tok-key { color: #fcd34d; }
+  .caret { display: inline-block; width: 13px; height: 28px; background: #c4b5fd; vertical-align: -5px; }
+  .resp { display: inline-block; margin-top: 16px; color: #86efac; }
+  #diagram { position: absolute; left: 965px; top: 300px; width: 860px; height: 640px; overflow: visible; }
+  .node-label { font-size: 23px; font-weight: 600; fill: #ede9fe; }
+  .node-sub { font-size: 18px; fill: #c4b5fd; }
+
+  /* Feature scenes */
+  .caption { position: absolute; left: 100px; top: 0; bottom: 0; width: 490px; display: flex; flex-direction: column; justify-content: center; }
+  .caption .h1 { font-size: 60px; }
+  .body { font-size: 29px; line-height: 1.5; color: #ddd6fe; margin-top: 28px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 36px; }
+  .chip { font-size: 21px; font-weight: 600; padding: 10px 20px; border-radius: 999px;
+    background: rgba(124,58,237,0.25); border: 1.5px solid rgba(167,139,250,0.5); color: #ede9fe; }
+  .win { position: absolute; border-radius: 18px; overflow: hidden; background: #fff;
+    box-shadow: 0 50px 120px rgba(5,2,15,0.6), 0 0 0 1.5px rgba(167,139,250,0.35); }
+  .win.dark { background: #0f0b1e; }
+  .bar { height: 44px; display: flex; align-items: center; gap: 9px; padding: 0 18px; background: #f3f0fb; border-bottom: 1px solid #e4def7; }
+  .win.dark .bar { background: #1b1530; border-bottom-color: #2c2450; }
+  .bar i { width: 13px; height: 13px; border-radius: 50%; display: block; }
+  .bar i:nth-child(1) { background: #f87171; } .bar i:nth-child(2) { background: #fbbf24; } .bar i:nth-child(3) { background: #34d399; }
+  .bar span { margin-left: 18px; flex: 1; max-width: 520px; height: 28px; border-radius: 8px; background: #fff; color: #6b6290;
+    font-size: 16px; line-height: 28px; padding-left: 14px; }
+  .win.dark .bar span { background: #110c22; color: #a79fd0; }
+  .view { position: relative; overflow: hidden; }
+  .zoom { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  .view img { position: absolute; left: 0; top: 0; display: block; }
+  .ring { position: absolute; border-radius: 14px; border: 4px solid #8b5cf6; box-shadow: 0 0 0 9999px rgba(18,10,38,0.0), 0 0 40px rgba(139,92,246,0.8); pointer-events: none; }
+
+  /* Progress */
+  #progress { position: absolute; left: 110px; right: 110px; bottom: 48px; display: flex; gap: 10px; }
+  #progress div { flex: 1; height: 5px; border-radius: 3px; background: rgba(196,181,253,0.18); overflow: hidden; }
+  #progress div b { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #8b5cf6, #818cf8); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="glow" id="glow1"></div>
+  <div class="glow" id="glow2"></div>
+
+  <!-- 1 Intro -->
+  <section class="scene" id="s-intro">
+    <div class="center">
+      <img class="logo" id="intro-logo" src="../static/img/logos-logo.svg" alt="">
+      <div class="brand" id="intro-brand">Logos</div>
+      <div class="tagline" id="intro-tag">LLM orchestration and management</div>
+      <div class="subline" id="intro-sub">One gateway to self-hosted GPUs and cloud LLM providers</div>
+    </div>
+  </section>
+
+  <!-- 2 API -->
+  <section class="scene" id="s-api">
+    <div class="headline">
+      <div class="kicker a-in" data-d="0.1">OpenAI-compatible</div>
+      <div class="h1 a-in" data-d="0.3">Use the OpenAI APIs you know</div>
+    </div>
+    <div class="code a-in" data-d="0.6"><div class="dots"><i></i><i></i><i></i></div><div class="tabs"><span class="tab" id="tab-chat">Chat Completions</span><span class="tab" id="tab-resp">Responses</span></div><span id="code-text"></span></div>
+    <svg id="diagram" viewBox="0 0 860 640">
+      <defs>
+        <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="200" y1="0" x2="660" y2="0"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#818cf8"/></linearGradient>
+      </defs>
+      <g id="edges" fill="none" stroke="url(#edge)" stroke-width="4" stroke-linecap="round"></g>
+      <g id="packets"></g>
+      <g id="nodes"></g>
+    </svg>
+  </section>
+
+  <!-- 3..8 feature scenes are built from FEATURES below -->
+  <div id="features"></div>
+
+  <!-- 9 Outro -->
+  <section class="scene" id="s-outro">
+    <div class="center">
+      <img class="logo a-in" data-d="0.0" src="../static/img/logos-logo.svg" alt="">
+      <div class="brand a-in" data-d="0.25">Logos</div>
+      <div class="tagline a-in" data-d="0.5">LLM orchestration and management</div>
+      <div class="pills">
+        <div class="pill a-in" data-d="1.0">User Guide</div>
+        <div class="pill a-in" data-d="1.2">Administrator Guide</div>
+        <div class="pill a-in" data-d="1.4">Developer Guide</div>
+      </div>
+      <div class="url a-in" data-d="1.9">logososs.github.io/Logos</div>
+    </div>
+  </section>
+
+  <div id="progress"></div>
+</div>
+
+<script>
+const IMG = "../static/img/";
+const DURATION = 60;
+
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, p) => a + (b - a) * p;
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const easeOut = (p) => 1 - Math.pow(1 - p, 3);
+const easeInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+
+/*
+ * Feature scenes. Image sizes are the natural PNG sizes; "rings" mark a region in
+ * natural pixels; "scroll" pans a tall screenshot from 0 to that many natural pixels.
+ */
+// Shots under trailer/shots/ are 2x captures; w/h are their CSS sizes (half the pixels).
+const SHOT = "../trailer/shots/";
+const FEATURES = [
+  {
+    id: "policies", kicker: "Routing", title: "Policies select the model",
+    body: "Route each request by privacy, cost and quality. Sensitive data stays on your own workers.",
+    chips: ["Privacy", "Priority", "Cost", "Quality"],
+    win: { src: SHOT + "policies.png", w: 1440, h: 900, url: "logos/policies", viewH: 560,
+      focus: [{ at: 0, x: 255, y: 20, w: 1170 }, { at: 3.4, x: 255, y: 140, w: 820 }],
+      rings: [{ x: 268, y: 205, w: 1145, h: 150, at: 2.4 }] },
+  },
+  {
+    id: "lanes", kicker: "Self-hosted GPUs", title: "Schedule work on your own GPUs",
+    body: "Logos loads and unloads vLLM lanes on your workers. VRAM, KV cache and queue show live.",
+    chips: ["vLLM", "VRAM", "KV cache", "Queue"],
+    win: { src: IMG + "roles/logos-admin-statistics-lanes.png", w: 1440, h: 1864, url: "logos/statistics", viewH: 720,
+      focus: [{ at: 0, x: 270, y: 150, w: 1150 }, { at: 3.8, x: 270, y: 1030, w: 1150 }] },
+  },
+  {
+    id: "models", kicker: "Models", title: "Measure every model",
+    body: "Compare latency, quality and price for each model. Nightly benchmarks keep the values current.",
+    chips: ["Latency", "Quality", "Price", "Nightly"],
+    win: { src: SHOT + "models.png", w: 1440, h: 987, url: "logos/models", viewH: 640,
+      focus: [{ at: 0, x: 255, y: 20, w: 1170 }, { at: 2.6, x: 255, y: 190, w: 880 }],
+      rings: [{ x: 262, y: 205, w: 1160, h: 365, at: 2.2, until: 3.4 }] },
+    win2: { src: SHOT + "performance.png", w: 1440, h: 900, url: "logos/models/llama-3.1-8b-instruct", viewH: 640, at: 3.8,
+      focus: [{ at: 0, x: 255, y: 60, w: 1000 }] },
+  },
+  {
+    id: "stats", kicker: "Observability", title: "Log every request",
+    body: "See requests, tokens, cold starts and cloud cost for all providers in one place.",
+    chips: ["Requests", "Tokens", "Cloud cost", "Live"],
+    win: { src: SHOT + "statistics.png", w: 1440, h: 2530, url: "logos/statistics", viewH: 720,
+      focus: [{ at: 0, x: 262, y: 20, w: 1160 }, { at: 2.6, x: 262, y: 240, w: 900 }, { at: 4.4, x: 262, y: 1980, w: 1160 }],
+      rings: [{ x: 268, y: 278, w: 1145, h: 155, at: 2.2, until: 4.0 }] },
+  },
+  {
+    id: "billing", kicker: "Teams and budgets", title: "A budget for every team",
+    body: "Give each team its own API keys, model access, budget and rate limits. Billing shows the spend.",
+    chips: ["Teams", "API keys", "Budgets", "Rate limits"],
+    win: { src: SHOT + "billing.png", w: 1440, h: 900, url: "logos/billing", viewH: 640,
+      focus: [{ at: 0, x: 255, y: 20, w: 1170 }, { at: 2.6, x: 255, y: 170, w: 1000 }],
+      rings: [{ x: 262, y: 335, w: 1160, h: 320, at: 2.4 }] },
+    win2: { src: SHOT + "team-overview.png", w: 1440, h: 900, url: "logos/teams/logos", viewH: 640, at: 3.8,
+      focus: [{ at: 0, x: 255, y: 0, w: 1000 }] },
+  },
+  {
+    id: "agents", kicker: "Spare capacity", title: "Run coding agents on idle GPUs",
+    body: "Agents work in isolated containers. Connect Claude Code or OpenCode in 6 guided steps.",
+    chips: ["Agents", "Containers", "Claude Code", "OpenCode"],
+    win: { src: IMG + "roles/logos-admin-agents.png", w: 1440, h: 1266, url: "logos/agents", viewH: 640,
+      focus: [{ at: 0, x: 250, y: 80, w: 1110 }, { at: 3.0, x: 250, y: 640, w: 1110 }] },
+    win2: { src: SHOT + "ai-tools.png", w: 1440, h: 900, url: "logos/ai-tools", viewH: 640, at: 4.0,
+      focus: [{ at: 0, x: 255, y: 0, w: 1060 }] },
+  },
+];
+
+// Timeline: [id, start, end]. Neighbouring scenes overlap by 0.6 s for a crossfade.
+const TIMELINE = [["s-intro", 0, 6.2], ["s-api", 5.6, 14.2]];
+{
+  let start = 13.6;
+  const lens = [6.9, 6.9, 6.9, 6.9, 6.9, 7.1];
+  FEATURES.forEach((f, i) => { TIMELINE.push(["s-" + f.id, start, start + lens[i]]); start += lens[i] - 0.6; });
+  TIMELINE.push(["s-outro", start, DURATION + 1]);
+}
+const FADE = 0.6;
+
+/* ---------- build feature DOM ---------- */
+const WIN_W = 1200;
+function buildWin(spec, cls) {
+  const scale = WIN_W / spec.w;
+  const el = document.createElement("div");
+  el.className = "win" + (spec.dark ? " dark" : "") + (cls ? " " + cls : "");
+  const viewH = spec.viewH;
+  el.style.width = WIN_W + "px";
+  el.innerHTML = `<div class="bar"><i></i><i></i><i></i><span>${spec.url}</span></div>
+    <div class="view" style="height:${viewH}px"><div class="zoom"><img src="${spec.src}" width="${WIN_W}" height="${Math.round(spec.h * scale)}" alt=""></div></div>`;
+  const view = el.querySelector(".zoom");
+  (spec.rings || []).forEach((r) => {
+    const ring = document.createElement("div");
+    ring.className = "ring";
+    Object.assign(ring.style, { left: r.x * scale - 8 + "px", top: r.y * scale - 8 + "px", width: r.w * scale + 16 + "px", height: r.h * scale + 16 + "px" });
+    view.appendChild(ring);
+    r.el = ring;
+  });
+  spec.scale = scale;
+  spec.el = el;
+  spec.zoom = view;
+  spec.viewHpx = viewH;
+  return el;
+}
+
+const featRoot = document.getElementById("features");
+FEATURES.forEach((f) => {
+  const s = document.createElement("section");
+  s.className = "scene";
+  s.id = "s-" + f.id;
+  s.innerHTML = `<div class="caption">
+      <div><span class="kicker a-in" data-d="0.15">${f.kicker}</span></div>
+      <div class="h1 a-in" data-d="0.35">${f.title}</div>
+      <div class="body a-in" data-d="0.6">${f.body}</div>
+      <div class="chips">${f.chips.map((c, i) => `<span class="chip a-in" data-d="${(1.1 + i * 0.18).toFixed(2)}">${c}</span>`).join("")}</div>
+    </div>`;
+  s.appendChild(buildWin(f.win));
+  if (f.win2) s.appendChild(buildWin(f.win2, "second"));
+  featRoot.appendChild(s);
+});
+
+/* ---------- progress bar ---------- */
+const prog = document.getElementById("progress");
+const CHAPTERS = TIMELINE.map(([id, a, b], i) => [a, i === TIMELINE.length - 1 ? DURATION : TIMELINE[i + 1][1]]);
+CHAPTERS.forEach(() => { const d = document.createElement("div"); d.appendChild(document.createElement("b")); prog.appendChild(d); });
+
+/* ---------- API scene ---------- */
+const SNIPPETS = {
+  chat: {
+    lines: [
+      [["tok-cmd", "curl"], ["", " https://logos.example/v1/chat/completions \\"]],
+      [["tok-flag", "  -H"], ["tok-str", " \"Authorization: Bearer $LOGOS_KEY\""], ["", " \\"]],
+      [["tok-flag", "  -d"], ["tok-str", " '{"]],
+      [["tok-key", "      \"model\""], ["tok-str", ": \"auto\","]],
+      [["tok-key", "      \"messages\""], ["tok-str", ": [{\"role\": \"user\", ...}]"]],
+      [["tok-str", "    }'"]],
+    ],
+    resp: "200 OK · qwen-2.5-72b-instruct on a GPU worker",
+  },
+  resp: {
+    lines: [
+      [["tok-cmd", "curl"], ["", " https://logos.example/v1/responses \\"]],
+      [["tok-flag", "  -H"], ["tok-str", " \"Authorization: Bearer $LOGOS_KEY\""], ["", " \\"]],
+      [["tok-flag", "  -d"], ["tok-str", " '{"]],
+      [["tok-key", "      \"model\""], ["tok-str", ": \"auto\","]],
+      [["tok-key", "      \"input\""], ["tok-str", ": \"Summarize the release notes\""]],
+      [["tok-str", "    }'"]],
+    ],
+    resp: "200 OK · routed to Azure",
+  },
+};
+for (const sn of Object.values(SNIPPETS)) sn.len = sn.lines.reduce((n, line) => n + line.reduce((m, [, s]) => m + s.length, 0) + 1, 0);
+function renderCode(sn, n, respOpacity, caretOn) {
+  let left = n, html = "";
+  for (const line of sn.lines) {
+    for (const [cls, s] of line) {
+      if (left <= 0) break;
+      const part = s.slice(0, left);
+      left -= part.length;
+      html += `<span class="${cls}">${part.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</span>`;
+    }
+    if (left <= 0) break;
+    left -= 1;
+    html += "\n";
+  }
+  if (caretOn) html += '<span class="caret"></span>';
+  // The response line always takes its place, so the card never changes height.
+  html += `\n<span class="resp" style="opacity:${respOpacity}">${sn.resp}</span>`;
+  document.getElementById("code-text").innerHTML = html;
+}
+
+// Layout on a symmetric grid: app box | 138 px | hub circle | 138 px | target boxes.
+// The outer target boxes end flush with the top and bottom edges of the code card.
+const BOX_W = 200, BOX_H = 100, HUB_R = 92;
+const NODES = {
+  app: { x: 100, y: 320, label: "Your apps", sub: "SDKs · tools · agents" },
+  hub: { x: 430, y: 320 },
+  gpu: { x: 760, y: 130, label: "GPU workers", sub: "vLLM · self-hosted" },
+  azure: { x: 760, y: 320, label: "Azure", sub: "cloud provider" },
+  openai: { x: 760, y: 510, label: "OpenAI", sub: "cloud provider" },
+};
+const EDGES = [["app", "hub", 0.6], ["hub", "gpu", 1.4], ["hub", "azure", 1.6], ["hub", "openai", 1.8]];
+const NS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent && parent.appendChild(e); return e; };
+const edgeG = document.getElementById("edges"), nodeG = document.getElementById("nodes"), pktG = document.getElementById("packets");
+const edgeEls = EDGES.map(([a, b, d]) => {
+  const A = NODES[a], B = NODES[b];
+  const x1 = A.x + (a === "hub" ? HUB_R : BOX_W / 2), x2 = B.x - (b === "hub" ? HUB_R : BOX_W / 2);
+  const mx = (x1 + x2) / 2;
+  const pathD = A.y === B.y ? `M${x1},${A.y} L${x2},${B.y}` : `M${x1},${A.y} C${mx},${A.y} ${mx},${B.y} ${x2},${B.y}`;
+  const p = svgEl("path", { d: pathD }, edgeG);
+  const len = p.getTotalLength();
+  p.style.strokeDasharray = len;
+  return { p, len, d };
+});
+const nodeEls = {};
+for (const [k, n] of Object.entries(NODES)) {
+  const g = svgEl("g", {}, nodeG);
+  if (k === "hub") {
+    svgEl("circle", { cx: n.x, cy: n.y, r: HUB_R, fill: "rgba(124,58,237,0.18)", stroke: "rgba(167,139,250,0.6)", "stroke-width": 2 }, g);
+    svgEl("image", { href: "../static/img/logos-logo.svg", x: n.x - 58, y: n.y - 58, width: 116, height: 116 }, g);
+    const t = svgEl("text", { x: n.x, y: n.y + 136, "text-anchor": "middle", class: "node-sub" }, g);
+    t.textContent = "auth · policies · scheduling · logs";
+  } else {
+    const w = BOX_W;
+    svgEl("rect", { x: n.x - w / 2, y: n.y - BOX_H / 2, width: w, height: BOX_H, rx: 18, fill: "rgba(20,12,44,0.92)", stroke: "rgba(167,139,250,0.55)", "stroke-width": 2 }, g);
+    const t1 = svgEl("text", { x: n.x, y: n.y - 6, "text-anchor": "middle", class: "node-label" }, g); t1.textContent = n.label;
+    const t2 = svgEl("text", { x: n.x, y: n.y + 26, "text-anchor": "middle", class: "node-sub" }, g); t2.textContent = n.sub;
+  }
+  nodeEls[k] = g;
+}
+const PKTS = Array.from({ length: 9 }, (_, i) => ({ el: svgEl("circle", { r: 9, fill: "#e9d5ff" }, pktG), phase: i / 9, target: 1 + (i % 3) }));
+PKTS.forEach((p) => p.el.setAttribute("filter", "drop-shadow(0 0 6px #a78bfa)"));
+
+/* ---------- render ---------- */
+function animateIn(scene, lt) {
+  scene.querySelectorAll(".a-in").forEach((el) => {
+    const p = easeOut(seg(lt, +el.dataset.d, +el.dataset.d + 0.7));
+    el.style.opacity = p;
+    el.style.transform = `translateY(${(1 - p) * 34}px)`;
+  });
+}
+
+function renderAt(t) {
+  // Background drift
+  document.getElementById("glow1").style.transform = `translate(${Math.sin(t * 0.25) * 140}px, ${Math.cos(t * 0.2) * 90}px)`;
+  document.getElementById("glow2").style.transform = `translate(${Math.cos(t * 0.22) * 160}px, ${Math.sin(t * 0.27) * 80}px)`;
+
+  for (const [id, a, b] of TIMELINE) {
+    const s = document.getElementById(id);
+    const isFirst = id === "s-intro", isLast = id === "s-outro";
+    const fin = isFirst ? 1 : easeInOut(seg(t, a, a + FADE));
+    const fout = isLast ? 1 : 1 - easeInOut(seg(t, b - FADE, b));
+    const vis = Math.min(fin, fout);
+    s.style.opacity = vis;
+    s.style.display = vis <= 0.001 ? "none" : "block";
+    if (vis <= 0.001) continue;
+    const lt = t - a;
+    const exit = 1 - fout;
+    s.style.transform = `scale(${1 - exit * 0.04}) translateX(${-exit * 60}px)`;
+    animateIn(s, lt);
+    if (id === "s-intro") renderIntro(lt);
+    else if (id === "s-api") renderApi(lt);
+    else if (id === "s-outro") { /* text only */ }
+    else renderFeature(FEATURES.find((f) => "s-" + f.id === id), lt, b - a);
+  }
+
+  CHAPTERS.forEach(([a, b], i) => { prog.children[i].firstChild.style.width = seg(t, a, b) * 100 + "%"; });
+  const pv = 1 - seg(t, DURATION - 2.4, DURATION - 1.6);
+  prog.style.opacity = Math.min(seg(t, 0.8, 1.6), pv);
+}
+
+function renderIntro(lt) {
+  const logo = document.getElementById("intro-logo");
+  const pl = seg(lt, 0.2, 1.4);
+  logo.style.opacity = easeOut(pl);
+  logo.style.transform = `scale(${lerp(0.55, 1, easeOut(pl))}) rotate(${lerp(-12, 0, easeOut(pl))}deg)`;
+  const set = (id, a) => { const e = document.getElementById(id); const p = easeOut(seg(lt, a, a + 0.8)); e.style.opacity = p; e.style.transform = `translateY(${(1 - p) * 40}px)`; e.style.filter = `blur(${(1 - p) * 8}px)`; };
+  set("intro-brand", 0.9);
+  set("intro-tag", 1.8);
+  set("intro-sub", 2.7);
+  // Slow push-in of the whole intro
+  document.querySelector("#s-intro .center").style.transform = `scale(${1 + lt * 0.008})`;
+}
+
+function renderApi(lt) {
+  // Chat Completions first, then the Responses API on the second tab.
+  const second = lt >= 4.6;
+  const sn = second ? SNIPPETS.resp : SNIPPETS.chat;
+  const [t0, t1, r0] = second ? [4.8, 6.4, 6.6] : [1.0, 3.0, 3.2];
+  const n = Math.floor(sn.len * seg(lt, t0, t1));
+  renderCode(sn, n, easeOut(seg(lt, r0, r0 + 0.5)), lt < r0 && Math.floor(lt * 2.5) % 2 === 0);
+  document.getElementById("tab-chat").classList.toggle("on", !second);
+  document.getElementById("tab-resp").classList.toggle("on", second);
+  // The node that served the shown response lights up.
+  const hl = { gpu: easeOut(seg(lt, 3.2, 3.7)) * (1 - seg(lt, 4.4, 4.8)), azure: easeOut(seg(lt, 6.6, 7.1)) };
+  for (const k of ["gpu", "azure", "openai"]) {
+    const rect = nodeEls[k].querySelector("rect");
+    const h = hl[k] || 0;
+    rect.setAttribute("stroke", h > 0 ? `rgba(134,239,172,${0.55 + 0.45 * h})` : "rgba(167,139,250,0.55)");
+    rect.setAttribute("stroke-width", 2 + 2 * h);
+  }
+
+  // Nodes pop in
+  const order = { app: 0.7, hub: 1.1, gpu: 1.9, azure: 2.1, openai: 2.3 };
+  for (const [k, g] of Object.entries(nodeEls)) {
+    const p = easeOut(seg(lt, order[k], order[k] + 0.6));
+    const n = NODES[k];
+    g.style.opacity = p;
+    g.setAttribute("transform", `translate(${n.x} ${n.y}) scale(${lerp(0.7, 1, p)}) translate(${-n.x} ${-n.y})`);
+  }
+  edgeEls.forEach((e) => { const p = easeInOut(seg(lt, e.d + 0.4, e.d + 1.2)); e.p.style.strokeDashoffset = e.len * (1 - p); e.p.style.opacity = 0.35 + 0.65 * p; });
+
+  // Packets: app -> hub -> target, looping after the edges are drawn
+  const live = seg(lt, 3.0, 3.6);
+  PKTS.forEach((pk) => {
+    const cyc = ((lt - 3.0) * 0.55 + pk.phase) % 1;
+    if (lt < 3.0) { pk.el.style.opacity = 0; return; }
+    let pt;
+    if (cyc < 0.45) { const e = edgeEls[0]; pt = e.p.getPointAtLength(e.len * (cyc / 0.45)); }
+    else { const e = edgeEls[pk.target]; pt = e.p.getPointAtLength(e.len * ((cyc - 0.45) / 0.55)); }
+    pk.el.setAttribute("cx", pt.x); pk.el.setAttribute("cy", pt.y);
+    const edgeFade = Math.min(seg(cyc, 0, 0.06), 1 - seg(cyc, 0.94, 1));
+    pk.el.style.opacity = live * edgeFade;
+  });
+  // Hub pulse when traffic flows
+  const hub = nodeEls.hub.firstChild;
+  hub.setAttribute("r", HUB_R + Math.sin(lt * 5) * 4 * live);
+}
+
+const WIN_X = 636;
+function viewAt(spec, lt) {
+  // Keyframes of the visible region in natural pixels; each move takes 1.1 s.
+  const keys = [{ at: -1, x: 0, y: 0, w: spec.w }, ...(spec.focus || [])];
+  let cur = keys[0];
+  for (let i = 1; i < keys.length; i++) {
+    const k = keys[i];
+    const p = easeInOut(seg(lt, k.at, k.at + 1.1));
+    if (p <= 0) break;
+    cur = { x: lerp(cur.x, k.x, p), y: lerp(cur.y, k.y, p), w: lerp(cur.w, k.w, p) };
+  }
+  return cur;
+}
+function placeZoom(spec, lt) {
+  const v = viewAt(spec, lt);
+  const k = spec.w / v.w; // zoom relative to fit-width
+  const imgH = spec.h * spec.scale * k;
+  let tx = -v.x * spec.scale * k;
+  let ty = -v.y * spec.scale * k;
+  tx = clamp(tx, -(WIN_W * k - WIN_W), 0);
+  ty = clamp(ty, Math.min(0, -(imgH - spec.viewHpx)), 0);
+  spec.zoom.style.transform = `translate(${tx}px, ${ty}px) scale(${k})`;
+}
+function renderFeature(f, lt, len) {
+  const w = f.win, w2 = f.win2;
+  const totalH = w.viewHpx + 44;
+  const pin = easeOut(seg(lt, 0.1, 1.1));
+  const drift = lt / len;
+  const baseY = (1080 - totalH) / 2 - (w2 ? 36 : 16);
+  w.el.style.left = WIN_X + "px";
+  w.el.style.top = baseY + "px";
+  w.el.style.transformOrigin = "0 0";
+  w.el.style.opacity = pin;
+  w.el.style.transform = `translateX(${(1 - pin) * 220 - drift * 24}px) scale(${1 + drift * 0.02}) perspective(2000px) rotateY(${(1 - pin) * -10}deg)`;
+  placeZoom(w, lt);
+  (w.rings || []).forEach((r) => {
+    const on = easeOut(seg(lt, r.at, r.at + 0.5)) * (r.until ? 1 - seg(lt, r.until, r.until + 0.4) : 1);
+    r.el.style.opacity = on * (0.75 + 0.25 * Math.sin((lt - r.at) * 5));
+  });
+  if (w2) {
+    const p2 = easeOut(seg(lt, w2.at, w2.at + 1.0));
+    const s2 = 1 + drift * 0.02;
+    w2.el.style.transformOrigin = "0 0";
+    w2.el.style.left = WIN_X + 24 + "px";
+    w2.el.style.top = baseY + 36 + "px";
+    w2.el.style.opacity = p2;
+    w2.el.style.transform = `translateY(${(1 - p2) * 160}px) scale(${s2})`;
+    placeZoom(w2, lt);
+    // Push the primary window back while the second one is in front
+    w.el.style.filter = `brightness(${1 - 0.35 * p2})`;
+  }
+}
+
+/* ---------- drive ---------- */
+window.renderAt = renderAt;
+window.DURATION = DURATION;
+window.trailerReady = Promise.all([...document.images].map((img) => (img.complete ? Promise.resolve() : new Promise((r) => { img.onload = img.onerror = r; }))))
+  .then(() => document.fonts.ready);
+
+if (!new URLSearchParams(location.search).has("driven")) {
+  // Preview: scale the 1920x1080 stage to fit the browser window.
+  const fit = () => {
+    const k = Math.min(innerWidth / 1920, innerHeight / 1080);
+    Object.assign(document.documentElement.style, { width: "100vw", height: "100vh", background: "#000" });
+    Object.assign(document.body.style, { width: "100vw", height: "100vh" });
+    const st = document.getElementById("stage");
+    st.style.transform = `translate(${(innerWidth - 1920 * k) / 2}px, ${(innerHeight - 1080 * k) / 2}px) scale(${k})`;
+  };
+  fit();
+  addEventListener("resize", fit);
+  const t0 = performance.now();
+  const loop = () => { renderAt(((performance.now() - t0) / 1000) % DURATION); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+} else {
+  renderAt(0);
+}
+</script>
+</body>
+</html>

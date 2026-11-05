@@ -40,7 +40,10 @@ def inspect_json(**state) -> str:
     container = {
         "Id": "abc123",
         "Image": "sha256:img",
-        "Config": {"Image": "registry.example/logos/logos-workernode-vllm:latest"},
+        "Config": {
+            "Image": "registry.example/logos/logos-workernode-vllm:latest",
+            "Labels": {"com.docker.compose.config-hash": "hash-a"},
+        },
         "RestartCount": 0,
         "State": {"Status": "running", "Running": True, "Restarting": False, "ExitCode": 0, **state},
     }
@@ -142,6 +145,23 @@ def test_a_failing_compose_config_is_an_error(settings):
         docker.image_ref("v2")
 
 
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        pytest.param(ok("logos-workernode 0f3a9c\n"), "0f3a9c", id="the hash of the service"),
+        pytest.param(failed("unknown flag: --hash"), None, id="an old compose version"),
+    ],
+)
+def test_the_config_hash_comes_from_compose_and_is_none_when_it_cannot_be_read(settings, result, expected):
+    docker, runner = docker_with(settings, result)
+
+    assert docker.config_hash("v2") == expected
+
+    argv, _, env = runner.calls[0]
+    assert argv[-3:] == ("config", "--hash", "logos-workernode")
+    assert env == {"IMAGE_TAG": "v2"}
+
+
 def test_a_container_is_read_from_docker_inspect(settings):
     docker, _ = docker_with(settings, ok(inspect_json(Health={"Status": "healthy"})))
 
@@ -152,6 +172,7 @@ def test_a_container_is_read_from_docker_inspect(settings):
     assert info.image_ref.endswith(":latest")
     assert info.running
     assert info.health == "healthy"
+    assert info.config_hash == "hash-a"
 
 
 def test_a_container_without_a_health_check_has_no_health(settings):

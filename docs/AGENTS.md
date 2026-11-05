@@ -57,14 +57,58 @@ defined technical name, and keep the same term for the same thing across the
 page. All pages are in STE. Write every new or changed text in STE, and keep
 the heading anchors that other pages link to.
 
-## System design diagrams
+## Homepage trailer
 
-Structural diagrams for the developer guide live under
-`static/img/system-design/` (SVG + `system-design.drawio`). The page is
-`developer/system-design.mdx` (Artemis-style: Top-Level, Deployment, Data
-Model, Request Flow). Keep the prose and filenames aligned with
-[Architecture](developer/architecture.mdx) terminology. Prefer white
-backgrounds, one accent colour, and short captions — not dense boxes.
+The homepage plays `static/video/logos-trailer.mp4` (60 s, 1920×1080, with
+music). The source files are in `trailer/`: the animated page, the render
+script, the music synthesizer, the screenshot capture script and the 2x
+screenshots. Re-render the video after you change the trailer, the music or a
+screenshot that the trailer shows. The procedure is in
+[`trailer/README.md`](trailer/README.md).
+
+## Images: Required Resolution and Layout
+
+Readers use 2x (Retina) displays. The docs content column is **823 CSS px**
+wide at a 1440 px window (with the table of contents); the homepage shows its
+diagram and video at up to 1050 px and 960 px. Every image must stay sharp and
+readable at that size. These rules apply to every image under `static/`:
+
+| Image | Format | Required size |
+|---|---|---|
+| UI screenshot (page, tab, dialog) | PNG | Viewport 1440 × 900 CSS px, `deviceScaleFactor: 2` → **2880 px wide**. Never a 1x capture, never upscaled. |
+| Cropped screenshot (a panel, a dialog only) | PNG | `deviceScaleFactor: 2`; the PNG is at least **2 × the width it is shown at** (a full-column crop ≥ 1646 px). |
+| Mobile screenshot | PNG | Viewport 375 CSS px, `deviceScaleFactor: 2` → 750 px wide. |
+| Architecture / UML diagram | SVG only, generated | Smallest text ≥ **10 px when shown 823 px wide**: font size ≥ 10 × viewBox width / 823 (`generate.py` derives it). No raster diagrams, no hand-exported drawio files. |
+| Logo, favicon | SVG | `static/img/logos-logo.svg` (identical to `logos-ui/public/favicon.svg`). |
+| Homepage trailer | MP4 | 1920 × 1080, frames rendered at 2x (see `trailer/README.md`). |
+
+Diagrams must not have layout defects: no text on text, no line or arrow
+through text, no box, frame, icon or interface ball cutting through text, no
+text outside the drawing. Check every diagram after a change:
+
+```bash
+python3 static/img/system-design/generate.py   # from docs/ or the repository root
+NODE_PATH=../logos-ui/node_modules node static/img/system-design/check-diagrams.cjs   # from docs/
+```
+
+`check-diagrams.cjs` fails on each of these defects and on text that is too
+small. Also look at each changed diagram at 823 px: the checker does not judge
+whether the picture is clear.
+
+### Diagrams
+
+`static/img/system-design/generate.py` makes all architecture diagrams:
+`top-level.svg` (UML component diagram, also on the homepage and in the root
+README), `deployment.svg`, `data-model.svg`, `request-flow.svg` and
+`../architecture.svg` (request routing and replication, on
+`developer/architecture.mdx`). Edit the script, not the SVG. Name components
+after the containers in `docker-compose.yaml` and
+`logos-workernode/docker-compose.yml`. Exception: `top-level.svg` uses title-case
+names without the `logos-` prefix (Webservice, Orchestrator, Worker Node), and
+`developer/system-design.mdx` maps them to the containers in a table. Use UML notation (component, deployment,
+class and activity diagrams), white background, one accent colour, and short
+labels — not dense boxes. Keep the prose of `developer/system-design.mdx` and
+`developer/architecture.mdx` aligned with the diagrams.
 
 ## Role-guide screenshots (committed PNGs)
 
@@ -77,11 +121,17 @@ allowed only when the UI change already merged without a docs update (debt
 cleanup); never defer the PNG refresh out of a UI PR that changes how a
 documented page looks.
 
+`seed/capture-screenshots.cjs` captures the shot matrix at the required 2x
+size (see the comment at its top for the seed steps and the run command). It
+skips shots that the screenshots stack cannot produce and keeps their old PNG.
+
 Capture technique (unlock `.main-content` scroll, wait for non-skeleton
 content, force light theme, use `localhost` not `127.0.0.1`) is the
 [`ui-screenshots`](../.agents/skills/ui-screenshots/SKILL.md) skill. Do **not**
 gist-host role docs shots — overwrite the files under `static/img/roles/`
-directly. Desktop viewport only (≈1440×900); no mobile variants for role docs.
+directly. Desktop viewport only (1440×900 CSS px at `deviceScaleFactor: 2`,
+see "Images: Required Resolution and Layout"); no mobile variants for role
+docs.
 
 ### Principles (what to shoot and how to write)
 
@@ -241,7 +291,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 
 | File | Login as | Route / state | Documented in |
 |---|---|---|---|
-| `logos-admin-statistics.png` | `tobias.wasner` | `/statistics` | `roles/logos-admin.md` |
+| `logos-admin-statistics.png` | `tobias.wasner` | `/statistics?tab=requests` (the plain route opens **Local Providers**) | `roles/logos-admin.md` |
 | `logos-admin-statistics-lanes.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a lane locked (needs a connected worker: the e2e stack, `../e2e`, with a lane loaded) | `roles/logos-admin.md#idle-lanes-and-lane-locks` |
 | `logos-admin-statistics-worker-lock.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a worker locked with two lanes (e2e stack; capture the lane panel) | `roles/logos-admin.md#worker-locks` |
 | `logos-admin-statistics-requesters.png` | `tobias.wasner` | `/statistics?tab=requests` — **Requesters** list open | `roles/logos-admin.md` |

@@ -8,14 +8,14 @@ Use **Model Details → Performance** to measure a model on a specific provider.
 You need the **Logos Admin** role to start a benchmark.
 Benchmarks measure speed and throughput. They do not grade the generated answers.
 
-## Before you start
+## Before You Start
 
 - A Logos worker must be connected and must report its status. The orchestrator must have capacity planning available.
 - A Logos worker needs no separate benchmark endpoint or API key.
 - An external provider uses its configured endpoint and credential.
 - Only one benchmark job can run on a provider at a time.
 
-## Configure a run
+## Configure a Run
 
 1. Open **Models → Model Management**.
 2. Select the model.
@@ -47,7 +47,7 @@ Private datasets, gated datasets and structured conversation columns are not sup
 The orchestrator downloads the dataset when the job starts.
 A small sample size does not necessarily limit the dataset download size.
 
-### Saved request datasets
+### Saved Request Datasets
 
 For a Logos worker, **Dataset and settings → Input dataset** also lists saved request datasets for that model.
 Select a dataset to replay all its saved requests. The sample size becomes fixed at the saved request count.
@@ -59,7 +59,7 @@ Create a saved dataset through **Nightly benchmarks → Request workload** befor
 
 ![Manual benchmark with a saved request dataset](/img/roles/logos-admin-benchmark-saved-requests.png)
 
-### Desktop example
+### Desktop Example
 
 **Performance** shows the current configuration and the record timeline.
 Select **Run benchmark** to open **Benchmark setup & nightly automation**.
@@ -72,7 +72,7 @@ Select an image to view it at full size.
 
 [![Desktop benchmark setup](/img/roles/logos-admin-nightly-results.png)](/img/roles/logos-admin-nightly-results.png)
 
-## Confirm the start
+## Confirm the Start
 
 1. Select **Review benchmark**, or **Review batch** for a batch.
 2. Check the provider, dataset, sample size, run count and production traffic information.
@@ -85,7 +85,7 @@ If the start fails, **Run benchmark** keeps your settings and shows the error.
 
 [![Desktop benchmark confirmation dialog](/img/roles/logos-admin-benchmark-confirmation.png)](/img/roles/logos-admin-benchmark-confirmation.png)
 
-## Production traffic during a benchmark
+## Production Traffic During a Benchmark
 
 The **orchestrator** reserves all lanes for the selected model on the selected worker.
 It reserves the worker/model pair, even if no lane exists yet.
@@ -107,7 +107,7 @@ A drain timeout fails preparation instead of starting measurement with existing 
 External provider benchmarks do not reserve provider capacity.
 Other traffic on that provider can affect the measurements.
 
-## Run a batch
+## Run a Batch
 
 1. Open **Repeat or compare settings** and enable **Run a batch**.
 2. Set the repetitions per configuration.
@@ -128,7 +128,7 @@ The first failed run stops the remaining batch. Completed measurements remain st
 Use the run's cancel action to stop the batch.
 Worker disconnects and orchestrator restarts stop the job. Batches do not resume automatically after a restart.
 
-## Read the comparison charts
+## Read the Comparison Charts
 
 Expand **Performance → Benchmark runs** to see runs, changed parameters, measurement times and throughput.
 Expand **More analysis & details → Charts and comparison**.
@@ -153,7 +153,7 @@ Expand **Run details and saved configurations** for the saved benchmark and serv
 
 [![Parameter comparison with reference line](/img/roles/logos-admin-benchmark-comparison.png)](/img/roles/logos-admin-benchmark-comparison.png)
 
-## Change settings and retry a failed model
+## Change Settings and Retry a Failed Model
 
 **Use for next benchmark** copies a historical run's settings and opens **Run benchmark**.
 It does not change the stored result.
@@ -179,7 +179,7 @@ Restore the intended worker settings explicitly when necessary.
 
 For deployment checks, use the [developer verification checklist](https://github.com/LogosOSS/Logos/blob/main/logos-orchestrator/docs/benchmark-configuration.md#dev-verification).
 
-## Reload worker GPU limits
+## Reload Worker GPU Limits
 
 1. Open **Run benchmark → Dataset and settings → vLLM settings for the next run**.
 2. Select **Reload GPU limits**.
@@ -192,7 +192,7 @@ Use **Reset vLLM changes** to discard draft overrides and keep the current worke
 
 [![Desktop view of the GPU limits reload button](/img/roles/logos-admin-benchmark-worker-settings.png)](/img/roles/logos-admin-benchmark-worker-settings.png)
 
-### Dark mode
+### Dark Mode
 
 Use the theme button at the top right to change between light and dark mode.
 The controls, charts and parameter hints use the selected theme.

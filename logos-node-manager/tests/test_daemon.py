@@ -7,6 +7,7 @@ import threading
 import time
 from dataclasses import replace
 
+import pytest
 from conftest import OLD
 
 from logos_node_manager.daemon import MAX_ATTEMPTS, Daemon
@@ -23,6 +24,13 @@ class ScriptedDeployer:
         self.error = error
         self.fail_ids = fail_ids
         self.seen: list[str] = []
+        self.reports = 0
+        self.report_error: Exception | None = None
+
+    def report_pending(self) -> None:
+        self.reports += 1
+        if self.report_error is not None:
+            raise self.report_error
 
     def process(self, deployment: Deployment) -> Deployment:
         self.seen.append(deployment.id)
@@ -306,3 +314,76 @@ def test_the_start_is_logged_with_the_docker_versions_and_missing_files(settings
     assert "Node manager" in caplog.text
     assert "engine fake, compose fake" in caplog.text
     assert "docker-compose.yml does not exist" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, "Draining is switched off"),
+        (
+            {"drain_enabled": True, "orchestrator_url": "https://logos.example", "node_key": "the-secret-key"},
+            "the node is cordoned at https://logos.example",
+        ),
+        (
+            {"drain_enabled": True},
+            "Draining is enabled, but NODE_MANAGER_ORCHESTRATOR_URL or NODE_MANAGER_NODE_KEY is missing",
+        ),
+    ],
+)
+def test_the_start_log_says_whether_the_node_is_drained(settings, store, docker, caplog, overrides, expected):
+    stop = threading.Event()
+    stop.set()
+    daemon = Daemon(replace(settings, **overrides), store, ScriptedDeployer(store, stop), stop, docker=docker)
+
+    with caplog.at_level(logging.INFO):
+        daemon.run()
+
+    assert expected in caplog.text
+    assert "the-secret-key" not in caplog.text
+
+
+def test_the_endings_are_reported_on_every_pass_of_the_loop(settings, store):
+    stop = threading.Event()
+    deployer = ScriptedDeployer(store, stop)
+
+    thread = start(settings, store, deployer, stop)
+    try:
+        assert wait_for(lambda: deployer.reports >= 2)
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+
+def test_a_report_that_breaks_does_not_stop_the_deployments(settings, store, caplog):
+    stop = threading.Event()
+    deployer = ScriptedDeployer(store, stop)
+    deployer.report_error = RuntimeError("boom")
+    queue(store, "first", "2026-01-01T00:00:01")
+
+    with caplog.at_level(logging.ERROR):
+        thread = start(settings, store, deployer, stop)
+        try:
+            assert wait_for(lambda: deployer.seen == ["first"])
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+
+    assert "could not be reported" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"orchestrator_url": "https://logos.example", "node_key": "k"}, "reported to https://logos.example"),
+        ({}, "the end of a deployment is not reported"),
+    ],
+)
+def test_the_start_log_says_whether_the_endings_are_reported(settings, store, docker, caplog, overrides, expected):
+    stop = threading.Event()
+    stop.set()
+    daemon = Daemon(replace(settings, **overrides), store, ScriptedDeployer(store, stop), stop, docker=docker)
+
+    with caplog.at_level(logging.INFO):
+        daemon.run()
+
+    assert expected in caplog.text

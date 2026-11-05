@@ -54,27 +54,42 @@
 }
 
 /* Homepage MDX: drop default doc chrome padding/margins. */
-article .markdown:has(.page) > header,
-article .markdown:has(.page) .theme-doc-breadcrumbs,
-article .markdown:has(.page) .theme-doc-version-badge,
-article .markdown:has(.page) .theme-doc-toc-mobile {
+article .markdown:has(.logos-home) > header,
+article .markdown:has(.logos-home) .theme-doc-breadcrumbs,
+article .markdown:has(.logos-home) .theme-doc-version-badge,
+article .markdown:has(.logos-home) .theme-doc-toc-mobile {
   display: none;
 }
 
-main:has(.page) .container {
-  max-width: none;
-  padding: 0;
+/* The homepage component has the global class logos-home (its CSS module
+   classes get hashed names). The bands of the homepage span the full window
+   width. Infima and Docusaurus raise their own rules to ID specificity
+   (:not(#\#)), so these rules need !important. */
+main:has(.logos-home) {
+  max-width: 100% !important;
 }
 
-main:has(.page) .row {
-  margin: 0;
+main:has(.logos-home) .container {
+  max-width: none !important;
+  padding: 0 !important;
 }
 
-main:has(.page) .col {
+main:has(.logos-home) .row {
+  margin: 0 !important;
+}
+
+/* The container keeps the padding-top--md utility (!important at ID
+   specificity), so the homepage moves up by that padding to sit right under
+   the navbar. */
+main:has(.logos-home) article {
+  margin-top: calc(-1 * var(--ifm-spacing-vertical));
+}
+
+main:has(.logos-home) .col {
   max-width: none;
   padding: 0 !important;
 }
 
-main:has(.page) .pagination-nav {
+main:has(.logos-home) .pagination-nav {
   display: none;
 }

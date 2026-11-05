@@ -169,6 +169,7 @@ class NightlyScheduler:
             and self.registry.is_provider_online(provider_id)
             and self.registry.has_received_first_status(provider_id)
             and not self.registry.is_calibrating(provider_id)
+            and not self.registry.is_cordoned(provider_id)
         )
 
     async def restore(self, pair_id, recovery):
@@ -183,7 +184,7 @@ class NightlyScheduler:
             recovery["lane_config"]["vllm_config"] = recovery["vllm_config"]
         provider_id = recovery["provider_id"]
         if not self.healthy(provider_id):
-            raise RuntimeError("Worker is offline or calibrating; restoration is pending")
+            raise RuntimeError("Worker is offline, calibrating or cordoned; restoration is pending")
         benchmark_reservations.reserve(provider_id, "*", -pair_id)
         runtime = await self.registry.send_command(provider_id, "get_lanes", {}, timeout_seconds=30)
         if not any(lane.get("lane_id") == recovery["lane_id"] for lane in runtime.get("lanes", [])):

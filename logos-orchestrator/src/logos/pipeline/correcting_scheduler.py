@@ -534,6 +534,30 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                     )
                     continue
 
+                # A worker whose container is being replaced takes no new work.
+                # A peer that can serve the model wins on score; when none can,
+                # the request waits in the model's queue for this worker to come
+                # back (the fallback below) instead of failing outright.
+                if provider_type == "logosnode" and self._logosnode.is_provider_cordoned(provider_id):
+                    logger.debug(
+                        "Model=%s worker=%s is cordoned: queueing only if no peer can serve it",
+                        self._logosnode.get_model_name(model_id, provider_id) or model_id,
+                        self._logosnode.get_provider_name(provider_id) or provider_id,
+                    )
+                    unavailable_fallbacks.append(
+                        self._queue_fallback(
+                            model_id,
+                            provider_id,
+                            provider_type,
+                            weight,
+                            priority_int,
+                            weight_span,
+                            "the worker is being replaced",
+                            named_model_peers=named_model_peers,
+                        )
+                    )
+                    continue
+
                 ettft = self._estimate_ettft(
                     model_id, provider_id, provider_type, input_tokens=input_tokens, request_id=request_id
                 )
@@ -565,37 +589,17 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                     # transitioning (sleep→wake) and will become available.
                     # Cloud unavailable means truly rate-limited → skip.
                     if provider_type == "logosnode":
-                        # Multi-model RESOURCE (and ETTFT-off) keep the historical
-                        # cold-load stand-in. Named-model peers alone may keep a
-                        # finite estimator wait so unavailable representatives
-                        # still strict-rank by true expected_wait_s.
-                        if named_model_peers and math.isfinite(ettft.expected_wait_s) and ettft.expected_wait_s > 0:
-                            fallback_wait = ettft.expected_wait_s
-                            state_overhead_s = min(fallback_wait, OVERHEAD_COLD_S)
-                        else:
-                            fallback_wait = OVERHEAD_COLD_S
-                            state_overhead_s = OVERHEAD_COLD_S
-                        fallback_ettft = EttftEstimate(
-                            expected_wait_s=fallback_wait,
-                            tier=ReadinessTier.COLD,
-                            reasoning=f"Fallback: {ettft.reasoning} — queueing as cold",
-                            state_overhead_s=state_overhead_s,
-                            warmth_state=-1,
-                        )
-                        ranking = self._ranking_score(
-                            weight,
-                            fallback_ettft.expected_wait_s,
-                            weight_span,
-                            named_model_peers=named_model_peers,
-                        )
                         unavailable_fallbacks.append(
-                            (
+                            self._queue_fallback(
                                 model_id,
                                 provider_id,
                                 provider_type,
-                                ranking,
+                                weight,
                                 priority_int,
-                                fallback_ettft,
+                                weight_span,
+                                ettft.reasoning,
+                                named_model_peers=named_model_peers,
+                                estimated_wait_s=ettft.expected_wait_s,
                             )
                         )
                     continue
@@ -665,6 +669,49 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         if not self._uses_ettft_routing():
             scored.sort(key=self._simple_candidate_key)
         return scored
+
+    def _queue_fallback(
+        self,
+        model_id: int,
+        provider_id: int,
+        provider_type: str,
+        weight: float,
+        priority_int: int,
+        weight_span: float,
+        reason: str,
+        *,
+        named_model_peers: bool,
+        estimated_wait_s: float = 0.0,
+    ) -> tuple:
+        """A scored entry for a worker that cannot take the request right now.
+
+        It is used only when no other candidate is available: the request is
+        then queued, scored as a cold start, instead of being refused.
+
+        Multi-model RESOURCE (and ETTFT-off) keep the historical cold-load
+        stand-in. Named-model peers alone may keep a finite estimator wait so
+        unavailable representatives still strict-rank by true expected_wait_s.
+        """
+        if named_model_peers and math.isfinite(estimated_wait_s) and estimated_wait_s > 0:
+            fallback_wait = estimated_wait_s
+            state_overhead_s = min(fallback_wait, OVERHEAD_COLD_S)
+        else:
+            fallback_wait = OVERHEAD_COLD_S
+            state_overhead_s = OVERHEAD_COLD_S
+        fallback_ettft = EttftEstimate(
+            expected_wait_s=fallback_wait,
+            tier=ReadinessTier.COLD,
+            reasoning=f"Fallback: {reason} — queueing as cold",
+            state_overhead_s=state_overhead_s,
+            warmth_state=-1,
+        )
+        ranking = self._ranking_score(
+            weight,
+            fallback_ettft.expected_wait_s,
+            weight_span,
+            named_model_peers=named_model_peers,
+        )
+        return (model_id, provider_id, provider_type, ranking, priority_int, fallback_ettft)
 
     def _record_scheduling_metrics(self, model_id: int, provider_id: int, ettft: "EttftEstimate") -> None:
         """Record per-decision scheduling metrics for the selected candidate."""

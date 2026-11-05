@@ -119,6 +119,9 @@ class PermissionControllerTest {
 
     @Test
     void appAdminTeamOwnerCanOverrideApiKeyPermissions() throws Exception {
+        jdbc.update("INSERT INTO team_provider_permissions (team_id, provider_id) VALUES (2001, 6001)");
+        jdbc.update("INSERT INTO team_model_permissions (team_id, model_id) VALUES (2001, 5001)");
+
         mvc.perform(put("/admin/api-keys/3001/provider-permissions")
                 .with(TestJwt.adminUser())
                 .contentType("application/json")
@@ -152,12 +155,47 @@ class PermissionControllerTest {
     }
 
     @Test
+    void appAdminCannotGrantApiKeyPermissionsOutsideTheTeamBoundary() throws Exception {
+        mvc.perform(put("/admin/api-keys/3001/provider-permissions")
+                .with(TestJwt.adminUser())
+                .contentType("application/json")
+                .content("{\"provider_ids\":[6001]}"))
+           .andExpect(status().isForbidden())
+           .andExpect(jsonPath("$.detail").value("API key provider permissions must be a subset of its team's permissions"));
+
+        mvc.perform(put("/admin/api-keys/3001/model-permissions")
+                .with(TestJwt.adminUser())
+                .contentType("application/json")
+                .content("{\"model_ids\":[5001]}"))
+           .andExpect(status().isForbidden())
+           .andExpect(jsonPath("$.detail").value("API key model permissions must be a subset of its team's permissions"));
+
+        assertFalse(jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM api_key_provider_permissions WHERE api_key_id = 3001)",
+            Boolean.class));
+        assertFalse(jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM api_key_model_permissions WHERE api_key_id = 3001)",
+            Boolean.class));
+    }
+
+    @Test
     void getTeamModelPermissions_emptyByDefault() throws Exception {
         mvc.perform(get("/admin/teams/2001/model-permissions")
                 .with(TestJwt.logosAdmin()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$").isArray())
            .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void appAdminCannotReadPermissionsForATeamTheyDoNotOwn() throws Exception {
+        mvc.perform(get("/admin/teams/2001/model-permissions")
+                .with(TestJwt.forSeededUser(1006, "kcmember", "chair-member")))
+           .andExpect(status().isForbidden());
+
+        mvc.perform(get("/admin/teams/2001/provider-permissions")
+                .with(TestJwt.forSeededUser(1006, "kcmember", "chair-member")))
+           .andExpect(status().isForbidden());
     }
 
     @Test
@@ -343,6 +381,37 @@ class PermissionControllerTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.length()").value(1))
            .andExpect(jsonPath("$[0]").value(5002));
+    }
+
+    @Test
+    void reducingTeamPermissionsPrunesCustomApiKeyPermissions() throws Exception {
+        jdbc.update("INSERT INTO team_provider_permissions (team_id, provider_id) VALUES (2001, 6001)");
+        jdbc.update("INSERT INTO team_model_permissions (team_id, model_id) VALUES (2001, 5001)");
+        jdbc.update("INSERT INTO api_key_provider_permissions (api_key_id, provider_id) VALUES (3001, 6001)");
+        jdbc.update("INSERT INTO api_key_model_permissions (api_key_id, model_id) VALUES (3001, 5001)");
+
+        mvc.perform(put("/admin/teams/2001/model-permissions")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"model_ids\":[]}"))
+           .andExpect(status().isOk());
+
+        assertFalse(jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM api_key_model_permissions WHERE api_key_id = 3001)",
+            Boolean.class));
+        assertTrue(jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM api_key_provider_permissions WHERE api_key_id = 3001)",
+            Boolean.class));
+
+        mvc.perform(put("/admin/teams/2001/provider-permissions")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_ids\":[]}"))
+           .andExpect(status().isOk());
+
+        assertFalse(jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM api_key_provider_permissions WHERE api_key_id = 3001)",
+            Boolean.class));
     }
 
     /**

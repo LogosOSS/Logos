@@ -32,50 +32,96 @@
     linear-gradient(165deg, var(--logos-hero-from), var(--logos-hero-to));
 }
 
-.heroInner {
-  max-width: 720px;
+.heroSplit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 3rem;
+  align-items: center;
+  max-width: 1200px;
   margin: 0 auto;
-  text-align: center;
+}
+
+@media (max-width: 996px) {
+  .heroSplit {
+    grid-template-columns: 1fr;
+    gap: 2.25rem;
+  }
 }
 
 .heroLogo {
   display: block;
-  margin: 0 auto 1rem;
-  border-radius: 16px;
-}
-
-.heroBrand {
-  margin: 0 0 0.35rem;
-  font-family: var(--ifm-font-family-base);
-  font-size: 1.35rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--logos-violet);
+  width: 72px;
+  height: 72px;
+  margin-bottom: 1.5rem;
 }
 
 .heroHeadline {
-  margin: 0 0 0.85rem;
+  margin: 0 0 1rem;
   font-family: var(--ifm-font-family-base);
-  font-size: clamp(2rem, 4vw, 2.75rem);
+  font-size: clamp(2rem, 3.6vw, 3rem);
   font-weight: 700;
   line-height: 1.15;
   color: var(--logos-ink);
 }
 
 .heroSubtitle {
-  margin: 0 auto 1.75rem;
-  max-width: 36rem;
+  margin: 0 0 1.25rem;
+  max-width: 32rem;
   font-size: 1.1rem;
   line-height: 1.55;
   color: var(--logos-muted);
+}
+
+.heroProof {
+  display: inline-block;
+  margin-bottom: 1.75rem;
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--logos-border);
+  border-radius: 999px;
+  background: var(--logos-card);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--logos-violet);
 }
 
 .heroCtas {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
+}
+
+.factBar {
+  display: flex;
+  flex-wrap: wrap;
   justify-content: center;
+  gap: 0.6rem 2rem;
+  padding: 1.1rem 1.5rem;
+  border-top: 1px solid var(--logos-border);
+  border-bottom: 1px solid var(--logos-border);
+  background: var(--logos-surface);
+  font-size: 0.92rem;
+  color: var(--logos-muted);
+}
+
+.fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fact::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--logos-violet);
+}
+
+.factBar a,
+.factBar a:hover {
+  color: var(--logos-muted) !important;
+  text-decoration: underline !important;
+  text-underline-offset: 3px;
 }
 
 .btnPrimary,
@@ -134,6 +180,8 @@
   color: var(--logos-ink);
 }
 
+/* Subtitles are <div>s: Infima resets the margins of every <p> with an
+   ID-level selector, which would drop the auto margins that centre them. */
 .sectionSubtitle {
   margin: 0 auto 2rem;
   max-width: 36rem;
@@ -219,4 +267,27 @@
   text-align: center;
   color: var(--logos-muted);
   font-size: 0.95rem;
+}
+
+.heroVideo {
+  min-width: 0;
+}
+
+.heroVideoCaption {
+  margin-top: 0.75rem;
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--logos-muted);
+}
+
+.trailer {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  border-radius: 14px;
+  border: 1px solid var(--logos-border);
+  background: #120a26;
+  box-shadow: 0 18px 50px rgba(76, 29, 149, 0.18);
 }

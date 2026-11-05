@@ -82,7 +82,7 @@ if [ "$INSTALL_DEPS" -eq 1 ]; then
             eval "$(/opt/homebrew/bin/brew shellenv)"
         else
             log "Installing Homebrew (asks for your password — it needs sudo)"
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+            /bin/bash -c "$(curl --proto =https -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
                 || die "Homebrew installation failed."
             [ -x /opt/homebrew/bin/brew ] || die "Homebrew installed but /opt/homebrew/bin/brew is missing."
             eval "$(/opt/homebrew/bin/brew shellenv)"
@@ -136,13 +136,13 @@ registry_ref() {
 registry_ref "$IMAGE"
 
 log "Fetching $IMAGE"
-TOKEN="$(curl -fsSL "https://${REGISTRY}/token?scope=repository:${REPO}:pull&service=${REGISTRY}" \
+TOKEN="$(curl --proto =https -fsSL "https://${REGISTRY}/token?scope=repository:${REPO}:pull&service=${REGISTRY}" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' 2>/dev/null)" \
     || die "Could not obtain a pull token for ${REPO} from ${REGISTRY}."
 
 ACCEPT="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json"
 
-curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: $ACCEPT" \
+curl --proto =https -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: $ACCEPT" \
     "https://${REGISTRY}/v2/${REPO}/manifests/${REFERENCE}" -o "$UNPACK/manifest.json" \
     || die "Could not fetch the manifest for ${IMAGE}."
 
@@ -159,7 +159,7 @@ for entry in m.get("manifests", []):
 PY
 )"
 if [ -n "$SUB_DIGEST" ]; then
-    curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: $ACCEPT" \
+    curl --proto =https -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: $ACCEPT" \
         "https://${REGISTRY}/v2/${REPO}/manifests/${SUB_DIGEST}" -o "$UNPACK/manifest.json" \
         || die "Could not fetch the arm64 manifest for ${IMAGE}."
 fi
@@ -183,7 +183,7 @@ while IFS= read -r layer; do
     # one yields an incomplete tree that the --delete sync below would then
     # publish over a working installation.
     blob="$UNPACK/layer.tar.gz"
-    curl -fsSL -H "Authorization: Bearer $TOKEN" \
+    curl --proto =https -fsSL -H "Authorization: Bearer $TOKEN" \
         "https://${REGISTRY}/v2/${REPO}/blobs/${layer}" -o "$blob" \
         || die "Failed to download layer ${layer%%:*}:${layer#*:} — aborting rather than deploying a partial payload."
 

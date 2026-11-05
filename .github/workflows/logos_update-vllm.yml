@@ -29,7 +29,7 @@ jobs:
       EFFORT_MODULE: logos-orchestrator/src/logos/pipeline/effort_normalization.py
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Use the PAT (when configured) for the branch push as well, so the
           # push and the PR are attributed to a real user and CI triggers on
@@ -44,7 +44,7 @@ jobs:
           if [ -n "$INPUT_VERSION" ]; then
             RAW="$INPUT_VERSION"
           else
-            RAW=$(curl -fsSL https://pypi.org/pypi/vllm/json | jq -r '.info.version')
+            RAW=$(curl --proto =https -fsSL https://pypi.org/pypi/vllm/json | jq -r '.info.version')
           fi
           # Normalize: strip an optional leading "v", validate it looks like a version.
           VERSION="${RAW#v}"

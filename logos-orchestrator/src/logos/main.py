@@ -76,7 +76,9 @@ from logos.logosnode_snapshot import (
     resolve_proxy_model_from_deployments,
 )
 from logos.middleware import APIPrefixStripperMiddleware
+from logos.model_profile_store import profile_needs_calibration
 from logos.monitoring import prometheus_metrics as prom
+from logos.node_maintenance import NodeMaintenance
 from logos.pipeline.context_resolver import ContextResolver
 from logos.pipeline.correcting_scheduler import ClassificationCorrectingScheduler
 from logos.pipeline.effort_normalization import (
@@ -225,6 +227,10 @@ _logosnode_registry = LogosNodeRuntimeRegistry(
     on_capabilities_changed=_sync_logosnode_capabilities_to_db,
     latency_store=_latency_store,
 )
+# The cordons that node managers hold while they replace a worker's container. The scheduling facade and the
+# scheduler are attached in start_pipeline.
+_node_maintenance = NodeMaintenance(_logosnode_registry)
+_logosnode_registry.cordon_check = _node_maintenance.is_cordoned
 _demand_tracker: Optional[DemandTracker] = None
 _capacity_planner: Optional[CapacityPlanner] = None
 _calibration_orchestrator: Optional[CalibrationOrchestrator] = None
@@ -1228,6 +1234,7 @@ async def start_pipeline():
     _queue_mgr = PriorityQueueManager()
 
     _logosnode_facade = LogosNodeSchedulingDataFacade(_queue_mgr, None, runtime_registry=_logosnode_registry)
+    _node_maintenance.tracked_requests = _logosnode_facade.count_tracked_requests
     _azure_facade = AzureSchedulingDataFacade(None)
 
     await _register_models_with_facades(_logosnode_facade, _azure_facade)
@@ -1283,6 +1290,8 @@ async def start_pipeline():
     # Every worker report restores the forwarding gate's budget, so it is
     # also the moment to reconsider requests being held for it.
     _logosnode_registry.set_on_runtime_updated(scheduler.on_worker_report)
+    # A released cordon frees the requests held back for that worker.
+    _node_maintenance.on_released = scheduler.on_worker_report
     _context_resolver = ContextResolver(
         logosnode_registry=_logosnode_registry,
         lane_preparer=_capacity_planner,
@@ -1321,6 +1330,7 @@ async def start_pipeline():
     global _nightly_scheduler, _maintenance_coordinator
     _maintenance_coordinator = MaintenanceCoordinator(_logosnode_registry)
     _logosnode_registry.maintenance = _maintenance_coordinator
+    _node_maintenance.busy_reason = _maintenance_coordinator.busy_reason
     _logosnode_registry.subscribe_to_events(_calibration_orchestrator._on_provider_event)
     _nightly_scheduler = NightlyScheduler(
         _logosnode_registry, _capacity_planner, _calibration_orchestrator, _logosnode_registry.maintenance
@@ -4862,24 +4872,7 @@ def _find_uncalibrated_models_on_provider(provider_id: int) -> list[str]:
     uncalibrated: list[str] = []
     for model_name in candidates:
         profile = profiles.get(model_name)
-        if not isinstance(profile, dict):
-            profile = None
-        collapsed_envelope = (
-            profile is not None
-            and profile.get("min_kv_cache_mb") is not None
-            and profile.get("max_kv_cache_mb") is not None
-            and profile.get("min_kv_cache_mb") > 0
-            and profile.get("min_kv_cache_mb") == profile.get("max_kv_cache_mb")
-        )
-        if (
-            profile is None
-            or profile.get("base_residency_mb") is None
-            or profile.get("sleeping_residual_mb") is None
-            or profile.get("sleep_l1_transient_host_ram_mb") is None
-            or (profile.get("residency_source") == "calibrated" and not profile.get("kv_cache_to_max_model_len_pairs"))
-            or collapsed_envelope
-            or bool(profile is not None and profile.get("calibration_stale"))
-        ):
+        if profile_needs_calibration(profile if isinstance(profile, dict) else None):
             uncalibrated.append(model_name)
     return uncalibrated
 
@@ -4945,7 +4938,7 @@ def _cloud_context_by_model() -> dict[str, dict[str, int]]:
 def _historic_max_context_by_model() -> dict[str, int]:
     """Model name -> widest context ever reported for it, from the database.
 
-    The durable counterpart of the live runtime snapshots: ``upsert_model_profiles``
+    The durable counterpart of the live runtime snapshots: ``persist_central_model_profile``
     keeps a high-water mark per (provider, model) in ``model_profiles`` on every
     worker snapshot, so this is still what a model's context is when no
     workernode is connected to say otherwise. Returns an empty mapping when the
