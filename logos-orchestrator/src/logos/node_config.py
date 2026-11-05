@@ -41,18 +41,26 @@ def conflicts(capability: Mapping[str, Any], overrides: Mapping[str, Any]) -> di
     }
 
 
-def entry_errors(entries: Iterable[Any]) -> list[str]:
-    """Problems that make a list unacceptable; empty when it is fine."""
+def name_errors(entries: Iterable[Any]) -> list[str]:
+    """Blank or repeated model names, which the table cannot hold."""
     errors: list[str] = []
     seen: set[str] = set()
     for entry in entries:
         name = entry.model_name.strip()
-        label = name or "<blank>"
         if not name:
             errors.append("model_name must not be blank")
         elif name in seen:
             errors.append(f"{name}: listed twice")
         seen.add(name)
+    return errors
+
+
+def entry_errors(entries: Iterable[Any]) -> list[str]:
+    """Problems that make a list unacceptable; empty when it is fine."""
+    entries = list(entries)
+    errors = name_errors(entries)
+    for entry in entries:
+        label = entry.model_name.strip() or "<blank>"
         for key, value in entry.capability.items():
             check = CAPABILITY_CHECKS.get(key)
             if check is None:
