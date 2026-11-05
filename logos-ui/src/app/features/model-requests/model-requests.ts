@@ -44,6 +44,11 @@ export class ModelRequests implements OnInit {
   teams = computed(() => this.auth.currentUser()?.teams ?? []);
   /** The team the next request is for; null while none is (or can be) chosen. */
   teamId = signal<number | null>(null);
+  /** The gated model whose license dialog is open; null while it is closed. */
+  licenseTarget = signal<ModelRequest | null>(null);
+  // Accepting a gated model's license is a Logos admin job, so the flag and
+  // the dialog behind it are only offered to that role.
+  readonly isLogosAdmin = computed(() => this.auth.role() === 'logos_admin');
 
   async ngOnInit(): Promise<void> {
     // Preselect the first team: a member of exactly one team should not have
@@ -56,6 +61,9 @@ export class ModelRequests implements OnInit {
   async refresh(): Promise<void> {
     this.loading.set(true);
     try {
+      // Best effort: a license accepted since the last check unflags the row,
+      // and a precheck failure must not keep the (local) list from rendering.
+      await this.service.recheckGated().catch(() => {});
       this.requests.set(await this.service.list());
     } catch {
       this.error.set('Could not load model requests.');
@@ -120,6 +128,28 @@ export class ModelRequests implements OnInit {
   /** Close the failed-vote modal. */
   closeVoteError(): void {
     this.voteError.set(null);
+  }
+
+  /** Open the license dialog for a gated model. */
+  openLicenseDialog(request: ModelRequest): void {
+    this.licenseTarget.set(request);
+  }
+
+  /** Close the license dialog (cancel, the backdrop or the close button). */
+  closeLicenseDialog(): void {
+    this.licenseTarget.set(null);
+  }
+
+  /**
+   * Open the model's Hugging Face page — where the license agreement is
+   * accepted — in a new tab, then dismiss the dialog.
+   */
+  goToHuggingFace(): void {
+    const target = this.licenseTarget();
+    if (target) {
+      window.open('https://huggingface.co/' + target.name, '_blank', 'noopener,noreferrer');
+    }
+    this.licenseTarget.set(null);
   }
 
   /** Team selector change; the empty option clears the selection. */

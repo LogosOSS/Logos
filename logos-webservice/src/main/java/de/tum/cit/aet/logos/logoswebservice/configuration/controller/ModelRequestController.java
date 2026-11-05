@@ -43,6 +43,18 @@ public class ModelRequestController {
     }
 
     /**
+     * Re-run the Hugging Face precheck for every flagged model and clear the
+     * flag from the ones the license for has been accepted. The Model
+     * requests' refresh button calls this before re-reading the list, so a
+     * freshly accepted license unflags the row without anyone voting again.
+     */
+    @PostMapping("/recheck_model_requests")
+    public ResponseEntity<Void> recheckModelRequests() {
+        requestedModelService.recheckGatedModels();
+        return ResponseEntity.ok().build();
+    }
+
+    /**
      * Cast the caller's vote for a model, naming the team it is wanted for.
      * The service's outcomes are mapped to HTTP in
      * {@link ModelRequestExceptionHandler}: 409 when the model is already

@@ -189,6 +189,61 @@ class ModelRequestControllerTest {
     }
 
     @Test
+    void recheck_clearsTheFlagWhenTheLicenseHasBeenAccepted() throws Exception {
+        jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/license-accepted', true)");
+        Mockito.when(hfReachabilityClient.check("acme/license-accepted"))
+            .thenReturn(new HfReachabilityResult(HfReachabilityResult.STATUS_REACHABLE, null, null));
+
+        mvc.perform(post("/logosdb/recheck_model_requests").with(TestJwt.testUser()))
+           .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForObject(
+            "SELECT is_gated FROM requested_models WHERE name = 'acme/license-accepted'",
+            Boolean.class)).isFalse();
+    }
+
+    @Test
+    void recheck_keepsTheFlagWhileTheHubStillReportsGated() throws Exception {
+        jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/still-gated', true)");
+        Mockito.when(hfReachabilityClient.check("acme/still-gated"))
+            .thenReturn(new HfReachabilityResult(
+                HfReachabilityResult.STATUS_REJECTED, HfReachabilityResult.REASON_MODEL_GATED,
+                "Repository access requires an authorized HF_TOKEN."));
+
+        mvc.perform(post("/logosdb/recheck_model_requests").with(TestJwt.testUser()))
+           .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForObject(
+            "SELECT is_gated FROM requested_models WHERE name = 'acme/still-gated'",
+            Boolean.class)).isTrue();
+    }
+
+    @Test
+    void recheck_leavesTheFlagAloneWithoutADecisiveAnswer() throws Exception {
+        // A timeout (or an unknown repository) is no answer about the license,
+        // so the flag must stay until a reachable verdict comes in.
+        jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/unknown', true)");
+        Mockito.when(hfReachabilityClient.check("acme/unknown"))
+            .thenReturn(new HfReachabilityResult(HfReachabilityResult.STATUS_UNKNOWN, null, null));
+
+        mvc.perform(post("/logosdb/recheck_model_requests").with(TestJwt.testUser()))
+           .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForObject(
+            "SELECT is_gated FROM requested_models WHERE name = 'acme/unknown'",
+            Boolean.class)).isTrue();
+    }
+
+    @Test
+    void recheck_checksNoRepositoryWhenNothingIsFlagged() throws Exception {
+        mvc.perform(post("/logosdb/recheck_model_requests").with(TestJwt.testUser()))
+           .andExpect(status().isOk());
+
+        Mockito.verify(hfReachabilityClient, Mockito.never())
+            .check(ArgumentMatchers.anyString());
+    }
+
+    @Test
     void vote_requiresATeam() throws Exception {
         mvc.perform(post("/logosdb/add_model_request")
                 .with(TestJwt.testUser())

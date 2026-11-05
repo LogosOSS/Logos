@@ -367,6 +367,30 @@ public class RequestedModelService {
     }
 
     /**
+     * Re-verify every flagged model against Hugging Face and clear the flag
+     * from the ones the central HF_TOKEN can see now — the license agreement
+     * was accepted since the row was flagged. The Model requests' refresh
+     * button calls this before re-reading the list, so an accepted license
+     * unflags the row without anyone voting again.
+     *
+     * Deliberately not transactional around the loop: the prechecks are
+     * remote round trips and must not hold a pooled database connection while
+     * waiting (the same reason the vote's precheck runs before its
+     * transaction), so the read, the checks and each conditional clear run in
+     * their own short transactions. Only a positive {@code reachable} verdict
+     * unflags: still-gated, not-found and timeout are no answer about the
+     * license, so the flag stays until a reachable answer comes.
+     */
+    public void recheckGatedModels() {
+        for (RequestedModel model : requestedModelRepository.findByIsGatedTrue()) {
+            HfReachabilityResult reachability = hfReachabilityClient.check(model.getName());
+            if (HfReachabilityResult.STATUS_REACHABLE.equals(reachability.status())) {
+                requestedModelRepository.clearGatedFlagIfStillSet(model.getId());
+            }
+        }
+    }
+
+    /**
      * Whether the name is already served by Logos, either as a model name or
      * as an alias of one — in either case it is not something to request.
      */

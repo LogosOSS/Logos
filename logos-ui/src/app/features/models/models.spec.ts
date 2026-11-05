@@ -44,7 +44,10 @@ async function boot() {
           getModelCapabilities: vi.fn().mockResolvedValue({}),
         },
       },
-      { provide: ModelRequestService, useValue: { list: vi.fn().mockResolvedValue([]) } },
+      {
+        provide: ModelRequestService,
+        useValue: { list: vi.fn().mockResolvedValue([]), recheckGated: vi.fn().mockResolvedValue(undefined) },
+      },
       {
         provide: AuthService,
         useValue: { role: signal('app_developer'), currentUser: signal(USER) },

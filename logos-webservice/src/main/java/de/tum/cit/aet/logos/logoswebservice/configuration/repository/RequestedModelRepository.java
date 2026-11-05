@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.RequestedModel;
 
@@ -16,6 +17,9 @@ public interface RequestedModelRepository extends JpaRepository<RequestedModel, 
 
     /** Registry rows without a Hugging Face verdict yet (never checked, or the check timed out). */
     List<RequestedModel> findByIsGatedIsNull();
+
+    /** Registry rows flagged as gated, for re-verification after a license acceptance. */
+    List<RequestedModel> findByIsGatedTrue();
 
     /**
      * Record a decisive Hugging Face gating verdict on a row that has none
@@ -27,6 +31,19 @@ public interface RequestedModelRepository extends JpaRepository<RequestedModel, 
     @Modifying
     @Query("UPDATE RequestedModel m SET m.isGated = :status WHERE m.id = :id AND m.isGated IS NULL")
     int setIsGatedIfNull(@Param("id") Integer id, @Param("status") Boolean status);
+
+    /**
+     * Clear the gating flag on a row that is still flagged (a recheck found
+     * the repository reachable, so the license was accepted). The condition
+     * keeps a concurrent vote — which stores its own fresh verdict — from
+     * being clobbered by a stale recheck.
+     *
+     * @return the number of rows updated (0 when the row is no longer flagged)
+     */
+    @Transactional
+    @Modifying
+    @Query("UPDATE RequestedModel m SET m.isGated = false WHERE m.id = :id AND m.isGated = true")
+    int clearGatedFlagIfStillSet(@Param("id") Integer id);
 
     /**
      * Acquires a transaction-scoped advisory lock on the given key, blocking
