@@ -34,7 +34,7 @@ public class RepoCredentialCrypto {
     private static final Logger log = LoggerFactory.getLogger(RepoCredentialCrypto.class);
 
     /** Documented development fallback — only with DEV_FALLBACK=true. */
-    static final String DEV_DEFAULT_PASSPHRASE =
+    static final String DEV_DEFAULT_PASSPHRASE = // NOSONAR public development fallback shared with logos-agent, used only with DEV_FALLBACK=true
         "logos-dev-repo-credentials-key-do-not-use-in-prod";
 
     private static final String ENV_KEY = "LOGOS_REPO_CREDENTIALS_KEY";
