@@ -58,7 +58,10 @@ describe('key permission rows', () => {
     expect(component.keyPermissions.isExpanded(4)).toBe(false);
 
     component.onRowClick(rowClick(plainCell()), 21);
-    expect(component.keyPermissions.isExpanded(4)).toBe(true);
+    expect(component.isExpanded(4)).toBe(true);
     await vi.waitFor(() => expect(teamService['getTeamProviderPermissions']).toHaveBeenCalledWith(9));
+    await vi.waitFor(() => expect(component.keyPermissions.globalDataLoaded).toBe(true));
+    expect(component.isLoadingExpand(4)).toBe(false);
+    expect(component.getModelGroups(component.apiKeys[0])).toEqual([]);
   });
 });

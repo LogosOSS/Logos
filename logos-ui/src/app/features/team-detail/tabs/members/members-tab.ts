@@ -24,6 +24,7 @@ import { DataTableComponent } from '../../../../shared/components/data-table/dat
 import { ApiKeyModalComponent } from '../../api-key-modal/api-key-modal';
 import { ErrorMessageComponent } from '../../../../shared/components/error-message/error-message';
 import { IconTileComponent } from '../../../../shared/components/icon-tile/icon-tile';
+import { KeyModelGroup } from '../key-model-groups';
 import { KeyPermissionExpansion } from '../key-permission-expansion';
 import { userDisplayName, userMatchesQuery } from '../../../../shared/utils/user-display';
 import { isInteractiveClick } from '../../../../shared/utils/interactive-click';
@@ -151,7 +152,24 @@ export class MembersTabComponent {
   onRowClick(event: Event, userId: number): void {
     if (isInteractiveClick(event)) return;
     const key = this.devKeyForUser(userId);
-    if (key) this.keyPermissions.toggleExpand(key);
+    if (key) this.toggleExpand(key);
+  }
+
+  // Template entry points; the owner and member tables both render key rows.
+  isExpanded(keyId: number): boolean {
+    return this.keyPermissions.isExpanded(keyId);
+  }
+
+  isLoadingExpand(keyId: number): boolean {
+    return this.keyPermissions.isLoadingExpand(keyId);
+  }
+
+  toggleExpand(key: TeamApiKey): void {
+    this.keyPermissions.toggleExpand(key);
+  }
+
+  getModelGroups(key: TeamApiKey): KeyModelGroup[] {
+    return this.keyPermissions.getModelGroups(key);
   }
 
   // ── add owner / member ────────────────────────────────────────────────────
