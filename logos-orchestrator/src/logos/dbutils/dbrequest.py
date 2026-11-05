@@ -180,6 +180,33 @@ class LogosNodeResetProfilesRequest(LogosKeyModel):
     model_names: list[str] | None = None
 
 
+class NodeConfigEntry(BaseModel):
+    """One model of a node's configuration, as the admin set it."""
+
+    model_config = ConfigDict(extra="forbid")
+    model_name: str = Field(max_length=256)
+    capability: dict[str, Any] = Field(default_factory=dict)
+    overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class LogosNodeConfigRequest(BaseModel):
+    shared_key: str
+
+
+class LogosNodeConfigImportRequest(LogosNodeConfigRequest):
+    entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
+
+
+class LogosNodeConfigGetRequest(LogosKeyModel):
+    provider_id: int
+
+
+class LogosNodeConfigReplaceRequest(LogosNodeConfigGetRequest):
+    # Revision the admin edited; a newer one means someone saved first
+    expected_revision: int = Field(ge=0)
+    entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
+
+
 class LogosNodeInvalidateCalibrationRequest(LogosKeyModel):
     calibration_id: int
     reason: str = "invalidated by admin"
