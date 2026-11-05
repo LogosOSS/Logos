@@ -178,7 +178,7 @@ jobs:
         working-directory: logos-ui
 
       - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+        run: npm run e2e:install
         working-directory: logos-ui
 
       - name: Start the stack with the UI profile
