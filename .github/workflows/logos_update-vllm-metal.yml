@@ -176,6 +176,7 @@ jobs:
         id: artifacts
         if: steps.check.outputs.needed == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -194,13 +195,10 @@ jobs:
           pick_release_wheel() {
             local repo="$1" tag="$2" pattern="$3" label="$4"
             local names
-            # One-liner keeps the YAML block scalar intact (a multi-line
-            # python -c body at column 0 would close the run: | block).
-            names=$(curl --proto =https -fsSL \
-              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${repo}/releases/tags/${tag}" \
-              | python3 -c "import json,re,sys; p=re.compile(sys.argv[1]); a=json.load(sys.stdin).get('assets') or []; print('\\n'.join(sorted(x['name'] for x in a if p.match(x.get('name') or ''))))" "$pattern")
+            # A failing lookup fails the step; a release without a matching
+            # asset yields an empty list and is reported below.
+            names=$(gh api "repos/${repo}/releases/tags/${tag}" --jq '.assets[].name' \
+              | { grep -E "$pattern" || true; } | sort)
             case "$(printf '%s' "$names" | grep -c . || true)" in
               1) printf '%s' "$names" ;;
               0)
@@ -231,6 +229,13 @@ jobs:
             *) VLLM_TAG="v$VERSION" ;;
           esac
           VLLM_VERSION="${VLLM_TAG#v}"
+          # vllm-metal can tag a release before the vLLM core release it
+          # builds on is published; retry on the next scheduled run then.
+          if ! gh api "repos/vllm-project/vllm/releases/tags/${VLLM_TAG}" --silent 2>/dev/null; then
+            echo "::notice::vLLM ${VLLM_TAG} is not released yet; skipping the vllm-metal ${TAG} update."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           CORE_WHEEL=$(pick_release_wheel "vllm-project/vllm" "$VLLM_TAG" \
             "^vllm-${VLLM_VERSION//./\\.}\\+cpu-.+-macosx_[0-9]+_[0-9]+_arm64\\.whl$" \
             "vLLM core")
@@ -251,7 +256,7 @@ jobs:
           echo "installer_path=$work/install.sh" >> "$GITHUB_OUTPUT"
 
       - name: Verify the patch patterns still match
-        if: steps.check.outputs.needed == 'true'
+        if: steps.check.outputs.needed == 'true' && steps.artifacts.outputs.ready != 'false'
         env:
           INSTALLER_PATH: ${{ steps.artifacts.outputs.installer_path }}
         run: |
@@ -291,7 +296,7 @@ jobs:
           PY
 
       - name: Update the pins
-        if: steps.check.outputs.needed == 'true'
+        if: steps.check.outputs.needed == 'true' && steps.artifacts.outputs.ready != 'false'
         env:
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -339,7 +344,7 @@ jobs:
 
       - name: Create branch, commit and pull request
         id: pr
-        if: steps.check.outputs.needed == 'true'
+        if: steps.check.outputs.needed == 'true' && steps.artifacts.outputs.ready != 'false'
         env:
           GH_TOKEN: ${{ secrets.LOGOS_VLLM_UPDATE_PAT || github.token }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -380,7 +385,7 @@ jobs:
           echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Close superseded update PRs
-        if: steps.check.outputs.needed == 'true'
+        if: steps.check.outputs.needed == 'true' && steps.artifacts.outputs.ready != 'false'
         env:
           GH_TOKEN: ${{ secrets.LOGOS_VLLM_UPDATE_PAT || github.token }}
           # The branch actually pushed, which differs from the computed one

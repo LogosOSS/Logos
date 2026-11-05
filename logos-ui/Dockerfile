@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npx ng build --configuration production
+RUN npm run build -- --configuration production
 
 # Serve stage
 FROM nginx:alpine
