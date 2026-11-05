@@ -56,7 +56,7 @@
           <!-- Main row -->
           <div
             class="table-row table-row--clickable"
-            [class.table-row--expanded]="isExpanded(key.id)"
+            [class.table-row--expanded]="keyPermissions.isExpanded(key.id)"
             [class.table-row--tier-start]="startsTier($index)"
             role="row"
             (click)="onRowClick($event, key)"
@@ -80,8 +80,8 @@
               <button
                 class="btn-chevron"
                 type="button"
-                [class.btn-chevron--open]="isExpanded(key.id)"
-                (click)="toggleExpand(key)"
+                [class.btn-chevron--open]="keyPermissions.isExpanded(key.id)"
+                (click)="keyPermissions.toggleExpand(key)"
                 aria-label="Show permissions"
               >
                 <i class="pi pi-chevron-right" aria-hidden="true"></i>
@@ -200,10 +200,10 @@
           </div>
 
           <!-- Expanded permissions row -->
-          @if (isExpanded(key.id)) {
+          @if (keyPermissions.isExpanded(key.id)) {
             <div class="expand-row" role="row">
               <div class="expand-inner" role="cell">
-                @if (isLoadingExpand(key.id) || (!globalDataLoaded && key.use_custom_permissions)) {
+                @if (keyPermissions.isLoadingExpand(key.id) || (!keyPermissions.globalDataLoaded && key.use_custom_permissions)) {
                   <div class="expand-loading">
                     <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
                     Loading…
@@ -212,11 +212,11 @@
                   <div class="expand-label">
                     {{ key.use_custom_permissions ? 'Custom Permissions' : 'Team Permissions' }}
                   </div>
-                  @if (getModelGroups(key).length === 0) {
+                  @if (keyPermissions.getModelGroups(key).length === 0) {
                     <span class="expand-empty">No models accessible via this key.</span>
                   } @else {
                     <div class="models-list">
-                      @for (group of getModelGroups(key); track group.model_name) {
+                      @for (group of keyPermissions.getModelGroups(key); track group.model_name) {
                         <div class="model-row">
                           <div class="model-row__head">
                             <span class="model-name">{{ group.model_name }}</span>

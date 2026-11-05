@@ -253,7 +253,7 @@ WHERE t.name = 'Logos'
 UPDATE api_keys
 SET environment = 'production'
 WHERE name = 'docs-role-logos-app-key'
-  AND (environment IS NULL OR environment = '-' OR environment = '');
+  AND (environment IS NULL OR environment = '-' OR char_length(environment) = 0);
 
 -- Providers + models (names match the committed shots' catalogue style).
 INSERT INTO providers (name, base_url, provider_type, cloud_provider_type, privacy_level, auth_name, auth_format)
