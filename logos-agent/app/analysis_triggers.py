@@ -21,6 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from . import controls, db, github, model_policy
+from .asyncio_tasks import cancel_and_wait
 from .config import settings
 from .schemas import ACTIVE_STATUSES, SessionStatus
 
@@ -121,13 +122,8 @@ class AnalysisPoller:
 
     async def stop(self) -> None:
         self._stopping.set()
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        await cancel_and_wait(self._task)
+        self._task = None
 
     async def _loop(self) -> None:
         while not self._stopping.is_set():

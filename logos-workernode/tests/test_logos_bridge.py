@@ -4540,3 +4540,24 @@ async def test_a_config_edit_not_yet_reported_still_gets_its_model_recalibrated(
     assert ("calibration_model_skipped", "calibrated meanwhile") not in events
     assert any(name == "calibration_model_selected" for name, _ in events)
     assert registry.get_profile("org/first").calibration_stale is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_command_tasks_stops_every_command_and_logs_failures(caplog):
+    client = LogosBridgeClient(_DummyApp(), LogosConfig(enabled=True, logos_url="http://logos", shared_key="k"))
+
+    async def _fails() -> None:
+        raise RuntimeError("command failed")
+
+    running = asyncio.create_task(asyncio.Event().wait())
+    failing = asyncio.create_task(_fails())
+    await asyncio.sleep(0)
+    client._command_tasks.update({"cmd-a": running, "cmd-b": failing})  # noqa: SLF001
+
+    with caplog.at_level(logging.DEBUG, logger="logos_worker_node.logos_bridge"):
+        await client._cancel_command_tasks()  # noqa: SLF001
+
+    assert running.cancelled()
+    assert failing.done() and isinstance(failing.exception(), RuntimeError)
+    assert client._command_tasks == {}  # noqa: SLF001
+    assert "Bridge background command task failed during shutdown" in caplog.text

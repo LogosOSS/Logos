@@ -31,6 +31,7 @@ from typing import Any
 import httpx
 
 from . import attachments, capacity, controls, conventions, db, docker_engine, github, model_policy, triggers, upstream
+from .asyncio_tasks import cancel_and_wait
 from .config import INTERRUPTION_FILE, REPLY_DIR, REPLY_FILE, REVIEW_COMMENTS_FILE, REVIEWED_SHA_FILE, settings
 from .schemas import TERMINAL_STATUSES, EventKind, SessionStatus
 
@@ -381,12 +382,7 @@ class SessionManager:
 
     async def stop(self) -> None:
         self._stopping.set()
-        if self._scheduler_task:
-            self._scheduler_task.cancel()
-            try:
-                await self._scheduler_task
-            except asyncio.CancelledError:
-                pass
+        await cancel_and_wait(self._scheduler_task)
         await self._stand_down()
         for task in list(self._supervisors.values()):
             task.cancel()
@@ -975,7 +971,7 @@ class SessionManager:
             # The container's agent user has to read the mark; the write
             # protection is the read-only mount, not ownership, so the file
             # only needs to be world-readable, no matter the runner's umask.
-            os.chmod(marker, 0o644)
+            os.chmod(marker, 0o644)  # NOSONAR - the mark holds no secret and is mounted read-only
         except (OSError, ValueError) as exc:
             # ValueError as well as OSError: a state root that is not a
             # usable path at all fails before the filesystem is reached, and

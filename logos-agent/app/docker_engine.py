@@ -21,7 +21,7 @@ from .config import settings
 # The Engine API is versioned; pin low enough to work with older daemons but
 # high enough for the fields used here (PidsLimit, NanoCPUs, ReadonlyRootfs).
 _API_VERSION = "v1.43"
-_BASE = f"http://docker/{_API_VERSION}"
+_BASE = f"http://docker/{_API_VERSION}"  # NOSONAR - sent over the local Docker Unix socket, never a network
 
 
 class DockerError(RuntimeError):
@@ -208,7 +208,10 @@ async def create_session_container(
         "ReadonlyRootfs": True,
         # The agent needs scratch space; give it tmpfs rather than a writable
         # root so nothing it writes outside /workspace survives the session.
-        "Tmpfs": {"/tmp": "rw,exec,nosuid,size=2g", "/home/agent/.cache": "rw,nosuid,size=2g"},
+        "Tmpfs": {
+            "/tmp": "rw,exec,nosuid,size=2g",  # NOSONAR - a private tmpfs inside the container, not a host directory
+            "/home/agent/.cache": "rw,nosuid,size=2g",
+        },
         "CapDrop": ["ALL"],
         "SecurityOpt": ["no-new-privileges:true"],
         "Memory": settings.session_memory_mb * 1024 * 1024,
@@ -263,7 +266,7 @@ async def create_screenshot_container(
         # session network.
         "NetworkMode": settings.session_egress_network,
         "ReadonlyRootfs": True,
-        "Tmpfs": {"/tmp": "rw,nosuid,size=2g"},
+        "Tmpfs": {"/tmp": "rw,nosuid,size=2g"},  # NOSONAR - a private tmpfs inside the container
         "CapDrop": ["ALL"],
         "SecurityOpt": ["no-new-privileges:true"],
         "Memory": settings.session_memory_mb * 1024 * 1024,
@@ -291,7 +294,7 @@ async def create_screenshot_container(
             "logos.agent.screenshot": "true",
             "logos.agent.managed": "true",
         },
-        "WorkingDir": "/tmp",
+        "WorkingDir": "/tmp",  # NOSONAR - the container's own private tmpfs
         "HostConfig": host_config,
         "User": "agent",
         "Tty": False,

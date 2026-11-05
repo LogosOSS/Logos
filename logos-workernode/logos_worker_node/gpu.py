@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 
+from logos_worker_node.asyncio_tasks import cancel_and_wait
 from logos_worker_node.models import DeviceInfo, DeviceSummary
 
 logger = logging.getLogger("logos_worker_node.gpu")
@@ -81,13 +82,8 @@ class GpuMetricsCollector:
         logger.info("GPU collector started — %d device(s)", len(self._devices))
 
     async def stop(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        await cancel_and_wait(self._task)
+        self._task = None
         logger.info("GPU collector stopped")
 
     async def force_poll(self) -> None:

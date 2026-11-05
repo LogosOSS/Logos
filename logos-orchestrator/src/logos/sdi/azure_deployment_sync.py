@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from logos.asyncio_tasks import cancel_and_wait
 from logos.dbutils.dbmanager import DBManager
 from logos.sdi.model_discovery_notifier import deliver_discovery_notifications
 
@@ -267,14 +268,7 @@ class AzureDeploymentSyncService:
 
     async def stop(self) -> None:
         for attr in ("_task", "_refresh_task"):
-            task = getattr(self, attr)
-            if task is None:
-                continue
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_wait(getattr(self, attr))
             setattr(self, attr, None)
 
     async def _loop(self) -> None:
