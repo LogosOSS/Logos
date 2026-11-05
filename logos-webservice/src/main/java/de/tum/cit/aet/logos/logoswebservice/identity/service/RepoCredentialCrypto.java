@@ -43,6 +43,8 @@ public class RepoCredentialCrypto {
     private static final int IV_BYTES = 12;
     private static final int TAG_BITS = 128;
 
+    private static final SecureRandom RANDOM = new SecureRandom();
+
     private final SecretKey secretKey;
     private static final AtomicBoolean DEV_WARNED = new AtomicBoolean(false);
 
@@ -69,7 +71,7 @@ public class RepoCredentialCrypto {
         requireKey();
         try {
             byte[] iv = new byte[IV_BYTES];
-            new SecureRandom().nextBytes(iv);
+            RANDOM.nextBytes(iv);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.ENCRYPT_MODE, secretKey, new GCMParameterSpec(TAG_BITS, iv));
             byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
