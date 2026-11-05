@@ -221,7 +221,7 @@ export class Models implements OnInit {
   }
 
   ngOnInit(): void {
-    this.fetchModels();
+    void this.fetchModels();
     if (this.role() === 'logos_admin') {
       timer(0, 30000).pipe(
         switchMap(() => this.http.post<{ schedules: NightlySchedule[]; next_date: string }>(

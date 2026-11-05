@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { HttpClient } from '@angular/common/http';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthService } from '../../core/auth/services/auth.service';
 import { User } from '../../core/auth/models/user.model';
@@ -232,6 +232,48 @@ describe('import preview stylesheet', () => {
     // the main table's rows use.
     expect(mobile).toMatch(/\.table-row:not\(\.import-preview-row\)\s*\{\s*padding-top:\s*12px/);
     expect(mobile).not.toMatch(/\.table-row\s*\{\s*padding-top:/);
+  });
+});
+
+describe('UserManagement dialogs', () => {
+  let component: UserManagement;
+  let getTeams: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    TestBed.resetTestingModule();
+    getTeams = vi.fn().mockResolvedValue([]);
+    await TestBed.configureTestingModule({
+      imports: [UserManagement],
+      providers: [
+        { provide: AuthService, useValue: { currentUser: signal<User | null>(admin()) } },
+        { provide: UserManagementService, useValue: { getUsers: vi.fn().mockResolvedValue([platformUser()]) } },
+        { provide: TeamManagementService, useValue: { getTeams } },
+        { provide: HttpClient, useValue: {} },
+      ],
+    }).compileComponents();
+    component = TestBed.createComponent(UserManagement).componentInstance;
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('loads the teams to pick from when the create dialog opens', async () => {
+    component.openCreateDialog();
+    await vi.waitFor(() => expect(getTeams).toHaveBeenCalled());
+  });
+
+  it('loads the teams to pick from when the edit dialog opens', async () => {
+    component.openEditDialog(platformUser());
+    await vi.waitFor(() => expect(getTeams).toHaveBeenCalled());
+  });
+
+  it('does not report the keys as copied when the clipboard refuses the write', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    component.createResult.set({ logos_keys: ['logos-key'] } as unknown as ReturnType<typeof component.createResult>);
+    component.copyApiKeys();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('logos-key'));
+    await Promise.resolve();
+    expect(component.copiedKeys()).toBe(false);
   });
 });
 

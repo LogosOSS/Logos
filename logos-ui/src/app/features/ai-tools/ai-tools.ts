@@ -706,7 +706,7 @@ export class AiTools implements OnInit, OnDestroy {
 
   selectKeyById(id: string) {
     const key = this.keys().find((k) => k.id === Number(id)) ?? null;
-    if (key) this.pickKey(key);
+    if (key) void this.pickKey(key);
   }
 
   private modelsRequestId = 0;
@@ -762,10 +762,11 @@ export class AiTools implements OnInit, OnDestroy {
   }
 
   copyCmd(text: string) {
+    // A refused clipboard write (no permission, insecure context) leaves the button unchanged.
     navigator.clipboard.writeText(text).then(() => {
       this.copiedCmd.set(text);
       setTimeout(() => this.copiedCmd.set(null), 2000);
-    });
+    }, () => undefined);
   }
 }
 

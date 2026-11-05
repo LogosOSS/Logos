@@ -337,14 +337,14 @@ export class MembersTabComponent {
     this.ownerSearch.set('');
     this.addOwnerError.set('');
     this.addOwnerOpen.set(true);
-    if (this.adminUsers().length === 0) this.fetchAdminUsers();
+    if (this.adminUsers().length === 0) void this.fetchAdminUsers();
   }
 
   openAddMember(): void {
     this.memberSearch.set('');
     this.addMemberError.set('');
     this.addMemberOpen.set(true);
-    if (this.allUsers().length === 0) this.fetchUsers();
+    if (this.allUsers().length === 0) void this.fetchUsers();
   }
 
   private async fetchAdminUsers(): Promise<void> {

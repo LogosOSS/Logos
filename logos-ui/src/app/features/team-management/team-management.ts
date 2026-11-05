@@ -107,13 +107,13 @@ export class TeamManagement implements OnInit {
   constructor() {
     effect(() => {
       if (this.canCreateTeam() && this.adminUsers().length === 0) {
-        this.fetchAdminUsers();
+        void this.fetchAdminUsers();
       }
     });
   }
 
   ngOnInit(): void {
-    this.fetchTeams();
+    void this.fetchTeams();
   }
 
   // ── Data fetching ─────────────────────────────────────────────────────────

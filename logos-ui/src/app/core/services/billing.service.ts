@@ -9,6 +9,11 @@ export interface BudgetBucket {
   cost_micro_cents: number;
 }
 
+/** Orders `bucket_ts` ISO-8601 strings chronologically (code-unit order, as `sort()` without a comparator). */
+export function compareTimestamps(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export interface TeamBudgetHistoryResponse {
   buckets: BudgetBucket[];
   bucket_seconds: number;

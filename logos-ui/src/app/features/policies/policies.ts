@@ -125,7 +125,7 @@ export class Policies implements OnInit {
   formValid = computed(() => this.formName().trim().length > 0);
 
   ngOnInit(): void {
-    this.fetchPolicies();
+    void this.fetchPolicies();
   }
 
   // ── Data fetching ─────────────────────────────────────────────────────────
@@ -266,7 +266,7 @@ export class Policies implements OnInit {
     this.formMode.set('add');
     this.editTarget.set(null);
     this.resetForm();
-    this.loadDropdownData();
+    void this.loadDropdownData();
     this.formOpen.set(true);
   }
 
@@ -285,7 +285,7 @@ export class Policies implements OnInit {
     this.formApiKeyId.set(policy.api_key_id);
     this.formTeamId.set(policy.team_id);
     this.formError.set('');
-    this.loadDropdownData();
+    void this.loadDropdownData();
     this.formOpen.set(true);
   }
 
