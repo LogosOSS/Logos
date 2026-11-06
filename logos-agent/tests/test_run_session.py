@@ -1677,3 +1677,23 @@ class TestWhatCommitThisSessionIsAnswerableFor:
         _git("update-ref", "refs/remotes/origin/logos/agent/x/session-9", "HEAD", cwd=checkout)
 
         assert run_session._ref_sha("refs/remotes/origin/logos/agent/x/session-9") == run_session._ref_sha("HEAD")
+
+
+class TestGitStartsNoBackgroundMaintenance:
+    """A fetch detaches `git maintenance run --auto`, which can rewrite the
+    shallow file under the next fetch of the preparation."""
+
+    def test_git_commands_run_with_auto_maintenance_off(self, monkeypatch):
+        calls: list = []
+
+        def fake_subprocess_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(run_session.subprocess, "run", fake_subprocess_run)
+        run_session.run(["git", "fetch", "--depth", "50", "origin", "main"], quiet=True)
+        run_session.run(["ls", "-la"], quiet=True)
+        assert calls == [
+            ["git", "-c", "maintenance.auto=false", "fetch", "--depth", "50", "origin", "main"],
+            ["ls", "-la"],
+        ]
