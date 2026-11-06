@@ -19,6 +19,10 @@ from logos.dbutils.dbrequest import (
     LogosNodeAuthRequest,
     LogosNodeCalibrationReservationRequest,
     LogosNodeClearUnsupportedRequest,
+    LogosNodeConfigGetRequest,
+    LogosNodeConfigImportRequest,
+    LogosNodeConfigReplaceRequest,
+    LogosNodeConfigRequest,
     LogosNodeDeleteLaneRequest,
     LogosNodeDeploymentReport,
     LogosNodeInvalidateCalibrationRequest,
@@ -44,6 +48,7 @@ from logos.main import (
 )
 from logos.model_profile_store import shared_profiles_enabled
 from logos.model_profile_sync import profile_sync
+from logos.node_config import SYNC_NODE_CONFIG_ACTION, conflict_warnings, entry_errors, name_errors
 from logos.notifications import emit_notification
 from logos.notifications.deployment import deployment_notification
 from logos.role_auth import require_logos_admin_key
@@ -841,3 +846,113 @@ async def logosnode_reset_profiles(data: LogosNodeResetProfilesRequest):
     if reset:
         await profile_sync.push_profiles(data.provider_id, reset)
     return {"provider_id": data.provider_id, "reset": reset, "shared_profiles": shared_profiles_enabled()}
+
+
+def _load_node_config(provider_id: int) -> Dict[str, Any] | None:
+    """The stored configuration of a node, or None when the node is unknown."""
+    with DBManager() as db:
+        if db.get_provider(provider_id) is None:
+            return None
+        return db.get_node_config(provider_id)
+
+
+def _require_admin_user(logos_key: str) -> int:
+    """The id of the Logos admin the key belongs to."""
+    with DBManager() as db:
+        require_logos_admin_key(logos_key, db)
+        return int(db.get_user_by_api_key(logos_key)["id"])
+
+
+async def _push_node_config(provider_id: int) -> None:
+    """Send a node's stored configuration to a worker that applies it."""
+    if not _main._logosnode_registry.supports_action(provider_id, SYNC_NODE_CONFIG_ACTION):
+        return
+    try:
+        config = await asyncio.to_thread(_load_node_config, provider_id)
+        await _main._logosnode_registry.send_command(
+            provider_id, SYNC_NODE_CONFIG_ACTION, params=config, timeout_seconds=30
+        )
+    except Exception:
+        # The worker keeps its current configuration until the next push.
+        logger.warning("Failed to push node config to provider %s", _resolve_provider_name(provider_id), exc_info=True)
+
+
+@router.post("/logosdb/providers/logosnode/node-config", tags=["logosnode"])
+async def logosnode_node_config(data: LogosNodeConfigRequest, request: Request):
+    """The configuration a worker starts with, before it starts any lane."""
+    _require_tls_request(request)
+    provider_id = int((await asyncio.to_thread(_logosnode_provider_for_key, data.shared_key))["id"])
+    return await asyncio.to_thread(_load_node_config, provider_id)
+
+
+@router.post("/logosdb/providers/logosnode/node-config/import", tags=["logosnode"])
+async def logosnode_node_config_import(data: LogosNodeConfigImportRequest, request: Request):
+    """Store a worker's YAML models once; later calls change nothing.
+
+    Stored as given, so calibration keys stay valid. Differences between a
+    model's capability and overrides are only reported.
+    """
+    _require_tls_request(request)
+    provider_id = int((await asyncio.to_thread(_logosnode_provider_for_key, data.shared_key))["id"])
+    errors = name_errors(data.entries)
+    if errors:
+        return admin_error_response(400, "; ".join(errors))
+    rows = [{**entry.model_dump(), "model_name": entry.model_name.strip()} for entry in data.entries]
+
+    def _import() -> bool:
+        with DBManager() as db:
+            if not db.claim_yaml_import(provider_id):
+                db.session.rollback()
+                return False
+            db.replace_node_config(provider_id, rows, 0, None, "yaml_import")
+            db.session.commit()
+            return True
+
+    imported = await asyncio.to_thread(_import)
+    warnings = conflict_warnings(data.entries) if imported else []
+    for warning in warnings:
+        logger.warning("Node config import for provider %s: %s", provider_id, warning)
+    return {"imported": imported, "warnings": warnings}
+
+
+@router.post("/logosdb/providers/logosnode/node-config/get", tags=["logosnode"])
+async def logosnode_node_config_get(data: LogosNodeConfigGetRequest):
+    """A node's configured models and revision."""
+    await asyncio.to_thread(_require_root_access, data.logos_key)
+    config = await asyncio.to_thread(_load_node_config, data.provider_id)
+    if config is None:
+        return admin_error_response(404, f"Provider {data.provider_id} not found")
+    return {"provider_id": data.provider_id, **config}
+
+
+@router.post("/logosdb/providers/logosnode/node-config/replace", tags=["logosnode"])
+async def logosnode_node_config_replace(data: LogosNodeConfigReplaceRequest):
+    """Replace a node's configured models.
+
+    expected_revision is the revision the admin edited; another save in the
+    meantime answers 409 with the current one.
+    """
+    admin_id = await asyncio.to_thread(_require_admin_user, data.logos_key)
+    errors = entry_errors(data.entries)
+    if errors:
+        return admin_error_response(400, "; ".join(errors))
+    rows = [{**entry.model_dump(), "model_name": entry.model_name.strip()} for entry in data.entries]
+
+    def _replace() -> tuple[str, int]:
+        with DBManager() as db:
+            if db.get_provider(data.provider_id) is None:
+                return "missing", 0
+            revision = db.replace_node_config(data.provider_id, rows, data.expected_revision, admin_id, "ui")
+            if revision is None:
+                db.session.rollback()
+                return "stale", db.get_node_config(data.provider_id)["revision"]
+            db.session.commit()
+            return "saved", revision
+
+    outcome, revision = await asyncio.to_thread(_replace)
+    if outcome == "missing":
+        return admin_error_response(404, f"Provider {data.provider_id} not found")
+    if outcome == "stale":
+        return admin_error_response(409, f"Configuration changed meanwhile (revision {revision}); reload it")
+    await _push_node_config(data.provider_id)
+    return {"provider_id": data.provider_id, "config_revision": revision}
