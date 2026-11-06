@@ -26,3 +26,31 @@ def test_the_same_value_in_both_places_and_engine_overrides_are_fine():
     entry = _entry({"tensor_parallel_size": 2}, {"tensor_parallel_size": 2, "quantization": "awq"})
     assert entry_errors([entry]) == []
     assert conflict_warnings([entry]) == []
+
+
+def test_blank_repeated_and_unknown_entries_are_each_named():
+    errors = entry_errors(
+        [
+            _entry(model_name=" "),
+            _entry({"tensor_parallel_size": 1}),
+            _entry({"gpu_devices": "0,1", "max_lanes": 2}, model_name="org/model "),
+        ]
+    )
+    assert errors == [
+        "model_name must not be blank",
+        "org/model: listed twice",
+        "org/model: capability key 'max_lanes' is not supported",
+    ]
+
+
+def test_capability_values_are_checked_against_their_expected_form():
+    entry = _entry(
+        {
+            "tensor_parallel_size": True,
+            "kv_cache_memory_bytes": "lots",
+            "gpu_devices": "0;1",
+            "base_residency_mb": 0,
+            "min_context_fraction": 1.5,
+        }
+    )
+    assert len(entry_errors([entry])) == 5

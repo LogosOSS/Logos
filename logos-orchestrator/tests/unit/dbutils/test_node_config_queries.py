@@ -44,3 +44,23 @@ def test_the_yaml_import_is_only_granted_once():
     assert db.claim_yaml_import(7) is False
     source = inspect.getsource(DBManager.claim_yaml_import)
     assert "yaml_imported_at IS NULL" in source and "NOT EXISTS" in source
+
+
+def test_an_unconfigured_node_reads_as_revision_zero_without_entries():
+    db = _db()
+    db.session.execute.return_value.fetchone.return_value = None
+    db.session.execute.return_value.fetchall.return_value = []
+    assert db.get_node_config(7) == {"revision": 0, "yaml_imported": False, "entries": []}
+
+
+def test_a_configured_node_reads_its_revision_and_models():
+    db = _db()
+    db.session.execute.return_value.fetchone.return_value = SimpleNamespace(config_revision=5, yaml_imported_at="t")
+    db.session.execute.return_value.fetchall.return_value = [
+        SimpleNamespace(model_name="org/a", capability={"tensor_parallel_size": 2}, overrides={})
+    ]
+    assert db.get_node_config(7) == {
+        "revision": 5,
+        "yaml_imported": True,
+        "entries": [{"model_name": "org/a", "capability": {"tensor_parallel_size": 2}, "overrides": {}}],
+    }
