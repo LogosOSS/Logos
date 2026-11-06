@@ -101,6 +101,20 @@ def _redact(cmd: list[str]) -> list[str]:
     return [scrub(c) for c in cmd]
 
 
+def _without_auto_maintenance(cmd: list[str]) -> list[str]:
+    """A git command that starts no background maintenance afterwards.
+
+    A fetch ends by detaching `git maintenance run --auto`, which in a shallow
+    checkout can rewrite .git/shallow while the next fetch of the preparation
+    reads it; that fetch then dies with "shallow file has changed since we
+    read it". The preparation runs its git commands back to back, so none of
+    them may leave such a process behind.
+    """
+    if cmd and cmd[0] == "git":
+        return ["git", "-c", "maintenance.auto=false", *cmd[1:]]
+    return cmd
+
+
 def run(
     cmd: list[str], *, cwd: Path | None = None, check: bool = True, quiet: bool = False
 ) -> subprocess.CompletedProcess:
@@ -109,7 +123,7 @@ def run(
     shown = _redact(cmd)
     if not quiet:
         log(f"$ {' '.join(shlex.quote(c) for c in shown)}")
-    process = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, timeout=1800)
+    process = subprocess.run(_without_auto_maintenance(cmd), cwd=cwd, text=True, capture_output=True, timeout=1800)
     if process.stdout and not quiet:
         print(process.stdout, end="", flush=True)
     if process.stderr:
