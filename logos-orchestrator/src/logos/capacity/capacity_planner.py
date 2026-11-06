@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from itertools import combinations
 from typing import Any, Callable, Dict, List, Optional
 
+from logos.asyncio_tasks import cancel_and_wait
 from logos.background_refresh import BackgroundRefreshedValue
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeRuntimeRegistry
@@ -1431,11 +1432,7 @@ class CapacityPlanner:
     async def stop(self) -> None:
         """Stop the planner."""
         if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_wait(self._task)
             logger.info("Capacity planner stopped")
         drains = list(getattr(self, "_demand_drain_tasks", {}).values())
         for task in drains:

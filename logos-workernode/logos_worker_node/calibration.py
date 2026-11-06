@@ -286,7 +286,9 @@ def _remove_failed_command(failed_path: Path, fingerprint: str) -> None:
     lines = failed_path.read_text(encoding="utf-8").splitlines()
     remaining = [ln for ln in lines if ln.strip() != fingerprint]
     if len(remaining) < len(lines):
-        failed_path.write_text("\n".join(remaining) + ("\n" if remaining else ""), encoding="utf-8")
+        # The path is fixed by the caller (calibration log dir + constant name);
+        # the file's own lines are only written back, never used as a path.
+        failed_path.write_text("\n".join(remaining) + ("\n" if remaining else ""), encoding="utf-8")  # NOSONAR
 
 
 # ---------------------------------------------------------------------------
@@ -2500,7 +2502,7 @@ def _calibrate_model_probe(
     tp = int(plan.get("tensor_parallel_size", 1))
     gpu_indices = parse_gpu_indices(gpu_devices)
     host = "127.0.0.1"
-    base_url = f"http://{host}:{port}"
+    base_url = f"http://{host}:{port}"  # NOSONAR - the probe talks to its own vLLM process on loopback
     log_path = log_dir / f"{model.replace('/', '__')}.log"
 
     partial = CalibrationResult(

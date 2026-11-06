@@ -3562,7 +3562,10 @@ class LaneManager:
             try:
                 await asyncio.shield(teardown)
             except asyncio.CancelledError:
+                # Cancelled again while tearing down: finish the teardown,
+                # then let this newer cancellation propagate.
                 await teardown
+                raise
             raise
         finally:
             self._finish_loading(lane_id)

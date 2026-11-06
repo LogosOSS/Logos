@@ -56,6 +56,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import controls, db, github, model_policy, priority
+from .asyncio_tasks import cancel_and_wait
 from .config import REVIEW_COMMENTS_FILE, settings
 from .conventions import for_task
 
@@ -510,13 +511,8 @@ class TriggerPoller:
 
     async def stop(self) -> None:
         self._stopping.set()
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        await cancel_and_wait(self._task)
+        self._task = None
 
     async def _loop(self) -> None:
         while not self._stopping.is_set():

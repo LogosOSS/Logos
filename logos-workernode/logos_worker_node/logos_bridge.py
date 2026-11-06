@@ -31,6 +31,7 @@ except Exception:  # noqa: BLE001
 
 from logos_worker_node import perf_trace as worker_perf
 from logos_worker_node import prometheus_metrics as prom
+from logos_worker_node.asyncio_tasks import cancel_and_wait, finish_shielded
 from logos_worker_node.gpu_slice import calibration_gpu_slice, parse_gpu_indices
 from logos_worker_node.lane_manager import _lane_id_from_config, _normalize_lane_id
 from logos_worker_node.metal import is_metal_backend
@@ -240,12 +241,7 @@ class LogosBridgeClient:
         self._stopping.set()
         task = self._task
         self._task = None
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        await cancel_and_wait(task)
         # No command is read any more. Shutdown, unlike a disconnect, ends the
         # lane commands still running before the lane manager cleans up. An
         # unload runs to its end: cancelled mid-exit, it would leave a process
@@ -315,15 +311,7 @@ class LogosBridgeClient:
                                 raw = raw.decode("utf-8", errors="replace")
                             await self._handle_message(ws, raw)
                     finally:
-                        heartbeat_task.cancel()
-                        status_task.cancel()
-                        vllm_metrics_task.cancel()
-                        event_task.cancel()
-                        for task in (heartbeat_task, status_task, vllm_metrics_task, event_task):
-                            try:
-                                await task
-                            except asyncio.CancelledError:
-                                pass
+                        await cancel_and_wait(heartbeat_task, status_task, vllm_metrics_task, event_task)
                         await self._cancel_command_tasks()
             except asyncio.CancelledError:
                 raise
@@ -789,17 +777,16 @@ class LogosBridgeClient:
 
         for task in tasks:
             task.cancel()
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._command_tasks.clear()
         for task in tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # noqa: BLE001
+            if not task.cancelled() and task.exception() is not None:
                 logger.debug(
                     "Bridge background command task failed during shutdown",
-                    exc_info=True,
+                    exc_info=task.exception(),
                 )
-        self._command_tasks.clear()
 
     def cancel_command(self, target_cmd_id: str) -> bool:
         """Cancel one in-flight command by its cmd_id.
@@ -2726,15 +2713,7 @@ class LogosBridgeClient:
             # while it waits for the lane lock. Own and await the shielded task
             # so command completion never leaves detached cleanup behind.
             cleanup = asyncio.create_task(self._cleanup_stream(lane_manager, lane_id, cmd_id, upstream))
-            cancelled = False
-            while not cleanup.done():
-                try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    cancelled = True
-            cleanup.result()
-            if cancelled:
-                raise asyncio.CancelledError
+            await finish_shielded(cleanup)
             if terminal_frame is not None:
                 await self._send_json(ws, terminal_frame)
 

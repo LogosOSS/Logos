@@ -434,8 +434,11 @@ async def _execute_lines(
             heartbeat_task = asyncio.ensure_future(_heartbeat())
             try:
                 await asyncio.gather(*worker_tasks)
-            except asyncio.CancelledError:
-                if lost.is_set():
+            except asyncio.CancelledError:  # NOSONAR - re-raised unless only the workers were cancelled
+                # A lost lease cancels the workers, which surfaces here; a
+                # cancellation of this run itself always propagates.
+                current = asyncio.current_task()
+                if lost.is_set() and not (current is not None and current.cancelling()):
                     logger.warning(
                         "Lost the lease on batch %s mid-run; another runner takes over", batch.get("upstream_id")
                     )

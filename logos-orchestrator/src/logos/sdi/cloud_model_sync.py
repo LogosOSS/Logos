@@ -33,6 +33,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from logos.asyncio_tasks import cancel_and_wait
 from logos.benchmarks.guidellm_runner import credential_transport_is_secure
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.types import cloud_auth_header, cloud_protocol_headers
@@ -254,14 +255,7 @@ class CloudModelSyncService:
 
     async def stop(self) -> None:
         for attr in ("_task", "_refresh_task"):
-            task = getattr(self, attr)
-            if task is None:
-                continue
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_wait(getattr(self, attr))
             setattr(self, attr, None)
 
     async def _loop(self) -> None:

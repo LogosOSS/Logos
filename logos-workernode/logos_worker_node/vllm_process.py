@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -85,6 +86,30 @@ GMU_AUTO_FLOOR = 0.5
 GMU_AUTO_CEILING = 0.95
 # vLLM's default when --gpu-memory-utilization is omitted (current engines).
 VLLM_DEFAULT_GMU = 0.9
+
+# Post-mortem logs of failed vLLM starts. Only ever used through _private_dir,
+# which keeps it a directory this user owns and nobody else can enter.
+FAILURE_LOG_DIR = Path("/tmp/logos-vllm-logs")  # NOSONAR - created 0700 and ownership-checked before every write
+
+
+def _private_dir(path: Path) -> Path:
+    """Create ``path`` as a directory only this user can enter, and refuse to use it otherwise.
+
+    A shared temporary directory lets anyone pre-create the name: a symlink, a
+    plain file or another user's directory there is rejected with ``OSError``
+    instead of being written through. An existing directory of this user that
+    others could write to may already hold planted symlinks and is rejected
+    too; one that others could only read or enter is narrowed to ``0700``.
+    """
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise OSError(f"{path} is not a directory owned by this user")
+    if info.st_mode & 0o022:
+        raise OSError(f"{path} is writable by other users")
+    if info.st_mode & 0o077:
+        path.chmod(0o700)
+    return path
 
 
 @dataclass(frozen=True)
@@ -2876,8 +2901,7 @@ class VllmProcessHandle:
         if not self._recent_logs:
             return
         try:
-            log_dir = Path("/tmp/logos-vllm-logs")
-            log_dir.mkdir(parents=True, exist_ok=True)
+            log_dir = _private_dir(FAILURE_LOG_DIR)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = log_dir / f"{self.lane_id}_{timestamp}_{reason}.log"
             path.write_text("\n".join(self._recent_logs), encoding="utf-8")

@@ -330,7 +330,7 @@ def calibrate_model_metal(
     model = plan["model"]
     _reset_calibration_log(log_dir, model)
     host = "127.0.0.1"
-    base_url = f"http://{host}:{port}"
+    base_url = f"http://{host}:{port}"  # NOSONAR - the probe talks to its own vLLM process on loopback
     log_path = log_dir / f"{model.replace('/', '__')}.log"
     # "model_kind" is an operator override (engines.vllm.model_overrides);
     # "_detected_model_kind" is the HF-precheck's auto-classification

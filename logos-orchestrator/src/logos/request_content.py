@@ -122,7 +122,7 @@ async def parse_audio_upload(request: Request) -> Dict[str, Any]:
         form = await limited_request.form(
             max_files=1,
             max_fields=64,
-            max_part_size=MAX_AUDIO_FORM_FIELD_BYTES,
+            max_part_size=MAX_AUDIO_FORM_FIELD_BYTES,  # NOSONAR - a Request.form() parameter of the pinned Starlette
         )
         return await _encode_form_data(form)
     except _MultipartRequestTooLarge as exc:

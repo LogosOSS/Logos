@@ -150,3 +150,12 @@ def test_every_process_of_a_probe_is_killed_whatever_its_command_line(proc_root)
     calibration._kill_stale_vllm_workers()
 
     assert killed == [800]
+
+
+def test_remove_failed_command_drops_only_that_fingerprint(tmp_path: Path) -> None:
+    failed = tmp_path / "failed_commands.txt"
+    failed.write_text("keep-a\ndrop\nkeep-b\n", encoding="utf-8")
+
+    calibration._remove_failed_command(failed, "drop")
+
+    assert failed.read_text(encoding="utf-8") == "keep-a\nkeep-b\n"

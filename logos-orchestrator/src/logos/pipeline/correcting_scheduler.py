@@ -274,7 +274,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         # matches the pre-existing equal-score queue pick.
         top_score = logosnode_candidates[0][3]
         tied = [s for s in logosnode_candidates if self._ranking_scores_tie(s[3], top_score)]
-        logosnode_candidate = random.choice(tied)
+        logosnode_candidate = random.choice(tied)  # NOSONAR - load-spreading tie-break, not a security decision
         if len(tied) > 1:
             tied_desc = ", ".join(
                 f"model={m} worker={self._logosnode.get_provider_name(p) or p} "
@@ -1068,7 +1068,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 # Pathological (all zero/negative); fall through to original order.
                 order.extend(remaining)
                 break
-            r = random.random() * total
+            r = random.random() * total  # NOSONAR - weighted scheduling order, not a security decision
             cum = 0.0
             picked = len(remaining) - 1  # default to last (covers float-edge cases)
             for idx, w in enumerate(weights):
