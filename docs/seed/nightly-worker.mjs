@@ -33,7 +33,7 @@ ws.addEventListener('open', () => {
       },
       lanes: models.map((model, index) => ({
         lane_id: `docs-lane-${index}`, model, backend: 'vllm', runtime_state: 'running', sleep_state: 'awake', loaded: true, sleeping: false,
-        lane_config: { vllm: true, vllm_config: { max_num_seqs: 16, max_num_batched_tokens: 4096 } },
+        lane_config: { vllm: true, vllm_config: { max_num_seqs: 20, max_num_batched_tokens: 4096 } },
       })),
     },
   }));

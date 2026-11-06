@@ -10,6 +10,7 @@ from logos.dbutils.dbmanager import DBManager, _init_engine
 from logos.maintenance_window import maintenance_node_limit
 
 LOCK_ID = 125500301
+MAX_RECOVERY_RESUMES = 2
 UNCHANGED = object()
 
 
@@ -511,10 +512,51 @@ def adoption_candidate(pair_id, search, report):
     return optimization.adoption_candidate(search, runs, report)
 
 
-def finish(pair_id, state, report, search=None):
+def selection_summary(pair_id, workload_id=None):
+    """Return bounded comparison diagnostics without request or response content."""
+    from logos.benchmarks.optimization import eligibility_issues, rate
+
+    with DBManager() as db:
+        runs = list(
+            db.session.execute(
+                text(
+                    "SELECT id, configuration, metrics, sample_size FROM model_provider_benchmarks "
+                    "WHERE model_provider_id = :pair ORDER BY id DESC LIMIT 100"
+                ),
+                {"pair": pair_id},
+            ).mappings()
+        )
+    by_id = {run["id"]: run for run in runs}
+    if not workload_id and runs:
+        workload_id = runs[0]["configuration"].get("workload", {}).get("id")
+    comparisons = []
+    for run in runs:
+        if not workload_id or run["configuration"].get("workload", {}).get("id") != workload_id:
+            continue
+        nightly = run["configuration"].get("nightly") or {}
+        baseline = by_id.get(nightly.get("baseline_id"))
+        issues = eligibility_issues(run, baseline) if baseline else ["No comparison baseline was recorded"]
+        comparisons.append(
+            {
+                "benchmark_id": run["id"],
+                "baseline_id": nightly.get("baseline_id"),
+                "throughput": rate(run),
+                "issues": issues,
+            }
+        )
+    observed = [row for row in comparisons if row["throughput"] is not None]
+    eligible = [row for row in observed if not row["issues"]]
+    return {
+        "best_observed": max(observed, key=lambda row: row["throughput"], default=None),
+        "best_eligible": max(eligible, key=lambda row: row["throughput"], default=None),
+        "comparisons": comparisons,
+    }
+
+
+def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
     """Commit restored state, the observed winner and its completion event together."""
     from logos.benchmarks.completion import result
-    from logos.benchmarks.optimization import eligible, select_state
+    from logos.benchmarks.optimization import eligibility_issues, select_state
 
     with DBManager() as db:
         row = (
@@ -530,6 +572,11 @@ def finish(pair_id, state, report, search=None):
             .mappings()
             .one()
         )
+        previous = row["optimizer"] or {}
+        session = dict(previous.get("nightly_session") or {})
+        same_night = session.get("date") == str(row["last_run_date"])
+        if not same_night:
+            session = {"date": str(row["last_run_date"]), "rounds": 0, "successful_configurations": 0}
         optimizer = None
         if search:
             ids = [item["benchmark_id"] for item in report if item.get("benchmark_id")]
@@ -547,12 +594,15 @@ def finish(pair_id, state, report, search=None):
                 else []
             )
             optimizer = select_state(search, runs, report)
-            optimizer["last_round_result"] = result(runs, report)
+            optimizer["last_round_result"] = result(runs, report) or (
+                previous.get("last_round_result", {}) if same_night else {}
+            )
             adopted = next((item for item in report if item.get("status") == "adopted"), None)
             if adopted:
                 if not row["enabled"]:
                     raise RuntimeError("Nightly schedule disabled before adoption committed")
                 optimizer["production_adoption"] = adopted
+                session["production_adoption"] = adopted
             baseline_id = next(
                 (
                     item.get("benchmark_id")
@@ -564,7 +614,10 @@ def finish(pair_id, state, report, search=None):
             baseline = next((run for run in runs if run["id"] == baseline_id), None)
             for run in runs:
                 comparison = dict(run["configuration"].get("nightly") or {})
-                comparison["eligible_for_selection"] = bool(baseline and eligible(run, baseline))
+                comparison["selection_issues"] = (
+                    eligibility_issues(run, baseline) if baseline else ["No comparison baseline was recorded"]
+                )
+                comparison["eligible_for_selection"] = not comparison["selection_issues"]
                 db.session.execute(
                     text(
                         "UPDATE model_provider_benchmarks SET configuration = "
@@ -573,13 +626,27 @@ def finish(pair_id, state, report, search=None):
                     {"id": run["id"], "nightly": json.dumps(comparison)},
                 )
         if row["last_run_date"] is not None and row["status"] in {"running", "preparing", "recovery_required"}:
-            optimizer = optimizer if optimizer is not None else dict(row["optimizer"] or {})
-            session = dict(optimizer.get("nightly_session") or {})
-            if session.get("date") != str(row["last_run_date"]):
-                session = {"date": str(row["last_run_date"]), "rounds": 0, "successful_configurations": 0}
+            if optimizer is None:
+                optimizer = dict(previous)
+                if not same_night:
+                    optimizer.pop("last_round_result", None)
             session["rounds"] += 1
             session["successful_configurations"] += sum(item.get("status") == "success" for item in report)
             optimizer["nightly_session"] = session
+        if state.startswith("interrupted") or state == "failed":
+            reason = next((item["reason"] for item in reversed(report) if item.get("reason")), None)
+            if reason:
+                session["interruption_reason"] = reason
+            elif state.startswith("interrupted"):
+                session["interruption_reason"] = "The previous execution ended before worker restoration was confirmed."
+        if state == "interrupted_recovered" and optimizer is not None:
+            if resume_after_recovery and row["enabled"]:
+                resumes = session.get("recovery_resumes", 0)
+                if resumes < MAX_RECOVERY_RESUMES:
+                    session["recovery_resumes"] = resumes + 1
+                    state = "continuing"
+                else:
+                    session["recovery_retry_limit_reached"] = True
         db.session.execute(
             text(
                 "UPDATE nightly_benchmarks SET status = :state, report = CAST(:report AS jsonb), recovery = NULL, "
@@ -607,7 +674,10 @@ def finish(pair_id, state, report, search=None):
                 "rounds": event_optimizer.get("nightly_session", {}).get("rounds", 1),
                 "reference_id": event_optimizer.get("reference_id"),
                 "best_benchmark_id": event_optimizer.get("best_benchmark_id"),
-                "production_adoption": event_optimizer.get("production_adoption"),
+                "production_adoption": session.get("production_adoption"),
+                "interruption_reason": session.get("interruption_reason"),
+                "recovery_resumes": session.get("recovery_resumes", 0),
+                "recovery_retry_limit_reached": session.get("recovery_retry_limit_reached", False),
                 "benchmark_id": None,
                 **event_optimizer.get("last_round_result", {}),
             }
@@ -642,7 +712,7 @@ def finalize_continuations(now):
 
 async def deliver_completion_events():
     """Retry persisted events; the application server deduplicates each event key."""
-    from logos.benchmarks.completion import description
+    from logos.benchmarks.completion import notification_message
     from logos.notifications import emit_notification
 
     with DBManager() as db:
@@ -656,17 +726,11 @@ async def deliver_completion_events():
         )
     for event in events:
         payload = event["payload"]
+        title, body = notification_message(payload)
         delivered = await emit_notification(
             "benchmark_result_ready",
-            "Nightly benchmark finished",
-            f"{payload['provider_name']}: {payload['successful_configurations']} successful configurations. "
-            f"Status: {payload['status']}. "
-            + (
-                f"Production uses improved configuration #{payload['production_adoption']['benchmark_id']}."
-                if payload.get("production_adoption")
-                else "Production settings restored."
-            )
-            + description(payload),
+            title,
+            body,
             payload,
             [{"kind": "role", "role": "logos_admin"}],
             event_key=event["event_id"],

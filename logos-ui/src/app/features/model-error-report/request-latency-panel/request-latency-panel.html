@@ -1,3 +1,22 @@
+@if (!loading() && charts().length) {
+  <section class="latency-charts" aria-label="Request timing measurements">
+    <p>p50: half of requests are at or below this time. p95: 95% are at or below it. Percentiles are shown separately and must not be added.</p>
+    <div class="chart-legend"><span class="p50">p50</span><span class="p95">p95</span></div>
+    @for (chart of charts(); track chart.row.modelId + '|' + chart.row.providerId + '|' + chart.row.reasoningEffort) {
+      <article class="latency-chart">
+        <h3>{{ chart.row.providerName }} · {{ chart.row.reasoningEffort || 'default effort' }}</h3>
+        <p>{{ chart.row.requestCount }} requests · {{ chart.row.ttftSamples }} first-token measurements</p>
+        @for (metric of chart.metrics; track metric.label) {
+          <div class="timing-metric">
+            <strong>{{ metric.label }}</strong>
+            <div class="timing-row"><span>p50</span><div class="bar-track"><div class="bar p50" [style.width.%]="metric.p50Width"></div></div><span>{{ formatDelay(metric.p50) }}</span></div>
+            <div class="timing-row"><span>p95</span><div class="bar-track"><div class="bar p95" [style.width.%]="metric.p95Width"></div></div><span>{{ formatDelay(metric.p95) }}</span></div>
+          </div>
+        }
+      </article>
+    }
+  </section>
+}
 <app-data-table
   [columns]="columns"
   [gridCols]="gridCols"

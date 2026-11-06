@@ -118,43 +118,63 @@ def rate(run):
     return value
 
 
-def eligible(candidate, baseline):
-    """Require the same tasks, complete answers, similar output lengths and bounded tail latency."""
+def eligibility_issues(candidate, baseline):
+    """Explain the response, workload and latency checks used for automatic adoption."""
+    issues = []
     if rate(candidate) is None or rate(baseline) is None:
-        return False
+        issues.append("A complete successful throughput measurement is missing")
     candidate_config, base_config = candidate["configuration"], baseline["configuration"]
     if candidate_config.get("nightly", {}).get("series_key") != base_config.get("nightly", {}).get("series_key"):
-        return False
+        issues.append("Measurement environments differ")
     if candidate_config.get("workload", {}).get("id") != base_config.get("workload", {}).get("id"):
-        return False
-    base_samples = {row["source_log_id"]: row for row in baseline["metrics"].get("replay_samples", [])}
+        issues.append("Request datasets differ")
+    base_rows = baseline["metrics"].get("replay_samples", [])
     samples = candidate["metrics"].get("replay_samples", [])
-    if len(base_samples) != baseline["sample_size"] or len(samples) != len(base_samples):
-        return False
-    if {row["source_log_id"] for row in samples} != set(base_samples):
-        return False
-    for row in samples:
-        original = base_samples[row["source_log_id"]]
-        if row["finish_reason"] != original["finish_reason"] or row["finish_reason"] not in {"stop", "tool_calls"}:
-            return False
-        if row.get("native_finish_reason") != original.get("native_finish_reason"):
-            return False
-        tokens, before = row["output_tokens"], original["output_tokens"]
-        if not (0.8 * before <= tokens <= 1.2 * before):
-            return False
+    base_samples = {row["source_log_id"]: row for row in base_rows}
+    if (
+        len(base_samples) != baseline["sample_size"]
+        or len(samples) != len(base_samples)
+        or {row["source_log_id"] for row in samples} != set(base_samples)
+    ):
+        issues.append("Per-request comparison data is missing or the request sets differ")
+    else:
+        finishes, native, lengths = 0, 0, 0
+        for row in samples:
+            original = base_samples[row["source_log_id"]]
+            if row["finish_reason"] != original["finish_reason"] or row["finish_reason"] not in {"stop", "tool_calls"}:
+                finishes += 1
+            if row.get("native_finish_reason") != original.get("native_finish_reason"):
+                native += 1
+            if not (0.8 * original["output_tokens"] <= row["output_tokens"] <= 1.2 * original["output_tokens"]):
+                lengths += 1
+        if finishes:
+            issues.append(f"{finishes} answers have a different or incomplete finish reason")
+        if native:
+            issues.append(f"{native} answers have a different native finish reason")
+        if lengths:
+            issues.append(f"{lengths} answer lengths differ by more than 20% from baseline")
 
     def p95(run):
         return run["metrics"].get("request_latency_ms", {}).get("successful", {}).get("percentiles", {}).get("p95")
 
     before, after = p95(baseline), p95(candidate)
-    return (
+    if not (
         type(before) in (int, float)
         and type(after) in (int, float)
         and math.isfinite(before)
         and math.isfinite(after)
         and before > 0
-        and 0 < after <= before * 1.1
-    )
+        and after > 0
+    ):
+        issues.append("Comparable p95 request latency is missing")
+    elif after > before * 1.1:
+        issues.append(f"p95 latency increased by {(after / before - 1) * 100:.1f}% (maximum 10%)")
+    return issues
+
+
+def eligible(candidate, baseline):
+    """Require the same tasks, complete answers, similar output lengths and bounded tail latency."""
+    return not eligibility_issues(candidate, baseline)
 
 
 def select_state(search, runs, report):

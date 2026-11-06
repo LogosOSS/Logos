@@ -517,26 +517,16 @@
           <div class="performance-header">
             <div>
               <h2>Performance</h2>
-              <p>Run a benchmark, then compare results across provider configurations.</p>
             </div>
-            <span class="performance-live">
-              <i class="pi pi-circle-fill" aria-hidden="true"></i>
-              Updates automatically
-            </span>
+            <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()" [attr.aria-expanded]="performanceView() === 'run'" aria-controls="benchmark-setup">Run benchmark</button>
           </div>
-
-          <nav id="performance-view-controls" class="performance-views" aria-label="Performance views">
-            <button type="button" [attr.aria-pressed]="performanceView() === 'results'"
-              (click)="performanceView.set('results')">Results</button>
-            <button type="button" [attr.aria-pressed]="performanceView() === 'run'"
-              (click)="performanceView.set('run')">Run benchmark</button>
-          </nav>
 
           @for (pair of benchmarkPairs(); track pair.model_provider_id) {
             @if (latestBenchmarkRun(pair.model_provider_id); as run) {
               @if (isBenchmarkActive(run) || run.status === 'failed') {
                 <section class="benchmark-current-run" [attr.aria-label]="'Benchmark status on ' + pair.provider_name">
-                  <strong>{{ pair.provider_name }}</strong>
+                  <div class="benchmark-current-run__content">
+                  <h3>{{ pair.provider_name }}</h3>
                   <div class="benchmark-pair__state">
                         <span class="run-status" [ngClass]="'run-status--' + run.status">
                           @if (isBenchmarkActive(run)) {
@@ -551,6 +541,9 @@
                         @if (run.status === 'failed' && run.error_message) {
                           <app-benchmark-run-failure [run]="run" />
                         }
+
+                  </div>
+                  </div>
                         @if (isBenchmarkActive(run)) {
                           <button
                             class="benchmark-cancel-button"
@@ -562,17 +555,61 @@
                             {{ benchmarkCancellingJobId() === run.id ? 'Cancelling…' : 'Stop benchmark' }}
                           </button>
                         }
-                  </div>
                 </section>
               }
             }
           }
 
+          <div class="performance-overview">
+          <section class="deployment-overview" aria-label="Currently deployed">
+            <h3>Currently deployed</h3>
+            @for (pair of deployedPairs(); track pair.model_provider_id) {
+              <app-deployed-configuration [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [runs]="performance()" />
+            } @empty { <p>No local worker configurations are available for this model.</p> }
+          </section>
+            <app-benchmark-results [runs]="performance()" [showHistory]="false" />
+          </div>
           @if (benchmarkStartError(); as error) {
             <p class="benchmark-runner__error" role="alert">{{ error }}</p>
           }
 
-          <div [hidden]="performanceView() !== 'run'">
+          <div class="performance-results">
+          @if (performanceLoading()) {
+
+            <div class="performance-message">Loading performance…</div>
+
+          } @else if (performanceError()) {
+
+            <app-error-message
+              variant="banner"
+              message="Failed to load model performance."
+            />
+
+          } @else if (performance().length === 0) {
+
+            <div class="empty-state">
+              <h2>No benchmark results available</h2>
+              @if (linkedBenchmarkId(); as benchmarkId) { <p>Benchmark #{{ benchmarkId }} is no longer available.</p> }
+              <p>Run a benchmark to measure throughput and response times.</p>
+              <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()">Configure a benchmark</button>
+            </div>
+
+          } @else {
+
+            @if (benchmarkDeleteError(); as error) {
+              <app-error-message variant="banner" [message]="error" />
+            }
+
+            <app-benchmark-results [runs]="performance()" [selectedRunId]="linkedBenchmarkId()" [showProgress]="false" />
+
+
+
+          }
+
+          </div>
+
+          <details id="benchmark-setup" class="performance-detail-section" [hidden]="performanceView() !== 'run'" [open]="performanceView() === 'run'" (toggle)="performanceView.set($any($event.target).open ? 'run' : 'results')">
+          <summary>Benchmark setup &amp; nightly automation</summary>
           @for (pair of benchmarkPairs(); track pair.model_provider_id) {
             @if (pair.provider_type === 'logosnode') {
               <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [modelName]="model.name" />
@@ -655,40 +692,49 @@
             <div class="empty-state"><h3>No provider available</h3><p>Add a provider for this model to run a benchmark.</p></div>
           }
 
+          </details>
+
+          <details class="performance-detail-section" [open]="performanceView() === 'measurements'">
+            <summary>Request measurements</summary>
+          <div class="delays">
+            <div class="delays__header">
+              <div>
+                  <p class="delays__subtitle">Request timings by provider and reasoning effort. Prompt and response content are excluded.</p>
+              </div>
+              <app-time-range-bar
+                [preset]="delayPreset()"
+                [offset]="delayOffset()"
+                (presetChange)="delayPreset.set($event)"
+                (offsetChange)="delayOffset.set($event)"
+              />
+              <button
+                type="button"
+                class="btn-copy-log"
+                aria-label="Refresh request measurements"
+                (click)="refreshDelays()"
+              >
+                <i class="pi pi-refresh" aria-hidden="true"></i> Refresh
+              </button>
+            </div>
+            @if (modelId() !== null) {
+              <app-request-latency-panel
+                [start]="delayWindow().start"
+                [end]="delayWindow().end"
+                [scope]="delayScope()"
+                [refresh]="delayRefresh()"
+              />
+            }
           </div>
 
-          <div [hidden]="performanceView() !== 'results'">
-          @if (performanceLoading()) {
+          </details>
 
-            <div class="performance-message">Loading performance…</div>
-
-          } @else if (performanceError()) {
-
-            <app-error-message
-              variant="banner"
-              message="Failed to load model performance."
-            />
-
-          } @else if (performance().length === 0) {
-
-            <div class="empty-state">
-              <h2>No benchmark results available</h2>
-              @if (linkedBenchmarkId(); as benchmarkId) { <p>Benchmark #{{ benchmarkId }} is no longer available.</p> }
-              <p>Run a benchmark to measure throughput and response times.</p>
-              <button type="button" class="benchmark-run-button" (click)="performanceView.set('run')">Configure a benchmark</button>
-            </div>
-
-          } @else {
-
-            @if (benchmarkDeleteError(); as error) {
-              <app-error-message variant="banner" [message]="error" />
-            }
-
-            <app-benchmark-results [runs]="performance()" [selectedRunId]="linkedBenchmarkId()" />
-            <details class="performance-detail-section" name="performance-analysis"><summary>Charts and comparison</summary>
+          <details class="performance-detail-section performance-advanced">
+            <summary>More analysis &amp; details</summary>
+            <div class="performance-advanced__content">
+<details class="performance-analysis-item" name="performance-analysis"><summary>Charts and comparison</summary>
               <app-benchmark-comparison [runs]="performance()" />
             </details>
-            <details class="performance-detail-section" name="performance-analysis"><summary>Run details and saved configurations</summary>
+<details class="performance-analysis-item" name="performance-analysis"><summary>Run details and saved configurations</summary>
 
             <div class="performance-list">
 
@@ -840,12 +886,7 @@
 
             </div>
             </details>
-
-          }
-
-          </div>
-
-          <details class="performance-glossary" name="performance-analysis">
+<details class="performance-analysis-item performance-glossary" name="performance-analysis">
             <summary><span>Glossary &amp; abbreviations</span><small>Metrics and serving parameters</small></summary>
             <div class="glossary-sections">
               <section><h4>Metrics</h4><dl class="glossary-grid">
@@ -883,47 +924,11 @@
               <div><dt><code>hf_overrides</code></dt><dd>Hugging Face configuration overrides.</dd></div>
             </dl></details>
           </details>
-          </div>
-
-        }
-
-        <!-- Delays -->
-        @case ('delays') {
-
-          <div class="delays">
-            <div class="delays__header">
-              <div>
-                <h2 class="delays__title">Request delays</h2>
-                <p class="delays__subtitle">
-                  Where the time of a request goes, per provider and reasoning effort: the wait inside
-                  Logos before the provider call (key lookup, rate limit, budget check, scheduling), the
-                  provider time, and the time to the first token. For local models the effort is the one
-                  Logos sent after mapping it onto the levels the model supports.
-                </p>
-              </div>
-              <app-time-range-bar
-                [preset]="delayPreset()"
-                [offset]="delayOffset()"
-                (presetChange)="delayPreset.set($event)"
-                (offsetChange)="delayOffset.set($event)"
-              />
-              <button
-                type="button"
-                class="btn-copy-log"
-                aria-label="Refresh request delays"
-                (click)="refreshDelays()"
-              >
-                <i class="pi pi-refresh" aria-hidden="true"></i> Refresh
-              </button>
             </div>
-            @if (modelId() !== null) {
-              <app-request-latency-panel
-                [start]="delayWindow().start"
-                [end]="delayWindow().end"
-                [scope]="delayScope()"
-                [refresh]="delayRefresh()"
-              />
-            }
+          </details>
+
+
+
           </div>
 
         }

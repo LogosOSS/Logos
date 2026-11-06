@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, effect, inject, input, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal } from '@angular/core';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table';
 import { StatisticsService } from '../../statistics/services/statistics.service';
 import {
@@ -59,6 +59,18 @@ export class RequestLatencyPanel {
   readonly rows = signal<RequestLatencyRow[]>([]);
   readonly loading = signal(true);
   readonly failed = signal(false);
+  readonly charts = computed(() => this.rows().map(row => {
+    const metrics = [
+      { label: 'Logos wait', p50: row.queueP50Ms, p95: row.queueP95Ms },
+      { label: 'Provider time', p50: row.upstreamP50Ms, p95: row.upstreamP95Ms },
+      { label: 'Time to first token', p50: row.ttftP50Ms, p95: row.ttftP95Ms },
+    ];
+    const valid = (value: number | null) => value !== null && Number.isFinite(value) && value >= 0;
+    const maximum = Math.max(1, ...metrics.flatMap(metric => [metric.p50, metric.p95]).filter(valid) as number[]);
+    return { row, metrics: metrics.map(metric => ({ ...metric,
+      p50Width: valid(metric.p50) ? metric.p50! / maximum * 100 : 0,
+      p95Width: valid(metric.p95) ? metric.p95! / maximum * 100 : 0 })) };
+  }));
 
   // The panel sits in one model's details, so it has no model column.
   readonly columns = [

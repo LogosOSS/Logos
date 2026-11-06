@@ -39,6 +39,11 @@ describe('Benchmark runner', () => {
     const fetch = vi.spyOn(component, 'fetchModel').mockResolvedValue();
     await component.ngOnInit();
     expect(component.activeTab()).toBe('access');
+    query.next(convertToParamMap({ tab: 'delays' }));
+    expect(component.activeTab()).toBe('performance');
+    expect(component.performanceView()).toBe('measurements');
+    query.next(convertToParamMap({ tab: 'improvement' }));
+    expect(component.activeTab()).toBe('performance');
     query.next(convertToParamMap({ tab: 'performance', benchmark: '115' }));
     expect(component.linkedBenchmarkId()).toBe(115);
     expect(component.performanceView()).toBe('results');
@@ -135,14 +140,23 @@ describe('Benchmark runner', () => {
   });
 
   it.each([
-    ['reconfiguring_worker', 'Applying vLLM settings on hochbruegge · model may restart'],
-    ['waiting_for_model', 'Waiting for the model on hochbruegge to become ready'],
+    ['reconfiguring_worker', 'Applying vLLM settings · model may restart'],
+    ['waiting_for_model', 'Waiting for model readiness'],
   ])('shows the %s preparation phase', (stage, expected) => {
     expect(component.benchmarkStatusLabel({
       ...run,
       request: { ...run.request, provider_name: 'hochbruegge' },
       result: { stage },
     })).toBe(expected);
+  });
+
+  it('does not present all started requests as completed', () => {
+    expect(component.benchmarkStatusLabel({ ...run,
+      result: { stage: 'benchmarking', started_samples: 10, total_samples: 10 },
+    })).toContain('10/10 requests started');
+    expect(component.benchmarkStatusLabel({ ...run,
+      result: { stage: 'benchmarking', started_samples: 10, completed_samples: 6, total_samples: 10 },
+    })).toContain('6/10 requests completed');
   });
 
   it('blocks repeated cancellation while cancellation is pending', async () => {

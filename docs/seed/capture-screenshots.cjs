@@ -2,8 +2,7 @@
 /*
  * Captures the committed documentation screenshots at 2x pixel density
  * (1440×900 CSS px viewport, 2880 px wide PNGs) from the screenshots stack.
- * The shot list follows the shot matrix in docs/AGENTS.md, plus the
- * benchmark images in static/img/benchmarks/.
+ * The shot list follows the shot matrix in docs/AGENTS.md.
  *
  * Prerequisites: the screenshots stack and `ng serve` on :4300 (docs/AGENTS.md,
  * "Stack"), the seed and the request workload example applied, and
@@ -17,8 +16,8 @@
  * Without arguments, shots marked `needs` are left out: the seed does not
  * create their example state, and the committed PNG stays in place.
  * OUT_DIR writes the PNGs to another folder instead of overwriting static/img/.
- * The nightly shots disable, enable and disable the schedule of
- * llama-3.1-8b-instruct on Docs Local Worker; the schedule is disabled at the end.
+ * The nightly shots change the schedule of llama-3.1-8b-instruct on Docs Local
+ * Worker. Use only the isolated documentation stack.
  */
 const { chromium } = require("playwright");
 const { execFileSync } = require("node:child_process");
@@ -101,7 +100,7 @@ async function settle(page, extra = 1500) {
           ...document.querySelectorAll(
             '[class*="skeleton"], app-stats-skeleton, .pi-spinner, .performance-message',
           ),
-        ].some((e) => e.getBoundingClientRect().height > 0),
+        ].some((e) => !e.closest(".benchmark-current-run") && e.getBoundingClientRect().height > 0),
       null,
       { timeout: 30000 },
     )
@@ -142,7 +141,9 @@ async function unlock(page) {
     if (main) {
       main.querySelectorAll("*").forEach((n) => {
         const cs = getComputedStyle(n);
-        if (cs.overflowY === "auto" || cs.overflowY === "scroll") {
+        const scrollsVertically = (cs.overflowY === "auto" || cs.overflowY === "scroll")
+          && n.scrollHeight > n.clientHeight;
+        if (scrollsVertically && n.scrollWidth <= n.clientWidth) {
           n.style.setProperty("overflow", "visible", "important");
           n.style.setProperty("height", "auto", "important");
           n.style.setProperty("max-height", "none", "important");
@@ -192,7 +193,7 @@ async function setNightly(page, enabled) {
 async function performance(page, ids, view, query = "") {
   await page.goto(`${BASE}/models/${ids.model}/details?tab=performance${query}`);
   await settle(page);
-  await button(page, view).click();
+  if (view) await button(page, view).click();
   await settle(page, 800);
 }
 
@@ -206,13 +207,21 @@ async function runView(page, ids, { nightly, open = [] }) {
   await page.waitForTimeout(600);
 }
 
-async function resultsView(page, ids, open, query = "") {
-  await performance(page, ids, "Results", query);
-  for (const text of ["Nightly progress", "Benchmark runs", "Charts and comparison", "Run details and saved configurations", "Glossary & abbreviations"]) {
-    await details(page, text, false).catch(() => {});
-  }
-  for (const text of open) await details(page, text, true);
-  await page.waitForTimeout(800);
+async function resultsView(page, ids, sections = [], query = "") {
+  await performance(page, ids, null, query);
+  for (const section of sections) await details(page, section);
+}
+
+async function analysisView(page, ids, section) {
+  await resultsView(page, ids, ["More analysis & details", section]);
+}
+
+async function selectSavedDataset(page) {
+  const dataset = page.getByLabel("Input dataset", { exact: true });
+  const value = await dataset.evaluate((select) => [...select.options].find((option) => option.value)?.value);
+  if (!value) throw new Error("No saved request dataset is available");
+  await dataset.selectOption(value);
+  await settle(page, 600);
 }
 
 async function teamTab(page, ids, label) {
@@ -255,12 +264,11 @@ const SHOTS = [
   {
     file: "roles/logos-admin-benchmark-notification.png",
     user: ADMIN,
-    needs: "a notification whose payload has benchmark_id (request-workload-example.py leaves it out)",
     full: true,
     go: async (p, ids) => {
-      await resultsView(p, ids, ["Nightly progress", "Benchmark runs"]);
+      await resultsView(p, ids);
       await p.locator('button[aria-label*="otification"]').first().click();
-      await p.waitForTimeout(1500);
+      await p.getByRole("link", { name: /View benchmark #/ }).first().waitFor();
     },
     // Later shots should not show the unread badge.
     after: (p) => p.getByText("Mark all as read").first().evaluate((b) => b.click()),
@@ -304,43 +312,42 @@ const SHOTS = [
     full: true,
     needs: "an owner-edited diagram with a differing agent update (Edited / Agent update / Keep mine)", go: (p, ids) => teamTab(p, ids, "Workflows") },
 
-  // Model performance: Results view
+  // Model performance: overview, results and analysis
   {
     file: "roles/logos-admin-nightly-results.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => resultsView(p, ids, ["Nightly progress", "Benchmark runs"]),
+    go: (p, ids) => resultsView(p, ids),
   },
   {
     file: "roles/logos-admin-benchmark-linked-result.png",
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await resultsView(p, ids, ["Nightly progress", "Benchmark runs"], `&benchmark=${ids.linkedBenchmark}`);
-      const more = p.getByRole("button", { name: /^Show all \d+ runs$/ });
-      if (await more.count()) await more.click();
+      await resultsView(p, ids, [], `&benchmark=${ids.linkedBenchmark}`);
+      await p.getByRole("region", { name: "Selected benchmark result" }).waitFor();
     },
   },
   {
     file: "roles/logos-admin-benchmark-comparison.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => resultsView(p, ids, ["Benchmark runs", "Charts and comparison"]),
+    go: (p, ids) => analysisView(p, ids, "Charts and comparison"),
   },
   {
     file: "roles/logos-admin-benchmark-configuration.png",
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await resultsView(p, ids, ["Benchmark runs", "Run details and saved configurations"]);
-      await details(p, "Configuration");
+      await analysisView(p, ids, "Run details and saved configurations");
+      await p.locator(".benchmark-configuration > summary").first().click();
     },
   },
   {
     file: "roles/logos-admin-benchmark-glossary.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => resultsView(p, ids, ["Benchmark runs", "Glossary & abbreviations"]),
+    go: (p, ids) => analysisView(p, ids, "Glossary & abbreviations"),
   },
   // Model performance: Run benchmark view and the nightly schedule
   {
@@ -348,17 +355,17 @@ const SHOTS = [
     user: ADMIN,
     full: true,
     go: (p, ids) =>
-      runView(p, ids, { nightly: false, open: ["Schedule and test plan", "Glossary & abbreviations"] }),
+      runView(p, ids, { nightly: true, open: ["Schedule and test plan"] }),
+    after: (p) => setNightly(p, false),
   },
   {
     file: "roles/logos-admin-nightly-workload.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) =>
-      runView(p, ids, {
-        nightly: false,
-        open: ["Request workload", "Schedule and test plan", "Glossary & abbreviations"],
-      }),
+    go: async (p, ids) => {
+      await runView(p, ids, { nightly: false, open: ["Request workload"] });
+      await details(p, "Create a fixed dataset from FULL request logs");
+    },
   },
   {
     file: "roles/logos-admin-nightly-enable.png",
@@ -367,12 +374,11 @@ const SHOTS = [
     go: async (p, ids) => {
       await runView(p, ids, {
         nightly: false,
-        open: ["Request workload", "Schedule and test plan", "Glossary & abbreviations"],
+        open: ["Schedule and test plan"],
       });
       await p.getByRole("button", { name: "Enable nightly runs…" }).click();
       await p.waitForTimeout(800);
     },
-    after: (p) => button(p, "Enable nightly runs").evaluate((b) => b.click()),
   },
   {
     file: "roles/logos-admin-nightly-disable.png",
@@ -381,12 +387,15 @@ const SHOTS = [
     go: async (p, ids) => {
       await runView(p, ids, {
         nightly: true,
-        open: ["Request workload", "Schedule and test plan", "Glossary & abbreviations"],
+        open: ["Schedule and test plan"],
       });
       await p.getByRole("button", { name: "Disable nightly runs…" }).click();
       await p.waitForTimeout(800);
     },
-    after: (p) => button(p, "Cancel").evaluate((b) => b.click()),
+    after: async (p) => {
+      await button(p, "Cancel").click();
+      await setNightly(p, false);
+    },
   },
   {
     file: "roles/logos-admin-benchmark-saved-requests.png",
@@ -394,10 +403,7 @@ const SHOTS = [
     full: true,
     go: async (p, ids) => {
       await runView(p, ids, { nightly: false, open: ["Dataset and settings"] });
-      const dataset = p.locator('select[aria-label="Input dataset"]');
-      const value = await dataset.evaluate((s) => [...s.options].find((o) => /requests/.test(o.textContent))?.value);
-      await dataset.selectOption(value);
-      await settle(p, 600);
+      await selectSavedDataset(p);
       await p.locator(".benchmark-settings-panel select").filter({ has: p.locator('option[value="concurrent"]') }).first().selectOption("concurrent");
       await p.getByLabel("Concurrent requests", { exact: true }).fill("4");
       await p.locator("body").click({ position: { x: 5, y: 890 } });
@@ -410,10 +416,7 @@ const SHOTS = [
     full: true,
     go: async (p, ids) => {
       await runView(p, ids, { nightly: true, open: ["Dataset and settings"] });
-      const dataset = p.locator('select[aria-label="Input dataset"]');
-      const value = await dataset.evaluate((s) => [...s.options].find((o) => /requests/.test(o.textContent))?.value);
-      await dataset.selectOption(value);
-      await settle(p, 600);
+      await selectSavedDataset(p);
       await details(p, "Dataset and settings", false);
       await details(p, "Repeat or compare settings");
       await p.getByLabel("Run a batch").check();
@@ -428,48 +431,59 @@ const SHOTS = [
       }
       await details(p, "View run plan & fixed settings");
     },
+    after: (p) => setNightly(p, false),
   },
   {
-    file: "benchmarks/performance-desktop.png",
-    user: ADMIN,
-    full: true,
-    go: (p, ids) => runView(p, ids, { nightly: true }),
-  },
-  {
-    file: "benchmarks/confirmation-desktop.png",
+    file: "roles/logos-admin-benchmark-confirmation.png",
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await runView(p, ids, { nightly: true });
+      await runView(p, ids, { nightly: false });
       await button(p, "Review benchmark").click();
-      await p.waitForTimeout(800);
     },
     after: (p) => button(p, "Cancel").evaluate((b) => b.click()),
   },
   {
-    file: "benchmarks/gpu-limits-desktop.png",
+    file: "roles/logos-admin-benchmark-worker-settings.png",
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await runView(p, ids, { nightly: true, open: ["Dataset and settings"] });
+      await runView(p, ids, { nightly: false, open: ["Dataset and settings"] });
       await details(p, "vLLM settings for the next run");
-      await settle(p, 800);
     },
   },
   {
-    file: "benchmarks/gpu-limits-dark-desktop.png",
+    file: "roles/logos-admin-deployed-configuration.png",
     user: ADMIN,
-    dark: true,
     full: true,
+    go: (p, ids) => resultsView(p, ids, ["Configuration & selection details"]),
+  },
+  {
+    file: "roles/logos-admin-model-request-measurements.png",
+    user: ADMIN,
+    full: true,
+    go: (p, ids) => resultsView(p, ids, ["Request measurements"]),
+  },
+  {
+    file: "roles/logos-admin-benchmark-status.png",
+    user: ADMIN,
+    full: true,
+    needs: "the illustrative running job from LOGOS_DOCS_ACTIVE_BENCHMARK=true",
     go: async (p, ids) => {
-      await runView(p, ids, { nightly: true, open: ["Dataset and settings"] });
-      await details(p, "vLLM settings for the next run");
-      await settle(p, 800);
+      await resultsView(p, ids);
+      await p.locator(".benchmark-current-run").waitFor();
     },
-    after: async (p, ids) => {
-      await performance(p, ids, "Run benchmark");
-      await setNightly(p, false);
+  },
+  {
+    file: "roles/logos-admin-nightly-automatic-source.png",
+    user: ADMIN,
+    full: true,
+    needs: "LOGOS_NIGHTLY_REQUEST_USERNAME in the documentation orchestrator",
+    go: async (p, ids) => {
+      await runView(p, ids, { nightly: true });
+      await p.getByText(/Latest \d+ successful FULL requests/).waitFor();
     },
+    after: (p) => setNightly(p, false),
   },
 
   // App Admin

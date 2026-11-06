@@ -328,7 +328,14 @@ class NightlyScheduler:
                     return False
                 store.finish_recovery_jobs(jobs)
                 await self.settle(pair_id, recovery, row["report"])
-                store.finish(pair_id, "interrupted_recovered", row["report"], recovery.get("search"))
+                now = local_now()
+                store.finish(
+                    pair_id,
+                    "interrupted_recovered",
+                    row["report"],
+                    recovery.get("search"),
+                    resume_after_recovery=row.get("last_run_date") == now.date() and can_start(now),
+                )
                 benchmark_reservations.release(-pair_id)
                 return True
             finally:
@@ -480,6 +487,13 @@ class NightlyScheduler:
                             "parameters": settings.serving_overrides.model_dump(exclude_none=True),
                         }
                         report.append(outcome)
+                        if search:
+                            adoption = store.adoption_candidate(pair_id, search, report)
+                            if adoption:
+                                validate_worker_overrides(
+                                    ServingOverrides(**adoption["parameters"]), worker_limits(snapshot, model)
+                                )
+                                recovery["adoption"] = adoption
                         store.save(pair_id, "running", report, recovery)
                         break
                     except NightlyStopped as exc:

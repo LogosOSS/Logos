@@ -72,7 +72,9 @@ def scheduler(monkeypatch):
     monkeypatch.setattr(
         module.store,
         "finish",
-        lambda pair, state, report, search=None: service.saved.append((pair, state, report, None)),
+        MagicMock(
+            side_effect=lambda pair, state, report, search=None, **_: service.saved.append((pair, state, report, None))
+        ),
     )
     monkeypatch.setattr(module.store, "deliver_completion_events", AsyncMock())
     yield service
@@ -460,6 +462,25 @@ async def test_orphaned_nightly_job_is_fenced_drained_and_recovered(scheduler, r
     assert not claimed
 
 
+@pytest.mark.parametrize(
+    "finished_at,day_offset,can_resume", [("07:59:59", 0, True), ("08:00:00", 0, False), ("05:30:00", 1, False)]
+)
+async def test_recovery_only_resumes_during_the_claimed_night(
+    scheduler, rotation, monkeypatch, finished_at, day_offset, can_resume
+):
+    from datetime import timedelta
+
+    rows, _ = rotation
+    now = datetime.fromisoformat(f"2026-10-13T{finished_at}+02:00")
+    monkeypatch.setattr(module, "local_now", lambda: now)
+    rows[0].update(recovery={"provider_id": 20}, last_run_date=now.date() - timedelta(days=day_offset))
+    scheduler.recovery_worker_idle = AsyncMock(return_value=True)
+
+    assert await scheduler.recover(rows[0], MagicMock())
+    scheduler.restore.assert_awaited_once()
+    assert module.store.finish.call_args.kwargs["resume_after_recovery"] is can_resume
+
+
 @pytest.mark.parametrize("blocker", ["execution", "manual", "task", "worker_busy", "lease"])
 async def test_recovery_keeps_journal_when_execution_or_cleanup_is_uncertain(scheduler, rotation, monkeypatch, blocker):
     import importlib
@@ -829,3 +850,41 @@ async def test_failed_baseline_does_not_schedule_unbounded_further_rounds(schedu
     scheduler.submit = submit
     assert await scheduler.run_schedule(31, MagicMock())
     assert scheduler.saved[-1][1] == "completed"
+
+
+async def test_completed_winner_is_durable_before_a_later_trial_is_interrupted(scheduler, monkeypatch):
+    target, snapshot, lane = scheduler.target_lane(31)
+    target["model_id"] = 1
+    scheduler.target_lane = lambda pair: (target, snapshot, lane)
+    monkeypatch.setattr(module.store, "status", lambda _: {"enabled": True, "workload_id": "a" * 64})
+    monkeypatch.setattr(
+        module.workloads,
+        "load",
+        lambda *args: {
+            "id": "a" * 64,
+            "name": "Saved requests",
+            "request_count": 10,
+            "provenance": "synthetic",
+        },
+    )
+    import copy
+
+    journals = []
+    monkeypatch.setattr(module.store, "save", lambda *args: journals.append(copy.deepcopy(args)))
+    module.store.adoption_candidate.side_effect = lambda pair, search, report: adoption() if len(report) >= 2 else None
+    submitted = 0
+
+    async def submit(*args):
+        nonlocal submitted
+        submitted += 1
+        if submitted == 3:
+            assert journals[-1][3]["adoption"]["benchmark_id"] == 2
+            raise NightlyStopped("interrupted")
+        return submitted, asyncio.create_task(asyncio.sleep(0, result=submitted))
+
+    scheduler.submit = submit
+    assert await scheduler.run_schedule(31, MagicMock())
+    assert submitted == 3
+    scheduler.restore.assert_awaited_once()
+    assert scheduler.restore.call_args.args[1]["adoption"]["benchmark_id"] == 2
+    assert any(item.get("status") == "adopted" for item in scheduler.saved[-1][2])

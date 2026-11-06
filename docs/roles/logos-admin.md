@@ -146,8 +146,9 @@ The preview depends on current worker availability. It does not reserve a worker
 
 ![Models page](/img/roles/logos-admin-models.png)
 
-The **Delays** tab of the **Model Details** view shows where the time of a
-request goes. The tab shows local and cloud providers. It has one row for each
+Open **Model Details → Performance → Request measurements** to inspect request times.
+This view uses timing metadata. It does not use prompt or response content.
+The view shows local and cloud providers. It has one row for each
 provider of the model and for each reasoning effort. A **Local** or **Cloud** tag
 next to the provider name shows the provider type. The row shows these values,
 each as the median (p50) and as the 95th percentile (p95):
@@ -169,17 +170,24 @@ accepts. The column then shows the changed level, not the level of the client.
 The value `default` shows that the request did not contain an effort.
 
 If the **Logos wait** values increase, Logos itself slows the requests down.
-Use the time range bar of the tab to select the period.
+Use the time range bar to select the period.
+The bar chart shows p50 and p95 separately for each metric. Do not add these percentiles.
 
-![Delays tab of a model](/img/roles/logos-admin-model-details-delays.png)
+![Request measurements and timing chart](/img/roles/logos-admin-model-request-measurements.png)
 
 ### Model Benchmarks
 
 Open the model's **Performance** tab to configure and start a benchmark.
 The orchestrator reserves the selected model lanes during a worker benchmark.
+The status card separates the provider, request progress and completed runs.
+**Requests started** does not mean that all responses are complete.
+Select **Stop benchmark** to cancel the active batch.
+
+![Running benchmark status and progress](../static/img/roles/logos-admin-benchmark-status.png)
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
-The **Results** tab starts with the nightly reference and observed improvement when comparable nightly runs exist.
+The **Performance** tab shows **Currently deployed** and **Timeline**.
+Expand **Benchmark runs** to read saved runs grouped by dataset.
 Without a nightly series, **Highest recorded throughput** shows the best result within each provider's latest captured workload.
 Older workloads are not ranked against it. Unknown controls do not establish a comparison.
 Manual benchmarks do not apply these parameters automatically. Nightly runs with saved request datasets can apply verified improvements.
@@ -199,22 +207,41 @@ A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
-**Nightly progress** starts at 0% and shows the total improvement against one starting baseline.
-The line increases when a completed round records a better result. Otherwise, the line stays flat.
-The starting baseline and best throughput labels show their run numbers.
-Saved request workloads use eligible results and their fixed reference.
-Historical Hugging Face series use the first comparable baseline and captured test settings.
-The chart separates runs with different captured workloads or other serving settings.
-Select a point to read its best run, throughput, time and total improvement.
-The tooltip also shows the relative improvement from the previous point.
+The **Timeline** starts with the first comparable baseline for the dataset.
+The vertical axis shows output tokens per second. Each subsequent point is a new throughput record.
+Slower runs do not add points. Each point keeps its actual measurement date and configuration.
+The chart separates datasets, providers and captured test settings. Worker releases can share a record history.
+Select a point to open its benchmark result.
+Expand **Record configurations** to read the dates and parameters.
+Saved-request variants must pass the response and latency checks before they enter the timeline.
 For example, 40 → 42 → 44 tok/s gives 10% total improvement and 4.8% improvement from the previous point.
 The chart does not show automatic parameter adoption or statistical significance.
-Expand **Benchmark runs** to see the latest 5 results. Select **Show all** to read older results.
+Expand **Benchmark runs** to see the latest 5 results per dataset.
+A baseline shows its own throughput and 0% change. Missing comparisons show why the baseline is unavailable. Select **Show all** to read older results.
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
 Select the same column again to reverse the order. Missing values stay at the end.
 
-![Reference throughput, observed change and fixed reference chart](../static/img/roles/logos-admin-nightly-results.png)
+![Performance overview with current configuration and record timeline](../static/img/roles/logos-admin-nightly-results.png)
 
+Read **Currently deployed** at the top of **Performance**.
+The summary shows throughput, baseline, change and the main batching parameters.
+Expand **Configuration & selection details** for all settings, the worker state and the telemetry time.
+The view identifies measurements with matching settings and the same measurement environment.
+Measurements from another environment appear with a historical label. They do not verify current performance.
+The measurement includes its benchmark number, baseline throughput, result throughput and percentage change.
+Temporary benchmark settings and recovery states do not establish the production configuration.
+An offline worker shows an unavailable state. A historical winner alone does not verify a deployment.
+Manual measurements can show their change from the first comparable dataset baseline. The summary labels this baseline as **Starting baseline**.
+The details also show the last confirmed adoption and reasons that exclude faster runs.
+A fresh comparison must verify a historical candidate before automatic adoption.
+
+![Current worker configuration and its measured result](../static/img/roles/logos-admin-deployed-configuration.png)
+
+The configuration and measurement sections start closed.
+The desktop overview places **Currently deployed** and **Timeline** side by side.
+On small screens, these cards appear below each other.
+Select **Run benchmark** to open **Benchmark setup & nightly automation**.
+Expand **More analysis & details** for the comparison charts, saved configurations and glossary.
 The large analysis sections open one at a time.
 Expand **Charts and comparison**. Select the **Reference run**, **Parameter** and **Metric**.
 The chart shows one parameter at a time, with a dashed reference line and measured changes.
@@ -274,8 +301,9 @@ Each night measures production settings and searches around the previous winner.
 Eligible improvements over the current baseline apply automatically after the worker confirms its configuration and model readiness.
 Otherwise, production settings return after each round. The pairs take turns until the window ends.
 The dataset keeps its original freeze date across runs. Its content hash remains in the configuration details.
-**Benchmark ready** appears once after the final production configuration is confirmed.
-Select **Benchmark ready** to open the exact measurement, its result and its changed parameters.
+Logos sends one notification after the last round.
+The notification shows the result and the last interruption reason, if available.
+Select **View benchmark** with its number to open the measurement and the changed parameters.
 The **Benchmark runs** table groups runs by dataset. Select a column heading to change the order.
 Each sortable column cycles through the initial order, ascending order and descending order.
 

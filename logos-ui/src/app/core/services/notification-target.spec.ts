@@ -1,4 +1,4 @@
-import { notificationTarget } from './notification-target';
+import { notificationBody, notificationTarget } from './notification-target';
 import { AppNotification } from './notification.service';
 
 describe('Benchmark notification destinations', () => {
@@ -12,4 +12,10 @@ describe('Benchmark notification destinations', () => {
     'does not navigate using missing or invalid identifiers: %j', payload => {
       expect(notificationTarget(notification(payload))).toBeNull();
     });
+});
+
+it('explains recovery in historical notifications without changing their destination', () => {
+  const item = { type: 'benchmark_result_ready', body: 'Worker: 3 successful configurations. Status: interrupted_recovered.', payload: { model_id: 1, benchmark_id: 127 } } as AppNotification;
+  expect(notificationBody(item)).toContain('Benchmark interrupted; worker configuration recovered.');
+  expect(notificationTarget(item)?.queryParams.benchmark).toBe(127);
 });
