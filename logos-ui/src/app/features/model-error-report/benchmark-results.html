@@ -52,19 +52,19 @@
 @if (activeProgress(); as chart) {
   <section class="benchmark-progress" aria-label="Performance timeline">
     <div class="results-heading"><h3>Timeline</h3>
-      <div class="timeline-headline"><strong>{{ chart.latest.rate | number:'1.1-1' }} <small>tok/s</small></strong><span>+{{ chart.latest.gain | number:'1.1-1' }}%</span></div>
+      <div class="timeline-headline"><strong>{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}%</strong><span>{{ chart.latest.rate | number:'1.1-1' }} tok/s</span></div>
     </div>
     @if (progress().length > 1) {
       <select class="timeline-dataset" aria-label="Timeline dataset" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
         @for (group of progress(); track group.key) { <option [value]="group.key">{{ group.label }}</option> }
       </select>
     } @else { <p class="results-note timeline-context">{{ datasetLabel(chart.reference) }}</p> }
-    <p class="results-note timeline-baseline">Since baseline #{{ chart.reference.id }}</p>
-    <div class="progress-plot" role="group" aria-label="Throughput records over time in output tokens per second">
-      <span class="progress-axis progress-axis--top">{{ chart.max | number:'1.0-1' }}</span>
-      <span class="progress-axis progress-axis--zero" [style.top.%]="chart.zero">{{ throughput(chart.reference) | number:'1.1-1' }}</span>
+    <p class="results-note timeline-baseline">Throughput change since baseline #{{ chart.reference.id }}</p>
+    <div class="progress-plot" role="group" aria-label="Throughput records as percentage change from the starting baseline">
+      <span class="progress-axis progress-axis--top">{{ chart.maxGain | number }}%</span>
+      <span class="progress-axis progress-axis--zero">0%</span>
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-        <line x1="0" x2="100" [attr.y1]="chart.zero" [attr.y2]="chart.zero" class="progress-zero" />
+        <line x1="0" x2="100" y1="100" y2="100" class="progress-zero" />
         @if (chart.points.length > 1) { <polyline [attr.points]="chart.line" class="progress-line" /> }
       </svg>
       @for (point of chart.points; track point.key) {
@@ -73,7 +73,10 @@
           <span class="progress-tooltip">#{{ point.run.id }} · {{ point.rate | number:'1.1-1' }} tok/s
             <small>{{ point.time | date:'dd MMM yyyy, HH:mm' }}</small><small>{{ point.configuration }}</small>
             @if (point.stepGain === null) { <small>Starting baseline · 0%</small> }
-            @else { <small>+{{ point.stepGain | number:'1.1-1' }}% vs. previous point (run #{{ point.previousRunId }})</small> }
+            @else {
+              <small>+{{ point.gain | number:'1.1-1' }}% vs. baseline #{{ chart.reference.id }}</small>
+              <small>+{{ point.stepGain | number:'1.1-1' }}% vs. previous point (run #{{ point.previousRunId }})</small>
+            }
           </span></a>
       }
     </div>

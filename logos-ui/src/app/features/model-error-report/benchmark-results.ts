@@ -19,7 +19,6 @@ type ResultColumn = 'runId' | 'measuredFrom' | 'before' | 'after' | 'delta';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class BenchmarkResults {
-  throughput(run: ModelProviderBenchmark) { return comparisonValue(run, 'throughput'); }
   readonly datasetLabel = benchmarkDatasetLabel;
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
   readonly selectedRunId = input<number | null>(null);

@@ -208,7 +208,8 @@ A missing stream terminator or an earlier context limit makes the run fail.
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
 The **Timeline** starts with the first comparable baseline for the dataset.
-The vertical axis shows output tokens per second. Each subsequent point is a new throughput record.
+The vertical axis shows the percentage change from the starting baseline (0%).
+Each subsequent point is a new throughput record.
 Slower runs do not add points. Each point keeps its actual measurement date and configuration.
 The chart separates datasets, providers and captured test settings. Worker releases can share a record history.
 Select a point to open its benchmark result.

@@ -255,7 +255,8 @@ The round report identifies an adopted benchmark or an adoption failure.
 
 The **Performance** tab contains the **Timeline** section.
 The chart starts with the first comparable baseline for each dataset and provider.
-The vertical axis shows output tokens per second. Subsequent points show only new throughput records.
+The vertical axis shows the percentage change from the starting baseline (0%).
+Subsequent points show only new throughput records. Select a point to see the rate in output tokens per second.
 Each point keeps the measurement date and configuration. Slower runs do not add points.
 Saved-request variants must pass the response and latency checks before they set a record.
 Select a point to open its benchmark. Expand **Record configurations** to read dates and parameters.
