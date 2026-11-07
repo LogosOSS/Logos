@@ -346,6 +346,34 @@ worker control actions (calibrate, sleep, wake, lane management).
 
 ![Providers page](/img/roles/logos-admin-providers.png)
 
+## Deployments
+
+The page **Deployments** deploys Logos from Logos. It is for Logos admins only. A
+deployer on each host takes the orders. See
+[Deployments from Logos](../deployment.md#deployments-from-logos) to install the
+deployers.
+
+If no deployer is set up, the page says so and shows nothing to start.
+
+The page has these parts:
+
+* **Environment switch.** One button for each environment that this Logos can
+  deploy. A yellow dot means that a core deployer was not seen recently.
+* **Current.** The deployment that runs now, with one line for each deployer. A
+  step is *Waiting for the core*, *Waiting for the deployer*, *Running*,
+  *Succeeded*, *Unchanged*, *Rolled back*, *Failed* or *Not started*. Click
+  **Abandon** to end a deployment that this Logos started.
+* **New deployment.** Enter an image tag and click **Deploy**. For Prod, type
+  `prod` in the dialog first. The button is off, with a reason, when the core
+  deployer is not online or a deployment runs.
+* **History.** The latest 50 deployments of the environment, with the person who
+  started each one and the time. Filter them by status. A deployment that another
+  Logos ordered has the label *via another Logos*. Click a row for the details.
+* **Details.** The steps of one deployment with their messages, their events and
+  the end of the log of a failed part.
+* **Deployers.** The deployers of the environment, when each was seen, and its
+  version. Click **Add a deployer** to make one. Logos shows the key once.
+
 ## Policies
 
 Policies are the rules that decide which models a team or an API key can use.

@@ -224,6 +224,136 @@ These limits apply to the drain:
 
 For all limits, see the README of the node manager.
 
+## Deployments from Logos
+
+The page **Deployments** lets a Logos admin deploy Logos from Logos itself. A
+program on each host, the *deployer*, takes the orders. The deployer is the node
+manager. Logos never calls a host. The deployer asks Logos for orders and tells
+Logos how they go.
+
+A deployment has two stages:
+
+1. The core deployer replaces the services of the core. It checks that all
+   services run and that Logos answers.
+2. If the core succeeded, all worker deployers start. Each worker drains its
+   node first. If the new container fails, the worker starts the previous
+   version again.
+
+If the core fails, the workers do not start. A core deployment has no automatic
+rollback. The new web service changes the database structure when it starts. The
+previous version may not work with the new structure. After a failure, fix the
+cause and deploy again, or restore a backup.
+
+The feature is off by default. A Logos that you install from the installation
+guide has no deployers. Its page **Deployments** says that deployments are not
+set up.
+
+### Environments
+
+Each environment has its own Logos. A host obeys the Logos of its environment.
+A Dev or Test host also obeys Prod.
+
+| Environment | Hosts obey | Who can deploy it |
+|---|---|---|
+| Prod | Prod | An admin on Prod |
+| Dev | Dev and Prod | An admin on Dev, or an admin on Prod |
+| Test | Test and Prod | An admin on Test, or an admin on Prod |
+
+A deployment changes one environment only. A deployment of Prod never changes
+Dev or Test. An admin on Prod deploys Dev or Test with the button in the section
+of that environment. Dev and Test cannot deploy Prod, because no Prod host obeys
+them.
+
+### Install the deployers
+
+Do these steps once for each host. Start with Test and Dev.
+
+1. In the GitHub environment of the core host, set the variable
+   `LOGOS_DEPLOYMENTS_ENVIRONMENT` to the name of the environment, for example
+   `Dev`. On Prod, also set `LOGOS_DEPLOYMENTS_ORDERABLE_ENVIRONMENTS` to
+   `Prod,Dev,Test`.
+2. Run the workflow **Logos - Sync host config** for the core host. Leave
+   **Also install or update the deployer** off. The workflow writes the `.env`
+   file and the compose file to the host.
+3. Restart the core with a normal deployment. The page **Deployments** is now on.
+4. On the page, click **Add a deployer**. Enter the name of the host and the kind
+   `core`. Copy the key. Logos shows the key once.
+5. In the GitHub environment of the host, set the secret `LOGOS_DEPLOYER_KEY` to
+   the key.
+6. Run the workflow again with **Also install or update the deployer** on. The
+   workflow starts the deployer as the compose project `logos-deployer`.
+7. Do steps 4 to 6 for each worker host with the kind `worker`. A worker already
+   has the node manager. The workflow replaces it with a new one that has the key.
+8. For a Dev or Test host, an admin on Prod also adds a deployer for the host on
+   the page of Prod. In the GitHub environment of the host, set `LOGOS_PROD_URL`
+   to the address of Prod, and the secret `LOGOS_PROD_DEPLOYER_KEY` to that key.
+   Then run the workflow again.
+
+| Variable | Where | Meaning |
+|---|---|---|
+| `LOGOS_DEPLOYMENTS_ENVIRONMENT` | Core | The name of this Logos. The feature is off while it is empty. |
+| `LOGOS_DEPLOYMENTS_ORDERABLE_ENVIRONMENTS` | Core | The environments this Logos can deploy. Default: only its own. |
+| `LOGOS_DEPLOYMENTS_PROTECTED_ENVIRONMENTS` | Core | Environments that need the typed name and accept only `latest` and release tags. Default: `Prod`. |
+| `LOGOS_DEPLOYMENTS_SILENCE_LIMIT` | Core | How long a started step can stay silent before Logos ends it. Default: `30m`. |
+| `LOGOS_DEPLOYER_KEY` | Every host | The key that this Logos made for the deployer of the host. |
+| `LOGOS_PROD_URL`, `LOGOS_PROD_DEPLOYER_KEY` | Dev and Test hosts | The address of Prod and the key that Prod made for the host. |
+
+### Sync the settings of a host
+
+A deployment from Logos carries only an image tag. The workflow **Logos - Sync
+host config** delivers everything else: the `.env` file and the compose file.
+GitHub stays the owner of the settings. Logos stores no secret of a host.
+
+* The `.env` file holds only the names that the compose files of the host read.
+  It does not hold every secret of the repository.
+* The workflow does not write the image tag. Logos gives the tag to Compose with
+  each order.
+* Run the workflow when a setting, a secret or a compose file changes. Run it
+  before the deployment that needs the change. A new `.env` file takes effect at
+  the next deployment of the host.
+* A host of Prod takes its files from the branch `main` only. To make this rule
+  hold, restrict the GitHub environments of Prod to the branch `main`.
+
+### Start a deployment
+
+1. Open the page **Deployments**. Choose the environment.
+2. Enter an image tag. Click **Deploy**.
+3. For Prod, type `prod` in the dialog and confirm. Prod accepts only `latest`
+   and release tags.
+
+Logos refuses a deployment in these cases:
+
+* A deployment of the same environment runs. Wait for it, or abandon it.
+* The core deployer of the environment is not online. The button is off and the
+  page shows why. A worker deployer that is not online does not block the start.
+* The tag is not a Docker tag, or Prod does not accept it.
+
+### A deployment that does not move
+
+A deployment can stop moving. The new web service can crash while it starts. A
+host can be off. A report can be lost. Two rules end such a deployment:
+
+* **The silence limit.** A deployer sends a report when its deployment changes
+  and at least every 20 seconds. If a started step is silent for 30 minutes,
+  Logos ends the step as failed with the reason "timed out". If the core step
+  ends this way, the workers do not start. After a long stop of Logos, Logos
+  closes an old plan before it looks at the first report. Then an old plan cannot
+  release the workers.
+* **Abandon.** An admin clicks **Abandon**. Steps that did not start never will.
+  Logos cannot take back an order that a deployer already fetched. That deployer
+  finishes its deployment. A host that was replaced stays replaced.
+
+An ended step can still change: a host that Logos ended as timed out can report
+its real result later. The page then shows the real result.
+
+### Keys of the deployers
+
+* A deployer authenticates with a key of its own, not with a login.
+* Logos shows the key once and stores only its hash. If you lose a key, click
+  **New key** for the deployer. The old key stops working at once.
+* A key lets a host fetch its own orders and report for itself. It cannot place
+  an order or read anything else.
+
 ## Nightly Benchmarks
 
 To retain a fixed Dev workload, leave `LOGOS_NIGHTLY_REQUEST_USERNAME` empty.
