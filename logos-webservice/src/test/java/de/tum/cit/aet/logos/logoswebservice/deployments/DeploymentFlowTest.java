@@ -310,6 +310,32 @@ class DeploymentFlowTest {
     }
 
     @Test
+    void aDeploymentHasANumberThatGrows() throws Exception {
+        devEnvironment();
+        JsonNode first = body(rawStart("Dev", "pr-93", null).andExpect(status().isCreated()));
+        mvc.perform(post("/deployments/plans/" + first.get("id").asText() + "/abandon").with(TestJwt.logosAdmin()));
+        JsonNode second = body(rawStart("Dev", "pr-94", null).andExpect(status().isCreated()));
+
+        assertThat(second.get("number").asLong()).isEqualTo(first.get("number").asLong() + 1);
+        assertThat(plan(first.get("id").asText()).get("number").asLong()).isEqualTo(first.get("number").asLong());
+    }
+
+    @Test
+    void theOverviewShowsHowTheLatestDeploymentOfEachEnvironmentEnded() throws Exception {
+        String[] keys = devEnvironment();
+        mvc.perform(get("/deployments/overview").with(TestJwt.logosAdmin()))
+            .andExpect(jsonPath("$.targets[1].last_status").doesNotExist());
+        JsonNode plan = body(rawStart("Dev", "pr-93", null).andExpect(status().isCreated()));
+        mvc.perform(get("/deployments/overview").with(TestJwt.logosAdmin()))
+            .andExpect(jsonPath("$.targets[1].last_status").value("running"));
+
+        report(keys[0], snapshot(step(plan, "dev-core").get("id").asText(), "pr-93", "done", "failed", "boom"));
+
+        mvc.perform(get("/deployments/overview").with(TestJwt.logosAdmin()))
+            .andExpect(jsonPath("$.targets[1].last_status").value("failed"));
+    }
+
+    @Test
     void aSecondDeploymentOfTheSameEnvironmentIsRefusedWhileOneRuns() throws Exception {
         devEnvironment();
         rawStart("Dev", "pr-93", null).andExpect(status().isCreated());

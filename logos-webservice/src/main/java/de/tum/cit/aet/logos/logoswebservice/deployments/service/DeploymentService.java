@@ -101,6 +101,8 @@ public class DeploymentService {
                 properties.isProtected(environment),
                 environmentDeployers.stream().map(deployer -> views.deployer(deployer, now)).toList(),
                 running.map(DeploymentPlan::getId).orElse(null),
+                plans.findFirstByEnvironmentIgnoreCaseOrderByCreatedAtDesc(environment)
+                    .map(plan -> plan.getStatus().name()).orElse(null),
                 blocked == null,
                 blocked));
         }
@@ -155,6 +157,7 @@ public class DeploymentService {
 
         DeploymentPlan plan = new DeploymentPlan();
         plan.setId(UUID.randomUUID());
+        plan.setNumber(plans.nextNumber());
         plan.setEnvironment(env);
         plan.setTag(tag);
         plan.setStatus(PlanStatus.running);

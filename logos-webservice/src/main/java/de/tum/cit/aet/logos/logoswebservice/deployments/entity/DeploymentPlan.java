@@ -22,6 +22,9 @@ public class DeploymentPlan {
     private UUID id;
 
     @Column(nullable = false)
+    private long number;
+
+    @Column(nullable = false)
     private String environment;
 
     @Column(nullable = false)
@@ -53,6 +56,7 @@ public class DeploymentPlan {
     private Instant lastActivityAt;
 
     public UUID getId() { return id; }
+    public long getNumber() { return number; }
     public String getEnvironment() { return environment; }
     public String getTag() { return tag; }
     public PlanStatus getStatus() { return status; }
@@ -66,6 +70,7 @@ public class DeploymentPlan {
     public Instant getLastActivityAt() { return lastActivityAt; }
 
     public void setId(UUID id) { this.id = id; }
+    public void setNumber(long number) { this.number = number; }
     public void setEnvironment(String environment) { this.environment = environment; }
     public void setTag(String tag) { this.tag = tag; }
     public void setStatus(PlanStatus status) { this.status = status; }

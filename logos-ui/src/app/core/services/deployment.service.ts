@@ -31,7 +31,11 @@ export class DeploymentService {
   }
 
   /** `confirmation` is the typed name of a protected environment. */
-  startPlan(environment: string, tag: string, confirmation?: string): Promise<DeploymentPlan> {
+  startPlan(
+    environment: string,
+    tag: string,
+    confirmation?: string,
+  ): Promise<DeploymentPlan> {
     return firstValueFrom(
       this.http.post<DeploymentPlan>(`${DeploymentService.BASE}/plans`, {
         environment,

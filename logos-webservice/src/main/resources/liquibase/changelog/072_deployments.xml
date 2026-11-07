@@ -47,8 +47,12 @@
             <not><tableExists tableName="deployment_plans"/></not>
         </preConditions>
         <sql><![CDATA[
+            -- The number of a deployment on this Logos, as the page shows it (#142).
+            CREATE SEQUENCE deployment_plan_number_seq;
+
             CREATE TABLE deployment_plans (
                 id UUID PRIMARY KEY,
+                number BIGINT NOT NULL UNIQUE,
                 environment VARCHAR(40) NOT NULL,
                 tag VARCHAR(128) NOT NULL,
                 status VARCHAR(16) NOT NULL
@@ -73,7 +77,7 @@
                 WHERE status = 'running' AND origin = 'local';
         ]]></sql>
         <rollback>
-            <sql>DROP TABLE IF EXISTS deployment_plans;</sql>
+            <sql>DROP TABLE IF EXISTS deployment_plans; DROP SEQUENCE IF EXISTS deployment_plan_number_seq;</sql>
         </rollback>
     </changeSet>
 

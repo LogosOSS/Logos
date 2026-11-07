@@ -42,6 +42,7 @@ public class DeploymentViews {
             .toList();
         return new PlanDTO(
             plan.getId(),
+            plan.getNumber(),
             plan.getEnvironment(),
             plan.getTag(),
             plan.getStatus().name(),

@@ -9,7 +9,7 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { DeploymentService } from '../../core/services/deployment.service';
 import {
   Deployer,
@@ -17,51 +17,61 @@ import {
   DeployerKind,
   DeploymentOverview,
   DeploymentPlan,
-  DeploymentStep,
+  DeploymentTarget,
   PLAN_STATUS_LABEL,
   PlanStatus,
   STEP_STATUS_LABEL,
+  StatusTone,
+  fullDate,
+  nodeKindLabel,
+  phaseStates,
   planTone,
+  stepStatusText,
   stepTone,
 } from '../../shared/models/deployment.model';
 import { formatRelativeTime } from '../../shared/utils/date';
 import { errorDetail } from '../../shared/utils/error-detail';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
 import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
+import { PhaseBar } from './phase-bar';
+import { StatusPill } from './status-pill';
 
 /** How often the page reads the state again. A deployment takes minutes, so a few seconds is soon enough. */
 const POLL_MS = 5000;
 
-/** "3 min 20 s", "45 s" or "2 h 5 min": how long a step took. */
-export function formatDuration(ms: number): string {
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  if (seconds < 60) return `${seconds} s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} min ${seconds % 60} s`;
-  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
-}
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** The order of the environments in the switch. Others follow, by name. */
+const ENVIRONMENT_ORDER = ['Prod', 'Dev', 'Test'];
 
 @Component({
   selector: 'app-deployments',
   standalone: true,
-  imports: [CommonModule, FormsModule, SelectComponent, ModalConfirmComponent],
+  imports: [
+    CommonModule,
+    FormsModule,
+    RouterLink,
+    SelectComponent,
+    ModalConfirmComponent,
+    PhaseBar,
+    StatusPill,
+  ],
   templateUrl: './deployments.html',
   changeDetection: ChangeDetectionStrategy.Eager,
-  styleUrl: './deployments.scss',
+  styleUrls: ['./deployments-shared.scss', './deployments.scss'],
 })
 export class Deployments implements OnInit {
   private service = inject(DeploymentService);
-  private route = inject(ActivatedRoute);
+  private router = inject(Router);
   private destroyRef = inject(DestroyRef);
 
   readonly planLabel = PLAN_STATUS_LABEL;
   readonly stepLabel = STEP_STATUS_LABEL;
   readonly planTone = planTone;
   readonly stepTone = stepTone;
+  readonly phaseStates = phaseStates;
+  readonly stepStatusText = stepStatusText;
+  readonly nodeKindLabel = nodeKindLabel;
+  readonly fullDate = fullDate;
   readonly age = formatRelativeTime;
-  readonly formatDuration = formatDuration;
 
   readonly kindOptions: AppSelectOption[] = [
     { value: 'worker', label: 'Worker' },
@@ -78,16 +88,17 @@ export class Deployments implements OnInit {
   // ── data ─────────────────────────────────────────────────────────────────
   overview = signal<DeploymentOverview | null>(null);
   plans = signal<DeploymentPlan[]>([]);
+  /** The steps of the running plan: the list has only one dot for each step. */
+  runningDetail = signal<DeploymentPlan | null>(null);
   selectedEnv = signal('');
   statusFilter = signal<'all' | PlanStatus>('all');
-  openPlan = signal<DeploymentPlan | null>(null);
   loading = signal(true);
   loadError = signal<string | null>(null);
 
   // ── starting a deployment ────────────────────────────────────────────────
   tag = signal('latest');
+  /** The typed name of a protected environment. */
   confirmation = signal('');
-  confirmOpen = signal(false);
   starting = signal(false);
   startError = signal<string | null>(null);
 
@@ -111,15 +122,27 @@ export class Deployments implements OnInit {
   deployerError = signal<string | null>(null);
 
   // ── derived ──────────────────────────────────────────────────────────────
-  target = computed(() => this.overview()?.targets.find((t) => t.name === this.selectedEnv()) ?? null);
+  targets = computed(() => {
+    const rank = (name: string) => {
+      const index = ENVIRONMENT_ORDER.indexOf(name);
+      return index === -1 ? ENVIRONMENT_ORDER.length : index;
+    };
+    return [...(this.overview()?.targets ?? [])].sort(
+      (a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name),
+    );
+  });
+  target = computed(() => this.targets().find((t) => t.name === this.selectedEnv()) ?? null);
   currentPlan = computed(() => this.plans().find((p) => p.status === 'running') ?? null);
+  lastPlan = computed(() => this.plans()[0] ?? null);
   history = computed(() => {
     const filter = this.statusFilter();
     return this.plans().filter((p) => filter === 'all' || p.status === filter);
   });
-  /** The plan the detail view shows, kept current when the list is read again. */
-  openDetail = computed(() => this.openPlan());
-  /** Whether a plan that this Logos started runs in the open environment, and so can be abandoned. */
+  /** The typed word that a protected environment asks for: its name, in lower case. */
+  confirmWord = computed(() => this.selectedEnv().toLowerCase());
+  confirmed = computed(
+    () => !this.target()?.requires_confirmation || this.confirmation().trim().toLowerCase() === this.confirmWord(),
+  );
   canAbandon = (plan: DeploymentPlan | null) => !!plan && plan.status === 'running' && plan.origin === 'local';
 
   ngOnInit(): void {
@@ -134,12 +157,13 @@ export class Deployments implements OnInit {
       const overview = await this.service.getOverview();
       this.overview.set(overview);
       if (overview.enabled) {
-        const names = overview.targets.map((t) => t.name);
+        const names = this.targets().map((t) => t.name);
         if (!names.includes(this.selectedEnv())) {
-          this.selectedEnv.set(overview.environment && names.includes(overview.environment) ? overview.environment : (names[0] ?? ''));
+          this.selectedEnv.set(
+            overview.environment && names.includes(overview.environment) ? overview.environment : (names[0] ?? ''),
+          );
         }
         await this.loadPlans();
-        if (initial) await this.openFromLink();
       }
       this.loadError.set(null);
     } catch (e) {
@@ -156,32 +180,18 @@ export class Deployments implements OnInit {
     const plans = await this.service.getPlans(env, 50);
     if (env !== this.selectedEnv()) return;
     this.plans.set(plans);
-    const open = this.openPlan();
-    if (open && open.environment === env) {
-      const fresh = await this.service.getPlan(open.id).catch(() => null);
-      if (fresh && this.openPlan()?.id === fresh.id) this.openPlan.set(fresh);
-    }
-  }
-
-  /** A notification links to `?plan=<id>`: show that plan. */
-  private async openFromLink(): Promise<void> {
-    const id = this.route.snapshot.queryParamMap.get('plan');
-    if (!id || !UUID.test(id)) return;
-    const plan = await this.service.getPlan(id).catch(() => null);
-    if (!plan) return;
-    if (this.overview()?.targets.some((t) => t.name === plan.environment)) {
-      this.selectedEnv.set(plan.environment);
-      await this.loadPlans();
-    }
-    this.openPlan.set(plan);
+    const running = plans.find((p) => p.status === 'running');
+    const detail = running ? await this.service.getPlan(running.id).catch(() => null) : null;
+    if (env === this.selectedEnv()) this.runningDetail.set(detail);
   }
 
   async selectEnv(name: string): Promise<void> {
     if (name === this.selectedEnv()) return;
     this.selectedEnv.set(name);
-    this.openPlan.set(null);
     this.plans.set([]);
+    this.runningDetail.set(null);
     this.startError.set(null);
+    this.confirmation.set('');
     try {
       await this.loadPlans();
     } catch (e) {
@@ -189,58 +199,28 @@ export class Deployments implements OnInit {
     }
   }
 
-  async open(plan: DeploymentPlan): Promise<void> {
-    this.openPlan.set(plan);
-    const detail = await this.service.getPlan(plan.id).catch(() => null);
-    if (detail && this.openPlan()?.id === plan.id) this.openPlan.set(detail);
-  }
-
-  close(): void {
-    this.openPlan.set(null);
-  }
-
   // ── starting ─────────────────────────────────────────────────────────────
-  /** Dev and Test start at once. A protected environment (Prod) first asks for its typed name. */
-  deploy(): void {
+  async deploy(): Promise<void> {
     this.startError.set(null);
     const target = this.target();
-    if (!target || !this.tag().trim()) {
+    if (!target) return;
+    if (!this.tag().trim()) {
       this.startError.set('Enter an image tag.');
       return;
     }
-    if (target.requires_confirmation) {
-      this.confirmation.set('');
-      this.confirmOpen.set(true);
+    if (!this.confirmed()) {
+      this.startError.set(`Type ${this.confirmWord()} to confirm.`);
       return;
     }
-    void this.start();
-  }
-
-  confirmStart(): void {
-    const env = this.selectedEnv();
-    if (this.confirmation().trim().toLowerCase() !== env.toLowerCase()) {
-      this.startError.set(`Type ${env.toLowerCase()} to confirm.`);
-      return;
-    }
-    void this.start();
-  }
-
-  closeConfirm(): void {
-    this.confirmOpen.set(false);
-    this.startError.set(null);
-  }
-
-  private async start(): Promise<void> {
     this.starting.set(true);
     try {
       const plan = await this.service.startPlan(
-        this.selectedEnv(),
+        target.name,
         this.tag().trim(),
-        this.target()?.requires_confirmation ? this.confirmation().trim() : undefined,
+        target.requires_confirmation ? this.confirmation().trim() : undefined,
       );
-      this.confirmOpen.set(false);
-      this.openPlan.set(plan);
-      await this.load(false);
+      this.confirmation.set('');
+      await this.router.navigate(['/deployments', plan.id]);
     } catch (e) {
       this.startError.set(errorDetail(e) ?? 'The deployment could not be started.');
     } finally {
@@ -259,13 +239,12 @@ export class Deployments implements OnInit {
   }
 
   async confirmAbandon(): Promise<void> {
-    const plan = this.currentPlan() ?? this.openPlan();
+    const plan = this.currentPlan();
     if (!plan) return;
     this.abandoning.set(true);
     try {
-      const updated = await this.service.abandonPlan(plan.id);
+      await this.service.abandonPlan(plan.id);
       this.abandonOpen.set(false);
-      if (this.openPlan()?.id === plan.id) this.openPlan.set(updated);
       await this.load(false);
     } catch (e) {
       this.abandonError.set(errorDetail(e) ?? 'The deployment could not be abandoned.');
@@ -351,24 +330,8 @@ export class Deployments implements OnInit {
   }
 
   // ── view helpers ─────────────────────────────────────────────────────────
-  /** How long a step took, or how long it has run. Empty before it started. */
-  stepDuration(step: DeploymentStep): string {
-    if (!step.started_at) return '';
-    const start = new Date(step.started_at).getTime();
-    const end = step.finished_at ? new Date(step.finished_at).getTime() : Date.now();
-    return Number.isNaN(start) || Number.isNaN(end) ? '' : formatDuration(end - start);
-  }
-
-  /** The dot of an environment in the switch: its core deployers are all online, or something needs a look. */
-  envState(name: string): 'ok' | 'warn' | 'idle' {
-    const target = this.overview()?.targets.find((t) => t.name === name);
-    if (!target || target.deployers.length === 0) return 'idle';
-    const cores = target.deployers.filter((d) => d.kind === 'core');
-    if (cores.length > 0 && !cores.every((d) => d.online)) return 'warn';
-    return 'ok';
-  }
-
-  stepSummary(step: { name: string; kind: string; status: string }): string {
-    return `${step.name} (${step.kind}): ${step.status.replace('_', ' ')}`;
+  /** The dot of an environment in the switch: how its latest deployment ended, or an empty ring if there is none. */
+  envDot(target: DeploymentTarget): StatusTone | 'none' {
+    return target.last_status ? planTone(target.last_status) : 'none';
   }
 }

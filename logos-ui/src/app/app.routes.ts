@@ -23,6 +23,7 @@ export const routes: Routes = [
       { path: 'models/:id/errors', redirectTo: 'models/:id/details', pathMatch: 'full' },
       { path: 'providers',      title: 'Providers · Logos',        data: { roles: ['logos_admin'] },                canActivate: [roleGuard], loadComponent: () => import('./features/providers/providers').then(m => m.Providers) },
       { path: 'deployments',    title: 'Deployments · Logos',      data: { roles: ['logos_admin'] },                canActivate: [roleGuard], loadComponent: () => import('./features/deployments/deployments').then(m => m.Deployments) },
+      { path: 'deployments/:id', title: 'Deployment · Logos',     data: { roles: ['logos_admin'] },                canActivate: [roleGuard], loadComponent: () => import('./features/deployments/deployment-detail').then(m => m.DeploymentDetail) },
       { path: 'policies',       title: 'Policies · Logos',         data: { roles: ['logos_admin'] },                canActivate: [roleGuard], loadComponent: () => import('./features/policies/policies').then(m => m.Policies) },
       { path: 'billing',        title: 'Billing · Logos',          data: { roles: ['logos_admin'] },                canActivate: [roleGuard], loadComponent: () => import('./features/billing/billing').then(m => m.Billing) },
       { path: 'user-management', title: 'Users · Logos',           data: { roles: ['logos_admin', 'app_admin'] },   canActivate: [roleGuard], loadComponent: () => import('./features/user-management/user-management').then(m => m.UserManagement) },

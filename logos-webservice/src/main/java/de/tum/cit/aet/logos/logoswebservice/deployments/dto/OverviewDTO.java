@@ -26,6 +26,8 @@ public record OverviewDTO(
         @JsonProperty("requires_confirmation") boolean requiresConfirmation,
         List<DeployerDTO> deployers,
         @JsonProperty("running_plan_id") UUID runningPlanId,
+        /** How the latest deployment of the environment ended, or null if there is none. The switch shows it as a dot. */
+        @JsonProperty("last_status") String lastStatus,
         @JsonProperty("can_start") boolean canStart,
         @JsonProperty("blocked_reason") String blockedReason
     ) {}

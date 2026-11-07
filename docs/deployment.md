@@ -316,10 +316,11 @@ GitHub stays the owner of the settings. Logos stores no secret of a host.
 
 ### Start a deployment
 
-1. Open the page **Deployments**. Choose the environment.
-2. Enter an image tag. Click **Deploy**.
-3. For Prod, type `prod` in the dialog and confirm. Prod accepts only `latest`
-   and release tags.
+1. Open the page **Deployments**. Choose the environment at the top right.
+2. Enter an image tag.
+3. For Prod, type `prod` in the field **Type prod to confirm**. Prod accepts
+   only `latest` and release tags.
+4. Click **Deploy**. Logos opens the page of the new deployment.
 
 Logos refuses a deployment in these cases:
 

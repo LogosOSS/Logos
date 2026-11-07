@@ -1,5 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { ActivatedRoute, convertToParamMap } from '@angular/router';
+import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DeploymentService } from '../../core/services/deployment.service';
@@ -9,8 +9,11 @@ import {
   DeploymentPlan,
   DeploymentStep,
   DeploymentTarget,
+  phaseStates,
+  stepStatusText,
 } from '../../shared/models/deployment.model';
-import { Deployments, formatDuration } from './deployments';
+import { DeploymentDetail } from './deployment-detail';
+import { Deployments } from './deployments';
 
 const NOW = '2026-11-07T10:00:00.000Z';
 
@@ -32,6 +35,7 @@ const makeTarget = (overrides: Partial<DeploymentTarget> = {}): DeploymentTarget
   requires_confirmation: false,
   deployers: [makeDeployer()],
   running_plan_id: null,
+  last_status: 'succeeded',
   can_start: true,
   blocked_reason: null,
   ...overrides,
@@ -65,11 +69,12 @@ const makeStep = (overrides: Partial<DeploymentStep> = {}): DeploymentStep => ({
 
 const makePlan = (overrides: Partial<DeploymentPlan> = {}): DeploymentPlan => ({
   id: 'p1',
+  number: 7,
   environment: 'Dev',
   tag: 'pr-93',
   status: 'succeeded',
   origin: 'local',
-  initiator: 'Jane Doe',
+  initiator: 'Tobias Wasner',
   reason: null,
   abandoned_by: null,
   created_at: '2026-11-07T09:00:00.000Z',
@@ -97,9 +102,6 @@ describe('Deployments', () => {
     fixture.detectChanges();
   }
 
-  /** The text of the whole page, dialogs included: the dialogs of the design system are drawn outside the component. */
-  const pageText = (): string => document.body.textContent ?? '';
-
   beforeEach(async () => {
     overview = makeOverview();
     plans = [makePlan()];
@@ -112,395 +114,187 @@ describe('Deployments', () => {
       })),
       startPlan: vi.fn().mockResolvedValue(makePlan({ id: 'new', status: 'running' })),
       abandonPlan: vi.fn().mockResolvedValue(makePlan({ status: 'failed' })),
-      createDeployer: vi.fn().mockResolvedValue({
-        deployer: makeDeployer({ id: 'd-new', name: 'deioma', kind: 'worker', online: false }),
-        key: 'the-secret-key-shown-once',
-      }),
-      replaceDeployerKey: vi.fn().mockResolvedValue({ deployer: makeDeployer(), key: 'another-key' }),
-      deleteDeployer: vi.fn().mockResolvedValue(undefined),
+      createDeployer: vi.fn(),
+      replaceDeployerKey: vi.fn(),
+      deleteDeployer: vi.fn(),
     };
     await TestBed.configureTestingModule({
       imports: [Deployments],
       providers: [
+        provideRouter([]),
         { provide: DeploymentService, useValue: service },
-        { provide: ActivatedRoute, useValue: { snapshot: { queryParamMap: convertToParamMap({}) } } },
+        { provide: ActivatedRoute, useValue: { snapshot: { paramMap: convertToParamMap({}) } } },
       ],
     }).compileComponents();
   });
 
-  describe('a Logos without deployers', () => {
-    it('says that deployments are not set up and offers nothing to start', async () => {
-      overview = makeOverview({ enabled: false, targets: [] });
-
-      await create();
-
-      expect(text()).toContain('Deployments are not set up on this Logos');
-      expect(text()).not.toContain('New deployment');
-      expect(service['getPlans']).not.toHaveBeenCalled();
-    });
+  it('says that deployments are not set up on a Logos without deployers', async () => {
+    overview = makeOverview({ enabled: false, targets: [] });
+    await create();
+    expect(text()).toContain('Deployments are not set up on this Logos');
+    expect(service['getPlans']).not.toHaveBeenCalled();
   });
 
-  describe('the environments', () => {
-    it('opens the environment of this Logos and loads its history', async () => {
-      overview = makeOverview({
-        environment: 'Prod',
-        targets: [makeTarget({ name: 'Prod', requires_confirmation: true }), makeTarget({ name: 'Dev', own: false })],
-      });
-
-      await create();
-
-      expect(component.selectedEnv()).toBe('Prod');
-      expect(service['getPlans']).toHaveBeenCalledWith('Prod', 50);
-      expect(text()).toContain('Prod');
-      expect(text()).toContain('Dev');
-    });
-
-    it('reads the history of another environment when it is chosen', async () => {
-      overview = makeOverview({
-        targets: [makeTarget(), makeTarget({ name: 'Test', own: false })],
-      });
-      await create();
-
-      await component.selectEnv('Test');
-
-      expect(component.selectedEnv()).toBe('Test');
-      expect(service['getPlans']).toHaveBeenLastCalledWith('Test', 50);
-    });
-
-    it('shows a warning dot when a core deployer is offline', async () => {
-      overview = makeOverview({
-        targets: [makeTarget({ deployers: [makeDeployer({ online: false })] })],
-      });
-
-      await create();
-
-      expect(component.envState('Dev')).toBe('warn');
-    });
-
-    it('shows no warning for an environment without deployers', async () => {
-      overview = makeOverview({ targets: [makeTarget({ deployers: [] })] });
-
-      await create();
-
-      expect(component.envState('Dev')).toBe('idle');
-    });
-  });
-
-  describe('starting a deployment', () => {
-    it('starts at once in an environment that needs no confirmation', async () => {
-      await create();
-      component.tag.set(' pr-93 ');
-
-      component.deploy();
-      await vi.waitFor(() => expect(component.starting()).toBe(false));
-
-      expect(component.confirmOpen()).toBe(false);
-      expect(service['startPlan']).toHaveBeenCalledWith('Dev', 'pr-93', undefined);
-    });
-
-    it('opens the plan it started', async () => {
-      await create();
-
-      component.deploy();
-      await vi.waitFor(() => expect(component.openPlan()?.id).toBe('new'));
-    });
-
-    it('asks a protected environment for its typed name first', async () => {
-      overview = makeOverview({
-        environment: 'Prod',
-        targets: [makeTarget({ name: 'Prod', requires_confirmation: true })],
-      });
-      await create();
-      component.tag.set('latest');
-
-      component.deploy();
-
-      expect(component.confirmOpen()).toBe(true);
-      expect(service['startPlan']).not.toHaveBeenCalled();
-    });
-
-    it('does not start a protected environment on the wrong word', async () => {
-      overview = makeOverview({
-        environment: 'Prod',
-        targets: [makeTarget({ name: 'Prod', requires_confirmation: true })],
-      });
-      await create();
-      component.deploy();
-      component.confirmation.set('dev');
-
-      component.confirmStart();
-
-      expect(service['startPlan']).not.toHaveBeenCalled();
-      expect(component.startError()).toBe('Type prod to confirm.');
-    });
-
-    it('starts a protected environment on its typed name, in any case', async () => {
-      overview = makeOverview({
-        environment: 'Prod',
-        targets: [makeTarget({ name: 'Prod', requires_confirmation: true })],
-      });
-      await create();
-      component.tag.set('v2026.10.4');
-      component.deploy();
-      component.confirmation.set(' PROD ');
-
-      component.confirmStart();
-      await vi.waitFor(() => expect(component.starting()).toBe(false));
-
-      expect(service['startPlan']).toHaveBeenCalledWith('Prod', 'v2026.10.4', 'PROD');
-      expect(component.confirmOpen()).toBe(false);
-    });
-
-    it('asks for a tag when it is empty', async () => {
-      await create();
-      component.tag.set('  ');
-
-      component.deploy();
-
-      expect(component.startError()).toBe('Enter an image tag.');
-      expect(service['startPlan']).not.toHaveBeenCalled();
-    });
-
-    it('shows the reason of the server when the start is refused', async () => {
-      service['startPlan'].mockRejectedValue({ error: { detail: 'A deployment of Dev is running.' } });
-      await create();
-
-      component.deploy();
-      await vi.waitFor(() => expect(component.startError()).toBe('A deployment of Dev is running.'));
-      fixture.detectChanges();
-
-      expect(text()).toContain('A deployment of Dev is running.');
-    });
-
-    it('turns the button off and says why when the environment is blocked', async () => {
-      overview = makeOverview({
-        targets: [
-          makeTarget({ can_start: false, blocked_reason: 'The core deployer dev-core was last seen 12 min ago.' }),
-        ],
-      });
-
-      await create();
-
-      const button = (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>('.new__deploy');
-      expect(button?.disabled).toBe(true);
-      expect(text()).toContain('The core deployer dev-core was last seen 12 min ago.');
-    });
-  });
-
-  describe('what runs now', () => {
-    const running = makePlan({
-      id: 'run',
-      status: 'running',
-      finished_at: null,
-      steps: [
-        { name: 'dev-core', kind: 'core', status: 'succeeded' },
-        { name: 'vm-2', kind: 'worker', status: 'waiting' },
+  it('shows the switch in the order Prod, Dev, Test and never says "this Logos" next to an environment', async () => {
+    overview = makeOverview({
+      environment: 'Prod',
+      targets: [
+        makeTarget({ name: 'Prod', requires_confirmation: true }),
+        makeTarget({ name: 'Dev' }),
+        makeTarget({ name: 'Test' }),
       ],
     });
-
-    it('shows the running plan with a pill for each step', async () => {
-      plans = [running];
-
-      await create();
-
-      expect(text()).toContain('started by Jane Doe');
-      expect(text()).toContain('Waiting for the core');
-    });
-
-    it('lets an admin abandon a plan that this Logos started', async () => {
-      plans = [running];
-      await create();
-
-      component.askAbandon();
-      await component.confirmAbandon();
-
-      expect(service['abandonPlan']).toHaveBeenCalledWith('run');
-      expect(component.abandonOpen()).toBe(false);
-    });
-
-    it('does not offer to abandon a plan that another Logos ordered', async () => {
-      plans = [{ ...running, origin: 'observed' }];
-
-      await create();
-
-      expect(component.canAbandon(component.currentPlan())).toBe(false);
-      expect(text()).toContain('ordered on another Logos');
-    });
-
-    it('says that nothing runs when nothing does', async () => {
-      await create();
-
-      expect(text()).toContain('Nothing is running in Dev.');
-    });
+    await create();
+    const pills = Array.from(fixture.nativeElement.querySelectorAll('.lg-pill')).map((e) =>
+      (e as HTMLElement).textContent?.trim(),
+    );
+    expect(pills).toEqual(['Prod', 'Dev', 'Test']);
+    expect(text()).not.toContain('this Logos');
+    expect(text()).toContain('Deployments on Prod affect live users');
   });
 
-  describe('the history', () => {
-    it('lists the plans with who started them and why they failed', async () => {
-      plans = [
-        makePlan({ id: 'a', tag: 'v1' }),
-        makePlan({ id: 'b', tag: 'v2', status: 'failed', reason: 'vm-2: the node did not drain within 900 s' }),
-      ];
+  it('lists the history with numbers and links each row to its page', async () => {
+    plans = [makePlan({ id: 'a', number: 9 }), makePlan({ id: 'b', number: 8, status: 'failed' })];
+    await create();
+    const rows = fixture.nativeElement.querySelectorAll('a.lg-trow') as NodeListOf<HTMLAnchorElement>;
+    expect(rows.length).toBe(2);
+    expect(rows[0].getAttribute('href')).toBe('/deployments/a');
+    expect(text()).toContain('#9');
+    expect(text()).toContain('Tobias Wasner');
+    expect(fixture.nativeElement.querySelector('.avatar')).toBeNull();
+  });
 
-      await create();
+  it('filters the history by status', async () => {
+    plans = [makePlan({ id: 'a', number: 9 }), makePlan({ id: 'b', number: 8, status: 'failed' })];
+    await create();
+    component.statusFilter.set('failed');
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelectorAll('a.lg-trow').length).toBe(1);
+  });
 
-      expect(text()).toContain('v1');
-      expect(text()).toContain('v2');
-      expect(text()).toContain('vm-2: the node did not drain within 900 s');
-    });
+  it('shows the running deployment with its nodes and offers to abandon it', async () => {
+    plans = [makePlan({ id: 'run', number: 12, status: 'running', finished_at: null })];
+    await create();
+    expect(text()).toContain('Deployment #12');
+    expect(text()).toContain('View details');
+    expect(text()).not.toContain('Only logos admins');
+    expect(text()).toContain('Abandon deployment');
+    expect(fixture.nativeElement.querySelectorAll('app-phase-bar').length).toBe(1);
+  });
 
-    it('filters the plans by status', async () => {
-      plans = [makePlan({ id: 'a' }), makePlan({ id: 'b', status: 'failed' }), makePlan({ id: 'c', status: 'rolled_back' })];
-      await create();
+  it('keeps Deploy off on a protected environment until its name is typed, then opens the page of the plan', async () => {
+    overview = makeOverview({ environment: 'Prod', targets: [makeTarget({ name: 'Prod', requires_confirmation: true })] });
+    plans = [];
+    await create();
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+    expect(component.confirmed()).toBe(false);
+    expect(text()).toContain('Type prod to confirm');
 
-      component.statusFilter.set('failed');
+    component.confirmation.set('prod');
+    await component.deploy();
 
-      expect(component.history().map((p) => p.id)).toEqual(['b']);
-      component.statusFilter.set('all');
-      expect(component.history()).toHaveLength(3);
-    });
+    expect(service['startPlan']).toHaveBeenCalledWith('Prod', 'latest', 'prod');
+    expect(navigate).toHaveBeenCalledWith(['/deployments', 'new']);
+  });
 
-    it('labels a plan that came from another Logos', async () => {
-      plans = [makePlan({ origin: 'observed' })];
+  it('does not start without the typed name', async () => {
+    overview = makeOverview({ environment: 'Prod', targets: [makeTarget({ name: 'Prod', requires_confirmation: true })] });
+    await create();
+    await component.deploy();
+    expect(service['startPlan']).not.toHaveBeenCalled();
+    expect(component.startError()).toContain('Type prod to confirm');
+  });
+});
 
-      await create();
+describe('DeploymentDetail', () => {
+  let fixture: ComponentFixture<DeploymentDetail>;
+  let service: Record<string, ReturnType<typeof vi.fn>>;
 
-      expect(text()).toContain('via another Logos');
-    });
+  async function create(plan: DeploymentPlan): Promise<void> {
+    service = { getPlan: vi.fn().mockResolvedValue(plan), abandonPlan: vi.fn() };
+    await TestBed.configureTestingModule({
+      imports: [DeploymentDetail],
+      providers: [
+        provideRouter([]),
+        { provide: DeploymentService, useValue: service },
+        { provide: ActivatedRoute, useValue: { snapshot: { paramMap: convertToParamMap({ id: plan.id }) } } },
+      ],
+    }).compileComponents();
+    fixture = TestBed.createComponent(DeploymentDetail);
+    fixture.detectChanges();
+    await vi.waitFor(() => expect(fixture.componentInstance.loading()).toBe(false));
+    fixture.detectChanges();
+  }
 
-    it('shows the steps, the events and the log of a plan when it is opened', async () => {
-      plans = [makePlan({ status: 'failed' })];
-      service['getPlan'].mockResolvedValue(
-        makePlan({
-          status: 'failed',
-          step_details: [
-            makeStep({
-              status: 'failed',
-              message: 'docker compose up failed',
-              failure_logs: 'Error response from daemon',
-              details: { drained_requests: 3, drain_seconds: 42 },
-            }),
-          ],
-        }),
-      );
-      await create();
-
-      await component.open(plans[0]);
-      fixture.detectChanges();
-
-      expect(text()).toContain('dev-core');
-      expect(text()).toContain('docker compose up failed');
-      expect(text()).toContain('Error response from daemon');
-      expect(text()).toContain('3 request(s) were running');
-      expect(text()).toContain('took 42 s');
-      expect(text()).toContain('3 min 20 s');
-    });
-
-    it('opens the plan that a notification links to', async () => {
-      const id = '3f2b6c1e-8d4a-4b7e-9c11-0a1b2c3d4e5f';
-      plans = [makePlan({ id })];
-      TestBed.resetTestingModule();
-      await TestBed.configureTestingModule({
-        imports: [Deployments],
-        providers: [
-          { provide: DeploymentService, useValue: service },
-          { provide: ActivatedRoute, useValue: { snapshot: { queryParamMap: convertToParamMap({ plan: id }) } } },
+  it('shows the node events and the container log of a rolled-back deployment', async () => {
+    await create(
+      makePlan({
+        status: 'rolled_back',
+        reason: 'verify failed on dev-core',
+        step_details: [
+          makeStep({ status: 'rolled_back', failure: 'verify_failed', failure_logs: 'health check failed' }),
         ],
-      }).compileComponents();
-
-      await create();
-
-      expect(service['getPlan']).toHaveBeenCalledWith(id);
-      expect(component.openPlan()?.id).toBe(id);
-    });
+      }),
+    );
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('Deployment #7');
+    expect(text).toContain('The deployment was rolled back');
+    expect(text).toContain('Node events');
+    expect(text).toContain('pulled the images');
+    expect(text).toContain('Container log');
+    expect(text).toContain('health check failed');
   });
 
-  describe('the deployers', () => {
-    it('shows the key once, after the deployer is made', async () => {
-      await create();
-      component.newName.set(' deioma ');
-      component.newKind.set('worker');
+  it('has no log panel and no abandon button for a deployment that succeeded', async () => {
+    await create(makePlan({ step_details: [makeStep()] }));
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).not.toContain('Container log');
+    expect(text).not.toContain('Abandon deployment');
+  });
+});
 
-      await component.createDeployer();
-      fixture.detectChanges();
-
-      expect(service['createDeployer']).toHaveBeenCalledWith('deioma', 'Dev', 'worker');
-      expect(component.createdKey()?.key).toBe('the-secret-key-shown-once');
-      expect(pageText()).toContain('the-secret-key-shown-once');
-
-      component.closeKey();
-      fixture.detectChanges();
-
-      expect(component.createdKey()).toBeNull();
-      expect(pageText()).not.toContain('the-secret-key-shown-once');
-    });
-
-    it('asks for a name', async () => {
-      await create();
-      component.newName.set('   ');
-
-      await component.createDeployer();
-
-      expect(service['createDeployer']).not.toHaveBeenCalled();
-      expect(component.createError()).toContain('Enter a name');
-    });
-
-    it('shows why a deployer could not be made', async () => {
-      service['createDeployer'].mockRejectedValue({ error: { detail: "The environment Dev has a deployer called 'deioma' already." } });
-      await create();
-      component.newName.set('deioma');
-
-      await component.createDeployer();
-
-      expect(component.createError()).toBe("The environment Dev has a deployer called 'deioma' already.");
-    });
-
-    it('gives a deployer a new key and shows it once', async () => {
-      await create();
-      component.replaceTarget.set(makeDeployer());
-
-      await component.confirmReplaceKey();
-
-      expect(service['replaceDeployerKey']).toHaveBeenCalledWith('d-core');
-      expect(component.createdKey()?.key).toBe('another-key');
-      expect(component.replaceTarget()).toBeNull();
-    });
-
-    it('removes a deployer', async () => {
-      await create();
-      component.removeTarget.set(makeDeployer());
-
-      await component.confirmRemove();
-
-      expect(service['deleteDeployer']).toHaveBeenCalledWith('d-core');
-      expect(component.removeTarget()).toBeNull();
-    });
-
-    it('lists the deployers of the environment with their last sight', async () => {
-      overview = makeOverview({
-        targets: [
-          makeTarget({
-            deployers: [makeDeployer(), makeDeployer({ id: 'd2', name: 'vm-2', kind: 'worker', online: false, last_seen_at: null })],
-          }),
-        ],
-      });
-
-      await create();
-
-      expect(text()).toContain('dev-core');
-      expect(text()).toContain('vm-2');
-      expect(text()).toContain('never');
-    });
+describe('phaseStates', () => {
+  it('marks the segments before the running phase as done', () => {
+    expect(phaseStates({ status: 'running', phase: 'swapping', failure: null })).toEqual([
+      'done',
+      'done',
+      'active',
+      'pending',
+    ]);
   });
 
-  describe('formatDuration', () => {
-    it.each([
-      [0, '0 s'],
-      [45_000, '45 s'],
-      [200_000, '3 min 20 s'],
-      [7_500_000, '2 h 5 min'],
-      [-5, '0 s'],
-    ])('writes %d ms as %s', (ms, expected) => {
-      expect(formatDuration(ms)).toBe(expected);
+  it('marks the segment of a failure', () => {
+    expect(phaseStates({ status: 'failed', phase: 'pulling', failure: 'swap_failed' })).toEqual([
+      'done',
+      'done',
+      'failed',
+      'pending',
+    ]);
+  });
+
+  it('marks every segment of a node that ended well as done', () => {
+    expect(phaseStates({ status: 'succeeded', phase: 'done', failure: null })).toEqual(['done', 'done', 'done', 'done']);
+  });
+});
+
+describe('stepStatusText', () => {
+  it('cuts the drain message to the number of requests that are left', () => {
+    const step = makeStep({
+      status: 'running',
+      events: [
+        {
+          at: NOW,
+          phase: 'draining',
+          note: 'waiting for the node to drain: 128 request(s) (100 tracked by the orchestrator, 28 on the worker) running',
+        },
+      ],
     });
+    expect(stepStatusText(step, 'pr-93')).toBe('Waiting for the node to drain:\n128 request(s)');
+  });
+
+  it('keeps other messages as they are', () => {
+    const step = makeStep({ status: 'running', events: [{ at: NOW, phase: 'pulling', note: 'pulled the images' }] });
+    expect(stepStatusText(step, 'pr-93')).toBe('pulled the images');
   });
 });

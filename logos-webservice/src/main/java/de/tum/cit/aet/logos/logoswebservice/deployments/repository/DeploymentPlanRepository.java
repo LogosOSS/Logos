@@ -24,6 +24,12 @@ public interface DeploymentPlanRepository extends JpaRepository<DeploymentPlan, 
 
     List<DeploymentPlan> findTop30ByOrderByCreatedAtDesc();
 
+    Optional<DeploymentPlan> findFirstByEnvironmentIgnoreCaseOrderByCreatedAtDesc(String environment);
+
+    /** The next number for a deployment. */
+    @Query(value = "SELECT nextval('deployment_plan_number_seq')", nativeQuery = true)
+    long nextNumber();
+
     Optional<DeploymentPlan> findFirstByEnvironmentIgnoreCaseAndOriginAndStatus(
             String environment, PlanOrigin origin, PlanStatus status);
 
@@ -36,8 +42,9 @@ public interface DeploymentPlanRepository extends JpaRepository<DeploymentPlan, 
     @Modifying
     @Query(value = """
             INSERT INTO deployment_plans
-                (id, environment, tag, status, origin, initiator, created_at, last_activity_at)
-            VALUES (:id, :environment, :tag, 'running', 'observed', :initiator, :createdAt, :createdAt)
+                (id, number, environment, tag, status, origin, initiator, created_at, last_activity_at)
+            VALUES (:id, nextval('deployment_plan_number_seq'), :environment, :tag, 'running', 'observed',
+                    :initiator, :createdAt, :createdAt)
             ON CONFLICT (id) DO NOTHING
             """, nativeQuery = true)
     int insertObservedIfAbsent(

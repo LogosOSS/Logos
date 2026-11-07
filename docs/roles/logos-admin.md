@@ -357,20 +357,28 @@ If no deployer is set up, the page says so and shows nothing to start.
 
 The page has these parts:
 
-* **Environment switch.** One button for each environment that this Logos can
-  deploy. A yellow dot means that a core deployer was not seen recently.
-* **Current.** The deployment that runs now, with one line for each deployer. A
-  step is *Waiting for the core*, *Waiting for the deployer*, *Running*,
+* **Environment switch.** At the top right, one button for each environment that
+  this Logos can deploy: Prod, Dev and Test. The dot shows how the latest deployment of the
+  environment ended: blue for running, green for succeeded, red for failed,
+  yellow for rolled back. An empty ring means that there is none yet.
+* **Current deployment.** The deployment that runs now, with one row for each
+  node. Each row shows how far the node is: Pull, Drain, Swap and Verify. A node
+  is *Waiting for the core*, *Waiting for the deployer*, *Running*,
   *Succeeded*, *Unchanged*, *Rolled back*, *Failed* or *Not started*. Click
-  **Abandon** to end a deployment that this Logos started.
-* **New deployment.** Enter an image tag and click **Deploy**. For Prod, type
-  `prod` in the dialog first. The button is off, with a reason, when the core
-  deployer is not online or a deployment runs.
-* **History.** The latest 50 deployments of the environment, with the person who
-  started each one and the time. Filter them by status. A deployment that another
-  Logos ordered has the label *via another Logos*. Click a row for the details.
-* **Details.** The steps of one deployment with their messages, their events and
-  the end of the log of a failed part.
+  **View details** to open the page of the deployment. Click **Abandon deployment**
+  to stop the next steps of a deployment that this Logos started. Without a
+  running deployment, the part shows the last one.
+* **New deployment.** Enter an image tag and click **Deploy**.
+  Prod shows a red banner and asks you to type `prod` in the field next to the
+  button. The button is off, with a reason, when the core deployer is not online
+  or a deployment runs.
+* **History.** The latest 50 deployments of the environment, each with its
+  number, the person who started it and the time. The number counts all
+  deployments of this Logos, so the numbers of one environment can skip. Filter
+  them by status. Click a row to open its page.
+* **Page of a deployment.** Click a row of the history, or **View details**, to open
+  it. The page shows the status, the events of each node and, for a
+  failed part, the end of the container log. A running deployment updates itself.
 * **Deployers.** The deployers of the environment, when each was seen, and its
   version. Click **Add a deployer** to make one. Logos shows the key once.
 
