@@ -7,6 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -292,7 +293,7 @@ public class DeploymentReportService {
         for (UUID planId : silentPlans) {
             // One transaction for each plan, so that one plan that cannot be changed does not hold up the others.
             Integer count = transactions.execute(status -> closeSilentStepsOf(planId));
-            ended += count == null ? 0 : count;
+            ended += Objects.requireNonNullElse(count, 0);
         }
         return ended;
     }

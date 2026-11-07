@@ -154,7 +154,7 @@ jobs:
           done
 
       - name: Copy the files to the host
-        uses: appleboy/scp-action@v1.0.0
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -170,7 +170,7 @@ jobs:
 
       - name: Install the deployer of a core host
         if: ${{ inputs.install-deployer && steps.host.outputs.kind == 'core' }}
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
         with:
@@ -211,7 +211,7 @@ jobs:
 
       - name: Update the node manager of a worker
         if: ${{ inputs.install-deployer && steps.host.outputs.kind == 'worker' }}
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
         with:
