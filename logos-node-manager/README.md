@@ -6,6 +6,10 @@ checks that the container comes up, and starts the previous version again if it 
 On a host that drains, the manager first asks the orchestrator to cordon the node. A cordoned node gets no new
 requests, so the requests that run on it finish before the container goes. See "Draining" below.
 
+The manager also runs on the *core* host, where Logos itself runs. There it replaces the services of the whole Logos
+compose project (see "Core host"). Deployments come from the command line and, if the host obeys a Logos, from the
+page Deployments of that Logos (see "Orders from Logos").
+
 ## What a deployment does
 
 A deployment is one request to run a given image tag. The daemon takes requests one at a time, oldest first.
@@ -172,6 +176,63 @@ run again.
 A problem during the removal does not fail the step. Images built before the label existed have none: remove them once
 by ID with `docker rmi`. A host without the deploy workflow keeps its old manager images and needs the same command.
 
+## Orders from Logos
+
+A host can obey one or more Logos instances. The manager then asks each of them for orders, and tells each of them how
+the deployments go. Nothing calls into the host: the manager only makes outgoing requests, so it still has no port and
+no server. The list comes from `NODE_MANAGER_LOGOS`: entries `url|key`, separated by commas. The worker compose file
+builds it from `LOGOS_URL` and `LOGOS_DEPLOYER_KEY` (the own Logos) and `LOGOS_PROD_URL` and `LOGOS_PROD_DEPLOYER_KEY`
+(Prod, for a Dev or Test host). An entry without a key is skipped.
+
+* **Orders.** One thread for each Logos sends `POST /api/deployments/deployer/poll` with the key in the header
+  `Authorization: Bearer`. Logos holds the request until an order appears or `ORDER_WAIT_S` (25 s) pass. An order starts
+  within seconds, and an idle host makes about 3 requests a minute for each Logos. The request also tells Logos that the
+  host is alive: the page greys out the button of an environment whose core deployer was not seen for 90 s.
+* **The order.** An order is a deployment id, a tag and a few facts about the plan it belongs to (the plan, the
+  environment, the kind of host, who started it). The manager checks the id and the tag with the same patterns as for
+  the command line, and checks that the kind of host fits (a worker takes no order for a core). It writes the order to
+  the state directory like any other request, so the queue, the phases and the time limits are the same. An order that
+  is repeated gives the same deployment. An order that cannot be run is refused in the next report, and Logos ends the
+  step as failed.
+* **Reports.** One thread sends `POST /api/deployments/deployer/report` to every Logos on the list. A report carries the
+  whole state of a deployment (phase, outcome, message, events, the end of a failure log), so a lost report is made up by
+  the next one. A deployment in progress is reported when it changes and at least every `REPORT_INTERVAL_S` (20 s): Logos
+  reads the reports as a sign of life, and ends a step that stays silent for 30 minutes as timed out. The first report
+  of an order also tells Logos that the order was taken. A finished deployment is reported until every Logos took it, for
+  up to 24 hours. A Logos that does not answer is asked again after 5 s, then after twice as long each time, up to
+  5 minutes. A report never changes how a deployment ends.
+* **All Logos instances get the same report.** A Logos that did not give the order shows the deployment as well, with
+  the plan data the order carried. This is how Prod shows what happened on Dev and Test, also when the Logos of Dev is
+  down.
+* **Notifications.** A deployment that came from Logos is not reported to the orchestrator (see "Reports"): Logos
+  notifies its admins itself. A deployment from the command line is reported to the orchestrator as before.
+
+## Core host
+
+With `NODE_MANAGER_KIND=core` the manager replaces the services of the Logos compose project instead of one worker
+container. The compose file `docker-compose.core.yml` of this directory starts it as a project of its own
+(`logos-deployer`), next to the project `logos`. This is required: the command `docker compose up -d --remove-orphans`
+of a deployment would otherwise restart the manager in the middle of its own deployment, or remove it as an orphan.
+
+| Phase | What happens |
+|---|---|
+| `pulling` | Notes the containers of the project, then runs `docker compose pull` for every service. If the pull fails, the running services are not touched. |
+| `draining` | Passes at once. The core has no node to cordon. |
+| `swapping` | Runs `docker compose up -d --remove-orphans --scale <service>=<n>`. The number comes from `LOGOS_WEBSERVICE_REPLICAS` in the `.env` (1 if it is missing or not a number). If every container is the one that ran before, the deployment ends as `unchanged`. |
+| `verifying` | Waits until every service of the active profiles has a running container (the scaled service as many as asked for), until no new container restarted or exited with an error, until no health check reports `unhealthy`, and until `NODE_MANAGER_CORE_HEALTH_URL` answers. All of it must hold for the stability window. The time limit is `CORE_VERIFY_TIMEOUT_S` (15 minutes). The new webservice applies its database migrations first. |
+
+* **There is no rollback.** The new webservice changes the database structure when it starts. The previous version may
+  not work with the new structure, and a rollback would hide that. A core deployment that fails ends as `failed`
+  (`swap_failed` or `verify_failed`), with the end of the log of the services that failed. A person decides whether to
+  fix forward or restore a backup. The workers of the plan do not start.
+* **After a success** the manager removes the images that no container uses (`docker image prune -af`), and then pulls
+  `<REGISTRY>/logos-agent-workspace:<tag>` if the `.env` has the profile `agent`. The order matters: nothing references
+  that image between sessions, so the prune would delete it. After a failure every image stays.
+* **The address that must answer** is `<own Logos>/api/info` by default (the first entry of `NODE_MANAGER_LOGOS`). It
+  shows that the whole way, from the proxy to the webservice, works. Set `NODE_MANAGER_CORE_HEALTH_URL` to check another
+  address, or to a value of your own.
+* **The registry login** is the directory `.docker` of the project directory, as for a worker.
+
 ## Use
 
 On a worker host, the manager is the service `logos-node-manager` in `logos-workernode/docker-compose.yml`. It belongs
@@ -268,6 +329,13 @@ All settings are environment variables with the prefix `NODE_MANAGER_`.
 | `ORCHESTRATOR_TIMEOUT_S` | 15 | The time limit of one call to the orchestrator. |
 | `RECONNECT_TIMEOUT_S` | 300 | How long the new worker may take to show up at the orchestrator after the Docker checks passed. |
 | `LOG_LEVEL` | `INFO` | |
+| `KIND` | `worker` | `worker` or `core`. Anything else counts as `worker`. A core host has other defaults: `PROJECT_DIR` is `/opt/logos` and `COMPOSE_FILE` is `<PROJECT_DIR>/docker-compose.yaml`. |
+| `LOGOS` | empty | The Logos instances this host obeys: entries `url\|key`, separated by commas (see "Orders from Logos"). Empty: only the command line gives orders. |
+| `ORDER_WAIT_S`, `ORDER_TIMEOUT_MARGIN_S` | 25, 15 | How long a request for orders waits at Logos, and the margin that the connection gets on top of it. |
+| `REPORT_INTERVAL_S` | 20 | How often a deployment in progress is reported to Logos when nothing changed. |
+| `SCALE_SERVICE`, `REPLICAS_VARIABLE` | `logos-webservice`, `LOGOS_WEBSERVICE_REPLICAS` | Core host: the service that runs as several copies, and the variable of the `.env` that says how many. |
+| `CORE_VERIFY_TIMEOUT_S` | 900 | Core host: how long the services get to come up. |
+| `CORE_HEALTH_URL` | `<first Logos>/api/info` | Core host: the address that must answer after a deployment. Empty: not checked. |
 
 A missing, malformed or non-positive timeout falls back to its default.
 
@@ -299,12 +367,19 @@ for the worker. The risk is accepted for these reasons:
 * The manager has no way in from the network. It publishes no port and runs no server. It is reached with
   `docker exec`, which needs access to `docker` on the host (root-equivalent anyway), and through the files in its state
   directory. Whoever can write there can queue a deployment of any tag that exists in the registry.
-* The only line out is the HTTPS call to the orchestrator for the drain. The manager authenticates with the key of the
-  worker, which Compose passes in its environment. The container can read the `.env` with that key anyway, so it gains no
+* The lines out are the HTTPS calls to the orchestrator for the drain, and, if the host obeys a Logos, the calls to that
+  Logos for orders and reports (see "Orders from Logos"). Nothing is reached from outside. The manager authenticates with
+  the key of the worker, which Compose passes in its environment. The container can read the `.env` with that key anyway, so it gains no
   secret, and the key lets it cordon its own node only. A person with the key can do the same from any machine, as they
   could already connect as the worker.
 * Every command is an argument list and never goes through a shell. The command line checks a deployment id and a tag
   against strict patterns before it accepts a request. The free text of `--requested-by` is only stored in the record.
+  An order from Logos goes through the same checks, and the manager takes nothing else from it that reaches a command.
+  The facts about the plan are only kept in the record and sent back in the reports. A Logos can therefore order any
+  tag that exists in the registry for its own hosts, and nothing more. Prod accepts only `latest` and release tags,
+  which Logos checks before it makes the order.
+* The key that a Logos made for a host fetches the orders of that host and reports for that host only. It cannot place
+  an order or read anything else. Logos stores only a hash of the key.
 * The container sees little of the host: the worker directory (read-only), its own state directory and the socket. The
   worker directory includes the `.env` with the secrets of the worker, because Compose needs that file, and the Docker
   login in `.docker`. No output of `docker compose config` and no environment is logged (see "Rules the code keeps").
@@ -383,6 +458,12 @@ replaces the container at once, as a manual `docker compose up` does. With the d
   `node-manager status --logs` shows them on the host. The Logos admins also get a notification when the
   deployment ends (see "Reports").
 * **The reports are one per node.** There is no notification for a whole rollout.
+* **A core deployment has no rollback and no drain.** The users of the environment notice the restart of the webservice.
+  With one copy of the webservice there is a gap with no page and no API, while the new one starts and applies its
+  migrations. A report that Logos cannot take during that time is sent again after the restart.
+* **An abandoned plan does not recall an order.** Logos cannot take back an order that the manager already fetched.
+  The node manager has no command to cancel a deployment. A deployment that is queued or started finishes, or goes back,
+  on its own.
 * **A drain figure is an estimate.** The status of the worker is a few seconds old, and a request that the orchestrator
   and the worker both count is counted once, so the figure is the larger of the two counts.
 * **The version of the worker is not compared.** The check of the new worker is the new session and its first status. The

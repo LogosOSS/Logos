@@ -145,6 +145,17 @@ class Deployment:
     failure_logs: str = ""
     events: list[dict[str, str]] = field(default_factory=list)
 
+    # Core host only: the containers of the compose project when the deployment began. The check tells the containers
+    # that the deployment started from the ones that were there already.
+    previous_container_ids: list[str] = field(default_factory=list)
+
+    # An order from Logos: the Logos that gave it, what that Logos said about the plan the deployment belongs to (every
+    # report passes it on, so that another Logos can show the deployment too), and the Logos instances that took the
+    # report of the end. A deployment from the command line has none of this.
+    source: str = ""
+    plan: dict | None = None
+    final_acked: list[str] = field(default_factory=list)
+
     @property
     def finished(self) -> bool:
         return self.phase is Phase.DONE
@@ -263,6 +274,18 @@ class StateStore:
     def save(self, deployment: Deployment) -> None:
         self.ensure()
         _write_atomically(self._path(deployment.id), self._dump(deployment))
+
+    def mark_acked(self, deployment_id: str, source: str) -> None:
+        """Note that a Logos took the report of the end. Reads the record again and changes nothing else.
+
+        This runs on the thread that reports, while the deployer may save other records. A finished record is not
+        written by the deployer any more, so the one field is safe to add here.
+        """
+        record = self.load(deployment_id)
+        if record is None or not record.finished or source in record.final_acked:
+            return
+        record.final_acked.append(source)
+        self.save(record)
 
     def all(self) -> list[Deployment]:
         """Every readable record, oldest request first. A file whose name is not a deployment id is not a record."""

@@ -234,3 +234,140 @@ class Docker:
         engine_text = engine.stdout.strip() if engine.ok else f"engine unavailable ({engine.tail(1)})"
         compose_text = f"compose {compose.stdout.strip()}" if compose.ok else f"compose unavailable ({compose.tail(1)})"
         return f"{engine_text}, {compose_text}"
+
+
+# ---------------------------------------------------------------------- A whole compose project (core host)
+
+PROJECT_LABEL = "com.docker.compose.project"
+SERVICE_LABEL = "com.docker.compose.service"
+ONE_OFF_LABEL = "com.docker.compose.oneoff"
+
+
+@dataclass(frozen=True)
+class ProjectContainer:
+    """A container of the compose project, with the service it belongs to."""
+
+    service: str
+    info: ContainerInfo
+
+
+def read_env_value(path: Path, name: str) -> str | None:
+    """The value of ``name`` in a ``.env`` file, or None. The last assignment wins, as it does for Compose.
+
+    A value in double quotes is read as JSON, which is how the deploy workflows write it. Anything else is taken as it
+    stands, without surrounding quotes. The file is read, never run: a value is data, not a shell command.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    found: str | None = None
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if not sep or key.strip() != name:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] == '"':
+            try:
+                value = str(json.loads(value))
+            except ValueError:
+                value = value[1:-1]
+        elif len(value) >= 2 and value[0] == value[-1] == "'":
+            value = value[1:-1]
+        found = value
+    return found
+
+
+class ProjectDocker(Docker):
+    """The docker command line, aimed at the whole compose project of a core host.
+
+    The core is many services, not one container: a deployment pulls the images of all of them and lets Compose replace
+    the ones that changed. Nothing here removes an image or a container by name, apart from what Compose itself does
+    (``--remove-orphans``) and the prune of images no container uses.
+    """
+
+    def pull_project(self, tag: str) -> CommandResult:
+        """Download the images of every service of the project for ``tag``."""
+        return self._runner.run(self._compose("pull"), timeout_s=self._settings.pull_timeout_s, env=self._tag_env(tag))
+
+    def up_project(self, tag: str, replicas: int) -> CommandResult:
+        """Create or replace the services whose image or configuration changed, and remove the ones that are gone."""
+        args = ["up", "-d", "--remove-orphans"]
+        if self._settings.scale_service:
+            args += ["--scale", f"{self._settings.scale_service}={replicas}"]
+        return self._runner.run(self._compose(*args), timeout_s=self._settings.swap_timeout_s, env=self._tag_env(tag))
+
+    def replicas(self) -> int:
+        """How many copies of the scaled service the ``.env`` file asks for. One if it is missing or not a number."""
+        raw = read_env_value(self._settings.env_file, self._settings.replicas_variable)
+        if raw is None or not raw.strip():
+            return 1
+        try:
+            count = int(raw.strip())
+        except ValueError:
+            logger.warning("%s is not a whole number; using 1", self._settings.replicas_variable)
+            return 1
+        if count < 1:
+            logger.warning("%s must be at least 1; using 1", self._settings.replicas_variable)
+            return 1
+        return count
+
+    def services(self) -> list[str]:
+        """The services of the project that should run: those of the active profiles."""
+        result = self._runner.run(self._compose("config", "--services"), timeout_s=CONFIG_TIMEOUT_S)
+        if not result.ok:
+            raise DockerError(f"docker compose config failed: {result.tail()}")
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    def project_containers(self) -> list[ProjectContainer]:
+        """Every container of the project, stopped ones included. One-off containers (``compose run``) do not count."""
+        listing = self._runner.run(
+            [
+                "docker",
+                "ps",
+                "-a",
+                "-q",
+                "--no-trunc",
+                "--filter",
+                f"label={PROJECT_LABEL}={self._settings.project_name}",
+            ],
+            timeout_s=QUERY_TIMEOUT_S,
+        )
+        if not listing.ok:
+            raise DockerError(f"docker ps failed: {listing.tail()}")
+        ids = [line.strip() for line in listing.stdout.splitlines() if line.strip()]
+        if not ids:
+            return []
+        inspected = self._runner.run(["docker", "inspect", "--type", "container", *ids], timeout_s=QUERY_TIMEOUT_S)
+        if not inspected.ok:
+            raise DockerError(f"docker inspect failed: {inspected.tail()}")
+        try:
+            raw_containers = json.loads(inspected.stdout)
+            found = []
+            for raw in raw_containers:
+                labels = (raw.get("Config") or {}).get("Labels") or {}
+                if labels.get(ONE_OFF_LABEL) == "True":
+                    continue
+                found.append(
+                    ProjectContainer(service=str(labels.get(SERVICE_LABEL) or ""), info=_container_from_inspect(raw))
+                )
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise DockerError(f"docker inspect returned unexpected output: {exc}") from exc
+        return found
+
+    def service_logs(self, services: list[str], lines: int = 30) -> str:
+        """The end of the log of some services, or an empty string if there is none."""
+        if not services:
+            return ""
+        result = self._runner.run(
+            self._compose("logs", "--no-color", "--tail", str(lines), *services), timeout_s=QUERY_TIMEOUT_S
+        )
+        return "\n".join(part for part in (result.stdout.rstrip(), result.stderr.rstrip()) if part)
+
+    def prune_images(self) -> CommandResult:
+        """Remove every image that no container uses."""
+        return self._runner.run(["docker", "image", "prune", "-af"], timeout_s=self._settings.pull_timeout_s)
+
+    def pull_image(self, reference: str) -> CommandResult:
+        """Download one image by name. For an image that is not a service of the project."""
+        return self._runner.run(["docker", "pull", reference], timeout_s=self._settings.pull_timeout_s)

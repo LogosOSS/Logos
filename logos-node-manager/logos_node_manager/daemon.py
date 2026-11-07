@@ -1,7 +1,8 @@
 """The long-running part of the manager.
 
-The daemon takes the queued deployments from the state directory, oldest first and one at a time. It has no other
-trigger: whoever wants a deployment writes a record with the command line, and the daemon finds it on its next pass.
+The daemon takes the queued deployments from the state directory, oldest first and one at a time. Whoever wants a
+deployment writes a record: the command line does, and so does the intake of the Logos link, which asks the Logos
+instances of the host for orders. The daemon finds the record on its next pass.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from logos_node_manager.config import Settings
 from logos_node_manager.deployer import Deployer
 from logos_node_manager.docker_ops import Docker, describe_registry_login
 from logos_node_manager.errors import Interrupted
+from logos_node_manager.logos_link import LogosLink
 from logos_node_manager.state import Deployment, StateStore
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,7 @@ class Daemon:
         docker: Docker | None = None,
         registry_login_file: Path | None = None,
         retry_delay_s: float = RETRY_DELAY_S,
+        link: LogosLink | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -46,6 +49,7 @@ class Daemon:
         self._docker = docker
         self._registry_login_file = registry_login_file
         self._retry_delay_s = retry_delay_s
+        self._link = link
 
     def run(self) -> None:
         """Process deployments until the stop event is set."""
@@ -54,6 +58,8 @@ class Daemon:
         beat = threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True)
         beat.start()
         self._log_start()
+        if self._link is not None:
+            self._link.start()
         try:
             while not self._stop.is_set():
                 self._report_endings()
@@ -65,6 +71,8 @@ class Daemon:
         finally:
             self._stop.set()
             beat.join(timeout=2.0)
+            if self._link is not None:
+                self._link.join()
         logger.info("Node manager stopped")
 
     def _report_endings(self) -> None:
@@ -112,12 +120,12 @@ class Daemon:
     def _log_start(self) -> None:
         s = self._settings
         logger.info(
-            "Node manager %s started: project %s in %s, service %s, container %s",
+            "Node manager %s started on a %s host: project %s in %s%s",
             __version__,
+            s.kind,
             s.project_name,
             s.project_dir,
-            s.service,
-            s.container,
+            f", service {s.service}, container {s.container}" if s.kind == "worker" else "",
         )
         if self._docker is not None:
             logger.info("Docker: %s", self._docker.versions())
@@ -126,6 +134,19 @@ class Daemon:
         for path in (s.compose_file, s.env_file):
             if not path.is_file():
                 logger.warning("%s does not exist; deployments fail until it does", path)
+        if s.logos_sources:
+            logger.info(
+                "Orders come from %s, and they get the reports of the deployments they ordered",
+                ", ".join(source.name for source in s.logos_sources),
+            )
+        else:
+            logger.info("NODE_MANAGER_LOGOS is empty: only the command line gives orders")
+        if s.kind == "core":
+            logger.info(
+                "A core host: no drain and no rollback; %s must answer after a deployment",
+                s.core_health_url or "no address",
+            )
+            return
         if s.orchestrator_url and s.node_key:
             logger.info("The end of a deployment is reported to %s", s.orchestrator_url)
         else:
