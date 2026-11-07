@@ -162,16 +162,21 @@
   display: inline-flex;
   align-items: center;
   align-self: flex-start;
-  gap: 6px;
+  gap: 8px;
   margin-bottom: 16px;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  color: rgb(var(--nav-item-text) / var(--nav-item-text-opacity));
-  opacity: var(--opacity-link);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: rgb(var(--color-typography-300));
   text-decoration: none;
 
   &:hover {
-    opacity: 1;
+    color: rgb(var(--color-text-accent));
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgb(var(--color-text-accent));
+    outline-offset: 3px;
+    border-radius: 4px;
   }
 }
 
