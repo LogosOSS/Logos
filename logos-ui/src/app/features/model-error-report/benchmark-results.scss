@@ -54,7 +54,7 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 .progress-line { fill: none; stroke: rgb(var(--color-primary-500)); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .progress-axis { position: absolute; right: calc(100% + .75rem); color: rgb(var(--color-typography-500)); font-size: .75rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .progress-axis--top { top: 0; transform: translateY(-50%); }
-.progress-axis--zero { transform: translateY(-50%); }
+.progress-axis--zero { top: 100%; transform: translateY(-50%); }
 .progress-point { position: absolute; width: 28px; height: 28px; transform: translate(-50%, -50%); border-radius: 50%; border: 0; padding: 0; background: transparent; cursor: pointer; }
 .progress-point::before { content: ''; position: absolute; inset: 10px; border-radius: 50%; background: rgb(var(--color-primary-500)); box-shadow: 0 0 0 2px rgb(var(--color-surface-0)); }
 .progress-point:focus-visible, .benchmark-progress select:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }

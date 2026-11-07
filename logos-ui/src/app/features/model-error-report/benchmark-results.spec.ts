@@ -179,8 +179,11 @@ describe('Nightly progress', () => {
     expect(groups[0].points.map(point => point.run.id)).toEqual([1, 4]);
     expect(groups[0].points[0].gain).toBe(0);
     expect(groups[0].points[1].gain).toBeCloseTo(10);
-    expect(groups[0].min).toBeLessThan(40);
-    expect(groups[0].max).toBeGreaterThan(44);
+    expect(groups[0].maxGain).toBeGreaterThan(10);
+    expect(groups[0].points[0].y).toBe(100);
+    const scaled = benchmarkProgress([measured(1, 400, 1, 21), measured(4, 440, 1, 22)])[0];
+    expect(scaled.maxGain).toBe(groups[0].maxGain);
+    expect(scaled.points[1].y).toBeCloseTo(groups[0].points[1].y);
     expect(benchmarkProgress([measured(1, 40, 1, 21), measured(2, 38, 1, 21),
       measured(3, 40, 3, 22), measured(5, 42, 3, 22), measured(4, 44, 3, 22)])[0].line).toBe(groups[0].line);
   });
@@ -222,6 +225,8 @@ describe('Nightly progress', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelectorAll('.progress-point')).toHaveLength(2);
     expect(fixture.nativeElement.querySelector('polyline')).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('.progress-axis--zero').textContent).toBe('0%');
+    expect(fixture.nativeElement.querySelector('.progress-axis--top').textContent).toMatch(/^\d+%$/);
     fixture.componentRef.setInput('runs', [measured(2, 44, 1, 21)]);
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelectorAll('.progress-point')).toHaveLength(0);

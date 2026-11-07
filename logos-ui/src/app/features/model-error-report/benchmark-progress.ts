@@ -59,15 +59,15 @@ export function benchmarkProgress(runs: readonly ModelProviderBenchmark[]) {
       bestRate = rate; previousRunId = run.id;
     }
     const last = Math.max(first, ...ordered.map(completedAt));
-    const padding = Math.max(referenceRate * .05, (bestRate - referenceRate) * .15, 1);
-    const min = Math.max(0, referenceRate - padding), max = bestRate + padding;
-    const y = (rate: number) => (max - rate) / (max - min) * 100;
+    const latestGain = points[points.length - 1].gain;
+    const maxGain = Math.max(5, Math.ceil(latestGain * 1.1));
     const plotted = points.map(point => ({ ...point, configuration: recordConfiguration(point.run),
-      x: first === last ? 50 : (point.time - first) / (last - first) * 100, y: y(point.rate) }));
+      x: first === last ? 50 : (point.time - first) / (last - first) * 100,
+      y: (1 - point.gain / maxGain) * 100 }));
     const latest = plotted[plotted.length - 1];
     const settings = comparisonSettings(reference);
-    return { key, fixed: isSavedRequestBenchmark(reference), reference, latest, first, last, min, max,
-      zero: y(referenceRate), points: plotted,
+    return { key, fixed: isSavedRequestBenchmark(reference), reference, latest, first, last, maxGain,
+      points: plotted,
       line: plotted.map(point => `${point.x},${point.y}`).join(' '),
       label: `${benchmarkDatasetLabel(reference)} · ${reference.provider_name} · ${reference.configuration['tool'] === 'logos-replay' ? 'Legacy replay' : 'GuideLLM'}`,
       runIds: ordered.filter(run => completedAt(run) >= first).map(run => run.id),

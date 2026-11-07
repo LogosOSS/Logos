@@ -247,7 +247,8 @@ The fixed reference remains unchanged after adoption. The next round measures th
 
 The recovery journal records adoption intent before the worker configuration changes.
 The worker must confirm the configuration, restart and model readiness before production traffic resumes.
-If adoption fails, then Logos restores the original configuration.
+If adoption fails, then Logos records a separate notification for Logos Admins and tries to restore the original configuration.
+The notification links to the eligible benchmark and shows the parameter values, throughput gain, and failure reason.
 If rollback fails, then the worker remains reserved until recovery succeeds.
 After an application restart, recovery completes the recorded adoption or restores the original settings.
 A disabled schedule cancels pending adoption.
@@ -255,7 +256,8 @@ The round report identifies an adopted benchmark or an adoption failure.
 
 The **Performance** tab contains the **Timeline** section.
 The chart starts with the first comparable baseline for each dataset and provider.
-The vertical axis shows output tokens per second. Subsequent points show only new throughput records.
+The vertical axis shows the percentage change from the starting baseline (0%).
+Subsequent points show only new throughput records. Select a point to see the rate in output tokens per second.
 Each point keeps the measurement date and configuration. Slower runs do not add points.
 Saved-request variants must pass the response and latency checks before they set a record.
 Select a point to open its benchmark. Expand **Record configurations** to read dates and parameters.
