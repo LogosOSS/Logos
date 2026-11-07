@@ -63,6 +63,10 @@ public class SecurityConfig {
                 // concurrency benchmark. Counters only; not routed via Traefik.
                 .requestMatchers("/internal/gateway_relay_stats", "/internal/gateway_relay_stats/**")
                     .permitAll()
+                // The deployers of the hosts ask for orders and report with a key of their own,
+                // checked in the controller. The key is not a JWT.
+                .requestMatchers(HttpMethod.POST, "/deployments/deployer/poll", "/deployments/deployer/report")
+                    .permitAll()
                 // Inference gateway authenticates Logos API keys in-controller;
                 // Bearer values on these paths are API keys, not JWTs.
                 .requestMatchers("/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**").permitAll()
@@ -217,7 +221,8 @@ public class SecurityConfig {
                     || "/internal/models_discovered".equals(path)
                     || "/internal/notifications".equals(path)
                     || path.equals("/internal/gateway_relay_stats")
-                    || path.startsWith("/internal/gateway_relay_stats/")) {
+                    || path.startsWith("/internal/gateway_relay_stats/")
+                    || path.startsWith("/deployments/deployer/")) {
                 return null;
             }
             // Logos API keys often arrive as Authorization: Bearer <key>. Do not

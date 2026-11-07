@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Deployments of Logos from Logos itself.
+
+         `deployers` are the programs on the hosts (the node manager) that obey this Logos: one row per host, with the
+         SHA-256 hash of its key. The key itself is shown once, when the row is made, and never stored.
+
+         `deployment_plans` are the to-do lists of one deployment of an environment: the core first, then all the
+         workers. A plan is `local` when an admin of this Logos started it, and `observed` when a deployer of another
+         environment reported it (a Logos that obeys several Logos instances reports to all of them).
+
+         `deployment_steps` are the work of one deployer within a plan. The id of a step is the deployment id that the
+         deployer knows. The status of a step is what Logos knows; `phase` is the phase the deployer reported.
+
+         A plan that is `local` and `running` is unique per environment: a second one is refused. The index makes
+         that true across several webservice copies. -->
+    <changeSet id="072-deployers" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="deployers"/></not>
+        </preConditions>
+        <sql><![CDATA[
+            CREATE TABLE deployers (
+                id UUID PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                environment VARCHAR(40) NOT NULL,
+                kind VARCHAR(16) NOT NULL CHECK (kind IN ('core', 'worker')),
+                key_hash VARCHAR(64) NOT NULL UNIQUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                last_seen_at TIMESTAMPTZ NULL,
+                version VARCHAR(40) NULL,
+                UNIQUE (environment, name)
+            );
+        ]]></sql>
+        <rollback>
+            <sql>DROP TABLE IF EXISTS deployers;</sql>
+        </rollback>
+    </changeSet>
+
+    <changeSet id="072-deployment-plans" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="deployment_plans"/></not>
+        </preConditions>
+        <sql><![CDATA[
+            CREATE TABLE deployment_plans (
+                id UUID PRIMARY KEY,
+                environment VARCHAR(40) NOT NULL,
+                tag VARCHAR(128) NOT NULL,
+                status VARCHAR(16) NOT NULL
+                    CHECK (status IN ('running', 'succeeded', 'failed', 'rolled_back')),
+                origin VARCHAR(16) NOT NULL CHECK (origin IN ('local', 'observed')),
+                initiator VARCHAR(200) NOT NULL,
+                initiator_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                reason TEXT NULL,
+                abandoned_by VARCHAR(200) NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                finished_at TIMESTAMPTZ NULL,
+                last_activity_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+
+            -- The history lists newest first.
+            CREATE INDEX idx_deployment_plans_created
+                ON deployment_plans (created_at DESC);
+
+            -- At most one running plan that this Logos started, per environment.
+            CREATE UNIQUE INDEX uq_deployment_plans_one_running
+                ON deployment_plans (environment)
+                WHERE status = 'running' AND origin = 'local';
+        ]]></sql>
+        <rollback>
+            <sql>DROP TABLE IF EXISTS deployment_plans;</sql>
+        </rollback>
+    </changeSet>
+
+    <changeSet id="072-deployment-steps" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="deployment_steps"/></not>
+        </preConditions>
+        <sql><![CDATA[
+            CREATE TABLE deployment_steps (
+                id UUID PRIMARY KEY,
+                plan_id UUID NOT NULL REFERENCES deployment_plans(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL,
+                kind VARCHAR(16) NOT NULL CHECK (kind IN ('core', 'worker')),
+                deployer_id UUID NULL REFERENCES deployers(id) ON DELETE SET NULL,
+                deployer_name VARCHAR(100) NOT NULL,
+                status VARCHAR(16) NOT NULL
+                    CHECK (status IN ('waiting', 'ordered', 'running', 'succeeded', 'unchanged',
+                                      'rolled_back', 'failed', 'cancelled')),
+                phase VARCHAR(16) NULL,
+                failure VARCHAR(40) NULL,
+                message TEXT NULL,
+                requested_by VARCHAR(300) NULL,
+                started_at TIMESTAMPTZ NULL,
+                finished_at TIMESTAMPTZ NULL,
+                last_activity_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                events JSONB NOT NULL DEFAULT '[]'::jsonb,
+                failure_logs TEXT NULL,
+                details JSONB NULL
+            );
+
+            CREATE INDEX idx_deployment_steps_plan
+                ON deployment_steps (plan_id, position);
+
+            -- A deployer asks for the steps that are ordered and not yet taken.
+            CREATE INDEX idx_deployment_steps_open_orders
+                ON deployment_steps (deployer_id)
+                WHERE status = 'ordered';
+
+            -- The sweep for silent deployers looks at the steps that have not ended.
+            CREATE INDEX idx_deployment_steps_active
+                ON deployment_steps (last_activity_at)
+                WHERE status IN ('ordered', 'running');
+        ]]></sql>
+        <rollback>
+            <sql>DROP TABLE IF EXISTS deployment_steps;</sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

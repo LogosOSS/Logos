@@ -76,4 +76,5 @@
     <include file="liquibase/changelog/069_nightly_request_sources.xml"/>
     <include file="liquibase/changelog/070_custom_permissions_team_boundary.xml"/>
     <include file="liquibase/changelog/071_node_model_config.xml"/>
+    <include file="liquibase/changelog/072_deployments.xml"/>
 </databaseChangeLog>
