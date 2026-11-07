@@ -91,6 +91,7 @@ describe('Deployments', () => {
   let service: Record<string, ReturnType<typeof vi.fn>>;
   let overview: DeploymentOverview;
   let plans: DeploymentPlan[];
+  let route: { query: Record<string, string> };
 
   const text = (): string => (fixture.nativeElement as HTMLElement).textContent ?? '';
 
@@ -105,6 +106,7 @@ describe('Deployments', () => {
   beforeEach(async () => {
     overview = makeOverview();
     plans = [makePlan()];
+    route = { query: {} };
     service = {
       getOverview: vi.fn().mockImplementation(async () => overview),
       getPlans: vi.fn().mockImplementation(async () => plans),
@@ -123,7 +125,10 @@ describe('Deployments', () => {
       providers: [
         provideRouter([]),
         { provide: DeploymentService, useValue: service },
-        { provide: ActivatedRoute, useValue: { snapshot: { paramMap: convertToParamMap({}) } } },
+        {
+          provide: ActivatedRoute,
+          useValue: { snapshot: { paramMap: convertToParamMap({}), queryParamMap: convertToParamMap(route.query) } },
+        },
       ],
     }).compileComponents();
   });
@@ -242,6 +247,37 @@ describe('Deployments', () => {
     await component.load(false);
     expect(component.loadError()).toBeNull();
     expect(component.overview()).not.toBeNull();
+  });
+
+  it('opens the environment named in the address, and writes the chosen one back to it', async () => {
+    overview = makeOverview({
+      environment: 'Prod',
+      targets: [makeTarget({ name: 'Prod' }), makeTarget({ name: 'Dev' })],
+    });
+    route.query = { env: 'Dev' };
+    TestBed.overrideProvider(ActivatedRoute, {
+      useValue: { snapshot: { paramMap: convertToParamMap({}), queryParamMap: convertToParamMap(route.query) } },
+    });
+    await create();
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+
+    expect(component.selectedEnv()).toBe('Dev');
+
+    await component.selectEnv('Prod');
+    expect(navigate).toHaveBeenCalledWith([], {
+      queryParams: { env: 'Prod' },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
+    });
+  });
+
+  it('ignores an environment in the address that does not exist', async () => {
+    overview = makeOverview({ environment: 'Dev', targets: [makeTarget({ name: 'Dev' })] });
+    TestBed.overrideProvider(ActivatedRoute, {
+      useValue: { snapshot: { paramMap: convertToParamMap({}), queryParamMap: convertToParamMap({ env: 'Nope' }) } },
+    });
+    await create();
+    expect(component.selectedEnv()).toBe('Dev');
   });
 
   it('shows the dot of an environment: the end of its last deployment, or an empty ring', async () => {
@@ -536,6 +572,12 @@ describe('DeploymentDetail', () => {
     fixture.detectChanges();
     await vi.waitFor(() => expect(fixture.componentInstance.loading()).toBe(false));
     expect(fixture.componentInstance.loadError()).not.toBeNull();
+  });
+
+  it('leads back to the environment of the deployment', async () => {
+    await create(makePlan({ environment: 'Dev', step_details: [makeStep()] }));
+    const link = fixture.nativeElement.querySelector('a.lg-breadcrumb') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('/deployments?env=Dev');
   });
 
   it('has no log panel and no abandon button for a deployment that succeeded', async () => {

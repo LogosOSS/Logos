@@ -9,7 +9,7 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { DeploymentService } from '../../core/services/deployment.service';
 import {
   Deployer,
@@ -61,6 +61,7 @@ const ENVIRONMENT_ORDER = ['Prod', 'Dev', 'Test'];
 export class Deployments implements OnInit {
   private service = inject(DeploymentService);
   private router = inject(Router);
+  private route = inject(ActivatedRoute);
   private destroyRef = inject(DestroyRef);
 
   readonly planLabel = PLAN_STATUS_LABEL;
@@ -159,8 +160,14 @@ export class Deployments implements OnInit {
       if (overview.enabled) {
         const names = this.targets().map((t) => t.name);
         if (!names.includes(this.selectedEnv())) {
+          // The environment in the address wins, so that a reload or the way back from a deployment keeps it.
+          const requested = this.route.snapshot.queryParamMap.get('env');
           this.selectedEnv.set(
-            overview.environment && names.includes(overview.environment) ? overview.environment : (names[0] ?? ''),
+            requested && names.includes(requested)
+              ? requested
+              : overview.environment && names.includes(overview.environment)
+                ? overview.environment
+                : (names[0] ?? ''),
           );
         }
         await this.loadPlans();
@@ -188,6 +195,7 @@ export class Deployments implements OnInit {
   async selectEnv(name: string): Promise<void> {
     if (name === this.selectedEnv()) return;
     this.selectedEnv.set(name);
+    void this.router.navigate([], { queryParams: { env: name }, queryParamsHandling: 'merge', replaceUrl: true });
     this.plans.set([]);
     this.runningDetail.set(null);
     this.startError.set(null);

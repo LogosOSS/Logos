@@ -1,5 +1,9 @@
 <div class="deployments">
-  <a class="lg-breadcrumb" routerLink="/deployments">
+  <a
+    class="lg-breadcrumb"
+    routerLink="/deployments"
+    [queryParams]="plan() ? { env: plan()?.environment } : null"
+  >
     <i class="pi pi-chevron-left" aria-hidden="true"></i> Deployments
   </a>
 
