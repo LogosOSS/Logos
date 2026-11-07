@@ -48,4 +48,13 @@ class DeploymentPropertiesTest {
         assertThat(properties.isProtected("PROD")).isTrue();
         assertThat(properties.isProtected("Dev")).isFalse();
     }
+
+    @Test
+    void namesAreStrippedAndEmptyOrRepeatedOnesAreDropped() {
+        DeploymentProperties properties =
+            new DeploymentProperties("Dev", List.of(" Dev ", "", "Test", "Test"), List.of(" Prod ", " "), null, null, null, null);
+
+        assertThat(properties.orderableEnvironments()).containsExactly("Dev", "Test");
+        assertThat(properties.protectedEnvironments()).containsExactly("Prod");
+    }
 }

@@ -223,6 +223,33 @@ def test_an_error_answer_says_whether_asking_again_can_help(logos, status, retry
     assert KEY not in str(caught.value)
 
 
+def test_an_answer_that_is_not_a_json_object_is_a_permanent_error(logos):
+    logos.answers = [(200, [1, 2])]
+
+    with pytest.raises(LogosError, match="not a JSON object") as caught:
+        client_for(logos).poll(1.0)
+
+    assert caught.value.retryable is False
+
+
+def test_an_error_answer_without_json_has_no_detail(logos):
+    logos.answers = [(500, b"<html>")]
+
+    with pytest.raises(LogosError) as caught:
+        client_for(logos).poll(1.0)
+
+    assert caught.value.retryable is True
+    assert "500" in str(caught.value)
+    assert ":" not in str(caught.value).split("500", 1)[1]
+
+
+def test_the_plan_of_an_order_that_is_not_an_object_is_dropped():
+    orders, rejections = parse_orders({"orders": [{"id": "o1", "tag": "v2", "plan": "text"}]})
+
+    assert orders == [Order(id="o1", tag="v2", requested_by="", plan={})]
+    assert rejections == []
+
+
 def test_an_answer_that_is_not_json_is_an_error(logos):
     logos.answers = [(200, b"<html>")]
 
@@ -470,3 +497,108 @@ def test_an_ending_from_logos_is_not_reported_to_the_orchestrator(make_deployer,
     deployer.report_pending()
 
     assert [report[0] for report in orchestrator.reports] == ["by-hand"]
+
+
+# ---------------------------------------------------------------------- The threads
+
+
+class PollClient(FakeClient):
+    """Answers a poll from a script and stops the link when the script is used up."""
+
+    def __init__(self, stop: threading.Event, script: list, name: str = "dev.example") -> None:
+        super().__init__(name)
+        self.stop = stop
+        self.script = list(script)
+
+    def poll(self, wait_s: float):
+        step = self.script.pop(0)
+        if not self.script:
+            self.stop.set()
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+def intake(link_settings, store, clock, script):
+    stop = threading.Event()
+    client = PollClient(stop, script)
+    link = LogosLink(link_settings, store, stop, [client], clock=clock)
+    return link, client, stop
+
+
+def test_the_link_exists_only_for_a_host_that_obeys_a_logos(settings, store):
+    stop = threading.Event()
+    with_logos = Settings.from_env({"NODE_MANAGER_LOGOS": f"https://a.example|{KEY}"})
+
+    assert LogosLink.from_settings(settings, store, stop) is None
+    assert LogosLink.from_settings(with_logos, store, stop) is not None
+
+
+def test_the_intake_accepts_orders_and_keeps_rejections_for_the_next_report(link_settings, store, clock):
+    link, client, _ = intake(
+        link_settings,
+        store,
+        clock,
+        [([order("o1")], [{"id": "o2", "rejected": "bad tag"}])],
+    )
+
+    link._intake_loop(client)
+
+    assert store.load("o1") is not None
+    assert link._rejections["dev.example"] == [{"id": "o2", "rejected": "bad tag"}]
+    assert link._wake.is_set()
+
+
+def test_the_intake_goes_on_after_an_error_of_logos(link_settings, store, clock):
+    link, client, _ = intake(link_settings, store, clock, [LogosError("down"), LogosError("down"), ([], [])])
+    link._stop.wait = lambda timeout=None: False  # no real pause between the tries
+
+    link._intake_loop(client)
+
+    assert client.script == []
+    assert link._complained == {}
+
+
+def test_the_intake_goes_on_after_an_unexpected_error(link_settings, store, clock):
+    link, client, _ = intake(link_settings, store, clock, [RuntimeError("boom"), ([], [])])
+    link._stop.wait = lambda timeout=None: False
+
+    link._intake_loop(client)
+
+    assert client.script == []
+
+
+def test_a_problem_with_a_logos_is_logged_once(link_settings, store, clock, caplog):
+    link = LogosLink(link_settings, store, threading.Event(), [FakeClient()], clock=clock)
+
+    with caplog.at_level("WARNING"):
+        link._complain("dev.example", "down")
+        link._complain("dev.example", "down")
+        link._complain("dev.example", "other")
+
+    assert [r.getMessage() for r in caplog.records] == ["down", "other"]
+
+
+def test_a_report_that_fails_unexpectedly_does_not_stop_the_reporter(link_settings, store, clock):
+    link, client, stop = intake(link_settings, store, clock, [([], [])])
+
+    def explode(c):
+        stop.set()
+        raise RuntimeError("boom")
+
+    link.report_once = explode
+    link._wake.set()
+
+    link._report_loop()
+
+    assert stop.is_set()
+
+
+def test_the_threads_start_and_end_when_the_link_stops(link_settings, store, clock):
+    link, client, stop = intake(link_settings, store, clock, [([], [])])
+
+    link.start()
+    link.join(timeout_s=5.0)
+
+    assert stop.is_set()
+    assert all(not thread.is_alive() for thread in link._threads)

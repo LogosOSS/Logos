@@ -205,6 +205,208 @@ describe('Deployments', () => {
     expect(service['startPlan']).not.toHaveBeenCalled();
     expect(component.startError()).toContain('Type prod to confirm');
   });
+
+  it('shows why the page could not load', async () => {
+    service['getOverview'].mockRejectedValueOnce(new Error('down'));
+    await create();
+    expect(component.loadError()).not.toBeNull();
+    expect(text()).toContain('could not be loaded');
+  });
+
+  it('loads the plans of another environment when it is chosen, and does nothing for the chosen one', async () => {
+    overview = makeOverview({ targets: [makeTarget({ name: 'Dev' }), makeTarget({ name: 'Test' })] });
+    await create();
+    service['getPlans'].mockClear();
+
+    await component.selectEnv('Dev');
+    expect(service['getPlans']).not.toHaveBeenCalled();
+
+    component.confirmation.set('typed');
+    await component.selectEnv('Test');
+    expect(component.selectedEnv()).toBe('Test');
+    expect(component.confirmation()).toBe('');
+    expect(service['getPlans']).toHaveBeenCalledWith('Test', 50);
+  });
+
+  it('shows an error when the plans of the chosen environment cannot be loaded', async () => {
+    overview = makeOverview({ targets: [makeTarget({ name: 'Dev' }), makeTarget({ name: 'Test' })] });
+    await create();
+    service['getPlans'].mockRejectedValueOnce(new Error('down'));
+    await component.selectEnv('Test');
+    expect(component.loadError()).not.toBeNull();
+  });
+
+  it('keeps the page when a later reload fails', async () => {
+    await create();
+    service['getOverview'].mockRejectedValueOnce(new Error('down'));
+    await component.load(false);
+    expect(component.loadError()).toBeNull();
+    expect(component.overview()).not.toBeNull();
+  });
+
+  it('shows the dot of an environment: the end of its last deployment, or an empty ring', async () => {
+    await create();
+    expect(component.envDot(makeTarget({ last_status: 'rolled_back' }))).toBe('rolled-back');
+    expect(component.envDot(makeTarget({ last_status: null }))).toBe('none');
+  });
+
+  it('refuses to start without a tag', async () => {
+    await create();
+    component.tag.set('  ');
+    await component.deploy();
+    expect(service['startPlan']).not.toHaveBeenCalled();
+    expect(component.startError()).toContain('image tag');
+  });
+
+  it('shows the error when a deployment cannot be started', async () => {
+    await create();
+    service['startPlan'].mockRejectedValueOnce(new Error('refused'));
+    await component.deploy();
+    expect(component.startError()).not.toBeNull();
+    expect(component.starting()).toBe(false);
+  });
+
+  describe('abandoning', () => {
+    beforeEach(() => {
+      plans = [makePlan({ id: 'run', number: 12, status: 'running', finished_at: null })];
+    });
+
+    it('asks first and abandons the running deployment', async () => {
+      await create();
+      component.askAbandon();
+      expect(component.abandonOpen()).toBe(true);
+
+      await component.confirmAbandon();
+
+      expect(service['abandonPlan']).toHaveBeenCalledWith('run');
+      expect(component.abandonOpen()).toBe(false);
+    });
+
+    it('keeps the dialog open and says why when it fails', async () => {
+      await create();
+      service['abandonPlan'].mockRejectedValueOnce(new Error('no'));
+      component.askAbandon();
+      await component.confirmAbandon();
+      expect(component.abandonOpen()).toBe(true);
+      expect(component.abandonError()).not.toBeNull();
+      component.closeAbandon();
+      expect(component.abandonOpen()).toBe(false);
+    });
+
+    it('does nothing when no deployment runs', async () => {
+      plans = [makePlan()];
+      await create();
+      await component.confirmAbandon();
+      expect(service['abandonPlan']).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('deployers', () => {
+    const created = { deployer: makeDeployer({ id: 'd-new', name: 'deioma', kind: 'worker' }), key: 'secret-key' };
+
+    it('makes a deployer and shows its key once', async () => {
+      service['createDeployer'].mockResolvedValue(created);
+      await create();
+      component.toggleAdd();
+      expect(component.addOpen()).toBe(true);
+      component.newName.set('  deioma ');
+      component.newKind.set('worker');
+
+      await component.createDeployer();
+
+      expect(service['createDeployer']).toHaveBeenCalledWith('deioma', 'Dev', 'worker');
+      expect(component.createdKey()).toEqual(created);
+      expect(component.addOpen()).toBe(false);
+      expect(component.newName()).toBe('');
+      component.closeKey();
+      expect(component.createdKey()).toBeNull();
+    });
+
+    it('asks for a name', async () => {
+      await create();
+      await component.createDeployer();
+      expect(service['createDeployer']).not.toHaveBeenCalled();
+      expect(component.createError()).toContain('name');
+    });
+
+    it('shows the error when a deployer cannot be made', async () => {
+      service['createDeployer'].mockRejectedValue(new Error('exists'));
+      await create();
+      component.newName.set('deioma');
+      await component.createDeployer();
+      expect(component.createError()).not.toBeNull();
+      expect(component.creating()).toBe(false);
+    });
+
+    it('gives a deployer a new key and shows it', async () => {
+      service['replaceDeployerKey'].mockResolvedValue({ deployer: makeDeployer(), key: 'another' });
+      await create();
+      component.replaceTarget.set(makeDeployer());
+      await component.confirmReplaceKey();
+      expect(service['replaceDeployerKey']).toHaveBeenCalledWith('d-core');
+      expect(component.createdKey()?.key).toBe('another');
+      expect(component.replaceTarget()).toBeNull();
+    });
+
+    it('keeps the dialog of a new key and says why when it fails', async () => {
+      service['replaceDeployerKey'].mockRejectedValue(new Error('no'));
+      await create();
+      component.replaceTarget.set(makeDeployer());
+      await component.confirmReplaceKey();
+      expect(component.deployerError()).not.toBeNull();
+      expect(component.replaceTarget()).not.toBeNull();
+    });
+
+    it('removes a deployer', async () => {
+      service['deleteDeployer'].mockResolvedValue(undefined);
+      await create();
+      component.removeTarget.set(makeDeployer());
+      await component.confirmRemove();
+      expect(service['deleteDeployer']).toHaveBeenCalledWith('d-core');
+      expect(component.removeTarget()).toBeNull();
+    });
+
+    it('keeps the dialog of a removal and says why when it fails', async () => {
+      service['deleteDeployer'].mockRejectedValue(new Error('no'));
+      await create();
+      component.removeTarget.set(makeDeployer());
+      await component.confirmRemove();
+      expect(component.deployerError()).not.toBeNull();
+      expect(component.removeTarget()).not.toBeNull();
+    });
+
+    it('does nothing for a key or a removal that nobody chose', async () => {
+      await create();
+      await component.confirmReplaceKey();
+      await component.confirmRemove();
+      expect(service['replaceDeployerKey']).not.toHaveBeenCalled();
+      expect(service['deleteDeployer']).not.toHaveBeenCalled();
+    });
+
+    it('copies the key to the clipboard', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      try {
+        await create();
+        component.createdKey.set(created);
+        await component.copyKey();
+        expect(writeText).toHaveBeenCalledWith('secret-key');
+        expect(component.keyCopied()).toBe(true);
+
+        writeText.mockRejectedValueOnce(new Error('denied'));
+        await component.copyKey();
+        expect(component.keyCopied()).toBe(false);
+      } finally {
+        Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+      }
+    });
+
+    it('copies nothing when there is no key', async () => {
+      await create();
+      await component.copyKey();
+      expect(component.keyCopied()).toBe(false);
+    });
+  });
 });
 
 describe('DeploymentDetail', () => {
@@ -244,6 +446,96 @@ describe('DeploymentDetail', () => {
     expect(text).toContain('pulled the images');
     expect(text).toContain('Container log');
     expect(text).toContain('health check failed');
+  });
+
+  it('abandons a running deployment after asking', async () => {
+    await create(makePlan({ id: 'run', status: 'running', finished_at: null, step_details: [makeStep()] }));
+    const component = fixture.componentInstance;
+    component.askAbandon();
+    expect(component.abandonOpen()).toBe(true);
+    service['abandonPlan'].mockResolvedValue(makePlan({ status: 'failed' }));
+
+    await component.confirmAbandon();
+
+    expect(service['abandonPlan']).toHaveBeenCalledWith('run');
+    expect(component.abandonOpen()).toBe(false);
+  });
+
+  it('says why a deployment could not be abandoned', async () => {
+    await create(makePlan({ id: 'run', status: 'running', finished_at: null, step_details: [makeStep()] }));
+    const component = fixture.componentInstance;
+    service['abandonPlan'].mockRejectedValue(new Error('no'));
+    component.askAbandon();
+    await component.confirmAbandon();
+    expect(component.abandonError()).not.toBeNull();
+    component.closeAbandon();
+    expect(component.abandonOpen()).toBe(false);
+  });
+
+  it('copies the container log', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    try {
+      await create(
+        makePlan({
+          status: 'failed',
+          step_details: [makeStep({ status: 'failed', failure: 'swap_failed', failure_logs: 'port in use' })],
+        }),
+      );
+      const component = fixture.componentInstance;
+      await component.copyLog();
+      expect(writeText).toHaveBeenCalledWith('port in use');
+      expect(component.copied()).toBe(true);
+      writeText.mockRejectedValueOnce(new Error('denied'));
+      await component.copyLog();
+      expect(component.copied()).toBe(false);
+    } finally {
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    }
+  });
+
+  it('copies nothing when the deployment has no log', async () => {
+    await create(makePlan({ step_details: [makeStep()] }));
+    await fixture.componentInstance.copyLog();
+    expect(fixture.componentInstance.copied()).toBe(false);
+  });
+
+  it('says how long a deployment took, in seconds, minutes or hours', async () => {
+    await create(makePlan({ created_at: '2026-11-07T09:00:00.000Z', finished_at: '2026-11-07T09:00:42.000Z', step_details: [] }));
+    expect(fixture.componentInstance.duration()).toBe('42s');
+    fixture.componentInstance.plan.set(makePlan({ finished_at: '2026-11-07T09:06:12.000Z' }));
+    expect(fixture.componentInstance.duration()).toBe('6m 12s');
+    fixture.componentInstance.plan.set(makePlan({ finished_at: '2026-11-07T12:04:00.000Z' }));
+    expect(fixture.componentInstance.duration()).toBe('3h 4m');
+  });
+
+  it('counts the time of a running deployment up', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-11-07T09:05:00.000Z'));
+      await create(makePlan({ status: 'running', finished_at: null, step_details: [] }));
+      expect(fixture.componentInstance.duration()).toBe('5m 0s');
+      vi.advanceTimersByTime(3000);
+      expect(fixture.componentInstance.duration()).toBe('5m 3s');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows why the deployment could not be loaded', async () => {
+    service = { getPlan: vi.fn().mockRejectedValue(new Error('gone')), abandonPlan: vi.fn() };
+    await TestBed.configureTestingModule({
+      imports: [DeploymentDetail],
+      providers: [
+        provideRouter([]),
+        { provide: DeploymentService, useValue: service },
+        { provide: ActivatedRoute, useValue: { snapshot: { paramMap: convertToParamMap({ id: 'x' }) } } },
+      ],
+    }).compileComponents();
+    fixture = TestBed.createComponent(DeploymentDetail);
+    fixture.detectChanges();
+    await vi.waitFor(() => expect(fixture.componentInstance.loading()).toBe(false));
+    expect(fixture.componentInstance.loadError()).not.toBeNull();
   });
 
   it('has no log panel and no abandon button for a deployment that succeeded', async () => {
