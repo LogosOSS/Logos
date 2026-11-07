@@ -68,7 +68,7 @@ def scheduler(monkeypatch):
     monkeypatch.setattr(module.store, "adoption_candidate", MagicMock(return_value=None))
     monkeypatch.setattr(module.store, "finalize_continuations", MagicMock())
     service.saved = []
-    monkeypatch.setattr(module.store, "save", lambda *args: service.saved.append(args))
+    monkeypatch.setattr(module.store, "save", MagicMock(side_effect=lambda *args, **_: service.saved.append(args)))
     monkeypatch.setattr(
         module.store,
         "finish",
@@ -165,6 +165,39 @@ async def test_adopted_parameters_keep_unrelated_lane_settings_and_use_worker_fl
     assert journal["vllm_config"] == original
 
 
+async def test_adoption_keeps_the_ready_lane_when_it_already_runs_the_winner(scheduler):
+    scheduler.restore = module.NightlyScheduler.restore.__get__(scheduler)
+    original = {"max_num_seqs": 16}
+    current = {"max_num_seqs": 20, "extra_args": ["--max-num-batched-tokens", "5120"]}
+    journal = {
+        "provider_id": 20,
+        "model": "model",
+        "lane_id": "lane",
+        "vllm_config": original,
+        "lane_config": {"vllm_config": original},
+        "adoption": adoption(),
+    }
+    scheduler.registry.send_command.return_value = {
+        "lanes": [
+            {
+                "lane_id": "lane",
+                "model": "model",
+                "lane_config": {"vllm_config": current},
+                "runtime_state": "loaded",
+                "sleep_state": "awake",
+                "active_requests": 0,
+            }
+        ]
+    }
+
+    report = []
+    await scheduler.settle(31, journal, report)
+
+    scheduler.registry.send_command.assert_awaited_once_with(20, "get_lanes", {}, timeout_seconds=30)
+    scheduler.planner.prepare_benchmark_lane.assert_not_called()
+    assert report == [{"status": "adopted", **adoption()}]
+
+
 async def test_disabled_schedule_discards_pending_adoption_during_recovery(scheduler, monkeypatch):
     monkeypatch.setattr(module.store, "status", lambda _: {"enabled": False})
     journal = {"provider_id": 20, "adoption": adoption()}
@@ -182,7 +215,8 @@ async def test_confirmation_failure_keeps_worker_reserved_until_original_setting
     with pytest.raises(RuntimeError, match="Rollback failed"):
         await scheduler.settle(31, journal, report)
     assert "adoption" not in journal
-    assert report[0]["status"] == "adoption_failed"
+    assert report[0] == {**adoption(), "status": "adoption_failed", "reason": "Adoption failed"}
+    assert module.store.save.call_args.kwargs["adoption_failure"] == report[0]
 
 
 async def test_pending_adoption_is_completed_after_restart(scheduler):

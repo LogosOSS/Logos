@@ -62,6 +62,22 @@ def status_description(status):
 def notification_message(payload):
     """Describe the night's outcome, including recovery and the measured result."""
     status = payload["status"]
+    if status == "adoption_failed":
+        settings = [
+            f"{label} {payload['parameters'][key]}"
+            for key, label in (("max_num_seqs", "Max sequences"), ("max_num_batched_tokens", "Max batched tokens"))
+            if key in payload["parameters"]
+        ]
+        benchmark = payload["benchmark_id"]
+        gain = (payload["throughput"] / payload["baseline_throughput"] - 1) * 100
+        return "Nightly configuration adoption failed", "\n".join(
+            [
+                f"{payload['provider_name']} · Benchmark #{benchmark} · {' · '.join(settings)}",
+                f"Measured {payload['throughput']:.1f} tok/s ({gain:+.1f}% vs. baseline #{payload['baseline_id']}).",
+                f"Could not apply the improved configuration. {payload['reason'].rstrip('.')}.",
+                "Check the nightly report for the status of the rollback.",
+            ]
+        )
     title = "Nightly benchmark interrupted" if status.startswith("interrupted") else "Nightly benchmark finished"
     lines = [
         f"{payload['provider_name']} · {payload['successful_configurations']} successful configurations",

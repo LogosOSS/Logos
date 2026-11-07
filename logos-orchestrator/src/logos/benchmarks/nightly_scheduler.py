@@ -187,7 +187,21 @@ class NightlyScheduler:
             raise RuntimeError("Worker is offline, calibrating or cordoned; restoration is pending")
         benchmark_reservations.reserve(provider_id, "*", -pair_id)
         runtime = await self.registry.send_command(provider_id, "get_lanes", {}, timeout_seconds=30)
-        if not any(lane.get("lane_id") == recovery["lane_id"] for lane in runtime.get("lanes", [])):
+        lane = next((item for item in runtime.get("lanes", []) if item.get("lane_id") == recovery["lane_id"]), None)
+        # Keep a tested winner that is still serving the exact settings on this reserved lane.
+        if (
+            recovery.get("adoption")
+            and lane is not None
+            and lane.get("model") == recovery["model"]
+            and (lane.get("lane_config") or {}).get("vllm_config") == recovery["vllm_config"]
+            and lane.get("runtime_state") in {"loaded", "running"}
+            and lane.get("sleep_state") in {"awake", "unsupported"}
+            and lane.get("transition") is None
+            and lane.get("active_requests") == 0
+            and not any((lane.get("backend_metrics") or {}).get(key) for key in ("requests_running", "queue_waiting"))
+        ):
+            return
+        if lane is None:
             result = await self.registry.send_command(
                 provider_id, "add_lane", recovery["lane_config"], timeout_seconds=900
             )
@@ -236,11 +250,10 @@ class NightlyScheduler:
             if not adoption or not LEASE_CHECK.get()():
                 raise
             recovery.pop("adoption")
-            report.append(
-                {"status": "adoption_failed", "benchmark_id": adoption["benchmark_id"], "reason": str(exc)[:1000]}
-            )
-            # Persist rollback intent before sending another worker command.
-            store.save(pair_id, "running", report, recovery)
+            failure = {**adoption, "status": "adoption_failed", "reason": str(exc)[:1000]}
+            report.append(failure)
+            # Persist rollback intent and the admin alert before sending another worker command.
+            store.save(pair_id, "running", report, recovery, adoption_failure=failure)
             await self.restore(pair_id, recovery)
             if not LEASE_CHECK.get()():
                 raise RuntimeError("Maintenance lock lost; worker recovery remains pending")
