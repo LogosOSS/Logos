@@ -417,6 +417,13 @@ services:
       KEYCLOAK_SYNC_ENABLED: "${KEYCLOAK_SYNC_ENABLED:-false}"
       KEYCLOAK_SYNC_CLIENT_ID: "${KEYCLOAK_SYNC_CLIENT_ID:-logos-sync}"
       KEYCLOAK_SYNC_CLIENT_SECRET: "${KEYCLOAK_SYNC_CLIENT_SECRET:-}"
+      # Deployments from Logos. Off while LOGOS_DEPLOYMENTS_ENVIRONMENT is empty. The environment is the name of this
+      # Logos (Prod, Dev or Test). Prod lists Dev and Test in LOGOS_DEPLOYMENTS_ORDERABLE_ENVIRONMENTS as well.
+      # See docs/deployment.md#deployments-from-logos.
+      LOGOS_DEPLOYMENTS_ENVIRONMENT: "${LOGOS_DEPLOYMENTS_ENVIRONMENT:-}"
+      LOGOS_DEPLOYMENTS_ORDERABLE_ENVIRONMENTS: "${LOGOS_DEPLOYMENTS_ORDERABLE_ENVIRONMENTS:-}"
+      LOGOS_DEPLOYMENTS_PROTECTED_ENVIRONMENTS: "${LOGOS_DEPLOYMENTS_PROTECTED_ENVIRONMENTS:-Prod}"
+      LOGOS_DEPLOYMENTS_SILENCE_LIMIT: "${LOGOS_DEPLOYMENTS_SILENCE_LIMIT:-30m}"
       # Origins the webservice accepts browser requests from. Browsers attach an
       # Origin header to POST requests and WebSocket handshakes even when the UI
       # and API share an origin, so the Spring CorsFilter rejects every POST/WS
@@ -488,6 +495,15 @@ services:
       - "traefik.http.routers.webservice-admin.service=logos-webservice-svc"
       - "traefik.http.routers.webservice-admin.middlewares=strip-api,rl-admin"
       - "traefik.http.routers.webservice-admin.priority=200"
+
+      # === Routing: /api/deployments (the deployments page, and the deployers of the hosts) ===
+      # The page uses a JWT. The deployers use a key of their own, checked in the controller. Their requests wait up
+      # to 30 s for an order (long polling), which the rate limit counts as one request.
+      - "traefik.http.routers.webservice-deployments.rule=PathPrefix(`/api/deployments`)"
+      - "traefik.http.routers.webservice-deployments.entrypoints=internal8090"
+      - "traefik.http.routers.webservice-deployments.service=logos-webservice-svc"
+      - "traefik.http.routers.webservice-deployments.middlewares=strip-api,rl-admin"
+      - "traefik.http.routers.webservice-deployments.priority=200"
 
       # === Routing: /api/ws/stats, /api/ws/stats/v2, /api/ws/notifications (WebSocket) ===
       - "traefik.http.routers.webservice-ws.rule=Path(`/api/ws/stats`) || Path(`/api/ws/stats/v2`) || Path(`/api/ws/notifications`)"
