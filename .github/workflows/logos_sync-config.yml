@@ -1,0 +1,249 @@
+name: Logos - Sync host config
+
+# A deployment from Logos carries only an image tag. Everything else a host needs comes from this workflow: the
+# settings file (.env), the compose file and, if asked, the deployer. Run it when a setting, a secret or the compose file
+# changed, before the deployment that needs the change. A new .env takes effect at the next deployment of the host,
+# because that is when Compose replaces the services whose settings changed.
+#
+# GitHub stays the owner of the settings. Logos holds no secret of a host.
+#
+#  * The .env holds only the names that the compose files of the host read, not every secret of the repository. The names
+#    come from the files themselves, so a new variable in a compose file needs no change here. Names that Compose or the
+#    deployer read from the file by themselves are listed in EXTRA_NAMES below.
+#  * The compose file is copied from the branch the workflow runs on. A host of Prod takes it from main only.
+#  * `install-deployer` is off by default. It installs the deployer of a core host, or updates the node manager of a
+#    worker (which also applies new Logos keys). It never touches the services of Logos.
+#
+# The check for main below is in this file, and a branch can change its own copy of the file. Restrict the environments of
+# Prod to the branch main in the settings of the repository to make the rule hold.
+
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: "The host: the name of its GitHub environment"
+        type: choice
+        required: true
+        options:
+          - Test
+          - Dev
+          - hochbruegge-vm-2
+          - Prod
+          - deioma
+          - deimama
+          - deipapa
+          - hochbruegge-vm-1
+      install-deployer:
+        description: "Also install or update the deployer of the host"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: logos-sync-config-${{ inputs.host }}
+  cancel-in-progress: false
+
+env:
+  # Read from the .env file by Compose or by the deployer, without a ${NAME} in a compose file.
+  EXTRA_NAMES: "COMPOSE_PROFILES LOGOS_WEBSERVICE_REPLICAS"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.host }}
+    steps:
+      - name: Look up the host
+        id: host
+        env:
+          HOST: ${{ inputs.host }}
+        run: |
+          case "$HOST" in
+            Test | Dev)
+              echo "kind=core" >> "$GITHUB_OUTPUT"
+              echo "base-path=/opt/logos" >> "$GITHUB_OUTPUT"
+              echo "prod=false" >> "$GITHUB_OUTPUT"
+              ;;
+            Prod)
+              echo "kind=core" >> "$GITHUB_OUTPUT"
+              echo "base-path=/opt/logos" >> "$GITHUB_OUTPUT"
+              echo "prod=true" >> "$GITHUB_OUTPUT"
+              ;;
+            hochbruegge-vm-2)
+              echo "kind=worker" >> "$GITHUB_OUTPUT"
+              echo "base-path=/opt/logos-workernode" >> "$GITHUB_OUTPUT"
+              echo "prod=false" >> "$GITHUB_OUTPUT"
+              ;;
+            deioma | deimama | deipapa | hochbruegge-vm-1)
+              echo "kind=worker" >> "$GITHUB_OUTPUT"
+              echo "base-path=/opt/logos-workernode" >> "$GITHUB_OUTPUT"
+              echo "prod=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unknown host: $HOST" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: A host of Prod takes its files from main only
+        if: ${{ steps.host.outputs.prod == 'true' && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "The host ${{ inputs.host }} belongs to Prod. Run this workflow from the branch main, not from ${{ github.ref_name }}." >&2
+          exit 1
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Prepare the files
+        env:
+          KIND: ${{ steps.host.outputs.kind }}
+        run: |
+          set -eu
+          mkdir -p out
+          if [ "$KIND" = "core" ]; then
+            cp docker-compose.yaml out/docker-compose.yaml
+            cp logos-node-manager/docker-compose.core.yml out/docker-compose.deployer.yml
+          else
+            cp logos-workernode/docker-compose.yml out/docker-compose.yml
+          fi
+
+      - name: Create .env file
+        env:
+          HOST: ${{ inputs.host }}
+          KIND: ${{ steps.host.outputs.kind }}
+          REGISTRY_HOST: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          VARS_CONTEXT: ${{ toJson(vars) }}
+          SECRETS_CONTEXT: ${{ toJson(secrets) }}
+        run: |
+          set -eu
+          # Every ${NAME} that a compose file of the host reads, and the names that are read in other ways.
+          if [ "$KIND" = "core" ]; then
+            files="out/docker-compose.yaml out/docker-compose.deployer.yml"
+          else
+            files="out/docker-compose.yml"
+          fi
+          names="$(grep -ohE '\$\{[A-Za-z_][A-Za-z0-9_]*' $files | sed 's/^\${//' | sort -u | tr '\n' ' ') $EXTRA_NAMES"
+
+          # Written first. The image tag is not written: a deployment from Logos gives it to Compose with each order.
+          echo "ENVIRONMENT=$HOST" > out/.env
+          echo "REGISTRY=$REGISTRY_HOST/logos" >> out/.env
+
+          # Variables win over secrets of the same name. Only the wanted names pass, and no value is printed.
+          jq -s '.[0] + .[1]' <(printf '%s' "$SECRETS_CONTEXT") <(printf '%s' "$VARS_CONTEXT") > out/available.json
+          jq -r --arg names "$names" '
+            ($names | split(" ") | map(select(length > 0))) as $wanted
+            | to_entries[]
+            | select(.key as $key | ($wanted | index($key)) != null and $key != "IMAGE_TAG" and $key != "REGISTRY")
+            | "\(.key)=\(.value | @json)"
+          ' out/available.json >> out/.env
+          rm out/available.json
+
+          # A worker runs the node manager, and drains its node before it replaces the container.
+          if [ "$KIND" = "worker" ]; then
+            echo "COMPOSE_PROFILES=node-manager" >> out/.env
+            echo "NODE_MANAGER_DRAIN_ENABLED=true" >> out/.env
+          fi
+
+          echo "Names written to the .env file of $HOST (values are not shown):"
+          cut -d= -f1 out/.env | sort | sed 's/^/  /'
+          echo "Names that the compose files read and that GitHub does not set (the defaults of the files apply):"
+          for name in $names; do
+            if ! grep -q "^$name=" out/.env; then echo "  $name"; fi
+          done
+
+      - name: Copy the files to the host
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ vars.VM_HOST }}
+          username: ${{ vars.VM_USERNAME }}
+          key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          proxy_host: ${{ vars.DEPLOYMENT_GATEWAY_HOST }}
+          proxy_username: ${{ vars.DEPLOYMENT_GATEWAY_USER }}
+          proxy_key: ${{ secrets.DEPLOYMENT_GATEWAY_SSH_KEY }}
+          proxy_port: ${{ vars.DEPLOYMENT_GATEWAY_PORT }}
+          source: "out/*,out/.env"
+          target: ${{ steps.host.outputs.base-path }}
+          strip_components: 1
+          overwrite: true
+
+      - name: Install the deployer of a core host
+        if: ${{ inputs.install-deployer && steps.host.outputs.kind == 'core' }}
+        uses: appleboy/ssh-action@v1.2.5
+        env:
+          LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        with:
+          host: ${{ vars.VM_HOST }}
+          username: ${{ vars.VM_USERNAME }}
+          key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          proxy_host: ${{ vars.DEPLOYMENT_GATEWAY_HOST }}
+          proxy_username: ${{ vars.DEPLOYMENT_GATEWAY_USER }}
+          proxy_key: ${{ secrets.DEPLOYMENT_GATEWAY_SSH_KEY }}
+          proxy_port: ${{ vars.DEPLOYMENT_GATEWAY_PORT }}
+          command_timeout: 15m
+          envs: LOGOS_HARBOR_PASSWORD
+          script: |
+            set -eu
+            BASE=${{ steps.host.outputs.base-path }}
+            # The login of the deploy user serves the pull below. The deployer reads its own login from .docker.
+            printf '%s' "$LOGOS_HARBOR_PASSWORD" | docker login ${{ vars.LOGOS_HARBOR_REGISTRY }} -u '${{ vars.LOGOS_HARBOR_USER }}' --password-stdin
+            mkdir -p -m 700 "$BASE/.docker"
+            printf '%s' "$LOGOS_HARBOR_PASSWORD" | DOCKER_CONFIG="$BASE/.docker" docker login ${{ vars.LOGOS_HARBOR_REGISTRY }} -u '${{ vars.LOGOS_HARBOR_USER }}' --password-stdin
+            mkdir -p "$BASE/node-manager"
+            # A project of its own: a deployment of Logos must not restart or remove the deployer.
+            compose() {
+              docker compose -p logos-deployer -f "$BASE/docker-compose.deployer.yml" --env-file="$BASE/.env" "$@"
+            }
+            compose pull logos-deployer
+            compose up -d logos-deployer
+            for attempt in $(seq 1 30); do
+              if docker exec logos-deployer node-manager ping; then
+                docker image prune -a -f --filter label=io.logos.component=node-manager \
+                  || echo "The unused node manager images were not removed." >&2
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "The deployer did not start." >&2
+            docker logs --tail 50 logos-deployer >&2
+            exit 1
+
+      - name: Update the node manager of a worker
+        if: ${{ inputs.install-deployer && steps.host.outputs.kind == 'worker' }}
+        uses: appleboy/ssh-action@v1.2.5
+        env:
+          LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        with:
+          host: ${{ vars.VM_HOST }}
+          username: ${{ vars.VM_USERNAME }}
+          key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          proxy_host: ${{ vars.DEPLOYMENT_GATEWAY_HOST }}
+          proxy_username: ${{ vars.DEPLOYMENT_GATEWAY_USER }}
+          proxy_key: ${{ secrets.DEPLOYMENT_GATEWAY_SSH_KEY }}
+          proxy_port: ${{ vars.DEPLOYMENT_GATEWAY_PORT }}
+          command_timeout: 15m
+          envs: LOGOS_HARBOR_PASSWORD
+          script: |
+            set -eu
+            BASE=${{ steps.host.outputs.base-path }}
+            printf '%s' "$LOGOS_HARBOR_PASSWORD" | docker login ${{ vars.LOGOS_HARBOR_REGISTRY }} -u '${{ vars.LOGOS_HARBOR_USER }}' --password-stdin
+            mkdir -p -m 700 "$BASE/.docker"
+            printf '%s' "$LOGOS_HARBOR_PASSWORD" | DOCKER_CONFIG="$BASE/.docker" docker login ${{ vars.LOGOS_HARBOR_REGISTRY }} -u '${{ vars.LOGOS_HARBOR_USER }}' --password-stdin
+            compose() {
+              docker compose -f "$BASE/docker-compose.yml" --env-file="$BASE/.env" "$@"
+            }
+            # Compose replaces the node manager if its image or its settings (the Logos keys) changed.
+            compose pull logos-node-manager
+            compose up -d logos-node-manager
+            for attempt in $(seq 1 30); do
+              if docker exec logos-node-manager node-manager ping; then
+                docker image prune -a -f --filter label=io.logos.component=node-manager \
+                  || echo "The unused node manager images were not removed." >&2
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "The node manager did not start." >&2
+            docker logs --tail 50 logos-node-manager >&2
+            exit 1

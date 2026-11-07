@@ -170,6 +170,11 @@ services:
       NODE_MANAGER_DRAIN_ENABLED: ${NODE_MANAGER_DRAIN_ENABLED:-false}
       NODE_MANAGER_ORCHESTRATOR_URL: ${LOGOS_URL:-}
       NODE_MANAGER_NODE_KEY: ${LOGOS_API_KEY:-}
+      # The Logos instances this host obeys. Orders come from them, and each one is told how the deployments go. The
+      # own Logos is LOGOS_URL with the deployer key LOGOS_DEPLOYER_KEY (made on the page Deployments). A Dev or Test host
+      # also obeys Prod: LOGOS_PROD_URL with a key that Prod made. An entry without a key is skipped, so a host
+      # without these variables takes no orders from Logos. The deploy workflows and the command line still work.
+      NODE_MANAGER_LOGOS: "${LOGOS_URL:-}|${LOGOS_DEPLOYER_KEY:-},${LOGOS_PROD_URL:-}|${LOGOS_PROD_DEPLOYER_KEY:-}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${NODE_MANAGER_PROJECT_DIR:-/opt/logos-workernode}:${NODE_MANAGER_PROJECT_DIR:-/opt/logos-workernode}:ro

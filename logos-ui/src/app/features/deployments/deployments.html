@@ -1,0 +1,476 @@
+<div class="deployments">
+  <h1 class="page-title">Deployments</h1>
+  <p class="page-subtitle">
+    Deploy Logos from this page. A deployer on each host takes the order, replaces the services,
+    checks them, and reports how it went. The core goes first, then all workers.
+  </p>
+
+  @if (loading()) {
+    <p class="muted">Loading deployments…</p>
+  } @else if (loadError()) {
+    <div class="alert alert--error" role="alert">{{ loadError() }}</div>
+  } @else if (overview(); as ov) {
+    @if (!ov.enabled) {
+      <!-- A Logos that no deployer obeys, for example one from the installation guide. -->
+      <section class="panel panel--empty" aria-labelledby="not-set-up">
+        <i class="pi pi-box panel__icon" aria-hidden="true"></i>
+        <h2 class="panel__title" id="not-set-up">Deployments are not set up on this Logos</h2>
+        <p class="panel__text">
+          A deployer on each host takes the orders of this page. To set them up, follow the section
+          “Deployments from Logos” in the deployment guide.
+        </p>
+      </section>
+    } @else {
+      <!-- ── Environment switch ──────────────────────────────────────────────── -->
+      <div class="env-switch" role="tablist" aria-label="Environment">
+        @for (t of ov.targets; track t.name) {
+          <button
+            type="button"
+            role="tab"
+            class="env-switch__tab"
+            [class.env-switch__tab--active]="t.name === selectedEnv()"
+            [attr.aria-selected]="t.name === selectedEnv()"
+            (click)="selectEnv(t.name)"
+          >
+            <span
+              class="dot"
+              [class.dot--ok]="envState(t.name) === 'ok'"
+              [class.dot--warn]="envState(t.name) === 'warn'"
+              aria-hidden="true"
+            ></span>
+            {{ t.name }}
+            @if (t.own) {
+              <span class="env-switch__own">this Logos</span>
+            }
+          </button>
+        }
+      </div>
+
+      @if (target(); as t) {
+        <!-- ── Current ───────────────────────────────────────────────────────── -->
+        <section class="panel" aria-labelledby="current-title">
+          <h2 class="section-title" id="current-title">Current</h2>
+          @if (currentPlan(); as plan) {
+            <div class="current">
+              <div class="current__head">
+                <span class="pill pill--running">{{ planLabel[plan.status] }}</span>
+                <span class="current__tag">{{ plan.tag }}</span>
+                <span class="muted">
+                  started by {{ plan.initiator }} · {{ age(plan.created_at) }}
+                  @if (plan.origin === 'observed') {
+                    · ordered on another Logos
+                  }
+                </span>
+                @if (canAbandon(plan)) {
+                  <button type="button" class="btn-secondary current__abandon" (click)="askAbandon()">
+                    Abandon
+                  </button>
+                }
+              </div>
+              <ul class="steps">
+                @for (step of plan.steps; track step.name) {
+                  <li class="steps__row">
+                    <i
+                      class="pi"
+                      [class.pi-server]="step.kind === 'core'"
+                      [class.pi-microchip-ai]="step.kind === 'worker'"
+                      aria-hidden="true"
+                    ></i>
+                    <span class="steps__name">{{ step.name }}</span>
+                    <span class="muted">{{ step.kind }}</span>
+                    <span class="pill" [ngClass]="'pill--' + stepTone(step.status)">{{ stepLabel[step.status] }}</span>
+                  </li>
+                }
+              </ul>
+              <button type="button" class="link" (click)="open(plan)">Show the details</button>
+            </div>
+          } @else {
+            <p class="muted">Nothing is running in {{ t.name }}.</p>
+          }
+        </section>
+
+        <!-- ── New deployment ────────────────────────────────────────────────── -->
+        <section class="panel" aria-labelledby="new-title">
+          <h2 class="section-title" id="new-title">New deployment</h2>
+          <div class="new">
+            <label class="field" for="deploy-tag">
+              <span class="field__label">Image tag</span>
+              <input
+                id="deploy-tag"
+                class="input"
+                type="text"
+                list="tag-suggestions"
+                autocomplete="off"
+                spellcheck="false"
+                [ngModel]="tag()"
+                (ngModelChange)="tag.set($event)"
+                [disabled]="!t.can_start"
+              />
+              <datalist id="tag-suggestions">
+                @for (suggestion of ov.suggested_tags; track suggestion) {
+                  <option [value]="suggestion"></option>
+                }
+              </datalist>
+            </label>
+            <button
+              type="button"
+              class="btn-primary new__deploy"
+              [disabled]="!t.can_start || starting()"
+              (click)="deploy()"
+            >
+              @if (starting()) {
+                <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+              }
+              Deploy to {{ t.name }}
+            </button>
+          </div>
+          @if (!t.can_start && t.blocked_reason) {
+            <p class="hint hint--warn"><i class="pi pi-info-circle" aria-hidden="true"></i> {{ t.blocked_reason }}</p>
+          } @else if (t.requires_confirmation) {
+            <p class="hint">
+              <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+              {{ t.name }} is protected. You confirm the deployment with the name of the
+              environment, and it takes only <code>latest</code> and release tags.
+            </p>
+          }
+          @if (startError() && !confirmOpen()) {
+            <p class="hint hint--error" role="alert">{{ startError() }}</p>
+          }
+        </section>
+
+        <!-- ── History ───────────────────────────────────────────────────────── -->
+        <section class="panel" aria-labelledby="history-title">
+          <h2 class="section-title" id="history-title">History</h2>
+          <div class="chips" role="group" aria-label="Filter by status">
+            @for (chip of statusChips; track chip.value) {
+              <button
+                type="button"
+                class="chip"
+                [class.chip--active]="statusFilter() === chip.value"
+                [attr.aria-pressed]="statusFilter() === chip.value"
+                (click)="statusFilter.set(chip.value)"
+              >
+                {{ chip.label }}
+              </button>
+            }
+          </div>
+          @if (history().length === 0) {
+            <p class="muted">No deployments to show for {{ t.name }}.</p>
+          } @else {
+            <ul class="history">
+              @for (plan of history(); track plan.id) {
+                <li>
+                  <button
+                    type="button"
+                    class="history__row"
+                    [class.history__row--open]="openPlan()?.id === plan.id"
+                    (click)="open(plan)"
+                  >
+                    <span class="pill" [ngClass]="'pill--' + planTone(plan.status)">{{ planLabel[plan.status] }}</span>
+                    <span class="history__tag">{{ plan.tag }}</span>
+                    <span class="history__dots" aria-hidden="true">
+                      @for (step of plan.steps; track step.name) {
+                        <span
+                          class="dot"
+                          [ngClass]="'dot--' + stepTone(step.status)"
+                          [title]="stepSummary(step)"
+                        ></span>
+                      }
+                    </span>
+                    <span class="history__who muted">
+                      {{ plan.initiator }}
+                      @if (plan.origin === 'observed') {
+                        <span class="tag">via another Logos</span>
+                      }
+                    </span>
+                    <span class="history__when muted" [title]="plan.created_at">{{ age(plan.created_at) }}</span>
+                    @if (plan.reason) {
+                      <span class="history__reason">{{ plan.reason }}</span>
+                    }
+                  </button>
+                </li>
+              }
+            </ul>
+          }
+        </section>
+
+        <!-- ── Detail of one deployment ──────────────────────────────────────── -->
+        @if (openPlan(); as plan) {
+          <section class="panel detail" aria-labelledby="detail-title">
+            <div class="detail__head">
+              <h2 class="section-title" id="detail-title">
+                {{ plan.tag }} in {{ plan.environment }}
+              </h2>
+              <span class="pill" [ngClass]="'pill--' + planTone(plan.status)">{{ planLabel[plan.status] }}</span>
+              <button type="button" class="btn-icon" aria-label="Close the details" (click)="close()">
+                <i class="pi pi-times" aria-hidden="true"></i>
+              </button>
+            </div>
+            <p class="muted">
+              Started by {{ plan.initiator }} · {{ age(plan.created_at) }}
+              @if (plan.finished_at) {
+                · ended {{ age(plan.finished_at) }}
+              }
+            </p>
+            @if (plan.reason) {
+              <p class="hint hint--warn">{{ plan.reason }}</p>
+            }
+            @if (canAbandon(plan)) {
+              <button type="button" class="btn-secondary" (click)="askAbandon()">Abandon this deployment</button>
+            }
+            @for (step of plan.step_details ?? []; track step.id) {
+              <article class="step">
+                <header class="step__head">
+                  <span class="step__name">{{ step.deployer_name }}</span>
+                  <span class="muted">{{ step.kind }}</span>
+                  <span class="pill" [ngClass]="'pill--' + stepTone(step.status)">{{ stepLabel[step.status] }}</span>
+                  @if (step.phase && step.status === 'running') {
+                    <span class="muted">phase: {{ step.phase }}</span>
+                  }
+                  @if (stepDuration(step); as took) {
+                    <span class="muted">{{ took }}</span>
+                  }
+                </header>
+                @if (step.message) {
+                  <p class="step__message">{{ step.message }}</p>
+                }
+                @if (step.details.drained_requests !== undefined || step.details.drain_seconds !== undefined) {
+                  <p class="muted">
+                    Drain:
+                    @if (step.details.drained_requests !== undefined) {
+                      {{ step.details.drained_requests }} request(s) were running
+                    }
+                    @if (step.details.drain_seconds !== undefined) {
+                      · took {{ formatDuration(step.details.drain_seconds * 1000) }}
+                    }
+                  </p>
+                }
+                @if (step.details.sole_replica_models?.length) {
+                  <p class="muted">
+                    No other node served {{ step.details.sole_replica_models.join(', ') }} meanwhile.
+                  </p>
+                }
+                @if (step.events.length) {
+                  <details class="step__events">
+                    <summary>Events ({{ step.events.length }})</summary>
+                    <ol class="log">
+                      @for (event of step.events; track $index) {
+                        <li>
+                          <time [attr.datetime]="event.at">{{ event.at.slice(11, 19) }}</time>
+                          <span class="log__phase">{{ event.phase }}</span>
+                          <span>{{ event.note }}</span>
+                        </li>
+                      }
+                    </ol>
+                  </details>
+                }
+                @if (step.failure_logs) {
+                  <details class="step__events">
+                    <summary>Log of the failed part</summary>
+                    <pre class="logblock">{{ step.failure_logs }}</pre>
+                  </details>
+                }
+              </article>
+            }
+          </section>
+        }
+
+        <!-- ── Deployers ─────────────────────────────────────────────────────── -->
+        <section class="panel" aria-labelledby="deployers-title">
+          <div class="deployers__head">
+            <h2 class="section-title" id="deployers-title">Deployers of {{ t.name }}</h2>
+            <button type="button" class="btn-secondary" (click)="toggleAdd()">
+              <i class="pi pi-plus" aria-hidden="true"></i> Add a deployer
+            </button>
+          </div>
+          @if (addOpen()) {
+            <form class="add" (ngSubmit)="createDeployer()" #addForm="ngForm">
+              <label class="field" for="deployer-name">
+                <span class="field__label">Name</span>
+                <input
+                  id="deployer-name"
+                  name="name"
+                  class="input"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="The name of the host"
+                  [ngModel]="newName()"
+                  (ngModelChange)="newName.set($event)"
+                />
+              </label>
+              <div class="field">
+                <span class="field__label">Kind</span>
+                <app-select
+                  ariaLabel="Kind"
+                  [options]="kindOptions"
+                  [value]="newKind()"
+                  (valueChange)="newKind.set($event === 'core' ? 'core' : 'worker')"
+                />
+              </div>
+              <button type="submit" class="btn-primary" [disabled]="creating()">
+                @if (creating()) {
+                  <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+                }
+                Make the deployer
+              </button>
+            </form>
+            <p class="hint">
+              The key of the deployer is shown once. Put it into the settings of its host, as described
+              in the deployment guide.
+            </p>
+            @if (createError()) {
+              <p class="hint hint--error" role="alert">{{ createError() }}</p>
+            }
+          }
+          @if (t.deployers.length === 0) {
+            <p class="muted">No deployer is set up for {{ t.name }} yet.</p>
+          } @else {
+            <table class="deployers" aria-label="Deployers">
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col">Kind</th>
+                  <th scope="col">Last seen</th>
+                  <th scope="col">Version</th>
+                  <th scope="col"><span class="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (d of t.deployers; track d.id) {
+                  <tr>
+                    <td data-label="Name">
+                      <span class="deployers__name">
+                        <span class="dot" [class.dot--ok]="d.online" [class.dot--warn]="!d.online" aria-hidden="true"></span>
+                        {{ d.name }}
+                      </span>
+                    </td>
+                    <td data-label="Kind">{{ d.kind }}</td>
+                    <td data-label="Last seen">
+                      {{ d.last_seen_at ? age(d.last_seen_at) : 'never' }}
+                      <span class="sr-only">{{ d.online ? '(online)' : '(offline)' }}</span>
+                    </td>
+                    <td data-label="Version">{{ d.version ?? '—' }}</td>
+                    <td class="deployers__actions">
+                      <button type="button" class="btn-secondary" (click)="replaceTarget.set(d)">New key</button>
+                      <button type="button" class="btn-secondary" (click)="removeTarget.set(d)">Remove</button>
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          }
+          @if (deployerError() && !removeTarget() && !replaceTarget()) {
+            <p class="hint hint--error" role="alert">{{ deployerError() }}</p>
+          }
+        </section>
+      }
+    }
+  }
+</div>
+
+<!-- ── Warning before a protected environment ───────────────────────────────── -->
+<app-modal-confirm
+  [visible]="confirmOpen()"
+  (visibleChange)="$event || closeConfirm()"
+  [title]="'Deploy ' + tag() + ' to ' + selectedEnv() + '?'"
+  message="The core restarts, and every worker is replaced one after the other. Users of this environment notice it. There is no automatic rollback for the core."
+  [confirmLabel]="'Deploy to ' + selectedEnv()"
+  icon="pi-exclamation-triangle"
+  [loading]="starting()"
+  (confirmed)="confirmStart()"
+>
+  <div modal-details class="typed">
+    <label class="field" for="typed-confirmation">
+      <span class="field__label">Type <strong>{{ selectedEnv().toLowerCase() }}</strong> to confirm</span>
+      <input
+        id="typed-confirmation"
+        class="input"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        [ngModel]="confirmation()"
+        (ngModelChange)="confirmation.set($event)"
+        (keydown.enter)="confirmStart()"
+      />
+    </label>
+  </div>
+  <div modal-error>
+    @if (startError()) {
+      <p class="hint hint--error" role="alert">{{ startError() }}</p>
+    }
+  </div>
+</app-modal-confirm>
+
+<!-- ── Abandon ──────────────────────────────────────────────────────────────── -->
+<app-modal-confirm
+  [visible]="abandonOpen()"
+  (visibleChange)="$event || closeAbandon()"
+  title="Abandon this deployment?"
+  message="Steps that did not start never will. A host that already received its order carries it out, and hosts that were replaced stay replaced."
+  confirmLabel="Abandon"
+  icon="pi-ban"
+  [loading]="abandoning()"
+  (confirmed)="confirmAbandon()"
+>
+  <div modal-error>
+    @if (abandonError()) {
+      <p class="hint hint--error" role="alert">{{ abandonError() }}</p>
+    }
+  </div>
+</app-modal-confirm>
+
+<!-- ── The key of a deployer: shown once ────────────────────────────────────── -->
+<app-modal-confirm
+  [visible]="createdKey() !== null"
+  (visibleChange)="$event || closeKey()"
+  [title]="'Key of ' + (createdKey()?.deployer?.name ?? 'the deployer')"
+  message="Copy the key now. Logos keeps only a hash of it and cannot show it again."
+  confirmLabel="I have copied the key"
+  icon="pi-key"
+  [danger]="false"
+  [confirmOnly]="true"
+  (confirmed)="closeKey()"
+>
+  <div modal-details class="reveal">
+    <code class="reveal__key" data-testid="deployer-key">{{ createdKey()?.key }}</code>
+    <button type="button" class="btn-secondary" (click)="copyKey()">
+      <i class="pi" [class.pi-copy]="!keyCopied()" [class.pi-check]="keyCopied()" aria-hidden="true"></i>
+      {{ keyCopied() ? 'Copied' : 'Copy the key' }}
+    </button>
+  </div>
+</app-modal-confirm>
+
+<!-- ── New key ──────────────────────────────────────────────────────────────── -->
+<app-modal-confirm
+  [visible]="replaceTarget() !== null"
+  (visibleChange)="$event || replaceTarget.set(null)"
+  [title]="'Give ' + (replaceTarget()?.name ?? '') + ' a new key?'"
+  message="The old key stops working at once. The deployer takes no orders until its host has the new key."
+  confirmLabel="Make a new key"
+  icon="pi-key"
+  [loading]="deployerBusy()"
+  (confirmed)="confirmReplaceKey()"
+>
+  <div modal-error>
+    @if (deployerError()) {
+      <p class="hint hint--error" role="alert">{{ deployerError() }}</p>
+    }
+  </div>
+</app-modal-confirm>
+
+<!-- ── Remove ───────────────────────────────────────────────────────────────── -->
+<app-modal-confirm
+  [visible]="removeTarget() !== null"
+  (visibleChange)="$event || removeTarget.set(null)"
+  [title]="'Remove ' + (removeTarget()?.name ?? '') + '?'"
+  message="Its key stops working. The history of its deployments stays."
+  confirmLabel="Remove"
+  [loading]="deployerBusy()"
+  (confirmed)="confirmRemove()"
+>
+  <div modal-error>
+    @if (deployerError()) {
+      <p class="hint hint--error" role="alert">{{ deployerError() }}</p>
+    }
+  </div>
+</app-modal-confirm>

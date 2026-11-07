@@ -23,11 +23,13 @@ import time
 from pathlib import Path
 from typing import Callable, TextIO
 
-from logos_node_manager.config import Settings
+from logos_node_manager.config import CORE, Settings
+from logos_node_manager.core_target import CoreTarget
 from logos_node_manager.daemon import Daemon
 from logos_node_manager.deployer import Deployer
-from logos_node_manager.docker_ops import Docker
+from logos_node_manager.docker_ops import Docker, ProjectDocker
 from logos_node_manager.errors import StateError
+from logos_node_manager.logos_link import LogosLink
 from logos_node_manager.orchestrator import OrchestratorClient
 from logos_node_manager.runner import SubprocessRunner
 from logos_node_manager.state import Deployment, Outcome, Phase, StateStore, utc_now, validate_id, validate_tag
@@ -250,11 +252,23 @@ def cmd_ping(args: argparse.Namespace, settings: Settings) -> int:
 
 def cmd_run(args: argparse.Namespace, settings: Settings) -> int:
     stop = threading.Event()
-    docker = Docker(settings, SubprocessRunner())
     store = StateStore(settings.state_dir)
-    orchestrator = OrchestratorClient.from_settings(settings)
-    deployer = Deployer(settings, docker, store, orchestrator=orchestrator, should_stop=stop.is_set)
-    daemon = Daemon(settings, store, deployer, stop, docker=docker, registry_login_file=DOCKER_CONFIG_FILE)
+    if settings.kind == CORE:
+        # A core host has no node to cordon and no orchestrator to ask: the Logos link is how it hears and reports.
+        docker: Docker = ProjectDocker(settings, SubprocessRunner())
+        deployer = Deployer(
+            settings,
+            docker,
+            store,
+            target_factory=lambda deployer: CoreTarget(deployer, docker),  # type: ignore[arg-type]
+            should_stop=stop.is_set,
+        )
+    else:
+        docker = Docker(settings, SubprocessRunner())
+        orchestrator = OrchestratorClient.from_settings(settings)
+        deployer = Deployer(settings, docker, store, orchestrator=orchestrator, should_stop=stop.is_set)
+    link = LogosLink.from_settings(settings, store, stop)
+    daemon = Daemon(settings, store, deployer, stop, docker=docker, registry_login_file=DOCKER_CONFIG_FILE, link=link)
     # Stop between steps. A deployment that is cut off continues from its recorded phase at the next start.
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stop.set())

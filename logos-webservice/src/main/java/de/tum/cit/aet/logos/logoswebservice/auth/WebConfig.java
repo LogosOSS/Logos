@@ -43,6 +43,8 @@ public class WebConfig implements WebMvcConfigurer {
                 "/logosdb/get_model_health", "/internal/models_discovered",
                 "/internal/notifications",
                 "/internal/gateway_relay_stats", "/internal/gateway_relay_stats/**",
+                // The deployers of the hosts authenticate with their own key in the controller.
+                "/deployments/deployer/**",
                 "/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**");
         // Registered after the auth interceptor, so it marks where authentication
         // ends and the controller begins for the request timing log.

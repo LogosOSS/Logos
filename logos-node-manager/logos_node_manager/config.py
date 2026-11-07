@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlparse
 
 PREFIX = "NODE_MANAGER_"
 
@@ -57,6 +58,39 @@ def compose_project_name(project_dir: Path) -> str:
     return name or "logos-workernode"
 
 
+WORKER = "worker"
+CORE = "core"
+
+
+@dataclass(frozen=True)
+class LogosSource:
+    """A Logos instance that this host obeys: it gives orders, and it is told how they go."""
+
+    url: str
+    key: str = field(repr=False)
+
+    @property
+    def name(self) -> str:
+        """A short name for logs and for the records, without the key."""
+        return urlparse(self.url).netloc or self.url
+
+
+def parse_logos_sources(raw: str) -> tuple[LogosSource, ...]:
+    """The Logos instances of ``NODE_MANAGER_LOGOS``: entries ``url|key`` separated by commas or white space.
+
+    An entry with a missing part, or with an address that is not http(s), is skipped: one bad entry must not stop the
+    manager at start, or hide the entries that are fine. The first entry for an address wins.
+    """
+    sources: dict[str, LogosSource] = {}
+    for entry in re.split(r"[,\s]+", raw.strip()):
+        url, _, key = entry.partition("|")
+        url, key = url.strip().rstrip("/"), key.strip()
+        if not url or not key or not url.startswith(("https://", "http://")):
+            continue
+        sources.setdefault(url, LogosSource(url=url, key=key))
+    return tuple(sources.values())
+
+
 @dataclass(frozen=True)
 class Settings:
     """What the manager needs to know about its host."""
@@ -99,13 +133,51 @@ class Settings:
     reconnect_timeout_s: float
     log_level: str
 
+    # What the host is: a GPU worker (``worker``) or the core of Logos (``core``). A worker host replaces the one worker
+    # container. A core host replaces the services of the whole compose project, and the manager sits outside that
+    # project so that it survives the replacement of Logos.
+    kind: str = WORKER
+    # The Logos instances this host obeys. The manager asks each for orders and tells each how they go. Empty: only the
+    # command line gives orders.
+    logos_sources: tuple[LogosSource, ...] = ()
+    # How long a request for orders may wait at Logos before it answers with none, and the margin that the connection
+    # gets on top of it.
+    order_wait_s: float = 25.0
+    order_timeout_margin_s: float = 15.0
+    # How often a deployment in progress is reported to Logos, also when nothing changed. Logos reads the report as a
+    # sign that the host is alive.
+    report_interval_s: float = 20.0
+
+    # Core host only. The service that runs as several copies, the variable of the ``.env`` file that says how many, the
+    # time the services get to come up, and the address that must answer once they did (empty: not checked).
+    scale_service: str = "logos-webservice"
+    replicas_variable: str = "LOGOS_WEBSERVICE_REPLICAS"
+    core_verify_timeout_s: float = 900.0
+    core_health_url: str = ""
+
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
         env = os.environ if environ is None else environ
-        project_dir = Path(_text(env, "PROJECT_DIR", "/opt/logos-workernode"))
+        kind = _text(env, "KIND", WORKER).lower()
+        if kind not in (WORKER, CORE):
+            kind = WORKER
+        core = kind == CORE
+        project_dir = Path(_text(env, "PROJECT_DIR", "/opt/logos" if core else "/opt/logos-workernode"))
+        compose_name = "docker-compose.yaml" if core else "docker-compose.yml"
+        logos_sources = parse_logos_sources(_text(env, "LOGOS", ""))
+        health_default = f"{logos_sources[0].url}/api/info" if core and logos_sources else ""
         return cls(
+            kind=kind,
+            logos_sources=logos_sources,
+            order_wait_s=_seconds(env, "ORDER_WAIT_S", 25.0),
+            order_timeout_margin_s=_seconds(env, "ORDER_TIMEOUT_MARGIN_S", 15.0),
+            report_interval_s=_seconds(env, "REPORT_INTERVAL_S", 20.0),
+            scale_service=_text(env, "SCALE_SERVICE", "logos-webservice"),
+            replicas_variable=_text(env, "REPLICAS_VARIABLE", "LOGOS_WEBSERVICE_REPLICAS"),
+            core_verify_timeout_s=_seconds(env, "CORE_VERIFY_TIMEOUT_S", 900.0),
+            core_health_url=_text(env, "CORE_HEALTH_URL", health_default),
             project_dir=project_dir,
-            compose_file=Path(_text(env, "COMPOSE_FILE", str(project_dir / "docker-compose.yml"))),
+            compose_file=Path(_text(env, "COMPOSE_FILE", str(project_dir / compose_name))),
             env_file=Path(_text(env, "ENV_FILE", str(project_dir / ".env"))),
             project_name=_text(env, "PROJECT_NAME", compose_project_name(project_dir)),
             service=_text(env, "SERVICE", "logos-workernode"),
