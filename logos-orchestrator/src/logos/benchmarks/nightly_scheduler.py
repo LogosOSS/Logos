@@ -23,12 +23,12 @@ from logos.benchmarks.nightly import (
 )
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.benchmarks.worker_limits import validate_worker_overrides, worker_limits
-from logos.capacity.capacity_planner import MAINTENANCE_RECOVERY
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import InternalBenchmarkRequest
 from logos.maintenance_window import maintenance_node_limit
 
 logger = logging.getLogger(__name__)
+RESTORE_CONFIRMATION_SECONDS = 30
 
 
 class NightlyScheduler:
@@ -182,16 +182,69 @@ class NightlyScheduler:
                 recovery["vllm_config"], ServingOverrides(**recovery["adoption"]["parameters"])
             )
             recovery["lane_config"]["vllm_config"] = recovery["vllm_config"]
-        provider_id = recovery["provider_id"]
+        provider_id, lane_id = recovery["provider_id"], recovery["lane_id"]
         if not self.healthy(provider_id):
             raise RuntimeError("Worker is offline, calibrating or cordoned; restoration is pending")
         benchmark_reservations.reserve(provider_id, "*", -pair_id)
         runtime = await self.registry.send_command(provider_id, "get_lanes", {}, timeout_seconds=30)
-        lane = next((item for item in runtime.get("lanes", []) if item.get("lane_id") == recovery["lane_id"]), None)
-        # Keep a tested winner that is still serving the exact settings on this reserved lane.
-        if (
-            recovery.get("adoption")
-            and lane is not None
+        lane = next((item for item in runtime.get("lanes", []) if item.get("lane_id") == lane_id), None)
+        if recovery.get("adoption") and self._restored_lane_is_ready(lane, recovery):
+            return
+        replies = []
+        if lane is None:
+            result = await self.registry.send_command(
+                provider_id, "add_lane", recovery["lane_config"], timeout_seconds=900, on_dispatched=replies.append
+            )
+        else:
+            result = await self.registry.send_command(
+                provider_id,
+                "reconfigure_lane",
+                {
+                    "lane_id": lane_id,
+                    "updates": {"vllm_config": recovery["vllm_config"]},
+                    "require_idle": False,
+                    "force_restart": True,
+                },
+                timeout_seconds=900,
+                on_dispatched=replies.append,
+            )
+        applied = (result.get("lane_config") or {}).get("vllm_config")
+        if applied != recovery["vllm_config"] or (lane is not None and not result.get("restarted")):
+            raise RuntimeError("Worker did not confirm the production configuration")
+
+        # The command can return before the routing snapshot catches up with
+        # the restart. Wait for that lane instead of asking the planner to load it again.
+        answer = replies[0].result()
+        state = "awaiting a fresh status"
+        try:
+            async with asyncio.timeout(RESTORE_CONFIRMATION_SECONDS):
+                while True:
+                    if self.registry.reflects_command(provider_id, answer):
+                        snapshot = self.registry.peek_runtime_snapshot(provider_id) or {}
+                        lanes = (snapshot.get("runtime") or {}).get("lanes") or []
+                        lane = next((item for item in lanes if item.get("lane_id") == lane_id), None)
+                        if self._restored_lane_is_ready(lane, recovery):
+                            return
+                        state = (
+                            "lane missing"
+                            if lane is None
+                            else (
+                                f"runtime={lane.get('runtime_state')}, sleep={lane.get('sleep_state')}, "
+                                f"transition={lane.get('transition')}, active_requests={lane.get('active_requests')}"
+                            )
+                        )
+                    await asyncio.sleep(0.2)
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"Worker {provider_id} applied the configuration for lane {lane_id}, "
+                f"but it did not report that lane ready with those settings "
+                f"within {RESTORE_CONFIRMATION_SECONDS:g}s ({state})."
+            ) from exc
+
+    @staticmethod
+    def _restored_lane_is_ready(lane, recovery):
+        return (
+            lane is not None
             and lane.get("model") == recovery["model"]
             and (lane.get("lane_config") or {}).get("vllm_config") == recovery["vllm_config"]
             and lane.get("runtime_state") in {"loaded", "running"}
@@ -199,37 +252,7 @@ class NightlyScheduler:
             and lane.get("transition") is None
             and lane.get("active_requests") == 0
             and not any((lane.get("backend_metrics") or {}).get(key) for key in ("requests_running", "queue_waiting"))
-        ):
-            return
-        if lane is None:
-            result = await self.registry.send_command(
-                provider_id, "add_lane", recovery["lane_config"], timeout_seconds=900
-            )
-            result["restarted"] = True
-        else:
-            result = await self.registry.send_command(
-                provider_id,
-                "reconfigure_lane",
-                {
-                    "lane_id": recovery["lane_id"],
-                    "updates": {"vllm_config": recovery["vllm_config"]},
-                    "require_idle": False,
-                    "force_restart": True,
-                },
-                timeout_seconds=900,
-            )
-        if (
-            not result.get("restarted")
-            or (result.get("lane_config") or {}).get("vllm_config") != recovery["vllm_config"]
-        ):
-            raise RuntimeError("Worker did not confirm the production configuration")
-        token = MAINTENANCE_RECOVERY.set(True)
-        try:
-            ready = await self.planner.prepare_benchmark_lane(provider_id, recovery["model"], timeout_seconds=900)
-        finally:
-            MAINTENANCE_RECOVERY.reset(token)
-        if not ready:
-            raise RuntimeError("Restored production model is not ready")
+        )
 
     async def settle(self, pair_id, recovery, report):
         """Complete a journaled adoption, or restore the original settings on failure."""
