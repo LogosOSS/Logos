@@ -44,6 +44,7 @@ from logos_worker_node.models import (
     model_can_sleep,
     model_uses_sharded_checkpoint,
 )
+from logos_worker_node.node_config import normalize_node_config
 from logos_worker_node.request_content import MULTIPART_PAYLOAD_KEY, httpx_request_parts
 from logos_worker_node.runtime import build_runtime_status
 from logos_worker_node.vllm_compat import DEFAULT_VLLM
@@ -404,6 +405,25 @@ class LogosBridgeClient:
         if not isinstance(profiles, dict):
             raise RuntimeError("Logos model-profiles response has no profiles mapping")
         return profiles
+
+    async def fetch_node_config(self) -> dict[str, Any]:
+        """This node's models and revision, as Logos stores them."""
+        url = f"{self._logos_base_url()}/logosdb/providers/logosnode/node-config"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json={"shared_key": self._cfg.shared_key})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"/node-config rejected with HTTP {resp.status_code}: {resp.text}")
+        return normalize_node_config(resp.json() if resp.content else None)
+
+    async def import_node_config(self, entries: list[dict[str, Any]]) -> list[str]:
+        """Hand Logos the models of config.yml; it keeps them once. Returns warnings."""
+        url = f"{self._logos_base_url()}/logosdb/providers/logosnode/node-config/import"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json={"shared_key": self._cfg.shared_key, "entries": entries})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"/node-config/import rejected with HTTP {resp.status_code}: {resp.text}")
+        body = resp.json() if resp.content else {}
+        return [str(w) for w in body.get("warnings") or []]
 
     async def _authenticate(self) -> dict[str, Any]:
         logos_url = self._logos_base_url()
@@ -1515,20 +1535,19 @@ class LogosBridgeClient:
         return Path("config.yml")
 
     def _resolve_configured_plan(self, model_name: str) -> dict[str, Any]:
-        """The model's plan from config.yml (gpu_devices, kv_cache_dtype,
+        """The model's configured plan (gpu_devices, kv_cache_dtype,
         ...), or {} if unconfigured/unreadable. The standalone RPC has no
         session plan to read these from, unlike the session loop — without
         it, a model pinned or given a --kv-cache-dtype gets the defaults."""
         try:
-            from logos_worker_node.calibration import plans_from_config  # noqa: PLC0415
+            from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
 
-            config_path = self.resolve_config_path()
-            if not config_path.exists():
-                return {}
-            plan = next((p for p in plans_from_config(config_path) if p.get("model") == model_name), None)
+            plan = next(
+                (p for p in plans_from_app_config(self._app.state.config) if p.get("model") == model_name), None
+            )
             return plan or {}
         except Exception:  # noqa: BLE001
-            logger.debug("[Precheck] config.yml plan lookup failed for %s", model_name, exc_info=True)
+            logger.debug("[Precheck] configured plan lookup failed for %s", model_name, exc_info=True)
             return {}
 
     async def _handle_run_compatibility_precheck(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1913,24 +1932,23 @@ class LogosBridgeClient:
         return ordered
 
     async def _refresh_calibration_keys(self) -> None:
-        """Re-fingerprint from config.yml as this session will run it.
+        """Re-fingerprint from the models as this session will run it.
 
-        config.yml can change without a restart; the startup keys would then
-        stamp snapshots with a plan that was never measured.
+        A pushed configuration can change them without a restart; the startup
+        keys would then stamp snapshots with a plan that was never measured.
         """
         gpu_collector = getattr(self._app.state, "gpu_collector", None)
         if gpu_collector is None:
             return
         try:
-            from logos_worker_node.calibration import plans_from_config  # noqa: PLC0415
+            from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
             from logos_worker_node.profile_fingerprint import (  # noqa: PLC0415
                 node_calibration_keys,
                 node_slice_gpu_counts,
             )
 
             snapshot = await gpu_collector.get_snapshot()
-            config_path = self.resolve_config_path()
-            plans = plans_from_config(config_path) if config_path.exists() else []
+            plans = plans_from_app_config(self._app.state.config)
             # Resolving an unknown vLLM version may fork a subprocess.
             keys = await asyncio.to_thread(node_calibration_keys, self._app.state.config, plans, list(snapshot.devices))
             counts = node_slice_gpu_counts(self._app.state.config, plans, list(snapshot.devices))
@@ -1978,11 +1996,11 @@ class LogosBridgeClient:
                 _plan_needs_gpu_pin,
                 calibrate_with_tp_escalation,
                 extract_revision_arg,
-                plans_from_config,
                 result_to_profile_dict,
             )
             from logos_worker_node.calibration_metal import calibrate_model_metal  # noqa: PLC0415
             from logos_worker_node.config import get_state_dir  # noqa: PLC0415
+            from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
 
             cfg = self._app.state.config
             model_profiles = self._app.state.model_profiles
@@ -1997,9 +2015,8 @@ class LogosBridgeClient:
             nccl_p2p = cfg.engines.vllm.nccl_p2p_available if cfg.engines else False
             _mc = model_cache if (model_cache is not None and getattr(model_cache, "enabled", False)) else None
 
-            # Resolve plans once — the kv-cache ceilings come from config.yml.
-            config_path = self.resolve_config_path()
-            all_plans = plans_from_config(config_path) if config_path.exists() else []
+            # Resolve plans once — the kv-cache ceilings come from the config.
+            all_plans = plans_from_app_config(cfg)
             plan_by_model = {p["model"]: p for p in all_plans}
 
             # Free the calibration's GPU slice up front — but only that slice

@@ -24,6 +24,29 @@ def _mapping(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def normalize_node_config(body: Any) -> dict[str, Any]:
+    """Logos' answer as {revision, yaml_imported, entries}; raises if unusable."""
+    if not isinstance(body, dict) or not isinstance(body.get("entries"), list):
+        raise RuntimeError("Logos node-config response has no entries list")
+    entries = []
+    for item in body["entries"]:
+        name = str(_mapping(item).get("model_name") or "").strip()
+        if not name:
+            raise RuntimeError("Logos node-config response has an entry without a model_name")
+        entries.append(
+            {
+                "model_name": name,
+                "capability": dict(_mapping(item.get("capability"))),
+                "overrides": dict(_mapping(item.get("overrides"))),
+            }
+        )
+    return {
+        "revision": int(body.get("revision") or 0),
+        "yaml_imported": bool(body.get("yaml_imported")),
+        "entries": entries,
+    }
+
+
 def entries_from_yaml(raw: dict[str, Any]) -> list[dict[str, Any]]:
     """The models of a config.yml, exactly as the file states them.
 

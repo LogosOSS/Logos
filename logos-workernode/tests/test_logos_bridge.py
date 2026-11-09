@@ -2685,7 +2685,7 @@ async def test_run_compatibility_precheck_model_kind_defaults_generative_on_fetc
 @pytest.mark.asyncio
 async def test_run_compatibility_precheck_rpc_uses_configured_gpu_devices(tmp_path, monkeypatch):
     """The standalone RPC has no session plan to read gpu_devices or
-    kv_cache_dtype from — it must look the model up in config.yml itself.
+    kv_cache_dtype from — it must look the model up in the configured models itself.
     Without that, a pinned model is evaluated against the wrong (default)
     slice and can be falsely blacklisted from a leftover GPU its pin was
     meant to avoid, and a configured fp8 KV cache looks twice its size."""
@@ -2697,21 +2697,18 @@ async def test_run_compatibility_precheck_rpc_uses_configured_gpu_devices(tmp_pa
     cfg = LogosConfig(enabled=True, logos_url="https://logos.example", shared_key="secret", configured_models=[])
     client = LogosBridgeClient(app, cfg)
 
-    config_path = tmp_path / "config.yml"
-    config_path.touch()
-    monkeypatch.setenv("LOGOS_WORKER_NODE_CONFIG", str(config_path))
-    monkeypatch.setattr(
-        "logos_worker_node.calibration.plans_from_config",
-        lambda _p: [
-            {
-                "model": "org/model",
+    app.state.config.logos.node_entries = [
+        {
+            "model_name": "org/model",
+            "capability": {
                 "gpu_devices": "1,2,3",
                 "kv_cache_dtype": "fp8",
                 "extra_args": ["--revision", "abc123"],
                 "tensor_parallel_size": 3,
-            }
-        ],
-    )
+            },
+            "overrides": {},
+        }
+    ]
     monkeypatch.setattr(
         "logos_worker_node.hf_model_info.fetch_hf_model_metadata",
         lambda *a, **k: HfModelMetadata(
@@ -4561,3 +4558,66 @@ async def test_cancel_command_tasks_stops_every_command_and_logs_failures(caplog
     assert failing.done() and isinstance(failing.exception(), RuntimeError)
     assert client._command_tasks == {}  # noqa: SLF001
     assert "Bridge background command task failed during shutdown" in caplog.text
+
+
+def _fake_http(monkeypatch, status: int, body: dict | None, posted: list) -> None:
+    class _Resp:
+        status_code = status
+        content = b"x"
+        text = "refused"
+
+        @staticmethod
+        def json():
+            return body
+
+    class _Http:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def post(self, url, json=None):
+            posted.append((url, json))
+            return _Resp()
+
+    monkeypatch.setattr("logos_worker_node.logos_bridge.httpx.AsyncClient", lambda timeout=15.0: _Http())
+
+
+@pytest.mark.asyncio
+async def test_the_node_config_is_fetched_with_the_shared_key(tmp_path, monkeypatch):
+    posted: list = []
+    entry = {"model_name": "org/a", "capability": {"tensor_parallel_size": 2}, "overrides": None}
+    _fake_http(monkeypatch, 200, {"revision": 3, "yaml_imported": True, "entries": [entry]}, posted)
+
+    config = await _central_client(tmp_path).fetch_node_config()
+
+    assert posted == [("https://logos.example/logosdb/providers/logosnode/node-config", {"shared_key": "secret"})]
+    assert config == {
+        "revision": 3,
+        "yaml_imported": True,
+        "entries": [{"model_name": "org/a", "capability": {"tensor_parallel_size": 2}, "overrides": {}}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_yaml_import_sends_the_entries_and_returns_the_warnings(tmp_path, monkeypatch):
+    posted: list = []
+    _fake_http(monkeypatch, 200, {"imported": True, "warnings": ["org/a: 'k' differs"]}, posted)
+    entries = [{"model_name": "org/a", "capability": {}, "overrides": {}}]
+
+    warnings = await _central_client(tmp_path).import_node_config(entries)
+
+    assert warnings == ["org/a: 'k' differs"]
+    url, body = posted[0]
+    assert url == "https://logos.example/logosdb/providers/logosnode/node-config/import"
+    assert body == {"shared_key": "secret", "entries": entries}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method, args", [("fetch_node_config", ()), ("import_node_config", ([],))])
+async def test_a_refused_node_config_request_raises(tmp_path, monkeypatch, method, args):
+    _fake_http(monkeypatch, 404, None, [])
+
+    with pytest.raises(RuntimeError, match="HTTP 404"):
+        await getattr(_central_client(tmp_path), method)(*args)

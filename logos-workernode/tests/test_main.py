@@ -220,7 +220,14 @@ async def test_lifespan_bootstraps_central_hf_token_before_startup_model_operati
 
         @staticmethod
         def json():
-            return {"ws_url": "wss://logos.example/ws", "hf_token": "central-token", "profiles": {}}
+            return {
+                "ws_url": "wss://logos.example/ws",
+                "hf_token": "central-token",
+                "profiles": {},
+                "revision": 0,
+                "yaml_imported": True,
+                "entries": [],
+            }
 
     class _HttpClient:
         async def __aenter__(self):
@@ -397,3 +404,136 @@ async def test_a_background_task_is_held_until_it_finishes() -> None:
     release.set()
     assert await task == "done"
     assert task not in worker_main._background_tasks  # noqa: SLF001
+
+
+_YAML_MODELS = """
+logos:
+  capabilities_models:
+    - org/from-yaml
+    - model: org/pinned
+      base_residency_mb: 900
+engines:
+  vllm:
+    model_overrides:
+      org/pinned:
+        quantization: awq
+"""
+
+
+class _ConfigBridge:
+    """Logos side of the first-start import: empty until something is imported."""
+
+    def __init__(self, stored: dict | None = None, failures: int = 0, warnings: list | None = None) -> None:
+        self.stored = stored or {"revision": 0, "yaml_imported": False, "entries": []}
+        self.failures = failures
+        self.warnings = warnings or []
+        self.fetches = 0
+        self.imported: list = []
+
+    async def fetch_node_config(self):
+        self.fetches += 1
+        if self.fetches <= self.failures:
+            raise RuntimeError("Logos unreachable")
+        return self.stored
+
+    async def import_node_config(self, entries):
+        self.imported.append(entries)
+        self.stored = {"revision": 1, "yaml_imported": True, "entries": entries}
+        return self.warnings
+
+
+@pytest.fixture
+def _yaml_models(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "config.yml"
+    path.write_text(_YAML_MODELS)
+    monkeypatch.setenv("LOGOS_WORKER_NODE_CONFIG", str(path))
+
+
+@pytest.mark.asyncio
+async def test_the_first_start_imports_config_yml_and_reads_it_back(_yaml_models, caplog) -> None:
+    bridge = _ConfigBridge(warnings=["org/pinned: 'x' differs"])
+    cfg = _central_cfg(True)
+
+    await worker_main._load_central_node_config(cfg, bridge)  # noqa: SLF001
+
+    assert bridge.imported == [
+        [
+            {"model_name": "org/from-yaml", "capability": {}, "overrides": {}},
+            {
+                "model_name": "org/pinned",
+                "capability": {"base_residency_mb": 900},
+                "overrides": {"quantization": "awq"},
+            },
+        ]
+    ]
+    assert bridge.fetches == 2
+    assert cfg.logos.capabilities_models == ["org/from-yaml", "org/pinned"]
+    assert cfg.engines.vllm.model_overrides["org/pinned"] == {"quantization": "awq"}
+    assert cfg.logos.node_config_revision == 1
+    assert "org/pinned: 'x' differs" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_stored_configuration_is_used_without_an_import(_yaml_models) -> None:
+    stored = {
+        "revision": 4,
+        "yaml_imported": True,
+        "entries": [{"model_name": "org/central", "capability": {}, "overrides": {}}],
+    }
+    bridge = _ConfigBridge(stored)
+    cfg = _central_cfg(True)
+
+    await worker_main._load_central_node_config(cfg, bridge)  # noqa: SLF001
+
+    assert bridge.imported == []
+    assert cfg.logos.capabilities_models == ["org/central"]
+    assert cfg.logos.node_config_revision == 4
+
+
+@pytest.mark.asyncio
+async def test_an_emptied_configuration_is_not_imported_again(_yaml_models) -> None:
+    bridge = _ConfigBridge({"revision": 2, "yaml_imported": True, "entries": []})
+    cfg = _central_cfg(True)
+
+    await worker_main._load_central_node_config(cfg, bridge)  # noqa: SLF001
+
+    assert bridge.imported == []
+    assert cfg.logos.capabilities_models == []
+
+
+@pytest.mark.asyncio
+async def test_the_node_config_waits_for_logos(_yaml_models, monkeypatch) -> None:
+    sleeps: list = []
+
+    async def _sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(worker_main.asyncio, "sleep", _sleep)
+    bridge = _ConfigBridge(failures=2)
+
+    await worker_main._load_central_node_config(_central_cfg(True), bridge)  # noqa: SLF001
+
+    assert sleeps == [5.0, 10.0]
+    assert len(bridge.imported) == 1
+
+
+@pytest.mark.asyncio
+async def test_without_the_bridge_the_models_stay_those_of_config_yml(_yaml_models) -> None:
+    bridge = _ConfigBridge()
+    cfg = _central_cfg(False)
+
+    await worker_main._load_central_node_config(cfg, bridge)  # noqa: SLF001
+
+    assert bridge.fetches == 0
+    assert cfg.logos.capabilities_models == ["org/model"]
+    assert [e["model_name"] for e in cfg.logos.node_entries] == ["org/from-yaml", "org/pinned"]
+
+
+@pytest.mark.asyncio
+async def test_a_missing_config_yml_imports_no_models(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LOGOS_WORKER_NODE_CONFIG", str(tmp_path / "absent.yml"))
+    bridge = _ConfigBridge()
+
+    await worker_main._load_central_node_config(_central_cfg(True), bridge)  # noqa: SLF001
+
+    assert bridge.imported == [[]]

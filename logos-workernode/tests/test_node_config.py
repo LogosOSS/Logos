@@ -15,6 +15,7 @@ from logos_worker_node.node_config import (
     apply_node_config,
     entries_from_yaml,
     entries_from_yaml_file,
+    normalize_node_config,
     plans_from_app_config,
     plans_from_entries,
 )
@@ -168,3 +169,19 @@ def test_central_plans_hash_like_the_yaml_plans(name):
 
     assert central == from_yaml
     assert central  # the examples configure models
+
+
+def test_logos_answer_is_normalized():
+    body = {"revision": "3", "yaml_imported": 1, "entries": [{"model_name": " org/m ", "capability": None}]}
+
+    assert normalize_node_config(body) == {
+        "revision": 3,
+        "yaml_imported": True,
+        "entries": [{"model_name": "org/m", "capability": {}, "overrides": {}}],
+    }
+
+
+@pytest.mark.parametrize("body", [None, {}, {"entries": "x"}, {"entries": [{"capability": {}}]}, {"entries": [7]}])
+def test_an_unusable_logos_answer_is_refused(body):
+    with pytest.raises(RuntimeError):
+        normalize_node_config(body)
