@@ -4073,69 +4073,13 @@ def result_to_profile_dict(r: CalibrationResult) -> dict[str, Any]:
 
 def plans_from_config(config_path: Path) -> list[dict[str, Any]]:
     """Read ``capabilities_models`` from *config.yml* and return calibration plans."""
+    from logos_worker_node.node_config import entries_from_yaml, plans_from_entries  # noqa: PLC0415
+
     with config_path.open() as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
-
-    logos = raw.get("logos") or {}
-    caps_raw = logos.get("capabilities_models") or []
-    caps_overrides: dict[str, dict] = dict(logos.get("capabilities_overrides") or {})
     vllm_engine: dict[str, Any] = (raw.get("engines") or {}).get("vllm") or {}
-    vllm_model_overrides: dict[str, dict] = vllm_engine.get("model_overrides") or {}
     global_args = [str(arg) for arg in (vllm_engine.get("global_extra_args") or [])]
-
-    plans: list[dict[str, Any]] = []
-    for entry in caps_raw:
-        if isinstance(entry, str):
-            plan: dict[str, Any] = {"model": entry}
-        elif isinstance(entry, dict):
-            plan = dict(entry)
-            # config format: top-level key is the model name when no "model:" key
-            if "model" not in plan:
-                model_name = next(iter(plan), None)
-                if model_name:
-                    plan = {**plan, "model": model_name}
-        else:
-            continue
-
-        model = plan.get("model", "")
-        if not model:
-            continue
-
-        # Merge capabilities_overrides (don't override explicit plan values)
-        for k, v in (caps_overrides.get(model) or {}).items():
-            plan.setdefault(k, v)
-
-        # Merge vllm model_overrides. Everything the operator pins for the
-        # serving lane comes through, because the profile is only meaningful if
-        # it describes the lane that actually runs.
-        #
-        # This used to be an allow-list of seven keys, which silently dropped
-        # the rest. What it dropped mattered: extra_args carries --hf-overrides
-        # (a YaRN rope_scaling that quadruples the context window on
-        # hochbruegge's Qwen2.5-Coder, an architecture swap on deioma's
-        # Qwen3-Reranker), and speculative_config loads a second model worth
-        # ~1.7 GiB per GPU. Calibrating without those measures a different model
-        # than the one being served, and the planner then sizes KV budgets
-        # against a residency that was never real.
-        #
-        # An allow-list also fails in the dangerous direction: a new vLLM
-        # setting is dropped by default and nothing reports it. Unknown keys are
-        # harmless here — the calibration command builder reads the ones it
-        # knows and ignores the rest — so only the plan's own bookkeeping is
-        # excluded, plus "model", which the loop above already resolved.
-        for k, v in (vllm_model_overrides.get(model) or {}).items():
-            if k == "model" or k.startswith("_"):
-                continue
-            plan.setdefault(k, v)
-
-        # Same order as the serving spawners: worker-wide flags first, so a
-        # model's own extra_args still win (argparse keeps the last one).
-        if global_args:
-            plan["extra_args"] = [*global_args, *(plan.get("extra_args") or [])]
-
-        plans.append(plan)
-
-    return plans
+    return plans_from_entries(entries_from_yaml(raw), global_args)
 
 
 # ---------------------------------------------------------------------------

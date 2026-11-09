@@ -2222,23 +2222,28 @@ class DBManager:
 
         A node nobody configured yet has revision 0 and no entries.
         """
-        state = self.session.execute(
-            text("SELECT config_revision, yaml_imported_at FROM node_config_state WHERE provider_id = :pid"),
-            {"pid": provider_id},
-        ).fetchone()
-        rows = self.session.execute(
+        # One statement, so the revision and the models are the same snapshot.
+        row = self.session.execute(
             text("""
-                SELECT model_name, capability, overrides FROM node_model_config
-                WHERE provider_id = :pid ORDER BY position, id
+                SELECT s.config_revision, s.yaml_imported_at,
+                       COALESCE((
+                           SELECT jsonb_agg(
+                               jsonb_build_object(
+                                   'model_name', model_name,
+                                   'capability', capability,
+                                   'overrides', overrides
+                               ) ORDER BY position, id
+                           ) FROM node_model_config WHERE provider_id = :pid
+                       ), '[]'::jsonb) AS entries
+                FROM (SELECT 1) AS one
+                LEFT JOIN node_config_state s ON s.provider_id = :pid
             """),
             {"pid": provider_id},
-        ).fetchall()
+        ).fetchone()
         return {
-            "revision": int(state.config_revision) if state is not None else 0,
-            "yaml_imported": state is not None and state.yaml_imported_at is not None,
-            "entries": [
-                {"model_name": r.model_name, "capability": r.capability, "overrides": r.overrides} for r in rows
-            ],
+            "revision": int(row.config_revision) if row.config_revision is not None else 0,
+            "yaml_imported": row.yaml_imported_at is not None,
+            "entries": list(row.entries),
         }
 
     def replace_node_config(

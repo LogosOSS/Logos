@@ -48,19 +48,27 @@ def test_the_yaml_import_is_only_granted_once():
 
 def test_an_unconfigured_node_reads_as_revision_zero_without_entries():
     db = _db()
-    db.session.execute.return_value.fetchone.return_value = None
-    db.session.execute.return_value.fetchall.return_value = []
+    db.session.execute.return_value.fetchone.return_value = SimpleNamespace(
+        config_revision=None, yaml_imported_at=None, entries=[]
+    )
     assert db.get_node_config(7) == {"revision": 0, "yaml_imported": False, "entries": []}
 
 
 def test_a_configured_node_reads_its_revision_and_models():
     db = _db()
-    db.session.execute.return_value.fetchone.return_value = SimpleNamespace(config_revision=5, yaml_imported_at="t")
-    db.session.execute.return_value.fetchall.return_value = [
-        SimpleNamespace(model_name="org/a", capability={"tensor_parallel_size": 2}, overrides={})
-    ]
-    assert db.get_node_config(7) == {
-        "revision": 5,
-        "yaml_imported": True,
-        "entries": [{"model_name": "org/a", "capability": {"tensor_parallel_size": 2}, "overrides": {}}],
-    }
+    entries = [{"model_name": "org/a", "capability": {"tensor_parallel_size": 2}, "overrides": {}}]
+    db.session.execute.return_value.fetchone.return_value = SimpleNamespace(
+        config_revision=5, yaml_imported_at="t", entries=entries
+    )
+    assert db.get_node_config(7) == {"revision": 5, "yaml_imported": True, "entries": entries}
+
+
+def test_a_node_is_read_in_one_statement_in_list_order():
+    db = _db()
+    db.session.execute.return_value.fetchone.return_value = SimpleNamespace(
+        config_revision=1, yaml_imported_at=None, entries=[]
+    )
+    db.get_node_config(7)
+    assert db.session.execute.call_count == 1
+    source = inspect.getsource(DBManager.get_node_config)
+    assert "ORDER BY position, id" in source and "LEFT JOIN node_config_state" in source

@@ -581,6 +581,10 @@ class LogosConfig(BaseModel):
     # server-side calibration orchestrator can still discover and target them.
     configured_models: list[str] = Field(default_factory=list)
     capabilities_overrides: dict[str, dict] = Field(default_factory=dict)
+    # Models as Logos stores them (None: not fetched). Plans and calibration
+    # keys derive from these, not from the dicts the worker wires up.
+    node_entries: list[dict[str, Any]] | None = Field(default=None, exclude=True)
+    node_config_revision: int = Field(default=0, exclude=True)
     heartbeat_interval_seconds: int = Field(default=5, ge=1)
     reconnect_backoff_seconds: int = Field(default=3, ge=1)
     # Max time between full runtime-status pushes regardless of lane churn.
