@@ -44,6 +44,8 @@ export class ModelRequests implements OnInit {
 
   requests = signal<ModelRequest[]>([]);
   loading = signal(false);
+  /** True while the (slow, remote) recheck of a refresh is running. */
+  rechecking = signal(false);
   submitting = signal(false);
   /** Load failure for the list, shown inline (load errors are not vote outcomes). */
   error = signal<string | null>(null);
@@ -65,6 +67,12 @@ export class ModelRequests implements OnInit {
 
   /** The row whose license dialog is open; null while it is closed. */
   licenseTarget = signal<ModelRequest | null>(null);
+  /**
+   * Bumped every time the dialog opens or closes; an in-flight license load
+   * applies its result only for the generation it started in, so a slow
+   * answer can never display one model's agreement while another is open.
+   */
+  private licenseGeneration = 0;
   /** The stored license for the open dialog's row; null until loaded. */
   license = signal<ModelLicense | null>(null);
   licenseLoading = signal(false);
@@ -82,13 +90,30 @@ export class ModelRequests implements OnInit {
     await this.refresh();
   }
 
+  /**
+   * Refresh = render what is stored, then re-verify, then render the fresh
+   * verdicts. The recheck is a slow remote scan, so the (local) list is
+   * loaded and rendered first instead of waiting behind it.
+   */
   async refresh(): Promise<void> {
-    this.loading.set(true);
+    await this.loadRequests();
+    this.rechecking.set(true);
     try {
       // Best effort: a license accepted since the last check unflags the row,
-      // and a precheck failure must not keep the (local) list from rendering.
+      // and a precheck failure must not keep the list from re-rendering.
       await this.service.recheckGated().catch(() => {});
+    } finally {
+      this.rechecking.set(false);
+    }
+    await this.loadRequests();
+  }
+
+  /** Load the stored list (no recheck) and render it, or report the failure. */
+  private async loadRequests(): Promise<void> {
+    this.loading.set(true);
+    try {
       this.requests.set(await this.service.list());
+      this.error.set(null);
     } catch {
       this.error.set('Could not load model requests.');
     } finally {
@@ -139,7 +164,9 @@ export class ModelRequests implements OnInit {
         );
       }
       onSuccess?.();
-      await this.refresh();
+      // The vote just updated the server state for this row; a plain list
+      // reload picks it up without re-running the remote recheck.
+      await this.loadRequests();
     } catch (err: unknown) {
       // Vote outcomes are surfaced in a modal, not inline: the message needs
       // to be seen even though the user's attention is on the button.
@@ -191,6 +218,7 @@ export class ModelRequests implements OnInit {
 
   /** Open the license dialog for a row and load its stored license. */
   openLicenseDialog(request: ModelRequest): void {
+    this.licenseGeneration++;
     this.licenseTarget.set(request);
     this.license.set(null);
     this.licenseError.set(null);
@@ -200,7 +228,11 @@ export class ModelRequests implements OnInit {
 
   /** Close the license dialog (cancel, the backdrop or the close button). */
   closeLicenseDialog(): void {
+    this.licenseGeneration++;
     this.licenseTarget.set(null);
+    // An in-flight load will not clear the flag for the closed session
+    // (its generation no longer matches), so the close does.
+    this.licenseLoading.set(false);
   }
 
   /**
@@ -229,7 +261,7 @@ export class ModelRequests implements OnInit {
       await this.service.approveLicense(target.id);
       this.licenseTarget.set(null);
       this.notice.set(`License agreement for "${target.name}" accepted.`);
-      await this.refresh();
+      await this.loadRequests();
     } catch (err: unknown) {
       this.licenseError.set(this.messageOf(err) ?? 'Could not record the acceptance.');
     } finally {
@@ -247,7 +279,7 @@ export class ModelRequests implements OnInit {
       await this.service.revokeLicense(target.id);
       this.licenseTarget.set(null);
       this.notice.set(`License agreement for "${target.name}" revoked.`);
-      await this.refresh();
+      await this.loadRequests();
     } catch (err: unknown) {
       this.licenseError.set(this.messageOf(err) ?? 'Could not revoke the acceptance.');
     } finally {
@@ -257,15 +289,23 @@ export class ModelRequests implements OnInit {
 
   private async loadLicense(): Promise<void> {
     const target = this.licenseTarget();
+    const generation = this.licenseGeneration;
     if (!target) return;
     this.licenseLoading.set(true);
     this.licenseError.set(null);
     try {
-      this.license.set(await this.service.getLicense(target.id));
+      const license = await this.service.getLicense(target.id);
+      // The dialog may have closed or switched to another model in the
+      // meantime: a stale answer must not render then.
+      if (generation !== this.licenseGeneration) return;
+      this.license.set(license);
     } catch (err: unknown) {
+      if (generation !== this.licenseGeneration) return;
       this.licenseError.set(this.messageOf(err) ?? 'Could not load the license.');
     } finally {
-      this.licenseLoading.set(false);
+      if (generation === this.licenseGeneration) {
+        this.licenseLoading.set(false);
+      }
     }
   }
 

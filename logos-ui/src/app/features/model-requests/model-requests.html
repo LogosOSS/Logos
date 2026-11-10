@@ -7,7 +7,7 @@
         vote per model — the most-voted missing models rise to the top.
       </p>
     </div>
-    <button class="ghost" (click)="refresh()" [disabled]="loading()">Refresh</button>
+    <button class="ghost" (click)="refresh()" [disabled]="loading() || rechecking()">Refresh</button>
   </div>
 
   <section class="card">

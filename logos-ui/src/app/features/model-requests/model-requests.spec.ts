@@ -102,28 +102,30 @@ describe('ModelRequests', () => {
   });
 
   it('reports a load failure instead of crashing', async () => {
-    list.mockRejectedValueOnce(new Error('down'));
+    list.mockRejectedValue(new Error('down'));
     await page.refresh();
     expect(page.error()).toBe('Could not load model requests.');
     expect(page.requests()).toEqual([]);
   });
 
-  it('re-verifies the flagged models before reloading the list', async () => {
+  it('renders the stored list first and reloads it after the recheck', async () => {
+    // The recheck is a slow remote scan, so it must not hold the (local)
+    // list back: the stored rows render first, the verdicts reload after.
     const order: string[] = [];
-    recheckGated.mockImplementationOnce(async () => {
-      order.push('recheck');
-    });
-    list.mockImplementationOnce(async () => {
+    list.mockImplementation(async () => {
       order.push('list');
       return [];
     });
+    recheckGated.mockImplementationOnce(async () => {
+      order.push('recheck');
+    });
     await page.refresh();
-    expect(order).toEqual(['recheck', 'list']);
+    expect(order).toEqual(['list', 'recheck', 'list']);
   });
 
   it('still loads the list when the recheck fails', async () => {
     recheckGated.mockRejectedValueOnce(new Error('Hub down'));
-    list.mockResolvedValueOnce([makeRequest({ name: 'gpt-5' })]);
+    list.mockResolvedValue([makeRequest({ name: 'gpt-5' })]);
     await page.refresh();
     expect(page.requests().map((r) => r.name)).toEqual(['gpt-5']);
     expect(page.error()).toBeNull();
@@ -231,6 +233,36 @@ describe('ModelRequests', () => {
     await tick();
     expect(page.licenseError()).toBe('Unknown requested model.');
     expect(page.license()).toBeNull();
+  });
+
+  it('discards a license load that outlives the dialog', async () => {
+    let resolveLoad: (license: ModelLicense) => void;
+    getLicense.mockImplementationOnce(
+      () => new Promise<ModelLicense>((resolve) => { resolveLoad = resolve; }),
+    );
+    page.openLicenseDialog(makeRequest({ id: 3, name: 'llama' }));
+    page.closeLicenseDialog();
+    resolveLoad!(makeLicense());
+    await tick();
+    expect(page.license()).toBeNull();
+    expect(page.licenseError()).toBeNull();
+    expect(page.licenseLoading()).toBe(false);
+  });
+
+  it('discards a stale load when the dialog switches models', async () => {
+    let resolveFirst: (license: ModelLicense) => void;
+    getLicense.mockImplementationOnce(
+      () => new Promise<ModelLicense>((resolve) => { resolveFirst = resolve; }),
+    );
+    page.openLicenseDialog(makeRequest({ id: 3, name: 'llama' }));
+    page.openLicenseDialog(makeRequest({ id: 4, name: 'gpt' }));
+    // The first model's answer lands after the second model's: it must not
+    // replace what the open dialog now shows.
+    resolveFirst!(makeLicense({ license_id: 'apache-2.0' }));
+    await tick();
+    expect(page.license()).toEqual(makeLicense());
+    expect(getLicense).toHaveBeenCalledWith(3);
+    expect(getLicense).toHaveBeenCalledWith(4);
   });
 
   it('records the acceptance only with the checkbox set, then closes', async () => {
@@ -540,6 +572,7 @@ describe('the license agreement column', () => {
 
     (document.querySelector('.license-accept input') as HTMLInputElement).click();
     fx.detectChanges();
+    const listCallsBeforeSave = service.list.mock.calls.length;
     buttonOn(document.body, 'Save')!.click();
     await tick();
     fx.detectChanges();
@@ -547,8 +580,9 @@ describe('the license agreement column', () => {
     expect(service.approveLicense).toHaveBeenCalledWith(11);
     expect(fx.componentInstance.licenseTarget()).toBeNull();
     expect(fx.componentInstance.notice()).toContain('accepted');
-    // The refresh after the acceptance re-reads the list.
-    expect(service.list).toHaveBeenCalledTimes(2);
+    // The reload after the acceptance re-reads the list (once — the acceptance
+    // does not re-run the remote recheck).
+    expect(service.list.mock.calls.length).toBe(listCallsBeforeSave + 1);
     fx.destroy();
   });
 
