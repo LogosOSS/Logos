@@ -11,12 +11,18 @@ import json
 import logging
 from typing import Any, Iterable
 
+from logos_worker_node.gpu_slice import parse_gpu_indices
 from logos_worker_node.metal import is_metal_backend
 from logos_worker_node.models import AppConfig, DeviceInfo, MetalConfig, model_can_sleep
+from logos_worker_node.vllm_compat import DEFAULT_VLLM
 
 logger = logging.getLogger(__name__)
 
 _KEY_SCHEMA = 1
+# Launch-contract revision for CUDA probes with prefix caching disabled.
+# These profiles are valid only when the negative CLI flag is explicit;
+# unaffected default/true and Metal plans retain their existing keys.
+_PREFIX_CACHING_CLI_EXPLICIT_NO = 2
 
 
 def _canonical(value: Any) -> str:
@@ -59,8 +65,6 @@ def calibration_devices(plan: dict[str, Any], devices: list[DeviceInfo]) -> list
     An unpinned plan may be probed on whichever GPUs are idle and served on
     any of them later, so every GPU of the node counts.
     """
-    from logos_worker_node.calibration import parse_gpu_indices  # noqa: PLC0415
-
     indexed = {int((d.extra or {}).get("index", -1)): d for d in devices if (d.extra or {}).get("index") is not None}
     pinned = parse_gpu_indices(str(plan.get("gpu_devices") or ""))
     if not indexed or pinned is None:
@@ -95,6 +99,9 @@ def compute_calibration_key(
         backend = probe_attention_backend(plan)
         if backend:
             key["attention_backend"] = backend
+        # The shared store and local registry require exact key-hash equality.
+        if not bool(plan.get("enable_prefix_caching", True)):
+            key["enable_prefix_caching_cli"] = _PREFIX_CACHING_CLI_EXPLICIT_NO
     return key
 
 
@@ -156,10 +163,8 @@ def node_calibration_keys(
     cfg: AppConfig, plans: list[dict[str, Any]], devices: list[DeviceInfo]
 ) -> dict[str, dict[str, Any]]:
     """Calibration key of every configured model, as the node runs it now."""
-    from logos_worker_node.vllm_compat import _DEFAULT_VLLM  # noqa: PLC0415
-
     models = list(cfg.logos.configured_models) if cfg.logos else []
-    version = cached_vllm_version(serving_vllm_binary(cfg, _DEFAULT_VLLM))
+    version = cached_vllm_version(serving_vllm_binary(cfg, DEFAULT_VLLM))
     return calibration_keys(cfg, plans, models, devices, version)
 
 

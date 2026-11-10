@@ -289,6 +289,10 @@ class VRAMLedger:
             0.0,
         )
 
+    def get_gpu_consumable_available_mb(self, provider_id: int, device_id: int, raw_gpu_free_mb: float) -> float:
+        """Physical free memory minus consuming reservations, excluding pending frees."""
+        return raw_gpu_free_mb - self._positive_gpu_committed_mb(provider_id, device_id)
+
     def has_active_reservation(
         self,
         provider_id: int,

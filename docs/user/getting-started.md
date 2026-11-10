@@ -2,13 +2,13 @@
 title: Getting Started
 ---
 
-# Getting started with Logos
+# Getting Started with Logos
 
 Logos provides an OpenAI-compatible API and a web interface. Teams use them
 to share hosted and self-hosted language models. Your administrator gives you
 a Logos API key and the URL of the Logos instance.
 
-## Open the web interface
+## Open the Web Interface
 
 1. Open the Logos URL in a browser.
 2. Sign in with the configured identity provider.
@@ -17,7 +17,7 @@ The **Models** page shows the models that are available to your team. The
 permissions of your team decide which of the **Providers**, **Statistics**,
 and **Batches** pages you can use.
 
-## Make your first request
+## First API Request
 
 Send your API key as a bearer token:
 

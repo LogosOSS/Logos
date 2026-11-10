@@ -69,8 +69,10 @@ When `LOGOS_CAPACITY_PLANNER_ENABLED=true` (default) on the Logos server, sleep 
 
 | Idle duration | Action | Scope |
 |--------------|--------|-------|
-| 5min | Sleep level 1 | vLLM lanes with sleep mode enabled |
-| 10min in L1 sleep | Sleep level 2 | vLLM lanes already at level 1 |
+| 30 min (`LOGOS_IDLE_SLEEP_L1_S`, default 1800 s) | Sleep level 1 | vLLM lanes with sleep mode enabled |
+| 24 h in L1 sleep (effectively off) | Sleep level 2 | vLLM lanes already at level 1 |
+
+If another model needs the VRAM, the planner sleeps or stops an idle lane at once, without these timers.
 
 Lanes are woken automatically when demand is detected (exponential-decay demand score >= 1.0). New lanes can also be loaded preemptively when demand score >= 2.0, subject to VRAM budget validation.
 
@@ -91,8 +93,6 @@ The worker automatically measures memory footprints:
 For vLLM, Logos does not blindly reuse `loaded_vram_mb` as the next load cost. It uses `base_residency_mb` plus a scaled `kv_budget_mb`, then chooses a lower or higher automatic `gpu_memory_utilization` target based on how large the model is relative to the provider VRAM budget.
 
 Profiles update via exponential moving average (alpha=0.3). The worker keeps them only in memory: Logos stores them in its database (`model_profiles`, with calibration snapshots in `model_calibrations`) from the runtime status the worker sends every few seconds, and hands them back when the worker starts. The worker therefore waits for Logos before it starts any lane, and a profile survives the node being reinstalled. The capacity planner reads the same profiles to validate VRAM budgets before loading or waking lanes.
-
-A node whose state directory still holds a `model_profiles.yml` or `calibration_logs/calibration_unsupported_models.txt` from before hands both to Logos once on its first start and renames them to `*.migrated`.
 
 Example profiles as the worker reports them:
 ```yaml

@@ -14,6 +14,14 @@ INSERT INTO teams (name)
 SELECT 'e2e'
 WHERE NOT EXISTS (SELECT 1 FROM teams WHERE name = 'e2e');
 
+-- Burst traffic in the integrated suite exceeds the 5 RPM team default.
+UPDATE teams
+SET default_local_rpm_limit = 100000,
+    default_local_tpm_limit = 100000000,
+    default_cloud_rpm_limit = 100000,
+    default_cloud_tpm_limit = 100000000
+WHERE name = 'e2e';
+
 INSERT INTO users (username, prename, name, role, email)
 SELECT 'e2e.admin', 'E2E', 'Admin', 'logos_admin', 'e2e-admin@logos.invalid'
 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = 'e2e.admin');

@@ -5,8 +5,8 @@ container with ``docker compose up`` and never rebuilds that definition through 
 
 Two rules hold for everything in this module:
 
-* ``docker compose config`` prints the resolved environment, secrets included. It is only called with ``--images``,
-  and no output of it is logged.
+* ``docker compose config`` prints the resolved environment, secrets included. It is only called with ``--images``
+  and ``--hash``, which print image names and a hash, and no output of it is logged.
 * The requested image tag reaches Compose as the ``IMAGE_TAG`` process variable. A variable in the process environment
   beats the same variable in the ``.env`` file, so a later rewrite of that file cannot change what an earlier request
   deploys.
@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 QUERY_TIMEOUT_S = 30.0
 # Compose has to read and interpolate the whole file before it prints the image names.
 CONFIG_TIMEOUT_S = 60.0
+# The label on which Compose keeps the hash of the configuration a container was made from.
+CONFIG_HASH_LABEL = "com.docker.compose.config-hash"
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,8 @@ class ContainerInfo:
     restart_count: int
     # None when the image defines no health check.
     health: str | None
+    # The configuration hash that Compose put on the container when it made it, or None if there is none.
+    config_hash: str | None = None
 
 
 def split_image_ref(ref: str) -> tuple[str, str | None]:
@@ -62,16 +66,19 @@ def split_image_ref(ref: str) -> tuple[str, str | None]:
 def _container_from_inspect(raw: dict) -> ContainerInfo:
     state = raw.get("State") or {}
     health = (state.get("Health") or {}).get("Status")
+    config = raw.get("Config") or {}
+    config_hash = (config.get("Labels") or {}).get(CONFIG_HASH_LABEL)
     return ContainerInfo(
         id=str(raw.get("Id") or ""),
         image_id=str(raw.get("Image") or ""),
-        image_ref=str((raw.get("Config") or {}).get("Image") or ""),
+        image_ref=str(config.get("Image") or ""),
         status=str(state.get("Status") or ""),
         running=bool(state.get("Running")),
         restarting=bool(state.get("Restarting")),
         exit_code=int(state.get("ExitCode") or 0),
         restart_count=int(raw.get("RestartCount") or 0),
         health=str(health) if health else None,
+        config_hash=str(config_hash) if config_hash else None,
     )
 
 
@@ -156,6 +163,21 @@ class Docker:
         if len(refs) != 1:
             raise DockerError(f"expected one image for service {self._settings.service!r}, got {len(refs)}")
         return refs[0]
+
+    def config_hash(self, tag: str) -> str | None:
+        """The hash of the configuration that Compose would make the worker container from now, or None if unknown.
+
+        Compose recreates a container when its image or this hash changed. The hash changes with a variable of the
+        ``.env`` file, with the compose file and with the image name, also when the image itself is the same. Only the
+        hash is read, never the configuration.
+        """
+        result = self._runner.run(
+            self._compose("config", "--hash", self._settings.service),
+            timeout_s=CONFIG_TIMEOUT_S,
+            env=self._tag_env(tag),
+        )
+        parts = result.stdout.split() if result.ok else []
+        return parts[1] if len(parts) == 2 and parts[0] == self._settings.service else None
 
     # ------------------------------------------------------------------ Engine
 

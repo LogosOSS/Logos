@@ -268,7 +268,7 @@ export class Models implements OnInit, OnDestroy {
       this.activeTab.set(this.tabFromParam(params.get('tab')));
     });
 
-    this.fetchModels();
+    void this.fetchModels();
     if (this.role() === 'logos_admin') {
       timer(0, 30000).pipe(
         switchMap(() => this.http.post<{ schedules: NightlySchedule[]; next_date: string }>(

@@ -8,7 +8,10 @@ tests import the app and inspect what it built.
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from app import main
@@ -508,3 +511,78 @@ class TestWhatEverySessionIsTold:
         await main.put_instructions(InstructionUpdate(house_rules=""), principal=_principal())
 
         assert written[0][0] == ""
+
+
+class TestTheSchedulerPassAnEndpointStarts:
+    """Changing the controls or creating a session runs a pass right away.
+
+    The pass runs in the background, and the manager holds its task until it
+    finishes: the event loop keeps only a weak reference to a task.
+    """
+
+    def install(self, monkeypatch):
+        from app import sessions
+
+        passes: list[asyncio.Task] = []
+        release = asyncio.Event()
+
+        async def scheduler_pass():
+            passes.append(asyncio.current_task())
+            await release.wait()
+
+        monkeypatch.setattr(sessions.manager, "scheduler_pass", scheduler_pass)
+        return passes, release
+
+    async def assert_one_held_pass(self, passes, release):
+        from app import sessions
+
+        await asyncio.sleep(0)
+        assert len(passes) == 1
+        assert passes[0] in sessions.manager._requested_passes
+        release.set()
+        await passes[0]
+        assert passes[0] not in sessions.manager._requested_passes
+
+    async def test_changing_the_controls_runs_a_pass(self, monkeypatch):
+        from app import controls
+        from app.schemas import ControlUpdate
+
+        passes, release = self.install(monkeypatch)
+
+        async def current():
+            return controls.Controls()
+
+        monkeypatch.setattr(controls, "current", current)
+
+        await main.update_controls(ControlUpdate(), principal=_principal())
+
+        await self.assert_one_held_pass(passes, release)
+
+    async def test_creating_a_session_runs_a_pass(self, monkeypatch):
+        from app import db, model_policy
+        from app.schemas import SessionCreate
+
+        passes, release = self.install(monkeypatch)
+
+        async def get_workspace(_workspace_id):
+            return {"id": 3}
+
+        async def refresh():
+            return SimpleNamespace(allows=lambda _model: True)
+
+        async def create_session(**_kwargs):
+            return 21
+
+        async def get_session(session_id):
+            return {**TestRunningWorkAgain.ROW, "id": session_id, "status": "queued"}
+
+        monkeypatch.setattr(main, "settings", replace(main.settings, agent_api_key="a-key"))
+        monkeypatch.setattr(db, "get_workspace", get_workspace)
+        monkeypatch.setattr(model_policy, "refresh", refresh)
+        monkeypatch.setattr(db, "create_session", create_session)
+        monkeypatch.setattr(db, "get_session", get_session)
+        monkeypatch.setattr(main, "_summary_fields", lambda row: dict(row))
+
+        await main.create_session(SessionCreate(workspace_id=3, task="Fix the flaky test"), principal=_principal())
+
+        await self.assert_one_held_pass(passes, release)

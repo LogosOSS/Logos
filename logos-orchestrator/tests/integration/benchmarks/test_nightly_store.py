@@ -1,13 +1,14 @@
 """Run against an explicitly supplied disposable PostgreSQL database."""
 
+import copy
 import os
 import uuid
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.orm import Session
 
 from logos.benchmarks import nightly_store as store
@@ -54,20 +55,26 @@ def database(monkeypatch):
         for sql in tree.findall("{*}changeSet/{*}sql"):
             connection.execute(text(sql.text))
         connection.execute(text("CREATE TABLE notifications(id integer PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE users(id integer PRIMARY KEY, username text)"))
         connection.execute(
             text(
                 "CREATE TABLE log_entry(id integer PRIMARY KEY, model_id integer, privacy_level text, "
-                "result_status text, environment text, input_payload jsonb)"
+                "result_status text, environment text, input_payload jsonb, user_id integer, "
+                "timestamp_request timestamptz, timestamp_response timestamptz)"
             )
         )
         connection.execute(
             text(
                 "CREATE TABLE model_provider_benchmarks(id integer PRIMARY KEY, configuration jsonb, "
-                "metrics jsonb, sample_size integer)"
+                "metrics jsonb, sample_size integer, model_provider_id integer DEFAULT 31)"
             )
         )
         workloads_migration = migration.with_name("068_benchmark_request_workloads.xml")
         for sql in ElementTree.parse(workloads_migration).findall("{*}changeSet/{*}sql"):
+            connection.execute(text(sql.text))
+        for sql in ElementTree.parse(migration.with_name("069_nightly_request_sources.xml")).findall(
+            "{*}changeSet/{*}sql"
+        ):
             connection.execute(text(sql.text))
 
     class Database(store.DBManager):
@@ -77,6 +84,9 @@ def database(monkeypatch):
 
     monkeypatch.setattr(store, "DBManager", Database)
     monkeypatch.setattr(store, "_init_engine", lambda: engine)
+    from logos.benchmarks import recent_requests
+
+    monkeypatch.setattr(recent_requests, "DBManager", Database)
     yield engine, Database
     engine.dispose()
     with admin.begin() as connection:
@@ -96,11 +106,13 @@ def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(dat
     with engine.begin() as connection:
         connection.execute(
             text(
-                "INSERT INTO log_entry VALUES (7, 11, 'FULL', 'success', '', "
+                "INSERT INTO log_entry(id, model_id, privacy_level, result_status, environment, input_payload) "
+                "VALUES (7, 11, 'FULL', 'success', '', "
                 '\'{"messages":[{"role":"user","content":"Synthetic prompt"}]}\')'
             )
         )
     created = workloads.create([7], "Trial", "synthetic")
+    assert created["created_at"]
     assert workloads.create([7], "Same inputs, another name", "synthetic") == created
     store.set_enabled(31, False, False, created["id"], None)
     with pytest.raises(ValueError):
@@ -114,9 +126,10 @@ def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(dat
 
 
 async def test_completion_event_survives_failed_delivery_and_deduplicates_finish(database, monkeypatch):
+    from importlib import import_module
     from unittest.mock import AsyncMock
 
-    import logos.notifications as notifications
+    notifications = import_module("logos.notifications")
 
     engine, _ = database
     store.set_enabled(31, True, False)
@@ -139,13 +152,19 @@ async def test_completion_event_survives_failed_delivery_and_deduplicates_finish
     assert delivery.call_args.kwargs["event_key"] == "nightly:31:2026-10-28"
 
 
-def test_finish_persists_winner_reference_and_chart_eligibility_atomically(database):
+@pytest.mark.parametrize("adopt", [False, True])
+def test_finish_persists_winner_reference_and_chart_eligibility_atomically(database, adopt):
     import json
 
     engine, _ = database
     store.set_enabled(31, True, False)
     store.claim(31, date(2026, 10, 28))
-    search = {"state": {"series_key": "series", "workload_id": "a" * 64}, "reference_id": 1}
+    search = {
+        "state": {"series_key": "series", "workload_id": "a" * 64},
+        "reference_id": 1,
+        "series_key": "series",
+        "workload_id": "a" * 64,
+    }
     with engine.begin() as connection:
         for identifier, throughput in [(1, 40), (2, 50)]:
             configuration = {
@@ -171,10 +190,20 @@ def test_finish_persists_winner_reference_and_chart_eligibility_atomically(datab
                 {"id": identifier, "config": json.dumps(configuration), "metrics": json.dumps(metrics)},
             )
     report = [{"configuration": i, "status": "success", "benchmark_id": i} for i in (1, 2)]
+    candidate = store.adoption_candidate(31, search, report)
+    assert candidate["benchmark_id"] == 2
+    assert store.adoption_candidate(32, search, report) is None
+    if adopt:
+        report.append({"status": "adopted", **candidate})
     store.finish(31, "completed", report, search)
     assert store.status(31)["optimizer"]["best_parameters"] == {"max_num_seqs": 32}
     assert store.status(31)["optimizer"]["reference_id"] == 1
+    if adopt:
+        assert store.status(31)["optimizer"]["production_adoption"]["benchmark_id"] == 2
     with engine.connect() as connection:
+        payload = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
+        assert payload["benchmark_id"] == 2
+        assert payload["changes"] == [{"parameter": "max_num_seqs", "before": None, "after": 32}]
         assert (
             connection.execute(
                 text(
@@ -502,3 +531,108 @@ def test_maintenance_holders_name_every_kind_of_slot_holder(database):
         "model-a",
     )
     assert recovery["status"] == "restoring"
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+def test_continuous_rounds_keep_daily_claims_and_notify_only_after_the_final_restoration(database, disabled):
+    engine, _ = database
+    day = date(2026, 10, 29)
+    store.set_enabled(31, True, False)
+    assert store.claim(31, day)
+    report = [{"configuration": 1, "status": "success"}, {"configuration": 2, "status": "success"}]
+    store.finish(31, "continuing", report)
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 0
+    assert store.claim(31, day)
+    assert not store.claim(31, day)
+
+    assert store.claimed_today(day) == 1
+    store.finish(31, "continuing", report)
+    store.finalize_continuations(datetime.fromisoformat("2026-10-29T07:59:59+01:00"))
+    assert store.status(31)["status"] == "continuing"
+    assert store.status(31)["optimizer"]["nightly_session"]["rounds"] == 2
+    with pytest.raises(ValueError):
+        store.set_enabled(31, True, True, None, None)
+    if disabled:
+        store.set_enabled(31, False, True)
+    stamp = "2026-10-29T07:59:59+01:00" if disabled else "2026-10-29T08:00:00+01:00"
+    store.finalize_continuations(datetime.fromisoformat(stamp))
+    store.finalize_continuations(datetime.fromisoformat(stamp))
+    assert store.status(31)["status"] == ("disabled" if disabled else "completed")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 1
+        payload = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
+        assert payload["successful_configurations"] == 4
+        assert payload["rounds"] == 2
+    assert not store.claim(31, day)
+
+
+def test_recovery_resumes_the_same_claim_and_records_one_final_event(database):
+    engine, _ = database
+    day = date(2026, 10, 29)
+    store.set_enabled(31, True, False)
+    report = [{"status": "success"}, {"status": "recovery_required", "reason": "GPU capacity unavailable"}]
+
+    for attempt in range(store.MAX_RECOVERY_RESUMES + 1):
+        assert store.claim(31, day)
+        assert store.claimed_today(day) == 1
+        store.save(31, "recovery_required", report, {"provider_id": 1})
+        store.finish(31, "interrupted_recovered", report, resume_after_recovery=True)
+        state = store.status(31)
+        assert not state["recovery_required"]
+        if attempt < store.MAX_RECOVERY_RESUMES:
+            assert state["status"] == "continuing"
+            with engine.connect() as connection:
+                assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 0
+
+    assert state["status"] == "interrupted_recovered"
+    assert not store.claim(31, day)
+    with engine.connect() as connection:
+        payload = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
+    assert payload["recovery_retry_limit_reached"]
+    assert payload["interruption_reason"] == "GPU capacity unavailable"
+    assert payload["rounds"] == 3
+
+
+def test_selection_diagnostics_keep_workloads_separate_and_explain_rejected_faster_runs(database):
+    from sqlalchemy import text
+    from sqlalchemy.types import JSON
+
+    from logos.benchmarks.optimization import eligible
+
+    engine, _ = database
+    baseline = {
+        "id": 1,
+        "sample_size": 1,
+        "configuration": {"workload": {"id": "a"}, "nightly": {"baseline_id": 1, "series_key": "series"}},
+        "metrics": {
+            "aggregate_output_tokens_per_second": 40,
+            "request_totals": {"total": 1, "successful": 1, "errored": 0, "incomplete": 0},
+            "replay_samples": [{"source_log_id": 8, "output_tokens": 100, "finish_reason": "stop"}],
+            "request_latency_ms": {"successful": {"percentiles": {"p95": 1000}}},
+        },
+    }
+
+    faster = copy.deepcopy(baseline)
+    faster["id"] = 2
+    faster["metrics"]["aggregate_output_tokens_per_second"] = 50
+    faster["metrics"]["replay_samples"][0]["output_tokens"] = 20
+    other = copy.deepcopy(baseline)
+    other["id"] = 3
+    other["configuration"]["workload"]["id"] = "b"
+    with engine.begin() as connection:
+        statement = text(
+            "INSERT INTO model_provider_benchmarks(id, configuration, metrics, sample_size) "
+            "VALUES (:id, :configuration, :metrics, :sample_size)"
+        ).bindparams(
+            bindparam("configuration", type_=JSON),
+            bindparam("metrics", type_=JSON),
+        )
+        connection.execute(statement, [baseline, faster, other])
+    summary = store.selection_summary(31, "a")
+    assert eligible(baseline, baseline)
+    assert summary["best_observed"]["benchmark_id"] == 2
+    assert summary["best_eligible"]["benchmark_id"] == 1
+    assert summary["best_observed"]["issues"] == ["1 answer lengths differ by more than 20% from baseline"]
+    assert {item["benchmark_id"] for item in summary["comparisons"]} == {1, 2}
+    assert "source_log_id" not in str(summary)

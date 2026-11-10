@@ -48,4 +48,7 @@ if (!url || !output) {
   } finally {
     if (browser) await browser.close();
   }
-})();
+})().catch((error) => {
+  console.error(`screenshot failed: ${error.message}`);
+  process.exitCode = 1;
+});

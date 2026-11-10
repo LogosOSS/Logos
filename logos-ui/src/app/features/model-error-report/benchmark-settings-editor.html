@@ -1,5 +1,26 @@
 <div class="settings-editor">
   <h4>Next benchmark</h4>
+  @if (pair()?.provider_type === 'logosnode') {
+    <label>Input dataset
+      <select aria-label="Input dataset" [ngModel]="settings().workload_id ?? ''" (ngModelChange)="selectWorkload($event)" [disabled]="workloadsLoading()">
+        <option value="">Hugging Face dataset</option>
+        @if (settings().workload_id && !selectedWorkload()) {
+          <option [value]="settings().workload_id" disabled>Saved dataset unavailable</option>
+        }
+        @for (workload of workloads(); track workload.id) {
+          <option [value]="workload.id">{{ workload.name }} · {{ workload.request_count }} requests · {{ workload.provenance }}</option>
+        }
+      </select>
+    </label>
+    @if (workloadsLoading()) { <p role="status">Loading saved request datasets…</p> }
+    @if (workloadsError()) {
+      <p role="alert" class="settings-error">{{ workloadsError() }}</p>
+      <button type="button" (click)="loadWorkloads()">Retry saved datasets</button>
+    }
+  }
+  @if (settings().workload_id) {
+    <p>{{ selectedWorkload()?.request_count }} saved requests. Every run replays the same inputs and preserves each request's output limit.</p>
+  } @else {
   <p>Choose a public Hugging Face dataset and the text column to use as the prompt.</p>
   <div class="dataset-picker" (keydown.escape)="closeDatasetPicker(); $event.stopPropagation()">
     <span id="benchmark-dataset-label">Dataset</span>
@@ -49,7 +70,9 @@
       <button type="button" (click)="retryDataset()" [disabled]="loading()">Retry dataset</button>
     </div>
   }
+  }
   <div class="settings-grid">
+    @if (!settings().workload_id) {
     <label>Dataset variant
       <select [ngModel]="settings().subset" (ngModelChange)="inspectDataset(settings().dataset, $event)" [disabled]="loading()">
         @for (subset of subsets(); track subset) { <option [value]="subset">{{ subset }}</option> }
@@ -68,6 +91,7 @@
     <label>Max output tokens
       <input type="number" min="1" max="4096" step="1" required [ngModel]="settings().max_output_tokens" (ngModelChange)="update('max_output_tokens', $event)" />
     </label>
+    }
     <label>Profile
       <select [ngModel]="settings().profile" (ngModelChange)="update('profile', $event)">
         <option value="synchronous">Sequential</option><option value="concurrent">Concurrent</option>
@@ -76,10 +100,13 @@
     <label>Concurrent requests
       <input type="number" min="1" max="32" step="1" required [disabled]="settings().profile === 'synchronous'" [ngModel]="settings().concurrency" (ngModelChange)="update('concurrency', $event)" />
     </label>
+    @if (!settings().workload_id) {
     <label>Seed
       <input type="number" min="0" max="2147483647" step="1" required [ngModel]="settings().seed" (ngModelChange)="update('seed', $event)" />
     </label>
+    }
   </div>
+  @if (!settings().workload_id) {
   <details class="dataset-preview">
     <summary>Dataset preview</summary>
     @if (loading()) {
@@ -106,6 +133,7 @@
       <p>No preview available. Use the Hugging Face link above to explore this dataset.</p>
     }
   </details>
+  }
   <details (toggle)="onServingToggle($event)">
     <summary>vLLM settings for the next run</summary>
     <p>Applies to the selected Logos worker before the benchmark and may reload the model. Changed settings remain active afterwards. Empty fields keep the current worker value.</p>

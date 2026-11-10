@@ -25,26 +25,140 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from harness.fake_vllm.protocol import chat_completion_payload, models_payload
 from harness.gpusim import state as gpustate
+from harness.gpusim.performance import PerformanceTiming, record_event
 from harness.gpusim.scenario import VllmScript
 
-#: Version the fake reports at ``/version``. Kept close to what the worker
-#: images pin so version-gated branches take their production path.
-FAKE_VLLM_VERSION = "0.11.0"
+#: Simulated protocol version reported at ``/version`` and ``vllm --version``.
+#: This is **not** an installed vLLM wheel — it labels the emulated EngineCore
+#: contract the benchmark images target (0.32.x). Override with
+#: ``LOGOS_SIM_FAKE_VLLM_VERSION`` when a suite needs a different target.
+_DEFAULT_FAKE_VLLM_VERSION = "0.32.0"
+
+
+def _fake_vllm_version() -> str:
+    raw = os.environ.get("LOGOS_SIM_FAKE_VLLM_VERSION", "").strip()
+    return raw or _DEFAULT_FAKE_VLLM_VERSION
+
+
+#: Default simulated protocol version. Prefer :func:`_fake_vllm_version` at
+#: call time so ``LOGOS_SIM_FAKE_VLLM_VERSION`` overrides apply; this alias
+#: keeps ``from harness.gpusim.server import FAKE_VLLM_VERSION`` stable.
+FAKE_VLLM_VERSION = _DEFAULT_FAKE_VLLM_VERSION
+
+#: vLLM's own default when ``--gpu-memory-utilization`` is omitted. The fake
+#: EngineCore still gates startup on this reservation even when
+#: ``--kv-cache-memory-bytes`` pins the steady-state KV pool (real
+#: ``request_memory`` behaviour).
+VLLM_DEFAULT_GMU = 0.9
 
 #: Canned completion text. Short and deterministic so streaming tests can
 #: assert on exact chunk counts.
 COMPLETION_TEXT = "Simulated response from the Logos E2E vLLM stub."
+
+#: Default fraction of the awake per-device claim kept resident after
+#: ``/sleep?level=1``. Synthetic approximation (~1 GiB of a ~40 GiB TP1 lane)
+#: unless a per-model absolute residual MB map overrides it. Without shrinking
+#: the ledger, the worker EMA-corrupts calibrated ``sleeping_residual_mb``
+#: toward the full awake footprint and the planner concludes sleep_L1 frees
+#: almost nothing.
+_DEFAULT_SLEEP_L1_RESIDUAL_FRAC = 0.03
+
+
+def _sleep_l1_residual_frac() -> float:
+    raw = os.environ.get("LOGOS_SIM_SLEEP_L1_RESIDUAL_FRAC", "").strip()
+    if not raw:
+        return _DEFAULT_SLEEP_L1_RESIDUAL_FRAC
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_SLEEP_L1_RESIDUAL_FRAC
+    return value if 0.0 < value < 1.0 else _DEFAULT_SLEEP_L1_RESIDUAL_FRAC
+
+
+def _sleep_l1_residual_mb_by_model() -> dict[str, float]:
+    """Optional absolute residual MB (per device) keyed by model id.
+
+    Sources, first match wins:
+
+    * ``LOGOS_SIM_SLEEP_L1_RESIDUAL_MB_JSON`` — inline ``{"model": mb, ...}``
+    * ``LOGOS_SIM_SLEEP_L1_RESIDUAL_MB_FILE`` — path to the same JSON object
+
+    Public fixtures may ship calibrated residuals without requiring private
+    files; absent entries fall back to the fractional approximation.
+    """
+    raw = os.environ.get("LOGOS_SIM_SLEEP_L1_RESIDUAL_MB_JSON", "").strip()
+    if not raw:
+        path = os.environ.get("LOGOS_SIM_SLEEP_L1_RESIDUAL_MB_FILE", "").strip()
+        if path:
+            try:
+                raw = Path(path).read_text(encoding="utf-8")
+            except OSError:
+                return {}
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, value in parsed.items():
+        try:
+            out[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def sleep_residual_mb_for(model: str, awake_mb: float) -> float:
+    """Resident MB kept on one device after sleep_L1 for *model*."""
+    absolute = _sleep_l1_residual_mb_by_model().get(model)
+    if absolute is not None and absolute > 0:
+        return max(float(absolute), 1.0)
+    return max(awake_mb * _sleep_l1_residual_frac(), 1.0)
+
+
+def simulation_assumptions() -> dict[str, Any]:
+    """Explicit sim assumptions for report emitters (fractional residual, etc.)."""
+    frac = _sleep_l1_residual_frac()
+    by_model = _sleep_l1_residual_mb_by_model()
+    return {
+        "fake_vllm_version": _fake_vllm_version(),
+        "fake_vllm_version_kind": "simulated_protocol",
+        "fake_vllm_version_note": (
+            "Reported version is the emulated EngineCore protocol target, " "not an installed vLLM package."
+        ),
+        "sleep_l1_residual_frac": frac,
+        "sleep_l1_residual_mb_by_model": dict(by_model),
+        "sleep_l1_residual_mode": "per_model_mb" if by_model else "fraction_of_awake",
+        "sleep_l1_residual_note": (
+            f"Default sleep_L1 residual is {frac:.3%} of the awake per-device "
+            "claim (synthetic approximation) unless overridden per model via "
+            "LOGOS_SIM_SLEEP_L1_RESIDUAL_MB_JSON / _FILE."
+        ),
+    }
+
+
+#: Default ``max_model_len`` advertised on ``/v1/models`` when the CLI omits
+#: ``--max-model-len`` (generic unit tests). Benchmark lanes pass the real pin.
+_DEFAULT_MAX_MODEL_LEN = 32768
 
 
 class Lane:
     """Mutable serving state for the one model this process hosts."""
 
     def __init__(self, model: str, script: VllmScript, vram_mb: float) -> None:
+        self.timing = PerformanceTiming(model) if os.environ.get("LOGOS_SIM_TIMING_PROFILE") else None
+        if self.timing:
+            script.ready_after_s = self.timing.values["cold_start_s"] / self.timing.speed
+            script.slow_wake_s = self.timing.values["wake_s"] / self.timing.speed
         self.model = model
         self.script = script
         self.vram_mb = vram_mb
@@ -53,14 +167,67 @@ class Lane:
         self.requests_total = 0
         self.prompt_tokens_total = 0
         self.generation_tokens_total = 0
+        #: Awake per-device claims (MB); restored on ``/wake_up``.
+        self.awake_by_device: dict[int, float] = {}
+        self.pid: int = 0
+        #: Startup GMU used for the free≥gmu×total gate (may differ from claim).
+        self.startup_gmu: float = VLLM_DEFAULT_GMU
+        #: Served context window from ``--max-model-len`` (worker calibration).
+        self.max_model_len: int = _DEFAULT_MAX_MODEL_LEN
 
     @property
     def ready(self) -> bool:
-        return time.time() - self.started_at >= self.script.ready_after_s
+        ready = time.time() - self.started_at >= self.script.ready_after_s
+        if ready and self.timing and not self.timing.ready_recorded:
+            self.timing.ready_recorded = True
+            record_event("cold_load", self)
+        return ready
 
 
 def _json_bytes(payload: Any) -> bytes:
     return json.dumps(payload).encode("utf-8")
+
+
+def _claim_mb(sim: gpustate.GpuSimState, pid: int, device_index: int) -> float:
+    for alloc in sim.allocations:
+        if alloc.pid == pid and alloc.device_index == device_index and not alloc.leaked:
+            return float(alloc.mb)
+    return 0.0
+
+
+def assert_startup_gmu_free(sim: gpustate.GpuSimState, device_index: int, gmu: float) -> None:
+    """Real vLLM ``request_memory`` gate: free ≥ gmu × physical total per GPU.
+
+    Runs even when the lane pins ``--kv-cache-memory-bytes``; that pin sizes the
+    steady-state KV pool and is independent of this startup reservation check.
+    """
+    device = sim.device(device_index)
+    if device is None:
+        raise gpustate.GpuSimStateError(f"no simulated device with index {device_index}")
+    total = device.memory_total_mb
+    need = float(gmu) * total
+    free = sim.free_mb(device_index)
+    if free + 1e-6 < need:
+        raise gpustate.GpuSimStateError(
+            f"Free memory on device cuda:{device_index} ({free:.2f} MB) is less than "
+            f"desired GPU memory utilization ({gmu:.4f} × {total:.2f} MB = {need:.2f} MB). "
+            "Decrease gpu_memory_utilization or reduce GPU memory used by other processes."
+        )
+
+
+def assert_wake_capacity(sim: gpustate.GpuSimState, pid: int, awake_by_device: dict[int, float]) -> None:
+    """Refuse wake if restoring awake claims would exceed any GPU's physical total."""
+    for index, awake_mb in awake_by_device.items():
+        device = sim.device(index)
+        if device is None:
+            raise gpustate.GpuSimStateError(f"no simulated device with index {index}")
+        current = _claim_mb(sim, pid, index)
+        others = sim.used_mb(index) - current
+        if others + float(awake_mb) > device.memory_total_mb + 1e-6:
+            raise gpustate.GpuSimStateError(
+                f"wake restore of {awake_mb:.2f} MB on GPU {index} exceeds physical "
+                f"capacity (others={others:.2f} MB, total={device.memory_total_mb:.2f} MB)"
+            )
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -110,7 +277,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send(200 if lane.ready else 503)
         elif path == "/version":
-            self._send(200, {"version": FAKE_VLLM_VERSION})
+            version = _fake_vllm_version()
+            self._send(
+                200,
+                {
+                    "version": version,
+                    "simulated": True,
+                    "version_kind": "simulated_protocol",
+                    "note": "simulated EngineCore protocol target, not an installed vLLM wheel",
+                },
+            )
         elif path == "/v1/models":
             self._send(200, self._models_payload(lane))
         elif path == "/metrics":
@@ -131,23 +307,66 @@ class Handler(BaseHTTPRequestHandler):
         lane = self.server.lane  # type: ignore[attr-defined]
 
         if path == "/sleep":
-            if lane.script.refuse_sleep:
-                self._send(500, {"error": "Sleep mode is not enabled for this engine"})
-                return
-            lane.sleeping = True
-            level = int((query.get("level") or ["1"])[0])
-            self._send(200, {"is_sleeping": True, "level": level})
+            self._handle_sleep(lane, query)
         elif path == "/wake_up":
-            if lane.script.slow_wake_s:
-                time.sleep(lane.script.slow_wake_s)
-            lane.sleeping = False
-            self._send(200, {"is_sleeping": False})
+            self._handle_wake(lane)
         elif path == "/reset_mm_cache":
             self._send(200, {})
         elif path in ("/v1/chat/completions", "/v1/completions"):
             self._completion(lane, path, self._read_json())
         else:
             self._send(404, {"error": {"message": f"Unknown route {path}", "type": "not_found"}})
+
+    def _handle_sleep(self, lane: Lane, query: dict[str, list[str]]) -> None:
+        if lane.script.refuse_sleep:
+            self._send(500, {"error": "Sleep mode is not enabled for this engine"})
+            return
+        level = int((query.get("level") or ["1"])[0])
+        if level >= 1 and lane.awake_by_device and not lane.sleeping:
+            try:
+                with gpustate.mutate() as sim:
+                    # Validate every TP device can be resized, then apply under
+                    # the same lock so a mid-TP failure never persists a partial.
+                    targets = {
+                        index: sleep_residual_mb_for(lane.model, awake_mb)
+                        for index, awake_mb in lane.awake_by_device.items()
+                    }
+                    for index in targets:
+                        if sim.device(index) is None:
+                            raise gpustate.GpuSimStateError(f"no simulated device with index {index}")
+                    for index, residual_mb in targets.items():
+                        sim.resize(lane.pid, index, residual_mb)
+            except gpustate.GpuSimStateError as exc:
+                # Preserve prior sleeping flag + ledger; never fake success.
+                self._send(500, {"error": {"message": str(exc), "type": "gpusim_state_error"}})
+                return
+        lane.sleeping = True
+        record_event("sleep", lane)
+        self._send(200, {"is_sleeping": True, "level": level})
+
+    def _handle_wake(self, lane: Lane) -> None:
+        if lane.script.slow_wake_s:
+            time.sleep(lane.script.slow_wake_s)
+        if lane.sleeping and lane.awake_by_device:
+            try:
+                with gpustate.mutate() as sim:
+                    assert_wake_capacity(sim, lane.pid, lane.awake_by_device)
+                    for index, awake_mb in lane.awake_by_device.items():
+                        sim.resize(lane.pid, index, awake_mb)
+            except gpustate.GpuSimStateError as exc:
+                # Stay asleep with residual claims intact — do not report awake
+                # under OOM, and do not commit a partial TP restore.
+                message = str(exc)
+                oom = "exceeds physical" in message or "wake restore" in message
+                record_event("wake_rejected" if oom else "wake_error", lane)
+                self._send(
+                    507 if oom else 500,
+                    {"error": {"message": message, "type": "out_of_memory" if oom else "gpusim_state_error"}},
+                )
+                return
+        lane.sleeping = False
+        record_event("wake", lane)
+        self._send(200, {"is_sleeping": False})
 
     # -- payloads ---------------------------------------------------------
 
@@ -157,13 +376,16 @@ class Handler(BaseHTTPRequestHandler):
             lane.model,
             owned_by="vllm",
             created=int(lane.started_at),
-            max_model_len=32768,
+            max_model_len=int(lane.max_model_len),
         )
 
     def _completion(self, lane: Lane, path: str, body: dict[str, Any]) -> None:
         if lane.sleeping:
             self._send(503, {"error": {"message": "engine is sleeping", "type": "service_unavailable"}})
             return
+
+        if lane.timing:
+            return lane.timing.complete(self, lane, path, body)
 
         lane.requests_total += 1
         prompt_tokens = 16
@@ -269,6 +491,8 @@ class Handler(BaseHTTPRequestHandler):
         Only the series ``get_backend_metrics`` parses are emitted; anything
         else would be dead weight the worker skips anyway.
         """
+        if lane.timing:
+            return lane.timing.metrics(lane)
         labels = f'{{model_name="{lane.model}"}}'
         ttft_count = max(lane.requests_total, 0)
         lines = [
@@ -308,8 +532,9 @@ def _startup_banner(lane: Lane, port: int) -> str:
     calibration's served-context extraction, so its shape has to match
     ``_VLLM_MAX_CONCURRENCY_RE`` exactly.
     """
+    version = _fake_vllm_version()
     lines = [
-        f"INFO [api_server.py:1000] vLLM API server version {FAKE_VLLM_VERSION}",
+        f"INFO [api_server.py:1000] vLLM API server version {version} (simulated protocol)",
         f"INFO [core.py:200] Loading model {lane.model}...",
         f"INFO [kv_cache_utils.py:900] Maximum concurrency for "
         f"{lane.script.max_concurrency_tokens:,} tokens per request: {lane.script.max_concurrency:.2f}x",
@@ -320,15 +545,36 @@ def _startup_banner(lane: Lane, port: int) -> str:
     return "\n".join(lines)
 
 
-def run(model: str, port: int, script: VllmScript, vram_by_device: dict[int, float]) -> int:
+def run(
+    model: str,
+    port: int,
+    script: VllmScript,
+    vram_by_device: dict[int, float],
+    *,
+    startup_gmu: float | None = None,
+    max_model_len: int | None = None,
+) -> int:
     """Serve until SIGTERM, holding each device's own allocation in the simulator.
 
     Keyed per device because a mixed-architecture tensor-parallel lane claims a
     different amount on each card; one figure for the whole lane would book the
     first GPU's share against all of them.
+
+    ``startup_gmu`` is the free≥gmu×total gate (real ``request_memory``). It is
+    independent of ``vram_by_device``, which is the synthetic/script ledger claim
+    (model+KV footprint). When omitted, the vLLM default 0.9 is used — matching
+    admission when the CLI flag is absent.
+
+    ``max_model_len`` is advertised on ``/v1/models`` (worker reads it for
+    calibration). Defaults to 32768 when the CLI omits ``--max-model-len``.
     """
     lane = Lane(model=model, script=script, vram_mb=sum(vram_by_device.values()))
     pid = os.getpid()
+    lane.pid = pid
+    gmu = float(startup_gmu) if startup_gmu is not None else VLLM_DEFAULT_GMU
+    lane.startup_gmu = gmu
+    if max_model_len is not None and int(max_model_len) > 0:
+        lane.max_model_len = int(max_model_len)
 
     # Bind before claiming VRAM. Binding is the step that can still fail (a port
     # collision — `lane.free_port()` hands out a port it has already closed), and
@@ -340,10 +586,32 @@ def run(model: str, port: int, script: VllmScript, vram_by_device: dict[int, flo
     server.daemon_threads = True
 
     claimed = {index: mb for index, mb in vram_by_device.items() if mb > 0}
+    lane.awake_by_device = dict(claimed)
+
+    if script.oom_on_start:
+        print(
+            f"ERROR [gpu_worker.py:0] ValueError: Free memory on device cuda:0 "
+            f"is less than desired GPU memory utilization (forced oom_on_start; "
+            f"gmu={gmu})",
+            flush=True,
+        )
+        server.server_close()
+        return 1
+
     if claimed:
-        with gpustate.mutate() as sim:
-            for index, mb in claimed.items():
-                sim.allocate(pid, index, mb)
+        try:
+            with gpustate.mutate() as sim:
+                # Gate first on every TP device, then allocate. Generic
+                # ``allocate`` stays unbounded for fault-injection tests; the
+                # strict contract lives at this fake-server boundary.
+                for index in claimed:
+                    assert_startup_gmu_free(sim, index, gmu)
+                for index, mb in claimed.items():
+                    sim.allocate(pid, index, mb)
+        except gpustate.GpuSimStateError as exc:
+            print(f"ERROR [gpu_worker.py:0] ValueError: {exc}", flush=True)
+            server.server_close()
+            return 1
 
     print(_startup_banner(lane, port), flush=True)
 
@@ -369,6 +637,7 @@ def run(model: str, port: int, script: VllmScript, vram_by_device: dict[int, flo
         stopping.set()
         print(f"INFO [api_server.py:1700] Received signal {signum}, shutting down", flush=True)
         _release()
+        record_event("stop", lane)
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, _on_signal)

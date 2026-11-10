@@ -193,6 +193,18 @@ class LogosNodeSchedulingDataFacade:
                 return self.queue_manager.get_total_depth_by_deployment(model_id, provider_id)
         return 0
 
+    def get_oldest_queued_at_by_model_name(self, model_name: str, provider_id: int) -> float | None:
+        """Oldest eligible scheduler arrival for a model on this worker."""
+        provider = self._providers.get(int(provider_id))
+        if provider is None:
+            return None
+        times = [
+            self.queue_manager.get_oldest_queued_at(mid, provider_id)
+            for mid, name in provider._model_id_to_name.items()
+            if name == model_name
+        ]
+        return min((at for at in times if at is not None), default=None)
+
     # A tracked request older than this is not counted as in flight: every
     # request releases its tracking when it ends, so an entry this old was
     # leaked, and it must not keep a lane awake forever.
@@ -270,6 +282,25 @@ class LogosNodeSchedulingDataFacade:
         """
         provider = self._providers.get(int(provider_id))
         return provider.is_online() if provider else False
+
+    def is_provider_cordoned(self, provider_id: int) -> bool:
+        """True if the worker is being replaced and must get no new work.
+
+        Unlike an offline worker it still has a session and may still be
+        finishing requests, so the scheduler treats it as unavailable for now
+        rather than as gone.
+        """
+        registry = self._runtime_registry
+        return registry is not None and registry.is_cordoned(provider_id)
+
+    def count_tracked_requests(self, provider_id: int) -> int:
+        """Requests tracked for a worker, from scheduling to completion.
+
+        This includes a request that is scheduled but has not reached the
+        worker yet, which the worker's own count cannot show.
+        """
+        with self._lock:
+            return sum(1 for data in self._request_tracking.values() if data.get("provider_id") == int(provider_id))
 
     def get_configured_models(self, provider_id: int) -> List[str]:
         """Return every model the worker is configured to serve, including

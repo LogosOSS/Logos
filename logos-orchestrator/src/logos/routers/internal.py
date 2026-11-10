@@ -66,6 +66,7 @@ from logos.dbutils.dbrequest import (
     RefreshPipelineRequest,
 )
 from logos.dbutils.types import Deployment
+from logos.errors import admin_error_response
 from logos.hf_reachability import check_hf_reachability
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeOfflineError, MaintenanceBusyError
 from logos.logosnode_snapshot import _logosnode_snapshot_is_connected
@@ -518,9 +519,9 @@ async def internal_fetch_calibration_log(provider_id: int, model_name: str, requ
             timeout_seconds=20,
         )
     except LogosNodeOfflineError as exc:
-        return JSONResponse(status_code=503, content={"error": str(exc) or "Worker not connected"})
+        return admin_error_response(503, str(exc) or "Worker not connected")
     except LogosNodeCommandError as exc:
-        return JSONResponse(status_code=404, content={"error": str(exc)})
+        return admin_error_response(404, str(exc))
 
     return JSONResponse(status_code=200, content=jsonable_encoder({"log_text": result.get("log_text", "")}))
 
@@ -857,7 +858,7 @@ async def internal_cancel_model_benchmark(job_id: int, request: Request):
 @router.post("/internal/model_benchmarks/jobs/{job_id}/v1/{path:path}", tags=["admin"])
 async def internal_model_benchmark_completion(job_id: int, path: str, request: Request):
     """Execute one signed benchmark request without a user API key."""
-    if path.strip("/") != "chat/completions":
+    if path.strip("/") not in {"chat/completions", "messages"}:
         raise HTTPException(status_code=404, detail="Unsupported benchmark operation")
 
     try:
@@ -967,12 +968,9 @@ async def internal_logosnode_calibrate_uncalibrated(data: InternalCalibrateReque
         raise HTTPException(status_code=409, detail="Worker is reserved for nightly benchmarks")
     snap = _main._logosnode_registry.peek_runtime_snapshot(data.provider_id)
     if snap is None:
-        return JSONResponse(status_code=503, content={"error": "Worker not connected"})
+        return admin_error_response(503, "Worker not connected")
     if not snap.get("first_status_received"):
-        return JSONResponse(
-            status_code=503,
-            content={"error": "Worker has not sent its first status yet"},
-        )
+        return admin_error_response(503, "Worker has not sent its first status yet")
     models = _find_uncalibrated_models_on_provider(data.provider_id)
     if not models:
         return {"message": "No uncalibrated models on this worker", "count": 0, "models": []}
@@ -994,12 +992,12 @@ async def internal_logosnode_calibrate_uncalibrated(data: InternalCalibrateReque
         )
     except LogosNodeOfflineError as exc:
         logger.warning("Internal calibrate-uncalibrated: provider=%s offline: %s", pname, exc)
-        return JSONResponse(status_code=503, content={"error": "Worker not connected"})
+        return admin_error_response(503, "Worker not connected")
     except LogosNodeCommandError as exc:
         logger.warning(
             "Internal calibrate-uncalibrated: start_calibration_session refused on provider=%s: %s", pname, exc
         )
-        return JSONResponse(status_code=409, content={"error": str(exc)})
+        return admin_error_response(409, str(exc))
     logger.info(
         "Internal calibrate-uncalibrated: session started on provider=%s (%d candidate model(s))", pname, len(models)
     )
@@ -1021,7 +1019,7 @@ async def internal_logosnode_stop_calibration(data: InternalStopCalibrationReque
     _require_internal_secret(request)
     snap = _main._logosnode_registry.peek_runtime_snapshot(data.provider_id)
     if snap is None:
-        return JSONResponse(status_code=503, content={"error": "Worker not connected"})
+        return admin_error_response(503, "Worker not connected")
     pname = _resolve_provider_name(data.provider_id)
     try:
         result = await _main._logosnode_registry.send_command(
@@ -1031,10 +1029,10 @@ async def internal_logosnode_stop_calibration(data: InternalStopCalibrationReque
         )
     except LogosNodeOfflineError as exc:
         logger.warning("Internal stop-calibration: provider=%s offline: %s", pname, exc)
-        return JSONResponse(status_code=503, content={"error": "Worker not connected"})
+        return admin_error_response(503, "Worker not connected")
     except LogosNodeCommandError as exc:
         logger.warning("Internal stop-calibration: stop_calibration_session failed on provider=%s: %s", pname, exc)
-        return JSONResponse(status_code=409, content={"error": str(exc)})
+        return admin_error_response(409, str(exc))
     was_active = bool(result.get("was_active", False))
     current_model = result.get("current_model")
     logger.info(
@@ -1119,7 +1117,7 @@ async def internal_logosnode_delete_lane(data: InternalDeleteLaneRequest, reques
         try:
             attempt = await _main._capacity_planner.forget_restored_lane(data.provider_id, data.lane_id)
         except RestoreRecordError as exc:
-            return JSONResponse(status_code=503, content={"error": str(exc)})
+            return admin_error_response(503, str(exc))
     dispatched = []
     planner = _main._capacity_planner
     try:
@@ -1252,19 +1250,16 @@ async def internal_logosnode_sleep_lane(data: InternalSleepLaneRequest, request:
 
     snap = _main._logosnode_registry.peek_runtime_snapshot(data.provider_id)
     if snap is None:
-        return JSONResponse(status_code=503, content={"error": "Worker not connected"})
+        return admin_error_response(503, "Worker not connected")
     if not snap.get("first_status_received"):
-        return JSONResponse(
-            status_code=503,
-            content={"error": "Worker has not sent its first status yet"},
-        )
+        return admin_error_response(503, "Worker has not sent its first status yet")
     lanes = (snap.get("runtime") or {}).get("lanes") or []
     lane = next(
         (item for item in lanes if isinstance(item, dict) and str(item.get("lane_id", "")) == data.lane_id),
         None,
     )
     if lane is None:
-        return JSONResponse(status_code=404, content={"error": f"Lane '{data.lane_id}' not found on this worker"})
+        return admin_error_response(404, f"Lane '{data.lane_id}' not found on this worker")
     # "unsupported" is the worker's resolved answer for "cannot sleep this
     # lane": enable_sleep_mode off for its model (per-model override or the
     # node-wide kill switch) or a non-vLLM lane. Dispatching would burn the
@@ -1308,19 +1303,16 @@ async def internal_logosnode_drain_lane(data: InternalDrainLaneRequest, request:
 
     snap = _main._logosnode_registry.peek_runtime_snapshot(data.provider_id)
     if snap is None:
-        return JSONResponse(status_code=503, content={"error": "Worker not connected"})
+        return admin_error_response(503, "Worker not connected")
     if not snap.get("first_status_received"):
-        return JSONResponse(
-            status_code=503,
-            content={"error": "Worker has not sent its first status yet"},
-        )
+        return admin_error_response(503, "Worker has not sent its first status yet")
     lanes = (snap.get("runtime") or {}).get("lanes") or []
     lane = next(
         (item for item in lanes if isinstance(item, dict) and str(item.get("lane_id", "")) == data.lane_id),
         None,
     )
     if lane is None:
-        return JSONResponse(status_code=404, content={"error": f"Lane '{data.lane_id}' not found on this worker"})
+        return admin_error_response(404, f"Lane '{data.lane_id}' not found on this worker")
     if _main._capacity_planner is None:
         raise HTTPException(status_code=503, detail="Capacity planner not ready")
 
@@ -1329,11 +1321,8 @@ async def internal_logosnode_drain_lane(data: InternalDrainLaneRequest, request:
     if status in ("slept", "unloaded"):
         return JSONResponse(status_code=200, content=result)
     if status == "drain_timeout":
-        return JSONResponse(
-            status_code=409,
-            content={"error": result.get("error") or "Lane did not drain in time"},
-        )
-    return JSONResponse(status_code=502, content={"error": result.get("error") or "Drain failed"})
+        return admin_error_response(409, result.get("error") or "Lane did not drain in time")
+    return admin_error_response(502, result.get("error") or "Drain failed")
 
 
 @router.post("/internal/logosnode/lanes/wake", tags=["admin"])

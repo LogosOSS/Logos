@@ -1,0 +1,92 @@
+# Optional overlay: dual-node dual-Ada fleet (2 nodes × 2× RTX 6000 Ada).
+#
+# Isolated project (required — avoids logos-e2e port/project collisions):
+#
+#   export E2E_COMPOSE_PROJECT=logos-e2e-bench
+#   export E2E_ORCHESTRATOR_PORT=18190
+#   export E2E_DB_PORT=15432
+#   python -m harness.stack.compose up --benchmark-topology
+#
+# Only the layer below the worker is simulated. No scientific performance claims.
+
+services:
+  node-l40s:
+    profiles: [default-fleet-disabled]
+  node-2080ti:
+    profiles: [default-fleet-disabled]
+
+  node-ada-a:
+    build:
+      context: ../../../
+      dockerfile: ./e2e/harness/nodesim/Dockerfile
+    depends_on:
+      logos-orchestrator:
+        condition: service_healthy
+    environment:
+      LOGOS_SIM_PROFILE: rtx6000ada
+      LOGOS_SIM_GPU_COUNT: "2"
+      LOGOS_SIM_NODE_NAME: node-ada-a
+      LOGOS_SIM_CAPABILITIES: "benchmark5"
+      # Empty by default; the runner's lifecycle prepare sets it when recreating
+      # a foreign node so the planner cannot place the lifecycle models there.
+      LOGOS_SIM_CAPABILITIES_EXCLUDE: "${E2E_NODE_ADA_A_CAPABILITIES_EXCLUDE:-}"
+      LOGOS_SIM_VLLM_READY_AFTER_S: "0.3"
+      LOGOS_URL: "http://logos-orchestrator:8080"
+      LOGOS_ALLOW_INSECURE_HTTP: "true"
+      LOGOS_IDLE_SLEEP_L1_S: "60"
+      # Missing HF weights only warn; fake vLLM never downloads.
+      LOGOS_PREFETCH_MISSING_MODELS: "false"
+      # Docker Desktop host RAM is ~8 GB; sleep_l1 needs ≥8 GB free headroom.
+      LOGOS_SIM_HOST_RAM_AVAILABLE_MB: "262144"
+      LOGOS_SIM_HOST_RAM_TOTAL_MB: "524288"
+    volumes:
+      - ada-a-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:80/ > /dev/null || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    networks: [e2e]
+
+  node-ada-b:
+    build:
+      context: ../../../
+      dockerfile: ./e2e/harness/nodesim/Dockerfile
+    depends_on:
+      logos-orchestrator:
+        condition: service_healthy
+    environment:
+      LOGOS_SIM_PROFILE: rtx6000ada
+      LOGOS_SIM_GPU_COUNT: "2"
+      LOGOS_SIM_NODE_NAME: node-ada-b
+      LOGOS_SIM_CAPABILITIES: "benchmark5"
+      # Empty by default; the runner's lifecycle prepare sets it when recreating
+      # a foreign node so the planner cannot place the lifecycle models there.
+      LOGOS_SIM_CAPABILITIES_EXCLUDE: "${E2E_NODE_ADA_B_CAPABILITIES_EXCLUDE:-}"
+      LOGOS_SIM_VLLM_READY_AFTER_S: "0.3"
+      LOGOS_URL: "http://logos-orchestrator:8080"
+      LOGOS_ALLOW_INSECURE_HTTP: "true"
+      LOGOS_IDLE_SLEEP_L1_S: "60"
+      LOGOS_PREFETCH_MISSING_MODELS: "false"
+      LOGOS_SIM_HOST_RAM_AVAILABLE_MB: "262144"
+      LOGOS_SIM_HOST_RAM_TOTAL_MB: "524288"
+    volumes:
+      - ada-b-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:80/ > /dev/null || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    networks: [e2e]
+
+  logos-orchestrator:
+    environment:
+      LOGOS_IDLE_SLEEP_L1_S: "60"
+      LOGOS_CAPACITY_PLANNER_ENABLED: "true"
+      LOGOS_SCHEDULER_ETTFT_ENABLED: "true"
+      # Matrix / local: demand (default) or lru via E2E_RESIDENCY_POLICY.
+      LOGOS_RESIDENCY_POLICY: "${E2E_RESIDENCY_POLICY:-demand}"
+
+volumes:
+  ada-a-data:
+  ada-b-data:

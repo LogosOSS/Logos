@@ -1,0 +1,35 @@
+@mixin section {
+  > summary {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: .5rem .75rem;
+    min-height: 44px;
+    padding: .75rem 0;
+    color: rgb(var(--color-typography-100));
+    font-family: var(--model-detail-font-family, var(--font-family-base));
+    font-size: var(--model-detail-heading-size, 1rem);
+    font-weight: 600;
+    line-height: 1.5;
+    list-style: none;
+    cursor: pointer;
+    &::-webkit-details-marker { display: none; }
+    &::before {
+      content: '';
+      width: .45rem;
+      height: .45rem;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
+      transform: rotate(-45deg);
+      flex: 0 0 auto;
+    }
+    &::after { content: none; }
+    h3 { margin: 0; font: inherit; color: inherit; }
+    small, > .disclosure-meta { color: rgb(var(--color-typography-500)); font-size: var(--model-detail-font-size, .875rem); font-weight: 400; }
+    &:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }
+    // `:is([open] > *)` matches the summary of an open disclosure with the same
+    // specificity as `[open] > summary` on the including selector.
+    &:is([open] > *)::before { transform: rotate(45deg); }
+    &:is([open] > *)::after { content: none; }
+  }
+}

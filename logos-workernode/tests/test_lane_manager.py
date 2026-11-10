@@ -1220,23 +1220,27 @@ async def test_auto_place_keeps_an_explicit_pin_on_healthy_gpus() -> None:
     assert placed.gpu_devices == "2"
 
 
-async def test_auto_place_skips_gmu_floor_when_kv_cache_memory_bytes_set() -> None:
-    """A kv-pinned lane must NOT be gated by the 0.5 GMU floor.
+async def test_auto_place_applies_gmu_floor_even_when_kv_cache_memory_bytes_set() -> None:
+    """A kv-pinned lane still needs free ≥ gmu×total at cold EngineCore init.
 
-    All three GPUs fall below the 0.5 × 24576 = 12288 MB floor vLLM would
-    attempt, so with the floor applied placement raises. With the lane pinning
-    kv_cache_memory_bytes, vLLM ignores gpu_memory_utilization and only grabs
-    weights + KV (~6 GB), so every GPU becomes feasible and the emptiest one
-    (GPU 0) is selected. This is the fix that lets small models (e.g.
-    gemma-3-4b) place into tight free VRAM.
+    Smoke regression: planner sent kv_cache_memory_bytes with a frozen
+    gpu_memory_utilization=0.5; placement used only the weights+KV footprint
+    (~18 GiB) into ~21 GiB free, then vLLM refused because 0.5 × 47.37 GiB
+    was not free. With the floor applied, residual free below the reservation
+    is infeasible even though the steady-state footprint would fit.
     """
     from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry
 
     profiles = ModelProfileRegistry()
-    profiles._profiles["Qwen/Qwen2.5-0.5B-Instruct"] = ModelProfileRecord(  # noqa: SLF001
-        loaded_vram_mb=6000.0,
+    profiles._profiles["google/gemma-3-4b-it"] = ModelProfileRecord(  # noqa: SLF001
+        loaded_vram_mb=18824.0,
         engine="vllm",
     )
+
+    # 47.37 GiB cards; 0.5 GMU needs ~24_256 MB free. Footprint is 18824 MB.
+    total_mb = 47.37 * 1024
+    free_below_gmu = 21.04 * 1024  # smoke residual on the chosen GPU
+    free_above_gmu = 30.0 * 1024
 
     async def _snapshot() -> DeviceSummary:
         return DeviceSummary(
@@ -1247,27 +1251,20 @@ async def test_auto_place_skips_gmu_floor_when_kv_cache_memory_bytes_set() -> No
                 DeviceInfo(
                     device_id="gpu0",
                     kind="nvidia",
-                    memory_total_mb=24576.0,
-                    memory_free_mb=12000.0,
+                    memory_total_mb=total_mb,
+                    memory_free_mb=free_below_gmu,
                     extra={"index": 0},
                 ),
                 DeviceInfo(
                     device_id="gpu1",
                     kind="nvidia",
-                    memory_total_mb=24576.0,
-                    memory_free_mb=12000.0,
+                    memory_total_mb=total_mb,
+                    memory_free_mb=free_above_gmu,
                     extra={"index": 1},
                 ),
-                DeviceInfo(
-                    device_id="gpu2",
-                    kind="nvidia",
-                    memory_total_mb=24576.0,
-                    memory_free_mb=7600.0,
-                    extra={"index": 2},
-                ),
             ],
-            total_memory_mb=3 * 24576.0,
-            free_memory_mb=31600.0,
+            total_memory_mb=2 * total_mb,
+            free_memory_mb=free_below_gmu + free_above_gmu,
         )
 
     manager = LaneManager(
@@ -1278,15 +1275,46 @@ async def test_auto_place_skips_gmu_floor_when_kv_cache_memory_bytes_set() -> No
         gpu_snapshot=_snapshot,
     )
     lane = LaneConfig(
-        model="Qwen/Qwen2.5-0.5B-Instruct",
+        model="google/gemma-3-4b-it",
         vllm=True,
-        vllm_config=VllmConfig(tensor_parallel_size=1, kv_cache_memory_bytes="1G"),
+        vllm_config=VllmConfig(
+            tensor_parallel_size=1,
+            kv_cache_memory_bytes="13G",
+            gpu_memory_utilization=0.5,
+        ),
     )
 
-    placed = await manager._auto_place_gpu_devices("planner-Qwen_Qwen2.5-0.5B-Instruct", lane)  # noqa: SLF001
-    # Floor skipped → threshold ≈ footprint (~6 GB) instead of 12288 MB, so the
-    # GPU-0/1 pair (12000 free each) is feasible and the emptiest one wins.
-    assert placed.gpu_devices == "0"
+    placed = await manager._auto_place_gpu_devices("planner-google_gemma-3-4b-it-2", lane)  # noqa: SLF001
+    assert placed.gpu_devices == "1"
+
+    async def _tight_snapshot() -> DeviceSummary:
+        return DeviceSummary(
+            timestamp=datetime.now(timezone.utc),
+            mode="nvidia",
+            nvidia_smi_available=True,
+            devices=[
+                DeviceInfo(
+                    device_id="gpu0",
+                    kind="nvidia",
+                    memory_total_mb=total_mb,
+                    memory_free_mb=free_below_gmu,
+                    extra={"index": 0},
+                ),
+                DeviceInfo(
+                    device_id="gpu1",
+                    kind="nvidia",
+                    memory_total_mb=total_mb,
+                    memory_free_mb=free_below_gmu,
+                    extra={"index": 1},
+                ),
+            ],
+            total_memory_mb=2 * total_mb,
+            free_memory_mb=2 * free_below_gmu,
+        )
+
+    manager._gpu_snapshot = _tight_snapshot
+    with pytest.raises(RuntimeError, match="no feasible GPU subset"):
+        await manager._auto_place_gpu_devices("planner-google_gemma-3-4b-it-2", lane)  # noqa: SLF001
 
 
 @pytest.mark.asyncio

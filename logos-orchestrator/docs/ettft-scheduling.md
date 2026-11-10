@@ -88,6 +88,12 @@ Key rules:
 - **Only logosnode deployments queue**: when no candidate can be served immediately, the request queues on the highest-scored logosnode candidate
 - **Same model, two logosnode providers**: both are scored independently — a loaded provider-B beats cold provider-A
 
+### Named-model peer ranking
+
+When the classified candidate list contains **exactly one** distinct `model_id` (the usual case for proxy / caller-named requests, and for a single classified model) and `ettft_enabled` is on, deployments of that model are ranked by **ascending true `expected_wait_s`**. The range-scaled corrected score is not used to order those peers, so waits above the 60s normalization horizon (for example 61s vs 600s) stay strictly ordered instead of tying after penalty saturation. GPU-weighted (or uniform) randomness breaks only true wait ties. Prefix-affinity bonuses do not apply in this mode, so stickiness cannot promote a higher-wait peer.
+
+When two or more distinct model_ids are classified (RESOURCE multi-model selection), ranking keeps the corrected-score policy below, including the warm-lane prefix-affinity bonus. With `ettft_enabled=False`, both modes use pure classification weights.
+
 ## 6. Properties
 
 ### Same-State Ordering Invariant
@@ -258,7 +264,7 @@ This also keeps the admission signals honest: a ghost generation inflates `reque
 
 ## 10. Prefix-Cache-Aware Placement
 
-With the same model deployed on several workers, two warm workers tie on corrected score and the tie-break is random. For a coding agent that is the worst possible placement: every turn re-sends a prompt the *previous* worker already has in its KV cache, and a random landing throws that cache away.
+Prefix-affinity scoring applies in **multi-model RESOURCE** ranking (see §5). With several classified models, two warm workers of the same model can still tie on corrected score; a bounded bonus nudges the request back to the worker that last served its stream. Named-model peer ranking (§5) orders by true expected wait instead and does not apply that bonus — equal waits keep the existing GPU/random tie-break.
 
 ### Stream identity
 

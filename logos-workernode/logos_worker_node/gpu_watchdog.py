@@ -62,6 +62,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from logos_worker_node.asyncio_tasks import cancel_and_wait
 from logos_worker_node.node_health import NodeHealthStatus, evaluate_node_health
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,10 @@ _LINUX_REBOOT_CMD_RESTART = 0x01234567
 _GPU_REASON_PREFIX = "gpu-"
 
 
+DEFAULT_POLL_INTERVAL_S = 60.0
+DEFAULT_TRIGGER_THRESHOLD = 3
+
+
 class GpuWatchdog:
     """Polls ``evaluate_node_health()`` and triggers ``reboot(2)`` when
     the GPU sensor stays unhealthy for ``trigger_threshold`` ticks."""
@@ -86,8 +91,8 @@ class GpuWatchdog:
         self,
         state_dir: Path,
         *,
-        poll_interval_seconds: float = 60.0,
-        trigger_threshold: int = 3,
+        poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_S,
+        trigger_threshold: int = DEFAULT_TRIGGER_THRESHOLD,
         rate_limit_seconds: float = 30 * 60,
         startup_grace_seconds: float = 5 * 60,
         reboot_fn=None,  # injection point for tests
@@ -127,13 +132,8 @@ class GpuWatchdog:
         )
 
     async def stop(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        await cancel_and_wait(self._task)
+        self._task = None
         logger.info("GPU watchdog stopped")
 
     async def _poll_loop(self) -> None:

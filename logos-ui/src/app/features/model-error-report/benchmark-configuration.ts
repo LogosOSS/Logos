@@ -16,12 +16,38 @@ const NOT_CAPTURED = 'Not captured';
 
 type JsonPath = readonly (string | number)[];
 
+export interface RequestDataset {
+  name?: string;
+  created_at?: string;
+}
+
+/** The freeze date belongs to the saved dataset, never to an individual benchmark run. */
+export function requestDatasetLabel(workload: RequestDataset | undefined, fallback = 'Saved requests'): string {
+  const name = workload?.name?.trim() || fallback;
+  const created = workload?.created_at ? new Date(workload.created_at) : null;
+  if (!created || !Number.isFinite(created.getTime())) return name;
+  const date = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(created);
+  return name.includes(date) ? name : `${name} · frozen ${date}`;
+}
+
+export function benchmarkDatasetLabel(run: ModelProviderBenchmark): string {
+  return requestDatasetLabel(run.configuration['workload'] as RequestDataset | undefined,
+    isSavedRequestBenchmark(run) ? 'Saved requests' : run.dataset);
+}
+
+/** Frozen inputs keep the same comparison rules across measurement engines. */
+export function isSavedRequestBenchmark(run: ModelProviderBenchmark): boolean {
+  return typeof field(run.configuration['workload'], 'id') === 'string';
+}
+
 export function benchmarkConfigurationItems(
   benchmark: ModelProviderBenchmark,
 ): readonly BenchmarkConfigurationItem[] {
   const configuration = benchmark.configuration;
 
-  if (configuration['tool'] === 'logos-replay') {
+  if (isSavedRequestBenchmark(benchmark)) {
     return [
       item('dataset', 'Dataset', benchmark.dataset),
       item('workload_name', 'Request workload', field(configuration['workload'], 'name')),
@@ -78,7 +104,7 @@ export function benchmarkConfigurationItems(
 }
 
 export function servingConfigurationItems(
-  benchmark: ModelProviderBenchmark,
+  benchmark: Pick<ModelProviderBenchmark, 'configuration'>,
 ): readonly BenchmarkConfigurationItem[] {
   const serving = servingConfiguration(benchmark.configuration);
 
@@ -115,9 +141,10 @@ export function servingConfigurationItems(
 
 export function benchmarkConfigurationRows(
   benchmark: ModelProviderBenchmark,
+  includeMissing = true,
 ): readonly BenchmarkConfigurationRow[] {
-  const benchmarkItems = benchmarkConfigurationItems(benchmark);
-  const servingItems = servingConfigurationItems(benchmark);
+  const benchmarkItems = benchmarkConfigurationItems(benchmark).filter(item => includeMissing || item.captured);
+  const servingItems = servingConfigurationItems(benchmark).filter(item => includeMissing || item.captured);
   const rowCount = Math.max(benchmarkItems.length, servingItems.length);
 
   return Array.from({ length: rowCount }, (_, index) => ({

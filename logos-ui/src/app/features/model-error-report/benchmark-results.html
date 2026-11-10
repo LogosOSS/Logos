@@ -1,7 +1,26 @@
-@if (topRuns().length) {
+@if (selectedRow(); as row) {
+  <section #selectedResult class="selected-result" tabindex="-1" aria-label="Selected benchmark result">
+    <h3>Benchmark #{{ row.run.id }}</h3>
+    <p>{{ datasetLabel(row.run) }} · {{ row.run.provider_name }} · {{ row.kind }}</p>
+    <dl class="results-summary">
+      <div><dt>Baseline (tok/s)</dt><dd>{{ row.before === null ? '—' : (row.before | number:'1.1-1') }}</dd></div>
+      <div><dt>Result (tok/s)</dt><dd>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }}</dd></div>
+      <div><dt>Change</dt><dd>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</dd></div>
+    </dl>
+    <p>{{ row.comparisonNote }}</p>
+    @if (row.selectionNote) { <p>{{ row.selectionNote }}</p> }
+    <h4>Changed parameters</h4>
+    @for (change of row.changes; track change) { <p>{{ change }}</p> }
+    @empty { <p>Current settings · no parameter changes</p> }
+    <p>Measured {{ (row.measurement?.started_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }} → {{ (row.measurement?.ended_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }}</p>
+  </section>
+} @else if (selectedRunId() !== null) {
+  <p role="status">Benchmark #{{ selectedRunId() }} is no longer available. Other saved results are shown below.</p>
+}
+@if (showHistory() && !activeProgress() && topRuns().length) {
   <section class="top-configurations" aria-label="Top configurations so far">
-    <h3><i class="pi pi-trophy" aria-hidden="true"></i> Top configuration so far</h3>
-    <p class="results-note">Best recorded run. Workloads may differ.</p>
+    <h3>Highest recorded throughput</h3>
+    <p class="results-note">Latest captured workload per provider. Older workloads are not ranked against it.</p>
     @for (top of topRuns(); track top.run.model_provider_id) {
       <article class="top-configuration">
         <div class="results-heading">
@@ -29,48 +48,65 @@
     }
   </section>
 }
+@if (showProgress()) {
 @if (activeProgress(); as chart) {
-  <section class="benchmark-progress" aria-label="Nightly progress">
-    <div class="results-heading">
-      <h3>Nightly progress <small>{{ chart.fixed ? 'Best so far vs. fixed reference' : 'Best variant vs. nightly baseline' }}</small></h3>
-      @if (progress().length > 1) {
-        <select aria-label="Progress workload" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
-          @for (group of progress(); track group.key) { <option [value]="group.key">{{ group.label }}</option> }
-        </select>
-      }
+  <section class="benchmark-progress" aria-label="Performance timeline">
+    <div class="results-heading"><h3>Timeline</h3>
+      <div class="timeline-headline"><strong>{{ chart.latest.rate | number:'1.1-1' }} <small>tok/s</small></strong><span>+{{ chart.latest.gain | number:'1.1-1' }}%</span></div>
     </div>
-    <p class="results-note">{{ chart.context }}</p>
-    <div class="progress-plot" role="group" [attr.aria-label]="chart.fixed ? 'Best eligible throughput so far against a fixed reference' : 'Best successful variant against its nightly baseline'">
-      <span class="progress-axis progress-axis--top">{{ chart.max | number:'1.0-1' }}%</span>
-      <span class="progress-axis progress-axis--zero" [style.top.%]="chart.zero">0%</span>
-      <span class="progress-axis progress-axis--bottom">{{ chart.min | number:'1.0-1' }}%</span>
+    @if (progress().length > 1) {
+      <select class="timeline-dataset" aria-label="Timeline dataset" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
+        @for (group of progress(); track group.key) { <option [value]="group.key">{{ group.label }}</option> }
+      </select>
+    } @else { <p class="results-note timeline-context">{{ datasetLabel(chart.reference) }}</p> }
+    <p class="results-note timeline-baseline">Since baseline #{{ chart.reference.id }}</p>
+    <div class="progress-plot" role="group" aria-label="Throughput records over time in output tokens per second">
+      <span class="progress-axis progress-axis--top">{{ chart.max | number:'1.0-1' }}</span>
+      <span class="progress-axis progress-axis--zero" [style.top.%]="chart.zero">{{ throughput(chart.reference) | number:'1.1-1' }}</span>
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
         <line x1="0" x2="100" [attr.y1]="chart.zero" [attr.y2]="chart.zero" class="progress-zero" />
         @if (chart.points.length > 1) { <polyline [attr.points]="chart.line" class="progress-line" /> }
       </svg>
-      @for (point of chart.points; track point.key ?? point.run.id) {
-        <button type="button" class="progress-point" [class.progress-point--last]="point.x > 80" [class.progress-point--first]="point.x < 20" [style.left.%]="point.x" [style.top.%]="point.y"
-          [attr.aria-label]="(chart.fixed ? 'Best so far run #' : 'Run #') + point.run.id + ', observed by ' + (point.time | date:'dd MMM yyyy, HH:mm') + ': ' + (point.gain | number:'1.1-1') + '% vs. baseline'"
-          ><span class="progress-tooltip">#{{ point.run.id }} · {{ point.gain > 0 ? '+' : '' }}{{ point.gain | number:'1.1-1' }}%<small>Observed by {{ point.time | date:'dd MMM yyyy, HH:mm' }}</small></span></button>
+      @for (point of chart.points; track point.key) {
+        <a class="progress-point" [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }" [class.progress-point--last]="point.x > 80" [class.progress-point--first]="point.x < 20" [style.left.%]="point.x" [style.top.%]="point.y"
+          [attr.aria-label]="'Benchmark #' + point.run.id + ', ' + (point.time | date:'dd MMM yyyy, HH:mm') + ': ' + (point.rate | number:'1.1-1') + ' tok/s, ' + point.configuration + ', ' + (point.gain | number:'1.1-1') + '% total vs. starting baseline' + (point.stepGain === null ? ', starting baseline' : ', ' + (point.stepGain | number:'1.1-1') + '% vs. previous point')">
+          <span class="progress-tooltip">#{{ point.run.id }} · {{ point.rate | number:'1.1-1' }} tok/s
+            <small>{{ point.time | date:'dd MMM yyyy, HH:mm' }}</small><small>{{ point.configuration }}</small>
+            @if (point.stepGain === null) { <small>Starting baseline · 0%</small> }
+            @else { <small>+{{ point.stepGain | number:'1.1-1' }}% vs. previous point (run #{{ point.previousRunId }})</small> }
+          </span></a>
       }
     </div>
-    <div class="progress-dates"><span>{{ chart.first | date:'dd MMM yyyy, HH:mm' }}</span>@if (chart.first !== chart.last) { <span>{{ chart.last | date:'dd MMM yyyy, HH:mm' }}</span> }</div>
+    <div class="progress-dates"><span>{{ chart.first | date:'dd MMM yyyy' }}</span>@if (chart.first !== chart.last) { <span>{{ chart.last | date:'dd MMM yyyy' }}</span> }</div>
+    <details class="timeline-records"><summary>Record configurations · {{ chart.points.length }}</summary>
+      <p class="results-note">First baseline, then new records only. Select a point for its configuration and results.</p>
+      @for (point of chart.points; track point.key) {
+        <a [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }"><strong>#{{ point.run.id }} · {{ point.rate | number:'1.1-1' }} tok/s</strong><span>{{ point.time | date:'dd MMM yyyy, HH:mm' }} · {{ point.configuration }}</span></a>
+      }
+      <p class="results-note">{{ chart.context }}</p>
+      <p class="results-note">Saved-request variants pass response and latency checks. Records can span worker releases; deployment requires a fresh comparison.</p>
+    </details>
   </section>
+} @else { <section class="benchmark-progress"><h3>Timeline</h3><p class="results-note" role="status">No comparable completed rounds yet. A complete baseline and matching workload are required.</p></section> }
 }
-<details class="run-history">
+@if (showHistory()) {
+<details class="run-history" [open]="selectedRunId() !== null">
   <summary><h3>Benchmark runs <small>{{ rows().length }} results · output tok/s</small></h3></summary>
-  <p class="results-note">Each variant compared with its nightly baseline.</p>
+  <p class="results-note">Each run compared with its recorded nightly baseline. Starting measurements show 0% change.</p>
   <table>
-    <thead><tr><th>Run</th><th>Changed parameters</th><th>Measured from → to</th>
+    <thead><tr>
       @for (column of columns; track column.key) {
+        @if (column.key === 'measuredFrom') { <th>Changed parameters</th> }
         <th class="sortable" [attr.aria-sort]="sort()?.key === column.key ? sort()!.direction : 'none'">
           <button type="button" (click)="sortBy(column.key)">{{ column.label }} <span aria-hidden="true">{{ sort()?.key === column.key ? (sort()!.direction === 'ascending' ? '↑' : '↓') : '↕' }}</span></button>
         </th>
       }
     </tr></thead>
-    <tbody>
-      @for (row of visibleRows(); track row.run.id) {
-        <tr>
+    @for (group of datasetGroups(); track group.key) {
+    <tbody [attr.aria-label]="group.label">
+      <tr class="dataset-heading"><th scope="rowgroup" colspan="6">{{ group.label }} <small>{{ group.rows.length }} {{ group.rows.length === 1 ? 'run' : 'runs' }}</small></th></tr>
+      @for (row of group.visible; track row.run.id) {
+        <tr [class.selected-run]="row.run.id === selectedRunId()">
           <td data-label="Run"><strong>#{{ row.run.id }} · {{ row.kind }}</strong><small>{{ row.run.provider_name }}</small></td>
           <td data-label="Changed parameters">
             @if (row.isBaseline || row.currentSettings) { Current settings }
@@ -83,12 +119,15 @@
           </td>
           <td data-label="Before (tok/s)" class="numeric">{{ row.before === null ? '—' : (row.before | number:'1.1-1') }}</td>
           <td data-label="After (tok/s)" class="numeric"><strong>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }}</strong></td>
-          <td data-label="Change" class="numeric">{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</td>
+          <td data-label="Change" class="numeric">{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}<small>{{ row.comparisonNote }}</small></td>
         </tr>
       }
     </tbody>
+    }
   </table>
-  @if (rows().length > 5) {
+  @if (hasMore()) {
     <button type="button" class="btn-secondary results-more" (click)="showAll.set(!showAll())">{{ showAll() ? 'Show fewer' : 'Show all ' + rows().length + ' runs' }}</button>
   }
 </details>
+
+}

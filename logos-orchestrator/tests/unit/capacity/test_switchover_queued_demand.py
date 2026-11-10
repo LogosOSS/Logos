@@ -211,7 +211,6 @@ def _planner(
     planner._lane_idle_since = {}
     planner._lane_sleep_since = {}
     planner._lane_sleep_level = {}
-    planner._load_cooldown_seconds = 0.0
     planner._eviction_gate_v2 = eviction_gate_v2
     planner._stop_dedup_siblings = False
     planner._cross_provider_dedup = False
@@ -224,6 +223,7 @@ def _planner(
         get_committed_mb=lambda pid: 0.0,
         has_overlapping_reservation=lambda *a, **k: False,
         get_gpu_effective_available_mb=lambda pid, g, f: f,
+        get_gpu_consumable_available_mb=lambda pid, g, f: f,
     )
     planner._build_load_params = lambda *a, **k: {}
     planner._enabled = False

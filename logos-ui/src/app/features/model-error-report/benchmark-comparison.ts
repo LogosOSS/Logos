@@ -1,8 +1,8 @@
-import { ChangeDetectionStrategy, Component, computed, input, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, LOCALE_ID, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { benchmarkConfigurationItems, servingConfigurationItems } from './benchmark-configuration';
-import { canCompare, comparisonSettings, isolatedRuns, parameterValue } from './benchmark-isolation';
+import { canCompare, ComparisonParameter, comparisonSettings, isolatedRuns, parameterValue } from './benchmark-isolation';
 
 export type ComparisonMetric = 'throughput' | 'ttft' | 'ttlt';
 type RunSortKey = 'id' | 'recorded_at' | 'tensor_parallel_size' | 'max_concurrency' | 'sample_size' | ComparisonMetric;
@@ -10,8 +10,8 @@ type RunSortKey = 'id' | 'recorded_at' | 'tensor_parallel_size' | 'max_concurren
 
 export const COMPARISON_METRICS = [
   { key: 'throughput', label: 'Output throughput', unit: 'tok/s', hint: 'Higher is better' },
-  { key: 'ttft', label: 'Mean TTFT', unit: 's', hint: 'Lower is better' },
-  { key: 'ttlt', label: 'Mean TTLT', unit: 's', hint: 'Lower is better' },
+  { key: 'ttft', label: 'Mean first-token latency', unit: 's', hint: 'Lower is better' },
+  { key: 'ttlt', label: 'Mean response time', unit: 's', hint: 'Lower is better' },
 ] as const;
 
 export function comparisonValue(run: ModelProviderBenchmark, metric: ComparisonMetric): number | null {
@@ -66,9 +66,12 @@ export function fitChartScale(values: readonly (number | null)[]): ChartScale {
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class BenchmarkComparison {
+  // Numbers follow the application locale, like the `number` pipe elsewhere on the page.
+  private readonly locale = inject(LOCALE_ID);
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
   readonly metrics = COMPARISON_METRICS;
   readonly metric = signal<ComparisonMetric>('throughput');
+  readonly parameter = signal<ComparisonParameter>('max_num_seqs');
   readonly columns: readonly { key: RunSortKey; label: string; unit?: string }[] = [
     { key: 'id', label: 'Run' }, { key: 'recorded_at', label: 'Date' },
     { key: 'tensor_parallel_size', label: 'TP' }, { key: 'max_concurrency', label: 'Concurrency' },
@@ -76,11 +79,12 @@ export class BenchmarkComparison {
     { key: 'throughput', label: 'Output', unit: 'tok/s' },
     { key: 'ttft', label: 'Mean TTFT', unit: 's' }, { key: 'ttlt', label: 'Mean TTLT', unit: 's' },
   ];
-  readonly sortKey = signal<RunSortKey>('recorded_at');
-  readonly sortDirection = signal<'ascending' | 'descending'>('descending');
+  readonly sort = signal<{ key: RunSortKey; direction: 'ascending' | 'descending' } | null>(null);
+  readonly sortKey = computed(() => this.sort()?.key ?? null);
+  readonly sortDirection = computed(() => this.sort()?.direction ?? 'descending');
   readonly sortedRuns = computed(() => [...this.selected()].sort((a, b) => {
-    const left = this.sortValue(a, this.sortKey());
-    const right = this.sortValue(b, this.sortKey());
+    const left = this.sortValue(a, this.sortKey() ?? 'recorded_at');
+    const right = this.sortValue(b, this.sortKey() ?? 'recorded_at');
     // Missing measurements stay last in either direction.
     if (left === null || right === null) return left === right ? b.id - a.id : left === null ? 1 : -1;
     return (left - right) * (this.sortDirection() === 'ascending' ? 1 : -1) || b.id - a.id;
@@ -92,6 +96,8 @@ export class BenchmarkComparison {
     Date.parse(b.recorded_at) - Date.parse(a.recorded_at) || b.id - a.id));
   readonly eligibleRuns = computed(() => this.orderedRuns().filter(canCompare));
   readonly baseline = computed(() => this.eligibleRuns().find(run => run.id === this.baselineId())
+    ?? this.eligibleRuns().find(run => run.id === (this.eligibleRuns()[0]?.configuration['nightly'] as { reference_id?: number } | undefined)?.reference_id)
+    ?? this.eligibleRuns().find(run => (run.configuration['nightly'] as { baseline_id?: number } | undefined)?.baseline_id === run.id)
     ?? this.eligibleRuns().find(run => run.dataset === 'openai/gsm8k' && run.sample_size === 50
       && parameterValue(run, 'tensor_parallel_size') === 1 && parameterValue(run, 'max_concurrency') === 4)
     ?? this.eligibleRuns()[0] ?? null);
@@ -101,30 +107,51 @@ export class BenchmarkComparison {
     const baseline = this.baseline();
     if (!baseline) return [];
     return ([
+      { key: 'max_num_seqs', label: 'Sequence limit', fixed: `Batch token limit held at ${this.baselineSettings()['max_num_batched_tokens'] ?? 'auto'}` },
+      { key: 'max_num_batched_tokens', label: 'Batch token limit', fixed: `Sequence limit held at ${this.baselineSettings()['max_num_seqs'] ?? 'auto'}` },
       { key: 'tensor_parallel_size', label: 'Tensor parallelism', fixed: `Concurrency fixed at ${this.baselineSettings()['max_concurrency']}` },
       { key: 'max_concurrency', label: 'Concurrent requests', fixed: `TP fixed at ${this.baselineSettings()['tensor_parallel_size']}` },
     ] as const).map(parameter => {
       const runs = isolatedRuns(this.orderedRuns(), baseline, parameter.key);
       const values = [...new Set(runs.map(run => parameterValue(run, parameter.key)!))];
       return { ...parameter, minPlotWidth: values.length * 68 + 72,
-        scale: fitChartScale(runs.map(run => comparisonValue(run, this.metric()))),
+        reference: comparisonValue(baseline, this.metric()),
+        scale: fitChartScale([comparisonValue(baseline, this.metric()), ...runs.map(run => comparisonValue(run, this.metric()))]),
         groups: values.map(value => {
           const rows = runs.filter(run => parameterValue(run, parameter.key) === value)
             .map(run => ({ run, value: comparisonValue(run, this.metric()) }));
           return { parameter: value, rows, box: boxplot(rows.map(row => row.value)) };
         }) };
-    });
+    }).filter(chart => chart.groups.length > 0);
   });
-  readonly selected = computed(() => [...new Map(this.charts().flatMap(chart => chart.groups)
-    .flatMap(group => group.rows).map(row => [row.run.id, row.run])).values()]);
+  readonly activeChart = computed(() => this.charts().find(chart => chart.key === this.parameter())
+    ?? this.charts().find(chart => chart.groups.length > 1) ?? this.charts().at(0));
+  readonly selected = computed(() => this.activeChart()?.groups.flatMap(group => group.rows.map(row => row.run)) ?? []);
+  readonly bestGroup = computed(() => this.activeChart()?.groups.filter(group => group.box !== null)
+    .sort((a, b) => (a.box!.median - b.box!.median) * (this.metric() === 'throughput' ? -1 : 1)).at(0));
+  readonly bestValue = computed(() => this.bestGroup()?.box?.median ?? null);
   readonly excludedCount = computed(() => this.runs().length - this.selected().length);
+
+  change(value: number | null): number | null {
+    const reference = this.activeChart()?.reference;
+    return value === null || reference == null || reference <= 0 ? null : (value / reference - 1) * 100;
+  }
+
+  changeLabel(value: number | null): string {
+    const change = this.change(value);
+    return change === null ? 'Change unavailable' : `${change > 0 ? '+' : ''}${change.toLocaleString(this.locale, { maximumFractionDigits: 1 })}% vs. reference`;
+  }
+
+  workloadLabel(run: ModelProviderBenchmark): string {
+    return (run.configuration['workload'] as { name?: string } | undefined)?.name ?? run.dataset;
+  }
   position(value: number, scale: ChartScale): number {
     return (value - scale.min) / scale.span * 100;
   }
 
   axisValue(value: number, scale: ChartScale): string {
     const digits = Math.min(20, Math.max(0, Math.ceil(-Math.log10(scale.span / 4)) + 1));
-    return value.toLocaleString(undefined, { maximumFractionDigits: digits });
+    return value.toLocaleString(this.locale, { maximumFractionDigits: digits });
   }
 
   boxLabel(box: NonNullable<ReturnType<typeof boxplot>>): string {
@@ -132,8 +159,9 @@ export class BenchmarkComparison {
   }
 
   sortBy(key: RunSortKey): void {
-    this.sortDirection.set(this.sortKey() === key && this.sortDirection() === 'ascending' ? 'descending' : 'ascending');
-    this.sortKey.set(key);
+    this.sort.update(previous => previous?.key === key
+      ? previous.direction === 'ascending' ? { key, direction: 'descending' } : null
+      : { key, direction: 'ascending' });
   }
 
   sortValue(run: ModelProviderBenchmark, key: RunSortKey): number | null {
@@ -147,19 +175,20 @@ export class BenchmarkComparison {
   }
 
   sortLabel(key: RunSortKey): string {
+    if (this.sortKey() === key && this.sortDirection() === 'descending') return 'Restore initial order';
     const direction = this.sortKey() === key && this.sortDirection() === 'ascending' ? 'descending' : 'ascending';
     return `Sort ${this.columns.find(column => column.key === key)!.label} ${direction}`;
   }
 
   chartValue(value: number | null): string {
     return value === null || (value > 0 && value < 0.01) ? this.format(value)
-      : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+      : value.toLocaleString(this.locale, { maximumFractionDigits: 2 });
   }
 
   format(value: number | null): string {
     if (value === null) return '—';
     if (value > 0 && value < 0.001) return '<0.001';
-    return value.toLocaleString(undefined, { maximumFractionDigits: 3 });
+    return value.toLocaleString(this.locale, { maximumFractionDigits: 3 });
   }
 
   value(run: ModelProviderBenchmark, metric: ComparisonMetric): string {

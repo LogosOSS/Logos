@@ -2,7 +2,7 @@
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 
@@ -59,8 +59,7 @@ class MaintenanceWindow:
         return start <= now < end
 
     def can_start_benchmark(self, now: datetime) -> bool:
-        start, end = self.bounds(now)
-        return start <= now < end - timedelta(minutes=10)
+        return self.contains(now)
 
     def describe(self) -> dict[str, str]:
         """Expose the effective window and derived start cutoff to administrators."""
@@ -68,6 +67,6 @@ class MaintenanceWindow:
         return {
             "start": self.start.strftime("%H:%M"),
             "end": self.end.strftime("%H:%M"),
-            "benchmark_start_cutoff": (end - timedelta(minutes=10)).strftime("%H:%M"),
+            "benchmark_start_cutoff": end.strftime("%H:%M"),
             "timezone": self.timezone,
         }

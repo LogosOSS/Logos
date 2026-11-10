@@ -65,8 +65,13 @@
         </table></div>
         @if (batch.configurations.length > previewLimit()) { <button type="button" (click)="previewLimit.set(previewLimit() + 50)">Show more configurations</button> }
         <h4>Fixed for all runs</h4>
-        <p>{{ settings().dataset }} · {{ settings().subset }}/{{ settings().split }} · text column {{ settings().text_column }}</p>
-        <p>Load profile: {{ batch.configurations[0].profile }} · one unmeasured warm-up request per run</p>
+        @if (settings().workload_id) {
+          <p>Frozen requests · {{ samples() }} saved requests per run · source inference and output settings</p>
+          <p>Load profile: {{ batch.configurations[0].profile }}</p>
+        } @else {
+          <p>{{ settings().dataset }} · {{ settings().subset }}/{{ settings().split }} · text column {{ settings().text_column }}</p>
+          <p>Load profile: {{ batch.configurations[0].profile }} · one unmeasured warm-up request per run</p>
+        }
         <dl>@for (field of fixed(); track field.label) { <div><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></div> }</dl>
         <ul class="batch-help">
           <li>Continues when you leave this page.</li>

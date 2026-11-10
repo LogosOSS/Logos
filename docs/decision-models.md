@@ -1,4 +1,4 @@
-# Decision models
+# Decision Models
 
 A decision model answers typed questions about a text with calibrated
 probabilities instead of generated text. Typical uses are ticket triage, model
@@ -6,14 +6,14 @@ routing, and content or safety moderation. Logos serves decision models through
 `POST /v1/systemone`. The endpoint uses the request and response schema of
 TypeSafe's Jev API, which Ollama also implements.
 
-- [Asking questions](#asking-questions)
+- [Request format](#request-format)
 - [Question types](#question-types)
 - [Supported models](#supported-models)
-- [How Logos answers](#how-logos-answers)
-- [Serving a decision model on a worker node](#serving-a-decision-model-on-a-worker-node)
+- [Answer probabilities from the decision head](#answer-probabilities-from-the-decision-head)
+- [Worker node configuration](#worker-node-configuration)
 - [Limits](#limits)
 
-## Asking questions
+## Request Format
 
 Send the text as `state` and name each question. A single request can ask
 several questions about the same state.
@@ -76,7 +76,7 @@ are rejected for these fields. Score criteria also reject `null`.
 
 `state` accepts any JSON value. Logos renders non-string values as JSON text.
 
-## Question types
+## Question Types
 
 | Type | `criteria` | Answer |
 |------|------------|--------|
@@ -88,7 +88,7 @@ are rejected for these fields. Score criteria also reject `null`.
 when one answer takes all probability and 0 when all answers are equally likely.
 Use low values to send an answer to a human for review.
 
-## Supported models
+## Supported Models
 
 | Model | Notes |
 |-------|-------|
@@ -96,7 +96,7 @@ Use low values to send an answer to a human for review.
 
 The API key needs access to the model, as for any other request.
 
-### Other models
+### Other Models
 
 Logos sends a request for any other model to that model's lane unchanged. vLLM
 serves `/v1/systemone` itself from v0.32.0 on, for architectures it can read,
@@ -111,7 +111,7 @@ vLLM's generic prompt is not the format a decision head was trained on. That is
 why a model in the table above stays with Logos' own read-out: through vLLM's
 endpoint, the same model gives noticeably different probabilities.
 
-## How Logos answers
+## Answer Probabilities from the Decision Head
 
 The model's decision head is a LoRA module next to the base model on the same
 vLLM lane. Each question becomes one completion on that module. The completion
@@ -125,7 +125,7 @@ authorises, schedules, logs, and bills every question like a completion. The
 questions of one request run in parallel and share the state prefix, which
 vLLM's prefix cache computes only once. `usage` adds up the questions.
 
-## Serving a decision model on a worker node
+## Worker Node Configuration
 
 The worker node serves the model with plain vLLM. It needs no plugin and no
 extra container. Add the model to `engines.vllm.model_overrides` in the worker's

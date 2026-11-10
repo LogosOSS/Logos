@@ -535,7 +535,7 @@ _ensure_request_capacity()   [lines 2479-2878]
 
 **Candidate exclusions**:
 - Active requests > 0 or queue_waiting > 0 (busy)
-- In load cooldown
+- Inside minimum tenure after wake/load
 - No GPU overlap with required set
 - Non-evictable states (cold, stopped, starting, error)
 
@@ -544,9 +544,9 @@ _ensure_request_capacity()   [lines 2479-2878]
 For cold loads, tries every combination of `tp` GPUs. For each combination:
 1. Compute per-GPU deficit
 2. Call `_find_eviction_set()`
-3. Select the placement whose eviction set has the lowest max effective-demand score
+3. Select the placement whose eviction set has the lowest diagnostic max effective-demand score among candidates (placement tie-break only)
 
-This ensures we sacrifice the least-valuable models when multiple GPU placements are feasible.
+Wake/load competitive-ratio gates elsewhere compare the target against the **sum** of non-self victim effective demands. Explicit queued demand may bypass that historical ratio when victims are idle.
 
 ---
 
@@ -656,15 +656,13 @@ Model switches are tracked via `_switch_timestamps`. When a new model activates 
 
 `_is_thrashing()` returns True if ≥6 switches occurred in 300 seconds, though currently this is metrics-only (no tenure multiplier applied; `SWITCH_TENURE_MULTIPLIER = 1.0`).
 
-### 11.5 Load Cooldown
+### 11.5 Minimum tenure (not a success cooldown)
 
-```python
-LOGOS_LOAD_COOLDOWN_SECONDS = 60  # environment variable
-```
-
-After a cold load completes, the lane enters a 60-second cooldown during which:
-- It cannot be stopped (prevents immediate reload oscillation)
-- Sleep is still allowed (sleeping only releases KV cache, not the model)
+Successful wake/load does **not** arm an extra eviction/load hold. Freshly
+loaded or woken lanes are protected only by minimum tenure
+(`LANE_MIN_TENURE_SECONDS` = 5s, or `LANE_COLD_WAITER_TENURE_SECONDS` = 15s
+when a cold-at-queue waiter is present). Failure cooldowns (wake 15s, load
+120s) remain separate.
 
 ### 11.6 Wake Failure Cooldown
 
@@ -759,15 +757,17 @@ The statistics UI's **Drain** button runs the same recipe as a one-shot, operato
 ### 13.5 Stop Execution Flow
 
 ```
-1. Check load cooldown — abort if active
-2. Create negative VRAM reservation
-3. mark_lane_cold (stop scheduling)
-4. _drain_lane (wait for active requests, up to 60s)
-5. Send delete_lane or apply_lanes command
-6. Poll for confirmation
-7. Release VRAM reservation (finally)
-8. On success: unmark cold
+1. Create negative VRAM reservation
+2. mark_lane_cold (stop scheduling)
+3. _drain_lane (wait for active requests, up to 60s)
+4. Send delete_lane or apply_lanes command
+5. Poll for confirmation
+6. Release VRAM reservation (finally)
+7. On success: unmark cold
 ```
+Minimum tenure (and failure cooldowns on other paths) still gate when a lane
+may be selected for reclaim; stop execution itself has no healthy-success hold.
+
 
 ### 13.6 Poll Confirmation
 

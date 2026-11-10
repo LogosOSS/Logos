@@ -17,7 +17,8 @@ export class BenchmarkBatchEditor {
   readonly repetitions = signal(3);
   readonly sweeps = signal<Sweep[]>([]);
   readonly previewLimit = signal(20);
-  readonly fields = computed(() => SWEEP_FIELDS.filter(field => this.worker() || ['concurrency', 'samples', 'seed', 'max_output_tokens'].includes(field.key)));
+  readonly fields = computed(() => SWEEP_FIELDS.filter(field => (this.worker() || ['concurrency', 'samples', 'seed', 'max_output_tokens'].includes(field.key))
+    && (!this.settings().workload_id || !['samples', 'seed', 'max_output_tokens'].includes(field.key))));
   readonly available = computed(() => this.fields().filter(field => !this.sweeps().some(sweep => sweep.key === field.key)));
   readonly plan = computed(() => {
     if (!this.enabled()) return { batch: null, error: null };

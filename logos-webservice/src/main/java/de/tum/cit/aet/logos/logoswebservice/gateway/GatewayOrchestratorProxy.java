@@ -33,6 +33,8 @@ import jakarta.servlet.http.HttpServletRequest;
 @Service
 public class GatewayOrchestratorProxy {
 
+    private static final int RELAY_BUFFER_BYTES = 8192;
+
     private final HttpClient httpClient;
     private final String orchestratorUrl;
 
@@ -109,11 +111,27 @@ public class GatewayOrchestratorProxy {
         InputStream upstreamBody = upstream.body();
         StreamingResponseBody stream = outputStream -> {
             try (upstreamBody; OutputStream out = outputStream) {
-                upstreamBody.transferTo(out);
-                out.flush();
+                relay(upstreamBody, out);
             }
         };
 
         return ResponseEntity.status(upstream.statusCode()).headers(responseHeaders).body(stream);
+    }
+
+    /**
+     * Copies {@code in} to {@code out}, flushing whenever no more upstream bytes
+     * are ready, so each streamed event reaches the client as soon as the
+     * orchestrator sends it. Bytes that arrive together are still sent together.
+     */
+    static void relay(InputStream in, OutputStream out) throws IOException {
+        byte[] buf = new byte[RELAY_BUFFER_BYTES];
+        int n;
+        while ((n = in.read(buf)) != -1) {
+            out.write(buf, 0, n);
+            if (in.available() == 0) {
+                out.flush();
+            }
+        }
+        out.flush();
     }
 }

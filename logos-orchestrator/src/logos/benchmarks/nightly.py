@@ -24,7 +24,7 @@ def local_now() -> datetime:
 
 
 def can_start(now: datetime) -> bool:
-    """Admit configurations until 10 minutes before the shared window ends."""
+    """Admit configurations throughout the shared maintenance window."""
     return MaintenanceWindow.from_env().can_start_benchmark(now)
 
 

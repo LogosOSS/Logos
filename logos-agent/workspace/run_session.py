@@ -35,6 +35,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -100,6 +101,20 @@ def _redact(cmd: list[str]) -> list[str]:
     return [scrub(c) for c in cmd]
 
 
+def _without_auto_maintenance(cmd: list[str]) -> list[str]:
+    """A git command that starts no background maintenance afterwards.
+
+    A fetch ends by detaching `git maintenance run --auto`, which in a shallow
+    checkout can rewrite .git/shallow while the next fetch of the preparation
+    reads it; that fetch then dies with "shallow file has changed since we
+    read it". The preparation runs its git commands back to back, so none of
+    them may leave such a process behind.
+    """
+    if cmd and cmd[0] == "git":
+        return ["git", "-c", "maintenance.auto=false", *cmd[1:]]
+    return cmd
+
+
 def run(
     cmd: list[str], *, cwd: Path | None = None, check: bool = True, quiet: bool = False
 ) -> subprocess.CompletedProcess:
@@ -108,7 +123,7 @@ def run(
     shown = _redact(cmd)
     if not quiet:
         log(f"$ {' '.join(shlex.quote(c) for c in shown)}")
-    process = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, timeout=1800)
+    process = subprocess.run(_without_auto_maintenance(cmd), cwd=cwd, text=True, capture_output=True, timeout=1800)
     if process.stdout and not quiet:
         print(process.stdout, end="", flush=True)
     if process.stderr:
@@ -138,7 +153,11 @@ def _install_git_askpass(token: str) -> None:
     """
     if not token:
         return
-    helper = Path("/tmp") / "logos-git-askpass.sh"
+    # A fresh file of our own rather than a fixed name in the shared temp
+    # directory, which another process could have created first.
+    descriptor, name = tempfile.mkstemp(prefix="logos-git-askpass-", suffix=".sh")
+    os.close(descriptor)
+    helper = Path(name)
     helper.write_text(
         "#!/bin/sh\n"
         'case "$1" in\n'
@@ -361,7 +380,7 @@ _DEEPEN_STEP = 250
 _MAX_HISTORY_DEPTH = 5000
 
 
-def _deepen_until_merge_base(default: str) -> None:
+def _deepen_until_merge_base(default: str, base: str) -> None:
     """Make `git merge-base origin/<default> HEAD` resolvable, or fail.
 
     A reviewing session is handed a diff against the default branch
@@ -391,9 +410,15 @@ def _deepen_until_merge_base(default: str) -> None:
                 "the checkout cannot be diffed against the default branch"
             )
         deepened += _DEEPEN_STEP
-        # No refspec: deepens every shallow boundary at once, so the base's
-        # line and the default's line both grow, not just one.
-        run(["git", "fetch", f"--deepen={_DEEPEN_STEP}", "origin"], cwd=CHECKOUT)
+        # Each line by name and in a fetch of its own: the shallow clone
+        # tracks a single branch, so a bare `fetch --deepen` grows only that
+        # one, and a single fetch naming both stops deepening the second line
+        # once the first has reached the commits they share.
+        run(["git", "fetch", f"--deepen={_DEEPEN_STEP}", "origin", base], cwd=CHECKOUT)
+        run(
+            ["git", "fetch", f"--deepen={_DEEPEN_STEP}", "origin", f"{default}:refs/remotes/origin/{default}"],
+            cwd=CHECKOUT,
+        )
 
 
 def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -> None:
@@ -490,7 +515,7 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     # alone is still a usable working copy, and there is nothing to deepen
     # toward.
     if default_available:
-        _deepen_until_merge_base(default)
+        _deepen_until_merge_base(default, base_branch)
 
 
 def agent_login() -> str:

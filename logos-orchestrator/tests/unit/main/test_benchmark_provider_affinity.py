@@ -381,7 +381,8 @@ async def test_internal_benchmark_proxy_does_not_resolve_a_user_api_key(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_internal_benchmark_request_is_visible_in_request_logs(monkeypatch):
+@pytest.mark.parametrize("operation", ["chat/completions", "messages"])
+async def test_internal_benchmark_request_is_visible_in_request_logs(monkeypatch, operation):
     logged = []
 
     class DummyDB:
@@ -429,11 +430,12 @@ async def test_internal_benchmark_request_is_visible_in_request_logs(monkeypatch
 
     benchmark_reservations.reserve(20, "org/model", 7)
     try:
-        response = await internal_mod.internal_model_benchmark_completion(7, "chat/completions", request)
+        response = await internal_mod.internal_model_benchmark_completion(7, operation, request)
     finally:
         benchmark_reservations.release(7)
 
     assert response == "response"
+    assert execute.await_args.kwargs["path"] == f"v1/{operation}"
     assert logged == [
         {
             "api_key_id": None,

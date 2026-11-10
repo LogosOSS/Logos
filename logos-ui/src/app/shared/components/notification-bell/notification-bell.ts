@@ -16,6 +16,8 @@ import {
   notificationMeta,
 } from '../../../core/services/notification.service';
 import { formatRelativeTime } from '../../utils/date';
+import { RouterLink } from '@angular/router';
+import { notificationBody, notificationTarget } from '../../../core/services/notification-target';
 
 const PAGE_SIZE = 15;
 /** Start loading the next page this close (px) to the end of the list. */
@@ -34,6 +36,7 @@ const LOAD_MORE_THRESHOLD_PX = 80;
 @Component({
   selector: 'app-notification-bell',
   standalone: true,
+  imports: [RouterLink],
   templateUrl: './notification-bell.html',
   styleUrl: './notification-bell.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -58,6 +61,8 @@ export class NotificationBell implements OnInit, OnDestroy {
 
   readonly meta = notificationMeta;
   readonly age = formatRelativeTime;
+  readonly target = notificationTarget;
+  readonly body = notificationBody;
 
   constructor() {
     effect(() => {
@@ -141,6 +146,11 @@ export class NotificationBell implements OnInit, OnDestroy {
     } finally {
       if (generation === this.generation) this.loading.set(false);
     }
+  }
+
+  followBenchmark(item: AppNotification): void {
+    void this.markRead(item);
+    this.open.set(false);
   }
 
   async markRead(item: AppNotification): Promise<void> {

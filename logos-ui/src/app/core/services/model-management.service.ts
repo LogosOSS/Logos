@@ -1,6 +1,6 @@
 import { BenchmarkBatch } from '../../features/model-error-report/benchmark-batch';
 import { Injectable, inject } from '@angular/core';
-import { BenchmarkSettings, BenchmarkWorkerLimits, DatasetMetadata, DEFAULT_BENCHMARK_SETTINGS } from '../../features/model-error-report/benchmark-settings';
+import { BenchmarkSettings, BenchmarkWorkerLimits, DatasetMetadata, DEFAULT_BENCHMARK_SETTINGS, SavedBenchmarkWorkload } from '../../features/model-error-report/benchmark-settings';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { Model, AddModelPayload, UpdateModelPayload } from '../../shared/models/model.model';
@@ -56,6 +56,13 @@ export class ModelManagementService {
     return firstValueFrom(this.http.post<BenchmarkWorkerLimits>(
       '/api/logosdb/model_benchmarks/limits', { model_provider_id: modelProviderId },
     ));
+  }
+
+  async getBenchmarkWorkloads(modelProviderId: number): Promise<SavedBenchmarkWorkload[]> {
+    const status = await firstValueFrom(this.http.post<{ workloads?: SavedBenchmarkWorkload[] }>(
+      '/api/logosdb/model_benchmarks/nightly/status', { model_provider_id: modelProviderId },
+    ));
+    return status.workloads ?? [];
   }
 
   searchBenchmarkDatasets(query: string, cursor?: string): Promise<{ datasets: { id: string }[]; next_cursor?: string | null }> {

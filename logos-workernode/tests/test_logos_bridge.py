@@ -1121,13 +1121,13 @@ def _make_app_for_calibration(tmp_path, *, vllm_disable_sleep=False, per_model_o
     app.state.config = cfg
     app.state.model_profiles = ModelProfileRegistry()
     app.state.model_cache = None
-    # Minimal lane_manager stub: event_log + destroy_all + _mark_status_dirty.
+    # Minimal lane_manager stub: event_log + destroy_all + mark_status_dirty.
     # The session driver records calibration_* events onto event_log directly
     # and marks status dirty after each model completes.
     lane_manager = type("LaneMgr", (), {})()
     lane_manager._event_log = []
     lane_manager._MAX_EVENT_LOG = 500
-    lane_manager._mark_status_dirty = lambda: None
+    lane_manager.mark_status_dirty = lambda: None
     lane_manager.destroy_all = AsyncMock(return_value=None)
     # Calibration-session GPU-slice guard: the session holds a
     # power-of-two slice and frees only the lanes on it, keeping leftover lanes.
@@ -1271,6 +1271,51 @@ async def test_start_calibration_session_routes_metal_backend_to_metal_probe(tmp
     assert "cancel_event" in seen_kwargs  # reached the Metal probe with real kwargs
     events = [e.event for e in app.state.lane_manager._event_log]
     assert "calibration_session_started" in events
+    assert "calibration_session_finished" in events
+
+
+@pytest.mark.asyncio
+async def test_calibration_session_ends_when_a_model_reports_a_degraded_node(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOGOS_WORKER_BACKEND", "metal")
+    from logos_worker_node import config as _wcfg
+    from logos_worker_node.calibration import CalibrationResult
+    from logos_worker_node.hf_model_info import HfModelMetadata
+
+    monkeypatch.setattr(_wcfg, "STATE_DIR", tmp_path)
+    app = _make_app_for_calibration(tmp_path)
+    cfg = LogosConfig(
+        enabled=True,
+        logos_url="https://logos.example",
+        shared_key="secret",
+        configured_models=["first/model", "second/model"],
+    )
+    client = LogosBridgeClient(app, cfg)
+    monkeypatch.setattr(
+        "logos_worker_node.hf_model_info.fetch_hf_model_metadata",
+        lambda *a, **k: HfModelMetadata(source="hf"),
+    )
+    calibrated: list[str] = []
+
+    def _degraded_node(plan, **kwargs):
+        calibrated.append(plan["model"])
+        return CalibrationResult(
+            model=plan["model"],
+            tensor_parallel_size=1,
+            gpu_devices="",
+            kv_cache_sent_mb=0.0,
+            success=False,
+            error="node degraded (gpu-error): GPU1.power='ERR!'",
+            node_unhealthy_reason="gpu-error",
+        )
+
+    monkeypatch.setattr("logos_worker_node.calibration_metal.calibrate_model_metal", _degraded_node)
+    monkeypatch.setattr("logos_worker_node.calibration.plans_from_config", lambda _p: [])
+
+    await client._handle_start_calibration_session({"sleep_level": 1})  # noqa: SLF001
+    await _drain_session(client)
+
+    assert calibrated == ["first/model"]
+    events = [e.event for e in app.state.lane_manager._event_log]
     assert "calibration_session_finished" in events
 
 
@@ -3945,7 +3990,7 @@ def _central_client(tmp_path) -> LogosBridgeClient:
     def _mark_dirty():
         app.state.lane_manager._status_dirty_marks += 1
 
-    app.state.lane_manager._mark_status_dirty = _mark_dirty
+    app.state.lane_manager.mark_status_dirty = _mark_dirty
     cfg = LogosConfig(
         enabled=True,
         logos_url="https://logos.example",
@@ -4125,9 +4170,8 @@ async def test_startup_fetch_posts_keys_and_legacy_files(tmp_path, monkeypatch):
             return _Resp()
 
     monkeypatch.setattr("logos_worker_node.logos_bridge.httpx.AsyncClient", lambda timeout=15.0: _Http())
-    legacy = {"model_profiles": {}, "unsupported_models": {"org/bad": "invalid-repo-id"}}
 
-    profiles = await client.fetch_model_profiles({"org/ready": "h"}, {"org/ready": 2}, legacy)
+    profiles = await client.fetch_model_profiles({"org/ready": "h"}, {"org/ready": 2})
 
     assert profiles == {"org/ready": {"base_residency_mb": 5.0, "sync_revision": 1}}
     url, body = posted[0]
@@ -4136,7 +4180,6 @@ async def test_startup_fetch_posts_keys_and_legacy_files(tmp_path, monkeypatch):
         "shared_key": "secret",
         "calibration_key_hashes": {"org/ready": "h"},
         "slice_gpu_counts": {"org/ready": 2},
-        "legacy_import": legacy,
     }
 
 
@@ -4161,7 +4204,7 @@ async def test_startup_fetch_rejects_an_orchestrator_without_central_profiles(tm
 
     monkeypatch.setattr("logos_worker_node.logos_bridge.httpx.AsyncClient", lambda timeout=15.0: _Http())
     with pytest.raises(RuntimeError, match="HTTP 404"):
-        await client.fetch_model_profiles({}, {}, None)
+        await client.fetch_model_profiles({}, {})
 
 
 @pytest.mark.asyncio
@@ -4497,3 +4540,24 @@ async def test_a_config_edit_not_yet_reported_still_gets_its_model_recalibrated(
     assert ("calibration_model_skipped", "calibrated meanwhile") not in events
     assert any(name == "calibration_model_selected" for name, _ in events)
     assert registry.get_profile("org/first").calibration_stale is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_command_tasks_stops_every_command_and_logs_failures(caplog):
+    client = LogosBridgeClient(_DummyApp(), LogosConfig(enabled=True, logos_url="http://logos", shared_key="k"))
+
+    async def _fails() -> None:
+        raise RuntimeError("command failed")
+
+    running = asyncio.create_task(asyncio.Event().wait())
+    failing = asyncio.create_task(_fails())
+    await asyncio.sleep(0)
+    client._command_tasks.update({"cmd-a": running, "cmd-b": failing})  # noqa: SLF001
+
+    with caplog.at_level(logging.DEBUG, logger="logos_worker_node.logos_bridge"):
+        await client._cancel_command_tasks()  # noqa: SLF001
+
+    assert running.cancelled()
+    assert failing.done() and isinstance(failing.exception(), RuntimeError)
+    assert client._command_tasks == {}  # noqa: SLF001
+    assert "Bridge background command task failed during shutdown" in caplog.text

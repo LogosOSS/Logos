@@ -668,14 +668,13 @@ public class AiWorkflowAnalysisService {
      * edit on a workflow a newer analysis superseded is refused.
      */
     private AiWorkflow lockCurrentWorkflow(int teamId, int workflowId) {
-        Integer repoId = jdbc.query("""
+        int repoId = jdbc.queryForList("""
             SELECT a.team_repository_id FROM ai_workflows w
               JOIN ai_workflow_analyses a ON a.id = w.analysis_id
              WHERE w.id = ? AND a.team_id = ?
-            """, rs -> rs.next() ? (Integer) rs.getObject(1) : null, workflowId, teamId);
-        if (repoId == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found");
-        }
+            """, Integer.class, workflowId, teamId).stream()
+            .findFirst()
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow not found"));
         jdbc.query("SELECT id FROM team_repositories WHERE id = ? FOR UPDATE", rs -> null, repoId);
         AiWorkflow workflow = workflowRepository.lockById(workflowId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,

@@ -471,7 +471,6 @@ def test_reclaim_selects_unreserved_alternative(lease):
     planner = object.__new__(CapacityPlanner)
     planner._facade = MagicMock()
     planner._facade.get_scheduler_queue_depth_by_model_name.return_value = 0
-    planner._lane_is_in_load_cooldown = MagicMock(return_value=False)
     target = SimpleNamespace(lane_id="target", model_name="target", gpu_devices=None)
     reserved = SimpleNamespace(lane_id="reserved", model_name="model")
     alternative = SimpleNamespace(
@@ -531,6 +530,7 @@ async def test_released_queue_request_keeps_transport_access_during_benchmark(ac
     future = asyncio.get_running_loop().create_future()
     queue.enqueue(future, 1, request_id="released-production", api_key_id=12)
     facade = MagicMock()
+    facade.is_provider_cordoned.return_value = False
     facade.get_model_name.return_value = "queued-model"
     facade.get_model_status.return_value = SimpleNamespace(active_requests=0)
     facade.get_parallel_capacity.return_value = (1, None)

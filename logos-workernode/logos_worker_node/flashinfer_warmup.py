@@ -174,7 +174,7 @@ def warmup(
         # setting it has no effect.
         os.environ.setdefault("FLASHINFER_WORKSPACE_BASE", workspace_base)
         cache_dir = os.path.join(workspace_base, ".cache", "flashinfer")
-        os.makedirs(cache_dir, exist_ok=True)
+        os.makedirs(cache_dir, exist_ok=True)  # NOSONAR - the operator-configured cache volume, not request input
 
     try:
         import torch

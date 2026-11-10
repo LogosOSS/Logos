@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
@@ -24,6 +25,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 /**
  * Public inference gateway for {@code /v1/**}, {@code /openai/**}, {@code /jobs/**}.
@@ -74,8 +76,16 @@ public class InferenceGatewayController {
         this.objectMapper = objectMapper;
     }
 
-    @RequestMapping({"/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**"})
-    public ResponseEntity<StreamingResponseBody> handle(HttpServletRequest request) throws IOException {
+    @RequestMapping(
+        value = {"/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**"},
+        method = {RequestMethod.GET, RequestMethod.HEAD, RequestMethod.POST, RequestMethod.PUT,
+            RequestMethod.PATCH, RequestMethod.DELETE, RequestMethod.OPTIONS})
+    public ResponseEntity<StreamingResponseBody> handle(HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
+        return GatewayClientFlush.flushingTo(response, route(request));
+    }
+
+    private ResponseEntity<StreamingResponseBody> route(HttpServletRequest request) throws IOException {
         // Taken before the key lookup: waiting for a database connection or a
         // budget refresh is part of what the caller waited for, and the log
         // row should show it.

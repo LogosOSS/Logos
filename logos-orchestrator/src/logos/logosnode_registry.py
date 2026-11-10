@@ -19,6 +19,7 @@ from fastapi import WebSocket
 from logos.benchmarks.nightly import LEASE_CHECK, NIGHTLY_CONTEXT
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.monitoring import prometheus_metrics as prom
+from logos.residency_policy import configured_residency_policy
 from logos.terminal_logging import (
     BOLD,
     CYAN,
@@ -411,6 +412,7 @@ class LogosNodeRuntimeRegistry:
         on_capabilities_changed: Callable[[int, list[str]], None] | None = None,
         latency_store: LatencyStore | None = None,
     ) -> None:
+        self._residency_policy = configured_residency_policy()
         self._tickets: dict[str, AuthTicket] = {}
         self._sessions: dict[int, ProviderSession] = {}
         # peek_runtime_snapshot memo: provider_id -> (snapshot_version, dict).
@@ -429,6 +431,10 @@ class LogosNodeRuntimeRegistry:
         # the lane health snapshot can show it without waiting for the worker
         # to push a status that differs from its last one.
         self.on_cold_mark_changed: Callable[[int], None] | None = None
+        # Whether a worker is cordoned for a planned replacement of its container (see node_maintenance). The
+        # maintenance service owns the state; the registry only asks it, so every reader of the registry (the
+        # scheduling facade, the capacity planner, the calibration orchestrator) shares one answer.
+        self.cordon_check: Callable[[int], bool] | None = None
         # provider_id -> monotonic timestamp of the last live-session drop.
         # A worker that went down a moment ago is mid-reboot, not dead: the
         # request path uses this to extend the startup grace period past the
@@ -1163,6 +1169,11 @@ class LogosNodeRuntimeRegistry:
         session = self._sessions.get(int(provider_id))
         return session is not None and session.calibrating
 
+    def is_cordoned(self, provider_id: int) -> bool:
+        """Return True while the worker is cordoned: it takes no new work, because its container is being replaced."""
+        check = self.cordon_check
+        return check is not None and bool(check(int(provider_id)))
+
     def subscribe_to_events(self, callback: Callable[[int, dict[str, Any]], None]) -> None:
         """Register a callback fired for every worker event.
 
@@ -1847,6 +1858,9 @@ class LogosNodeRuntimeRegistry:
             candidates.append(lane)
         if not candidates:
             return None
+        if getattr(self, "_residency_policy", "demand") == "simple":
+            candidates = [lane for lane in candidates if lane.get("runtime_state") in {"loaded", "running"}]
+            return min(candidates, key=lambda lane: str(lane.get("lane_id", "")), default=None)
         candidates.sort(key=_lane_sort_key)
         return candidates[0]
 

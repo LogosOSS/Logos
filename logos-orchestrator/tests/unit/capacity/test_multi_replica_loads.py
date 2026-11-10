@@ -252,6 +252,7 @@ def _manual_load_planner(lanes: List[LaneSchedulerSignals]) -> CapacityPlanner:
     planner._cold_mark_settlers = set()
     registry = MagicMock()
     registry.is_calibrating.return_value = False
+    registry.is_cordoned.return_value = False
     registry.has_received_first_status.return_value = True
     planner._registry = registry
     facade = MagicMock()
@@ -399,6 +400,7 @@ def _planner(provider: _MockProvider, *, score: float = 2.0, replicate: bool = F
     registry = MagicMock()
     registry.has_received_first_status.return_value = True
     registry.is_calibrating.return_value = False
+    registry.is_cordoned.return_value = False
     registry.peek_runtime_snapshot.return_value = {"runtime": {"lanes": [], "devices": {}}}
     demand = MagicMock()
     demand.get_ranked_models.return_value = [("X", score)]
@@ -418,7 +420,6 @@ def _planner(provider: _MockProvider, *, score: float = 2.0, replicate: bool = F
     planner._lane_idle_since = {}
     planner._lane_sleep_since = {}
     planner._lane_sleep_level = {}
-    planner._load_cooldown_seconds = 0.0
     planner._eviction_gate_v2 = True
     planner._stop_dedup_siblings = False
     planner._announced_use = {}
@@ -427,6 +428,7 @@ def _planner(provider: _MockProvider, *, score: float = 2.0, replicate: bool = F
         get_committed_mb=lambda pid: 0.0,
         has_overlapping_reservation=lambda *a, **k: False,
         get_gpu_effective_available_mb=lambda pid, g, f: f,
+        get_gpu_consumable_available_mb=lambda pid, g, f: f,
     )
     planner._get_queue_depth_across_deployments = lambda *_: 0
     planner._build_load_params = lambda *a, **k: {}

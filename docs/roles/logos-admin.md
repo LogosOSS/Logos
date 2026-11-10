@@ -44,7 +44,7 @@ copy the commit. With this information, you can find which workers have the
 update. If a worker cannot report a commit, the page shows `version: unknown`.
 The icon then shows the reason.
 
-### Maintenance status
+### Maintenance Status
 
 Above the workers, the **Maintenance** box shows what holds the maintenance
 slot. Calibration, benchmarks and nightly recovery share this slot. While one
@@ -76,7 +76,7 @@ The audit log records every release.
 
 The box updates together with the rest of the page.
 
-### Idle lanes and lane locks
+### Idle Lanes and Lane Locks
 
 The capacity planner puts a lane to sleep after the lane has no requests for
 30 minutes (`LOGOS_IDLE_SLEEP_L1_S`, see
@@ -102,7 +102,7 @@ The **Sleep** action on a locked lane still puts the lane to sleep. Use it only
 if you must make memory free at once. The planner then wakes the locked lane
 again.
 
-### Worker locks
+### Worker Locks
 
 To keep all lanes of a worker as they are, lock the worker. Above the lane list
 of the worker, click **Lock worker**. While the worker is locked, the capacity
@@ -118,7 +118,7 @@ restart goes to sleep again. To release the worker, click **Worker locked**.
 
 ![A locked worker with two lanes](/img/roles/logos-admin-statistics-worker-lock.png)
 
-### Parallel lane actions
+### Parallel Lane Actions
 
 A worker unloads a lane at once, also while it loads or wakes another lane. It
 loads two lanes at the same time only if they use different GPUs. If the only
@@ -146,8 +146,9 @@ The preview depends on current worker availability. It does not reserve a worker
 
 ![Models page](/img/roles/logos-admin-models.png)
 
-The **Delays** tab of the **Model Details** view shows where the time of a
-request goes. The tab shows local and cloud providers. It has one row for each
+Open **Model Details → Performance → Request measurements** to inspect request times.
+This view uses timing metadata. It does not use prompt or response content.
+The view shows local and cloud providers. It has one row for each
 provider of the model and for each reasoning effort. A **Local** or **Cloud** tag
 next to the provider name shows the provider type. The row shows these values,
 each as the median (p50) and as the 95th percentile (p95):
@@ -169,34 +170,98 @@ accepts. The column then shows the changed level, not the level of the client.
 The value `default` shows that the request did not contain an effort.
 
 If the **Logos wait** values increase, Logos itself slows the requests down.
-Use the time range bar of the tab to select the period.
+Use the time range bar to select the period.
+The bar chart shows p50 and p95 separately for each metric. Do not add these percentiles.
 
-![Delays tab of a model](/img/roles/logos-admin-model-details-delays.png)
+![Request measurements and timing chart](/img/roles/logos-admin-model-request-measurements.png)
 
-### Model benchmarks
+### Model Benchmarks
 
 Open the model's **Performance** tab to configure and start a benchmark.
 The orchestrator reserves the selected model lanes during a worker benchmark.
+The status card separates the provider, request progress and completed runs.
+**Requests started** does not mean that all responses are complete.
+Select **Stop benchmark** to cancel the active batch.
+
+![Running benchmark status and progress](../static/img/roles/logos-admin-benchmark-status.png)
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
-The **Results** tab shows **Top configuration so far** for each model/provider.
-This is the highest recorded output throughput among fully successful runs.
-Select **Measured configuration** to see the saved benchmark settings and serving parameters.
-Runs can use different workloads. This record does not prove an improvement under identical conditions.
-The application does not apply these parameters automatically.
+The **Performance** tab shows **Currently deployed** and **Timeline**.
+Expand **Benchmark runs** to read saved runs grouped by dataset.
+Without a nightly series, **Highest recorded throughput** shows the best result within each provider's latest captured workload.
+Older workloads are not ranked against it. Unknown controls do not establish a comparison.
+Manual benchmarks do not apply these parameters automatically. Nightly runs with saved request datasets can apply verified improvements.
 
-**Nightly progress** shows the best eligible throughput so far against a fixed reference for saved request workloads.
-Hugging Face runs retain their separate nightly baselines.
-The chart separates runs with different captured workloads or other serving settings.
-Select a point to read its run number, time and percentage change.
+To benchmark saved requests manually, open **Run benchmark → Dataset and settings**.
+Select the saved dataset under **Input dataset**. Logos fixes the sample size to its request count.
+The run preserves each source request's output limit. Set the profile and concurrency for the comparison.
+**Repeat or compare settings** uses the same saved requests for every configuration.
+
+![Manual benchmark with a saved request dataset](../static/img/roles/logos-admin-benchmark-saved-requests.png)
+
+Open **Repeat or compare settings** and select **Run a batch** to compare parameter values.
+Open **View run plan & fixed settings** to check each combination and the saved request count.
+The frozen dataset keeps its source inference and output settings for all runs.
+A response that reaches the caller's explicit token limit completes the requested output budget.
+A missing stream terminator or an earlier context limit makes the run fail.
+
+![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
+
+The **Timeline** starts with the first comparable baseline for the dataset.
+The vertical axis shows output tokens per second. Each subsequent point is a new throughput record.
+Slower runs do not add points. Each point keeps its actual measurement date and configuration.
+The chart separates datasets, providers and captured test settings. Worker releases can share a record history.
+Select a point to open its benchmark result.
+Expand **Record configurations** to read the dates and parameters.
+Saved-request variants must pass the response and latency checks before they enter the timeline.
+For example, 40 → 42 → 44 tok/s gives 10% total improvement and 4.8% improvement from the previous point.
 The chart does not show automatic parameter adoption or statistical significance.
-Expand **Benchmark runs** to see the latest 5 results. Select **Show all** to read older results.
+Expand **Benchmark runs** to see the latest 5 results per dataset.
+A baseline shows its own throughput and 0% change. Missing comparisons show why the baseline is unavailable. Select **Show all** to read older results.
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
 Select the same column again to reverse the order. Missing values stay at the end.
 
-![Best recorded benchmark and the fixed reference chart](../static/img/roles/logos-admin-nightly-results.png)
+![Performance overview with current configuration and record timeline](../static/img/roles/logos-admin-nightly-results.png)
 
-### Nightly benchmarks
+Read **Currently deployed** at the top of **Performance**.
+The summary shows throughput, baseline, change and the main batching parameters.
+Expand **Configuration & selection details** for all settings, the worker state and the telemetry time.
+The view identifies measurements with matching settings and the same measurement environment.
+Measurements from another environment appear with a historical label. They do not verify current performance.
+The measurement includes its benchmark number, baseline throughput, result throughput and percentage change.
+Temporary benchmark settings and recovery states do not establish the production configuration.
+An offline worker shows an unavailable state. A historical winner alone does not verify a deployment.
+Manual measurements can show their change from the first comparable dataset baseline. The summary labels this baseline as **Starting baseline**.
+The details also show the last confirmed adoption and reasons that exclude faster runs.
+A fresh comparison must verify a historical candidate before automatic adoption.
+
+![Current worker configuration and its measured result](../static/img/roles/logos-admin-deployed-configuration.png)
+
+The configuration and measurement sections start closed.
+The desktop overview places **Currently deployed** and **Timeline** side by side.
+On small screens, these cards appear below each other.
+Select **Run benchmark** to open **Benchmark setup & nightly automation**.
+Expand **More analysis & details** for the comparison charts, saved configurations and glossary.
+The large analysis sections open one at a time.
+Expand **Charts and comparison**. Select the **Reference run**, **Parameter** and **Metric**.
+The chart shows one parameter at a time, with a dashed reference line and measured changes.
+Only matching workloads and other captured settings enter the comparison.
+A single parameter value shows an explanation instead of an empty comparison chart.
+
+![Parameter comparison with reference and measured changes](../static/img/roles/logos-admin-benchmark-comparison.png)
+
+Expand **Run details and saved configurations** to inspect a selected run.
+Expand **Configuration** for its captured benchmark settings and serving parameters.
+Expand **Fields not captured** to see unavailable fields.
+
+![Run details and saved configuration](../static/img/roles/logos-admin-benchmark-configuration.png)
+
+Expand **Glossary & abbreviations** for metric definitions and nightly parameter names.
+Expand **Runtime terms and other serving parameters** for less common terms.
+
+![Grouped benchmark glossary](../static/img/roles/logos-admin-benchmark-glossary.png)
+
+### Nightly Benchmarks
 
 The **Performance** tab provides nightly benchmarks for each model/worker pair.
 Calibration runs first. Benchmarks use the remaining time.
@@ -233,9 +298,33 @@ Enter the request IDs, name and provenance. Select **Create dataset**, then **Ap
 The dataset keeps its inputs when source logs are deleted.
 The first successful run establishes a new reference for this dataset.
 Each night measures production settings and searches around the previous winner.
-Production settings return after the plan. **Benchmark ready** appears after restoration.
+Eligible improvements over the current baseline apply automatically after the worker confirms its configuration and model readiness.
+Otherwise, production settings return after each round. The pairs take turns until the window ends.
+The dataset keeps its original freeze date across runs. Its content hash remains in the configuration details.
+Logos sends one notification after the last round.
+The notification shows the result and the last interruption reason, if available.
+Select **View benchmark** with its number to open the measurement and the changed parameters.
+The **Benchmark runs** table groups runs by dataset. Select a column heading to change the order.
+Each sortable column cycles through the initial order, ascending order and descending order.
+
+![Benchmark notification with a link to its captured measurement](../static/img/roles/logos-admin-benchmark-notification.png)
+
+The linked result stays selected when newer benchmark runs appear.
+If the measurement is deleted, then the page identifies the unavailable benchmark.
+
+![Selected benchmark with its result and changed parameters](../static/img/roles/logos-admin-benchmark-linked-result.png)
+
 
 ![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
+
+Some deployments select a user instead of a fixed dataset.
+The card then shows **Latest 50 successful FULL requests**, the username and the cutoff.
+All configurations use the same selection for that night.
+The dataset controls are unavailable because the deployment setting controls this source.
+If fewer than 50 requests qualify, then the card shows the selection error.
+See [deployment-specific request sources](../admin/nightly-benchmarks.md#deployment-specific-request-sources) for the exact rules.
+
+![Nightly selection of recent user requests](../static/img/roles/logos-admin-nightly-automatic-source.png)
 
 To remove the pair from the nightly rotation:
 

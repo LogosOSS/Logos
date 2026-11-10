@@ -219,7 +219,6 @@ services:
       # Locked lanes (statistics page) never sleep, whatever this value is.
       LOGOS_IDLE_SLEEP_L1_S: "${LOGOS_IDLE_SLEEP_L1_S:-1800}"
       LOGOS_SHARED_PROFILES: "${LOGOS_SHARED_PROFILES:-1}"
-      LOGOS_SHARED_PROFILE_MAX_AGE_DAYS: "${LOGOS_SHARED_PROFILE_MAX_AGE_DAYS:-30}"
       # Global request-lifecycle timeout knob. When set (>0) it overrides the
       # scheduler queue-wait, execution-context resolve, and worker stream
       # timeouts so a request effectively never times out (benchmark uses
@@ -232,6 +231,8 @@ services:
       LOGOS_MAINTENANCE_WINDOW_START: "${LOGOS_MAINTENANCE_WINDOW_START:-05:00}"
       LOGOS_MAINTENANCE_WINDOW_END: "${LOGOS_MAINTENANCE_WINDOW_END:-08:00}"
       LOGOS_MAINTENANCE_TIMEZONE: "${LOGOS_MAINTENANCE_TIMEZONE:-Europe/Berlin}"
+      # Leave empty on Dev to keep its fixed pilot workload. Opt in on Prod only.
+      LOGOS_NIGHTLY_REQUEST_USERNAME: "${LOGOS_NIGHTLY_REQUEST_USERNAME:-}"
       LOGOS_CALIB_SLEEP_LEVEL: "${LOGOS_CALIB_SLEEP_LEVEL:-1}"
       # Nightly benchmarks are opt-in per model/worker in the administration UI.
       # The schedule is persisted in PostgreSQL (Europe/Berlin, starts 05:00–07:50).

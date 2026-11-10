@@ -32,6 +32,9 @@ const USER: User = {
 /** Flush the microtask queue so an in-flight navigation settles. */
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** The model-list fetch started in ngOnInit; reassigned per test. */
+let getModels: ReturnType<typeof vi.fn>;
+
 async function boot() {
   await TestBed.configureTestingModule({
     imports: [Models],
@@ -40,7 +43,7 @@ async function boot() {
       {
         provide: ModelManagementService,
         useValue: {
-          getModels: vi.fn().mockResolvedValue([]),
+          getModels,
           getModelCapabilities: vi.fn().mockResolvedValue({}),
         },
       },
@@ -66,6 +69,10 @@ async function boot() {
 
 describe('Models tabs', () => {
   let fixture: ComponentFixture<Models> | undefined;
+
+  beforeEach(() => {
+    getModels = vi.fn().mockResolvedValue([]);
+  });
 
   afterEach(() => {
     fixture?.destroy();
@@ -116,5 +123,25 @@ describe('Models tabs', () => {
 
     expect(page.fx.nativeElement.querySelector('app-data-table')).not.toBeNull();
     expect(page.fx.nativeElement.querySelector('app-model-requests')).toBeNull();
+  });
+});
+
+describe('Models', () => {
+  let fixture: ComponentFixture<Models> | undefined;
+
+  beforeEach(() => {
+    getModels = vi.fn().mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    fixture?.destroy();
+    fixture = undefined;
+    TestBed.resetTestingModule();
+  });
+
+  it('loads the model list on start', async () => {
+    const page = await boot();
+    fixture = page.fx;
+    await vi.waitFor(() => expect(getModels).toHaveBeenCalled());
   });
 });

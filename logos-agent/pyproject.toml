@@ -11,11 +11,11 @@ dependencies = [
     "httpx==0.28.1",
     "sqlalchemy[asyncio]==2.1.6",
     "asyncpg==0.32.0",
-    "pydantic==2.14.1",
+    "pydantic==2.14.2",
     "pyjwt[crypto]==2.15.1",
     # Security floors for transitive packages (fastapi[standard] / httpx).
     "certifi==2026.10.23",
-    "dnspython==2.9.0",
+    "dnspython==2.9.1",
     # Keep the OpenTelemetry trio on one release line (sdk pins api exactly).
     "opentelemetry-api==1.45.1",
     "opentelemetry-sdk==1.45.1",
@@ -24,15 +24,17 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-asyncio==1.4.1",
+    # Coverage of the test run, imported by the SonarQube Cloud analysis.
+    "coverage[toml]==7.16.2",
     "black==26.10.1",
-    "flake8==7.4.1",
+    "flake8==7.5.0",
     "isort==9.0.2",
 ]
 
 [build-system]
-requires = ["hatchling==1.32.4"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

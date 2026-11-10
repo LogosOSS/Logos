@@ -1,4 +1,4 @@
-# Logos deployment
+# Logos Deployment
 
 Logos deployments use pull. The project publishes prebuilt images to its Harbor
 registry (`${LOGOS_HARBOR_REGISTRY}/logos`). The tag `latest` follows `main`.
@@ -22,7 +22,7 @@ A deployment consists of:
   [agent runner reference](https://github.com/LogosOSS/Logos/blob/main/logos-agent/README.md)).
   It is opt-in. To enable it, set `COMPOSE_PROFILES=agent`.
 
-## Images and registry
+## Images and Registry
 
 | Image | Contents |
 |---|---|
@@ -84,7 +84,7 @@ pass `--build-arg GIT_SHA=$(git rev-parse HEAD)`. For a pull-request build, the
 version is the commit of the pull request. The image is that pull request merged
 into `main` as of the build.
 
-### Update a worker node with the node manager
+### Update a Worker Node with the Node Manager
 
 The node manager is an optional service on a worker host. It replaces the worker
 container with a new image. It then checks the new container. If the new
@@ -121,6 +121,14 @@ ends, the node manager removes the image that is two versions old. It also
 removes the image of a release that does not run. If the rollback fails, the node
 manager removes no image.
 
+When the new node manager answers, the workflow removes every image of the
+node manager that no container uses. It finds them by the label
+`io.logos.component=node-manager`, so images that piled up earlier go too.
+If the new node manager does not start, the old image stays on the host.
+Images from before the label existed have no label. Remove them once with
+`docker rmi`. A host without the workflow keeps its old node manager images
+and needs the same command.
+
 The node manager writes the record of each deployment to the directory
 `node-manager/` in the worker directory. The image `logos-node-manager` is in the
 deployment registry and, for builds of `main`, in the public mirror.
@@ -130,17 +138,18 @@ worker service. Use the node manager instead.
 
 To use the node manager on a host without the deploy workflow, do these steps:
 
-1. If the registry needs a login, run `docker login` on the host.
+1. If the registry needs a login, run
+   `DOCKER_CONFIG=<worker directory>/.docker docker login <registry>` on the
+   host.
 2. Add `COMPOSE_PROFILES=node-manager` to the `.env` file of the worker.
 3. To pull a version tag, set `REGISTRY` in the `.env` file of the worker to
    the deployment registry (`<registry>/logos`). Then set `IMAGE_TAG`. The
    public mirror has only the tag `latest`.
 4. In the worker directory, run `docker compose up -d logos-node-manager`.
 
-The node manager keeps the login that existed when it started. If you run
-`docker login` again, run
-`docker compose up -d --force-recreate logos-node-manager`. The deploy
-workflows do this on each run.
+The node manager reads the login from the directory `.docker` of the worker
+directory. A new login is visible at once. The deploy workflows write the login
+to this directory on each run.
 
 To send a deploy request, run this command:
 
@@ -152,7 +161,75 @@ The node manager reserves the tag `previous`. Do not deploy that tag.
 
 To see the latest deployment, run `docker exec logos-node-manager node-manager status`.
 
-## Nightly benchmarks
+### Drain a Worker Node During an Update
+
+By default, the node manager replaces the worker container at once. This stops
+the requests that run on the worker. The drain prevents this. With the drain,
+the node manager first asks the orchestrator to cordon the worker. A cordoned
+worker gets no new requests. The requests that run on it finish. Then the node
+manager replaces the container.
+
+A worker drains if its entry in the matrix of the deploy workflow has
+`drain: true`, in addition to `node-manager: true`. For such a worker, the
+workflow does these steps:
+
+1. The workflow writes `NODE_MANAGER_DRAIN_ENABLED=true` to the `.env` file of
+   the worker.
+2. The workflow sends a deploy request to the node manager.
+3. The workflow waits until the image is on the host. Then the job ends.
+
+The drain, the replacement and the checks continue on the host. The job is green
+when the image is on the host. It does not show how the deployment ends.
+
+CAUTION: Give `drain: true` to every worker of the workflow, or put the workers
+without it first. A worker without the drain replaces its container at once,
+also if another worker still drains.
+
+The orchestrator lets only one worker at a time out of service. The node manager
+of a second worker waits for its turn. It waits for up to 2 hours. The worker
+serves requests as usual while it waits.
+
+For a cordoned worker, the orchestrator does these things:
+
+- It sends new requests to another worker that serves the model.
+- If no other worker serves the model, the requests wait in a queue. They wait
+  for 20 minutes, or for the `timeout_s` of the client. After this time, the
+  request fails with the status 503.
+- It places no model on the worker.
+
+The worker has drained if no request runs on it for 10 s. If the worker does not
+drain in 15 minutes, the node manager ends the deployment with the result
+`failed`. The cordon ends. The running container stays and serves again.
+
+After the replacement, the node manager waits until the orchestrator sees the new
+worker. If this does not happen in 5 minutes, the node manager starts the
+previous version again. If the node manager cannot ask the orchestrator, it
+replaces the container without the drain and writes a note in the record.
+
+To see how a deployment ended, use one of these methods:
+
+- Look at the step `Show how the previous deployment ended` in the next run of
+  the workflow. It prints the events of the last deployment on each worker.
+- Run `docker exec logos-node-manager node-manager status --logs` on the host.
+  The command also prints the log of a failed container.
+
+These limits apply to the drain:
+
+- The orchestrator keeps the cordon in memory. A restart of the orchestrator ends
+  all cordons. The node manager asks again before it replaces a container.
+- A model that only one worker serves has no worker during the update. Its
+  requests wait, as described above.
+- The models of the worker load again after the deployment. The next worker
+  can start before the first worker has its models back.
+
+For all limits, see the README of the node manager.
+
+## Nightly Benchmarks
+
+To retain a fixed Dev workload, leave `LOGOS_NIGHTLY_REQUEST_USERNAME` empty.
+To freeze 50 recent requests on Prod, set this variable to the exact Prod username.
+See [deployment-specific request sources](admin/nightly-benchmarks.md#deployment-specific-request-sources) for selection and failure rules.
+This setting reads the deployment's own database. It does not copy Prod requests to Dev.
 
 Nightly benchmarks require updates to the webservice, orchestrator, web application and selected workers.
 The webservice applies changelog `065_nightly_benchmarks.xml` before the new scheduler starts.
@@ -174,13 +251,16 @@ Unavailable pairs do not consume a place in that night's limit.
 Failed or cancelled plans consume a place after admission.
 The limit persists across restarts and changes to activation.
 
-New configurations and retries start between 05:00 and 07:50 in `Europe/Berlin`.
+New configurations and retries start between 05:00 and 08:00 in `Europe/Berlin`.
 At 08:00, a run continues only if at least 50% of its requests completed successfully.
 A run stops after 5 minutes without output content or a successful request completion.
-A stalled configuration gets at most 1 retry before 07:50.
+A stalled configuration gets at most 1 retry before 08:00.
 The existing 2-hour measurement timeout also applies.
 
-The scheduler restores the original worker configuration after the plan.
+The scheduler restores the original worker configuration after each round.
+The admitted pairs rotate through further rounds until 08:00.
+The daily limit counts distinct pairs. It does not limit the number of rounds.
+Completion is reported only after the final restoration.
 If restoration fails, the worker remains reserved and further plans stop until recovery succeeds.
 The recovery journal stays in PostgreSQL until the original configuration is ready.
 Do not delete the journal to release a worker.
@@ -194,7 +274,7 @@ Before activation:
 5. Check that another worker still accepts production requests.
 
 Automatic calibration runs first, from 05:00 to 08:00 in `Europe/Berlin` by default.
-Benchmarks use the remaining time and start no new configuration after 07:50.
+Benchmarks use the remaining time and start no new configuration after 08:00.
 `LOGOS_MAINTENANCE_MAX_NODES` limits simultaneous maintenance workers, including manual starts. The default `1` keeps runs sequential.
 Apply `065_nightly_benchmarks.xml` and update workers for the `get_calibration_status` command.
 The coordinator releases calibration claims only after worker confirmation.
@@ -204,7 +284,7 @@ The `LOGOS_MAINTENANCE_WINDOW_*` variables control both calibration and benchmar
 See the [nightly benchmark guide](admin/nightly-benchmarks.md)
 for activation, the fixed workload, parameter values, API requests and diagnostic states.
 
-## Security & rate limiting
+## Security & Rate Limiting
 
 The API surface of the orchestrator has tiers:
 
@@ -224,7 +304,7 @@ The API docs (`/docs`, `/redoc`, `/openapi.json`) publish the full endpoint map.
 They are **off by default**. Set `LOGOS_DOCS_ENABLED=1` in `.env` only where
 necessary (the dev compose enables it).
 
-### Layer 1: per-IP limits (nginx rate gateway, in-stack)
+### Layer 1: Per-IP Limits (nginx Rate Gateway, In-Stack)
 
 The `logos-rate-gateway` container is an nginx. Every public request (443 and
 8080) passes it first. It enforces a request budget **for each client IP**.
@@ -310,7 +390,7 @@ The dev compose runs the same gateway with higher defaults (300/600 and 50/100).
 This prevents throttling during local benchmarks. The direct ports 18080 and
 18082 bypass the gateway completely (for debugging).
 
-### Layer 2: per-service limits (Traefik)
+### Layer 2: Per-Service Limits (Traefik)
 
 Both compose files attach generous Traefik `rateLimit` middleware to the API
 routers (429 when exceeded). These limits count for each service and not for
@@ -341,7 +421,7 @@ The orchestrator enforces the request budgets for each API key on the model
 paths (from the `cloud_rl`/`local_rl` of the key). The limits in the stack are
 the backstop against abuse with unauthenticated requests or leaked keys.
 
-### Optional: an additional per-client brake in the nginx in front
+### Optional Per-Client Limits in the Upstream nginx
 
 The stack does not *need* limits for each client in the nginx ingress of the
 chair. The limits are now in the stack and move with the deployment. You can
@@ -368,7 +448,7 @@ Adjust the zone and the rate to the traffic of the deployment. Use
 `limit_req_status 429;` to keep the status code the same as the limits in the
 stack.
 
-## Apple Silicon (MLX) worker nodes
+## Apple Silicon (MLX) Worker Nodes
 
 MLX nodes do not use the compose-based deploy path above. Metal cannot pass into
 a container. Docker on macOS runs a Linux VM with no GPU passthrough, so a
@@ -390,7 +470,7 @@ The server therefore frees memory when it stops and restarts lanes.
 
 Full setup, sizing and troubleshooting: `logos-workernode/MACOS.md`.
 
-## Inference gateway replicas
+## Inference Gateway Replicas
 
 Public `/v1`, `/openai`, and `/jobs` traffic goes to **logos-webservice**. The
 service has no fixed `container_name`, so Compose can run more than one
@@ -476,7 +556,7 @@ Optional `.env` options:
 - A change to `LOGOS_DB_MAX_CONNECTIONS` or `LOGOS_DB_SHARED_BUFFERS` takes
   effect only after `logos-db` restarts.
 
-### Failover verification
+### Failover Verification
 
 A configuration with 2 replicas does not prove that a kill of one replica is
 harmless for every request. Run `scripts/gateway-failover-demo.sh` against a
@@ -508,7 +588,7 @@ COMPOSE_FILE=docker-compose.yaml \
   scripts/gateway-failover-demo.sh https://logos.example.org 30
 ```
 
-## Environment variables
+## Environment Variables
 
 All runtime configuration is in the `.env` file next to the compose file. The
 [`.env.example` in the repository](https://github.com/LogosOSS/Logos/blob/main/.env.example)

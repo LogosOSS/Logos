@@ -185,6 +185,7 @@ def _planner(providers: List[_MockProvider]) -> CapacityPlanner:
     # Explicit: a bare MagicMock returns a truthy mock, which would make the
     # planner treat every provider as mid-calibration and skip it.
     registry.is_calibrating.return_value = False
+    registry.is_cordoned.return_value = False
     registry.peek_runtime_snapshot.return_value = {"runtime": {"lanes": [], "devices": {}}}
     demand = MagicMock()
     demand.get_ranked_models.return_value = []
@@ -204,7 +205,6 @@ def _planner(providers: List[_MockProvider]) -> CapacityPlanner:
     planner._lane_idle_since = {}
     planner._lane_sleep_since = {}
     planner._lane_sleep_level = {}
-    planner._load_cooldown_seconds = 0.0
     planner._eviction_gate_v2 = True
     planner._stop_dedup_siblings = False
     return planner
@@ -492,9 +492,9 @@ class TestEstimateDemandActionCost:
         )
         assert result is not None
 
-    def test_a_sleeping_lane_is_unaffected_by_the_load_cooldown(self):
+    def test_a_sleeping_lane_is_unaffected_by_the_load_failure_cooldown(self):
         """Waking a lane that is already resident is not the load that failed,
-        and has its own cooldown."""
+        and uses the wake-failure path rather than the load-failure cooldown."""
         provider = _MockProvider(
             provider_id=1,
             name="A",
@@ -1772,6 +1772,7 @@ class TestWakeTargetSelfEviction:
             get_committed_mb=lambda pid: 0.0,
             has_overlapping_reservation=lambda *a, **k: False,
             get_gpu_effective_available_mb=lambda pid, g, f: f,
+            get_gpu_consumable_available_mb=lambda pid, g, f: f,
         )
         planner._get_queue_depth_across_deployments = lambda *_: 0
         planner._build_load_params = lambda *a, **k: {}
@@ -1814,6 +1815,7 @@ class TestBalanceWake:
             get_committed_mb=lambda pid: 0.0,
             has_overlapping_reservation=lambda *a, **k: False,
             get_gpu_effective_available_mb=lambda pid, g, f: f,
+            get_gpu_consumable_available_mb=lambda pid, g, f: f,
         )
         planner._demand.get_ranked_models.return_value = [ranked]
         planner._demand.get_score.return_value = ranked[1]

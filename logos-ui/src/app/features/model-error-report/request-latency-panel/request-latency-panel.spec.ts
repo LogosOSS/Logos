@@ -98,6 +98,9 @@ describe('RequestLatencyPanel', () => {
     await fixture.whenStable();
     fixture.detectChanges();
 
+    expect(fixture.nativeElement.querySelectorAll('.latency-chart')).toHaveLength(2);
+    expect(fixture.componentInstance.charts()[0].metrics[2].p95Width).toBe(100);
+    expect(fixture.nativeElement.querySelector('.latency-charts').textContent).toContain('must not be added');
     const rows = fixture.nativeElement.querySelectorAll('.table-row');
     expect(rows.length).toBe(2);
     expect(rows[0].textContent).toContain('azure');

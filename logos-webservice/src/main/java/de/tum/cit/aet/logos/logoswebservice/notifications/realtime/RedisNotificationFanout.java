@@ -22,7 +22,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * and the persisted inbox is the record. When Redis is unreachable the
  * publishing replica still reaches its own sockets.
  */
-@Configuration
+@Configuration(NotificationFanout.BEAN_NAME)
 @ConditionalOnProperty(name = "logos.notifications.fanout", havingValue = "redis", matchIfMissing = true)
 public class RedisNotificationFanout implements NotificationFanout {
 

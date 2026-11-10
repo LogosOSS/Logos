@@ -8,14 +8,14 @@ Use **Model Details → Performance** to measure a model on a specific provider.
 You need the **Logos Admin** role to start a benchmark.
 Benchmarks measure speed and throughput. They do not grade the generated answers.
 
-## Before you start
+## Before You Start
 
 - A Logos worker must be connected and must report its status. The orchestrator must have capacity planning available.
 - A Logos worker needs no separate benchmark endpoint or API key.
 - An external provider uses its configured endpoint and credential.
 - Only one benchmark job can run on a provider at a time.
 
-## Configure a run
+## Configure a Run
 
 1. Open **Models → Model Management**.
 2. Select the model.
@@ -47,20 +47,32 @@ Private datasets, gated datasets and structured conversation columns are not sup
 The orchestrator downloads the dataset when the job starts.
 A small sample size does not necessarily limit the dataset download size.
 
-### Desktop example
+### Saved Request Datasets
 
-**Run benchmark** contains the configuration. **Results** contains the charts and run history.
-Your draft settings remain unchanged when you switch views.
-Active jobs remain visible in both views.
+For a Logos worker, **Dataset and settings → Input dataset** also lists saved request datasets for that model.
+Select a dataset to replay all its saved requests. The sample size becomes fixed at the saved request count.
+Each run preserves the source prompts, inference controls and output limits.
+The Hugging Face dataset, prompt column, seed and output-limit controls do not apply to these runs.
+Select **Concurrent** and set **Concurrent requests** to use the same load for each configuration.
+Batch configurations keep the selected saved dataset. They cannot vary its request count, seed or output limits.
+Create a saved dataset through **Nightly benchmarks → Request workload** before selecting it here.
+
+![Manual benchmark with a saved request dataset](/img/roles/logos-admin-benchmark-saved-requests.png)
+
+### Desktop Example
+
+**Performance** shows the current configuration and the record timeline.
+Select **Run benchmark** to open **Benchmark setup & nightly automation**.
+Expand **Benchmark runs** for the history. Active jobs remain visible above these sections.
 
 The screenshots show the local application with example data, navigation and complete page content.
 They demonstrate the interface, not a live benchmark measurement.
 Provider names and measured values depend on your deployment.
 Select an image to view it at full size.
 
-[![Desktop benchmark setup](/img/benchmarks/performance-desktop.png)](/img/benchmarks/performance-desktop.png)
+[![Desktop benchmark setup](/img/roles/logos-admin-nightly-results.png)](/img/roles/logos-admin-nightly-results.png)
 
-## Confirm the start
+## Confirm the Start
 
 1. Select **Review benchmark**, or **Review batch** for a batch.
 2. Check the provider, dataset, sample size, run count and production traffic information.
@@ -68,12 +80,12 @@ Select an image to view it at full size.
 
 Closing the dialog does not start a job.
 Closing the browser after confirmation does not stop a submitted job.
-After a successful start, **Results** opens and shows the job status.
+After a successful start, the setup closes and **Performance** shows the job status.
 If the start fails, **Run benchmark** keeps your settings and shows the error.
 
-[![Desktop benchmark confirmation dialog](/img/benchmarks/confirmation-desktop.png)](/img/benchmarks/confirmation-desktop.png)
+[![Desktop benchmark confirmation dialog](/img/roles/logos-admin-benchmark-confirmation.png)](/img/roles/logos-admin-benchmark-confirmation.png)
 
-## Production traffic during a benchmark
+## Production Traffic During a Benchmark
 
 The **orchestrator** reserves all lanes for the selected model on the selected worker.
 It reserves the worker/model pair, even if no lane exists yet.
@@ -95,7 +107,7 @@ A drain timeout fails preparation instead of starting measurement with existing 
 External provider benchmarks do not reserve provider capacity.
 Other traffic on that provider can affect the measurements.
 
-## Run a batch
+## Run a Batch
 
 1. Open **Repeat or compare settings** and enable **Run a batch**.
 2. Set the repetitions per configuration.
@@ -116,29 +128,32 @@ The first failed run stops the remaining batch. Completed measurements remain st
 Use the run's cancel action to stop the batch.
 Worker disconnects and orchestrator restarts stop the job. Batches do not resume automatically after a restart.
 
-## Read the comparison charts
+## Read the Comparison Charts
 
-Open **Results** to see runs, changed parameters, measurement times and throughput.
-Expand **Charts and comparison**.
-Select a reference run and a metric in **Compare benchmark runs**.
-Each chart varies one parameter while the other recorded settings match the reference.
-The charts use separate vertical scales to show their measured ranges.
+Expand **Performance → Benchmark runs** to see runs, changed parameters, measurement times and throughput.
+Expand **More analysis & details → Charts and comparison**.
+Select a **Reference run**, **Parameter** and **Metric** in **Parameter comparison**.
+The chart shows one parameter at a time: sequence limit, batch token limit, tensor parallelism or concurrent requests.
+Other captured settings must match the reference.
+The dashed line marks the reference measurement. Labels show recorded values and percentage changes.
+For repeated runs, the box shows the middle 50% and the line marks the median.
+A single run appears as a point.
+If only one parameter value exists, then the view explains why it cannot show a parameter comparison.
+**Individual runs** contains only the selected parameter's matching measurements.
 
-One eligible measurement appears as a filled point, including when repetitions is 1.
-The label `n = 1` means one measured run. That run can contain many sample requests.
-Multiple measurements use a boxplot. The box shows the middle 50%; the line shows the median.
-Separate dots show outliers.
-
+The summary shows reference throughput, the best recorded median and the observed change.
+These observations do not establish statistical significance.
 A result must be successful and complete, with the required configuration metadata.
-Logos does not infer missing controls in historical results.
 If a result is absent, check its completion state and recorded configuration.
+Saved request workloads require the same workload identity and captured environment.
 
-The example shows a nightly baseline and one variant with illustrative measurements.
-**Before** uses the baseline from the same nightly plan. Expand the sections below for charts and saved configurations.
+**Benchmark runs** lists changed parameters, measurement times and output throughput.
+**Before** uses the production baseline from the same nightly round.
+Expand **Run details and saved configurations** for the saved benchmark and serving settings.
 
-[![Desktop comparison charts and run history](/img/benchmarks/results-desktop.png)](/img/benchmarks/results-desktop.png)
+[![Parameter comparison with reference line](/img/roles/logos-admin-benchmark-comparison.png)](/img/roles/logos-admin-benchmark-comparison.png)
 
-## Change settings and retry a failed model
+## Change Settings and Retry a Failed Model
 
 **Use for next benchmark** copies a historical run's settings and opens **Run benchmark**.
 It does not change the stored result.
@@ -164,7 +179,7 @@ Restore the intended worker settings explicitly when necessary.
 
 For deployment checks, use the [developer verification checklist](https://github.com/LogosOSS/Logos/blob/main/logos-orchestrator/docs/benchmark-configuration.md#dev-verification).
 
-## Reload worker GPU limits
+## Reload Worker GPU Limits
 
 1. Open **Run benchmark → Dataset and settings → vLLM settings for the next run**.
 2. Select **Reload GPU limits**.
@@ -175,11 +190,9 @@ The button stays available after a failed request or an unknown GPU count.
 Reload preserves your draft settings. Parameter warnings appear below the relevant fields.
 Use **Reset vLLM changes** to discard draft overrides and keep the current worker configuration.
 
-[![Desktop view of the GPU limits reload button](/img/benchmarks/gpu-limits-desktop.png)](/img/benchmarks/gpu-limits-desktop.png)
+[![Desktop view of the GPU limits reload button](/img/roles/logos-admin-benchmark-worker-settings.png)](/img/roles/logos-admin-benchmark-worker-settings.png)
 
-### Dark mode
+### Dark Mode
 
 Use the theme button at the top right to change between light and dark mode.
 The controls, charts and parameter hints use the selected theme.
-
-[![Dark mode with vLLM controls and parameter hints](/img/benchmarks/gpu-limits-dark-desktop.png)](/img/benchmarks/gpu-limits-dark-desktop.png)

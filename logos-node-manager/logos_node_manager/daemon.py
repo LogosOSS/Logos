@@ -56,6 +56,7 @@ class Daemon:
         self._log_start()
         try:
             while not self._stop.is_set():
+                self._report_endings()
                 deployment = self._store.next_unfinished()
                 if deployment is None:
                     self._stop.wait(self._settings.loop_interval_s)
@@ -65,6 +66,15 @@ class Daemon:
             self._stop.set()
             beat.join(timeout=2.0)
         logger.info("Node manager stopped")
+
+    def _report_endings(self) -> None:
+        """Report the deployments that ended. A problem here never stops the deployments."""
+        try:
+            self._deployer.report_pending()
+        except Interrupted:
+            return
+        except Exception:  # noqa: BLE001 - a notification must not stop the deployments
+            logger.exception("The endings of the deployments could not be reported")
 
     def _heartbeat(self) -> None:
         while not self._stop.wait(HEARTBEAT_INTERVAL_S):
@@ -116,5 +126,21 @@ class Daemon:
         for path in (s.compose_file, s.env_file):
             if not path.is_file():
                 logger.warning("%s does not exist; deployments fail until it does", path)
-        if s.drain_enabled:
-            logger.warning("NODE_MANAGER_DRAIN_ENABLED is set, but this version does not drain yet")
+        if s.orchestrator_url and s.node_key:
+            logger.info("The end of a deployment is reported to %s", s.orchestrator_url)
+        else:
+            logger.info(
+                "NODE_MANAGER_ORCHESTRATOR_URL or NODE_MANAGER_NODE_KEY is missing: "
+                "the end of a deployment is not reported"
+            )
+        if not s.drain_enabled:
+            logger.info("Draining is switched off: a deployment replaces the container at once")
+        elif s.orchestrator_url and s.node_key:
+            logger.info(
+                "Draining is enabled: the node is cordoned at %s before the container is replaced", s.orchestrator_url
+            )
+        else:
+            logger.warning(
+                "Draining is enabled, but NODE_MANAGER_ORCHESTRATOR_URL or NODE_MANAGER_NODE_KEY is missing: "
+                "a deployment replaces the container without draining the node"
+            )

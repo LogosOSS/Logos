@@ -89,7 +89,7 @@ def main() -> int:
     llm = LLM.from_engine_args(engine_args)
 
     out = Path(args.output)
-    out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)  # NOSONAR - --output is set by the worker that spawns this tool
 
     # Dump each rank's shard directly to the output directory.
     llm.llm_engine.engine_core.save_sharded_state(path=str(out), pattern=pattern, max_size=args.max_file_size)

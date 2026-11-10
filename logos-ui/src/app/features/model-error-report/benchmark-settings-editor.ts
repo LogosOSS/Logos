@@ -2,7 +2,7 @@ import { Component, computed, DestroyRef, effect, ElementRef, inject, input, mod
 import { ModelBenchmarkPair } from '../../shared/models/provider.model';
 import { FormsModule } from '@angular/forms';
 import { ModelManagementService } from '../../core/services/model-management.service';
-import { attentionBackendRestriction, benchmarkGpuDescription, benchmarkErrorMessage, BenchmarkSettings, BenchmarkWorkerLimits, SERVING_CHOICES, servingValidationIssues, DatasetMetadata, datasetViewerUrl, DEFAULT_BENCHMARK_SETTINGS, SERVING_FIELDS } from './benchmark-settings';
+import { attentionBackendRestriction, benchmarkGpuDescription, benchmarkErrorMessage, BenchmarkSettings, BenchmarkWorkerLimits, SERVING_CHOICES, servingValidationIssues, DatasetMetadata, datasetViewerUrl, DEFAULT_BENCHMARK_SETTINGS, SERVING_FIELDS, SavedBenchmarkWorkload } from './benchmark-settings';
 
 @Component({
   selector: 'app-benchmark-settings-editor', standalone: true, imports: [FormsModule],
@@ -15,6 +15,12 @@ export class BenchmarkSettingsEditor {
   readonly limits = signal<BenchmarkWorkerLimits | null>(null);
   readonly limitsLoading = signal(false);
   readonly limitsError = signal<string | null>(null);
+  readonly workloads = signal<SavedBenchmarkWorkload[]>([]);
+  readonly workloadsLoading = signal(false);
+  readonly workloadsError = signal<string | null>(null);
+  readonly selectedWorkload = computed(() => this.workloads().find(row => row.id === this.settings().workload_id));
+  readonly sampleSizeChange = output<number>();
+  private workloadsVersion = 0;
   readonly choices = SERVING_CHOICES;
   readonly gpuDescription = computed(() => benchmarkGpuDescription(this.limits()));
   backendRestriction(backend: string) { return attentionBackendRestriction(this.limits(), backend); }
@@ -72,6 +78,7 @@ export class BenchmarkSettingsEditor {
       ++this.searchVersion;
       ++this.metadataVersion;
       ++this.limitsVersion;
+      ++this.workloadsVersion;
     });
     effect(() => {
       const pair = this.pair();
@@ -79,6 +86,7 @@ export class BenchmarkSettingsEditor {
       if (id === this.limitsPairId) return;
       this.limitsPairId = id;
       void this.loadLimits(pair);
+      void this.loadWorkloads(pair);
     });
     effect(() => {
       const s = this.settings();
@@ -90,17 +98,46 @@ export class BenchmarkSettingsEditor {
         return Number.isFinite(n) && n >= (field.min ?? 0) && (field.max == null || n <= field.max)
           && (field.step != null || Number.isInteger(n));
       });
-      this.validChange.emit(!this.loading() && !this.jsonError() && validNumbers && this.validationErrors().length === 0
+      const validSource = s.workload_id ? !this.workloadsLoading() && !!this.selectedWorkload()
+        : !this.loading() && Boolean(s.dataset && s.subset && s.split && s.text_column);
+      this.validChange.emit(validSource && !this.jsonError() && validNumbers && this.validationErrors().length === 0
         && integer(s.max_output_tokens, 1, 4096) && integer(s.concurrency, 1, 32) && integer(s.seed, 0, 2147483647)
-        && Boolean(s.dataset && s.subset && s.split && s.text_column));
+      );
     });
     effect(() => {
       const s = this.settings();
+      if (s.workload_id) return;
       // A copied historical run may select a different dataset than the current picker.
       if (this.metadata()?.dataset !== s.dataset || this.metadata()?.subset !== s.subset || this.metadata()?.split !== s.split) {
         void this.inspectDataset(s.dataset, s.subset, s.split);
       }
     });
+  }
+
+  async loadWorkloads(pair = this.pair()): Promise<void> {
+    const version = ++this.workloadsVersion;
+    this.workloads.set([]);
+    this.workloadsError.set(null);
+    this.workloadsLoading.set(false);
+    if (!pair || pair.provider_type !== 'logosnode') return;
+    this.workloadsLoading.set(true);
+    try {
+      const rows = await this.service.getBenchmarkWorkloads(pair.model_provider_id);
+      if (version === this.workloadsVersion) this.workloads.set(rows);
+    } catch {
+      if (version === this.workloadsVersion) this.workloadsError.set('Could not load saved request datasets.');
+    } finally {
+      if (version === this.workloadsVersion) this.workloadsLoading.set(false);
+    }
+  }
+
+  selectWorkload(id: string): void {
+    ++this.metadataVersion;
+    this.loading.set(false);
+    this.error.set(null);
+    this.update('workload_id', id || null);
+    const workload = this.workloads().find(row => row.id === id);
+    if (workload) this.sampleSizeChange.emit(workload.request_count);
   }
 
   async loadLimits(pair = this.pair()): Promise<void> {

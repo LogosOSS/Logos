@@ -17,6 +17,7 @@ def scheduler(monkeypatch):
     registry.is_provider_online.return_value = True
     registry.has_received_first_status.return_value = True
     registry.is_calibrating.return_value = False
+    registry.is_cordoned.return_value = False
     registry.send_command = AsyncMock(return_value={"lanes": []})
     registry.active_provider_ids.return_value = [20, 21]
     registry.peek_runtime_snapshot.return_value = {
@@ -64,16 +65,131 @@ def scheduler(monkeypatch):
         pid, "*", owner
     )
     monkeypatch.setattr(module.store, "record_comparison", MagicMock())
+    monkeypatch.setattr(module.store, "adoption_candidate", MagicMock(return_value=None))
+    monkeypatch.setattr(module.store, "finalize_continuations", MagicMock())
     service.saved = []
     monkeypatch.setattr(module.store, "save", lambda *args: service.saved.append(args))
     monkeypatch.setattr(
         module.store,
         "finish",
-        lambda pair, state, report, search=None: service.saved.append((pair, state, report, None)),
+        MagicMock(
+            side_effect=lambda pair, state, report, search=None, **_: service.saved.append((pair, state, report, None))
+        ),
     )
     monkeypatch.setattr(module.store, "deliver_completion_events", AsyncMock())
     yield service
     benchmark_reservations.release(-31)
+
+
+def adoption():
+    return {"benchmark_id": 2, "baseline_id": 1, "parameters": {"max_num_seqs": 20, "max_num_batched_tokens": 5120}}
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_improvement_is_journaled_and_confirmed_before_production_is_released(scheduler, monkeypatch, fails):
+    target, snapshot, lane = scheduler.target_lane(31)
+    target["model_id"] = 1
+    scheduler.target_lane = lambda pair: (target, snapshot, lane)
+    monkeypatch.setattr(module.store, "status", lambda _: {"enabled": True, "workload_id": "a" * 64})
+    monkeypatch.setattr(
+        module.workloads,
+        "load",
+        lambda *args: {
+            "id": "a" * 64,
+            "name": "Saved requests",
+            "request_count": 10,
+            "provenance": "synthetic",
+        },
+    )
+    module.store.adoption_candidate.return_value = adoption()
+
+    async def submit(*args):
+        return 1, asyncio.create_task(asyncio.sleep(0, result=1))
+
+    scheduler.submit = submit
+    calls = []
+
+    async def restore(pair, journal):
+        assert not benchmark_reservations.allows(20, "model", "production")
+        calls.append(dict(journal))
+        if fails and journal.get("adoption"):
+            raise RuntimeError("New configuration could not start")
+
+    scheduler.restore.side_effect = restore
+    finish = module.store.finish
+
+    def commit(*args):
+        assert not benchmark_reservations.allows(20, "model", "production")
+        finish(*args)
+
+    monkeypatch.setattr(module.store, "finish", commit)
+    assert await scheduler.run_schedule(31, MagicMock())
+    assert calls[0]["adoption"]["benchmark_id"] == 2
+    report = scheduler.saved[-1][2]
+    if fails:
+        assert "adoption" not in calls[1]
+        assert any(row["status"] == "adoption_failed" for row in report)
+        assert not any(row["status"] == "adopted" for row in report)
+    else:
+        assert any(row["status"] == "adopted" for row in report)
+    assert benchmark_reservations.allows(20, "model", "production")
+
+
+async def test_adopted_parameters_keep_unrelated_lane_settings_and_use_worker_flags(scheduler):
+    scheduler.restore = module.NightlyScheduler.restore.__get__(scheduler)
+    original = {
+        "max_num_seqs": 16,
+        "extra_args": ["--max-num-batched-tokens=4096", "--trust-remote-code"],
+        "dtype": "auto",
+    }
+    expected = {
+        "max_num_seqs": 20,
+        "extra_args": ["--trust-remote-code", "--max-num-batched-tokens", "5120"],
+        "dtype": "auto",
+    }
+    journal = {
+        "provider_id": 20,
+        "model": "model",
+        "lane_id": "lane",
+        "vllm_config": original,
+        "lane_config": {"vllm_config": original},
+        "adoption": adoption(),
+    }
+    scheduler.registry.send_command.side_effect = [
+        {"lanes": [{"lane_id": "lane"}]},
+        {"restarted": True, "lane_config": {"vllm_config": expected}},
+    ]
+    scheduler.planner.prepare_benchmark_lane = AsyncMock(return_value=True)
+    await scheduler.restore(31, journal)
+    assert scheduler.registry.send_command.await_args_list[1].args[2]["updates"]["vllm_config"] == expected
+    assert journal["vllm_config"] == original
+
+
+async def test_disabled_schedule_discards_pending_adoption_during_recovery(scheduler, monkeypatch):
+    monkeypatch.setattr(module.store, "status", lambda _: {"enabled": False})
+    journal = {"provider_id": 20, "adoption": adoption()}
+    report = [{"status": "adopted", **adoption()}]
+    await scheduler.settle(31, journal, report)
+    assert "adoption" not in journal
+    assert not report
+    scheduler.restore.assert_awaited_once_with(31, journal)
+
+
+async def test_confirmation_failure_keeps_worker_reserved_until_original_settings_return(scheduler):
+    scheduler.restore.side_effect = [RuntimeError("Adoption failed"), RuntimeError("Rollback failed")]
+    journal = {"provider_id": 20, "adoption": adoption()}
+    report = []
+    with pytest.raises(RuntimeError, match="Rollback failed"):
+        await scheduler.settle(31, journal, report)
+    assert "adoption" not in journal
+    assert report[0]["status"] == "adoption_failed"
+
+
+async def test_pending_adoption_is_completed_after_restart(scheduler):
+    journal = {"provider_id": 20, "adoption": adoption()}
+    report = []
+    await scheduler.settle(31, journal, report)
+    assert report == [{"status": "adopted", **adoption()}]
 
 
 async def test_stall_retries_same_configuration_once_then_moves_on(scheduler):
@@ -128,8 +244,8 @@ async def test_recovery_failure_holds_node_and_stops_other_schedules(scheduler):
     assert not benchmark_reservations.allows(20, "other", "production")
 
 
-async def test_no_configuration_or_retry_starts_at_0450(scheduler, monkeypatch):
-    monkeypatch.setattr(module, "local_now", lambda: datetime.fromisoformat("2026-10-13T07:50:00+02:00"))
+async def test_no_configuration_or_retry_starts_at_window_end(scheduler, monkeypatch):
+    monkeypatch.setattr(module, "local_now", lambda: datetime.fromisoformat("2026-10-13T08:00:00+02:00"))
     scheduler.submit = AsyncMock()
     assert await scheduler.run_schedule(31, MagicMock())
     scheduler.submit.assert_not_awaited()
@@ -226,6 +342,7 @@ async def test_daily_quota_never_blocks_pending_recovery(scheduler, rotation):
 
 async def test_calibration_runs_before_benchmarks_even_without_enabled_schedules(scheduler, monkeypatch):
     events = []
+    monkeypatch.setattr(module.recent_requests, "freeze", lambda *args, **kwargs: events.append("freeze"))
     scheduler.calibration = MagicMock()
     scheduler.calibration._active_provider_ids = set()
     scheduler.calibration._tick = AsyncMock(side_effect=lambda: events.append("calibration"))
@@ -233,7 +350,36 @@ async def test_calibration_runs_before_benchmarks_even_without_enabled_schedules
     monkeypatch.setattr(module.store, "has_recovery", lambda: False)
     monkeypatch.setattr(module.store, "has_active_benchmarks", lambda: False)
     await scheduler._cycle()
-    assert events == ["calibration", "benchmarks"]
+    assert events == ["freeze", "calibration", "benchmarks"]
+
+
+async def test_recent_user_mode_uses_fifty_frozen_requests_in_every_configuration(scheduler, monkeypatch):
+    target, snapshot, lane = scheduler.target_lane(31)
+    target["model_id"] = 1
+    scheduler.target_lane = lambda pair: (target, snapshot, lane)
+    monkeypatch.setattr(module.recent_requests, "username", lambda: "source.user")
+    source = {
+        "id": "a" * 64,
+        "name": "Recent requests",
+        "request_count": 50,
+        "provenance": "production",
+        "source_selection": {"username": "source.user", "user_id": 1},
+    }
+    monkeypatch.setattr(module.recent_requests, "for_model", lambda *args: source)
+    binding = MagicMock()
+    monkeypatch.setattr(module.store, "bind_workload", binding)
+    settings_sent = []
+
+    async def submit(pair, settings):
+        settings_sent.append(settings)
+        return len(settings_sent), asyncio.create_task(asyncio.sleep(0, result=len(settings_sent)))
+
+    scheduler.submit = submit
+    assert await scheduler.run_schedule(31, MagicMock())
+    binding.assert_called_once_with(31, "a" * 64)
+    assert len(settings_sent) == 5
+    assert all(settings.samples == 50 and settings.workload_id == source["id"] for settings in settings_sent)
+    assert scheduler.saved[-1][1] == "continuing"
 
 
 async def test_manual_benchmark_does_not_consume_pending_calibration_attempt(scheduler, monkeypatch):
@@ -286,7 +432,7 @@ async def test_metal_plan_runs_all_batching_configurations(scheduler):
     scheduler.submit = AsyncMock(side_effect=submit)
     assert await scheduler.run_schedule(31, MagicMock())
     assert scheduler.submit.await_count == 5
-    assert scheduler.saved[-1][1] == "completed"
+    assert scheduler.saved[-1][1] == "continuing"
 
 
 async def test_unknown_inventory_is_rejected_before_worker_is_drained(scheduler):
@@ -314,6 +460,25 @@ async def test_orphaned_nightly_job_is_fenced_drained_and_recovered(scheduler, r
     assert scheduler.saved[-1][1] == "interrupted_recovered"
     assert scheduler.saved[-1][3] is None
     assert not claimed
+
+
+@pytest.mark.parametrize(
+    "finished_at,day_offset,can_resume", [("07:59:59", 0, True), ("08:00:00", 0, False), ("05:30:00", 1, False)]
+)
+async def test_recovery_only_resumes_during_the_claimed_night(
+    scheduler, rotation, monkeypatch, finished_at, day_offset, can_resume
+):
+    from datetime import timedelta
+
+    rows, _ = rotation
+    now = datetime.fromisoformat(f"2026-10-13T{finished_at}+02:00")
+    monkeypatch.setattr(module, "local_now", lambda: now)
+    rows[0].update(recovery={"provider_id": 20}, last_run_date=now.date() - timedelta(days=day_offset))
+    scheduler.recovery_worker_idle = AsyncMock(return_value=True)
+
+    assert await scheduler.recover(rows[0], MagicMock())
+    scheduler.restore.assert_awaited_once()
+    assert module.store.finish.call_args.kwargs["resume_after_recovery"] is can_resume
 
 
 @pytest.mark.parametrize("blocker", ["execution", "manual", "task", "worker_busy", "lease"])
@@ -441,7 +606,7 @@ async def test_explicit_single_worker_maintenance_runs_and_restores(scheduler, m
     assert await scheduler.run_schedule(31, MagicMock())
     assert scheduler.submit.await_count == 5
     scheduler.restore.assert_awaited_once()
-    assert scheduler.saved[-1][1] == "completed"
+    assert scheduler.saved[-1][1] == "continuing"
     assert benchmark_reservations.owner(20, "other") is None
 
 
@@ -464,7 +629,7 @@ def test_locked_worker_is_excluded_from_preview_without_changing_its_schedule(sc
     assert scheduler.saved == []
 
 
-@pytest.mark.parametrize("condition", ["offline", "unhealthy", "calibrating"])
+@pytest.mark.parametrize("condition", ["offline", "unhealthy", "calibrating", "cordoned"])
 def test_single_worker_override_still_requires_healthy_idle_worker(scheduler, monkeypatch, condition):
     monkeypatch.setenv("LOGOS_MAINTENANCE_MAX_NODES", "1")
     scheduler.registry.active_provider_ids.return_value = [20]
@@ -472,6 +637,8 @@ def test_single_worker_override_still_requires_healthy_idle_worker(scheduler, mo
         scheduler.registry.is_provider_online.return_value = False
     elif condition == "calibrating":
         scheduler.registry.is_calibrating.return_value = True
+    elif condition == "cordoned":
+        scheduler.registry.is_cordoned.return_value = True
     else:
         scheduler.registry.peek_runtime_snapshot.return_value["runtime"]["node_health"] = {"healthy": False}
     with pytest.raises(RuntimeError, match="selected worker must be online and healthy"):
@@ -625,3 +792,99 @@ async def test_recovery_completes_although_the_orchestrator_counter_is_stale(sch
     planner._drain_lane.assert_awaited_once()
     assert scheduler.saved[-1][1:] == ("interrupted_recovered", [], None)
     assert benchmark_reservations.owner(20, "model") is None
+
+
+async def test_restored_rounds_rotate_without_admitting_a_third_pair(scheduler, rotation, monkeypatch):
+    rows, claimed = rotation
+    day = module.local_now().date()
+
+    def claim(pair, date):
+        row = next(item for item in rows if item["model_provider_id"] == pair)
+        if pair in claimed and row.get("status") != "continuing":
+            return False
+        claimed.add(pair)
+        row.update(last_run_date=date, status="running")
+        return True
+
+    async def restored(pair, connection):
+        row = next(item for item in rows if item["model_provider_id"] == pair)
+        row.update(status="continuing", recovery=None)
+        return True
+
+    monkeypatch.setattr(module.store, "claim", claim)
+    scheduler.run_schedule.side_effect = restored
+    await scheduler.tick()
+    await scheduler.tick()
+    assert claimed == {31, 32}
+    assert [call.args[0] for call in scheduler.run_schedule.await_args_list] == [31, 32, 31, 32]
+    assert all(row["last_run_date"] == day for row in rows[:2])
+
+
+async def test_a_round_that_finishes_at_window_end_restores_and_reports_completion(scheduler, monkeypatch):
+    now = datetime.fromisoformat("2026-10-13T07:59:00+02:00")
+    monkeypatch.setattr(module, "local_now", lambda: now)
+
+    async def submit(*args):
+        async def execute():
+            nonlocal now
+            now = datetime.fromisoformat("2026-10-13T08:00:00+02:00")
+            return 1
+
+        return 7, asyncio.create_task(execute())
+
+    scheduler.submit = AsyncMock(side_effect=submit)
+    assert await scheduler.run_schedule(31, MagicMock())
+    assert scheduler.submit.await_count == 1
+    scheduler.restore.assert_awaited_once()
+    assert scheduler.saved[-1][1] == "window_closed"
+
+
+async def test_failed_baseline_does_not_schedule_unbounded_further_rounds(scheduler):
+    count = 0
+
+    async def submit(*args):
+        nonlocal count
+        count += 1
+        return count, asyncio.create_task(asyncio.sleep(0, result=None if count == 1 else count))
+
+    scheduler.submit = submit
+    assert await scheduler.run_schedule(31, MagicMock())
+    assert scheduler.saved[-1][1] == "completed"
+
+
+async def test_completed_winner_is_durable_before_a_later_trial_is_interrupted(scheduler, monkeypatch):
+    target, snapshot, lane = scheduler.target_lane(31)
+    target["model_id"] = 1
+    scheduler.target_lane = lambda pair: (target, snapshot, lane)
+    monkeypatch.setattr(module.store, "status", lambda _: {"enabled": True, "workload_id": "a" * 64})
+    monkeypatch.setattr(
+        module.workloads,
+        "load",
+        lambda *args: {
+            "id": "a" * 64,
+            "name": "Saved requests",
+            "request_count": 10,
+            "provenance": "synthetic",
+        },
+    )
+    import copy
+
+    journals = []
+    monkeypatch.setattr(module.store, "save", lambda *args: journals.append(copy.deepcopy(args)))
+    module.store.adoption_candidate.side_effect = lambda pair, search, report: adoption() if len(report) >= 2 else None
+    submitted = 0
+
+    async def submit(*args):
+        nonlocal submitted
+        submitted += 1
+        if submitted == 3:
+            assert journals[-1][3]["adoption"]["benchmark_id"] == 2
+            raise NightlyStopped("interrupted")
+        return submitted, asyncio.create_task(asyncio.sleep(0, result=submitted))
+
+    scheduler.submit = submit
+    assert await scheduler.run_schedule(31, MagicMock())
+    assert submitted == 3
+    scheduler.restore.assert_awaited_once()
+    assert scheduler.restore.call_args.args[1]["adoption"]["benchmark_id"] == 2
+    assert any(item.get("status") == "adopted" for item in scheduler.saved[-1][2])

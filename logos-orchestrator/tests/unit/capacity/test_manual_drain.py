@@ -122,7 +122,6 @@ async def test_a_drained_lane_is_slept_and_the_mark_cleared(monkeypatch):
     assert action.action == "sleep_l1"
     assert action.lane_id == "lane-1"
     assert action.model_name == "org/model-a"
-    assert action.bypass_load_cooldown is False
     planner._registry.mark_lane_cold.assert_called_once_with(1, "lane-1")
     planner._registry.unmark_lane_cold.assert_called_once_with(1, "lane-1")
     assert planner._marked_cold_lanes == set()
@@ -170,7 +169,6 @@ async def test_low_host_ram_escalates_the_sleep_to_an_unload(monkeypatch):
     executor.assert_awaited_once()
     action = executor.await_args.args[0]
     assert action.action == "stop"
-    assert action.bypass_load_cooldown is True
     planner._registry.unmark_lane_cold.assert_called_once_with(1, "lane-1")
     assert planner._marked_cold_lanes == set()
 

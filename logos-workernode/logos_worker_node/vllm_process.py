@@ -25,11 +25,13 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
 import urllib.parse
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, ClassVar
@@ -78,28 +80,107 @@ from logos_worker_node.vllm_compat import (
 
 logger = logging.getLogger("logos_worker_node.vllm_process")
 
-# Bounds of the auto-derived gpu_memory_utilization (see _resolve_gmu below).
-# The placement planner (lane_manager) gates on the reservation these values
-# produce — via effective_gmu() — so both sides share these constants and the
-# explicit/floor branches instead of re-declaring them.
+# Bounds of the auto-derived gpu_memory_utilization (see resolve_startup_gmu).
+# Spawner, placement, and status publication share these via that helper.
 GMU_AUTO_FLOOR = 0.5
 GMU_AUTO_CEILING = 0.95
+# vLLM's default when --gpu-memory-utilization is omitted (current engines).
+VLLM_DEFAULT_GMU = 0.9
+
+# Post-mortem logs of failed vLLM starts. Only ever used through _private_dir,
+# which keeps it a directory this user owns and nobody else can enter.
+FAILURE_LOG_DIR = Path("/tmp/logos-vllm-logs")  # NOSONAR - created 0700 and ownership-checked before every write
 
 
-def effective_gmu(vllm_config: VllmConfig) -> float:
-    """The gpu_memory_utilization vLLM is started with when the calibrated
-    auto-derivation is not the binding branch.
+def _private_dir(path: Path) -> Path:
+    """Create ``path`` as a directory only this user can enter, and refuse to use it otherwise.
 
-    An explicit operator ``gpu_memory_utilization`` wins verbatim (vLLM
-    receives it unclamped); otherwise the auto-derivation floor applies — it
-    is the minimum the clamped derivation can reach. The spawner
-    (``_resolve_gmu``) and the placement planner both gate on the reservation
-    this value describes (gmu × per-card total at vLLM startup), so they
-    share this definition instead of each re-implementing the branches.
+    A shared temporary directory lets anyone pre-create the name: a symlink, a
+    plain file or another user's directory there is rejected with ``OSError``
+    instead of being written through. An existing directory of this user that
+    others could write to may already hold planted symlinks and is rejected
+    too; one that others could only read or enter is narrowed to ``0700``.
     """
-    if vllm_config.gpu_memory_utilization is not None:
-        return float(vllm_config.gpu_memory_utilization)
-    return GMU_AUTO_FLOOR
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise OSError(f"{path} is not a directory owned by this user")
+    if info.st_mode & 0o022:
+        raise OSError(f"{path} is writable by other users")
+    if info.st_mode & 0o077:
+        path.chmod(0o700)
+    return path
+
+
+@dataclass(frozen=True)
+class StartupGmuResolution:
+    """Resolved startup gpu_memory_utilization for spawn and admission.
+
+    ``value_for_spawn`` is None when the CLI flag should be omitted (vLLM
+    applies its own default). ``value_for_admission`` is always the fraction
+    that EngineCore's request_memory check will enforce — including
+    ``VLLM_DEFAULT_GMU`` when the flag is omitted. ``source`` is one of
+    ``configured`` | ``derived`` | ``default`` (never ``observed``).
+    """
+
+    value_for_spawn: float | None
+    value_for_admission: float
+    source: str
+
+
+def resolve_startup_gmu(
+    *,
+    explicit_gmu: float | None,
+    loaded_vram_mb: float | None,
+    tensor_parallel_size: int,
+    per_gpu_total_mb: float,
+    profile: Any | None = None,
+    kv_cache_per_gpu_mb: float = 0.0,
+) -> StartupGmuResolution:
+    """Pure GMU resolution shared by spawn, placement, and status publish.
+
+    Order matches VllmProcessHandle._resolve_gmu:
+      1. Explicit override wins verbatim.
+      2. Calibrated derivation: clamp(reconfigured_loaded / tp / total, floor, ceil)
+         using the same KV reconfiguration as spawn.
+      3. Otherwise omit the flag (spawn None) and admit against vLLM's default 0.9.
+    """
+    if explicit_gmu is not None:
+        value = float(explicit_gmu)
+        return StartupGmuResolution(value, value, "configured")
+    tp = int(tensor_parallel_size or 0)
+    total = float(per_gpu_total_mb or 0.0)
+    loaded = float(loaded_vram_mb) if loaded_vram_mb is not None else 0.0
+    if profile is not None and loaded > 0 and tp > 0 and total > 0:
+        adjusted = reconfigured_vram_mb(profile, loaded, tp, float(kv_cache_per_gpu_mb or 0.0))
+        derived = float(adjusted) / float(tp) / float(total)
+        clamped = min(GMU_AUTO_CEILING, max(GMU_AUTO_FLOOR, derived))
+        return StartupGmuResolution(clamped, clamped, "derived")
+    return StartupGmuResolution(None, VLLM_DEFAULT_GMU, "default")
+
+
+def effective_gmu(
+    vllm_config: VllmConfig,
+    *,
+    profile: Any | None = None,
+    per_gpu_total_mb: float = 0.0,
+    kv_cache_per_gpu_mb: float = 0.0,
+) -> float:
+    """Admission / placement GMU — always a positive fraction for free checks.
+
+    Prefer calling ``resolve_startup_gmu`` when spawn-vs-admit distinction
+    matters. This wrapper returns ``value_for_admission`` only.
+    """
+    tp = int(getattr(vllm_config, "parallel_gpu_count", None) or getattr(vllm_config, "tensor_parallel_size", 1) or 1)
+    loaded = getattr(profile, "loaded_vram_mb", None) if profile is not None else None
+    return resolve_startup_gmu(
+        explicit_gmu=vllm_config.gpu_memory_utilization,
+        loaded_vram_mb=loaded,
+        tensor_parallel_size=tp,
+        per_gpu_total_mb=per_gpu_total_mb,
+        profile=profile,
+        kv_cache_per_gpu_mb=kv_cache_per_gpu_mb,
+    ).value_for_admission
 
 
 MODEL_PATH_PLACEHOLDER = "{model_path}"
@@ -1508,8 +1589,9 @@ class VllmProcessHandle:
     async def pull_model_streaming(self, model_name: str) -> AsyncIterator[dict[str, Any]]:
         """Not supported by vLLM — yields nothing."""
         logger.info("[%s] Streaming pull not supported by vLLM", self.lane_id)
-        return
-        yield  # pragma: no cover — makes this an async generator
+        # An empty loop keeps this an async generator that yields nothing.
+        for progress in ():
+            yield progress
 
     async def get_loaded_models(self) -> list[dict[str, Any]]:
         """Query /v1/models for the currently served model."""
@@ -1835,59 +1917,38 @@ class VllmProcessHandle:
     ) -> float | None:
         """Return the gpu_memory_utilization to pass to vLLM, or None to omit.
 
-        Selection order:
-          1. Explicit per-model override (vc.gpu_memory_utilization is not
-             None) — operator's value wins, no derivation.
-          2. Auto-derive from calibrated profile when available:
-             gmu = clamp(loaded_vram_mb / tp / per_gpu_total_mb,
-                         _GMU_AUTO_FLOOR, _GMU_AUTO_CEILING)
-             Matches what the lane actually uses; the planner's separate
-             PER_GPU_COLD_START_MB headroom is the sole safety buffer.
-          3. None — no profile, no override; omit the flag and let vLLM
-             apply its own default (0.9 in current versions).
+        Delegates to ``resolve_startup_gmu`` (shared with placement and status
+        publication). Returns ``value_for_spawn`` — None omits the flag so
+        vLLM applies its own default.
         """
-        if vc.gpu_memory_utilization is not None:
-            # Same definition the placement planner gates on (shared helper).
-            return effective_gmu(vc)
-        if self._model_profiles is None:
-            return None
-        profile = self._model_profiles.get_profile(lane_config.model)
-        if profile is None:
-            return None
-        loaded = getattr(profile, "loaded_vram_mb", None)
-        # Use the lane's ACTUAL tensor_parallel_size (what vLLM is spawned with),
-        # NOT the profile's calibrated TP — they can differ. Calibration may record
-        # TP=1 (the model fits on one GPU) while auto-placement spawns the lane at
-        # TP=2 for co-residence. loaded_vram_mb is the TOTAL footprint across ranks,
-        # so gmu must divide by the TP the lane actually runs at. Using the profile's
-        # TP=1 for a TP=2 lane over-reserves (gmu 0.95 instead of 0.5) and fails the
-        # co-residence memory floor check when another lane is already resident.
+        profile = None
+        if self._model_profiles is not None:
+            profile = self._model_profiles.get_profile(lane_config.model)
+        # Lane's actual TP (what vLLM is spawned with), not profile TP — they
+        # can differ when auto-placement escalates for co-residence.
         tp = vc.parallel_gpu_count
-        if not loaded or not tp or tp <= 0:
-            return None
-        loaded = reconfigured_vram_mb(
-            profile, float(loaded), tp, ModelProfileRegistry._parse_kv_cache_to_mb(vc.kv_cache_memory_bytes)
+        loaded = getattr(profile, "loaded_vram_mb", None) if profile is not None else None
+        kv_mb = (
+            ModelProfileRegistry._parse_kv_cache_to_mb(vc.kv_cache_memory_bytes) if vc.kv_cache_memory_bytes else 0.0
         )
-        per_gpu_total = self._per_gpu_total_mb()
-        if per_gpu_total <= 0:
-            return None
-        derived = float(loaded) / float(tp) / float(per_gpu_total)
-        clamped = min(self._GMU_AUTO_CEILING, max(self._GMU_AUTO_FLOOR, derived))
-        logger.info(
-            "[%s] Auto-derived gpu_memory_utilization=%.3f for %s "
-            "(loaded=%.0fMB / tp=%d / per_gpu_total=%.0fMB; raw=%.3f, "
-            "clamped to [%.2f, %.2f])",
-            self.lane_id,
-            clamped,
-            lane_config.model,
-            loaded,
-            tp,
-            per_gpu_total,
-            derived,
-            self._GMU_AUTO_FLOOR,
-            self._GMU_AUTO_CEILING,
+        resolution = resolve_startup_gmu(
+            explicit_gmu=vc.gpu_memory_utilization,
+            loaded_vram_mb=loaded,
+            tensor_parallel_size=tp,
+            per_gpu_total_mb=float(self._per_gpu_total_mb() or 0.0),
+            profile=profile,
+            kv_cache_per_gpu_mb=float(kv_mb or 0.0),
         )
-        return clamped
+        if resolution.source == "derived" and resolution.value_for_spawn is not None:
+            logger.info(
+                "[%s] Auto-derived gpu_memory_utilization=%.3f for %s " "(source=derived; clamped to [%.2f, %.2f])",
+                self.lane_id,
+                resolution.value_for_spawn,
+                lane_config.model,
+                self._GMU_AUTO_FLOOR,
+                self._GMU_AUTO_CEILING,
+            )
+        return resolution.value_for_spawn
 
     def _calibrated_max_num_seqs(self, lane_config: LaneConfig) -> int | None:
         """Return the --max-num-seqs cap recorded by calibration.
@@ -2139,8 +2200,8 @@ class VllmProcessHandle:
                 self._auto_attention_backend,
             )
         )
-        if vc.enable_prefix_caching:
-            cmd.append("--enable-prefix-caching")
+        # vLLM's own default is on, so a disabled setting must be passed explicitly.
+        cmd.append("--enable-prefix-caching" if vc.enable_prefix_caching else "--no-enable-prefix-caching")
         # vLLM only reports usage.prompt_tokens_details (cached_tokens) when
         # this server flag is set — its default is off, so without it local
         # lanes omit the prefix-cache hit count that cloud providers include
@@ -2799,7 +2860,9 @@ class VllmProcessHandle:
                                 self._max_concurrency,
                             )
         except asyncio.CancelledError:
-            pass
+            # Stopping the lane cancels this task; nothing awaits it, so the
+            # cancellation ends it as cancelled rather than as finished.
+            raise
         except Exception:
             logger.debug("[%s] vLLM log streaming ended", self.lane_id, exc_info=True)
 
@@ -2838,8 +2901,7 @@ class VllmProcessHandle:
         if not self._recent_logs:
             return
         try:
-            log_dir = Path("/tmp/logos-vllm-logs")
-            log_dir.mkdir(parents=True, exist_ok=True)
+            log_dir = _private_dir(FAILURE_LOG_DIR)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = log_dir / f"{self.lane_id}_{timestamp}_{reason}.log"
             path.write_text("\n".join(self._recent_logs), encoding="utf-8")

@@ -1,85 +1,78 @@
 <section class="comparison" aria-label="Benchmark parameter comparison">
-  <header>
-    <h3>Compare benchmark runs</h3>
-    <label class="metric-picker">Metric
-      <select [value]="metric()" (change)="metric.set($any($event.target).value)">
-        @for (item of metrics; track item.key) {
-          <option [value]="item.key">{{ item.label }} ({{ item.unit }})</option>
-        }
-      </select>
-    </label>
-  </header>
-
+  <header><div><h3>Parameter comparison</h3><p class="muted">Change one parameter. Keep the workload and other captured settings fixed.</p></div></header>
   @if (baseline(); as reference) {
     <label class="baseline-picker">Reference run
       <select [value]="reference.id" (change)="baselineId.set(+$any($event.target).value)">
         @for (run of eligibleRuns(); track run.id) {
-          <option [value]="run.id" [selected]="run.id === reference.id">#{{ run.id }} · {{ run.provider_name }} · {{ run.dataset }} · {{ run.sample_size }} requests · {{ configuration(run) }}</option>
+          <option [value]="run.id" [selected]="run.id === reference.id">#{{ run.id }} · {{ run.recorded_at | date:'dd MMM, HH:mm' }} · {{ run.provider_name }} · {{ workloadLabel(run) }}</option>
         }
       </select>
     </label>
-    <div class="comparison-context">
-      <p><strong>{{ reference.provider_name }} · {{ reference.dataset }}</strong>
-        · {{ baselineSettings()['subset'] }}/{{ baselineSettings()['split'] }} · {{ reference.sample_size }} requests
-        · max {{ baselineSettings()['max_output_tokens'] }} tokens</p>
-      <details class="comparison-details">
-        <summary>Comparison details</summary>
-        <p>Each box summarizes repeated runs of the same configuration. The line is the median, the box spans Q1–Q3, whiskers extend to the last values within 1.5 × IQR, and dots mark outliers. A single run appears as a filled point. Only the X-axis parameter changes; other recorded settings match the reference.
-          {{ excludedCount() }} runs excluded. Seed {{ baselineSettings()['seed'] }}. Cache state and other traffic may still differ.</p>
-        <p>TTFT: time to first token. TTLT: total response time (GuideLLM request latency).
-          Each Y-axis fits its own measurements with 10% padding above and below. Both latency metrics are arithmetic means across successful requests. Output: GuideLLM’s aggregate output token rate. — means not captured.</p>
-      </details>
+    <div class="comparison-controls">
+      <label class="parameter-picker">Parameter
+        <select [value]="activeChart()?.key" (change)="parameter.set($any($event.target).value)">
+          @for (chart of charts(); track chart.key) { <option [value]="chart.key">{{ chart.label }}</option> }
+        </select>
+      </label>
+      <label class="metric-picker">Metric
+        <select [value]="metric()" (change)="metric.set($any($event.target).value)">
+          @for (item of metrics; track item.key) { <option [value]="item.key">{{ item.label }} ({{ item.unit }})</option> }
+        </select>
+      </label>
     </div>
-
-    <div class="charts">
-      @for (chart of charts(); track chart.key) {
+    @if (activeChart(); as chart) {
+      <dl class="comparison-summary">
+        <div><dt>Reference #{{ reference.id }}</dt><dd>{{ format(chart.reference) }} <small>{{ activeMetric().unit }}</small></dd></div>
+        <div><dt>Best recorded median</dt><dd>{{ format(bestValue()) }} <small>{{ activeMetric().unit }}</small></dd></div>
+        <div><dt>Change from reference</dt><dd>{{ changeLabel(bestValue()) }}</dd></div>
+      </dl>
+      <p class="comparison-context">{{ reference.provider_name }} · {{ workloadLabel(reference) }} · {{ reference.sample_size }} requests per run · {{ selected().length }} matching runs</p>
+      @if (chart.groups.length > 1) {
         <figure [attr.aria-label]="chart.label + ': ' + activeMetric().label + ' by parameter value'">
-          <figcaption><strong>{{ chart.label }}</strong><span>{{ chart.fixed }}</span></figcaption>
+          <figcaption><strong>{{ chart.label }}</strong><span>{{ activeMetric().hint }} · {{ chart.fixed }}</span></figcaption>
           <div class="axis-title">{{ activeMetric().label }} ({{ activeMetric().unit }})</div>
           <div class="plot-scroll" tabindex="0" role="region" [attr.aria-label]="chart.label + ' chart, scroll horizontally for all parameter values'">
             <div class="plot" [style.min-width.px]="chart.minPlotWidth">
               <div class="y-axis" aria-hidden="true">
-                @for (tick of chart.scale.ticks; track $index) {
-                  <span [style.top.%]="$index * 25">{{ axisValue(tick, chart.scale) }}</span>
-                }
+                @for (tick of chart.scale.ticks; track $index) { <span [style.top.%]="$index * 25">{{ axisValue(tick, chart.scale) }}</span> }
               </div>
               <div class="plot-groups" [style.grid-template-columns]="'repeat(' + chart.groups.length + ', minmax(0, 1fr))'">
+                @if (chart.reference !== null) { <div class="reference-guide" aria-hidden="true"><span class="reference-line" [style.top.%]="100 - position(chart.reference, chart.scale)"></span></div> }
                 @for (group of chart.groups; track group.parameter) {
-                  <div class="parameter-group">
+                  <div class="parameter-group" [class.parameter-group--reference]="group.parameter.toString() === baselineSettings()[chart.key]">
                     @if (group.box; as box) {
                       <div class="box-track" tabindex="0" role="img" [attr.aria-label]="chart.label + ' ' + group.parameter + ': ' + boxLabel(box)" [title]="boxLabel(box)">
-                        @if (box.count === 1) {
-                          <span class="single-value" [style.bottom.%]="position(box.median, chart.scale)"></span>
-                        } @else {
-                        <span class="whisker" [style.bottom.%]="position(box.low, chart.scale)" [style.height.%]="(box.high - box.low) / chart.scale.span * 100"></span>
-                        <span class="whisker-cap" [style.bottom.%]="position(box.low, chart.scale)"></span>
-                        <span class="whisker-cap" [style.bottom.%]="position(box.high, chart.scale)"></span>
-                        <span class="quartile-box" [style.bottom.%]="position(box.q1, chart.scale)" [style.height.%]="(box.q3 - box.q1) / chart.scale.span * 100"></span>
-                        <span class="median" [style.bottom.%]="position(box.median, chart.scale)"></span>
-                        @for (outlier of box.outliers; track outlier) {
-                          <span class="outlier" [style.bottom.%]="position(outlier, chart.scale)"></span>
-                        }
+                        @if (box.count === 1) { <span class="single-value" [style.bottom.%]="position(box.median, chart.scale)"></span> }
+                        @else {
+                          <span class="whisker" [style.bottom.%]="position(box.low, chart.scale)" [style.height.%]="(box.high - box.low) / chart.scale.span * 100"></span>
+                          <span class="whisker-cap" [style.bottom.%]="position(box.low, chart.scale)"></span>
+                          <span class="whisker-cap" [style.bottom.%]="position(box.high, chart.scale)"></span>
+                          <span class="quartile-box" [style.bottom.%]="position(box.q1, chart.scale)" [style.height.%]="(box.q3 - box.q1) / chart.scale.span * 100"></span>
+                          <span class="median" [style.bottom.%]="position(box.median, chart.scale)"></span>
+                          @for (outlier of box.outliers; track outlier) { <span class="outlier" [style.bottom.%]="position(outlier, chart.scale)"></span> }
                         }
                       </div>
-                      <small class="run-count">n = {{ box.count }}@if (box.count < group.rows.length) { / {{ group.rows.length }}}</small>
-                    } @else {
-                      <div class="box-track missing">—</div><small class="run-count">Not captured</small>
-                    }
-                    <strong class="parameter-label">{{ group.parameter }}</strong>
+                      <strong class="parameter-label">{{ group.parameter }}</strong>
+                      <span class="group-value">{{ format(box.median) }} {{ activeMetric().unit }}</span>
+                      <small class="run-count">{{ box.count }} {{ box.count === 1 ? 'run' : 'runs' }} · {{ changeLabel(box.median) }}</small>
+                    } @else { <div class="box-track missing">—</div><strong class="parameter-label">{{ group.parameter }}</strong><small class="run-count">Not captured</small> }
                   </div>
                 }
               </div>
             </div>
           </div>
-          <div class="x-axis-title">{{ chart.label }}</div>
-          @if (chart.groups.length < 2) {
-            <p class="comparison-note">No matching run with a different {{ chart.label.toLowerCase() }} value yet.</p>
-          }
+          <p class="box-legend">Dashed line: reference run · point: one run · box: repeated runs · Y-axis fitted to observations</p>
         </figure>
+      } @else {
+        <p class="comparison-note">Only one {{ chart.label.toLowerCase() }} value is recorded ({{ chart.groups[0].parameter }}). A parameter comparison needs at least two values under matching conditions.</p>
       }
-    </div>
-
-    <p class="box-legend">Auto-scaled per chart · filled point: single run · box: middle 50% · line: median · dots: outliers · n: runs</p>
+    } @else { <p class="comparison-note">No recorded parameter values are available for this reference.</p> }
+    <details class="comparison-details">
+      <summary>How to read this comparison</summary>
+      <p>Only the selected parameter changes. Workload, source requests, provider and other captured controls match the reference. {{ excludedCount() }} other runs are excluded. Cache state and other traffic may still differ.</p>
+      <p>Labels show observed values and changes, without a statistical significance claim. For repeated runs, the box spans the middle 50%, the line marks the median, whiskers end within 1.5 × IQR, and dots show outliers.</p>
+      <p>TTFT is time to first token. Total response time includes the complete request. Latency values are means across successful requests. Replay throughput is all output tokens divided by replay time; GuideLLM reports its aggregate token rate. — means not captured.</p>
+    </details>
     <details class="run-details" (toggle)="showRuns.set($any($event.target).open)">
       <summary>Individual runs ({{ selected().length }})</summary>
     @if (showRuns()) {
@@ -116,7 +109,5 @@
     }
     }
     </details>
-  } @else {
-    <p class="empty">No comparable runs yet. Older runs remain available below.</p>
-  }
+  } @else { <p class="empty">No comparable runs yet. Older runs remain available in Run details.</p> }
 </section>

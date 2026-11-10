@@ -53,8 +53,9 @@ public class PermissionController {
             @PathVariable Integer keyId,
             @RequestBody SetModelPermissionsRequestDTO body,
             @RequestAttribute("authContext") AuthContext auth) {
-        enforceKeyAccess(keyId, auth);
-        permissionService.setApiKeyModelPermissions(keyId, body.modelIds());
+        Integer teamId = enforceKeyAccess(keyId, auth);
+        permissionService.setApiKeyModelPermissions(
+            keyId, body.modelIds(), isLogosAdmin(auth) ? null : teamId);
         return ResponseEntity.ok(Map.of("result", "API Key model permissions updated"));
     }
 
@@ -73,15 +74,18 @@ public class PermissionController {
             @PathVariable Integer keyId,
             @RequestBody SetProviderPermissionsRequestDTO body,
             @RequestAttribute("authContext") AuthContext auth) {
-        enforceKeyAccess(keyId, auth);
-        permissionService.setApiKeyProviderPermissions(keyId, body.providerIds());
+        Integer teamId = enforceKeyAccess(keyId, auth);
+        permissionService.setApiKeyProviderPermissions(
+            keyId, body.providerIds(), isLogosAdmin(auth) ? null : teamId);
         return ResponseEntity.ok(Map.of("result", "API Key provider permissions updated"));
     }
 
     @GetMapping("/teams/{teamId}/model-permissions")
     @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
     public ResponseEntity<?> getTeamModelPermissions(
-            @PathVariable Integer teamId) {
+            @PathVariable Integer teamId,
+            @RequestAttribute("authContext") AuthContext auth) {
+        enforceTeamAccess(teamId, auth);
         return ResponseEntity.ok(permissionService.getTeamModelPermissions(teamId));
     }
 
@@ -91,10 +95,7 @@ public class PermissionController {
             @PathVariable Integer teamId,
             @RequestBody SetModelPermissionsRequestDTO body,
             @RequestAttribute("authContext") AuthContext auth) {
-        boolean allowed = isLogosAdmin(auth)
-            || (Role.APP_ADMIN.matches(auth.role()) && auth.userId() != null
-                && apiKeyService.isTeamOwner(teamId, auth.userId()));
-        if (!allowed) return ResponseEntity.status(403).body(Map.of("detail", "Logos Admin or team owner access required"));
+        enforceTeamAccess(teamId, auth);
         permissionService.setTeamModelPermissions(teamId, body.modelIds());
         return ResponseEntity.ok(Map.of("result", "Team model permissions updated"));
     }
@@ -102,7 +103,9 @@ public class PermissionController {
     @GetMapping("/teams/{teamId}/provider-permissions")
     @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
     public ResponseEntity<?> getTeamProviderPermissions(
-            @PathVariable Integer teamId) {
+            @PathVariable Integer teamId,
+            @RequestAttribute("authContext") AuthContext auth) {
+        enforceTeamAccess(teamId, auth);
         return ResponseEntity.ok(permissionService.getTeamProviderPermissions(teamId));
     }
 
@@ -142,14 +145,22 @@ public class PermissionController {
         return ResponseEntity.ok(Map.of("result", "Team provider permission removed"));
     }
 
-    private void enforceKeyAccess(Integer keyId, AuthContext auth) {
+    private Integer enforceKeyAccess(Integer keyId, AuthContext auth) {
         Optional<Map<String, Object>> keyInfo = apiKeyService.getKeyById(keyId);
         if (keyInfo.isEmpty()) throw new NotFoundException("API Key not found");
+        Integer teamId = (Integer) keyInfo.get().get("team_id");
         if (Role.APP_ADMIN.matches(auth.role())) {
-            Integer teamId = (Integer) keyInfo.get().get("team_id");
             if (teamId == null || auth.userId() == null || !apiKeyService.isTeamOwner(teamId, auth.userId())) {
                 throw new ForbiddenException("Team owner access required");
             }
+        }
+        return teamId;
+    }
+
+    private void enforceTeamAccess(Integer teamId, AuthContext auth) {
+        if (!isLogosAdmin(auth)
+                && (auth.userId() == null || !apiKeyService.isTeamOwner(teamId, auth.userId()))) {
+            throw new ForbiddenException("Logos Admin or team owner access required");
         }
     }
 }

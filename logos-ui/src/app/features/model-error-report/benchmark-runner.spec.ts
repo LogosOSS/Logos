@@ -1,8 +1,9 @@
 import { TestBed } from '@angular/core/testing';
-import { ActivatedRoute, provideRouter } from '@angular/router';
+import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
+import { BehaviorSubject } from 'rxjs';
 import { HttpClient, provideHttpClient } from '@angular/common/http';
 import { ModelManagementService } from '../../core/services/model-management.service';
-import { ModelBenchmarkPair, ModelBenchmarkRun, ModelBenchmarkResponse } from '../../shared/models/provider.model';
+import { ModelBenchmarkPair, ModelBenchmarkRun, ModelBenchmarkResponse, ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { ModelErrorReport } from './model-error-report';
 
 function deferred<T>() {
@@ -29,6 +30,40 @@ describe('Benchmark runner', () => {
     component.modelId.set(1);
   });
   afterEach(() => { component.ngOnDestroy(); vi.restoreAllMocks(); });
+
+  it('opens benchmark links when only query parameters change and when another model reuses the route', async () => {
+    const params = new BehaviorSubject(convertToParamMap({ id: '1' }));
+    const query = new BehaviorSubject(convertToParamMap({ tab: 'access' }));
+    Object.assign(TestBed.inject(ActivatedRoute), { paramMap: params, queryParamMap: query });
+    component.modelId.set(null);
+    const fetch = vi.spyOn(component, 'fetchModel').mockResolvedValue();
+    await component.ngOnInit();
+    expect(component.activeTab()).toBe('access');
+    query.next(convertToParamMap({ tab: 'delays' }));
+    expect(component.activeTab()).toBe('performance');
+    expect(component.performanceView()).toBe('measurements');
+    query.next(convertToParamMap({ tab: 'improvement' }));
+    expect(component.activeTab()).toBe('performance');
+    query.next(convertToParamMap({ tab: 'performance', benchmark: '115' }));
+    expect(component.linkedBenchmarkId()).toBe(115);
+    expect(component.performanceView()).toBe('results');
+    expect(component.activeTab()).toBe('performance');
+    params.next(convertToParamMap({ id: '2' }));
+    expect(fetch.mock.calls.map(call => call[0])).toEqual([1, 2]);
+    component.ngOnDestroy();
+    query.next(convertToParamMap({ benchmark: '124' }));
+    expect(component.linkedBenchmarkId()).toBe(115);
+  });
+
+  it('shows replay latency in milliseconds and legacy latency in seconds without losing recorded values', () => {
+    const distribution = { successful: { max: 3000, percentiles: { p50: 1200, p95: 2500, p99: 2900 } } };
+    const row = { dataset: 'requests/hash', configuration: { workload: { name: 'Coding requests' } },
+      metrics: { request_latency_ms: distribution } } as unknown as ModelProviderBenchmark;
+    expect(component.benchmarkLatency(row, 'p50')).toBe('1.20 s');
+    expect(component.benchmarkDatasetLabel(row)).toBe('Coding requests');
+    row.metrics = { request_totals: {} as any, request_latency: { successful: { percentiles: { p50: 1.2, p95: 2.5, p99: 2.9 } } } };
+    expect(component.benchmarkLatency(row, 'p95')).toBe('2.50 s');
+  });
 
   it('defaults to an online worker instead of the first offline provider', async () => {
     const offline = { ...pair, provider_type: 'logosnode', provider_name: 'Offline worker' } as ModelBenchmarkPair;
@@ -105,14 +140,23 @@ describe('Benchmark runner', () => {
   });
 
   it.each([
-    ['reconfiguring_worker', 'Applying vLLM settings on hochbruegge · model may restart'],
-    ['waiting_for_model', 'Waiting for the model on hochbruegge to become ready'],
+    ['reconfiguring_worker', 'Applying vLLM settings · model may restart'],
+    ['waiting_for_model', 'Waiting for model readiness'],
   ])('shows the %s preparation phase', (stage, expected) => {
     expect(component.benchmarkStatusLabel({
       ...run,
       request: { ...run.request, provider_name: 'hochbruegge' },
       result: { stage },
     })).toBe(expected);
+  });
+
+  it('does not present all started requests as completed', () => {
+    expect(component.benchmarkStatusLabel({ ...run,
+      result: { stage: 'benchmarking', started_samples: 10, total_samples: 10 },
+    })).toContain('10/10 requests started');
+    expect(component.benchmarkStatusLabel({ ...run,
+      result: { stage: 'benchmarking', started_samples: 10, completed_samples: 6, total_samples: 10 },
+    })).toContain('6/10 requests completed');
   });
 
   it('blocks repeated cancellation while cancellation is pending', async () => {

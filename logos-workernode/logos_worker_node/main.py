@@ -26,7 +26,6 @@ from logos_worker_node.config import get_state_dir, load_config
 from logos_worker_node.gpu import GpuMetricsCollector
 from logos_worker_node.gpu_watchdog import GpuWatchdog
 from logos_worker_node.lane_manager import LaneManager, _lane_id_from_config
-from logos_worker_node.legacy_profile_import import mark_legacy_profiles_migrated, read_legacy_profiles
 from logos_worker_node.logos_bridge import LogosBridgeClient
 from logos_worker_node.metal import MetalMetricsCollector, is_metal_backend
 from logos_worker_node.model_cache import ModelRamCache, _DisabledModelRamCache, create_model_cache
@@ -43,6 +42,19 @@ logging.basicConfig(
 logger = logging.getLogger("logos_worker_node")
 
 _LANE_MANAGER_SHUTDOWN_TIMEOUT = 90
+
+# Background tasks started without an owner, held until they finish: the
+# event loop keeps only a weak reference to a task.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _run_in_background(coro) -> asyncio.Task:
+    """Start a coroutine nobody awaits and hold its task until it finishes."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 # Host-RAM safety buffer the RAM cache plan must leave untouched: OS page
 # cache, malloc fragmentation, vLLM mm processor caches, monitoring agents,
@@ -214,7 +226,7 @@ async def _load_central_profiles(
     instead of guessing; with the bridge disabled it starts empty.
     """
     snapshot = await gpu_collector.get_snapshot()
-    config_path = LogosBridgeClient._resolve_config_path()
+    config_path = LogosBridgeClient.resolve_config_path()
     plans = plans_from_config(config_path) if config_path.exists() else []
     model_profiles.set_calibration_keys(node_calibration_keys(cfg, plans, list(snapshot.devices)))
     model_profiles.set_slice_gpu_counts(node_slice_gpu_counts(cfg, plans, list(snapshot.devices)))
@@ -222,13 +234,11 @@ async def _load_central_profiles(
         logger.info("Logos bridge disabled — starting without model profiles")
         return
 
-    state_dir = get_state_dir()
-    legacy_import = read_legacy_profiles(state_dir)
     delay = 5.0
     while True:
         try:
             profiles = await logos_bridge.fetch_model_profiles(
-                model_profiles.calibration_key_hashes(), model_profiles.slice_gpu_counts(), legacy_import
+                model_profiles.calibration_key_hashes(), model_profiles.slice_gpu_counts()
             )
             break
         except Exception as exc:  # noqa: BLE001
@@ -241,8 +251,6 @@ async def _load_central_profiles(
             delay = min(delay * 2, 60.0)
     model_profiles.replace_from_sync(profiles)
     logger.info("Loaded %d model profile(s) from Logos", len(profiles))
-    if legacy_import is not None:
-        mark_legacy_profiles_migrated(state_dir)
 
 
 def _resolve_worker_cache_root(cfg) -> str:
@@ -1245,7 +1253,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # Fire-and-forget: download missing weights in the background so the
             # worker boots into zero-lane mode immediately and serves the models
             # it already has while the rest stream in.
-            asyncio.create_task(_prefetch_missing_models(missing, hf_home))
+            _run_in_background(_prefetch_missing_models(missing, hf_home))
 
     # ── Static lanes (pinned, never removed by the capacity planner) ──────
     static_lane_ids: set[str] = set()

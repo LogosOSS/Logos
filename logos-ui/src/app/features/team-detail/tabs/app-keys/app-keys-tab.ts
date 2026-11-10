@@ -23,7 +23,7 @@ import {
   moveItemInArray,
 } from '@angular/cdk/drag-drop';
 import { ErrorMessageComponent } from '../../../../shared/components/error-message/error-message';
-import { buildKeyModelGroups, KeyModelGroup, ProviderInfo } from '../key-model-groups';
+import { KeyPermissionExpansion } from '../key-permission-expansion';
 import { isInteractiveClick } from '../../../../shared/utils/interactive-click';
 import {
   KeySlo,
@@ -346,129 +346,11 @@ export class AppKeysTabComponent {
   }
 
   // ── Expand state ──────────────────────────────────────────────────────────
-  expandedKeyIds = signal<Set<number>>(new Set());
-  loadingKeyIds = signal<Set<number>>(new Set());
-
-  globalDataLoaded = false;
-  private globalDataLoading = false;
-  private keyPermCache = new Map<number, { providerIds: Set<number>; modelIds: Set<number> }>();
-
-  allProviders = signal<ProviderInfo[]>([]);
-  allModels = signal<{ id: number; name: string }[]>([]);
-  teamProviderIds = signal<Set<number>>(new Set());
-  teamModelIds = signal<Set<number>>(new Set());
-  // providerId → set of model ids that provider serves
-  private providerModelMap = new Map<number, Set<number>>();
-
-  isExpanded(keyId: number): boolean {
-    return this.expandedKeyIds().has(keyId);
-  }
-  isLoadingExpand(keyId: number): boolean {
-    return this.loadingKeyIds().has(keyId);
-  }
+  readonly keyPermissions = new KeyPermissionExpansion(this.svc, () => this.teamId);
 
   onRowClick(event: Event, key: TeamApiKey): void {
     if (isInteractiveClick(event)) return;
-    this.toggleExpand(key);
-  }
-
-  toggleExpand(key: TeamApiKey): void {
-    const next = new Set(this.expandedKeyIds());
-    if (next.has(key.id)) {
-      next.delete(key.id);
-      this.expandedKeyIds.set(next);
-      return;
-    }
-    next.add(key.id);
-    this.expandedKeyIds.set(next);
-    if (!this.globalDataLoaded) {
-      if (!this.globalDataLoading) this.loadGlobalData(key);
-    } else if (key.use_custom_permissions && !this.keyPermCache.has(key.id)) {
-      this.loadKeyPerms(key.id);
-    }
-  }
-
-  private async loadGlobalData(pending?: TeamApiKey): Promise<void> {
-    this.globalDataLoading = true;
-    try {
-      const [providers, teamProviders, teamModels] = await Promise.all([
-        this.svc.getAllProviders(),
-        this.svc.getTeamProviderPermissions(this.teamId),
-        this.svc.getTeamModelPermissions(this.teamId),
-      ]);
-
-      this.allProviders.set(
-        providers.map((p) => ({ id: p.id, name: p.name, isCloud: p.provider_type !== 'logosnode' })),
-      );
-      this.teamProviderIds.set(new Set(teamProviders));
-      this.teamModelIds.set(new Set(teamModels));
-
-      const modelById = new Map<number, string>();
-      await Promise.all(
-        providers.map(async (p) => {
-          try {
-            const ms = await this.svc.getProviderModels(p.id);
-            this.providerModelMap.set(p.id, new Set((ms ?? []).map((m) => m.model_id)));
-            for (const m of ms ?? [])
-              if (!modelById.has(m.model_id)) modelById.set(m.model_id, m.model_name);
-          } catch {
-            this.providerModelMap.set(p.id, new Set());
-          }
-        }),
-      );
-      this.allModels.set([...modelById.entries()].map(([id, name]) => ({ id, name })));
-      this.globalDataLoaded = true;
-
-      if (pending?.use_custom_permissions && !this.keyPermCache.has(pending.id)) {
-        this.loadKeyPerms(pending.id);
-      }
-    } finally {
-      this.globalDataLoading = false;
-    }
-  }
-
-  private async loadKeyPerms(keyId: number): Promise<void> {
-    const l = new Set(this.loadingKeyIds());
-    l.add(keyId);
-    this.loadingKeyIds.set(l);
-    try {
-      const [providerIds, modelIds] = await Promise.all([
-        this.svc.getApiKeyProviderPermissions(keyId),
-        this.svc.getApiKeyModelPermissions(keyId),
-      ]);
-      this.keyPermCache.set(keyId, {
-        providerIds: new Set(providerIds),
-        modelIds: new Set(modelIds),
-      });
-    } catch {
-      // leave cache empty for this key
-    } finally {
-      const l2 = new Set(this.loadingKeyIds());
-      l2.delete(keyId);
-      this.loadingKeyIds.set(l2);
-    }
-  }
-
-  getDisplayProviders(key: TeamApiKey): ProviderInfo[] {
-    const ids = key.use_custom_permissions
-      ? (this.keyPermCache.get(key.id)?.providerIds ?? new Set<number>())
-      : this.teamProviderIds();
-    return this.allProviders().filter((p) => ids.has(p.id));
-  }
-
-  getDisplayModels(key: TeamApiKey): { id: number; name: string }[] {
-    const ids = key.use_custom_permissions
-      ? (this.keyPermCache.get(key.id)?.modelIds ?? new Set<number>())
-      : this.teamModelIds();
-    return this.allModels().filter((m) => ids.has(m.id));
-  }
-
-  getModelGroups(key: TeamApiKey): KeyModelGroup[] {
-    return buildKeyModelGroups(
-      this.getDisplayProviders(key),
-      this.getDisplayModels(key),
-      this.providerModelMap,
-    );
+    this.keyPermissions.toggleExpand(key);
   }
 
   // ── Effective values (key override → team default → null) ─────────────────

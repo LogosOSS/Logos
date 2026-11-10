@@ -246,9 +246,9 @@ public class IpRateLimiterService {
                     return false;
                 }
             }
+            int mask = (0xFF << (8 - remainingBits)) & 0xFF;
             return remainingBits == 0
-                || (candidateBytes[fullBytes] & (0xFF << (8 - remainingBits)))
-                    == (networkBytes[fullBytes] & (0xFF << (8 - remainingBits)));
+                || ((candidateBytes[fullBytes] & 0xFF) & mask) == ((networkBytes[fullBytes] & 0xFF) & mask);
         } catch (UnknownHostException | NumberFormatException e) {
             return false;
         }

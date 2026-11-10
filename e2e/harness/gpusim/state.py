@@ -222,7 +222,24 @@ class GpuSimState:
     # -- mutation ---------------------------------------------------------
 
     def allocate(self, pid: int, device_index: int, mb: float) -> None:
+        """Record a claim. Unbounded on purpose for fault-injection tests.
+
+        Strict free≥gmu×total and wake-capacity checks live at the fake-server
+        startup / ``/wake_up`` boundary so intentional over-allocation scripts
+        (and telemetry tests that plant foreign PIDs) keep working.
+        """
         self.allocations.append(Allocation(pid=pid, device_index=device_index, mb=mb))
+
+    def resize(self, pid: int, device_index: int, mb: float) -> None:
+        """Update one pid's per-device claim (used by sleep_L1 / wake in the fake server).
+
+        Unbounded here; the fake server validates wake capacity before calling.
+        """
+        for alloc in self.allocations:
+            if alloc.pid == pid and alloc.device_index == device_index and not alloc.leaked:
+                alloc.mb = float(mb)
+                return
+        self.allocate(pid, device_index, mb)
 
     def release(self, pid: int) -> None:
         """Free every non-leaked allocation held by *pid*.

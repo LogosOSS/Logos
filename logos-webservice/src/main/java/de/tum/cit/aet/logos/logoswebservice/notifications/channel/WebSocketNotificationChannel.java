@@ -2,6 +2,7 @@ package de.tum.cit.aet.logos.logoswebservice.notifications.channel;
 
 import java.util.List;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import de.tum.cit.aet.logos.logoswebservice.notifications.entity.Notification;
@@ -22,7 +23,8 @@ public class WebSocketNotificationChannel implements NotificationChannel {
     private final NotificationFanout fanout;
     private final NotificationMapper mapper;
 
-    public WebSocketNotificationChannel(NotificationFanout fanout, NotificationMapper mapper) {
+    public WebSocketNotificationChannel(@Qualifier(NotificationFanout.BEAN_NAME) NotificationFanout fanout,
+                                        NotificationMapper mapper) {
         this.fanout = fanout;
         this.mapper = mapper;
     }

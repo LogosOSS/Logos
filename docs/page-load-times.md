@@ -1,4 +1,4 @@
-# Page load times
+# Page Load Times
 
 This page shows where the slow pages of the web application spend their time.
 It also shows what was changed and what is left to do. Every number on this page
@@ -25,9 +25,9 @@ Snapshot used on this page: 2026-09-17, 689,682 `log_entry` rows, 2,419,395
 The production figure is higher in absolute terms and has a similar ratio.
 ² Extrapolated from the snapshot figure (4,746 ms -> 693 ms) with the same 4x factor.
 
-## Statistics page
+## Statistics Page
 
-### What was wrong
+### Cause: The `COALESCE` Filter on `log_entry`
 
 Every aggregate behind the page filters `log_entry` on this expression:
 
@@ -43,7 +43,7 @@ In addition, the page sent **25 MB of JSON per load**. The browser drew the
 request-volume chart from the raw enqueue event of every request in the range.
 This path was also wrong. See "Request volume" below.
 
-### Why an index is not the answer
+### Expression Index on the `COALESCE` Filter
 
 We built an expression index on that `COALESCE` and measured it. It does not
 help the default view. The 30-day preset selects ~60% of the table (416,722 of
@@ -54,7 +54,7 @@ the index, because the index caused bitmap scans.
 To count 400k rows into 120 buckets is O(n) work. Only pre-aggregation removes
 this work.
 
-### What was done
+### Hourly Rollup Table `log_entry_hourly_stats`
 
 `log_entry_hourly_stats` (migration 035) is an hourly rollup with this grain:
 
@@ -91,7 +91,7 @@ materializes every row of the range, including the token `LATERAL` and the cost
 join. After that it filters down to the live tail. On the production snapshot,
 this takes **1,837 ms against 52 ms** for the same answer.
 
-### Freshness: why a table and not a materialized view
+### Rollup Refresh: Table Instead of Materialized View
 
 A `log_entry` row can change after its hour closes. The orchestrator writes the
 status, the response time, and the tokens when the request finishes. Cost
@@ -132,7 +132,7 @@ pass corrects a changed row. It tests that a row that moves to a later hour
 leaves no count in the hour that it left. It tests that an aged state row
 sends every aggregate to the live data with identical numbers.
 
-### Three queries nothing rendered
+### Unused Aggregate Queries
 
 `findQueueDepth`, `findRuntimeByColdStart` and `findLastEventTs` ran on every
 aggregate push. The TypeScript types of the page declare their results, but no
@@ -144,7 +144,7 @@ When we removed `findQueueDepth`, we also removed the one aggregate that a
 rollup cannot serve. `PERCENTILE_CONT(0.95)` cannot be computed from sums per
 hour.
 
-## Request volume was broken
+## Request Volume Chart
 
 The chart was not slow. It was wrong. The browser built the chart from the raw
 enqueue events of every request in the range. The server limited these events to
@@ -171,7 +171,7 @@ The smallest bucket of the chart is 15 minutes (the "today" preset) and the
 default is six hours. Thus the extra 8 s are not visible. The KPI cards next
 to the chart already used the aggregate push. They did not change.
 
-## Models page
+## Models Page
 
 `ModelRepository.findAllWithPricing` took **9,648 ms on production**. One
 `LEFT JOIN LATERAL` used 9,500 ms of this time. This join finds the most
@@ -195,7 +195,7 @@ first row. The index includes `provider_id`, so the scan stays index-only.
 Snapshot: 252 ms -> 1.7 ms for the whole query. The lateral changed from 5.1 ms
 to 0.004 ms for each model.
 
-## Billing page
+## Billing Page
 
 `findTeamBudgetHistory` took **18,264 ms on production**. There were two
 causes. Both are in the way `log_entry_cost` was written:
@@ -217,7 +217,7 @@ branch.
 We verified the equivalence against the full snapshot. All 689,682 rows give
 identical values and identical totals. Snapshot timing: 4,746 ms -> 693 ms.
 
-## Still open
+## Open Issues
 
 - **The billing join.** The view fix did not change one problem. The plan joins
   `api_keys` to `log_entry` as a nested loop with a join filter. This makes 46.9M

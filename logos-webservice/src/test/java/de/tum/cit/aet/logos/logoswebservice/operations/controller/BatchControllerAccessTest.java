@@ -18,6 +18,7 @@ import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchService;
 
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -76,5 +77,16 @@ class BatchControllerAccessTest {
                 .param("apiKeyId", "3004")
                 .with(TestJwt.logosAdmin()))
            .andExpect(status().isOk());
+    }
+
+    @Test
+    void anInvalidBatchIdIsABadRequest() throws Exception {
+        when(batchService.getBatch(anyInt(), anyInt(), anyString()))
+            .thenThrow(new BatchService.InvalidIdException("Not a valid batch or file id."));
+
+        mvc.perform(get("/logosdb/batches/{batchId}", "bad id")
+                .param("apiKeyId", "3004")
+                .with(TestJwt.logosAdmin()))
+           .andExpect(status().isBadRequest());
     }
 }

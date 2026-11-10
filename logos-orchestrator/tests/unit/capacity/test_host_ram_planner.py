@@ -442,5 +442,4 @@ async def test_sleep_action_escalates_to_stop_when_incremental_host_ram_does_not
     assert len(escalated) == 1
     assert escalated[0].action == "stop"
     assert escalated[0].lane_id == "lean"
-    assert escalated[0].bypass_load_cooldown is True
     assert "host RAM headroom too low" in escalated[0].reason

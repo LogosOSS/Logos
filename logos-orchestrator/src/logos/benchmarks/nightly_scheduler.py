@@ -8,8 +8,9 @@ import logging
 from starlette.requests import Request
 
 from logos.benchmarks import nightly_store as store
-from logos.benchmarks import optimization, workloads
-from logos.benchmarks.guidellm_runner import extract_serving_configuration
+from logos.benchmarks import optimization, recent_requests, workloads
+from logos.benchmarks.configuration import ServingOverrides
+from logos.benchmarks.guidellm_runner import apply_serving_overrides, extract_serving_configuration
 from logos.benchmarks.maintenance import AUTOMATIC_CALIBRATION
 from logos.benchmarks.nightly import (
     LEASE_CHECK,
@@ -61,6 +62,8 @@ class NightlyScheduler:
             await asyncio.sleep(15)
 
     async def _cycle(self):
+        recent_requests.freeze(local_now(), include_requests=False)
+        store.finalize_continuations(local_now())
         await store.deliver_completion_events()
         claims = []
         if self.maintenance:
@@ -120,10 +123,13 @@ class NightlyScheduler:
                         not can_start(local_now())
                         or store.has_active_benchmarks()
                         or (self.calibration and self.calibration.benchmarks_must_wait())
-                        or store.claimed_today(day) >= MAX_PAIRS_PER_NIGHT
                     ):
                         break
-                    if not row["enabled"] or row["last_run_date"] == day:
+                    if not row["enabled"]:
+                        continue
+                    if row["last_run_date"] == day and row.get("status") != "continuing":
+                        continue
+                    if row["last_run_date"] != day and store.claimed_today(day) >= MAX_PAIRS_PER_NIGHT:
                         continue
                     if len(selected) >= maintenance_node_limit():
                         deferred.append(row)
@@ -163,15 +169,22 @@ class NightlyScheduler:
             and self.registry.is_provider_online(provider_id)
             and self.registry.has_received_first_status(provider_id)
             and not self.registry.is_calibrating(provider_id)
+            and not self.registry.is_cordoned(provider_id)
         )
 
     async def restore(self, pair_id, recovery):
-        """Restore the exact original configuration before releasing production traffic."""
+        """Confirm the selected production configuration before releasing traffic."""
         if not recovery.get("mutated", True):
             return
+        recovery = copy.deepcopy(recovery)
+        if recovery.get("adoption"):
+            recovery["vllm_config"] = apply_serving_overrides(
+                recovery["vllm_config"], ServingOverrides(**recovery["adoption"]["parameters"])
+            )
+            recovery["lane_config"]["vllm_config"] = recovery["vllm_config"]
         provider_id = recovery["provider_id"]
         if not self.healthy(provider_id):
-            raise RuntimeError("Worker is offline or calibrating; restoration is pending")
+            raise RuntimeError("Worker is offline, calibrating or cordoned; restoration is pending")
         benchmark_reservations.reserve(provider_id, "*", -pair_id)
         runtime = await self.registry.send_command(provider_id, "get_lanes", {}, timeout_seconds=30)
         if not any(lane.get("lane_id") == recovery["lane_id"] for lane in runtime.get("lanes", [])):
@@ -195,7 +208,7 @@ class NightlyScheduler:
             not result.get("restarted")
             or (result.get("lane_config") or {}).get("vllm_config") != recovery["vllm_config"]
         ):
-            raise RuntimeError("Worker did not confirm its original configuration")
+            raise RuntimeError("Worker did not confirm the production configuration")
         token = MAINTENANCE_RECOVERY.set(True)
         try:
             ready = await self.planner.prepare_benchmark_lane(provider_id, recovery["model"], timeout_seconds=900)
@@ -203,6 +216,37 @@ class NightlyScheduler:
             MAINTENANCE_RECOVERY.reset(token)
         if not ready:
             raise RuntimeError("Restored production model is not ready")
+
+    async def settle(self, pair_id, recovery, report):
+        """Complete a journaled adoption, or restore the original settings on failure."""
+        adoption = recovery.get("adoption")
+        if adoption:
+            report[:] = [item for item in report if item.get("status") != "adopted"]
+        if adoption and not store.status(pair_id)["enabled"]:
+            recovery.pop("adoption")
+            store.save(pair_id, "running", report, recovery)
+            adoption = None
+        try:
+            await self.restore(pair_id, recovery)
+            if not LEASE_CHECK.get()():
+                raise RuntimeError("Maintenance lock lost; worker recovery remains pending")
+            if adoption and not store.status(pair_id)["enabled"]:
+                raise RuntimeError("Nightly schedule disabled during adoption")
+        except Exception as exc:
+            if not adoption or not LEASE_CHECK.get()():
+                raise
+            recovery.pop("adoption")
+            report.append(
+                {"status": "adoption_failed", "benchmark_id": adoption["benchmark_id"], "reason": str(exc)[:1000]}
+            )
+            # Persist rollback intent before sending another worker command.
+            store.save(pair_id, "running", report, recovery)
+            await self.restore(pair_id, recovery)
+            if not LEASE_CHECK.get()():
+                raise RuntimeError("Maintenance lock lost; worker recovery remains pending")
+        else:
+            if adoption:
+                report.append({"status": "adopted", **adoption})
 
     def target_lane(self, pair_id, *, disable_missing=True):
         """Resolve and validate a currently usable model/worker pair."""
@@ -283,8 +327,15 @@ class NightlyScheduler:
                 if not held():
                     return False
                 store.finish_recovery_jobs(jobs)
-                await self.restore(pair_id, recovery)
-                store.finish(pair_id, "interrupted_recovered", row["report"], recovery.get("search"))
+                await self.settle(pair_id, recovery, row["report"])
+                now = local_now()
+                store.finish(
+                    pair_id,
+                    "interrupted_recovered",
+                    row["report"],
+                    recovery.get("search"),
+                    resume_after_recovery=row.get("last_run_date") == now.date() and can_start(now),
+                )
                 benchmark_reservations.release(-pair_id)
                 return True
             finally:
@@ -351,10 +402,18 @@ class NightlyScheduler:
             current = extract_serving_configuration(snapshot, model)
             plan = parameter_plan(current)
             schedule = store.status(pair_id)
-            if schedule.get("workload_id"):
-                workload = workloads.load(schedule["workload_id"], target["model_id"])
+            if recent_requests.username() or schedule.get("workload_id"):
+                workload = (
+                    recent_requests.for_model(target, local_now())
+                    if recent_requests.username()
+                    else workloads.load(schedule["workload_id"], target["model_id"])
+                )
+                if recent_requests.username():
+                    store.bind_workload(pair_id, workload["id"])
                 search = optimization.context(current, snapshot, workload, schedule.get("optimizer") or {})
-                plan = optimization.plan(current, search)
+                plan = optimization.plan(
+                    current, search, round_index=optimization.round_index(search["state"], local_now().date())
+                )
             recovery = {
                 "provider_id": pid,
                 "model": model,
@@ -428,6 +487,13 @@ class NightlyScheduler:
                             "parameters": settings.serving_overrides.model_dump(exclude_none=True),
                         }
                         report.append(outcome)
+                        if search:
+                            adoption = store.adoption_candidate(pair_id, search, report)
+                            if adoption:
+                                validate_worker_overrides(
+                                    ServingOverrides(**adoption["parameters"]), worker_limits(snapshot, model)
+                                )
+                                recovery["adoption"] = adoption
                         store.save(pair_id, "running", report, recovery)
                         break
                     except NightlyStopped as exc:
@@ -453,18 +519,44 @@ class NightlyScheduler:
             state = "failed"
             report.append({"status": "failed", "reason": str(exc)[:1000]})
         finally:
+            settled = recovery is None
             if recovery:
                 try:
                     if not LEASE_CHECK.get()():
                         raise RuntimeError("Maintenance lock lost; worker recovery remains pending")
-                    await self.restore(pair_id, recovery)
-                    recovery = None
-                    benchmark_reservations.release(-pair_id)
+                    if search and state in {"completed", "window_closed"} and store.status(pair_id)["enabled"]:
+                        adoption = store.adoption_candidate(pair_id, search, report)
+                        if adoption:
+                            validate_worker_overrides(
+                                ServingOverrides(**adoption["parameters"]), worker_limits(snapshot, model)
+                            )
+                            recovery["adoption"] = adoption
+                            store.save(pair_id, "running", report, recovery)
+                    await self.settle(pair_id, recovery, report)
+                    settled = True
                 except Exception as exc:
                     state = "recovery_required"
                     report.append({"status": state, "reason": str(exc)[:1000]})
-            if recovery is None:
-                store.finish(pair_id, state, report, search)
+            if settled:
+                baseline_ok = any(item.get("configuration") == 1 and item.get("status") == "success" for item in report)
+                successful = sum(item.get("status") == "success" for item in report)
+                if (
+                    state == "completed"
+                    and baseline_ok
+                    and successful > 1
+                    and can_start(local_now())
+                    and store.status(pair_id)["enabled"]
+                ):
+                    state = "continuing"
+                try:
+                    store.finish(pair_id, state, report, search)
+                except Exception:
+                    # The worker remains reserved until its configuration and result are durable together.
+                    if recovery:
+                        store.save(pair_id, "recovery_required", report, recovery)
+                    raise
+                recovery = None
+                benchmark_reservations.release(-pair_id)
             else:
                 store.save(pair_id, state, report, recovery)
         return recovery is None

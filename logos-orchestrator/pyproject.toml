@@ -30,7 +30,7 @@ sentence-transformers = "==5.7.0"
 torch = "==2.14.0"
 prometheus-client = "==0.21.1"
 python-multipart = "==0.0.32"
-guidellm = {version = "==0.7.2", extras = ["recommended"]}
+guidellm = {version = "==0.8.1", extras = ["recommended"]}
 
 # Security floors for packages that would otherwise only be transitive.
 # The Docker build installs from uv.lock (`uv sync --locked`), but CI test

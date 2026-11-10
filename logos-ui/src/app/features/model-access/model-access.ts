@@ -78,7 +78,7 @@ export class ModelAccess implements OnInit {
 
   ngOnInit(): void {
     const id = Number(this.route.snapshot.paramMap.get('id'));
-    this.load(id);
+    void this.load(id);
   }
 
   async load(modelId: number): Promise<void> {

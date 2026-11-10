@@ -1,0 +1,67 @@
+{
+  "synthetic_only": true,
+  "timing_mode": "accelerated_functional",
+  "scientific_claims": false,
+  "inputs": "neutral calibrated footprints with real TP/KV/ctx; timings accelerated_functional only",
+  "host_ram_total_mb": 524288,
+  "note": "Calibration KV/ctx here; frozen engine pins live in benchmark_engine_specs_public.json (Gemma-4b calib KV≈30720MB vs engine≈13GiB).",
+  "nodes": {
+    "public-anon": {
+      "Qwen/Qwen3.6-35B-A3B": {
+        "base_residency_mb": 80367.0,
+        "loaded_vram_mb": 80367.0,
+        "sleeping_residual_mb": 4327.0,
+        "kv_budget_mb": 4096.0,
+        "tensor_parallel_size": 2,
+        "max_context_length": 262144,
+        "calibration_max_model_len": 262144,
+        "cold_load_time_s": 2.0,
+        "wake_from_sleep_time_s": 0.3
+      },
+      "meta-llama/Llama-3.1-8B-Instruct": {
+        "base_residency_mb": 40153.0,
+        "loaded_vram_mb": 40153.0,
+        "sleeping_residual_mb": 1097.0,
+        "kv_budget_mb": 23552.0,
+        "tensor_parallel_size": 1,
+        "max_context_length": 131072,
+        "calibration_max_model_len": 131072,
+        "cold_load_time_s": 1.5,
+        "wake_from_sleep_time_s": 0.25
+      },
+      "google/gemma-3-12b-it": {
+        "base_residency_mb": 41005.0,
+        "loaded_vram_mb": 41005.0,
+        "sleeping_residual_mb": 1253.0,
+        "kv_budget_mb": 15360.0,
+        "tensor_parallel_size": 1,
+        "max_context_length": 131072,
+        "calibration_max_model_len": 131072,
+        "cold_load_time_s": 1.5,
+        "wake_from_sleep_time_s": 0.25
+      },
+      "microsoft/Phi-4-reasoning": {
+        "base_residency_mb": 40611.0,
+        "loaded_vram_mb": 40611.0,
+        "sleeping_residual_mb": 1241.0,
+        "kv_budget_mb": 11264.0,
+        "tensor_parallel_size": 1,
+        "max_context_length": 32768,
+        "calibration_max_model_len": 32768,
+        "cold_load_time_s": 1.5,
+        "wake_from_sleep_time_s": 0.25
+      },
+      "google/gemma-3-4b-it": {
+        "base_residency_mb": 41123.0,
+        "loaded_vram_mb": 41123.0,
+        "sleeping_residual_mb": 1115.0,
+        "kv_budget_mb": 30720.0,
+        "tensor_parallel_size": 1,
+        "max_context_length": 131072,
+        "calibration_max_model_len": 131072,
+        "cold_load_time_s": 1.2,
+        "wake_from_sleep_time_s": 0.2
+      }
+    }
+  }
+}

@@ -54,6 +54,25 @@ def test_build_cmd_does_not_duplicate_enforce_eager(monkeypatch) -> None:
     assert cmd.count("--enforce-eager") == 1
 
 
+@pytest.mark.parametrize(
+    ("enabled", "flag"), [(True, "--enable-prefix-caching"), (False, "--no-enable-prefix-caching")]
+)
+def test_build_cmd_passes_prefix_caching_setting_explicitly(monkeypatch, enabled, flag) -> None:
+    # vLLM enables prefix caching by default; omitting the flag for a lane that
+    # disables it would silently leave it on.
+    handle = VllmProcessHandle("lane-test", 19000, WorkerConfig())
+    monkeypatch.setattr(handle, "_resolve_vllm_binary", lambda _configured: "/tmp/vllm")
+
+    lane = LaneConfig(
+        model="deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+        vllm=True,
+        vllm_config=VllmConfig(enable_prefix_caching=enabled),
+    )
+    cmd = handle._build_cmd(lane)
+    assert flag in cmd
+    assert sum(arg in {"--enable-prefix-caching", "--no-enable-prefix-caching"} for arg in cmd) == 1
+
+
 def test_build_cmd_includes_prompt_tokens_details_by_default(monkeypatch) -> None:
     # vLLM keeps usage.prompt_tokens_details (cached_tokens) off by default;
     # Logos lanes must enable it so consumers see the prefix-cache hit share
@@ -2905,6 +2924,35 @@ async def test_stream_logs_stores_concurrency_factor_not_token_count(monkeypatch
     assert handle.max_concurrency == 8
 
 
+async def test_stream_logs_ends_as_cancelled_when_the_lane_stops(monkeypatch) -> None:
+    """Stopping the lane cancels the log task; it must end as cancelled, not as finished."""
+    handle = _handle_with_stub_binary(monkeypatch)
+    silent = asyncio.Event()
+
+    class _FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = self._stdout()
+
+        async def _stdout(self):
+            await silent.wait()
+            yield b""
+
+    handle._process = _FakeProcess()
+    task = asyncio.create_task(handle._stream_logs())
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+
+
+async def test_streaming_pull_yields_nothing() -> None:
+    handle = VllmProcessHandle("lane-test", 19000, WorkerConfig())
+
+    assert [progress async for progress in handle.pull_model_streaming("some/model")] == []
+
+
 def test_startup_failure_keeps_root_exception_before_shutdown_tail():
     handle = VllmProcessHandle("lane-test", 19000, WorkerConfig())
     handle._recent_logs.extend(
@@ -3152,3 +3200,70 @@ def test_resolve_model_snapshot_skips_redundant_original_weights(monkeypatch, tm
     vllm_process.resolve_model_snapshot("meta-llama/Llama-3.1-8B-Instruct", str(tmp_path))
 
     assert calls[0]["ignore_patterns"] == ["original/*"]
+
+
+def test_failure_logs_go_to_a_private_directory(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from logos_worker_node import vllm_process
+
+    log_dir = tmp_path / "logos-vllm-logs"
+    monkeypatch.setattr(vllm_process, "FAILURE_LOG_DIR", log_dir)
+    handle = SimpleNamespace(_recent_logs=["boom"], lane_id="lane-a")
+
+    VllmProcessHandle._persist_failure_logs(handle, "crash")
+
+    assert log_dir.stat().st_mode & 0o777 == 0o700
+    (written,) = log_dir.glob("lane-a_*_crash.log")
+    assert written.read_text(encoding="utf-8") == "boom"
+
+
+def test_failure_logs_refuse_a_planted_symlink(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from logos_worker_node import vllm_process
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    planted = tmp_path / "logos-vllm-logs"
+    planted.symlink_to(elsewhere, target_is_directory=True)
+    monkeypatch.setattr(vllm_process, "FAILURE_LOG_DIR", planted)
+    handle = SimpleNamespace(_recent_logs=["boom"], lane_id="lane-a")
+
+    VllmProcessHandle._persist_failure_logs(handle, "crash")  # logged, not raised
+
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_private_dir_refuses_a_plain_file(tmp_path: Path) -> None:
+    from logos_worker_node import vllm_process
+
+    target = tmp_path / "not-a-dir"
+    target.write_text("x", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        vllm_process._private_dir(target)
+
+
+def test_private_dir_narrows_an_existing_readable_directory(tmp_path: Path) -> None:
+    from logos_worker_node import vllm_process
+
+    target = tmp_path / "logs"
+    target.mkdir(mode=0o755)
+    target.chmod(0o755)
+
+    assert vllm_process._private_dir(target) == target
+    assert target.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o757, 0o777])
+def test_private_dir_refuses_a_directory_others_can_write(tmp_path: Path, mode: int) -> None:
+    from logos_worker_node import vllm_process
+
+    target = tmp_path / "logs"
+    target.mkdir()
+    target.chmod(mode)
+
+    with pytest.raises(OSError):
+        vllm_process._private_dir(target)
+    assert target.stat().st_mode & 0o777 == mode

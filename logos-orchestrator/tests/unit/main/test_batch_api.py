@@ -1261,9 +1261,9 @@ def test_result_file_ids_are_deterministic_and_distinguish_the_providers():
     # repeated poll upserts the one row; two providers minting the same file
     # id must yield two different ones, so one team's result can never be
     # reached through the other's id.
-    assert batch_api._logos_result_file_id(OPENAI_PROVIDER, "file-out") == batch_api._logos_result_file_id(
-        OPENAI_PROVIDER, "file-out"
-    )
+    first = batch_api._logos_result_file_id(OPENAI_PROVIDER, "file-out")
+    repeated = batch_api._logos_result_file_id(OPENAI_PROVIDER, "file-out")
+    assert first == repeated
     assert batch_api._logos_result_file_id(OPENAI_PROVIDER, "file-out") != batch_api._logos_result_file_id(
         AZURE_PROVIDER, "file-out"
     )
@@ -3219,6 +3219,81 @@ def test_a_lease_lost_mid_chunk_cancels_the_lines_and_writes_nothing(monkeypatch
     assert "checkpoints" not in stored
     assert "finish" not in stored
     assert "content" not in stored
+
+
+def test_a_cancelled_run_propagates_even_when_the_lease_is_lost_too(monkeypatch):
+    # The lost lease cancels the lines; when the run itself is cancelled at
+    # the same moment (a shutdown), that cancellation must reach the caller
+    # instead of being taken for the lease loss and absorbed.
+    monkeypatch.setattr(batch_local, "LOCAL_BATCH_LEASE_TTL_S", 0.6)  # heartbeat every 0.2 s
+    runner: dict = {}
+
+    async def fake_execute(path, headers, body, client_ip, auth, log_id):
+        try:
+            await asyncio.sleep(0.5)  # longer than the heartbeat interval
+        except asyncio.CancelledError:
+            runner["task"].cancel()
+            raise
+        return {"status_code": 200, "data": {}}
+
+    stored = {}
+
+    class _LostLeaseDB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def claim_local_batch(self, object_id, runner_id, lease_seconds):
+            return True
+
+        def get_local_object_by_upstream_id(self, kind, upstream_id):
+            return {"id": 1000}
+
+        def get_local_batch_file_content(self, object_id):
+            return _jsonl(_local_line("a"))
+
+        def get_api_key_by_id(self, api_key_id):
+            return _runner_key_row()
+
+        def get_local_batch_lines(self, object_id):
+            return {}
+
+        def update_local_batch_progress(self, object_id, runner_id, completed, failed, lease_seconds):
+            stored["progress_calls"] = stored.get("progress_calls", 0) + 1
+            return False if stored["progress_calls"] == 1 else None
+
+        def save_local_batch_lines(self, object_id, runner_id, rows):
+            stored.setdefault("checkpoints", []).extend(rows)
+
+        def log_usage(self, **kwargs):
+            return {"log-id": 700}, 200
+
+        def release_local_batch(self, object_id, runner_id):
+            return True
+
+    monkeypatch.setattr(batch_local, "DBManager", _LostLeaseDB)
+    monkeypatch.setitem(__import__("sys").modules, "logos.main", main)
+    monkeypatch.setattr(main, "execute_proxy_job", fake_execute, raising=False)
+
+    async def _run():
+        runner["task"] = asyncio.current_task()
+        return await batch_local.run_local_batch(
+            {
+                "id": 2006,
+                "upstream_id": "batch_c",
+                "input_file_id": "file-in",
+                "api_key_id": 11,
+                "team_id": OWN_TEAM,
+                "user_id": 13,
+                "status": "in_progress",
+            }
+        )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_run())
+    assert "checkpoints" not in stored
 
 
 def test_a_heartbeat_that_fails_cancels_the_lines_and_writes_nothing(monkeypatch):

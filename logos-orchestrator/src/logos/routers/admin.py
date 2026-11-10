@@ -35,6 +35,7 @@ async def scheduler_state(request: Request):
 
     payload = {
         "queue_total": _main._pipeline.scheduler.get_total_queue_depth(),
+        "residency_policy": (_main._capacity_planner.residency_policy if _main._capacity_planner else "demand"),
         "logosnode": _main._logosnode_facade.debug_state(),
     }
     prefix_router = getattr(_main._pipeline.scheduler, "_prefix_router", None)

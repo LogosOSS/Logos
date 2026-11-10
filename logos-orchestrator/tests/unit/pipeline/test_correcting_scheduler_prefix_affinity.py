@@ -1,11 +1,9 @@
 """Prefix-cache-aware placement in the correcting scheduler.
 
-Two warm workers serving the same model tie on corrected score, so placement
-used to be a coin flip — and a coin flip is the worst outcome for a coding
-agent, whose every turn re-sends a prompt the previous worker already has in
-its KV cache. The scheduler now nudges such a request back to the worker that
-last served its stream, with a bounded bonus so a meaningfully faster peer
-still wins.
+Multi-model RESOURCE ranking may still nudge a warm sticky worker with a
+bounded corrected-score bonus. Named-model peer ranking orders by true
+expected wait and does not apply that bonus (see
+test_named_model_ettft_ranking.py).
 """
 
 import pytest
@@ -17,6 +15,7 @@ from logos.pipeline.scheduler_interface import SchedulingRequest
 from logos.queue import PriorityQueueManager
 
 MODEL_ID = 1
+OTHER_MODEL_ID = 2
 WORKER_A = 10
 WORKER_B = 11
 KEYS = ["deep-block", "shallow-block"]
@@ -24,7 +23,11 @@ KEYS = ["deep-block", "shallow-block"]
 DEPLOYMENTS = [
     {"model_id": MODEL_ID, "provider_id": WORKER_A, "type": "logosnode"},
     {"model_id": MODEL_ID, "provider_id": WORKER_B, "type": "logosnode"},
+    {"model_id": OTHER_MODEL_ID, "provider_id": WORKER_A, "type": "logosnode"},
 ]
+
+# Two classified models → multi-model RESOURCE path (affinity bonus applies).
+MULTI_MODEL_CANDIDATES = [(MODEL_ID, 10.0, 1), (OTHER_MODEL_ID, 9.0, 1)]
 
 
 def _scheduler(logosnode, router=None):
@@ -48,13 +51,18 @@ def _two_warm_workers(queue_waiting_a=0.0, queue_waiting_b=0.0):
         WORKER_B,
         _make_view(model_id=MODEL_ID, provider_id=WORKER_B, aggregate_queue_waiting=queue_waiting_b),
     )
+    logosnode.set_view(
+        OTHER_MODEL_ID,
+        WORKER_A,
+        _make_view(model_id=OTHER_MODEL_ID, provider_id=WORKER_A, model_name="other"),
+    )
     return logosnode
 
 
 def _request(keys=KEYS, request_id="req-1"):
     return SchedulingRequest(
         request_id=request_id,
-        classified_models=[(MODEL_ID, 10.0, 1)],
+        classified_models=MULTI_MODEL_CANDIDATES,
         deployments=DEPLOYMENTS,
         payload={},
         affinity_keys=keys,
@@ -62,7 +70,7 @@ def _request(keys=KEYS, request_id="req-1"):
 
 
 # ---------------------------------------------------------------------------
-# Placement
+# Placement (multi-model RESOURCE)
 # ---------------------------------------------------------------------------
 
 
@@ -122,13 +130,18 @@ def test_no_bonus_for_a_worker_whose_lane_is_not_warm():
         _make_view(model_id=MODEL_ID, provider_id=WORKER_A, best_lane_state="sleeping", is_loaded=False),
     )
     logosnode.set_view(MODEL_ID, WORKER_B, _make_view(model_id=MODEL_ID, provider_id=WORKER_B))
+    logosnode.set_view(
+        OTHER_MODEL_ID,
+        WORKER_A,
+        _make_view(model_id=OTHER_MODEL_ID, provider_id=WORKER_A, model_name="other"),
+    )
     scheduler = _scheduler(logosnode)
 
-    with_affinity = scheduler._compute_candidate_scores([(MODEL_ID, 10.0, 1)], DEPLOYMENTS, {MODEL_ID: WORKER_A})
-    without_affinity = scheduler._compute_candidate_scores([(MODEL_ID, 10.0, 1)], DEPLOYMENTS, {})
+    with_affinity = scheduler._compute_candidate_scores(MULTI_MODEL_CANDIDATES, DEPLOYMENTS, {MODEL_ID: WORKER_A})
+    without_affinity = scheduler._compute_candidate_scores(MULTI_MODEL_CANDIDATES, DEPLOYMENTS, {})
 
-    scores_with = {provider_id: score for _m, provider_id, _t, score, _p, _e in with_affinity}
-    scores_without = {provider_id: score for _m, provider_id, _t, score, _p, _e in without_affinity}
+    scores_with = {provider_id: score for _m, provider_id, _t, score, _p, _e in with_affinity if _m == MODEL_ID}
+    scores_without = {provider_id: score for _m, provider_id, _t, score, _p, _e in without_affinity if _m == MODEL_ID}
     assert scores_with[WORKER_A] == scores_without[WORKER_A]
 
 
@@ -139,10 +152,10 @@ def test_bonus_is_bounded_by_the_weight_span():
     from logos.pipeline.ettft_estimator import CORRECTION_STRENGTH, compute_weight_span
 
     scheduler = _scheduler(_two_warm_workers())
-    scored = scheduler._compute_candidate_scores([(MODEL_ID, 10.0, 1)], DEPLOYMENTS, {MODEL_ID: WORKER_A})
-    scores = {provider_id: score for _m, provider_id, _t, score, _p, _e in scored}
+    scored = scheduler._compute_candidate_scores(MULTI_MODEL_CANDIDATES, DEPLOYMENTS, {MODEL_ID: WORKER_A})
+    scores = {provider_id: score for _m, provider_id, _t, score, _p, _e in scored if _m == MODEL_ID}
 
-    expected = compute_weight_span([10.0]) * CORRECTION_STRENGTH * PREFIX_AFFINITY_BONUS_FRACTION
+    expected = compute_weight_span([10.0, 9.0]) * CORRECTION_STRENGTH * PREFIX_AFFINITY_BONUS_FRACTION
     assert scores[WORKER_A] - scores[WORKER_B] == pytest.approx(expected)
 
 

@@ -41,7 +41,7 @@ public class SecurityConfig {
             @Qualifier("logosCorsConfigurationSource") CorsConfigurationSource corsSource) throws Exception {
         http
             .cors(cors -> cors.configurationSource(corsSource))
-            .csrf(csrf -> csrf.disable())
+            .csrf(csrf -> csrf.disable()) // NOSONAR stateless API: no session or auth cookie a browser would attach; credentials travel in headers
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()

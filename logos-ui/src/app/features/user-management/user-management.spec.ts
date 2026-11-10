@@ -1,10 +1,9 @@
 import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { HttpClient } from '@angular/common/http';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthService } from '../../core/auth/services/auth.service';
 import { User } from '../../core/auth/models/user.model';
@@ -15,6 +14,10 @@ import {
 import { TeamManagementService } from '../../core/services/team-management.service';
 import { PlatformUser } from '../../shared/models/platform-user.model';
 import { UserManagement } from './user-management';
+
+// Relative to the project root, where `ng test` runs: with coverage enabled the
+// bundled spec's `import.meta.url` no longer points at this directory.
+const SPEC_DIRECTORY = join(process.cwd(), 'src/app/features/user-management');
 
 function platformUser(overrides: Partial<PlatformUser> = {}): PlatformUser {
   return {
@@ -232,6 +235,48 @@ describe('import preview stylesheet', () => {
   });
 });
 
+describe('UserManagement dialogs', () => {
+  let component: UserManagement;
+  let getTeams: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    TestBed.resetTestingModule();
+    getTeams = vi.fn().mockResolvedValue([]);
+    await TestBed.configureTestingModule({
+      imports: [UserManagement],
+      providers: [
+        { provide: AuthService, useValue: { currentUser: signal<User | null>(admin()) } },
+        { provide: UserManagementService, useValue: { getUsers: vi.fn().mockResolvedValue([platformUser()]) } },
+        { provide: TeamManagementService, useValue: { getTeams } },
+        { provide: HttpClient, useValue: {} },
+      ],
+    }).compileComponents();
+    component = TestBed.createComponent(UserManagement).componentInstance;
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('loads the teams to pick from when the create dialog opens', async () => {
+    component.openCreateDialog();
+    await vi.waitFor(() => expect(getTeams).toHaveBeenCalled());
+  });
+
+  it('loads the teams to pick from when the edit dialog opens', async () => {
+    component.openEditDialog(platformUser());
+    await vi.waitFor(() => expect(getTeams).toHaveBeenCalled());
+  });
+
+  it('does not report the keys as copied when the clipboard refuses the write', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    component.createResult.set({ logos_keys: ['logos-key'] } as unknown as ReturnType<typeof component.createResult>);
+    component.copyApiKeys();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('logos-key'));
+    await Promise.resolve();
+    expect(component.copiedKeys()).toBe(false);
+  });
+});
+
 /**
  * Reads the component's stylesheet from the spec's directory as raw text. The
  * unit-test builder's pipeline cannot resolve `?raw` imports, and the
@@ -239,7 +284,7 @@ describe('import preview stylesheet', () => {
  * instead.
  */
 function readStyleSheet(): string {
-  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'user-management.scss'), 'utf8');
+  return readFileSync(join(SPEC_DIRECTORY, 'user-management.scss'), 'utf8');
 }
 
 /**

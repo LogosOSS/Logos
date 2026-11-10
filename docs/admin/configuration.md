@@ -22,7 +22,7 @@ safe for an instance that is open to the internet.
 For CORS, use exact origins with the scheme and the port. Do not use `*` with
 browser requests that send credentials. Do not put `.env` in source control.
 
-## Provider endpoints
+## Provider Endpoints
 
 Logos sends a provider's credentials only over HTTPS. Plain HTTP is allowed
 only on loopback (`localhost`, `127.0.0.1`, `::1`). If a provider has an API

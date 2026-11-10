@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
  * Single-replica fan-out: pushes straight to this replica's sockets. Selected
  * with {@code logos.notifications.fanout=local} (tests, a lone instance).
  */
-@Component
+@Component(NotificationFanout.BEAN_NAME)
 @ConditionalOnProperty(name = "logos.notifications.fanout", havingValue = "local")
 public class LocalNotificationFanout implements NotificationFanout {
 

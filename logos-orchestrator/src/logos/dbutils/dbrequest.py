@@ -89,6 +89,39 @@ class LogosNodeAuthRequest(BaseModel):
     configured_models: list[str] = Field(default_factory=list)
 
 
+class LogosNodeMaintenanceRequest(BaseModel):
+    """A node manager's call about the planned replacement of its node's container.
+
+    The node is resolved from the key, like for the worker itself, so a caller can only act on its own node.
+    ``deployment_id`` names the replacement; the id format is the one the node manager checks before it accepts a
+    deployment.
+    """
+
+    shared_key: str
+    deployment_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+class LogosNodeDeploymentReport(LogosNodeMaintenanceRequest):
+    """How a deployment of a node's container ended, as its node manager reports it.
+
+    Every ending is reported, also the one of a deployment that found nothing to replace. The free-text fields are
+    limited, because they end up in an inbox item.
+    """
+
+    tag: str = Field(max_length=128)
+    outcome: Literal["succeeded", "unchanged", "rolled_back", "failed"]
+    # The kind of failure of the node manager (for example ``drain_timeout``); empty after a success.
+    failure: Optional[str] = Field(default=None, max_length=40)
+    message: str = Field(default="", max_length=2000)
+    requested_by: str = Field(default="", max_length=300)
+    # Requests that were still running on the node when it was cordoned, and the seconds it took to drain them. Both
+    # are missing for a deployment that did not drain the node.
+    drained_requests: Optional[int] = Field(default=None, ge=0)
+    drain_seconds: Optional[int] = Field(default=None, ge=0)
+    # Models that no other node could serve while this node was out of service.
+    sole_replica_models: list[str] = Field(default_factory=list, max_length=50)
+
+
 class LogosNodeRegisterRequest(LogosKeyModel):
     provider_name: str
     base_url: str = ""
@@ -119,18 +152,12 @@ class LogosNodeStatusRequest(LogosKeyModel):
 _MAX_PROFILE_MODELS = 1000
 
 
-class LogosNodeLegacyProfileImport(BaseModel):
-    model_profiles: dict[str, dict[str, Any]] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
-    unsupported_models: dict[str, str] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
-
-
 class LogosNodeModelProfilesRequest(BaseModel):
     shared_key: str
     # model name -> calibration key hash the worker computes for it right now
     calibration_key_hashes: dict[str, str] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
     # model name -> GPUs the node can calibrate and serve the model on
     slice_gpu_counts: dict[str, int] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
-    legacy_import: LogosNodeLegacyProfileImport | None = None
 
 
 class LogosNodeCalibrationReservationRequest(BaseModel):
@@ -151,6 +178,33 @@ class LogosNodeResetProfilesRequest(LogosKeyModel):
     provider_id: int
     # None resets every profile of the node
     model_names: list[str] | None = None
+
+
+class NodeConfigEntry(BaseModel):
+    """One model of a node's configuration, as the admin set it."""
+
+    model_config = ConfigDict(extra="forbid")
+    model_name: str = Field(max_length=256)
+    capability: dict[str, Any] = Field(default_factory=dict)
+    overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class LogosNodeConfigRequest(BaseModel):
+    shared_key: str
+
+
+class LogosNodeConfigImportRequest(LogosNodeConfigRequest):
+    entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
+
+
+class LogosNodeConfigGetRequest(LogosKeyModel):
+    provider_id: int
+
+
+class LogosNodeConfigReplaceRequest(LogosNodeConfigGetRequest):
+    # Revision the admin edited; a newer one means someone saved first
+    expected_revision: int = Field(ge=0)
+    entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
 
 
 class LogosNodeInvalidateCalibrationRequest(LogosKeyModel):

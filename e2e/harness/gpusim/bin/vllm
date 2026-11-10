@@ -133,23 +133,36 @@ def _target_devices(tensor_parallel_size: int) -> list[int]:
     return visible[:tensor_parallel_size]
 
 
-def _resolve_vram_mb(argv: list[str], script: VllmScript, devices: list[int]) -> dict[int, float]:
-    """VRAM this lane claims, per device.
+def _resolve_startup_gmu(argv: list[str]) -> float:
+    """GMU for the free≥gmu×total startup gate.
 
-    Defaults to ``gpu_memory_utilization × memory.total`` for *each* card,
-    which is the number vLLM itself gates startup on — so the planner's
-    arithmetic and the sim's ledger describe the same quantity.
+    Mirrors real EngineCore ``request_memory``: an explicit
+    ``--gpu-memory-utilization`` wins; otherwise vLLM's default 0.9 applies —
+    including when ``--kv-cache-memory-bytes`` is also present (that pin sizes
+    the steady-state KV pool and does not skip the gate).
+    """
+    from harness.gpusim.server import VLLM_DEFAULT_GMU  # noqa: PLC0415
+
+    raw_gmu = _flag(argv, "--gpu-memory-utilization")
+    return float(raw_gmu) if raw_gmu else VLLM_DEFAULT_GMU
+
+
+def _resolve_vram_mb(
+    argv: list[str], script: VllmScript, devices: list[int], *, startup_gmu: float
+) -> dict[int, float]:
+    """VRAM this lane claims on the ledger, per device.
+
+    Distinct from the startup GMU gate: ``script.vram_mb`` (or a synthetic
+    ``gmu × total`` fallback) is what nvidia-smi reports after a healthy start.
+    The gate still demands ``free ≥ startup_gmu × total`` even when the claim
+    is a pinned KV footprint smaller than that reservation.
 
     Per device rather than one figure for the lane: on a mixed-architecture
     node the cards have different capacities, so a single value taken from the
-    first GPU would book the wrong amount against every other one. The ledger
-    is the thing this simulator exists to get right, and a capacity test can
-    only be as trustworthy as the numbers underneath it.
+    first GPU would book the wrong amount against every other one.
     """
     if script.vram_mb is not None:
         return {index: script.vram_mb for index in devices}
-    raw_gmu = _flag(argv, "--gpu-memory-utilization")
-    gmu = float(raw_gmu) if raw_gmu else 0.9
     try:
         sim = gpustate.load()
     except gpustate.GpuSimStateError:
@@ -157,7 +170,7 @@ def _resolve_vram_mb(argv: list[str], script: VllmScript, devices: list[int]) ->
     allocations: dict[int, float] = {}
     for index in devices:
         device = sim.device(index)
-        allocations[index] = (device.memory_total_mb * gmu) if device else 0.0
+        allocations[index] = (device.memory_total_mb * startup_gmu) if device else 0.0
     return allocations
 
 
@@ -166,9 +179,10 @@ def main(argv: list[str]) -> int:
         print("usage: vllm serve <model> [options]   (Logos E2E simulator stub)")
         return 0
     if argv[0] == "--version":
-        from harness.gpusim.server import FAKE_VLLM_VERSION  # noqa: PLC0415
+        from harness.gpusim.server import _fake_vllm_version  # noqa: PLC0415
 
-        print(FAKE_VLLM_VERSION)
+        # Simulated protocol target, not an installed vLLM wheel.
+        print(_fake_vllm_version())
         return 0
     if argv[0] != "serve":
         print(f"gpusim vllm: unsupported subcommand {argv[0]!r}", file=sys.stderr)
@@ -192,13 +206,28 @@ def main(argv: list[str]) -> int:
     port = int(_flag(argv, "--port", "8000") or 8000)
     tp_size = int(_flag(argv, "--tensor-parallel-size", "1") or 1)
     devices = _target_devices(tp_size)
-    vram_by_device = _resolve_vram_mb(argv, script, devices)
+    startup_gmu = _resolve_startup_gmu(argv)
+    vram_by_device = _resolve_vram_mb(argv, script, devices, startup_gmu=startup_gmu)
+    raw_max_len = (_flag(argv, "--max-model-len") or "").strip()
+    max_model_len: int | None = None
+    if raw_max_len and raw_max_len.lower() not in {"auto", "none", "null"}:
+        try:
+            max_model_len = int(raw_max_len)
+        except ValueError:
+            max_model_len = None
 
     # Readiness is served, not slept: the port opens immediately and /health
     # answers 503 until `ready_after_s` has passed. That matches how the worker
     # observes a slow cold load, and lets a "never becomes ready" scenario be
     # expressed as a large `ready_after_s` without wedging the process.
-    return run_server(model=model, port=port, script=script, vram_by_device=vram_by_device)
+    return run_server(
+        model=model,
+        port=port,
+        script=script,
+        vram_by_device=vram_by_device,
+        startup_gmu=startup_gmu,
+        max_model_len=max_model_len,
+    )
 
 
 if __name__ == "__main__":

@@ -568,3 +568,11 @@ def test_vllm_estimate_vram_falls_back_to_loaded_when_no_base():
     )
     estimate = profile.estimate_vram_mb()
     assert estimate == 8000.0  # Falls back to loaded_vram_mb
+
+
+def test_the_profile_dict_carries_every_field():
+    from dataclasses import fields
+
+    from logos.sdi.models import ModelProfile
+
+    assert set(ModelProfile(model_name="m").to_dict()) == {item.name for item in fields(ModelProfile)}

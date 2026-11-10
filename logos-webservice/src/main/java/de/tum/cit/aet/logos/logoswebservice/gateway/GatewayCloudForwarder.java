@@ -227,7 +227,30 @@ public class GatewayCloudForwarder {
         static final int MAX_CHUNKS = 1024;
         private static final int CHUNK_BYTES = 8192;
 
-        private record Chunk(byte[] bytes, Instant at, IOException error) {
+        /** One queued read, the end marker, or a read error; queue items are never compared. */
+        private static final class Chunk {
+
+            private final byte[] bytes;
+            private final Instant at;
+            private final IOException error;
+
+            Chunk(byte[] bytes, Instant at, IOException error) {
+                this.bytes = bytes;
+                this.at = at;
+                this.error = error;
+            }
+
+            byte[] bytes() {
+                return bytes;
+            }
+
+            Instant at() {
+                return at;
+            }
+
+            IOException error() {
+                return error;
+            }
         }
 
         private static final Chunk END = new Chunk(null, null, null);
@@ -252,6 +275,8 @@ public class GatewayCloudForwarder {
                 try {
                     Thread.sleep(attachTimeout);
                 } catch (InterruptedException e) {
+                    // A relay attached and stopped the watchdog.
+                    Thread.currentThread().interrupt();
                     return;
                 }
                 if (!attached) {
@@ -289,18 +314,23 @@ public class GatewayCloudForwarder {
                 endedAt = Instant.now();
                 last = new Chunk(null, null, e);
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 return;
             }
             if (!closed.get()) {
                 try {
                     chunks.put(last);
-                } catch (InterruptedException ignored) {
+                } catch (InterruptedException e) {
                     // Closed meanwhile; close() leaves its own end marker.
+                    Thread.currentThread().interrupt();
                 }
             }
         }
 
-        /** Relays every chunk to {@code out}, in order, until the upstream ends. */
+        /**
+         * Relays every chunk to {@code out}, in order, until the upstream ends,
+         * flushing whenever it has caught up with the upstream.
+         */
         void transferTo(OutputStream out) throws IOException {
             attached = true;
             watchdog.interrupt();
@@ -323,6 +353,11 @@ public class GatewayCloudForwarder {
                 }
                 currentChunkAt = chunk.at();
                 out.write(chunk.bytes());
+                if (chunks.isEmpty()) {
+                    // Nothing else has arrived: send this chunk now rather than
+                    // leave it in the response buffer until more follows.
+                    out.flush();
+                }
             }
         }
 

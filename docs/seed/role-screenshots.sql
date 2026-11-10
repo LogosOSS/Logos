@@ -253,7 +253,7 @@ WHERE t.name = 'Logos'
 UPDATE api_keys
 SET environment = 'production'
 WHERE name = 'docs-role-logos-app-key'
-  AND (environment IS NULL OR environment = '-' OR environment = '');
+  AND (environment IS NULL OR environment = '-' OR char_length(environment) = 0);
 
 -- Providers + models (names match the committed shots' catalogue style).
 INSERT INTO providers (name, base_url, provider_type, cloud_provider_type, privacy_level, auth_name, auth_format)
@@ -390,7 +390,7 @@ INSERT INTO log_entry (
     request_id, api_key_id, model_id, provider_id, result_status,
     timestamp_request, timestamp_forwarding, time_at_first_token, timestamp_response,
     was_cold_start, queue_depth_at_enqueue, user_id, team_id, environment,
-    rate_limit_admitted, cost_finalized, settled_cost_micro_cents
+    rate_limit_admitted, cost_finalized, settled_cost_micro_cents, reasoning_effort
 )
 SELECT
     'docs-role-req-' || g.n,
@@ -409,7 +409,8 @@ SELECT
     'docs-role-screenshots',
     true,
     true,
-    100000 + (g.n * 7000)   -- ~$0.10–$0.20-ish micro-cents spread across the month
+    100000 + (g.n * 7000),   -- ~$0.10–$0.20-ish micro-cents spread across the month
+    CASE WHEN g.n % 2 = 0 THEN 'medium' END
 FROM generate_series(1, 48) AS g(n)
 JOIN api_keys k ON k.name = 'docs-role-tobias.wasner-key'
 JOIN models m ON m.name = 'llama-3.1-8b-instruct'

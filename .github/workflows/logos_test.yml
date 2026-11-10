@@ -27,15 +27,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install Dependencies
         # Install the master logos package plus pytest-timeout, which the
@@ -57,6 +57,7 @@ jobs:
         run: |
           source .venv/bin/activate
           coverage run -m pytest
+          pytest --noconftest tests/integration/benchmarks/test_guidellm_requests.py -q
         working-directory: logos-orchestrator
 
       - name: Run worker-node Tests
@@ -78,10 +79,11 @@ jobs:
         #     file. The tests pass locally on macOS and Linux.
         run: |
           source ../logos-orchestrator/.venv/bin/activate
-          pytest -q --tb=short --timeout=30 \
+          coverage run --source=logos_worker_node -m pytest -q --tb=short --timeout=30 \
             --ignore=tests/test_model_cache.py \
             --ignore=tests/test_calibration.py \
             --ignore=tests/test_lane_manager.py
+          coverage xml -o coverage.xml
         working-directory: logos-workernode
 
       - name: Generate Coverage Report
@@ -90,41 +92,94 @@ jobs:
           coverage xml
         working-directory: logos-orchestrator
 
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-coverage
+          path: |
+            logos-orchestrator/coverage.xml
+            logos-workernode/coverage.xml
+          retention-days: 1
+
   test-node-manager:
     name: Test Node Manager
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install dependencies
         run: |
           uv venv .venv
           uv pip install --python .venv/bin/python -e ".[dev]"
+          uv pip install --python .venv/bin/python "coverage[toml]==7.16.2"
         working-directory: logos-node-manager
 
       - name: Run tests
         # No Docker engine is needed: the tests replace it with a simulation.
-        run: .venv/bin/python -m pytest -q --tb=short
+        run: |
+          .venv/bin/python -m coverage run --source=logos_node_manager -m pytest -q --tb=short
+          .venv/bin/python -m coverage xml -o coverage.xml
         working-directory: logos-node-manager
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: node-manager-coverage
+          path: logos-node-manager/coverage.xml
+          retention-days: 1
+
+  test-agent:
+    name: Test Agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Install dependencies
+        # Exactly the locked versions, from wheels only; the tests import the
+        # application from the source tree, so the project is not installed.
+        run: uv sync --frozen --extra dev --no-install-project --no-build --python 3.13
+        working-directory: logos-agent
+
+      - name: Run tests
+        run: |
+          .venv/bin/python -m coverage run --source=app,workspace -m pytest -q --tb=short
+          .venv/bin/python -m coverage xml -o coverage.xml
+        working-directory: logos-agent
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-coverage
+          path: logos-agent/coverage.xml
+          retention-days: 1
 
   test-webservice:
     name: Test Webservice
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Java
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           java-version: "25"
           distribution: "temurin"
@@ -135,15 +190,93 @@ jobs:
         run: mvn -B test
         working-directory: logos-webservice
 
+      - name: Upload compiled classes and coverage report
+        # The Java analysis of the quality job needs the bytecode; JaCoCo
+        # writes the coverage report during `mvn test`.
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: webservice-build
+          path: |
+            logos-webservice/target/classes
+            logos-webservice/target/test-classes
+            logos-webservice/target/site/jacoco/jacoco.xml
+          retention-days: 1
+
+  quality:
+    name: SonarQube Cloud Analysis
+    needs: [test, test-node-manager, test-agent, test-webservice, test-ui-export]
+    # Pull requests from forks get no secrets, so the analysis cannot run there.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history lets the analysis attribute new code and blame lines.
+          fetch-depth: 0
+
+      - name: Download orchestrator and worker node coverage reports
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-coverage
+          path: .
+
+      - name: Download node manager coverage report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: node-manager-coverage
+          path: logos-node-manager
+
+      - name: Download agent coverage report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: agent-coverage
+          path: logos-agent
+
+      - name: Download web service build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: webservice-build
+          path: logos-webservice/target
+
+      - name: Download web application coverage report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ui-coverage
+          path: logos-ui/coverage/logos-ui
+
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version: "25"
+          distribution: "temurin"
+          cache: "maven"
+          cache-dependency-path: logos-webservice/pom.xml
+
+      - name: Collect Java libraries
+        # Lets the Java analysis resolve the types the web service imports.
+        run: mvn -B -q dependency:copy-dependencies -DincludeScope=test -DoutputDirectory=target/dependency
+        working-directory: logos-webservice
+
+      - name: Run analysis
+        uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65 # v8.4.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          # Fail this job, a required check, when the quality gate fails.
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=600
+
   test-ui-export:
     name: Test UI Static Export
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: logos-ui/.nvmrc
           cache: "npm"
@@ -154,8 +287,21 @@ jobs:
         working-directory: logos-ui
 
       - name: Run unit tests
-        run: npm test -- --watch=false
+        run: npm test -- --watch=false --coverage --coverage-reporters=lcov
         working-directory: logos-ui
+
+      - name: Prefix coverage paths
+        # The report lists files relative to logos-ui/; the analysis runs from
+        # the repository root.
+        run: sed -i 's#^SF:#SF:logos-ui/#' coverage/logos-ui/lcov.info
+        working-directory: logos-ui
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ui-coverage
+          path: logos-ui/coverage/logos-ui/lcov.info
+          retention-days: 1
 
       - name: Build static web export
         run: npm run build

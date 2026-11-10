@@ -152,7 +152,7 @@ public class GatewayCloudAccounting {
     @Transactional
     public Integer admitAndReserve(GatewayKey key, GatewayDeployment deployment, byte[] requestBody) {
         return admitAndReserve(key, deployment, requestBody,
-            GatewayLoggingLevel.resolve(null, key != null ? key.logLevel() : null));
+            GatewayLoggingLevel.resolve(null, key.logLevel()));
     }
 
     /**
@@ -416,12 +416,18 @@ public class GatewayCloudAccounting {
      * so the intervals between them never mix two clocks.
      */
     private static MapSqlParameterSource timingParams(GatewayForwardTimings timings) {
-        GatewayForwardTimings t = timings == null ? GatewayForwardTimings.NONE : timings;
-        return new MapSqlParameterSource()
-            .addValue("responded", utc(Instant.now()))
-            .addValue("providerCall", utc(t.providerCall()))
-            .addValue("firstToken", utc(t.firstToken()))
-            .addValue("providerResponse", utc(t.providerResponse()));
+        MapSqlParameterSource params = new MapSqlParameterSource()
+            .addValue("responded", utc(Instant.now()));
+        if (timings == null) {
+            return params
+                .addValue("providerCall", null)
+                .addValue("firstToken", null)
+                .addValue("providerResponse", null);
+        }
+        return params
+            .addValue("providerCall", utc(timings.providerCall()))
+            .addValue("firstToken", utc(timings.firstToken()))
+            .addValue("providerResponse", utc(timings.providerResponse()));
     }
 
     /**
@@ -488,43 +494,37 @@ public class GatewayCloudAccounting {
         insertMissingTokenTypes(names);
         Map<String, Integer> typeIds = tokenTypeIds(names);
 
-        List<String> values = new ArrayList<>();
-        MapSqlParameterSource params = new MapSqlParameterSource("log", logEntryId);
-        int index = 0;
+        List<MapSqlParameterSource> rows = new ArrayList<>();
         for (Map.Entry<String, Integer> e : counts.entrySet()) {
             Integer typeId = typeIds.get(e.getKey());
             if (typeId == null) {
                 continue;
             }
-            values.add("(:log, :t" + index + ", :c" + index + ")");
-            params.addValue("t" + index, typeId);
-            params.addValue("c" + index, e.getValue());
-            index++;
+            rows.add(new MapSqlParameterSource("log", logEntryId)
+                .addValue("type", typeId)
+                .addValue("count", e.getValue()));
         }
-        if (values.isEmpty()) {
+        if (rows.isEmpty()) {
             return;
         }
-        jdbc.update("""
+        jdbc.batchUpdate("""
             INSERT INTO usage_tokens (log_entry_id, type_id, token_count)
-            VALUES %s
+            VALUES (:log, :type, :count)
             ON CONFLICT (log_entry_id, type_id)
             DO UPDATE SET token_count = EXCLUDED.token_count
-            """.formatted(String.join(", ", values)), params);
+            """, rows.toArray(MapSqlParameterSource[]::new));
     }
 
     /** Register token type names not seen before. {@code name} is UNIQUE, so this is race-safe. */
     private void insertMissingTokenTypes(List<String> names) {
-        List<String> values = new ArrayList<>();
-        MapSqlParameterSource params = new MapSqlParameterSource();
-        for (int i = 0; i < names.size(); i++) {
-            values.add("(:n" + i + ", '')");
-            params.addValue("n" + i, names.get(i));
-        }
-        jdbc.update("""
+        MapSqlParameterSource[] rows = names.stream()
+            .map(name -> new MapSqlParameterSource("name", name))
+            .toArray(MapSqlParameterSource[]::new);
+        jdbc.batchUpdate("""
             INSERT INTO token_types (name, description)
-            VALUES %s
+            VALUES (:name, '')
             ON CONFLICT (name) DO NOTHING
-            """.formatted(String.join(", ", values)), params);
+            """, rows);
     }
 
     private Map<String, Integer> tokenTypeIds(List<String> names) {

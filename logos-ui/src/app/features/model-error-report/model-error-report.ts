@@ -12,6 +12,8 @@ import { NgClass } from '@angular/common';
 import { NightlyBenchmarks } from './nightly-benchmarks';
 import { BenchmarkRunFailure } from './benchmark-run-failure';
 import { BenchmarkResults } from './benchmark-results';
+import { DeployedConfiguration } from './deployed-configuration';
+import { benchmarkDatasetLabel } from './benchmark-configuration';
 import { BenchmarkComparison } from './benchmark-comparison';
 import { BenchmarkBatchEditor } from './benchmark-batch-editor';
 import { BenchmarkBatch } from './benchmark-batch';
@@ -23,7 +25,7 @@ import {
 } from '@angular/cdk/scrolling';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
+import { combineLatest, firstValueFrom, Subscription } from 'rxjs';
 
 import { ModelManagementService } from '../../core/services/model-management.service';
 import { Model } from '../../shared/models/model.model';
@@ -58,7 +60,6 @@ type ModelErrorTab =
   | 'error_report'
   | 'complete_logs'
   | 'performance'
-  | 'delays'
   | 'access'
   | 'prices';
 
@@ -332,6 +333,17 @@ const UNSUPPORTED_REASON_DESCRIPTIONS: Record<string, ReasonDescription> = {
   },
 };
 
+// Written by the worker's GPU health check during a probe.
+const GPU_HEALTH_NEEDLE = 'gpu health:';
+
+function gpuHealthReason(label: string, finding: string, consequence: string): ReasonDescription {
+  return {
+    label,
+    description: `nvidia-smi ${finding} while the probe was running. ${consequence}`,
+    needle: GPU_HEALTH_NEEDLE,
+  };
+}
+
 const NODE_UNHEALTHY_REASON_DESCRIPTIONS: Record<string, ReasonDescription> = {
   'filesystem-eio': {
     label: 'Filesystem I/O error',
@@ -355,6 +367,26 @@ const NODE_UNHEALTHY_REASON_DESCRIPTIONS: Record<string, ReasonDescription> = {
     // Same reasoning as filesystem-eio above.
     needle: 'No space left on device',
   },
+  'gpu-error': gpuHealthReason(
+    'GPU reports an error',
+    'reported an error state (ERR!/[Error]) for a GPU',
+    'The card or driver is wedged and the node needs operator action.'
+  ),
+  'gpu-na': gpuHealthReason(
+    'GPU memory unreadable',
+    'could not read a GPU\'s memory',
+    'The card fell off the bus or the driver lost it.'
+  ),
+  'gpu-query-failed': gpuHealthReason(
+    'GPU query failed',
+    'exited with an error',
+    'The driver is likely unhealthy.'
+  ),
+  'gpu-query-timeout': gpuHealthReason(
+    'GPU query timed out',
+    'did not answer',
+    'The driver is likely stuck.'
+  ),
   'cuda-device-not-detected': {
     label: 'No GPU detected',
     description: 'No CUDA-capable device is visible to vLLM on this node.',
@@ -430,6 +462,23 @@ const OBSERVED_REASON_DESCRIPTIONS: Record<string, ReasonDescription> = {
     // Can hit at essentially any point CUDA kernels run — resolved
     // positionally (domain omitted), same as cuda-oom.
     needle: 'CUDA error:',
+  },
+  'repeated-ready-timeout': {
+    label: 'Repeated ready timeout (observed)',
+    description:
+      'vLLM did not become ready within the ready timeout on consecutive ' +
+      'probes, so the KV-cache search was stopped. A later session retries.',
+    domain: DOMAIN_SERVER_START,
+    needle: 'ready timeout:',
+  },
+  'engine-warmup-stalled': {
+    label: 'Engine warmup stalled (observed)',
+    description:
+      'vLLM stopped producing output during engine warmup and no compiler ' +
+      'was running, so the probe was aborted early. A larger KV cache ' +
+      'cannot fix this; a later session retries.',
+    domain: DOMAIN_SERVER_START,
+    needle: 'engine warmup stalled',
   },
   'hf-network-timeout': {
     label: 'Hugging Face network timeout (observed)',
@@ -637,6 +686,7 @@ const GENERIC_CALIBRATION_ERROR_DETAIL_MAX_LINES = 80;
     BenchmarkBatchEditor,
     BenchmarkComparison,
     BenchmarkResults,
+    DeployedConfiguration,
     BenchmarkRunFailure,
     NightlyBenchmarks,
 
@@ -726,7 +776,10 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   readonly performanceLoading = signal(false);
   private performanceRequestVersion = 0;
   readonly performanceError = signal(false);
-  readonly performanceView = signal<'results' | 'run'>('results');
+  readonly deployedPairs = computed(() => this.benchmarkPairs().filter(pair => pair.provider_type === 'logosnode'));
+  readonly performanceView = signal<'results' | 'run' | 'measurements'>('results');
+  readonly linkedBenchmarkId = signal<number | null>(null);
+  private navigation?: Subscription;
   readonly benchmarkStartingPairId = signal<number | null>(null);
   readonly benchmarkCancellingJobId = signal<number | null>(null);
   readonly benchmarkStartError = signal<string | null>(null);
@@ -795,11 +848,16 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     this.benchmarkSampleSize.set(COMPARISON_SAMPLE_SIZE);
   }
 
+  openBenchmarkSetup(): void {
+    this.performanceView.set('run');
+    setTimeout(() => document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  }
+
   useBenchmarkConfiguration(benchmark: ModelProviderBenchmark): void {
     this.performanceView.set('run');
     this.benchmarkSettings.set(settingsFromBenchmark(benchmark));
     this.benchmarkSampleSize.set(Math.min(100, Math.max(1, benchmark.sample_size)));
-    document.getElementById('performance-view-controls')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setTimeout(() => document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 
   hasServingOverrides(): boolean {
@@ -833,7 +891,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     return [...grouped.entries()].map(([modelProviderId, benchmarks]) => ({
       modelProviderId,
       benchmarks,
-      selected: benchmarks.find(benchmark => benchmark.id === selectedIds.get(modelProviderId)) ?? benchmarks[0]!,
+      selected: benchmarks.find(benchmark => benchmark.id === (selectedIds.get(modelProviderId) ?? this.linkedBenchmarkId())) ?? benchmarks[0]!,
     }));
   });
   private performancePollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -853,7 +911,6 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     'error_report',
     'complete_logs',
     'performance',
-    'delays',
     'access',
     'prices',
   ];
@@ -862,7 +919,6 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     error_report: 'Error Report',
     complete_logs: 'Complete Logs',
     performance: 'Performance',
-    delays: 'Delays',
     access: 'Access',
     prices: 'Prices',
   };
@@ -881,8 +937,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
    * The Prices tab only exists for cloud models: a model served solely by
    * local (logosnode) providers has no catalogue pricing. Until a successful
    * response proves that, the tab stays visible so its loading and error
-   * states remain reachable. The Delays tab covers local and cloud providers
-   * alike, so every model has it.
+   * states remain reachable. Request measurements cover local and cloud providers alike.
    */
   readonly visibleTabs = computed<readonly ModelErrorTab[]>(() => {
     const hasCloudProvider = this.priceProviders().some(
@@ -1142,23 +1197,31 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   // ==========================================================================
 
   async ngOnInit(): Promise<void> {
-    const id = Number(
-      this.route.snapshot.paramMap.get('id')
-    );
-
-    this.modelId.set(id);
-
-    // Model rows deep-link to the access tab (?tab=access); only known tabs
-    // override the default, everything else falls back to complete logs.
-    const tabParam = this.route.snapshot.queryParamMap.get('tab') as ModelErrorTab | null;
-    if (tabParam != null && this.tabs.includes(tabParam)) {
-      this.activeTab.set(tabParam);
-    }
-
-    await this.fetchModel(id);
+    this.navigation = combineLatest([this.route.paramMap, this.route.queryParamMap]).subscribe(([params, query]) => {
+      const id = Number(params.get('id'));
+      const requestedTab = query.get('tab');
+      const tab = (requestedTab === 'delays' || requestedTab === 'improvement' ? 'performance' : requestedTab) as ModelErrorTab | null;
+      if (requestedTab === 'delays') this.performanceView.set('measurements');
+      const benchmark = Number(query.get('benchmark'));
+      const linked = Number.isSafeInteger(benchmark) && benchmark > 0 ? benchmark : null;
+      if (linked !== this.linkedBenchmarkId()) this.selectedBenchmarkIds.set(new Map());
+      this.linkedBenchmarkId.set(linked);
+      if (this.linkedBenchmarkId() !== null) {
+        this.activeTab.set('performance');
+        this.performanceView.set('results');
+      } else if (tab !== null && this.tabs.includes(tab)) {
+        this.activeTab.set(tab);
+      }
+      if (this.modelId() !== id) {
+        this.modelId.set(id);
+        this.performance.set([]);
+        void this.fetchModel(id);
+      }
+    });
   }
 
   ngOnDestroy(): void {
+    this.navigation?.unsubscribe();
     this.destroyed = true;
     this.clearPerformancePoll();
     if (this.logCopiedResetTimer !== null) {
@@ -1178,6 +1241,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     try {
       const models =
         await this.modelService.getModels();
+      if (this.destroyed || this.modelId() !== id) return;
 
       const foundModel = models.find(
         model => model.id === id
@@ -1207,7 +1271,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     } catch {
       this.loadError.set(true);
     } finally {
-      this.loading.set(false);
+      if (this.modelId() === id) this.loading.set(false);
     }
   }
 
@@ -1397,18 +1461,21 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   }
 
   benchmarkStatusLabel(run: ModelBenchmarkRun): string {
-    if (run.status === 'pending') return `Queued for ${run.request.provider_name}`;
+    if (run.status === 'pending') return 'Queued';
     if (run.status === 'running') {
-      if (run.result.stage === 'preparing_worker') return `Preparing ${run.request.provider_name}`;
-      if (run.result.stage === 'reconfiguring_worker') return `Applying vLLM settings on ${run.request.provider_name} · model may restart`;
-      if (run.result.stage === 'waiting_for_model') return `Waiting for the model on ${run.request.provider_name} to become ready`;
-      if (run.result.stage === 'warming_up') return `Warming up ${run.request.provider_name}`;
+      if (run.result.stage === 'preparing_worker') return 'Preparing worker';
+      if (run.result.stage === 'reconfiguring_worker') return 'Applying vLLM settings · model may restart';
+      if (run.result.stage === 'waiting_for_model') return 'Waiting for model readiness';
+      if (run.result.stage === 'warming_up') return 'Warming up';
       if (run.result.stage === 'benchmarking') {
         const started = run.result.started_samples ?? 0;
         const total = run.result.total_samples ?? run.request.samples;
-        return `Running on ${run.request.provider_name} · request ${started}/${total}`;
+        const progress = run.result.completed_samples === undefined
+          ? `${started}/${total} requests started`
+          : `${run.result.completed_samples}/${total} requests completed`;
+        return `Running · ${progress}`;
       }
-      return `Running on ${run.request.provider_name}`;
+      return 'Running';
     }
     if (run.status === 'success') return `Completed ${this.formatBenchmarkTimestamp(run.updated_at)}`;
     return `Failed ${this.formatBenchmarkTimestamp(run.updated_at)}`;
@@ -1484,9 +1551,6 @@ export class ModelErrorReport implements OnInit, OnDestroy {
 
   setTab(tab: ModelErrorTab): void {
     this.activeTab.set(tab);
-    if (tab === 'delays') {
-      this.refreshDelays();
-    }
     if (tab === 'performance') {
       void this.loadPerformance(this.modelId(), true);
     } else {
@@ -1570,8 +1634,22 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     return 'GuideLLM';
   }
 
+  benchmarkDatasetLabel(benchmark: ModelProviderBenchmark): string {
+    return benchmarkDatasetLabel(benchmark);
+  }
+
+  benchmarkLatency(benchmark: ModelProviderBenchmark, percentile: 'p50' | 'p95' | 'p100'): string {
+    return this.formatBenchmarkDuration(benchmark.metrics.request_latency_ms ?? benchmark.metrics.request_latency,
+      percentile, benchmark.metrics.request_latency_ms ? 'milliseconds' : 'seconds');
+  }
+
   configurationRows(benchmark: ModelProviderBenchmark) {
-    return benchmarkConfigurationRows(benchmark);
+    return benchmarkConfigurationRows(benchmark, false);
+  }
+
+  uncapturedConfiguration(benchmark: ModelProviderBenchmark) {
+    return benchmarkConfigurationRows(benchmark).flatMap(row => [row.benchmark, row.serving]
+      .flatMap(item => item && !item.captured ? [item] : []));
   }
 
   servingCommand(benchmark: ModelProviderBenchmark): string | null {
