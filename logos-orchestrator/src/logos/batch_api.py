@@ -53,7 +53,13 @@ from logos.billing.finalize import finalize_billing_inputs
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.types import cloud_auth_header
 from logos.errors import openai_error_response, raise_openai_error
-from logos.request_content import parse_batch_file_upload, sanitized_headers_for_persistence, strip_proxy_prefixes
+from logos.request_content import (
+    parse_batch_file_upload,
+    sanitized_headers_for_persistence,
+    stateful_reference_detail,
+    stateful_reference_field,
+    strip_proxy_prefixes,
+)
 from logos.responses import get_client_ip
 from logos.sdi.azure_deployment_sync import azure_host_from_base_url
 from logos.sdi.providers.azure_provider import extract_azure_deployment_name
@@ -1416,6 +1422,11 @@ def _local_batch_contract(content: bytes, json_body: Dict[str, Any]) -> str:
         raise_openai_error(400, "completion_window must be '24h'.", code="invalid_request_error")
 
     for number, line in enumerate(parse_request_lines(content), start=1):
+        reference = stateful_reference_field(line.get("body"))
+        if reference is not None:
+            raise_openai_error(
+                400, f"Line {number}: {stateful_reference_detail(reference)}", code="invalid_batch_line"
+            )
         method = line.get("method")
         if method is None:
             raise_openai_error(

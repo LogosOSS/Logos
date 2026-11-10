@@ -24,6 +24,16 @@ curl https://logos.aet.cit.tum.de/v1/chat/completions \
 
 For the complete request and response schema, see the Swagger UI at `/docs`.
 
+## Conversation State in the Responses API
+
+Logos does not keep conversation state at the provider. Requests that set
+`previous_response_id` or `conversation` are rejected with status `400`.
+Send the whole conversation in `input` instead.
+
+This is a limitation of Logos. Logos reaches each provider with one account
+for all teams, so the provider cannot tell which team stored a response, and
+a reference could load the conversation of another team.
+
 ## Audio Transcription and Translation
 
 Logos implements the OpenAI multipart audio APIs:

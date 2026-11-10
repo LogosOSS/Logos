@@ -12,7 +12,7 @@ import base64
 import binascii
 import json
 import os
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from fastapi import HTTPException, Request
 from starlette.datastructures import FormData, UploadFile
@@ -51,6 +51,33 @@ def reject_client_multipart_marker(body: Any) -> None:
     """
     if isinstance(body, dict) and MULTIPART_PAYLOAD_KEY in body:
         raise HTTPException(status_code=400, detail=f"Unsupported request field '{MULTIPART_PAYLOAD_KEY}'")
+
+
+# Responses API fields that point at state the provider keeps. Providers are
+# reached with one shared account, so the provider cannot tell teams apart: a
+# reference would load whatever response or conversation it names, also
+# another team's. Requests carry their full history instead.
+STATEFUL_REFERENCE_FIELDS = ("previous_response_id", "conversation")
+
+
+def stateful_reference_field(body: Any) -> Optional[str]:
+    """The first provider-state reference a request body sets, if any."""
+    if not isinstance(body, dict):
+        return None
+    return next((name for name in STATEFUL_REFERENCE_FIELDS if body.get(name) is not None), None)
+
+
+def stateful_reference_detail(field: str) -> str:
+    return (
+        f"'{field}' is not supported: Logos does not keep conversation state at the provider. "
+        "Send the full conversation in 'input' instead."
+    )
+
+
+def reject_stateful_references(body: Any) -> None:
+    field = stateful_reference_field(body)
+    if field is not None:
+        raise HTTPException(status_code=400, detail=stateful_reference_detail(field))
 
 
 def _audio_request_limit_detail() -> str:

@@ -100,6 +100,7 @@ from logos.request_content import (
     parse_audio_upload,
     payload_requests_streaming,
     reject_client_multipart_marker,
+    reject_stateful_references,
     render_metered_whisper_response,
     sanitized_headers_for_persistence,
     sanitized_payload_for_logging,
@@ -4540,6 +4541,7 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
         reject_client_multipart_marker(body)
+        reject_stateful_references(body)
 
     if body is None:
         body = {}

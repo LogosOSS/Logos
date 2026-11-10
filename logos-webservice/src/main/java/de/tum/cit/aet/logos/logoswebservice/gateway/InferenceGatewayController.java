@@ -120,6 +120,7 @@ public class InferenceGatewayController {
         GatewayKey key = authService.requireActiveKey(apiKeyValue);
         byte[] body = GatewayBodyReader.read(request.getInputStream());
         JsonNode root = parseJsonBody(body, contentType);
+        rejectStatefulReferences(root);
         String modelName = extractModelName(root);
 
         if (modelName != null
@@ -230,6 +231,29 @@ public class InferenceGatewayController {
             return objectMapper.readTree(body);
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    /**
+     * Responses API fields that point at state the provider keeps. Providers
+     * are reached with one shared account, so the provider cannot tell teams
+     * apart: a reference would load whatever response or conversation it
+     * names, also another team's. Requests carry their full history instead.
+     * The orchestrator applies the same rule to the requests proxied to it.
+     */
+    static final List<String> STATEFUL_REFERENCE_FIELDS = List.of("previous_response_id", "conversation");
+
+    static void rejectStatefulReferences(JsonNode root) {
+        if (root == null || !root.isObject()) {
+            return;
+        }
+        for (String field : STATEFUL_REFERENCE_FIELDS) {
+            JsonNode value = root.get(field);
+            if (value != null && !value.isNull()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "'" + field
+                    + "' is not supported: Logos does not keep conversation state at the provider. "
+                    + "Send the full conversation in 'input' instead.");
+            }
         }
     }
 
