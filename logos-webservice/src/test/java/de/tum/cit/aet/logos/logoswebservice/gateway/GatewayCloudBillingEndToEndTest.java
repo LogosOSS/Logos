@@ -526,7 +526,7 @@ class GatewayCloudBillingEndToEndTest {
     }
 
     @Test
-    void clientDisconnectMidStream_isNotBilled() throws Exception {
+    void clientDisconnectMidStream_isBilledFromProviderUsage() throws Exception {
         responseContentType = "text/event-stream";
         responseBody = "data: {\"usage\":{\"prompt_tokens\":10}}\n\n";
         Fixture f = seedPricedDeployment();
@@ -545,8 +545,13 @@ class GatewayCloudBillingEndToEndTest {
             }
         })).isInstanceOf(IOException.class);
 
-        assertThat(cost(logId)).isZero();
-        assertThat(status(logId)).isEqualTo("error");
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (status(logId) == null && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(status(logId)).isEqualTo("success");
+        assertThat(cost(logId)).isEqualTo(200L);
+        assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 10);
     }
 
     // ------------------------------------------------------- payload logging

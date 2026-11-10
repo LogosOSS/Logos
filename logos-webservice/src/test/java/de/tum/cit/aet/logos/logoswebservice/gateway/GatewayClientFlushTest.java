@@ -10,11 +10,11 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.sun.net.httpserver.HttpServer;
@@ -29,16 +29,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import jakarta.servlet.http.HttpServletResponse;
 
-/**
- * A client that is gone shows up when the relay flushes to it. The direct-cloud
- * relay must then end like any other failed relay: the request is settled as a
- * failure, the upstream connection is released, and the relay no longer counts
- * as active.
- */
+/** Client failures release the relay while provider usage is collected independently. */
 class GatewayClientFlushTest {
 
     private HttpServer upstream;
-    private final CountDownLatch upstreamReleased = new CountDownLatch(1);
+    private final CountDownLatch continueUpstream = new CountDownLatch(1);
+    private final CountDownLatch settled = new CountDownLatch(1);
+    private final AtomicReference<GatewayForwardResult> success = new AtomicReference<>();
+    private final AtomicReference<String> failure = new AtomicReference<>();
+    private String tail = "data: {\"usage\":{\"prompt_tokens\":37,\"completion_tokens\":19,\"total_tokens\":56}}\n\n";
+    private static final byte[] REQUEST = "{\"model\":\"m\",\"stream\":true}".getBytes(StandardCharsets.UTF_8);
 
     @BeforeEach
     void startUpstream() throws IOException {
@@ -47,17 +47,15 @@ class GatewayClientFlushTest {
             exchange.getRequestBody().readAllBytes();
             exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
             exchange.sendResponseHeaders(200, 0);
-            OutputStream body = exchange.getResponseBody();
-            try {
-                // Keeps streaming until the gateway closes the connection.
-                for (int i = 0; i < 200; i++) {
-                    body.write("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n"
-                        .getBytes(StandardCharsets.UTF_8));
-                    body.flush();
-                    Thread.sleep(25);
-                }
-            } catch (IOException e) {
-                upstreamReleased.countDown();
+            try (OutputStream body = exchange.getResponseBody()) {
+                body.write("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"
+                    .getBytes(StandardCharsets.UTF_8));
+                body.flush();
+                continueUpstream.await();
+                body.write(tail.getBytes(StandardCharsets.UTF_8));
+                body.flush();
+            } catch (IOException ignored) {
+                // A completed or timed-out drain closes the provider connection.
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } finally {
@@ -69,41 +67,117 @@ class GatewayClientFlushTest {
 
     @AfterEach
     void stopUpstream() {
-        if (upstream != null) {
-            upstream.stop(0);
-        }
+        continueUpstream.countDown();
+        upstream.stop(0);
     }
 
-    @Test
-    void aFailedFlushToTheClient_settlesTheRequestAsFailedAndReleasesTheUpstream() throws Exception {
+    private ResponseEntity<StreamingResponseBody> forward(Duration timeout) throws Exception {
         GatewayDeployment deployment = new GatewayDeployment(
             1, "m", 10, "Cloud", "cloud", "openai", "http://127.0.0.1:" + upstream.getAddress().getPort(), null,
             "Authorization", "Bearer {}", "sk", "CLOUD_NOT_IN_EU_BY_US_PROVIDER", null);
-        AtomicBoolean settledSuccess = new AtomicBoolean();
-        AtomicReference<String> settledFailure = new AtomicReference<>();
-        int activeBefore = activeRelays();
-
-        ResponseEntity<StreamingResponseBody> forwarded = new GatewayCloudForwarder(new ObjectMapper()).forward(
-            deployment, "/v1/chat/completions", null, "POST",
-            "{\"model\":\"m\",\"stream\":true}".getBytes(StandardCharsets.UTF_8),
+        GatewayCloudForwarder forwarder = new GatewayCloudForwarder(new ObjectMapper());
+        forwarder.setStreamDrainTimeout(timeout);
+        return forwarder.forward(deployment, "/v1/chat/completions", null, "POST", REQUEST,
             Map.of("content-type", List.of("application/json")), false,
-            result -> settledSuccess.set(true),
-            (error, timings) -> settledFailure.set(error));
+            result -> { success.set(result); settled.countDown(); },
+            (error, timings) -> { failure.set(error); settled.countDown(); });
+    }
+
+    private void disconnectOnFlush(ResponseEntity<StreamingResponseBody> forwarded) throws Exception {
         HttpServletResponse goneClient = mock(HttpServletResponse.class);
         doThrow(new IOException("Broken pipe")).when(goneClient).flushBuffer();
         ResponseEntity<StreamingResponseBody> response = GatewayClientFlush.flushingTo(goneClient, forwarded);
-
+        int activeBefore = (int) GatewayRelayOccupancy.snapshot().get("active");
         assertThatThrownBy(() -> response.getBody().writeTo(new ByteArrayOutputStream()))
-            .isInstanceOf(IOException.class)
-            .hasMessage("Broken pipe");
-
-        assertThat(settledFailure.get()).isEqualTo("Broken pipe");
-        assertThat(settledSuccess).isFalse();
-        assertThat(activeRelays()).isEqualTo(activeBefore);
-        assertThat(upstreamReleased.await(5, TimeUnit.SECONDS)).isTrue();
+            .isInstanceOf(IOException.class).hasMessage("Broken pipe");
+        assertThat(GatewayRelayOccupancy.snapshot().get("active")).isEqualTo(activeBefore);
+        assertThat(failure.get()).isNull();
     }
 
-    private static int activeRelays() {
-        return (int) GatewayRelayOccupancy.snapshot().get("active");
+    @Test
+    void failedClientFlushReleasesTheRelayBeforeSettlingFromLateProviderUsage() throws Exception {
+        org.springframework.web.context.request.ServletWebRequest request =
+            new org.springframework.web.context.request.ServletWebRequest(
+                new org.springframework.mock.web.MockHttpServletRequest());
+        org.springframework.web.context.request.RequestContextHolder.setRequestAttributes(request);
+        ResponseEntity<StreamingResponseBody> forwarded;
+        try {
+            forwarded = forward(Duration.ofSeconds(5));
+        } finally {
+            org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
+        }
+        disconnectOnFlush(forwarded);
+        new GatewayRelayCleanup().afterCompletion(request, () -> null);
+        assertThat(settled.getCount()).isEqualTo(1);
+        continueUpstream.countDown();
+        assertThat(settled.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(failure.get()).isNull();
+        assertThat(success.get().usage()).containsExactlyInAnyOrderEntriesOf(
+            Map.of("prompt_tokens", 37L, "completion_tokens", 19L, "total_tokens", 56L));
+    }
+
+    @Test
+    void requestCompletionDuringProviderSilenceDetachesTheRelayAndKeepsReadingUsage() throws Exception {
+        org.springframework.web.context.request.ServletWebRequest request =
+            new org.springframework.web.context.request.ServletWebRequest(
+                new org.springframework.mock.web.MockHttpServletRequest());
+        org.springframework.web.context.request.RequestContextHolder.setRequestAttributes(request);
+        ResponseEntity<StreamingResponseBody> forwarded;
+        try {
+            forwarded = forward(Duration.ofSeconds(5));
+        } finally {
+            org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
+        }
+        CountDownLatch firstWrite = new CountDownLatch(1);
+        CountDownLatch relayReleased = new CountDownLatch(1);
+        Thread.ofVirtual().start(() -> {
+            try {
+                forwarded.getBody().writeTo(new ByteArrayOutputStream() {
+                    @Override
+                    public void flush() {
+                        firstWrite.countDown();
+                    }
+                });
+            } catch (IOException ignored) {
+                // The client-side relay ends independently of provider completion.
+            } finally {
+                relayReleased.countDown();
+            }
+        });
+        assertThat(firstWrite.await(5, TimeUnit.SECONDS)).isTrue();
+        new GatewayRelayCleanup().afterCompletion(request, () -> null);
+        assertThat(relayReleased.await(1, TimeUnit.SECONDS)).isTrue();
+        assertThat(settled.getCount()).isEqualTo(1);
+        continueUpstream.countDown();
+        assertThat(settled.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(failure.get()).isNull();
+        assertThat(success.get().usage()).containsEntry("completion_tokens", 19L);
+    }
+
+    @Test
+    void failedClientWriteStillCapturesTheProviderChunkAndEstimatesAtEnd() throws Exception {
+        tail = "data: {\"choices\":[{\"delta\":{\"content\":\" world!\"}}]}\n\n";
+        ResponseEntity<StreamingResponseBody> forwarded = forward(Duration.ofSeconds(5));
+        OutputStream gone = new OutputStream() {
+            @Override
+            public void write(int b) throws IOException {
+                throw new IOException("Broken pipe");
+            }
+        };
+        assertThatThrownBy(() -> forwarded.getBody().writeTo(gone)).isInstanceOf(IOException.class);
+        continueUpstream.countDown();
+        assertThat(settled.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(failure.get()).isNull();
+        assertThat(success.get().usage()).containsEntry("completion_tokens", 3L)
+            .containsEntry("prompt_tokens", (REQUEST.length + 3L) / 4).containsEntry("usage_estimated", 1L);
+    }
+
+    @Test
+    void silentProviderIsClosedAndEstimatedAtTheDrainDeadline() throws Exception {
+        disconnectOnFlush(forward(Duration.ofMillis(100)));
+        assertThat(settled.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(failure.get()).isNull();
+        assertThat(success.get().usage()).containsEntry("completion_tokens", 2L)
+            .containsEntry("prompt_tokens", (REQUEST.length + 3L) / 4).containsEntry("usage_estimated", 1L);
     }
 }

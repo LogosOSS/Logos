@@ -298,6 +298,18 @@ public class GatewayCloudAccounting {
         if (logEntryId == null) {
             return;
         }
+        if (usage != null && usage.containsKey("provider_delivered_nothing")) {
+            jdbc.update("""
+                UPDATE log_entry
+                   SET timestamp_response = :responded,
+                       %s,
+                       result_status = 'success',
+                       settled_cost_micro_cents = 0,
+                       cost_finalized = TRUE
+                 WHERE id = :id AND result_status IS NULL
+                """.formatted(TIMINGS_SET), timingParams(timings).addValue("id", logEntryId));
+            return;
+        }
         boolean priced = usage != null && !usage.isEmpty();
         // Claim the row first: a reservation already zeroed by reconcileStale
         // (or settled by a racing callback) must not gain usage rows. The tier

@@ -1,15 +1,8 @@
-"""An abandoned request must be aborted on the worker, not just locally.
+"""Prompt worker cancellation and partial usage billing after client disconnects.
 
-`_execute_cancelling_on_disconnect` already stops the orchestrator from
-reading a response whose client is gone, and for the HTTP path that is
-enough: closing the httpx context closes the connection and vLLM aborts the
-sequence by itself. Worker requests have no such connection — every request
-to a worker is multiplexed over one WebSocket — so dropping the local queue
-only stops *us* from reading. The lane keeps generating, holding a KV slot
-for the full length of a response nobody will read; under a retry storm each
-abandoned attempt eats the capacity its own retry needs.
-
-These tests pin the missing half: the orchestrator tells the worker to stop.
+Worker requests share a WebSocket, so dropping the local queue does not stop
+inference. Cancellation must reach the worker promptly to release its KV slot
+and avoid abandoned generations occupying capacity needed by subsequent requests.
 """
 
 from __future__ import annotations
@@ -264,9 +257,8 @@ async def test_hello_without_actions_leaves_the_known_set_intact():
 
 @pytest.mark.asyncio
 async def test_closing_the_response_closes_the_worker_stream_at_once(monkeypatch):
-    from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
-
     import logos as main
+    from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
 
     closed = asyncio.Event()
 
@@ -321,18 +313,24 @@ async def test_closing_the_response_closes_the_worker_stream_at_once(monkeypatch
 
     await body.aclose()
 
-    # No sleep, no gc pass: the worker stream must already be closed by the
-    # time the disconnect handler returns.
-    assert closed.is_set(), "worker stream cleanup was deferred to the GC hook"
+    # No sleep or GC pass: cleanup and slot release happen before close returns.
+    assert closed.is_set()
+    assert _release_calls == [(27, 12, "logosnode", "req-abandoned")]
+    assert _completion_calls[-1]["result_status"] == "error"
+    assert "Client disconnected" in _completion_calls[-1]["error_message"]
+    usage = _completion_calls[-1]["usage_tokens"]
+    assert usage["usage_estimated"] == 1
+    assert usage["prompt_tokens"] > 0
+    assert usage["completion_tokens"] == 1
+    assert usage["billed_requests"] == 1
 
 
 @pytest.mark.asyncio
-async def test_an_abandoned_response_reaches_the_worker_as_a_cancellation(monkeypatch):
-    """The whole chain, with the real registry behind the response: client
-    goes away → response iterator closed → worker told to abort."""
-    from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
-
+@pytest.mark.parametrize("disconnect_at", ["yield", "pending_read", "before_first_chunk"])
+async def test_an_abandoned_response_reaches_the_worker_as_a_cancellation(monkeypatch, disconnect_at):
+    """Both closing at a yield and cancelling a pending read promptly abort the worker."""
     import logos as main
+    from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
 
     registry, websocket = _registry_with_session()
 
@@ -368,13 +366,31 @@ async def test_an_abandoned_response_reaches_the_worker_as_a_cancellation(monkey
     first = asyncio.ensure_future(body.__anext__())
     # The consumer starts the arrival pump; give the pump a hop so it opens the
     # worker stream (sends infer_stream) before we look for its cmd_id.
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    while not websocket.sent:
+        await asyncio.sleep(0)
     cmd_id = _sent_stream_cmd_id(websocket)
-    await _feed(registry, cmd_id, {"type": "stream_chunk", "chunk": b"data: {}\n\n"})
-    await first
+    if disconnect_at == "before_first_chunk":
+        reader = first
+    else:
+        await _feed(registry, cmd_id, {"type": "stream_chunk", "chunk": b"data: {}\n\n"})
+        await first
+        if disconnect_at == "pending_read":
+            reader = asyncio.create_task(anext(body))
+            await asyncio.sleep(0)
 
-    await body.aclose()
+    if disconnect_at != "yield":
+        reader.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reader
+    else:
+        await body.aclose()
+    assert _release_calls == [(27, PROVIDER_ID, "logosnode", "req-abandoned")]
+    assert _completion_calls[-1]["result_status"] == "error"
+    assert "Client disconnected" in _completion_calls[-1]["error_message"]
+    assert _completion_calls[-1]["usage_tokens"]["billed_requests"] == 1
+    assert _completion_calls[-1]["usage_tokens"]["usage_estimated"] == 1
+    assert _completion_calls[-1]["usage_tokens"]["prompt_tokens"] > 0
+    assert _completion_calls[-1]["usage_tokens"]["completion_tokens"] == 0
     await _drain_pending_tasks()
 
     frames = websocket.cancel_frames()
@@ -460,9 +476,8 @@ async def _run_streamer(
     chunks: list[bytes] | None = None,
     provider_response_calls: list | None = None,
 ):
-    from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
-
     import logos as main
+    from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
 
     if chunks is None:
         chunks = [
@@ -531,10 +546,15 @@ async def test_a_stream_read_to_the_end_is_a_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_stream_the_client_walked_away_from_is_not(monkeypatch):
+async def test_a_disconnected_stream_is_billed_from_the_received_text(monkeypatch):
     calls = await _run_streamer(monkeypatch, abandon_after=1)
     assert calls[-1]["result_status"] == "error"
-    assert "disconnected mid-stream" in calls[-1]["error_message"]
+    assert "Client disconnected" in calls[-1]["error_message"]
+    usage = calls[-1]["usage_tokens"]
+    assert usage["usage_estimated"] == 1
+    assert usage["prompt_tokens"] > 0
+    assert usage["completion_tokens"] == 1
+    assert usage["billed_requests"] == 1
 
 
 @pytest.mark.asyncio
@@ -560,11 +580,22 @@ async def test_closing_after_done_is_a_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_recorded_reason_says_how_far_it_got(monkeypatch):
-    """Distinguishes "left immediately" from "read most of it", which is what
-    makes the number actionable."""
-    calls = await _run_streamer(monkeypatch, abandon_after=1)
-    assert "token(s)" in calls[-1]["error_message"]
+async def test_a_disconnected_stream_uses_already_received_usage_exactly(monkeypatch):
+    calls = await _run_streamer(
+        monkeypatch,
+        abandon_after=3,
+        chunks=[
+            b'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n',
+            b'data: {"usage":{"prompt_tokens":13,"completion_tokens":701,"total_tokens":714}}\n\n',
+            b'data: {"choices":[]}\n\n',
+        ],
+    )
+    assert calls[-1]["result_status"] == "error"
+    assert "Client disconnected" in calls[-1]["error_message"]
+    assert calls[-1]["usage_tokens"]["billed_requests"] == 1
+    assert calls[-1]["usage_tokens"]["completion_tokens"] == 701
+    assert calls[-1]["usage_tokens"]["prompt_tokens"] == 13
+    assert "usage_estimated" not in calls[-1]["usage_tokens"]
 
 
 @pytest.mark.asyncio

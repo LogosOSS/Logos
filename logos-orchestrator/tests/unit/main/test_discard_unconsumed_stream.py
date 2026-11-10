@@ -8,16 +8,17 @@ slot would leak without an explicit cleanup path.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
-from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
 
 import logos as main
+from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
 
 
 @pytest.mark.asyncio
-async def test_discard_of_unconsumed_streaming_response_closes_upstream_and_releases_slot(
+async def test_discard_of_prefetched_response_drains_usage_before_releasing_slot(
     monkeypatch,
 ):
     upstream_closed = False
@@ -72,6 +73,9 @@ async def test_discard_of_unconsumed_streaming_response_closes_upstream_and_rele
     assert getattr(response, "_logos_unconsumed_cleanup", None) is not None
     # Nobody consumes the body — the keepalive / disconnect path discards it.
     await main._discard_response(response)
+    assert not upstream_closed
+    await asyncio.wait_for(response.body_iterator.drain_task, 1)
+    assert _completion[-1]["usage_tokens"]["usage_estimated"] == 1
 
     assert upstream_closed, "prefetched upstream iterator was not closed"
     assert release_calls, "scheduler slot was not released"
@@ -135,7 +139,8 @@ async def test_discard_of_unconsumed_logosnode_response_releases_slot(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_cancel_at_scheduling_comment_discards_prefetched_http_stream(monkeypatch):
+async def test_cancel_at_scheduling_comment_releases_client_and_bounds_prefetched_stream(monkeypatch):
+    monkeypatch.setenv("LOGOS_STREAM_DRAIN_TIMEOUT_SECONDS", "0.02")
     """Cancel while the scheduling comment is yielded must run unconsumed
     cleanup — closing only the never-started body leaves the peeked upstream
     and the reserved slot behind."""
@@ -217,7 +222,11 @@ async def test_cancel_at_scheduling_comment_discards_prefetched_http_stream(monk
     assert b"logos-schedule" in first
     await agen.aclose()
 
-    assert upstream_closed, "prefetched upstream stayed open after comment-yield cancel"
+    from logos.stream_drain import _background_drains
+
+    if _background_drains:
+        await asyncio.wait_for(asyncio.gather(*list(_background_drains)), 1)
+    assert upstream_closed, "prefetched upstream stayed open after the drain deadline"
     assert release_calls, "scheduler slot was not released after comment-yield cancel"
     assert not any(
         s["request_id"] == "req-comment-cancel" for s in main._live_streams.snapshot()

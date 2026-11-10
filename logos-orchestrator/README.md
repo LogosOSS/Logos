@@ -49,3 +49,15 @@ path reuses the existing GuideLLM job, inference logging and result storage.
 See the [nightly benchmark guide](../docs/admin/nightly-benchmarks.md) for the complete
 policy, operator workflow and test commands. See
 [configurable benchmarks](docs/benchmark-configuration.md) for manual runs.
+
+## Billing after a streaming disconnect
+
+After a client disconnects, the orchestrator reads cloud provider streams in the
+background until final usage, stream end, or the drain timeout.
+`LOGOS_STREAM_DRAIN_TIMEOUT_SECONDS` bounds this wait (default: 120 seconds).
+Without final usage, prompt and received output text are estimated and stored
+with `usage_estimated=1` in the usage entries.
+
+Self-hosted worker streams are cancelled immediately and their scheduler slots
+released during disconnect cleanup. They are billed from usage already received,
+or from the request prompt and received output text with `usage_estimated=1`.

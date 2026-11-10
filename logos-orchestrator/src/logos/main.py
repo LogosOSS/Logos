@@ -112,6 +112,7 @@ from logos.sdi.azure_facade import AzureSchedulingDataFacade
 from logos.sdi.cloud_model_sync import CloudModelSyncService
 from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
 from logos.sdi.providers.azure_provider import extract_azure_deployment_name
+from logos.stream_drain import UsageDrainIterator, UsageDrainResponse
 from logos.terminal_logging import (
     GREEN,
     RED,
@@ -1967,13 +1968,9 @@ async def _streaming_response(
             # registry is dropped in the finally below, so a client that walks
             # away cannot leave an entry behind.
             _live_streams.start(request_id, model_name_cache.get(model_id) if model_id else None)
-            # A client that walks away mid-stream closes this generator, which
-            # raises GeneratorExit at the `yield` — no exception reaches the
-            # handler below, so without this flag the request was recorded as
-            # a success. It is not one: nobody read the answer, and the
-            # generation was cancelled on the worker. Recording it honestly
-            # also completes the disconnect count, which until now only saw
-            # the clients that left *before* the first token.
+            # Closing at a yield raises GeneratorExit, which bypasses the
+            # exception handler. Track completion so an abandoned generation
+            # is recorded as a disconnect even when its partial usage is billed.
             stream_completed = False
             # The provider's last byte is the last chunk off the worker stream.
             # _chunks_with_arrival captures each chunk's arrival on a
@@ -2000,16 +1997,12 @@ async def _streaming_response(
                     produced = False
                     held_rejection = None
                     try:
-                        # `aclosing` is what makes an abandoned request reach
-                        # the worker promptly. When this generator is closed
-                        # mid-stream — a client that walked away — a bare
-                        # `async for` would leave the inner generator to the
-                        # async-generator GC hook, so its cleanup (which is
-                        # what sends the cancellation) would run at some
-                        # unspecified later point. Closing it here runs that
-                        # cleanup while the disconnect is being handled. The
-                        # chunks are read through _chunks_with_arrival so the
-                        # arrival instant is captured off the client's pace.
+                        # An abandoned request must reach the worker promptly.
+                        # `aclosing` runs the inner cleanup that sends cancellation
+                        # while handling the disconnect; a bare `async for` would
+                        # defer it to the async-generator GC hook. Do not drain
+                        # worker streams: cancel generation and release capacity
+                        # immediately instead of waiting for final usage.
                         lane_id = context.lane_id
                         if attempt:
                             lane = await _logosnode_registry.select_lane_for_model(
@@ -2102,6 +2095,7 @@ async def _streaming_response(
                     break  # stream completed without raising
             finally:
                 if not stream_completed and error_message is None:
+                    stream_log.client_disconnected = True
                     error_message = (
                         "Client disconnected mid-stream; upstream generation cancelled "
                         f"after {stream_log.streamed_tokens().get('completion_tokens', 0)} token(s)."
@@ -2111,7 +2105,7 @@ async def _streaming_response(
                 # A terminal ``response.failed`` frame ends the stream cleanly,
                 # but the request still failed and must not be billed or logged
                 # as a success.
-                if error_message is None and stream_log.upstream_error:
+                if stream_log.upstream_error:
                     error_message = str(stream_log.upstream_error.get("message") or stream_log.upstream_error)
                 # Client close after [DONE] jumps here via GeneratorExit before
                 # the post-loop stamp. Persist the captured terminal arrival so
@@ -2123,7 +2117,13 @@ async def _streaming_response(
                     and last_chunk_at is not None
                 ):
                     _pipeline.record_provider_response(request_id, at=last_chunk_at)
-                billable = stream_completed and stream_log.upstream_error is None
+                # A disconnect cancels generation but still bills the work
+                # already observed. Provider failures remain non-billable.
+                billable = (
+                    (stream_completed and error_message is None) or stream_log.client_disconnected
+                ) and stream_log.upstream_error is None
+                if billable:
+                    stream_log.estimate_disconnected_usage(prepared_payload, estimate_unseen_prompt=True)
                 response_payload = stream_log.response_payload()
                 usage_tokens = _usage_tokens_from_payload(
                     response_payload,
@@ -2284,8 +2284,9 @@ async def _streaming_response(
     # Bound before http_streamer so the closure can claim it when the body runs.
     unconsumed_cleanup = None
 
+    stream_log = _StreamingLogAccumulator()
+
     async def http_streamer():
-        stream_log = _StreamingLogAccumulator()
         cost_enricher = (
             _StreamingCostEnricher(provider_id, model_id, request_payload=prepared_payload, path=request_path or "")
             if context.provider_type == "cloud" and upstream_media_type in {"", "text/event-stream"}
@@ -2331,12 +2332,7 @@ async def _streaming_response(
             return await asyncio.to_thread(cost_enricher.feed, chunk)
 
         def client_chunks(chunk: bytes | str) -> list[bytes | str]:
-            """Record one upstream chunk and return what the client receives.
-
-            Logging, billing and the live view all read the upstream's own
-            frames, so the accumulator is fed before any translation — only
-            the bytes on the wire change shape.
-            """
+            """Record enriched chunks before translating to the client's protocol."""
             stream_log.feed(chunk)
             return translated_stream.feed(chunk) if translated_stream else [chunk]
 
@@ -2351,10 +2347,11 @@ async def _streaming_response(
         # chunk's arrival would be stamped only after the client took chunk
         # one — inflating the provider's run figure.
         async def _source():
-            if first_chunk:
-                yield first_chunk
-            async for chunk in chunk_iter:
-                yield chunk
+            async with aclosing(chunk_iter):
+                if first_chunk:
+                    yield first_chunk
+                async for chunk in chunk_iter:
+                    yield chunk
 
         # Discard of a never-started body cannot run this generator's finally;
         # claim ownership of the prefetched upstream + slot as soon as we run.
@@ -2368,6 +2365,7 @@ async def _streaming_response(
                     # chunks use the pump's recorded arrival.
                     last_chunk_at = stream_first_byte_at if first_chunk_pending else arrival
                     first_chunk_pending = False
+                    stream_log.received_bytes = stream_log.received_bytes or bool(chunk)
                     for outgoing_chunk in await enriched_chunks(chunk):
                         for client_chunk in client_chunks(outgoing_chunk):
                             yield client_chunk
@@ -2460,6 +2458,8 @@ async def _streaming_response(
             # exec figure does not fall back to completion (billing) time.
             if request_id and not provider_response_stamped and stream_log.terminal_event_received:
                 _pipeline.record_provider_response(request_id, at=last_chunk_at)
+            if not failed:
+                stream_log.estimate_disconnected_usage(prepared_payload)
             response_payload = stream_log.response_payload()
             usage_tokens = _usage_tokens_from_payload(
                 response_payload,
@@ -2521,8 +2521,8 @@ async def _streaming_response(
             _release()
 
     unconsumed_cleanup = _UnconsumedStreamCleanup(chunk_iter, _release)
-    response = StreamingResponse(
-        http_streamer(),
+    response = UsageDrainResponse(
+        UsageDrainIterator(http_streamer(), stream_log, claim_prefetched=unconsumed_cleanup.claim_for_streamer),
         headers=response_headers,
     )
     response._logos_unconsumed_cleanup = unconsumed_cleanup
@@ -3771,24 +3771,22 @@ async def _discard_response(response: Any) -> None:
     """Close a response nobody is left to read.
 
     ``_streaming_response`` pulls the first chunk before handing the response
-    over, so by then the upstream connection is already open. Closing only
-    the never-started body generator would leave that iterator and the
-    scheduler slot behind — the attached cleanup closes both, then the body
-    iterator is closed for any streamer that did start.
+    over, so its usage-aware iterator claims the prefetched provider stream
+    for background billing before cleanup runs. An unstarted worker iterator
+    has no provider work to drain; its attached cleanup releases the slot.
     """
     if response is None:
         return
+    iterator = getattr(response, "body_iterator", None)
+    if iterator is not None:
+        with suppress(Exception):
+            await iterator.aclose()
     cleanup = getattr(response, "_logos_unconsumed_cleanup", None)
     if cleanup is not None:
         with suppress(Exception):
             await cleanup.close()
         with suppress(Exception):
             response._logos_unconsumed_cleanup = None
-    iterator = getattr(response, "body_iterator", None)
-    if iterator is None:
-        return
-    with suppress(Exception):
-        await iterator.aclose()
 
 
 async def _execute_cancelling_on_disconnect(request: Request, **kwargs):
@@ -4179,9 +4177,10 @@ async def _keepalive_producer(inner_iterator, queue: "asyncio.Queue") -> None:
 
     A producer task (rather than awaiting the streamer inline) keeps the drain
     robust under cancellation: when the client walks away, cancelling this task
-    unwinds the ``aclosing`` context, which closes the inner streamer and runs
-    its cleanup — the worker cancel, the scheduler release — promptly, instead
-    of leaving the streamer to the async-generator GC hook.
+    unwinds the ``aclosing`` context. Cloud streams transfer to a bounded
+    background usage drain. Worker streams close immediately, sending worker
+    cancellation and releasing the scheduler slot without waiting for final
+    usage or the async-generator GC hook.
     """
     try:
         async with aclosing(inner_iterator):
@@ -4342,11 +4341,8 @@ async def _keepalive_streaming_response(request: Request, **execute_kwargs):
                     producer.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await producer
-            # Always discard the settled response. Closing only a never-started
-            # body_iterator (e.g. cancel at the scheduling-comment yield before
-            # the producer enters http_streamer) bypasses its finally and would
-            # leave the prefetched upstream / reserved slot behind; discard runs
-            # the attached cleanup first, then closes the body.
+            # Discard transfers prefetched provider work to its usage drain.
+            # A worker stream that never started only releases its reservation.
             if completed is not None:
                 await _discard_response(completed)
             elif inner_iterator is not None:
@@ -4358,7 +4354,7 @@ async def _keepalive_streaming_response(request: Request, **execute_kwargs):
             # leaves the request registered forever.
             _live_streams.finish(request_id)
 
-    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
+    return UsageDrainResponse(gen(), media_type="text/event-stream", headers=headers)
 
 
 async def handle_sync_request(path: str, request: Request):

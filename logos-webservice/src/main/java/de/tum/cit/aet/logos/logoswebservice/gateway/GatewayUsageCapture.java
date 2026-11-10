@@ -46,7 +46,10 @@ final class GatewayUsageCapture extends OutputStream {
     /** One SSE event that exceeds this is skipped rather than buffered. */
     static final int SSE_LINE_LIMIT_BYTES = 256 * 1024;
 
-    private final OutputStream delegate;
+    private OutputStream delegate;
+    private boolean finalUsage;
+    private boolean terminalEvent;
+    private long completionCharacters;
     private final ObjectMapper objectMapper;
     private final boolean sse;
     private final boolean retainBody;
@@ -130,8 +133,12 @@ final class GatewayUsageCapture extends OutputStream {
     public void write(int b) throws IOException {
         chunkArrivedAt = clock.get();
         markFirstByte(1);
-        delegate.write(b);
         capture(new byte[] {(byte) b}, 0, 1);
+        try {
+            delegate.write(b);
+        } catch (IOException e) {
+            throw new ClientDisconnectedException(e);
+        }
     }
 
     @Override
@@ -142,13 +149,21 @@ final class GatewayUsageCapture extends OutputStream {
         // this chunk is recorded as having arrived from the upstream.
         chunkArrivedAt = clock.get();
         markFirstByte(len);
-        delegate.write(b, off, len);
         capture(b, off, len);
+        try {
+            delegate.write(b, off, len);
+        } catch (IOException e) {
+            throw new ClientDisconnectedException(e);
+        }
     }
 
     @Override
     public void flush() throws IOException {
-        delegate.flush();
+        try {
+            delegate.flush();
+        } catch (IOException e) {
+            throw new ClientDisconnectedException(e);
+        }
     }
 
     @Override
@@ -161,6 +176,81 @@ final class GatewayUsageCapture extends OutputStream {
             }
         } finally {
             delegate.close();
+        }
+    }
+
+    /** Client I/O is distinct from an upstream read failure. */
+    static final class ClientDisconnectedException extends IOException {
+        ClientDisconnectedException(IOException cause) {
+            super(cause.getMessage(), cause);
+        }
+    }
+
+    void detachClient() {
+        delegate = OutputStream.nullOutputStream();
+    }
+
+    boolean drainComplete() {
+        return finalUsage || terminalEvent;
+    }
+
+    /** Persist the estimate marker alongside canonical, priceable token counts. */
+    Map<String, Long> disconnectedUsage(byte[] request, boolean timedOut) {
+        if (finalUsage) {
+            return usage.isEmpty() ? Map.of("provider_delivered_nothing", 1L) : usage;
+        }
+        if (firstByteAt == null && !timedOut) {
+            return Map.of("provider_delivered_nothing", 1L);
+        }
+        long prompt = request == null ? 0 : (new String(request, StandardCharsets.UTF_8).length() + 3L) / 4;
+        long completion = (completionCharacters + 3) / 4;
+        return Map.of("prompt_tokens", prompt, "completion_tokens", completion,
+            "total_tokens", prompt + completion, "usage_estimated", 1L);
+    }
+
+    private static long textLength(JsonNode node) {
+        if (node.isTextual()) {
+            return node.asText().codePointCount(0, node.asText().length());
+        }
+        if (node.isArray()) {
+            long count = 0;
+            for (JsonNode part : node) {
+                count += textLength(part.isObject() ? part.path("text") : part);
+            }
+            return count;
+        }
+        return 0;
+    }
+
+    private void observeEvent(JsonNode event) {
+        JsonNode reported = event.path("response").path("usage");
+        if (!reported.isObject()) {
+            reported = event.path("usage");
+        }
+        if (reported.isObject() && !reported.isEmpty() && !"message_start".equals(event.path("type").asText())) {
+            finalUsage = true;
+        }
+        for (JsonNode choice : event.path("choices")) {
+            completionCharacters += textLength(choice.path("text"));
+            JsonNode delta = choice.path("delta");
+            for (String field : new String[] {"content", "reasoning", "reasoning_content"}) {
+                completionCharacters += textLength(delta.path(field));
+            }
+            for (JsonNode tool : delta.path("tool_calls")) {
+                completionCharacters += textLength(tool.path("function").path("arguments"));
+            }
+        }
+        String type = event.path("type").asText("");
+        if (java.util.Set.of("response.completed", "response.incomplete", "response.failed", "message_stop")
+                .contains(type)) {
+            terminalEvent = true;
+        }
+        if (type.startsWith("response.") && type.endsWith(".delta")) {
+            completionCharacters += textLength(event.path("delta"));
+        } else if ("content_block_delta".equals(type)) {
+            for (String field : new String[] {"text", "thinking", "partial_json"}) {
+                completionCharacters += textLength(event.path("delta").path(field));
+            }
         }
     }
 
@@ -223,10 +313,14 @@ final class GatewayUsageCapture extends OutputStream {
         }
         String line = buffer.toString(StandardCharsets.UTF_8);
         buffer.reset();
+        if ("data: [DONE]".equals(line.strip())) {
+            terminalEvent = true;
+        }
         JsonNode event = GatewayUsageExtractor.parseSseDataLine(objectMapper, line);
         if (event == null) {
             return;
         }
+        observeEvent(event);
         if (firstTokenAt == null && carriesContent(event)) {
             firstTokenAt = chunkArrivedAt;
         }
@@ -289,6 +383,7 @@ final class GatewayUsageCapture extends OutputStream {
         buffer.reset();
         JsonNode root = GatewayUsageExtractor.parseJsonBody(objectMapper, body);
         if (root != null) {
+            observeEvent(root);
             Map<String, Long> found = GatewayUsageExtractor.fromEnvelope(root);
             if (!found.isEmpty()) {
                 usage = found;

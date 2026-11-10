@@ -164,6 +164,11 @@ class _StreamingLogAccumulator:
     metadata is not lost when it arrives split across chunks.
     """
 
+    client_disconnected: bool = False
+    drain_timed_out: bool = False
+    provider_usage: Optional[Dict[str, Any]] = None
+    received_bytes: bool = False
+    completion_characters: int = 0
     buffer: str = ""
     full_text: str = ""
     first_chunk: Optional[Dict[str, Any]] = None
@@ -202,6 +207,7 @@ class _StreamingLogAccumulator:
     )
 
     def feed(self, chunk: bytes | str) -> None:
+        self.received_bytes = self.received_bytes or bool(chunk)
         if isinstance(chunk, bytes):
             text = self._decoder.decode(chunk, final=False)
         else:
@@ -250,7 +256,34 @@ class _StreamingLogAccumulator:
             completion = self.delta_count
         return {"prompt_tokens": prompt, "completion_tokens": completion}
 
+    def has_final_usage(self) -> bool:
+        """Whether settled counts arrived, excluding the Messages start placeholder."""
+        if self._saw_messages_events:
+            return self._messages_final_usage
+        return bool(self.usage())
+
+    def estimate_disconnected_usage(self, request_payload: Any, *, estimate_unseen_prompt: bool = False) -> None:
+        """Estimate missing usage after disconnect, including a cancelled worker's unseen prompt."""
+        if not self.client_disconnected or self.has_final_usage() or self.upstream_error:
+            return
+        include_prompt = self.received_bytes or self.drain_timed_out or estimate_unseen_prompt
+        prompt = estimate_prompt_tokens(request_payload) if include_prompt else 0
+        if not prompt and include_prompt and request_payload:
+            prompt = (len(json.dumps(request_payload, ensure_ascii=False, default=str)) + 3) // 4
+        completion = (self.completion_characters + 3) // 4
+        self.provider_usage = {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+            "usage_estimated": 1,
+        }
+        self.messages_usage = None
+        if self.responses_final is not None:
+            self.responses_final = dict(self.responses_final, usage=self.provider_usage)
+
     def usage(self) -> Dict[str, Any]:
+        if self.provider_usage is not None:
+            return self.provider_usage
         if isinstance(self.responses_final, dict):
             usage = self.responses_final.get("usage")
             if isinstance(usage, dict):
@@ -270,13 +303,16 @@ class _StreamingLogAccumulator:
         if isinstance(self.responses_final, dict):
             return self.responses_final
         if self._saw_responses_events:
-            return {"content": self.full_text}
+            payload = {"content": self.full_text}
+            if self.usage():
+                payload["usage"] = self.usage()
+            return payload
         if self._saw_messages_events:
             # No chunk to rebuild from: an Anthropic stream never sends the
             # response as one object, only the events that assemble it.
             payload: Dict[str, Any] = {"content": self.full_text}
-            if self.messages_usage:
-                payload["usage"] = self.messages_usage
+            if self.usage():
+                payload["usage"] = self.usage()
             return payload
 
         usage = self.usage()
@@ -347,10 +383,13 @@ class _StreamingLogAccumulator:
             self._consume_messages_event(event_type, blob)
             return
 
+        if isinstance(blob.get("usage"), dict) and blob["usage"]:
+            self.provider_usage = blob["usage"]
         self.last_chunk = blob
         if self.first_chunk is None:
             self.first_chunk = blob
 
+        self.completion_characters += _completion_characters(blob)
         choices = blob.get("choices")
         if isinstance(choices, list) and choices:
             first_choice = choices[0]
@@ -368,6 +407,7 @@ class _StreamingLogAccumulator:
 
     def _consume_responses_event(self, event_type: str, blob: Dict[str, Any]) -> None:
         """Consume one Responses-API SSE event (``{"type": "response.*", ...}``)."""
+        self.completion_characters += _completion_characters(blob)
         self._saw_responses_events = True
         if event_type == "response.output_text.delta":
             delta = blob.get("delta")
@@ -410,6 +450,7 @@ class _StreamingLogAccumulator:
         Both events are merged instead, later winning, since message_delta
         carries the settled figures.
         """
+        self.completion_characters += _completion_characters(blob)
         self._saw_messages_events = True
         if event_type == "content_block_delta":
             delta = blob.get("delta")
@@ -470,3 +511,36 @@ def _usage_tokens_from_payload(
             if estimated > 0:
                 usage["estimated_prompt_tokens"] = estimated
     return usage
+
+
+def _completion_characters(event: dict) -> int:
+    """Count text, reasoning and tool arguments without counting SSE framing."""
+
+    def text_size(value):
+        if isinstance(value, str):
+            return len(value)
+        if isinstance(value, list):
+            return sum(text_size(item) for item in value)
+        if isinstance(value, dict):
+            return sum(text_size(value.get(key)) for key in ("text", "content", "arguments"))
+        return 0
+
+    count = 0
+    choices = event.get("choices")
+    for choice in choices if isinstance(choices, list) else []:
+        if not isinstance(choice, dict):
+            continue
+        count += text_size(choice.get("text"))
+        delta = choice.get("delta")
+        if isinstance(delta, dict):
+            count += sum(text_size(delta.get(key)) for key in ("content", "reasoning", "reasoning_content"))
+            tools = delta.get("tool_calls")
+            for tool in tools if isinstance(tools, list) else []:
+                if isinstance(tool, dict):
+                    count += text_size(tool.get("function"))
+    kind = event.get("type", "")
+    if isinstance(kind, str) and kind.startswith("response.") and kind.endswith(".delta"):
+        count += text_size(event.get("delta"))
+    if kind == "content_block_delta" and isinstance(event.get("delta"), dict):
+        count += sum(text_size(event["delta"].get(key)) for key in ("text", "thinking", "partial_json"))
+    return count

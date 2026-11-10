@@ -39,6 +39,17 @@ class GatewayUsageCaptureTest {
     }
 
     @Test
+    void zeroProviderUsageAfterDisconnectDoesNotRetainAReservation() throws Exception {
+        GatewayUsageCapture capture = new GatewayUsageCapture(
+            java.io.OutputStream.nullOutputStream(), new ObjectMapper(), "text/event-stream");
+        capture.write("data: {\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0}}\n\n"
+            .getBytes(StandardCharsets.UTF_8));
+        assertThat(capture.drainComplete()).isTrue();
+        assertThat(capture.disconnectedUsage(new byte[0], false))
+            .containsEntry("provider_delivered_nothing", 1L);
+    }
+
+    @Test
     void jsonResponse_isForwardedVerbatimAndPriced() throws IOException {
         String body = """
             {"id":"chatcmpl-1","choices":[{"message":{"content":"hello"}}],

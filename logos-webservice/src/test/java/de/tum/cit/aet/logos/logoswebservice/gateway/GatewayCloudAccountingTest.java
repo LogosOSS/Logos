@@ -103,6 +103,27 @@ class GatewayCloudAccountingTest {
     }
 
     @Test
+    void estimatedUsageIsPricedAndItsMarkerIsStoredWithoutAnExtraCharge() {
+        Fixture f = seedPricedDeployment();
+        int logId = admit(f);
+        accounting.settleSuccess(logId, Map.of("prompt_tokens", 1000L, "completion_tokens", 300L,
+            "total_tokens", 1300L, "usage_estimated", 1L), null, null);
+        assertThat(settledCost(logId)).isEqualTo(56_000L);
+        assertThat(usageTokens(logId)).containsEntry("usage_estimated", 1);
+        assertThat(status(logId)).isEqualTo("success");
+    }
+
+    @Test
+    void anEmptyProviderStreamReleasesTheReservationWithoutCharging() {
+        Fixture f = seedPricedDeployment();
+        int logId = admit(f);
+        accounting.settleSuccess(logId, Map.of("provider_delivered_nothing", 1L), null, null);
+        assertThat(settledCost(logId)).isZero();
+        assertThat(status(logId)).isEqualTo("success");
+        assertThat(usageTokens(logId)).isEmpty();
+    }
+
+    @Test
     void settleSuccess_cachedPromptTokensAreBilledAtTheCacheRate() {
         Fixture f = seedPricedDeployment();
         jdbc.update("INSERT INTO token_prices (type_id, model_id, provider_id, unit, min_context_tokens, "

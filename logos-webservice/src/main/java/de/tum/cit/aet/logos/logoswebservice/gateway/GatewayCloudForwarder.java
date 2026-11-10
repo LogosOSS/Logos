@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -41,6 +42,13 @@ public class GatewayCloudForwarder {
      * gone anyway.
      */
     static final Duration RELAY_ATTACH_TIMEOUT = Duration.ofMinutes(30);
+
+    @Value("${logos.gateway.stream-drain-timeout-seconds:120}")
+    private double streamDrainTimeoutSeconds = 120;
+
+    void setStreamDrainTimeout(Duration timeout) {
+        streamDrainTimeoutSeconds = timeout.toNanos() / 1_000_000_000.0;
+    }
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -168,8 +176,9 @@ public class GatewayCloudForwarder {
         // an executor thread to run the relay shifts the provider's timestamps.
         // It starts here, not in the relay, for the second reason.
         UpstreamPump pump = UpstreamPump.start(upstream.body(), headersAt, RELAY_ATTACH_TIMEOUT);
-        GatewayRelayCleanup.closeWhenRequestEnds(pump);
         String upstreamContentType = upstream.headers().firstValue("content-type").orElse(null);
+        pump.drainOnClientEnd = upstreamOk && GatewayUsageCapture.isEventStream(upstreamContentType);
+        GatewayRelayCleanup.closeWhenRequestEnds(pump);
         StreamingResponseBody stream = outputStream -> {
             IOException streamError = null;
             // The capture sits between the upstream and the client so the
@@ -177,11 +186,57 @@ public class GatewayCloudForwarder {
             // the bytes the client receives.
             GatewayUsageCapture capture = new GatewayUsageCapture(
                 outputStream, objectMapper, upstreamContentType, retainResponseBody, pump::currentChunkAt);
-            try (pump; OutputStream out = capture) {
-                pump.transferTo(out);
-                out.flush();
+            boolean draining = false;
+            try {
+                pump.transferTo(capture);
+                capture.flush();
+            } catch (GatewayUsageCapture.ClientDisconnectedException e) {
+                if (upstreamOk && GatewayUsageCapture.isEventStream(upstreamContentType)) {
+                    capture.detachClient();
+                    pump.beginDrain();
+                    draining = true;
+                    Thread.ofVirtual().name("gateway-usage-drain").start(() -> {
+                        boolean timedOut = false;
+                        IOException upstreamError = null;
+                        try {
+                            pump.drainTo(capture, Duration.ofNanos((long) (Math.max(0, streamDrainTimeoutSeconds)
+                                * 1_000_000_000)), capture::drainComplete);
+                        } catch (java.util.concurrent.TimeoutException timeout) {
+                            timedOut = true;
+                        } catch (IOException failure) {
+                            upstreamError = failure;
+                        } finally {
+                            pump.close();
+                            try {
+                                capture.close();
+                            } catch (IOException ignored) {
+                                // The detached capture owns no client resources.
+                            }
+                        }
+                        GatewayForwardTimings drainedTimings = new GatewayForwardTimings(
+                            providerCall, capture.firstTokenAt(), pump.endedAt());
+                        if (upstreamError != null) {
+                            if (onFailure != null) {
+                                onFailure.accept(upstreamError.getMessage(), drainedTimings);
+                            }
+                        } else if (onSuccess != null) {
+                            onSuccess.accept(new GatewayForwardResult(capture.disconnectedUsage(body, timedOut),
+                                capture.capturedBody(), capture.serviceTier(), drainedTimings));
+                        }
+                    });
+                    throw e;
+                }
+                streamError = e;
             } catch (IOException e) {
                 streamError = e;
+            } finally {
+                if (!draining) {
+                    pump.close();
+                    // Closing the servlet output is MVC's responsibility. Parsing
+                    // the final buffered line must not flush to a disconnected client.
+                    capture.detachClient();
+                    capture.close();
+                }
             }
             GatewayForwardTimings timings = new GatewayForwardTimings(
                 providerCall, capture.firstTokenAt(), pump.endedAt());
@@ -264,6 +319,10 @@ public class GatewayCloudForwarder {
             new java.util.concurrent.atomic.AtomicBoolean();
         private volatile Instant endedAt;
         private volatile boolean attached;
+        private volatile boolean draining;
+        private volatile boolean drainOnClientEnd;
+        private volatile boolean clientEnded;
+        private volatile Thread relayThread;
         private Instant currentChunkAt;
 
         private UpstreamPump(InputStream in, Instant headersAt, Duration attachTimeout) {
@@ -332,16 +391,24 @@ public class GatewayCloudForwarder {
          * flushing whenever it has caught up with the upstream.
          */
         void transferTo(OutputStream out) throws IOException {
+            relayThread = Thread.currentThread();
             attached = true;
             watchdog.interrupt();
             if (closed.get()) {
                 throw new IOException("The upstream body was released before the relay started");
             }
             while (true) {
+                if (clientEnded) {
+                    throw new GatewayUsageCapture.ClientDisconnectedException(new IOException("Client request ended"));
+                }
                 Chunk chunk;
                 try {
                     chunk = chunks.take();
                 } catch (InterruptedException e) {
+                    if (drainOnClientEnd) {
+                        throw new GatewayUsageCapture.ClientDisconnectedException(
+                            new java.io.InterruptedIOException("Client relay interrupted"));
+                    }
                     Thread.currentThread().interrupt();
                     throw new java.io.InterruptedIOException("Relay interrupted");
                 }
@@ -358,6 +425,54 @@ public class GatewayCloudForwarder {
                     // leave it in the response buffer until more follows.
                     out.flush();
                 }
+            }
+        }
+
+        void beginDrain() {
+            draining = true;
+        }
+
+        void closeClientRequest() {
+            if (draining || closed.get()) {
+                return;
+            }
+            if (drainOnClientEnd && attached) {
+                clientEnded = true;
+                // Wake a relay waiting for provider bytes so its catch block
+                // can hand capture and pump ownership to the bounded drain.
+                relayThread.interrupt();
+            } else {
+                close();
+            }
+        }
+
+        /** Drain on the background owner, bounded even when the provider is silent. */
+        void drainTo(OutputStream out, Duration timeout, java.util.function.BooleanSupplier complete)
+                throws IOException, java.util.concurrent.TimeoutException {
+            long deadline = System.nanoTime() + timeout.toNanos();
+            while (!complete.getAsBoolean()) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
+                    throw new java.util.concurrent.TimeoutException();
+                }
+                Chunk chunk;
+                try {
+                    chunk = chunks.poll(remaining, java.util.concurrent.TimeUnit.NANOSECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new java.io.InterruptedIOException("Usage drain interrupted");
+                }
+                if (chunk == null) {
+                    throw new java.util.concurrent.TimeoutException();
+                }
+                if (chunk.error() != null) {
+                    throw chunk.error();
+                }
+                if (chunk.bytes() == null) {
+                    return;
+                }
+                currentChunkAt = chunk.at();
+                out.write(chunk.bytes());
             }
         }
 

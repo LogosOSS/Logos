@@ -15,7 +15,8 @@ import org.springframework.web.context.request.async.CallableProcessingIntercept
  * task ran, nothing else would stop the reader. Spring calls
  * {@link #afterCompletion} for every async request once it is over, however
  * it ended; for a relay that ran to the end the pump is already closed and
- * closing it again does nothing.
+ * closing it again does nothing. A detached usage drain owns its pump until
+ * provider usage, EOF or its deadline; request completion leaves that pump open.
  */
 public final class GatewayRelayCleanup implements CallableProcessingInterceptor {
 
@@ -33,7 +34,7 @@ public final class GatewayRelayCleanup implements CallableProcessingInterceptor 
     public <T> void afterCompletion(NativeWebRequest request, Callable<T> task) {
         if (request.getAttribute(ATTRIBUTE, RequestAttributes.SCOPE_REQUEST)
                 instanceof GatewayCloudForwarder.UpstreamPump pump) {
-            pump.close();
+            pump.closeClientRequest();
         }
     }
 }
