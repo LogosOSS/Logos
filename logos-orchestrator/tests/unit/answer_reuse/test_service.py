@@ -241,13 +241,25 @@ def test_a_far_question_is_a_miss_that_reports_its_similarity():
     assert match.similarity == pytest.approx(0.0, abs=1e-6)
 
 
-def test_an_empty_scope_is_a_miss():
-    cache, _ = _cache(_Store({}))
+def test_an_empty_scope_is_a_miss_without_running_the_model():
+    cache, encoded = _cache(_Store({}))
 
     answer, match = cache.find(REQUEST)
 
     assert answer is None
     assert match.index is None
+    assert encoded == []
+
+
+def test_a_scope_with_fewer_entries_than_k_is_a_miss_without_running_the_model():
+    # Two near-identical questions could never satisfy top-3 agreement.
+    cache, encoded = _cache(_Store({"team:3:shop-a": [_entry(7, NEAR[0]), _entry(8, NEAR[1])]}))
+
+    answer, match = cache.find(REQUEST)
+
+    assert answer is None
+    assert not match.accepted
+    assert encoded == []
 
 
 def test_a_scope_never_answers_from_another_scope():

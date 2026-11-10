@@ -254,6 +254,10 @@ class AnswerCache:
             decided it.
         """
         scope = self._scope(request.scope)
+        if len(scope.entries) < self._k:
+            # The rule needs k stored questions to agree, so fewer can never be
+            # reused: answer the miss without running the model.
+            return None, Match(accepted=False, index=None, similarity=0.0, label=None)
         query = np.asarray(self._encode(embedding_text(request.question)), dtype=np.float32)
         match = decide_reuse(query, scope.vectors, scope.intents, threshold=self._threshold, k=self._k)
         if not match.accepted:
