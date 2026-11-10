@@ -199,6 +199,10 @@ def _open_line_log(auth: AuthContext, body: Dict[str, Any]) -> Optional[int]:
         return None
 
 
+class _BatchStopped(Exception):
+    """A rate-limited line stopped waiting because its batch was cancelled or expired."""
+
+
 async def _run_line(
     line: Dict[str, Any],
     auth: AuthContext,
@@ -244,7 +248,7 @@ async def _run_line(
         backoff = 1.0
         while True:
             if stop is not None and stop.is_set():
-                raise asyncio.CancelledError
+                raise _BatchStopped
             result = await execute_proxy_job(endpoint, dict(headers), dict(body), None, auth, log_id)
             if not isinstance(result, dict) or result.get("status_code") != 429:
                 break
@@ -266,8 +270,10 @@ async def _run_line(
                 except TimeoutError:
                     pass
                 else:
-                    raise asyncio.CancelledError
+                    raise _BatchStopped
             backoff = min(backoff * 2, 60.0)
+    except _BatchStopped:
+        raise
     except Exception:  # noqa: BLE001 - one bad line must not stop the batch
         # The exception itself stays in the server log; the result file is
         # downloadable by the caller, so it carries a generic message
@@ -434,13 +440,11 @@ async def _execute_lines(
                     return
                 try:
                     await _run_and_checkpoint(line)
-                except asyncio.CancelledError:
+                except _BatchStopped:
                     # A rate-limited line has no result to checkpoint when
-                    # the batch is cancelled. External task cancellation
-                    # still propagates, including lease loss and shutdown.
-                    if no_more.is_set() and not asyncio.current_task().cancelling():
-                        return
-                    raise
+                    # the batch is cancelled or its window ends. Task
+                    # cancellation (lease loss, shutdown) propagates as is.
+                    return
                 finally:
                     queue.task_done()
 
