@@ -69,14 +69,32 @@ def test_streaming_requests_are_not_eligible():
     "extra",
     [
         {"tools": [{"type": "function", "function": {"name": "lookup"}}]},
+        {"tools": []},
         {"functions": [{"name": "lookup"}]},
         {"tool_choice": "auto"},
         {"response_format": {"type": "json_object"}},
+        {"max_tokens": 1},
+        {"max_completion_tokens": 1},
+        {"stop": ["\n"]},
+        {"logprobs": True},
+        {"logit_bias": {"50256": -100}},
+        {"a_field_added_to_the_api_later": 1},
         {"n": 2},
     ],
 )
 def test_requests_that_shape_the_answer_are_not_eligible(extra):
+    # A stored answer cannot be cut to max_tokens, stop at a stop sequence or
+    # follow a format, so these requests take the normal path.
     assert _eligible(_body(**extra)) is None
+
+
+def test_sampling_and_bookkeeping_fields_keep_a_request_eligible():
+    body = _body(model="local-llama", temperature=0.2, top_p=0.9, seed=7, user="u-1", metadata={"shop": "a"})
+    assert _eligible({**body, "store": False, "timeout_s": 30}) is not None
+
+
+def test_a_field_sent_as_null_counts_as_absent():
+    assert _eligible(_body(max_tokens=None, stop=None, tools=None)) is not None
 
 
 def test_a_single_choice_is_eligible():

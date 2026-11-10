@@ -42,10 +42,14 @@ only between requests with the same context from API keys of the same team
 (or from the same key, if it belongs to no team).
 
 Reuse applies to non-streaming requests that consist of a single user message
-(no system or developer message, no earlier turns) and use no tools or
-response format. Other requests, and requests without the header, are handled
-as before. A request that names a model is only answered from stored answers
-if your API key may use that model; otherwise it is rejected as usual.
+(no system or developer message, no earlier turns) and set no fields beyond
+`model`, `messages`, `stream` (false), `n` (1), `temperature`, `top_p`,
+`seed`, `user`, `metadata`, `store` and `timeout_s`. Fields such as
+`max_tokens`, `stop`, `tools` or `response_format` constrain the reply, which a
+stored answer cannot follow. Other requests, and requests without the header,
+are handled as before. A request that names a model is only answered from
+stored answers if your API key may use that model; otherwise it is rejected as
+usual.
 
 A reused answer reports `"model": "logos-answer-cache"`, zero `usage`, and the
 `X-Logos-Cache: hit` response header. The `logos.answer_reuse` object in the

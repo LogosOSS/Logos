@@ -37,9 +37,28 @@ CACHE_TTL_SECONDS = 30.0
 # The ``model`` a cached response reports: no model ran for this request.
 CACHE_MODEL_NAME = "logos-answer-cache"
 
-# Request fields that change what a correct answer looks like. A stored
-# plain-text answer is not a valid reply to a request that sets them.
-_ANSWER_SHAPING_FIELDS = ("tools", "functions", "tool_choice", "function_call", "response_format")
+# The only request fields a stored answer can honour. The sampling fields only
+# change how random a fresh answer would be, and a stored answer is one such
+# answer; stream and n are checked separately. Every other field, such as
+# max_tokens, stop, tools, response_format, logprobs or logit_bias, may
+# constrain what a correct reply is, so a request that sets one is not
+# eligible. Listing the safe fields rather than the unsafe ones keeps a field
+# added to the API later out of the cache until someone decides otherwise.
+_REUSABLE_FIELDS = frozenset(
+    {
+        "model",
+        "messages",
+        "stream",
+        "n",
+        "temperature",
+        "top_p",
+        "seed",
+        "user",
+        "metadata",
+        "store",
+        "timeout_s",  # Logos's own request timeout
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -100,7 +119,7 @@ def reuse_request_from(
         return None
     if body.get("n") not in (None, 1):
         return None
-    if any(body.get(field) for field in _ANSWER_SHAPING_FIELDS):
+    if any(value is not None and field not in _REUSABLE_FIELDS for field, value in body.items()):
         return None
 
     question = _single_question(body.get("messages"))
