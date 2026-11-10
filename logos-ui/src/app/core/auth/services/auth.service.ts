@@ -43,13 +43,14 @@ export class AuthService {
 
   /**
    * Returns a token that is valid for at least the next 30s, refreshing if
-   * needed. Returns '' if unauthenticated or the refresh fails (caller should
-   * then not use a token; the next HTTP request's interceptor handles re-auth).
+   * needed. A server-reported expiry forces refresh despite client clock skew.
+   * Returns '' if unauthenticated or the refresh fails (caller should then not
+   * use a token; the next HTTP request's interceptor handles re-auth).
    */
-  async freshToken(): Promise<string> {
+  async freshToken(forceRefresh = false): Promise<string> {
     if (!this.keycloak.authenticated) return '';
     try {
-      await this.keycloak.updateToken(30);
+      await this.keycloak.updateToken(forceRefresh ? -1 : 30);
     } catch {
       return '';
     }

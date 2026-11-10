@@ -88,9 +88,12 @@ class StatsV2WebSocketHandlerLivePushTest {
         when(restTemplate.exchange(anyString(), any(HttpMethod.class), any(HttpEntity.class), any(Class.class)))
             .thenReturn(ResponseEntity.ok(Map.of("streams", List.of())));
 
+        WebSocketSessionAuth sessionAuth = mock(WebSocketSessionAuth.class);
+        when(sessionAuth.register(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
+        when(sessionAuth.isAuthorized(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
         handler = new StatsV2WebSocketHandler(
             vramService, requestLogService, statsService,
-            liveStreamClient, new ObjectMapper());
+            liveStreamClient, new ObjectMapper(), sessionAuth);
         stubLatestRequests(requestLogService, requestRow("req-1"));
 
         session = mock(WebSocketSession.class);
