@@ -100,6 +100,18 @@ async def test_lfs_license_file_follows_the_cdn_redirect(hub):
     assert result.license_text == "Apache License 2.0 ..."
 
 
+async def test_overall_deadline_bounds_the_whole_fetch(hub, monkeypatch):
+    monkeypatch.setattr(hf_license, "OVERALL_DEADLINE_S", 0.0)
+    _hub_with(hub, {"cardData": {}}, {"main": []}, {})
+
+    result = await hf_license.fetch_hf_license("org/model")
+
+    # The deadline is already spent before the first request: nothing is sent.
+    assert result.error is not None
+    assert "did not answer" in result.error
+    assert hub.requests == []
+
+
 async def test_provider_specific_license_file_names_are_found(hub):
     _hub_with(
         hub,

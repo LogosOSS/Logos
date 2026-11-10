@@ -11,6 +11,7 @@ repository the reachability check has already answered ``reachable`` for.
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -24,6 +25,15 @@ _LICENSE_FILE_NAME = re.compile(r"^(licen[cs]e|copying|community-license-agreeme
 # License files live in a handful of conventional names; the repository's
 # tree is scanned for them rather than assuming one spelling.
 _DEFAULT_REFS = ("main", "master")
+
+# The fetch is several sequential Hub round trips (card, tree, license file),
+# so it is bounded as a unit, not only per request: a slow Hub must not hold
+# the caller's round trip open longer than this.
+OVERALL_DEADLINE_S = 60.0
+
+
+class _OverallDeadlineExceeded(Exception):
+    """The whole license fetch outlived its overall deadline."""
 
 
 @dataclass(frozen=True)
@@ -50,8 +60,20 @@ async def _fetch(hf_repo_id: str, token: str | None) -> tuple[str | None, str | 
         # False, not None: None would fall back to a token cached on disk —
         # the same discipline as the reachability check.
         headers = build_hf_headers(token=token or False)
+        deadline = time.monotonic() + OVERALL_DEADLINE_S
         async with _new_client() as client:
-            info = await client.get(f"{constants.ENDPOINT}/api/models/{hf_repo_id}", headers=headers)
+
+            async def get(url: str, follow_redirects: bool = False) -> httpx.Response:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _OverallDeadlineExceeded()
+                # Each request gets the smaller of its own budget and the
+                # time the overall deadline still allows.
+                return await client.get(
+                    url, headers=headers, timeout=min(_TIMEOUT_S, remaining), follow_redirects=follow_redirects
+                )
+
+            info = await get(f"{constants.ENDPOINT}/api/models/{hf_repo_id}")
             hf_raise_for_status(info)
             card_data = info.json().get("cardData") or {}
             license_id = card_data.get("license")
@@ -63,7 +85,7 @@ async def _fetch(hf_repo_id: str, token: str | None) -> tuple[str | None, str | 
             license_file: str | None = None
             license_ref: str | None = None
             for ref in _DEFAULT_REFS:
-                tree = await client.get(f"{constants.ENDPOINT}/api/models/{hf_repo_id}/tree/{ref}", headers=headers)
+                tree = await get(f"{constants.ENDPOINT}/api/models/{hf_repo_id}/tree/{ref}")
                 if tree.status_code == 404:
                     continue  # not this repository's default branch
                 hf_raise_for_status(tree)
@@ -82,9 +104,8 @@ async def _fetch(hf_repo_id: str, token: str | None) -> tuple[str | None, str | 
                 # The file comes from the canonical resolve URL (not the
                 # /api/... variant, which 404s for these repositories), and
                 # LFS files 302 to CDN storage, so follow the redirect.
-                file = await client.get(
+                file = await get(
                     f"{constants.ENDPOINT}/{hf_repo_id}/resolve/{license_ref}/{license_file}",
-                    headers=headers,
                     follow_redirects=True,
                 )
                 hf_raise_for_status(file)
@@ -103,6 +124,8 @@ async def _fetch(hf_repo_id: str, token: str | None) -> tuple[str | None, str | 
             None,
             "Repository does not exist or is not visible to the configured HF_TOKEN.",
         )
+    except _OverallDeadlineExceeded:
+        return None, None, None, f"Hugging Face Hub did not answer within {OVERALL_DEADLINE_S:g}s."
     except httpx.TimeoutException:
         return None, None, None, f"Hugging Face Hub did not answer within {_TIMEOUT_S:g}s."
     except Exception:  # noqa: BLE001
