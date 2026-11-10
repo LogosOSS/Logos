@@ -38,8 +38,11 @@ def _hub_with(hub, model_info, tree_by_ref, files):
             if ref in tree_by_ref:
                 return httpx.Response(200, json=tree_by_ref[ref])
             return httpx.Response(404, json={"error": "Not Found"})
-        if len(match) > 1 and match[1].startswith("resolve/"):
-            file_path = match[1].removeprefix("resolve/").split("/", 1)[1]
+        # The license file comes from the canonical resolve URL — without
+        # the /api prefix — so it is matched on its own path.
+        match = path.split("/org/model/resolve/")
+        if len(match) > 1:
+            file_path = match[1].split("/", 1)[1]
             if file_path in files:
                 return httpx.Response(200, text=files[file_path])
             return httpx.Response(404, json={"error": "Not Found"})
@@ -68,8 +71,30 @@ async def test_license_file_and_card_license(hub):
     assert paths == [
         "/api/models/org/model",
         "/api/models/org/model/tree/main",
-        "/api/models/org/model/resolve/main/LICENSE.md",
+        "/org/model/resolve/main/LICENSE.md",
     ]
+
+
+async def test_lfs_license_file_follows_the_cdn_redirect(hub):
+    def handler(request):
+        path = str(request.url.path)
+        if path.endswith("/api/models/org/model"):
+            return httpx.Response(200, json={"cardData": {"license": "apache-2.0"}})
+        if path == "/api/models/org/model/tree/main":
+            return httpx.Response(200, json=[{"type": "file", "path": "LICENSE"}])
+        if path == "/org/model/resolve/main/LICENSE":
+            # LFS files 302 to CDN storage; the file text lives at the target.
+            return httpx.Response(302, headers={"location": "https://cdn.example/lic"}, text="")
+        if path == "/lic":
+            return httpx.Response(200, text="Apache License 2.0 ...")
+        return httpx.Response(404, json={"error": "Not Found"})
+
+    hub.handler = staticmethod(handler)
+
+    result = await hf_license.fetch_hf_license("org/model")
+
+    assert result.error is None
+    assert result.license_text == "Apache License 2.0 ..."
 
 
 async def test_provider_specific_license_file_names_are_found(hub):

@@ -84,9 +84,13 @@ async def _fetch(hf_repo_id: str, token: str | None) -> tuple[str | None, str | 
 
             license_text: str | None = None
             if license_file is not None and license_ref is not None:
+                # The file comes from the canonical resolve URL (not the
+                # /api/... variant, which 404s for these repositories), and
+                # LFS files 302 to CDN storage, so follow the redirect.
                 file = await client.get(
-                    f"{constants.ENDPOINT}/api/models/{hf_repo_id}/resolve/{license_ref}/{license_file}",
+                    f"{constants.ENDPOINT}/{hf_repo_id}/resolve/{license_ref}/{license_file}",
                     headers=headers,
+                    follow_redirects=True,
                 )
                 hf_raise_for_status(file)
                 license_text = file.text
