@@ -2,13 +2,14 @@
   <div class="maintenance__header">
     <span id="maintenance-title" class="maintenance__title">Maintenance</span>
     @if (status(); as s) {
-      <span class="maintenance__badge" [class.maintenance__badge--busy]="!s.free">
-        {{ s.free ? 'Free' : 'In use' }}
+      <span class="maintenance__badge" [class.maintenance__badge--busy]="!s.free || rows().length > 0">
+        {{ s.free && rows().length === 0 ? 'Free' : 'In use' }}
       </span>
       <span class="maintenance__hint">
         Calibration, benchmarks and nightly recovery share this slot{{
           s.limit > 1 ? ' (up to ' + s.limit + ' providers at a time)' : ''
         }}.
+        @if (s.node_maintenance?.length) { Node deployments use a separate lease. }
       </span>
     }
   </div>
@@ -22,7 +23,7 @@
   }
 
   @if (status(); as s) {
-    @if (s.free) {
+    @if (s.free && rows().length === 0) {
       <p class="maintenance__free">The slot is free. Calibration and benchmarks can start.</p>
     } @else {
       <ul class="maintenance__list">
@@ -46,6 +47,12 @@
               }
             </div>
             <div class="maintenance__actions">
+              @if (row.kind === 'node') {
+                <button type="button" class="maintenance__btn maintenance__btn--danger" [disabled]="busyKey() !== null"
+                        (click)="askNodeRelease(row)">
+                  Release node lease
+                </button>
+              }
               @if (row.canStop) {
                 <button type="button" class="maintenance__btn" [disabled]="busyKey() !== null" (click)="stop(row)">
                   {{ busyKey() === row.key && !releaseTarget() ? 'Stopping…' : 'Stop calibration' }}
@@ -111,4 +118,18 @@
   (confirmed)="confirmForceRelease()"
 >
   @if (forceError(); as error) { <p modal-error role="alert">{{ error }}</p> }
+</app-modal-confirm>
+
+<app-modal-confirm
+  [visible]="nodeTarget() !== null"
+  (visibleChange)="closeNodeRelease($event)"
+  title="Release the node lease?"
+  [message]="'Release the lease only after stopping the deployment on ' + (nodeTarget()?.provider ?? 'the provider')
+    + '. The node can receive requests again, and another node can deploy. This deployment cannot renew its lease.'"
+  confirmLabel="Release node lease"
+  icon="pi-unlock"
+  [loading]="busyKey() !== null"
+  (confirmed)="confirmNodeRelease()"
+>
+  @if (nodeError(); as error) { <p modal-error role="alert">{{ error }}</p> }
 </app-modal-confirm>

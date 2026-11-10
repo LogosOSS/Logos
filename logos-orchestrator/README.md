@@ -78,3 +78,34 @@ byte limits refer to decoded chunks):
 An overflow discards queued data of active streams, fails them as upstream
 errors, logs the exceeded limit and closes the worker connection. Consuming or
 closing a stream releases its buffer budget.
+
+## Node deployment maintenance
+
+A node manager can hold one cluster-wide node deployment lease. The lease expires
+30 minutes after its last renewal. `LOGOS_NODE_MAINTENANCE_MAX_LEASE_S` also limits
+the elapsed time since that deployment first acquired a lease (default: 7200 seconds).
+Neither status polling nor reacquiring a released or expired lease resets this deadline.
+A different deployment cannot take over an active lease.
+
+Deployment reports require a previously granted lease on the authenticated node.
+`LOGOS_NODE_MAINTENANCE_REPORTS_PER_HOUR` limits report attempts per node in a rolling
+hour (default: 20). Excess reports and reports without lease evidence return
+`status: dropped`, log the reason, and emit no notification. Failed notification
+attempts count toward this limit, but can be retried within the budget. Tags follow
+the node manager's Docker tag grammar; message and requester limits are 2000 and
+300 characters respectively.
+
+Logos admins can inspect and revoke leases from Statistics → Maintenance. The
+application server records these releases in the audit log. Operator API keys can
+also use `POST /logosdb/providers/logosnode/node-maintenance/admin/status` with
+`logos_key`, and `POST .../admin/release` with `logos_key`, `provider_id`, and
+`deployment_id`. Both require a `logos_admin` key. The selected deployment cannot
+reacquire a revoked lease; a stale selection cannot release a newer deployment.
+Stop the node manager's deployment before releasing its lease because the node
+becomes eligible for requests again.
+
+Leases, deployment history, revocations, and report budgets are local to the
+orchestrator process and reset on restart. History retains at most 4096 deployment
+IDs per node until restart. Further new IDs are refused with
+`deployment_history_full`, preserving existing deadlines and revocations without
+unbounded memory growth.

@@ -14,6 +14,7 @@ import logos.main as _main
 from logos.capacity.capacity_planner import RestoreRecordError
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import (
+    AdminReleaseNodeMaintenanceRequest,
     LogosKeyModel,
     LogosNodeApplyLanesRequest,
     LogosNodeAuthRequest,
@@ -395,6 +396,24 @@ async def _maintenance_provider_id(data: LogosNodeMaintenanceRequest, request: R
     return int(provider["id"])
 
 
+@router.post("/logosdb/providers/logosnode/node-maintenance/admin/status", tags=["admin"])
+async def logosnode_maintenance_admin_status(data: LogosKeyModel):
+    """List node leases for an operator authenticated with a Logos admin key."""
+    _require_root_access(data.logos_key)
+    if _main._node_maintenance is None:
+        raise HTTPException(status_code=503, detail="Node maintenance is unavailable")
+    return {"node_maintenance": _main._node_maintenance.admin_status()}
+
+
+@router.post("/logosdb/providers/logosnode/node-maintenance/admin/release", tags=["admin"])
+async def logosnode_maintenance_admin_release(data: AdminReleaseNodeMaintenanceRequest):
+    """Revoke the selected node lease using a Logos admin key."""
+    _require_root_access(data.logos_key)
+    from logos.routers.internal import release_node_maintenance
+
+    return release_node_maintenance(data)
+
+
 @router.post("/logosdb/providers/logosnode/node-maintenance/cordon", tags=["logosnode"])
 async def logosnode_maintenance_cordon(data: LogosNodeMaintenanceRequest, request: Request):
     """Cordon the caller's node for the replacement of its container, or renew the cordon.
@@ -432,9 +451,12 @@ async def logosnode_maintenance_report(data: LogosNodeDeploymentReport, request:
     Answers ``accepted`` once the notification is stored at the application server. The notification is named by the
     node and the deployment, and the application server stores one notification per name, so a repeated report is
     harmless: it is answered ``accepted`` as well and adds no second inbox item. If the notification could not be
-    delivered the answer is a 503, so the caller reports again.
+    delivered the answer is a 503, so the caller reports again within its hourly budget. Reports without a granted
+    lease on this node, or beyond that budget, are dropped without a notification.
     """
     provider_id = await _maintenance_provider_id(data, request)
+    if not _main._node_maintenance.accept_report(provider_id, data.deployment_id):
+        return {"status": "dropped"}
     notification = deployment_notification(_main._node_maintenance.node_name(provider_id), data)
     event_key = f"deployment:{provider_id}:{data.deployment_id}"
     if not await emit_notification(**notification, event_key=event_key):
