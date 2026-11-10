@@ -61,3 +61,20 @@ with `usage_estimated=1` in the usage entries.
 Self-hosted worker streams are cancelled immediately and their scheduler slots
 released during disconnect cleanup. They are billed from usage already received,
 or from the request prompt and received output text with `usage_estimated=1`.
+
+## Worker stream buffer limits
+
+Worker receive buffers are bounded per stream and per connected worker session.
+The following environment variables configure the limits (positive integers;
+byte limits refer to decoded chunks):
+
+| Variable | Default | Limit |
+|---|---:|---|
+| `LOGOSNODE_STREAM_MAX_CHUNKS` | 512 | Buffered chunks per stream |
+| `LOGOSNODE_STREAM_MAX_BYTES` | 8388608 (8 MiB) | Buffered bytes per stream |
+| `LOGOSNODE_STREAM_MAX_CHUNK_BYTES` | 1048576 (1 MiB) | Bytes per chunk |
+| `LOGOSNODE_SESSION_MAX_STREAM_BYTES` | 67108864 (64 MiB) | Buffered bytes across a session's streams |
+
+An overflow discards queued data of active streams, fails them as upstream
+errors, logs the exceeded limit and closes the worker connection. Consuming or
+closing a stream releases its buffer budget.

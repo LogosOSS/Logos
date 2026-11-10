@@ -8,6 +8,7 @@ and avoid abandoned generations occupying capacity needed by subsequent requests
 from __future__ import annotations
 
 import asyncio
+import base64
 from types import SimpleNamespace
 
 import pytest
@@ -61,9 +62,13 @@ def _registry_with_session(*, actions: set[str] | None = None) -> tuple[LogosNod
 
 
 async def _feed(registry: LogosNodeRuntimeRegistry, cmd_id: str, event: dict) -> None:
-    """Push one worker frame into the queue behind ``cmd_id``."""
-    queue = registry._sessions[PROVIDER_ID].pending_streams[cmd_id]
-    await queue.put(event)
+    """Deliver one worker frame through the registry's receive handlers."""
+    if event["type"] == "stream_chunk":
+        await registry.on_stream_chunk(
+            PROVIDER_ID, {"cmd_id": cmd_id, "chunk_b64": base64.b64encode(event["chunk"]).decode("ascii")}
+        )
+    else:
+        await registry.on_stream_end(PROVIDER_ID, {"cmd_id": cmd_id, **event})
 
 
 async def _drain_pending_tasks() -> None:
