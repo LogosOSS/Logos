@@ -69,7 +69,7 @@ public class ApiKeyAdminController {
                 return ResponseEntity.status(403).body(Map.of("detail", "Team owner access required"));
             }
         }
-        return service.rotateKey(keyId)
+        return service.rotateKey(keyId, auth.userId())
             .<ResponseEntity<?>>map(ResponseEntity::ok)
             .orElseGet(() -> ResponseEntity.status(404).body(Map.of("detail", "API Key not found")));
     }
@@ -99,6 +99,6 @@ public class ApiKeyAdminController {
         if (Role.APP_ADMIN.matches(auth.role()) && !service.isTeamOwner(teamId, auth.userId())) {
             return ResponseEntity.status(403).body(Map.of("detail", "Team owner access required"));
         }
-        return ResponseEntity.ok(service.getKeysForTeam(teamId));
+        return ResponseEntity.ok(service.getKeysForTeam(teamId, auth.userId()));
     }
 }
