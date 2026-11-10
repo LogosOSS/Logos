@@ -74,4 +74,78 @@ class BatchPriceServiceIntegrationTest {
         jdbc.update("DELETE FROM api_key_model_permissions WHERE api_key_id = 3101");
         assertThat(service.pricesForKey(1101, 3101)).isEmpty();
     }
+
+    @Test
+    void modelPricesWithNullProviderAreResolved() {
+        jdbc.update("UPDATE token_prices SET provider_id = NULL WHERE model_id = 5101 AND provider_id = 6101");
+        assertThat(service.pricesForKey(1101, 3101)).containsExactly(
+            new BatchPriceService.ModelPrice("test-model", 100L, 300L));
+    }
+
+    @Test
+    void providerPricesWithNullModelAreResolved() {
+        jdbc.update("UPDATE token_prices SET model_id = NULL WHERE model_id = 5101 AND provider_id = 6101");
+        assertThat(service.pricesForKey(1101, 3101)).containsExactly(
+            new BatchPriceService.ModelPrice("test-model", 100L, 300L));
+    }
+
+    @Test
+    void providerSpecificPricesTakePrecedenceOverMoreExpensiveFallbacks() {
+        addPrices(5101, null, 9000, "2022-01-01", 200000, "default", "token");
+        addPrices(null, 6101, 8000, "2022-01-01", 200000, "default", "token");
+        addPrices(null, null, 7000, "2022-01-01", 200000, "default", "token");
+
+        assertThat(service.pricesForKey(1101, 3101)).containsExactly(
+            new BatchPriceService.ModelPrice("test-model", 100L, 300L));
+    }
+
+    @Test
+    void modelSpecificFallbackTakesPrecedenceOverProviderOnlyPrice() {
+        jdbc.update("DELETE FROM token_prices WHERE model_id = 5101 AND provider_id = 6101");
+        addPrices(5101, null, 400, "2021-01-01", 0, "default", "token");
+        addPrices(null, 6101, 8000, "2022-01-01", 200000, "default", "token");
+
+        assertThat(service.pricesForKey(1101, 3101)).containsExactly(
+            new BatchPriceService.ModelPrice("test-model", 400L, 1200L));
+    }
+
+    @Test
+    void highestContextTierUsesLatestCurrentDefaultTokenPrice() {
+        addPrices(5101, 6101, 9000, "2020-01-01", 200000, "default", "token");
+        addPrices(5101, 6101, 400, "2021-01-01", 200000, "default", "token");
+        addPrices(5101, 6101, 500, "2021-01-01", 200000, "default", "token");
+        addPrices(5101, 6101, 8000, "2022-01-01", 0, "default", "token");
+        addPrices(5101, 6101, 99000, "2999-01-01", 300000, "default", "token");
+        addPrices(5101, 6101, 50, "2022-01-01", 300000, "batch", "token");
+        addPrices(5101, 6101, 99000, "2022-01-01", 300000, "default", "image");
+
+        assertThat(service.pricesForKey(1101, 3101)).containsExactly(
+            new BatchPriceService.ModelPrice("test-model", 500L, 1500L));
+    }
+
+    @Test
+    void maximumAcrossPermittedDeploymentsStillRequiresEveryDeploymentToBePriced() {
+        jdbc.update("INSERT INTO team_provider_permissions (team_id, provider_id) VALUES (2101, 6102)");
+        assertThat(service.pricesForKey(1101, 3101)).containsExactly(
+            new BatchPriceService.ModelPrice("test-model", 2000L, 6000L));
+
+        jdbc.update("DELETE FROM token_prices WHERE model_id = 5101 AND provider_id = 6102");
+        assertThat(service.pricesForKey(1101, 3101)).containsExactly(
+            new BatchPriceService.ModelPrice("test-model", null, null));
+
+        jdbc.update("UPDATE providers SET provider_type = 'logosnode' WHERE id = 6102");
+        assertThat(service.pricesForKey(1101, 3101)).containsExactly(
+            new BatchPriceService.ModelPrice("test-model", 100L, 300L));
+    }
+
+    private void addPrices(Integer modelId, Integer providerId, long inputRate, String validFrom,
+                           long contextTokens, String serviceTier, String unit) {
+        jdbc.update("""
+            INSERT INTO token_prices
+                (model_id, provider_id, type_id, price_per_k_unit, valid_from, min_context_tokens, service_tier, unit)
+            SELECT ?, ?, id, CASE WHEN name = 'billed_input_uncached' THEN ? ELSE ? END,
+                   ?::timestamptz, ?, ?, ?
+            FROM token_types WHERE name IN ('billed_input_uncached', 'billed_output_text')
+            """, modelId, providerId, inputRate, inputRate * 3, validFrom, contextTokens, serviceTier, unit);
+    }
 }

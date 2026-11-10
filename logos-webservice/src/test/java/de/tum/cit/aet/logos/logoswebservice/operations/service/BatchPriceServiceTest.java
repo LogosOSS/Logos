@@ -1,16 +1,12 @@
 package de.tum.cit.aet.logos.logoswebservice.operations.service;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import de.tum.cit.aet.logos.logoswebservice.configuration.entity.TokenPrice;
-import de.tum.cit.aet.logos.logoswebservice.configuration.entity.TokenType;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.TokenPriceRepository;
-import de.tum.cit.aet.logos.logoswebservice.configuration.repository.TokenTypeRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.ApiKey;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.ApiKeyRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.ModelAccessProjection;
@@ -22,8 +18,7 @@ import static org.mockito.Mockito.*;
 class BatchPriceServiceTest {
     private final ApiKeyRepository keys = mock(ApiKeyRepository.class);
     private final TokenPriceRepository prices = mock(TokenPriceRepository.class);
-    private final TokenTypeRepository types = mock(TokenTypeRepository.class);
-    private final BatchPriceService service = new BatchPriceService(keys, prices, types);
+    private final BatchPriceService service = new BatchPriceService(keys, prices);
     private final ApiKey key = new ApiKey();
 
     @BeforeEach
@@ -33,13 +28,6 @@ class BatchPriceServiceTest {
         key.setTeamId(3);
         key.setUseCustomPermissions(false);
         when(keys.findById(10)).thenReturn(Optional.of(key));
-        TokenType input = mock(TokenType.class);
-        when(input.getId()).thenReturn(1);
-        when(input.getName()).thenReturn("billed_input_uncached");
-        TokenType output = mock(TokenType.class);
-        when(output.getId()).thenReturn(2);
-        when(output.getName()).thenReturn("billed_output_text");
-        when(types.findAll()).thenReturn(List.of(input, output));
     }
 
     @Test
@@ -52,44 +40,32 @@ class BatchPriceServiceTest {
         key.setIsActive(true);
         key.setUserId(8);
         assertDenied();
-        verifyNoInteractions(prices, types);
+        verifyNoInteractions(prices);
         verify(keys, never()).findAccessibleModelsByTeam(anyInt());
         verify(keys, never()).findAccessibleModelsByKey(anyInt());
     }
 
     @Test
-    void teamPermissionsRestrictProvidersAndReturnOnlyCurrentStandardTokenRates() {
+    void teamPermissionsResolveOnlyPermittedDeploymentsAtTheHighestContextTier() {
         var cloud = deployment(1, "cloud");
         when(keys.findAccessibleModelsByTeam(3)).thenReturn(List.of(cloud));
-        TokenPrice batch = price(1, 1, 50, "2026-01-01T00:00:00Z");
-        batch.setServiceTier("batch");
-        TokenPrice image = price(1, 1, 9000, "2026-01-01T00:00:00Z");
-        image.setUnit("image");
-        when(prices.findByModelId(20)).thenReturn(List.of(
-            price(1, 1, 800, "2020-01-01T00:00:00Z"),
-            price(1, 1, 100, "2021-01-01T00:00:00Z"),
-            price(1, 2, 300, "2021-01-01T00:00:00Z"),
-            price(1, 1, 999, "2999-01-01T00:00:00Z"),
-            price(2, 1, 5000, "2021-01-01T00:00:00Z"), batch, image));
+        resolvedPrices(1, 100L, 300L);
 
         assertThat(service.pricesForKey(7, 10)).containsExactly(
             new BatchPriceService.ModelPrice("model", 100L, 300L));
+        verify(prices).resolveCurrentDefaultUnitPrice("billed_input_uncached", 20, 1, Long.MAX_VALUE);
+        verify(prices).resolveCurrentDefaultUnitPrice("billed_output_text", 20, 1, Long.MAX_VALUE);
+        verifyNoMoreInteractions(prices);
         verify(keys, never()).findAccessibleModelsByKey(anyInt());
     }
 
     @Test
-    void customPermissionsUseOnlyTheKeysDeploymentsAndHighestCurrentContextRates() {
+    void customPermissionsTakeTheMaximumResolvedRateAcrossTheKeysDeployments() {
         key.setUseCustomPermissions(true);
-        var cloud = deployment(1, "cloud");
-        var otherCloud = deployment(2, "cloud");
-        when(keys.findAccessibleModelsByKey(10)).thenReturn(List.of(cloud, otherCloud));
-        TokenPrice longContext = price(1, 1, 400, "2021-01-01T00:00:00Z");
-        longContext.setMinContextTokens(200000L);
-        when(prices.findByModelId(20)).thenReturn(List.of(
-            price(1, 1, 100, "2021-01-01T00:00:00Z"), longContext,
-            price(1, 2, 200, "2021-01-01T00:00:00Z"),
-            price(2, 1, 300, "2021-01-01T00:00:00Z"),
-            price(2, 2, 600, "2021-01-01T00:00:00Z")));
+        var deployments = List.of(deployment(1, "cloud"), deployment(2, "cloud"));
+        when(keys.findAccessibleModelsByKey(10)).thenReturn(deployments);
+        resolvedPrices(1, 400L, 200L);
+        resolvedPrices(2, 300L, 600L);
 
         assertThat(service.pricesForKey(7, 10)).containsExactly(
             new BatchPriceService.ModelPrice("model", 400L, 600L));
@@ -97,16 +73,26 @@ class BatchPriceServiceTest {
     }
 
     @Test
-    void missingCloudPricesAreUnknownWhileLocalModelsAreFree() {
-        var cloud = deployment(1, "cloud");
-        when(keys.findAccessibleModelsByTeam(3)).thenReturn(List.of(cloud));
-        when(prices.findByModelId(20)).thenReturn(List.of(price(1, 1, 100, "2021-01-01T00:00:00Z")));
+    void missingCloudPriceRemainsUnknownDespiteAnotherPricedDeployment() {
+        var deployments = List.of(deployment(1, "cloud"), deployment(2, "cloud"));
+        when(keys.findAccessibleModelsByTeam(3)).thenReturn(deployments);
+        resolvedPrices(1, 100L, 300L);
+        resolvedPrices(2, 200L, null);
         assertThat(service.pricesForKey(7, 10)).containsExactly(
-            new BatchPriceService.ModelPrice("model", 100L, null));
+            new BatchPriceService.ModelPrice("model", 200L, null));
+
+        resolvedPrices(2, null, 600L);
+        assertThat(service.pricesForKey(7, 10)).containsExactly(
+            new BatchPriceService.ModelPrice("model", null, 600L));
+    }
+
+    @Test
+    void localModelsAreFreeWithoutResolvingPrices() {
         var local = deployment(1, "logosnode");
         when(keys.findAccessibleModelsByTeam(3)).thenReturn(List.of(local));
         assertThat(service.pricesForKey(7, 10)).containsExactly(
             new BatchPriceService.ModelPrice("model", 0L, 0L));
+        verifyNoInteractions(prices);
     }
 
     @Test
@@ -130,13 +116,10 @@ class BatchPriceServiceTest {
         return row;
     }
 
-    private TokenPrice price(int providerId, int typeId, long rate, String date) {
-        TokenPrice price = new TokenPrice();
-        price.setModelId(20);
-        price.setProviderId(providerId);
-        price.setTypeId(typeId);
-        price.setPricePerKUnit(rate);
-        price.setValidFrom(Instant.parse(date));
-        return price;
+    private void resolvedPrices(int providerId, Long input, Long output) {
+        when(prices.resolveCurrentDefaultUnitPrice("billed_input_uncached", 20, providerId, Long.MAX_VALUE))
+            .thenReturn(input);
+        when(prices.resolveCurrentDefaultUnitPrice("billed_output_text", 20, providerId, Long.MAX_VALUE))
+            .thenReturn(output);
     }
 }
