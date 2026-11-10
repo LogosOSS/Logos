@@ -107,59 +107,6 @@
         </rollback>
     </changeSet>
 
-    <!-- Labelled example questions for assigning an intent to a question
-         (nearest-neighbour vote, logos.answer_reuse.matching.assign_intent).
-
-         context_id NULL marks a global example, available to every context;
-         a non-NULL context_id limits the example to that context.
-
-         source tells where the example came from: 'seed' for a labelled
-         dataset question. 'auto' is reserved for intents created at runtime,
-         which nothing creates yet; evaluations can then separate the two,
-         because only seeded intents come from an independent label source. -->
-    <changeSet id="072-intent-exemplar" author="natasya.gunawan">
-        <preConditions onFail="MARK_RAN">
-            <not><tableExists tableName="intent_exemplar"/></not>
-        </preConditions>
-        <createTable tableName="intent_exemplar">
-            <column name="id" type="INTEGER" autoIncrement="true">
-                <constraints primaryKey="true" primaryKeyName="pk_intent_exemplar"/>
-            </column>
-            <column name="context_id" type="TEXT"/>
-            <column name="intent" type="TEXT">
-                <constraints nullable="false"/>
-            </column>
-            <column name="text" type="TEXT">
-                <constraints nullable="false"/>
-            </column>
-            <column name="embedding" type="REAL[]">
-                <constraints nullable="false"/>
-            </column>
-            <column name="source" type="TEXT" defaultValue="seed">
-                <constraints nullable="false"/>
-            </column>
-            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
-                <constraints nullable="false"/>
-            </column>
-        </createTable>
-        <sql><![CDATA[
-            ALTER TABLE intent_exemplar
-                ADD CONSTRAINT ck_intent_exemplar_source CHECK (source IN ('seed', 'auto'));
-
-            ALTER TABLE intent_exemplar
-                ADD CONSTRAINT ck_intent_exemplar_embedding_dim CHECK (array_length(embedding, 1) = 384);
-
-            -- COALESCE so global examples (context_id NULL) are deduplicated
-            -- too: a plain unique index treats every NULL as distinct.
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_intent_exemplar_context_text
-                ON intent_exemplar (COALESCE(context_id, ''), text);
-        ]]></sql>
-        <rollback>
-            <sql>DROP INDEX IF EXISTS uq_intent_exemplar_context_text;</sql>
-            <dropTable tableName="intent_exemplar"/>
-        </rollback>
-    </changeSet>
-
     <!-- Which requests were answered from answer_cache.
            cache_hit TRUE  — answered from the cache, no model call
                              (cache_entry_id names the entry);

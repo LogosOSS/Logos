@@ -1,4 +1,4 @@
-"""The queries behind answer reuse (answer_cache, intent_exemplar).
+"""The queries behind answer reuse (answer_cache).
 
 The unit-test environment stubs SQLAlchemy, so ``text()`` yields no
 inspectable statement — these assert on the bound parameters, the returned
@@ -73,18 +73,6 @@ def test_an_empty_context_has_no_entries():
     assert db.get_answer_cache_entries("unknown") == []
 
 
-def test_intent_exemplars_are_read_for_the_context():
-    db = _db()
-    db.session.execute.return_value.fetchall.return_value = [
-        _row(id=1, intent="track_order", text="where is my package", source="seed", embedding=EMBEDDING)
-    ]
-
-    exemplars = db.get_intent_exemplars("shop-a")
-
-    assert _params_of(db.session.execute.call_args) == {"context_id": "shop-a"}
-    assert exemplars[0]["intent"] == "track_order"
-
-
 def test_a_new_answer_is_stored_and_committed():
     db = _db()
     db.session.execute.return_value.fetchone.return_value = _row(id=12)
@@ -136,28 +124,6 @@ def test_the_embedding_is_bound_as_plain_floats():
     bound = _params_of(db.session.execute.call_args)["embedding"]
     assert len(bound) == 384
     assert all(type(value) is float for value in bound)
-
-
-def test_a_global_intent_exemplar_has_no_context():
-    db = _db()
-    db.session.execute.return_value.fetchone.return_value = _row(id=4)
-
-    exemplar_id = db.insert_intent_exemplar(
-        context_id=None, intent="track_order", text_value="where is my package", embedding=EMBEDDING
-    )
-
-    assert exemplar_id == 4
-    params = _params_of(db.session.execute.call_args)
-    assert params["context_id"] is None
-    assert params["source"] == "seed"
-    db.session.commit.assert_called_once()
-
-
-def test_a_duplicate_intent_exemplar_returns_none():
-    db = _db()
-    db.session.execute.return_value.fetchone.return_value = None
-
-    assert db.insert_intent_exemplar(context_id="shop-a", intent="x", text_value="t", embedding=EMBEDDING) is None
 
 
 def test_a_cache_hit_is_counted_on_its_entry():

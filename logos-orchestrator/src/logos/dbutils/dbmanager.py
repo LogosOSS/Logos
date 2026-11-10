@@ -5220,7 +5220,7 @@ class DBManager:
                             """)
         return self.session.execute(sql, {"logos_key": logos_key}).fetchone() is not None
 
-    # Answer reuse (tables answer_cache and intent_exemplar, changelog 072)
+    # Answer reuse (table answer_cache, changelog 072)
 
     def get_answer_cache_entries(self, context_id: str) -> List[Dict[str, Any]]:
         """Return every stored answer of one context, oldest first.
@@ -5241,31 +5241,6 @@ class DBManager:
                  SELECT id, intent, answer_template, source, source_model_id, embedding
                  FROM answer_cache
                  WHERE context_id = :context_id
-                 ORDER BY id
-                 """),
-            {"context_id": context_id},
-        ).fetchall()
-        return [dict(row._mapping) for row in rows]
-
-    def get_intent_exemplars(self, context_id: str) -> List[Dict[str, Any]]:
-        """Return the labelled example questions that apply to one context.
-
-        A context sees its own examples plus the global ones
-        (``context_id`` NULL).
-
-        Params:
-            context_id: The scope, as built by
-                :func:`logos.answer_reuse.context.cache_scope`.
-
-        Returns:
-            One dict per example with ``id``, ``intent``, ``text``, ``source``
-            and ``embedding`` (384 floats).
-        """
-        rows = self.session.execute(
-            text("""
-                 SELECT id, intent, text, source, embedding
-                 FROM intent_exemplar
-                 WHERE context_id = :context_id OR context_id IS NULL
                  ORDER BY id
                  """),
             {"context_id": context_id},
@@ -5326,50 +5301,6 @@ class DBManager:
                 "source": source,
                 "source_model_id": source_model_id,
                 "source_log_id": source_log_id,
-            },
-        ).fetchone()
-        self.session.commit()
-        return int(row._mapping["id"]) if row else None
-
-    def insert_intent_exemplar(
-        self,
-        *,
-        context_id: Optional[str],
-        intent: str,
-        text_value: str,
-        embedding: List[float],
-        source: str = "seed",
-    ) -> Optional[int]:
-        """Store one labelled example question.
-
-        An example that already exists for the context (same text) is left
-        as it is.
-
-        Params:
-            context_id: The context the example belongs to; None for a global
-                example every context can use.
-            intent: The example's intent label.
-            text_value: The example question, normalized like stored questions.
-            embedding: The 384 floats of ``text_value``.
-            source: ``"seed"`` for a dataset label, ``"auto"`` for an intent
-                created at runtime.
-
-        Returns:
-            The new example's id, or None when it was already stored.
-        """
-        row = self.session.execute(
-            text("""
-                 INSERT INTO intent_exemplar (context_id, intent, text, embedding, source)
-                 VALUES (:context_id, :intent, :text_value, CAST(:embedding AS REAL[]), :source)
-                 ON CONFLICT DO NOTHING
-                 RETURNING id
-                 """),
-            {
-                "context_id": context_id,
-                "intent": intent,
-                "text_value": text_value,
-                "embedding": [float(x) for x in embedding],
-                "source": source,
             },
         ).fetchone()
         self.session.commit()

@@ -1,11 +1,10 @@
-"""Deciding whether a question may reuse a stored answer, and which intent it has.
+"""Deciding whether a question may reuse a stored answer.
 
 Pure functions: no database, no model, no network. A question arrives here
 already embedded; the callers load the stored entries and pass them in.
 
-Both decisions apply the same rule to a different set of labelled vectors:
-the most similar vector must reach a threshold, and the ``k`` most similar
-vectors must all carry the same label. Requiring the top ``k`` to agree keeps
+The rule: the most similar stored question must reach a threshold, and the
+``k`` most similar must all carry the same intent. Requiring the top ``k`` to agree keeps
 an ambiguous question (whose nearest neighbours belong to different intents)
 from being answered with the wrong intent's answer, even when one neighbour
 is very close.
@@ -27,8 +26,6 @@ import numpy as np
 # lowest that reused no answer across intents.
 DEFAULT_SIMILARITY_THRESHOLD = 0.85
 DEFAULT_TOP_K = 3
-
-UNKNOWN_INTENT = "unknown"
 
 # The prefix the classifier's encoder puts in front of every prompt
 # (LauraEmbeddingClassifier.encode_text). Stored and incoming questions must be
@@ -166,30 +163,3 @@ def decide_reuse(
         whose answer is reused.
     """
     return best_match(query, entry_vectors, entry_intents, threshold, k)
-
-
-def assign_intent(
-    query: Sequence[float],
-    exemplar_vectors: np.ndarray,
-    exemplar_intents: Sequence[str],
-    threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
-    k: int = DEFAULT_TOP_K,
-) -> str:
-    """Assign an intent to a question from labelled example questions.
-
-    The same rule as :func:`decide_reuse`, applied to intent_exemplar rows: a
-    question whose closest examples are not close enough, or disagree, gets
-    :data:`UNKNOWN_INTENT`.
-
-    Params:
-        query: The question's normalized embedding.
-        exemplar_vectors: The embeddings of the context's example questions.
-        exemplar_intents: The intent of each example, same order.
-        threshold: Minimum similarity of the closest example.
-        k: How many closest examples must share one intent.
-
-    Returns:
-        The intent, or :data:`UNKNOWN_INTENT`.
-    """
-    match = best_match(query, exemplar_vectors, exemplar_intents, threshold, k)
-    return match.label if match.accepted else UNKNOWN_INTENT

@@ -1,4 +1,4 @@
-"""The reuse rule and intent assignment (pure functions, no database)."""
+"""The reuse rule (pure functions, no database)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,6 @@ import pytest
 
 from logos.answer_reuse.matching import (
     DEFAULT_SIMILARITY_THRESHOLD,
-    UNKNOWN_INTENT,
-    assign_intent,
     best_match,
     decide_reuse,
     embedding_text,
@@ -167,21 +165,3 @@ def test_the_rule_matches_the_experiment_on_random_data():
         expected = bool(best_sim >= threshold and (top_labels == top_labels[:, [0]]).all())
 
         assert decide_reuse(query, history, list(history_labels), threshold=threshold).accepted == expected
-
-
-# intent assignment
-
-
-def test_an_intent_is_assigned_when_the_closest_examples_agree():
-    vectors = np.stack([_at_similarity(QUERY, s) for s in (0.93, 0.91, 0.90)])
-    assert assign_intent(QUERY, vectors, ["track_order"] * 3) == "track_order"
-
-
-def test_a_question_far_from_every_example_has_no_intent():
-    vectors = np.stack([_at_similarity(QUERY, s) for s in (0.40, 0.35, 0.30)])
-    assert assign_intent(QUERY, vectors, ["track_order"] * 3) == UNKNOWN_INTENT
-
-
-def test_a_question_between_two_intents_has_no_intent():
-    vectors = np.stack([_at_similarity(QUERY, s) for s in (0.93, 0.92, 0.91)])
-    assert assign_intent(QUERY, vectors, ["track_order", "cancel_order", "track_order"]) == UNKNOWN_INTENT
