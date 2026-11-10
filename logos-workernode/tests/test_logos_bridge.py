@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ import httpx
 import pytest
 
 from logos_worker_node.logos_bridge import LogosBridgeClient, _CalibrationSession
-from logos_worker_node.models import LaneStatus, LogosConfig, ProcessState, ProcessStatus
+from logos_worker_node.models import AppConfig, LaneStatus, LogosConfig, ProcessState, ProcessStatus
 
 
 @pytest.fixture(autouse=True)
@@ -4679,3 +4680,94 @@ async def test_cancel_command_tasks_stops_every_command_and_logs_failures(caplog
     assert failing.done() and isinstance(failing.exception(), RuntimeError)
     assert client._command_tasks == {}  # noqa: SLF001
     assert "Bridge background command task failed during shutdown" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "path,content",
+    [
+        (
+            "v1/chat/completions",
+            {
+                "messages": [
+                    {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "http://127.0.0.1/"}}]}
+                ]
+            },
+        ),
+        (
+            "v1/responses",
+            {"input": [{"type": "message", "content": [{"type": "input_file", "file_url": "file:///etc/passwd"}]}]},
+        ),
+    ],
+)
+async def test_invalid_media_returns_400_without_acquiring_or_relaying(stream, path, content):
+    app = _DummyApp()
+    app.state.config = AppConfig()
+    app.state.lane_manager = SimpleNamespace(acquire_lane_for_infer=AsyncMock(), decrement_active_requests=AsyncMock())
+    client = LogosBridgeClient(app, LogosConfig())
+    await client._relay_client.aclose()
+    client._relay_client = MagicMock()
+    client._send_json = AsyncMock()
+    params = {"lane_id": "lane-a", "request_path": path, "payload": content}
+    if stream:
+        await client._execute_stream_command(object(), "cmd-media", params)
+        client._send_json.assert_awaited_once()
+        result = client._send_json.call_args.args[1]
+        assert result["type"] == "stream_end"
+        assert result["success"] is False
+        assert result["cmd_id"] == "cmd-media"
+    else:
+        result = await client._execute_infer_command(params)
+    assert result["status_code"] == 400
+    assert result["body"]["error"]["code"] == "invalid_media_url"
+    assert "base64 data:" in result["body"]["error"]["message"]
+    assert "127.0.0.1" not in result["body"]["error"]["message"]
+    assert client._relay_client.mock_calls == []
+    app.state.lane_manager.acquire_lane_for_infer.assert_not_awaited()
+    app.state.lane_manager.decrement_active_requests.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "url,domains",
+    [
+        ("data:image/png;base64,aGVsbG8=", []),
+        ("https://media.example/image.png", ["media.example"]),
+    ],
+)
+async def test_bridge_relays_embedded_or_allowlisted_media(stream, url, domains):
+    app = _DummyApp()
+    app.state.config = AppConfig(engines={"vllm": {"allowed_media_domains": domains}})
+    app.state.lane_manager = SimpleNamespace(
+        acquire_lane_for_infer=AsyncMock(return_value=_make_lane_status()), decrement_active_requests=AsyncMock()
+    )
+    client = LogosBridgeClient(app, LogosConfig())
+    await client._relay_client.aclose()
+    payload = {"input": [{"type": "input_image", "image_url": url}]}
+    requests = []
+
+    async def handle(request):
+        requests.append(request)
+        assert json.loads(request.content) == payload
+        return httpx.Response(200, json={"output": []})
+
+    client._relay_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    client._send_json = AsyncMock()
+    params = {"lane_id": "lane-a", "request_path": "v1/responses", "payload": payload}
+    try:
+        if stream:
+            await client._execute_stream_command(object(), "cmd-media", params)
+            frames = [call.args[1] for call in client._send_json.call_args_list]
+            assert [frame["type"] for frame in frames] == ["stream_start", "stream_chunk", "stream_end"]
+            assert frames[0]["status_code"] == 200
+            assert json.loads(base64.b64decode(frames[1]["chunk_b64"])) == {"output": []}
+            assert frames[2]["success"] is True
+        else:
+            result = await client._execute_infer_command(params)
+            assert result["status_code"] == 200
+        assert len(requests) == 1
+        app.state.lane_manager.decrement_active_requests.assert_awaited_once_with("lane-a")
+    finally:
+        await client._relay_client.aclose()

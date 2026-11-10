@@ -19,6 +19,37 @@ It does four things:
 
 No overlap. Credentials never go in `config.yml`. Hardware config never goes in `.env`.
 
+## Media access
+
+Worker-served models accept embedded media by default: use base64 `data:` URLs
+for images, videos and files, or base64 data for `input_audio`. Remote URLs and
+local files are rejected by the bridge with an `invalid_media_url` 400 error;
+streaming requests carry the same invalid-request error in the stream.
+
+To permit HTTP(S) media from specific hosts, set this worker-wide policy in
+`config.yml` and restart the worker and its lanes:
+
+```yaml
+engines:
+  vllm:
+    allowed_media_domains: [media.example.com, assets.example.com]
+```
+
+The default is `[]`. Entries are bare ASCII hostnames (punycode for international
+names), matched exactly, ignoring hostname case; subdomains require separate
+entries. Schemes, ports, paths, credentials and wildcards are not allowed in the
+list. The bridge applies this policy to chat content and Responses input items,
+including nested media references. Cloud-provider models are unaffected.
+
+The worker passes the same allowlist to vLLM's `--allowed-media-domains`; with an
+empty list it passes the reserved `logos-media-disabled.invalid` hostname to deny
+remote media. Local media access remains disabled (`--allowed-local-media-path`
+is never enabled), and media redirects are disabled with
+`VLLM_MEDIA_URL_ALLOW_REDIRECTS=0` so allowed hosts cannot redirect outside the
+list. Media access flags cannot be supplied through vLLM extra arguments.
+See the [vLLM 0.33 serve options](https://docs.vllm.ai/en/v0.33.0/cli/serve/)
+and [media redirect setting](https://docs.vllm.ai/en/v0.33.0/configuration/env_vars/).
+
 ## Custom chat templates
 
 A model can be served with a chat template other than the one bundled with its

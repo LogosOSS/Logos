@@ -2059,7 +2059,7 @@ async def _streaming_response(
                         # before stream_start). Nothing was sent downstream, so a
                         # fresh dispatch is transparent. Once any chunk has gone to
                         # the client we cannot un-send it, so re-raise.
-                        if not produced and attempt < attempts - 1:
+                        if not produced and attempt < attempts - 1 and not isinstance(e, UpstreamStreamError):
                             logger.warning(
                                 "logosnode pre-token stream failure (attempt %d/%d), retrying: %s",
                                 attempt + 1,
@@ -4115,6 +4115,8 @@ def _error_frames(path: str, status: int, body: Any) -> list:
 
 def _instream_error_frames(path: str, exc: Exception) -> list:
     """An exception from the execution path as in-stream error frames."""
+    if isinstance(exc, UpstreamStreamError):
+        return _error_frames(path, exc.status_code, exc.body)
     if isinstance(exc, HTTPException):
         return _error_frames(path, exc.status_code, {"error": str(exc.detail)})
     return _error_frames(path, 500, {"error": str(exc)})

@@ -44,7 +44,12 @@ from logos_worker_node.models import (
     model_can_sleep,
     model_uses_sharded_checkpoint,
 )
-from logos_worker_node.request_content import MULTIPART_PAYLOAD_KEY, httpx_request_parts
+from logos_worker_node.request_content import (
+    MULTIPART_PAYLOAD_KEY,
+    MediaReferenceError,
+    httpx_request_parts,
+    validate_media_references,
+)
 from logos_worker_node.runtime import build_runtime_status
 from logos_worker_node.vllm_compat import DEFAULT_VLLM
 from logos_worker_node.vllm_metrics_export import collect_vllm_metrics_text
@@ -2498,12 +2503,22 @@ class LogosBridgeClient:
             raise ValueError(f"Request path '/{endpoint}' is not allowed through the inference proxy")
         return f"http://127.0.0.1:{lane_status['port']}/{endpoint}"
 
+    def _validate_media(self, payload: dict[str, Any]) -> None:
+        config = getattr(self._app.state, "config", None)
+        domains = config.engines.vllm.allowed_media_domains if config is not None else ()
+        validate_media_references(payload, domains)
+
     async def _execute_infer_command(self, params: dict[str, Any]) -> dict[str, Any]:
         lane_manager = self._app.state.lane_manager
         lane_id = str(params.get("lane_id", "")).strip()
         payload = params.get("payload") or {}
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
+
+        try:
+            self._validate_media(payload)
+        except MediaReferenceError as exc:
+            return {"status_code": 400, "body": exc.error_body(), "headers": {"content-type": "application/json"}}
 
         tracer = worker_perf.begin()
 
@@ -2584,6 +2599,22 @@ class LogosBridgeClient:
                     "cmd_id": cmd_id,
                     "success": False,
                     "error": "payload must be an object",
+                },
+            )
+            return
+
+        try:
+            self._validate_media(payload)
+        except MediaReferenceError as exc:
+            await self._send_json(
+                ws,
+                {
+                    "type": "stream_end",
+                    "cmd_id": cmd_id,
+                    "success": False,
+                    "status_code": 400,
+                    "body": exc.error_body(),
+                    "error": str(exc),
                 },
             )
             return
