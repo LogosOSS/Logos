@@ -1,9 +1,13 @@
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ModelRequests } from './model-requests';
-import { ModelRequest, ModelRequestService } from '../../core/services/model-request.service';
+import {
+  ModelLicense,
+  ModelRequest,
+  ModelRequestService,
+} from '../../core/services/model-request.service';
 import { AuthService } from '../../core/auth/services/auth.service';
 
 const makeRequest = (overrides: Partial<ModelRequest> = {}): ModelRequest => ({
@@ -13,8 +17,22 @@ const makeRequest = (overrides: Partial<ModelRequest> = {}): ModelRequest => ({
   has_voted: false,
   is_gated: null,
   first_requesting_team: null,
+  license_status: 'pending',
+  license_approved: false,
   ...overrides,
 });
+
+const makeLicense = (overrides: Partial<ModelLicense> = {}): ModelLicense => ({
+  status: 'available',
+  license_id: 'apache-2.0',
+  license_text: 'Apache License 2.0',
+  approved: false,
+  approved_at: null,
+  ...overrides,
+});
+
+/** Let the fire-and-forget license load of the open dialog settle. */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const makeUser = (teams: { id: number; name: string }[]) => ({
   user_id: 1,
@@ -32,15 +50,33 @@ describe('ModelRequests', () => {
   let vote: ReturnType<typeof vi.fn>;
   let undoVote: ReturnType<typeof vi.fn>;
   let recheckGated: ReturnType<typeof vi.fn>;
+  let getLicense: ReturnType<typeof vi.fn>;
+  let approveLicense: ReturnType<typeof vi.fn>;
+  let revokeLicense: ReturnType<typeof vi.fn>;
+
+  const serviceMock = () => ({
+    list,
+    vote,
+    undoVote,
+    recheckGated,
+    getLicense,
+    approveLicense,
+    revokeLicense,
+  });
 
   beforeEach(async () => {
     list = vi.fn().mockResolvedValue([]);
     vote = vi.fn().mockResolvedValue(makeRequest({ has_voted: true }));
     undoVote = vi.fn().mockResolvedValue(makeRequest({ request_count: 0, has_voted: false }));
     recheckGated = vi.fn().mockResolvedValue(undefined);
+    getLicense = vi.fn().mockResolvedValue(makeLicense());
+    approveLicense = vi.fn().mockResolvedValue(
+      makeLicense({ approved: true, approved_at: '2026-11-10T12:00:00Z' }),
+    );
+    revokeLicense = vi.fn().mockResolvedValue(makeLicense({ approved: false, approved_at: null }));
     TestBed.configureTestingModule({
       providers: [
-        { provide: ModelRequestService, useValue: { list, vote, undoVote, recheckGated } },
+        { provide: ModelRequestService, useValue: serviceMock() },
         {
           provide: AuthService,
           useValue: {
@@ -159,7 +195,7 @@ describe('ModelRequests', () => {
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
       providers: [
-        { provide: ModelRequestService, useValue: { list, vote, undoVote, recheckGated } },
+        { provide: ModelRequestService, useValue: serviceMock() },
         {
           provide: AuthService,
           useValue: {
@@ -175,6 +211,80 @@ describe('ModelRequests', () => {
     page.name.set('gpt-5');
     await page.submit();
     expect(vote).not.toHaveBeenCalled();
+  });
+
+  it('loads the stored license when the license dialog opens', async () => {
+    const row = makeRequest({ id: 3, name: 'llama', license_status: 'available' });
+    page.openLicenseDialog(row);
+    expect(page.license()).toBeNull();
+    expect(page.licenseLoading()).toBe(true);
+    await tick();
+    expect(getLicense).toHaveBeenCalledWith(3);
+    expect(page.license()).toEqual(makeLicense());
+    expect(page.acceptChecked()).toBe(false);
+    expect(page.licenseLoading()).toBe(false);
+  });
+
+  it('surfaces a license load failure in the dialog', async () => {
+    getLicense.mockRejectedValueOnce({ error: { error: 'Unknown requested model.' } });
+    page.openLicenseDialog(makeRequest({ id: 3 }));
+    await tick();
+    expect(page.licenseError()).toBe('Unknown requested model.');
+    expect(page.license()).toBeNull();
+  });
+
+  it('records the acceptance only with the checkbox set, then closes', async () => {
+    const row = makeRequest({ id: 3, name: 'llama', license_status: 'available' });
+    page.openLicenseDialog(row);
+    await tick();
+    await page.acceptLicense();
+    expect(approveLicense).not.toHaveBeenCalled();
+    expect(page.licenseTarget()).toBe(row);
+
+    page.acceptChecked.set(true);
+    await page.acceptLicense();
+    expect(approveLicense).toHaveBeenCalledWith(3);
+    expect(page.licenseTarget()).toBeNull();
+    expect(page.notice()).toContain('accepted');
+  });
+
+  it('keeps the dialog open on a failed acceptance', async () => {
+    approveLicense.mockRejectedValueOnce({
+      error: { error: 'The license agreement cannot be accepted: no license information is available for this model yet.' },
+    });
+    page.openLicenseDialog(makeRequest({ id: 3, name: 'llama' }));
+    await tick();
+    page.acceptChecked.set(true);
+    await page.acceptLicense();
+    expect(page.licenseTarget()).not.toBeNull();
+    expect(page.licenseError()).toBe(
+      'The license agreement cannot be accepted: no license information is available for this model yet.',
+    );
+  });
+
+  it('revokes the acceptance from the dialog, then closes', async () => {
+    const row = makeRequest({ id: 3, name: 'llama', license_approved: true });
+    page.openLicenseDialog(row);
+    await tick();
+    await page.revokeLicense();
+    expect(revokeLicense).toHaveBeenCalledWith(3);
+    expect(page.licenseTarget()).toBeNull();
+    expect(page.notice()).toContain('revoked');
+  });
+
+  it('reports the flag title per license state', () => {
+    expect(page.licenseFlagTitle(makeRequest({ license_status: 'available' }))).toBe(
+      'License agreement not accepted yet',
+    );
+    expect(page.licenseFlagTitle(makeRequest({ license_status: 'no_license' }))).toBe(
+      'No license information found on Hugging Face',
+    );
+    expect(page.licenseFlagTitle(makeRequest({ license_status: 'pending', is_gated: true }))).toBe(
+      'The model is gated — its license can only be fetched once Hugging Face grants access',
+    );
+    expect(page.licenseFlagTitle(makeRequest({ license_status: 'pending', is_gated: false }))).toBe(
+      'The license has not been fetched yet',
+    );
   });
 });
 
@@ -198,6 +308,9 @@ describe('the gated model flag', () => {
             vote: vi.fn(),
             undoVote: vi.fn(),
             recheckGated: vi.fn().mockResolvedValue(undefined),
+            getLicense: vi.fn().mockResolvedValue(makeLicense({ status: 'pending', license_id: null, license_text: null })),
+            approveLicense: vi.fn(),
+            revokeLicense: vi.fn(),
           },
         },
         {
@@ -256,7 +369,7 @@ describe('the gated model flag', () => {
         '_blank',
         'noopener,noreferrer',
       );
-      expect(fx.componentInstance.licenseTarget()).toBeNull();
+      expect(fx.componentInstance.gatedTarget()).toBeNull();
     } finally {
       openSpy.mockRestore();
       fx.destroy();
@@ -280,11 +393,209 @@ describe('the gated model flag', () => {
       cancel!.click();
       fx.detectChanges();
       expect(openSpy).not.toHaveBeenCalled();
-      expect(fx.componentInstance.licenseTarget()).toBeNull();
+      expect(fx.componentInstance.gatedTarget()).toBeNull();
     } finally {
       openSpy.mockRestore();
       fx.destroy();
       document.querySelector('cdk-overlay-container')?.remove();
+    }
+  });
+});
+
+describe('the license agreement column', () => {
+  const OPEN_OPEN = makeRequest({
+    id: 11,
+    name: 'openai/gpt-5',
+    is_gated: false,
+    license_status: 'available',
+  });
+  const OPEN_ACCEPTED = makeRequest({
+    id: 12,
+    name: 'mistral/mistral-7b',
+    is_gated: false,
+    license_status: 'available',
+    license_approved: true,
+  });
+  const GATED = makeRequest({
+    id: 13,
+    name: 'meta-llama/llama-3.1-8b',
+    is_gated: true,
+    license_status: 'pending',
+  });
+
+  const LICENSES: Record<number, ModelLicense> = {
+    [OPEN_OPEN.id]: makeLicense({
+      status: 'available',
+      license_id: 'apache-2.0',
+      license_text: 'Apache License 2.0 — full text',
+    }),
+    [OPEN_ACCEPTED.id]: makeLicense({
+      status: 'available',
+      license_id: 'mit',
+      license_text: 'MIT License',
+      approved: true,
+      approved_at: '2026-11-10T12:00:00Z',
+    }),
+    [GATED.id]: makeLicense({
+      status: 'pending',
+      license_id: null,
+      license_text: null,
+    }),
+  };
+
+  const serviceMock = () => ({
+    list: vi.fn().mockResolvedValue([OPEN_OPEN, OPEN_ACCEPTED, GATED]),
+    vote: vi.fn(),
+    undoVote: vi.fn(),
+    recheckGated: vi.fn().mockResolvedValue(undefined),
+    getLicense: vi.fn(async (id: number) => LICENSES[id]),
+    approveLicense: vi.fn(async (id: number) => ({
+      ...LICENSES[id],
+      approved: true,
+      approved_at: '2026-11-10T12:00:00Z',
+    })),
+    revokeLicense: vi.fn(async (id: number) => ({ ...LICENSES[id], approved: false, approved_at: null })),
+  });
+
+  async function renderPage(role: 'logos_admin' | 'app_developer') {
+    const service = serviceMock();
+    TestBed.resetTestingModule();
+    await TestBed.configureTestingModule({
+      imports: [ModelRequests],
+      providers: [
+        { provide: ModelRequestService, useValue: service },
+        {
+          provide: AuthService,
+          useValue: { currentUser: signal(makeUser([])), role: signal(role) },
+        },
+      ],
+    }).compileComponents();
+    const fx = TestBed.createComponent(ModelRequests);
+    fx.detectChanges();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fx.detectChanges();
+    return { fx, service };
+  }
+
+  const rowOf = (fx: { nativeElement: HTMLElement }, name: string) =>
+    [...fx.nativeElement.querySelectorAll('tr')].find((tr) => tr.textContent?.includes(name))!;
+
+  const buttonOn = (root: ParentNode, label: string) =>
+    [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === label);
+
+  afterEach(() => {
+    // A dialog closed mid-test may still be running its exit animation;
+    // drop the overlay so it cannot leak into the next test's button search.
+    document.querySelector('cdk-overlay-container')?.remove();
+  });
+
+  it('shows the column for the Logos admin and nothing for other roles', async () => {
+    const { fx } = await renderPage('logos_admin');
+    expect(fx.nativeElement.textContent).toContain('License agreement status');
+    expect(fx.nativeElement.querySelectorAll('.license-state')).toHaveLength(3);
+    fx.destroy();
+
+    const dev = await renderPage('app_developer');
+    expect(dev.fx.nativeElement.textContent).not.toContain('License agreement status');
+    expect(dev.fx.nativeElement.querySelectorAll('.license-state')).toHaveLength(0);
+    dev.fx.destroy();
+  });
+
+  it('shows a green check for an accepted license and a red cross otherwise', async () => {
+    const { fx } = await renderPage('logos_admin');
+    expect(rowOf(fx, 'openai/gpt-5').querySelector('.license-state--open')).toBeTruthy();
+    expect(rowOf(fx, 'mistral/mistral-7b').querySelector('.license-state--ok')).toBeTruthy();
+    expect(rowOf(fx, 'meta-llama/llama-3.1-8b').querySelector('.license-state--open')).toBeTruthy();
+    fx.destroy();
+  });
+
+  it('opens the license dialog with the stored text, the checkbox and a disabled Save', async () => {
+    const { fx } = await renderPage('logos_admin');
+    (rowOf(fx, 'openai/gpt-5').querySelector('.license-state') as HTMLButtonElement).click();
+    fx.detectChanges();
+    await tick();
+    fx.detectChanges();
+
+    expect(document.body.textContent).toContain('Apache License 2.0 — full text');
+    const checkbox = document.querySelector('.license-accept input') as HTMLInputElement;
+    expect(checkbox).toBeTruthy();
+    expect(checkbox.checked).toBe(false);
+
+    const save = buttonOn(document.body, 'Save');
+    expect(save).toBeDefined();
+    expect(save!.disabled).toBe(true);
+
+    checkbox.click();
+    fx.detectChanges();
+    expect(save!.disabled).toBe(false);
+    fx.destroy();
+  });
+
+  it('saves the acceptance from the dialog, closes it and refreshes the list', async () => {
+    const { fx, service } = await renderPage('logos_admin');
+    (rowOf(fx, 'openai/gpt-5').querySelector('.license-state') as HTMLButtonElement).click();
+    fx.detectChanges();
+    await tick();
+    fx.detectChanges();
+
+    (document.querySelector('.license-accept input') as HTMLInputElement).click();
+    fx.detectChanges();
+    buttonOn(document.body, 'Save')!.click();
+    await tick();
+    fx.detectChanges();
+
+    expect(service.approveLicense).toHaveBeenCalledWith(11);
+    expect(fx.componentInstance.licenseTarget()).toBeNull();
+    expect(fx.componentInstance.notice()).toContain('accepted');
+    // The refresh after the acceptance re-reads the list.
+    expect(service.list).toHaveBeenCalledTimes(2);
+    fx.destroy();
+  });
+
+  it('shows the accepted state with a revoke action and no checkbox', async () => {
+    const { fx, service } = await renderPage('logos_admin');
+    (rowOf(fx, 'mistral/mistral-7b').querySelector('.license-state') as HTMLButtonElement).click();
+    fx.detectChanges();
+    await tick();
+    fx.detectChanges();
+
+    expect(document.body.textContent).toContain('MIT License');
+    expect(document.body.textContent).toContain('Accepted on');
+    expect(document.querySelector('.license-accept')).toBeNull();
+
+    buttonOn(document.body, 'Revoke acceptance')!.click();
+    await tick();
+    fx.detectChanges();
+    expect(service.revokeLicense).toHaveBeenCalledWith(12);
+    expect(fx.componentInstance.licenseTarget()).toBeNull();
+    expect(fx.componentInstance.notice()).toContain('revoked');
+    fx.destroy();
+  });
+
+  it('offers the Hugging Face page for a pending gated row', async () => {
+    const { fx } = await renderPage('logos_admin');
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+    try {
+      (rowOf(fx, 'meta-llama/llama-3.1-8b').querySelector('.license-state') as HTMLButtonElement).click();
+      fx.detectChanges();
+      await tick();
+      fx.detectChanges();
+
+      expect(document.body.textContent).toContain(
+        'its license is only readable on Hugging Face after the',
+      );
+
+      buttonOn(document.body, 'Go to HuggingFace')!.click();
+      fx.detectChanges();
+      expect(openSpy).toHaveBeenCalledWith(
+        'https://huggingface.co/meta-llama/llama-3.1-8b',
+        '_blank',
+        'noopener,noreferrer',
+      );
+      expect(fx.componentInstance.licenseTarget()).toBeNull();
+    } finally {
+      openSpy.mockRestore();
+      fx.destroy();
     }
   });
 });

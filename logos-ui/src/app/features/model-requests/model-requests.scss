@@ -191,6 +191,11 @@ table {
   white-space: nowrap;
 }
 
+// Centered state icon (the license agreement status column).
+.row-action--license {
+  text-align: center;
+}
+
 .mono {
   font-family: var(--font-mono, monospace);
   font-size: 0.85rem;
@@ -228,6 +233,79 @@ table {
     outline-offset: 1px;
     border-radius: 4px;
   }
+}
+
+// License agreement state (Logos admin only): a green check while the
+// agreement is accepted, a red cross while it is open (not fetched yet,
+// not accepted yet, or no license found). Hover explains, click opens the
+// license dialog.
+.license-state {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  vertical-align: middle;
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+
+  &--ok {
+    color: rgb(var(--color-success));
+  }
+
+  &--open {
+    color: rgb(var(--color-danger-500));
+  }
+
+  &:hover {
+    opacity: 0.8;
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgb(var(--color-text-accent));
+    outline-offset: 1px;
+    border-radius: 4px;
+  }
+}
+
+// Body notes of the license dialog (explanatory, secondary text).
+.license-note {
+  margin: 0 0 8px;
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-500));
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+
+  code {
+    overflow-wrap: anywhere;
+  }
+}
+
+// The fetched license text: long agreements scroll inside the dialog.
+.license-text {
+  max-height: 40vh;
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid rgb(var(--color-outline-200) / var(--opacity-subtle));
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+}
+
+// The "I accept this model's license agreement." checkbox row.
+.license-accept {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--font-size-md);
+  cursor: pointer;
 }
 
 .empty {
