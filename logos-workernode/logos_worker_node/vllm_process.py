@@ -77,6 +77,7 @@ from logos_worker_node.vllm_compat import (
     _infer_reasoning_parser,
     _infer_tool_call_parser,
     _resolve_chat_template,
+    strip_host_args,
 )
 
 logger = logging.getLogger("logos_worker_node.vllm_process")
@@ -2120,7 +2121,7 @@ class VllmProcessHandle:
             "serve",
             serve_target,
             "--host",
-            "0.0.0.0",
+            "127.0.0.1",
             "--port",
             str(self.port),
             "--tensor-parallel-size",
@@ -2273,7 +2274,10 @@ class VllmProcessHandle:
         # NFS-flavoured storage that vLLM's auto-detection misses) — applied
         # BEFORE per-lane extra_args so a lane can still override a global
         # default when needed (argparse takes the last occurrence).
-        extra_args = [*self._vllm_engine_config.global_extra_args, *vc.extra_args]
+        extra_args = [
+            *strip_host_args(self._vllm_engine_config.global_extra_args),
+            *strip_host_args(vc.extra_args),
+        ]
         for arg in extra_args:
             flag = arg.split("=", 1)[0].replace("_", "-")
             if flag.startswith("--allowed-media") or flag.startswith("--allowed-local-media"):
