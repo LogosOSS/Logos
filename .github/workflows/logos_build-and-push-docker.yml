@@ -209,11 +209,6 @@ jobs:
       meta-flavor: |
         latest=false
     secrets:
-      # The builder hands this token to the build as the GIT_AUTH_TOKEN secret,
-      # where every RUN step of the Dockerfile under build could read it. The
-      # contexts are local directories, so no build needs it: a placeholder
-      # keeps the job token, which can write packages, out of the build.
-      github-token: unused
       registry-auths: |
         - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
           username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
@@ -254,7 +249,6 @@ jobs:
       meta-flavor: |
         latest=false
     secrets:
-      github-token: unused
       registry-auths: |
         - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
           username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
@@ -295,7 +289,6 @@ jobs:
       meta-flavor: |
         latest=false
     secrets:
-      github-token: unused
       registry-auths: |
         - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
           username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
@@ -334,7 +327,6 @@ jobs:
       meta-flavor: |
         latest=false
     secrets:
-      github-token: unused
       registry-auths: |
         - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
           username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
@@ -384,7 +376,6 @@ jobs:
       meta-flavor: |
         latest=false
     secrets:
-      github-token: unused
       registry-auths: |
         - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
           username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
@@ -490,7 +481,6 @@ jobs:
       meta-flavor: |
         latest=false
     secrets:
-      github-token: unused
       registry-auths: |
         - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
           username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
@@ -527,7 +517,6 @@ jobs:
       meta-flavor: |
         latest=false
     secrets:
-      github-token: unused
       registry-auths: |
         - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
           username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
@@ -565,7 +554,6 @@ jobs:
       meta-flavor: |
         latest=false
     secrets:
-      github-token: unused
       registry-auths: |
         - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
           username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
@@ -603,7 +591,6 @@ jobs:
       meta-flavor: |
         latest=false
     secrets:
-      github-token: unused
       registry-auths: |
         - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
           username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
@@ -638,7 +625,6 @@ jobs:
       meta-flavor: |
         latest=false
     secrets:
-      github-token: unused
       registry-auths: |
         - registry: ${{ github.actor == 'dependabot[bot]' && 'ghcr.io' || vars.LOGOS_HARBOR_REGISTRY }}
           username: ${{ github.actor == 'dependabot[bot]' && github.actor || vars.LOGOS_HARBOR_USER }}
