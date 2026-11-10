@@ -15,6 +15,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import de.tum.cit.aet.logos.logoswebservice.configuration.HfReachabilityUnavailableException;
 import de.tum.cit.aet.logos.logoswebservice.configuration.ModelAlreadyAvailableException;
+import de.tum.cit.aet.logos.logoswebservice.configuration.ModelNames;
 import de.tum.cit.aet.logos.logoswebservice.configuration.ModelNotOnHuggingFaceException;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.RequestedModelResponse;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.RequestedModel;
@@ -198,6 +199,7 @@ public class RequestedModelService {
             throw new IllegalArgumentException("A model name is required.");
         }
         requireUser(userId);
+        ModelNames.rejectControlCharacters(name);
         String normalized = normalizeName(name);
         if (!MODEL_NAME_PATTERN.matcher(normalized).matches()) {
             throw new IllegalArgumentException(
