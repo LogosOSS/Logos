@@ -99,6 +99,7 @@ from logos.request_content import (
     metered_whisper_response_format,
     parse_audio_upload,
     payload_requests_streaming,
+    reject_client_multipart_marker,
     render_metered_whisper_response,
     sanitized_headers_for_persistence,
     sanitized_payload_for_logging,
@@ -4538,6 +4539,7 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
             body = await request.json()
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+        reject_client_multipart_marker(body)
 
     if body is None:
         body = {}

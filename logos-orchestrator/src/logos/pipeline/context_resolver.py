@@ -424,6 +424,13 @@ class ContextResolver:
         # translation below. See strip_billing_header_from_payload.
         payload = strip_billing_header_from_payload(payload)
 
+        # A forwarded form carries its fields twice: in the JSON view the
+        # pipeline authorizes and rewrites, and in the form the provider
+        # receives. Keep the form's model the one the JSON view names, so the
+        # model sent is always the model that was authorized.
+        if is_multipart_payload(payload):
+            payload = set_payload_field(payload, "model", payload.get("model") or context.model_name)
+
         # An inbound Anthropic Messages request bound for an upstream without a
         # Messages route becomes a chat/completions or Responses request here.
         # Done before everything below so the rewrites that follow (model

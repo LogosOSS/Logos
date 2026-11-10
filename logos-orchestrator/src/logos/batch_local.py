@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from logos.auth import AuthContext
 from logos.dbutils.dbmanager import DBManager
-from logos.request_content import sanitized_payload_for_logging
+from logos.request_content import MULTIPART_PAYLOAD_KEY, sanitized_payload_for_logging
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +213,12 @@ async def _run_line(line: Dict[str, Any], auth: AuthContext, headers: Dict[str, 
     if not endpoint.startswith("v1/"):
         endpoint = f"v1/{endpoint}"
     body = line.get("body") if isinstance(line.get("body"), dict) else {}
+    if MULTIPART_PAYLOAD_KEY in body:
+        # Internal to the audio upload path; a batch line has no form behind it.
+        return _result_row(
+            line,
+            {"status_code": 400, "data": {"error": {"message": f"Unsupported request field '{MULTIPART_PAYLOAD_KEY}'"}}},
+        )
 
     log_id = _open_line_log(auth, body)
     if log_id is None:

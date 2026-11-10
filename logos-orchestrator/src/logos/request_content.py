@@ -41,6 +41,18 @@ class _MultipartRequestTooLarge(MultiPartException):
     """Signal an over-limit stream through Starlette's multipart cleanup path."""
 
 
+def reject_client_multipart_marker(body: Any) -> None:
+    """Refuse a client body that carries the internal multipart marker.
+
+    The marker is set only by ``parse_audio_upload`` after it parsed a real
+    form; the executor turns it back into the form it forwards. Accepted from
+    a client, it would forward fields - the model among them - that the
+    authorization never saw.
+    """
+    if isinstance(body, dict) and MULTIPART_PAYLOAD_KEY in body:
+        raise HTTPException(status_code=400, detail=f"Unsupported request field '{MULTIPART_PAYLOAD_KEY}'")
+
+
 def _audio_request_limit_detail() -> str:
     return f"Audio request exceeds the {MAX_AUDIO_REQUEST_BYTES}-byte request limit"
 
