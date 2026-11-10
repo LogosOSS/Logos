@@ -65,6 +65,11 @@ _REUSABLE_FIELDS = frozenset(
     }
 )
 
+# The only fields the single user message may set. Any other field, such as a
+# speaker ``name``, reaches the model on the normal path but plays no part in
+# the match, so a message that sets one is not eligible.
+_REUSABLE_MESSAGE_FIELDS = frozenset({"role", "content"})
+
 
 @dataclass(frozen=True)
 class ReuseRequest:
@@ -108,9 +113,10 @@ def reuse_request_from(
     Returns:
         The :class:`ReuseRequest`, or None when the request follows the
         normal path: no ``logos-context`` header, another endpoint,
-        streaming, more than one choice, tools or a response format,
-        anything but a single plain-text user message, or a question that
-        is empty once placeholders are removed.
+        streaming, more than one choice, a request field outside
+        ``_REUSABLE_FIELDS``, anything but a single plain-text user message
+        with only a role and content, or a question that is empty once
+        placeholders are removed.
 
     Raises:
         InvalidContextId: The ``logos-context`` header is present but unusable.
@@ -140,13 +146,16 @@ def _single_question(messages: Any) -> Optional[str]:
     change what a correct answer is without taking part in the match: a system
     or developer message can set a language or a format ("Answer only in
     German"), and earlier turns change what the last question refers to. So
-    None for anything but a single user message, a user message that is not
-    plain text, or a question that is empty once placeholders are removed.
+    None for anything but a single user message, a user message that sets a
+    field besides role and content, a user message that is not plain text,
+    or a question that is empty once placeholders are removed.
     """
     if not isinstance(messages, list) or len(messages) != 1:
         return None
     message = messages[0]
     if not isinstance(message, dict) or message.get("role") != "user":
+        return None
+    if any(value is not None and field not in _REUSABLE_MESSAGE_FIELDS for field, value in message.items()):
         return None
     question = message.get("content")
     if not isinstance(question, str) or not normalize(question):

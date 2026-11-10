@@ -131,6 +131,17 @@ def test_anything_but_one_user_question_is_not_eligible(messages):
     assert _eligible({"messages": messages}) is None
 
 
+def test_a_user_message_with_another_field_is_not_eligible():
+    # A speaker name reaches the model on the normal path but not the match.
+    body = _body({"role": "user", "content": "Where is my package?", "name": "alice"})
+    assert _eligible(body) is None
+
+
+def test_a_message_field_sent_as_null_counts_as_absent():
+    body = _body({"role": "user", "content": "Where is my package?", "name": None})
+    assert _eligible(body).question == "Where is my package?"
+
+
 def test_a_question_with_images_or_parts_is_not_eligible():
     body = _body({"role": "user", "content": [{"type": "text", "text": "Where is my package?"}]})
     assert _eligible(body) is None

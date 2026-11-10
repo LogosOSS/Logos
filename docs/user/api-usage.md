@@ -49,6 +49,8 @@ Logos uses stored answers only for a request with these properties:
 - The request does not use streaming, and `n` is 1 or not set.
 - The request has one user message and no other messages. A system message, a
   developer message or an earlier turn is not permitted.
+- The user message has only the fields `role` and `content`, and `content` is
+  text.
 - The request sets no fields other than `model`, `messages`, `stream`, `n`,
   `temperature`, `top_p`, `seed`, `user`, `metadata`, `store` and `timeout_s`.
 
