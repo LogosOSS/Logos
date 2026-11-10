@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+
 from app.config import settings
 from app.schemas import (
     ACTIVE_STATUSES,
@@ -1086,7 +1087,7 @@ class TestAnAnswerThatWasNeverWritten:
         monkeypatch.setattr(sessions.db, "get_session", get_session)
         monkeypatch.setattr(sessions.db, "record_reply_attempt", record_reply_attempt)
         monkeypatch.setattr(sessions.db, "abandon_reply", refuse)
-        monkeypatch.setattr(sessions.Path, "read_text", unreadable)
+        monkeypatch.setattr(sessions, "read_artifact_text", unreadable)
 
         await sessions.manager._post_reply(7)
 
@@ -4240,6 +4241,40 @@ class TestReviewReplyDelivery:
         monkeypatch.setattr(sessions.github, "issue_comment_contains", fake_issue_contains)
         monkeypatch.setattr(sessions.github, "request_pull_review", fake_request)
         return recorded
+
+    @pytest.mark.parametrize("kind", ["file_symlink", "parent_symlink", "oversize", "fifo"])
+    async def test_unsafe_comment_answers_are_not_posted(self, monkeypatch, tmp_path, kind):
+        from app import sessions
+
+        recorded = self.install(monkeypatch, tmp_path, self.REVIEW_ROW)
+        monkeypatch.setattr(sessions, "settings", replace(sessions.settings, artifact_max_bytes=32))
+        directory = tmp_path / "31"
+        replies = directory / "replies"
+        replies.mkdir(parents=True)
+        victim = tmp_path / "32"
+        victim.mkdir()
+        (victim / "101.md").write_text("private analysis")
+        if kind == "file_symlink":
+            (replies / "101.md").symlink_to(victim / "101.md")
+        elif kind == "parent_symlink":
+            replies.rmdir()
+            replies.symlink_to(victim)
+        elif kind == "oversize":
+            (replies / "101.md").write_text("x" * 33)
+        else:
+            import os
+
+            os.mkfifo(replies / "101.md")
+        (directory / "reply.md").write_text("summary")
+
+        manager = sessions.SessionManager()
+        await manager._post_reply(31)
+
+        assert recorded["threads"] == []
+        assert recorded["summaries"] == []
+        assert recorded["attempts"] == [(31, False)]
+        if kind == "parent_symlink":
+            assert await manager._combined_review_answers(31) is None
 
     async def test_each_comment_gets_its_answer_in_its_own_thread(self, monkeypatch, tmp_path):
         from app import sessions

@@ -323,6 +323,9 @@ class Settings:
     # Where session artefacts (logs, screenshots) are kept, on a volume shared
     # with the session containers.
     artifact_root: str = os.getenv("LOGOS_AGENT_ARTIFACT_ROOT", "/var/lib/logos-agent/artifacts")
+    artifact_max_bytes: int = _int("LOGOS_AGENT_ARTIFACT_MAX_BYTES", 1024 * 1024)
+    # Full-page screenshots are far larger than the text artifacts above.
+    screenshot_max_bytes: int = _int("LOGOS_AGENT_SCREENSHOT_MAX_BYTES", 25 * 1024 * 1024)
     artifact_volume: str = os.getenv("LOGOS_AGENT_ARTIFACT_VOLUME", "logos_agent_artifacts")
     # Where the runner keeps its own per-session state. Deliberately not on
     # the artefact volume: the session container mounts this directory

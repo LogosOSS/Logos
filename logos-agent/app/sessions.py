@@ -31,6 +31,7 @@ from typing import Any
 import httpx
 
 from . import attachments, capacity, controls, conventions, db, docker_engine, github, model_policy, triggers, upstream
+from .artifacts import read_artifact_text
 from .asyncio_tasks import cancel_and_wait
 from .config import INTERRUPTION_FILE, REPLY_DIR, REPLY_FILE, REVIEW_COMMENTS_FILE, REVIEWED_SHA_FILE, settings
 from .schemas import TERMINAL_STATUSES, EventKind, SessionStatus
@@ -2551,9 +2552,8 @@ class SessionManager:
         file that is not valid JSON, or an entry without a usable path, line
         and body, is not dropped: it comes back as text, so it is still said.
         """
-        path = artifact_dir(session_id) / REVIEW_COMMENTS_FILE
         try:
-            raw = path.read_text()
+            raw = read_artifact_text(artifact_dir(session_id), REVIEW_COMMENTS_FILE, limit=settings.artifact_max_bytes)
         except FileNotFoundError:
             return [], ""
         except OSError as exc:
@@ -2677,9 +2677,8 @@ class SessionManager:
         an attempt rather than as an answer that was never written. Only a
         file that is genuinely absent is final.
         """
-        path = artifact_dir(session_id) / REPLY_FILE
         try:
-            return path.read_text().strip()
+            return read_artifact_text(artifact_dir(session_id), REPLY_FILE, limit=settings.artifact_max_bytes).strip()
         except FileNotFoundError:
             return ""
         except OSError as exc:
@@ -2700,10 +2699,12 @@ class SessionManager:
             return ""
         answers: list[tuple[int, str]] = []
         for path in sorted(replies_dir.iterdir()):
-            if not path.is_file() or path.suffix != ".md" or not path.stem.isdigit():
+            if path.suffix != ".md" or not path.stem.isdigit():
                 continue
             try:
-                text = path.read_text().strip()
+                text = read_artifact_text(
+                    artifact_dir(session_id), Path(REPLY_DIR) / path.name, limit=settings.artifact_max_bytes
+                ).strip()
             except OSError as exc:
                 await db.record_reply_attempt(session_id, delivered=False)
                 logger.warning(
@@ -2830,13 +2831,15 @@ class SessionManager:
         replies_dir = artifact_dir(session_id) / REPLY_DIR
         if replies_dir.is_dir():
             for path in sorted(replies_dir.iterdir()):
-                if not path.is_file() or path.suffix != ".md" or not path.stem.isdigit():
+                if path.suffix != ".md" or not path.stem.isdigit():
                     continue
                 comment_id = int(path.stem)
                 if comment_id not in valid or comment_id in state["replied"]:
                     continue
                 try:
-                    body = path.read_text().strip()
+                    body = read_artifact_text(
+                        artifact_dir(session_id), Path(REPLY_DIR) / path.name, limit=settings.artifact_max_bytes
+                    ).strip()
                 except OSError as exc:
                     # Unreadable is not absent: the next pass may read it.
                     await db.record_reply_attempt(session_id, delivered=False)
@@ -3047,10 +3050,12 @@ class SessionManager:
         for taking too long never gets to write one, and the exit code already
         tells us what happened.
         """
-        path = artifact_dir(session_id) / "result.json"
         try:
-            if path.is_file():
-                return json.loads(path.read_text())
+            return json.loads(
+                read_artifact_text(artifact_dir(session_id), "result.json", limit=settings.artifact_max_bytes)
+            )
+        except FileNotFoundError:
+            return {}
         except Exception as exc:
             logger.warning("unreadable result file for session %s: %s", session_id, exc)
         return {}

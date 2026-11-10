@@ -38,6 +38,8 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 WORKSPACE = Path("/workspace")
 CHECKOUT = WORKSPACE / "repo"
@@ -123,7 +125,24 @@ def run(
     shown = _redact(cmd)
     if not quiet:
         log(f"$ {' '.join(shlex.quote(c) for c in shown)}")
-    process = subprocess.run(_without_auto_maintenance(cmd), cwd=cwd, text=True, capture_output=True, timeout=1800)
+    # Only trusted harness commands use this wrapper. Each invocation gets
+    # empty configuration directories outside the persistent workspace.
+    with tempfile.TemporaryDirectory(prefix="logos-command-home-") as home:
+        gh_config = Path(home) / "gh"
+        xdg_config = Path(home) / "xdg"
+        gh_config.mkdir()
+        xdg_config.mkdir()
+        environment = {
+            **os.environ,
+            "HOME": home,
+            "GH_CONFIG_DIR": str(gh_config),
+            "XDG_CONFIG_HOME": str(xdg_config),
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+        process = subprocess.run(
+            _without_auto_maintenance(cmd), cwd=cwd, text=True, capture_output=True, timeout=1800, env=environment
+        )
     if process.stdout and not quiet:
         print(process.stdout, end="", flush=True)
     if process.stderr:
@@ -539,6 +558,13 @@ def _configure_git_identity() -> None:
     )
 
 
+class _NoIdentityRedirects(HTTPRedirectHandler):
+    """An authenticated identity request must never leave its fixed endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def verify_token_identity(token: str) -> None:
     """Refuse to push with a token that is not the agent account's.
 
@@ -549,17 +575,25 @@ def verify_token_identity(token: str) -> None:
     a human contributor's name.
     """
     expected = agent_login().lower()
-    result = subprocess.run(
-        ["gh", "api", "user", "--jq", ".login"],
-        cwd=str(CHECKOUT) if CHECKOUT.is_dir() else None,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "GH_TOKEN": token, "GITHUB_TOKEN": token},
-        timeout=60,
+    request = Request(
+        "https://api.github.com/user",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "logos-agent",
+        },
     )
-    if result.returncode != 0:
-        raise RuntimeError(f"could not establish the identity of the push token: {result.stderr.strip()[:200]}")
-    login = (result.stdout or "").strip()
+    # Neither gh configuration, environment proxies nor redirects may select
+    # the host receiving this credential. urllib verifies HTTPS certificates.
+    opener = build_opener(ProxyHandler({}), _NoIdentityRedirects())
+    try:
+        with opener.open(request, timeout=60) as response:
+            identity = json.loads(response.read(65536))
+        login = identity["login"].strip()
+        if not login:
+            raise ValueError("missing login")
+    except (URLError, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise RuntimeError("could not establish the identity of the push token") from exc
     if login.lower() != expected:
         raise RuntimeError(
             f"the push token authenticates as '{login}', not as the agent account "
@@ -595,6 +629,7 @@ def finalize_checkout(repo_url: str, base_branch: str, branch: str, token: str) 
     # the conversation that produced it rather than starting over.
     _save_conversation()
     _reset_agent_home()
+    verify_token_identity(token)
     if CHECKOUT.is_symlink() or (CHECKOUT.exists() and not CHECKOUT.is_dir()):
         log("the checkout is not a directory; there is no work to finalize")
         if CHECKOUT.is_symlink():
@@ -1415,11 +1450,6 @@ def run_finalize(result: Result) -> None:
     if not token:
         log("no GitHub token provided; leaving changes uncommitted in the workspace")
         return
-    # Whose work this is about to become. Checked before anything is
-    # committed or pushed, so a wrong token fails the session instead of
-    # putting agent commits under a contributor's name.
-    verify_token_identity(token)
-
     path = Path(os.environ.get("LOGOS_ARTIFACT_DIR", "/artifacts")) / "result.json"
     if path.is_file():
         try:
