@@ -1,13 +1,7 @@
-"""Unit tests for per-request SLO headers and admin queue-rank folding."""
+"""Unit tests for workflow-tag SLO priority and admin queue-rank folding."""
 
 from logos.pipeline.pipeline import effective_queue_role_rank, queue_role_rank
-from logos.pipeline.request_slo import (
-    VALID_SLOS,
-    parse_request_slo_header,
-    parse_workflow_tag_header,
-    resolve_request_priority,
-    slo_to_priority,
-)
+from logos.pipeline.request_slo import VALID_SLOS, parse_workflow_tag_header, resolve_request_priority, slo_to_priority
 from logos.queue import Priority
 
 
@@ -21,19 +15,6 @@ def test_slo_to_priority_maps_tiers():
     assert slo_to_priority("ux-background") == 1
 
 
-def test_parse_request_slo_header_accepts_known_values():
-    assert parse_request_slo_header({"X-Logos-SLO": "ux-critical"}) == "ux-critical"
-    assert parse_request_slo_header({"x-logos-slo": "UX-HIGH-PRIO"}) == "ux-high-prio"
-    assert parse_request_slo_header({"logos-slo": "ux-background"}) == "ux-background"
-
-
-def test_parse_request_slo_header_rejects_unknown_or_missing():
-    assert parse_request_slo_header({}) is None
-    assert parse_request_slo_header({"X-Logos-SLO": "urgent"}) is None
-    assert parse_request_slo_header({"X-Logos-SLO": "  "}) is None
-    assert parse_request_slo_header(None) is None
-
-
 def test_parse_workflow_tag_header_accepts_aliases():
     assert parse_workflow_tag_header({"X-Logos-Workflow-Tag": "checkout.pay"}) == "checkout.pay"
     assert parse_workflow_tag_header({"x-logos-workflow-tag": " step "}) == "step"
@@ -42,22 +23,23 @@ def test_parse_workflow_tag_header_accepts_aliases():
     assert parse_workflow_tag_header({"X-Logos-Workflow-Tag": ""}) is None
 
 
-def test_resolve_request_priority_header_slo_wins():
-    # Header beats tag, key, team, and policy.
-    assert resolve_request_priority("ux-background", "ux-critical", 10, 10, 10) == 1
-    assert resolve_request_priority("ux-critical", "ux-background", 1, 1, 1) == 10
+def test_request_cannot_name_its_own_slo():
+    # The SLO header is no longer read: only the tag's stored SLO counts.
+    from logos.pipeline import request_slo
+
+    assert not hasattr(request_slo, "parse_request_slo_header")
 
 
 def test_resolve_request_priority_tag_slo_beats_key_team_policy():
-    assert resolve_request_priority(None, "ux-critical", 1, 5, 10) == 10
-    assert resolve_request_priority(None, "ux-background", 10, 10, 10) == 1
+    assert resolve_request_priority("ux-critical", 1, 5, 10) == 10
+    assert resolve_request_priority("ux-background", 10, 10, 10) == 1
 
 
 def test_resolve_request_priority_falls_back_to_key_team_policy_chain():
-    assert resolve_request_priority(None, None, 10, 5, 1) == 10
-    assert resolve_request_priority(None, None, 0, 5, 1) == 5
-    assert resolve_request_priority(None, None, 0, 0, 1) == 1
-    assert resolve_request_priority(None, None, 0, 0, 0) == int(Priority.NORMAL)
+    assert resolve_request_priority(None, 10, 5, 1) == 10
+    assert resolve_request_priority(None, 0, 5, 1) == 5
+    assert resolve_request_priority(None, 0, 0, 1) == 1
+    assert resolve_request_priority(None, 0, 0, 0) == int(Priority.NORMAL)
 
 
 def test_effective_queue_role_rank_unranked_matches_base():

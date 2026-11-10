@@ -81,10 +81,11 @@ class WorkflowLifecycleControllerTest {
         mvc.perform(patch("/admin/teams/2001/workflows/" + workflowId)
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
-                .content("{\"status\":\"Deprecated\",\"tag\":\" Checkout.Pay \"}"))
+                .content("{\"status\":\"Deprecated\",\"tag\":\"other\"}"))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.status").value("deprecated"))
-           .andExpect(jsonPath("$.tag").value("checkoutpay"))
+           // The tag is fixed once stored: the request's tag is ignored.
+           .andExpect(jsonPath("$.tag").value("checkout"))
            .andExpect(jsonPath("$.steps[0].name").value("score"));
 
         mvc.perform(patch("/admin/teams/2001/workflows/" + workflowId)
@@ -155,18 +156,13 @@ class WorkflowLifecycleControllerTest {
                 .content("{\"confirmed_slo\":\"urgent\"}"))
            .andExpect(status().isBadRequest());
 
+        // The tag is fixed once stored: a tag in the request is ignored.
         mvc.perform(patch("/admin/teams/2001/workflow-steps/" + stepId)
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
-                .content("{\"tag\":\"!!!\"}"))
-           .andExpect(status().isBadRequest());
-
-        // The workflow's own tag is taken within the team.
-        mvc.perform(patch("/admin/teams/2001/workflow-steps/" + stepId)
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"tag\":\"checkout\"}"))
-           .andExpect(status().isConflict());
+                .content("{\"tag\":\"renamed\"}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.tag").value("checkout-score"));
 
         // Another team's id in the path does not reach this team's step.
         mvc.perform(patch("/admin/teams/2002/workflow-steps/" + stepId)

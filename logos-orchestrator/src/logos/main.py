@@ -87,7 +87,7 @@ from logos.pipeline.effort_normalization import (
 from logos.pipeline.executor import ExecutionResult, Executor, StreamingExecutionStatus
 from logos.pipeline.latency_store import LatencyStore
 from logos.pipeline.pipeline import PipelineRequest, RequestPipeline, effective_queue_role_rank
-from logos.pipeline.request_slo import VALID_SLOS, parse_request_slo_header, parse_workflow_tag_header, slo_to_priority
+from logos.pipeline.request_slo import VALID_SLOS, parse_workflow_tag_header, slo_to_priority
 from logos.queue.priority_queue import PriorityQueueManager
 from logos.request_content import (
     force_non_streaming_payload,
@@ -3357,13 +3357,10 @@ async def _execute_resource_mode(
     # Extract policy
     policy = _extract_policy(headers, auth.key_value, body)
 
-    # Per-request SLO header wins; else elevate from the workflow-tag step SLO
-    # resolved during auth_parse_log. Unset leaves the key's default_priority.
-    header_slo = parse_request_slo_header(headers)
+    # Elevate from the workflow-tag step SLO resolved during auth_parse_log.
+    # Unset leaves the key's default_priority.
     tag_slo = auth.tag_slo if getattr(auth, "tag_slo", None) in VALID_SLOS else None
-    if header_slo:
-        default_priority = slo_to_priority(header_slo)
-    elif tag_slo:
+    if tag_slo:
         default_priority = slo_to_priority(tag_slo)
     else:
         default_priority = auth.default_priority
@@ -4577,8 +4574,7 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
         deployment_cache = refcache.get_ref_cache()
         cached_deployments = deployment_cache.get(("deployments", auth.api_key_id))
 
-        # Request attribution: X-Logos-SLO and/or X-Logos-Workflow-Tag.
-        header_slo = parse_request_slo_header(headers)
+        # Request attribution: X-Logos-Workflow-Tag.
         workflow_tag = parse_workflow_tag_header(headers)
         workflow_id = None
         workflow_step_id = None
@@ -4597,7 +4593,7 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
                 workflow_step_id = tag_info.get("step_id")
                 looked_up_slo = tag_info.get("slo")
                 tag_slo = looked_up_slo if looked_up_slo in VALID_SLOS else None
-        request_slo = header_slo or tag_slo
+        request_slo = tag_slo
         auth.request_slo = request_slo
         auth.workflow_tag = workflow_tag
         auth.workflow_id = workflow_id

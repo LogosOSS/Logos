@@ -26,11 +26,4 @@ class AiWorkflowTagTest {
         assertThat(first).hasSizeLessThanOrEqualTo(80).isNotEqualTo(workflowTag);
         assertThat(second).hasSizeLessThanOrEqualTo(80).isNotEqualTo(first).isNotEqualTo(workflowTag);
     }
-
-    @Test
-    void normalizeTagMatchesTheIngestShape() {
-        assertThat(AiWorkflowAnalysisService.normalizeTag(" Checkout.Pay ")).isEqualTo("checkoutpay");
-        assertThat(AiWorkflowAnalysisService.normalizeTag("  ")).isNull();
-        assertThat(AiWorkflowAnalysisService.normalizeTag("a".repeat(100))).hasSize(80);
-    }
 }

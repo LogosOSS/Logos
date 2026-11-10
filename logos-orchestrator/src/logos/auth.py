@@ -159,7 +159,7 @@ class AuthContext:
     # between the admin bypass (SQL, sees every model) and the in-memory
     # resolution over the key's permitted deployments .
     role: Optional[str] = None
-    # Request-scoped attribution from X-Logos-SLO / X-Logos-Workflow-Tag,
+    # Request-scoped attribution from X-Logos-Workflow-Tag,
     # filled by auth_parse_log so the pipeline can elevate priority without a
     # second tag lookup.
     request_slo: Optional[str] = None

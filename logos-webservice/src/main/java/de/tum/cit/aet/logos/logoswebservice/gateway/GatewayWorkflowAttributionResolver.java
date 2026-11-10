@@ -10,8 +10,9 @@ import org.springframework.stereotype.Component;
 import jakarta.servlet.http.HttpServletRequest;
 
 /**
- * Parses {@code X-Logos-SLO} / {@code X-Logos-Workflow-Tag} and resolves a
- * matching workflow step (or workflow) for the caller's team. Only each
+ * Parses {@code X-Logos-Workflow-Tag} and resolves a matching workflow step
+ * (or workflow) for the caller's team. The SLO is the one stored for the step;
+ * a request cannot name its own. Only each
  * repository's latest succeeded analysis counts, so ignoring, deleting, or
  * renaming a tag is not undone by a superseded copy.
  */
@@ -28,11 +29,9 @@ public class GatewayWorkflowAttributionResolver {
     }
 
     public GatewayRequestAttribution resolve(HttpServletRequest request, Integer teamId) {
-        String headerSlo = firstHeader(request, "X-Logos-SLO", "logos-slo");
-        String requestSlo = normalizeSlo(headerSlo);
         String tag = firstHeader(request, "X-Logos-Workflow-Tag", "logos-workflow-tag");
         if (tag == null || tag.isBlank() || teamId == null) {
-            return new GatewayRequestAttribution(null, null, null, requestSlo);
+            return GatewayRequestAttribution.EMPTY;
         }
         String normalizedTag = tag.trim();
         MapSqlParameterSource params = new MapSqlParameterSource()
@@ -61,7 +60,7 @@ public class GatewayWorkflowAttributionResolver {
                 normalizedTag,
                 rs.getInt("workflow_id"),
                 rs.getInt("step_id"),
-                requestSlo != null ? requestSlo : normalizeSlo(rs.getString("slo"))
+                normalizeSlo(rs.getString("slo"))
             ));
         if (!step.isEmpty()) {
             return step.getFirst();
@@ -87,12 +86,12 @@ public class GatewayWorkflowAttributionResolver {
                 normalizedTag,
                 rs.getInt("workflow_id"),
                 null,
-                requestSlo
+                null
             ));
         if (!workflow.isEmpty()) {
             return workflow.getFirst();
         }
-        return new GatewayRequestAttribution(normalizedTag, null, null, requestSlo);
+        return new GatewayRequestAttribution(normalizedTag, null, null, null);
     }
 
     private static String normalizeSlo(String raw) {

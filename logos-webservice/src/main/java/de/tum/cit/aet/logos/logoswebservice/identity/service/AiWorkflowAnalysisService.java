@@ -130,8 +130,9 @@ public class AiWorkflowAnalysisService {
         ux-background → [price, quality, latency].
 
         Suggest stable kebab-case `tag` values on workflows and steps so applications
-        can send `X-Logos-Workflow-Tag` (and optionally `X-Logos-SLO`) to attribute
-        traffic. Prefer short, unique tags derived from the workflow/step name.
+        can send `X-Logos-Workflow-Tag` to attribute traffic. A tag never changes
+        once it is stored, so prefer short, unique tags derived from the
+        workflow/step name.
 
         Repository: %s
         Clone URL: %s
@@ -146,7 +147,7 @@ public class AiWorkflowAnalysisService {
         Workflow tag (X-Logos-Workflow-Tag): %s
 
         Steps (send the step tag as X-Logos-Workflow-Tag when the call is that step;
-        also set X-Logos-SLO to the confirmed or recommended SLO when known):
+        do not send an SLO, Logos stores the SLO for each step):
         %s
 
         Repository: %s
@@ -596,9 +597,6 @@ public class AiWorkflowAnalysisService {
             }
             workflow.setStatus(status);
         }
-        if (body.tag() != null) {
-            workflow.setTag(claimTag(teamId, workflow.getTag(), normalizeTag(body.tag())));
-        }
         if (Boolean.TRUE.equals(body.deleted())) {
             workflow.setDeletedAt(Instant.now());
             workflow.setStatus("ignored");
@@ -634,9 +632,6 @@ public class AiWorkflowAnalysisService {
         }
         if (body.confirmedObjectivePriority() != null) {
             step.setConfirmedObjectivePriority(ObjectivePriority.asJsonList(body.confirmedObjectivePriority()));
-        }
-        if (body.tag() != null) {
-            step.setTag(claimTag(teamId, step.getTag(), normalizeTag(body.tag())));
         }
         if (body.name() != null) {
             String name = body.name().trim();
@@ -741,9 +736,7 @@ public class AiWorkflowAnalysisService {
         String stepsLabel = steps.isEmpty()
             ? "(no steps recorded — send the workflow tag at every call site)"
             : steps.stream()
-                .map(s -> "- " + s.getName()
-                    + " | tag=" + s.getTag()
-                    + " | slo=" + (s.getConfirmedSlo() != null ? s.getConfirmedSlo() : s.getRecommendedSlo()))
+                .map(s -> "- " + s.getName() + " | tag=" + s.getTag())
                 .collect(Collectors.joining("\n"));
 
         String task = TAGGING_PR_TASK_TEMPLATE.formatted(
@@ -1076,22 +1069,6 @@ public class AiWorkflowAnalysisService {
         return new HashSet<>(tags);
     }
 
-    /**
-     * An owner-chosen tag must stay unique among the team's current workflows
-     * and steps: both resolvers would otherwise attribute requests to
-     * whichever match they find first.
-     */
-    private String claimTag(int teamId, String current, String wanted) {
-        if (wanted == null || wanted.equals(current)) {
-            return wanted;
-        }
-        if (lockTeamTags(teamId).contains(wanted)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                "tag " + wanted + " is already used by another workflow or step of this team");
-        }
-        return wanted;
-    }
-
     /** {@code base}, or {@code base-2}, {@code base-3}, … — never one in {@code taken}; reserves it. */
     static String uniqueTag(String base, Set<String> taken) {
         String stem = base.length() > MAX_TAG_LENGTH - TAG_SUFFIX_RESERVE
@@ -1110,23 +1087,6 @@ public class AiWorkflowAnalysisService {
             .replaceAll("[^a-z0-9]+", "-")
             .replaceAll("^-+|-+$", "");
         return slug.isEmpty() ? fallback : slug;
-    }
-
-    /**
-     * Same shape the analysis ingest produces: lowercase kebab-case, at most
-     * {@value #MAX_TAG_LENGTH} characters. Blank clears the tag.
-     */
-    static String normalizeTag(String raw) {
-        String trimmed = raw.trim();
-        if (trimmed.isEmpty()) {
-            return null;
-        }
-        String cleaned = trimmed.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9-]", "");
-        if (cleaned.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                "tag must contain lowercase letters, digits, or hyphens");
-        }
-        return cleaned.length() > MAX_TAG_LENGTH ? cleaned.substring(0, MAX_TAG_LENGTH) : cleaned;
     }
 
     private static String formatPaths(List<String> paths) {

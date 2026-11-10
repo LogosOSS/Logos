@@ -93,8 +93,8 @@ ux-critical → [latency, quality, price]; ux-high-prio → [quality, latency, p
 ux-background → [price, quality, latency].
 
 Suggest stable kebab-case `tag` values on workflows and steps so applications
-can send `X-Logos-Workflow-Tag` (and optionally `X-Logos-SLO`) to attribute
-traffic. Prefer short, unique tags derived from the workflow/step name.
+can send `X-Logos-Workflow-Tag` to attribute traffic. A tag never changes once
+it is stored, so prefer short, unique tags derived from the workflow/step name.
 
 Repository: {repo_slug}
 Clone URL: {repo_url}

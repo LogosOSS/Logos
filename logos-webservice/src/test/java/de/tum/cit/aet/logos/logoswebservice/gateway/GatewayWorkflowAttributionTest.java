@@ -76,8 +76,9 @@ class GatewayWorkflowAttributionTest {
         assertThat(attr.workflowTag()).isEqualTo("checkout-score");
         assertThat(attr.workflowId()).isEqualTo(f.workflowId());
         assertThat(attr.workflowStepId()).isEqualTo(f.stepId());
-        // Explicit header SLO wins over the step's recommended SLO.
-        assertThat(attr.requestSlo()).isEqualTo("ux-high-prio");
+        // A request cannot name its own SLO: the header is ignored and the
+        // step's SLO applies.
+        assertThat(attr.requestSlo()).isEqualTo("ux-critical");
 
         Integer logId = accounting.admitAndReserve(
             f.key(), f.deployment(), REQUEST_BODY, "BILLING", null, null, attr);
@@ -90,21 +91,20 @@ class GatewayWorkflowAttributionTest {
         assertThat(row.get("workflow_tag")).isEqualTo("checkout-score");
         assertThat(((Number) row.get("workflow_id")).intValue()).isEqualTo(f.workflowId());
         assertThat(((Number) row.get("workflow_step_id")).intValue()).isEqualTo(f.stepId());
-        assertThat(row.get("request_slo")).isEqualTo("ux-high-prio");
+        assertThat(row.get("request_slo")).isEqualTo("ux-critical");
     }
 
     @Test
-    void resolve_dropsInvalidSloAndKeepsTeamScopedTag() {
+    void resolve_usesTheStepSloAndKeepsTeamScopedTag() {
         Fixture f = seedFixtureWithStep("team-only-tag", "ux-background");
 
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("X-Logos-Workflow-Tag", "team-only-tag");
-        request.addHeader("X-Logos-SLO", "not-a-real-slo");
 
         GatewayRequestAttribution attr = resolver.resolve(request, f.teamId());
         assertThat(attr.workflowId()).isEqualTo(f.workflowId());
         assertThat(attr.workflowStepId()).isEqualTo(f.stepId());
-        // Invalid header is ignored; the step's recommended SLO fills in.
+        // The step's recommended SLO applies.
         assertThat(attr.requestSlo()).isEqualTo("ux-background");
 
         // A tag that belongs to another team must not resolve for this key.

@@ -113,8 +113,10 @@ not show, also when the toggle is on.
 A workflow can contain more than one **step**. Each step has its own
 recommended SLO. Owners can confirm that SLO. Applications attribute traffic
 with `X-Logos-Workflow-Tag` and the workflow or step tag. To copy a tag to
-the clipboard, click its chip. A request can also set its SLO with `X-Logos-SLO`
-(`ux-critical`, `ux-high-prio`, or `ux-background`).
+the clipboard, click its chip. A tag does not change once Logos has stored it.
+The application never sends an SLO: Logos applies the SLO of the step
+(`ux-critical`, `ux-high-prio`, or `ux-background`), so changing it in the
+user interface takes effect without a code change.
 
 A Logos Admin can select **Propose tagging PR**. That action queues an agent
 session. The session opens a pull request in the linked repository. The pull

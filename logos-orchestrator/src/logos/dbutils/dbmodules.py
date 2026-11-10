@@ -241,7 +241,7 @@ class LogEntry(Base):
     queue_depth_at_enqueue = Column(Integer)
     queue_depth_at_schedule = Column(Integer)
     timeout_s = Column(Integer)
-    # Attribution from X-Logos-Workflow-Tag / X-Logos-SLO; the ids name the
+    # Attribution from X-Logos-Workflow-Tag (request_slo is the SLO stored for the matched step); the ids name the
     # matched workflow and step of the caller's team, when one matched.
     workflow_tag = Column(Text)
     workflow_id = Column(Integer)
