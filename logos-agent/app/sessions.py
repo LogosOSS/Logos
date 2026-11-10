@@ -27,6 +27,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -223,6 +224,30 @@ def state_dir(session_id: int) -> Path:
     says into it — the pause mark — cannot be written back by the session.
     """
     return Path(settings.state_root) / str(session_id)
+
+
+SSH_KNOWN_HOSTS = "/logos/ssh_known_hosts"
+SSH_COMMAND = (
+    "ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes "
+    "-o StrictHostKeyChecking=accept-new -o UpdateHostKeys=no "
+    f"-o UserKnownHostsFile={SSH_KNOWN_HOSTS} -o GlobalKnownHostsFile=/dev/null"
+)
+
+
+def _uses_ssh(repo_url: str) -> bool:
+    return repo_url.startswith(("ssh://", "git+ssh://", "ssh+git://")) or (
+        "://" not in repo_url and bool(re.match(r"[^/]+:.+", repo_url))
+    )
+
+
+def _deploy_key_url(repo_url: str) -> str:
+    if _uses_ssh(repo_url):
+        return repo_url
+    parsed = urlsplit(repo_url)
+    if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+        raise ValueError("deploy-key checkout requires an SSH or HTTP repository URL")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return f"ssh://git@{host}{parsed.path}"
 
 
 def _give_to_session_user(path: Path) -> None:
@@ -1458,6 +1483,35 @@ class SessionManager:
         They run on the egress network, the one network a container with
         credentials is allowed to have.
         """
+        known_hosts_host_path = None
+        ssh_key_host_path = None
+        if _uses_ssh(env.get("LOGOS_REPO_URL", "")):
+            known_hosts = Path(settings.state_root) / "ssh_known_hosts"
+            known_hosts.parent.mkdir(parents=True, exist_ok=True)
+            known_hosts.touch(exist_ok=True)
+            known_hosts.chmod(0o600)
+            _give_to_session_user(known_hosts)
+            host_root = Path(await docker_engine.volume_mountpoint(settings.state_volume))
+            known_hosts_host_path = str(host_root / known_hosts.name)
+            env = {**env, "GIT_SSH_COMMAND": SSH_COMMAND}
+            if env.get("LOGOS_SSH_DEPLOY_KEY"):
+                env["GIT_SSH_COMMAND"] += " -i /logos/deploy_key"
+                ssh_key_host_path = str(host_root / str(session_id) / "deploy_key")
+            if phase != "ssh-trust":
+                # Only this isolated helper may append host keys. It has no
+                # workspace or session artefacts from which to execute code.
+                code = await self._run_helper(
+                    phase="ssh-trust",
+                    session_id=session_id,
+                    env={**env, "LOGOS_SESSION_PHASE": "ssh-trust", "LOGOS_ARTIFACT_DIR": "/tmp"},
+                    workspace_volume=workspace_volume,
+                    artifact_host_path=artifact_host_path,
+                )
+                if code != 0:
+                    return code
+                launch = self._launches.get(session_id)
+                if launch and launch.cancelled:
+                    return 137
         # Tracked before the create is even awaited: a cancel that lands
         # while the create request is in flight must find the record here
         # and wait for it — not report a clean cancellation for a helper
@@ -1477,6 +1531,8 @@ class SessionManager:
                     session_id=session_id,
                     network=settings.session_egress_network,
                     labels={"logos.agent.helper": phase},
+                    ssh_known_hosts_host_path=known_hosts_host_path,
+                    ssh_key_host_path=ssh_key_host_path,
                 )
                 helper.container_id = container_id
             finally:
@@ -1600,24 +1656,19 @@ class SessionManager:
         if settings.session_github_token and not is_analysis:
             env["GITHUB_TOKEN"] = settings.session_github_token
 
-        # Per-link deploy keys: write via the runner-mounted artifact root
-        # (same volume the helper binds at /artifacts). Never write through
-        # the Docker-daemon host path — that lands in the runner's own FS.
+        # Deploy keys live in runner-owned state and are mounted read-only
+        # into trusted helpers, then removed before the agent starts.
         key_runner_path: Path | None = None
         if is_analysis and team_repo_id is not None:
             from . import repo_credentials
 
             pem = await repo_credentials.load_deploy_key_pem(int(team_repo_id))
             if pem:
-                key_runner_path = artifact_dir(int(session["id"])) / "deploy_key"
+                env["LOGOS_REPO_URL"] = _deploy_key_url(env["LOGOS_REPO_URL"])
+                key_runner_path = state_dir(int(session["id"])) / "deploy_key"
                 repo_credentials.write_deploy_key_file(pem, key_runner_path)
                 _give_to_session_user(key_runner_path)
-                slug = session.get("repo_slug") or settings.repo_slug
-                env["LOGOS_REPO_URL"] = f"git@github.com:{slug}.git"
-                env["GIT_SSH_COMMAND"] = (
-                    "ssh -i /artifacts/deploy_key -o IdentitiesOnly=yes "
-                    "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-                )
+                env["LOGOS_SSH_DEPLOY_KEY"] = "1"
                 logger.info(
                     "session %s checkout uses deploy key for team_repository %s",
                     session["id"],

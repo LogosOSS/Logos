@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Entrypoint of an agent session container.
 
-One session runs in three phases of this image, selected by
+Sessions run in separate phases of this image, selected by
 ``LOGOS_SESSION_PHASE`` and run by the runner as separate containers:
 
+* ``ssh-trust`` — isolated, trusted: persist and verify SSH host keys before
+  checkout, without access to the workspace or session artefacts.
 * ``prepare`` — trusted, with egress and the scoped push token: clone or
   reset the working copy, rebuild its git metadata, and replace the agent's
   home.
@@ -22,12 +24,13 @@ has settled.
 Everything here runs unprivileged inside a container with no Docker socket, no
 workflow-scoped token, and no route to production. That sandbox is what lets
 the agent run with permission prompts disabled: there is nothing inside the
-agent phase worth protecting from it — and the two trusted phases only ever
+agent phase worth protecting from it — and the trusted phases only ever
 run fixed harness code, never the agent.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -43,6 +46,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 WORKSPACE = Path("/workspace")
 CHECKOUT = WORKSPACE / "repo"
+SSH_KNOWN_HOSTS = Path("/logos/ssh_known_hosts")
 
 # The one line the agent writes about what it changed, in its artefact
 # directory. The finalizer commits with it. Kept in step with the runner's
@@ -147,6 +151,13 @@ def run(
         print(process.stdout, end="", flush=True)
     if process.stderr:
         print(process.stderr, end="", file=sys.stderr, flush=True)
+    if "failed to add the host to the list of known hosts" in (process.stderr or "").lower():
+        raise RuntimeError("SSH host key could not be persisted in the runner's known_hosts file")
+    if process.returncode != 0 and any(
+        marker in (process.stderr or "").lower()
+        for marker in ("remote host identification has changed", "host key verification failed")
+    ):
+        raise RuntimeError("SSH host key verification failed: the git host key changed or is not trusted")
     if check and process.returncode != 0:
         raise RuntimeError(f"command failed ({process.returncode}): {' '.join(shown)}")
     return process
@@ -1402,6 +1413,15 @@ def _pr_reviewers() -> list[str]:
     return [name.strip() for name in os.environ.get("LOGOS_SESSION_PR_REVIEWERS", "").split(",") if name.strip()]
 
 
+def run_ssh_trust() -> None:
+    """Learn or verify host keys without mounting session-controlled files."""
+    # Serialise first connections across sessions and runner processes. SSH
+    # appends to this same inode; checkout helpers only get a read-only bind.
+    with SSH_KNOWN_HOSTS.open("r+") as known_hosts:
+        fcntl.flock(known_hosts, fcntl.LOCK_EX)
+        run(["git", "ls-remote", "--", require_env("LOGOS_REPO_URL"), "HEAD"], cwd=Path("/tmp"), quiet=True)
+
+
 def run_prepare(result: Result) -> None:
     """Trusted phase one: bring the working copy to a trusted state.
 
@@ -1496,14 +1516,16 @@ def run_finalize(result: Result) -> None:
 def main() -> int:
     """Run whichever phase of the session this container was asked for.
 
-    The runner runs ``prepare``, ``agent``, and ``finalize`` as separate
-    containers: the two trusted phases carry credentials and egress, the
+    The runner runs SSH trust, preparation, agent work, and finalization in
+    separate containers: trusted phases carry credentials and egress, the
     untrusted agent phase carries neither.
     """
     phase = os.environ.get("LOGOS_SESSION_PHASE", "agent").strip().lower()
     result = Result()
     try:
-        if phase == "prepare":
+        if phase == "ssh-trust":
+            run_ssh_trust()
+        elif phase == "prepare":
             run_prepare(result)
         elif phase == "finalize":
             run_finalize(result)

@@ -327,9 +327,9 @@ class Settings:
     # Full-page screenshots are far larger than the text artifacts above.
     screenshot_max_bytes: int = _int("LOGOS_AGENT_SCREENSHOT_MAX_BYTES", 25 * 1024 * 1024)
     artifact_volume: str = os.getenv("LOGOS_AGENT_ARTIFACT_VOLUME", "logos_agent_artifacts")
-    # Where the runner keeps its own per-session state. Deliberately not on
-    # the artefact volume: the session container mounts this directory
-    # read-only, so a mark the runner writes into it cannot be written back
+    # Where the runner keeps per-session state and persistent SSH host keys.
+    # Deliberately not on the artefact volume: session containers mount their
+    # state read-only, so a mark the runner writes cannot be written back
     # by the agent that reads it.
     state_root: str = os.getenv("LOGOS_AGENT_STATE_ROOT", "/var/lib/logos-agent/state")
     # The volume backing `state_root`. Named like the artefact volume and kept

@@ -165,6 +165,8 @@ async def create_session_container(
     workspace_volume: str,
     artifact_host_path: str,
     state_host_path: str | None = None,
+    ssh_known_hosts_host_path: str | None = None,
+    ssh_key_host_path: str | None = None,
     session_id: int,
     labels: dict[str, str] | None = None,
     network: str | None = None,
@@ -193,6 +195,10 @@ async def create_session_container(
     next door is the agent's to write. The helper phases pass nothing, so a
     container that never reads the mark also never mounts it.
 
+    The SSH trust helper mounts only the persistent host-key file writable
+    and an optional deploy key read-only. Other helpers only read those
+    files; the agent phase receives neither.
+
     The default network is the internal session network (the agent phase);
     the trusted helper containers pass the egress network explicitly.
     """
@@ -202,6 +208,18 @@ async def create_session_container(
     ]
     if state_host_path:
         binds.append(f"{state_host_path}:/logos/state:ro")
+    trust_only = env.get("LOGOS_SESSION_PHASE") == "ssh-trust"
+    if trust_only:
+        # Host-key learning cannot see any session-writable files, including
+        # repository metadata, home configuration, and artefacts.
+        binds = []
+        if not ssh_known_hosts_host_path:
+            raise ValueError("SSH trust helper requires persistent known_hosts")
+    if ssh_known_hosts_host_path:
+        mode = "rw" if trust_only else "ro"
+        binds.append(f"{ssh_known_hosts_host_path}:/logos/ssh_known_hosts:{mode}")
+    if ssh_key_host_path:
+        binds.append(f"{ssh_key_host_path}:/logos/deploy_key:ro")
     host_config: dict[str, Any] = {
         "Binds": binds,
         "NetworkMode": network or settings.session_network,
@@ -230,7 +248,7 @@ async def create_session_container(
             "logos.agent.managed": "true",
             **(labels or {}),
         },
-        "WorkingDir": "/workspace",
+        "WorkingDir": "/tmp" if trust_only else "/workspace",
         "HostConfig": host_config,
         "Tty": False,
         "OpenStdin": False,
