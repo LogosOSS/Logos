@@ -75,16 +75,21 @@ def _use_cache(monkeypatch, result=None, error=None):
     return cache
 
 
-async def _route(body=QUESTION, headers=CONTEXT, is_async_job=False, **kwargs):
+def _auth(resolved_proxy_model=None):
+    return SimpleNamespace(team_id=3, api_key_id=10, resolved_proxy_model=resolved_proxy_model)
+
+
+async def _route(body=QUESTION, headers=CONTEXT, is_async_job=False, auth=None, **kwargs):
     return await main.route_and_execute(
         deployments=DEPLOYMENTS,
         body=body,
         headers=headers,
-        auth=MagicMock(team_id=3, api_key_id=10),
+        auth=auth if auth is not None else _auth(),
         path="chat/completions",
         log_id=kwargs.get("log_id", 55),
         is_async_job=is_async_job,
         request_id="req-1",
+        required_provider_id=kwargs.get("required_provider_id"),
     )
 
 
@@ -119,10 +124,85 @@ async def test_a_request_naming_another_model_can_still_be_answered(monkeypatch,
     # response reports the model that wrote it.
     _use_cache(monkeypatch, HIT)
 
-    response = await _route(body={**QUESTION, "model": "local-llama"})
+    response = await _route(body={**QUESTION, "model": "local-llama"}, auth=_auth((2, "local-llama")))
 
     assert paths.proxy.calls == 0
     assert response.headers["X-Logos-Cache-Source-Model"] == "4"
+
+
+# a named model is access-checked before a hit, as in proxy mode
+
+
+async def test_a_model_the_key_may_not_use_is_never_answered_from_the_cache(monkeypatch, paths, pipeline, persisted):
+    # auth_parse_log leaves resolved_proxy_model as None for a model the key
+    # may not use; proxy mode rejects it with a 404, so the cache must not
+    # answer it with a 200.
+    cache = _use_cache(monkeypatch, HIT)
+    monkeypatch.setattr(main, "_resolve_requested_model", lambda auth, name, request_id: None)
+
+    out = await _route(body={**QUESTION, "model": "not-allowed"})
+
+    assert out == {"status": "proxy"}
+    assert paths.proxy.calls == 1
+    cache.find.assert_not_called()
+    assert persisted == []
+    pipeline.record_answer_reuse_miss.assert_not_called()
+
+
+async def test_a_failing_model_check_leaves_the_decision_to_the_normal_path(monkeypatch, paths, pipeline, persisted):
+    cache = _use_cache(monkeypatch, HIT)
+
+    def fail(auth, name, request_id):
+        raise RuntimeError("database down")
+
+    monkeypatch.setattr(main, "_resolve_requested_model", fail)
+
+    out = await _route(body={**QUESTION, "model": "local-llama"})
+
+    assert out == {"status": "proxy"}
+    cache.find.assert_not_called()
+
+
+async def test_a_request_pinned_to_a_provider_is_never_answered_from_the_cache(monkeypatch, paths, pipeline, persisted):
+    # Only internal benchmarks pin a provider; they must measure it.
+    cache = _use_cache(monkeypatch, HIT)
+
+    out = await _route(
+        body={**QUESTION, "model": "local-llama"}, auth=_auth((2, "local-llama")), required_provider_id=5
+    )
+
+    assert out == {"status": "proxy"}
+    cache.find.assert_not_called()
+
+
+def test_a_model_resolved_during_authentication_is_not_looked_up_again(fake_db):
+    auth = _auth((2, "local-llama"))
+
+    assert main._resolve_requested_model(auth, "local-llama", "req-1") == (2, "local-llama")
+    assert fake_db.calls == []
+
+
+def test_an_unresolved_model_is_read_fresh_and_kept_for_the_request(monkeypatch):
+    lookups = []
+
+    class _DB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def resolve_proxy_model(self, api_key_id, name):
+            lookups.append((api_key_id, name))
+            return (2, "local-llama") if name == "local-llama" else None
+
+    monkeypatch.setattr(main, "DBManager", _DB)
+    allowed, refused = _auth(), _auth()
+
+    assert main._resolve_requested_model(allowed, "local-llama", "req-1") == (2, "local-llama")
+    assert allowed.resolved_proxy_model == (2, "local-llama")
+    assert main._resolve_requested_model(refused, "other", "req-1") is None
+    assert lookups == [(10, "local-llama"), (10, "other")]
 
 
 async def test_a_hit_is_settled_with_its_log_row_entry_and_payload(monkeypatch, paths, pipeline, persisted):

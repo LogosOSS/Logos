@@ -3257,20 +3257,7 @@ async def _execute_proxy_mode(
         model_id = matching_deployments[0]["model_id"] if len(matching_deployments) == 1 else None
         model_name = requested_model_name if model_id is not None else None
     else:
-        # auth_parse_log resolved the model in the same session as the
-        # deployment lookup (same permission data, one checkout — );
-        # reuse it when present. The reuse is not traced again under
-        # "mode.resolve_model": the pre-resolve already recorded the phase,
-        # a second near-zero sample under the same name would skew its p50.
-        resolved = auth.resolved_proxy_model
-        if resolved is None:
-            # Not resolved on the auth path (other callers, or no "model" at
-            # auth time): permission data — read fresh per request, never
-            # from the ref cache (a removed model permission must not wait
-            # for a TTL).
-            with perf_trace.phase(request_id, "mode.resolve_model"):
-                with DBManager() as db:
-                    resolved = db.resolve_proxy_model(auth.api_key_id, requested_model_name)
+        resolved = _resolve_requested_model(auth, requested_model_name, request_id)
         if resolved is None:
             raise HTTPException(
                 status_code=404,
@@ -3649,6 +3636,57 @@ def _persist_cache_hit(log_id, request_id: Optional[str], entry_id: int, payload
         logger.exception("Failed to record answer-cache hit (log_id=%s, request_id=%s)", log_id, request_id)
 
 
+def _resolve_requested_model(
+    auth: "AuthContext", requested_model_name: str, request_id: Optional[str]
+) -> Optional[tuple]:
+    """Return ``(model_id, model_name)`` if the key may use the named model, else None.
+
+    auth_parse_log resolved the model in the same session as the deployment
+    lookup (same permission data, one checkout) and its result is reused when
+    present. The reuse is not traced again under "mode.resolve_model": the
+    pre-resolve already recorded the phase, and a second near-zero sample
+    under the same name would skew its p50. A result looked up here is kept
+    on ``auth`` so that a later caller for the same request reuses it.
+    """
+    resolved = auth.resolved_proxy_model
+    if resolved is None:
+        # Not resolved on the auth path (other callers, or no "model" at
+        # auth time): permission data — read fresh per request, never
+        # from the ref cache (a removed model permission must not wait
+        # for a TTL).
+        with perf_trace.phase(request_id, "mode.resolve_model"):
+            with DBManager() as db:
+                resolved = db.resolve_proxy_model(auth.api_key_id, requested_model_name)
+        auth.resolved_proxy_model = resolved
+    return resolved
+
+
+def _may_answer_from_cache(
+    body: Dict[str, Any],
+    auth: "AuthContext",
+    request_id: Optional[str],
+    required_provider_id: Optional[int],
+) -> bool:
+    """Whether a stored answer may stand in for this request's normal path.
+
+    A request pinned to one provider is an internal benchmark and must reach
+    that provider. A request naming a model may only be answered if the key
+    may use that model: the normal path checks this in proxy mode and rejects
+    it with a 404, and a cached answer must not skip that check. Any failure
+    here counts as "no", so the normal path decides.
+    """
+    if required_provider_id is not None:
+        return False
+    requested_model_name = str(body.get("model") or "").strip()
+    if not requested_model_name:
+        return True
+    try:
+        return _resolve_requested_model(auth, requested_model_name, request_id) is not None
+    except Exception:  # noqa: BLE001 — the normal path repeats the check and reports it
+        logger.exception("Model check before answer reuse failed (request_id=%s)", request_id)
+        return False
+
+
 async def _answer_from_cache(
     body: Dict[str, Any],
     headers: Dict[str, str],
@@ -3657,13 +3695,15 @@ async def _answer_from_cache(
     log_id: Optional[int],
     request_id: Optional[str],
     is_async_job: bool,
+    required_provider_id: Optional[int] = None,
 ):
     """Answer the request from the answer cache, or return None to take the normal path.
 
     Runs before classification, scheduling, the rate-limit and budget
     checks and the model call: a hit uses none of them and books no
-    scheduler slot. A failing lookup never fails the request; it falls
-    through to the normal path.
+    scheduler slot. A named model is access-checked first, as in proxy
+    mode. A failing lookup never fails the request; it falls through to
+    the normal path.
 
     Raises:
         HTTPException: 400 when the ``logos-context`` header is unusable.
@@ -3673,6 +3713,8 @@ async def _answer_from_cache(
     except InvalidContextId as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if reuse is None:
+        return None
+    if not await asyncio.to_thread(_may_answer_from_cache, body, auth, request_id, required_provider_id):
         return None
 
     try:
@@ -3777,7 +3819,9 @@ async def route_and_execute(
     try:
         # Answer reuse comes first: a hit returns before classification and
         # scheduling, so it books no scheduler slot and calls no model.
-        response = await _answer_from_cache(body, headers, auth, path, log_id, request_id, is_async_job)
+        response = await _answer_from_cache(
+            body, headers, auth, path, log_id, request_id, is_async_job, required_provider_id
+        )
         if response is not None:
             return response
 
