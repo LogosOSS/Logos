@@ -192,6 +192,15 @@ class _LoadedScope:
     intents: List[str]
 
 
+class _Refresh:
+    """A scope load in progress, shared by every lookup that needs it meanwhile."""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.loaded: Optional[_LoadedScope] = None
+        self.error: Optional[BaseException] = None
+
+
 class AnswerCache:
     """The stored answers of every scope in use, held in memory.
 
@@ -203,7 +212,8 @@ class AnswerCache:
     recently used going first, and a scope past its TTL is dropped whenever a
     scope is loaded, since its next lookup would read it again anyway. Empty
     scopes are held too, so a context without answers costs one database read
-    per TTL rather than one per request.
+    per TTL rather than one per request. Lookups that need a scope while it
+    loads share that one load.
 
     Params:
         load_entries: Reads a scope's entries; returns dicts as
@@ -239,6 +249,9 @@ class AnswerCache:
         # Least recently used first.
         self._scopes: OrderedDict[str, _LoadedScope] = OrderedDict()
         self._lock = threading.Lock()
+        # Scopes being loaded right now. Only loads in progress are held, so
+        # this stays as small as the number of concurrent lookups.
+        self._refreshing: Dict[str, _Refresh] = {}
 
     def find(self, request: ReuseRequest) -> tuple[Optional[CachedAnswer], Match]:
         """Look for a stored answer the request may reuse.
@@ -282,29 +295,58 @@ class AnswerCache:
                 self._scopes.pop(scope, None)
 
     def _scope(self, name: str) -> _LoadedScope:
+        """Return the scope's entries, loading them if they are missing or expired.
+
+        Lookups that need the same scope while it loads wait for that one load
+        instead of each reading the database; lookups for other scopes do not
+        wait. A failed load fails every lookup that waited for it.
+        """
         now = self._clock()
         with self._lock:
             loaded = self._scopes.get(name)
             if loaded is not None and not self._expired(loaded, now):
                 self._scopes.move_to_end(name)
                 return loaded
+            refresh = self._refreshing.get(name)
+            loads_it = refresh is None
+            if loads_it:
+                refresh = _Refresh()
+                self._refreshing[name] = refresh
 
+        if not loads_it:
+            refresh.done.wait()
+            if refresh.error is not None:
+                raise refresh.error
+            return refresh.loaded
+
+        try:
+            loaded = self._load(name, now)
+            with self._lock:
+                self._scopes[name] = loaded
+                self._scopes.move_to_end(name)
+                self._evict(now)
+            refresh.loaded = loaded
+            return loaded
+        except BaseException as exc:
+            refresh.error = exc
+            raise
+        finally:
+            with self._lock:
+                del self._refreshing[name]
+            refresh.done.set()
+
+    def _load(self, name: str, now: float) -> _LoadedScope:
         entries = self._load_entries(name)
         if entries:
             vectors = np.asarray([entry["embedding"] for entry in entries], dtype=np.float32)
         else:
             vectors = np.zeros((0, 0), dtype=np.float32)
-        loaded = _LoadedScope(
+        return _LoadedScope(
             loaded_at=now,
             entries=entries,
             vectors=vectors,
             intents=[entry["intent"] for entry in entries],
         )
-        with self._lock:
-            self._scopes[name] = loaded
-            self._scopes.move_to_end(name)
-            self._evict(now)
-        return loaded
 
     def _expired(self, loaded: _LoadedScope, now: float) -> bool:
         return now - loaded.loaded_at >= self._ttl_seconds

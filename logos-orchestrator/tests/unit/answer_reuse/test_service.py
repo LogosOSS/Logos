@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 import numpy as np
 import pytest
 
+from logos.answer_reuse import service
 from logos.answer_reuse.context import InvalidContextId
 from logos.answer_reuse.service import (
     CACHE_MODEL_NAME,
@@ -361,6 +365,113 @@ def test_inactive_scopes_are_dropped_once_their_ttl_has_passed():
 def test_the_bound_must_allow_one_scope():
     with pytest.raises(ValueError, match="max_scopes"):
         _cache(_Store({}), max_scopes=0)
+
+
+# concurrent lookups
+
+
+class _GatedStore(_Store):
+    """A store whose loads of one scope wait until the test opens the gate."""
+
+    def __init__(self, scopes, gated, error=None):
+        super().__init__(scopes)
+        self.gated = gated
+        self.error = error
+        self.gate = threading.Event()
+
+    def __call__(self, scope):
+        entries = super().__call__(scope)
+        if scope == self.gated:
+            assert self.gate.wait(5), "the test never opened the gate"
+            if self.error is not None:
+                raise self.error
+        return entries
+
+
+@pytest.fixture
+def waiting(monkeypatch):
+    """Counts lookups waiting for another lookup's load of their scope."""
+    count = []
+
+    class _CountedEvent(threading.Event):
+        def wait(self, timeout=None):
+            count.append(1)
+            return super().wait(timeout)
+
+    class _CountedRefresh(service._Refresh):
+        def __init__(self):
+            super().__init__()
+            self.done = _CountedEvent()
+
+    monkeypatch.setattr(service, "_Refresh", _CountedRefresh)
+    return count
+
+
+def _wait_until(condition):
+    deadline = time.monotonic() + 5
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.001)
+
+
+def _in_threads(calls):
+    results = [None] * len(calls)
+
+    def run(i, call):
+        try:
+            results[i] = call()
+        except Exception as exc:  # noqa: BLE001 — the test inspects it
+            results[i] = exc
+
+    threads = [threading.Thread(target=run, args=(i, call)) for i, call in enumerate(calls)]
+    for thread in threads:
+        thread.start()
+    return threads, results
+
+
+def test_lookups_for_a_scope_being_loaded_share_one_load(waiting):
+    store = _GatedStore({"team:3:shop-a": [_entry(i, v) for i, v in enumerate(NEAR)]}, gated="team:3:shop-a")
+    cache, _ = _cache(store)
+
+    threads, results = _in_threads([lambda: cache.find(REQUEST)] * 5)
+    _wait_until(lambda: len(waiting) == 4)  # one lookup loads, four wait for it
+    store.gate.set()
+    for thread in threads:
+        thread.join(5)
+
+    assert store.reads == ["team:3:shop-a"]
+    assert [answer.entry_id for answer, _ in results] == [0] * 5
+
+
+def test_a_scope_being_loaded_does_not_hold_up_other_scopes(waiting):
+    store = _GatedStore(
+        {"team:3:shop-a": [], "team:3:shop-b": [_entry(i, v) for i, v in enumerate(NEAR)]}, gated="team:3:shop-a"
+    )
+    cache, _ = _cache(store)
+
+    threads, _ = _in_threads([lambda: cache.find(REQUEST)])
+    _wait_until(lambda: store.reads == ["team:3:shop-a"])
+    answer, _ = cache.find(ReuseRequest(scope="team:3:shop-b", question=REQUEST.question))
+    store.gate.set()
+    threads[0].join(5)
+
+    assert answer.entry_id == 0
+
+
+def test_a_failed_load_fails_its_waiters_and_the_next_lookup_loads_again(waiting):
+    store = _GatedStore({}, gated="team:3:shop-a", error=RuntimeError("database down"))
+    cache, _ = _cache(store)
+
+    threads, results = _in_threads([lambda: cache.find(REQUEST)] * 3)
+    _wait_until(lambda: len(waiting) == 2)
+    store.gate.set()
+    for thread in threads:
+        thread.join(5)
+
+    assert [str(result) for result in results] == ["database down"] * 3
+    store.error = None
+    assert cache.find(REQUEST)[0] is None
+    assert store.reads == ["team:3:shop-a", "team:3:shop-a"]
 
 
 def test_a_model_answer_keeps_its_source_model():
