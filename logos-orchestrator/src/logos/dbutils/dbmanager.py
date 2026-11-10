@@ -5291,7 +5291,8 @@ class DBManager:
         text) is left as it is, so loading the same data twice is harmless.
 
         Params:
-            context_id: The context the answer belongs to.
+            context_id: The scope, as built by
+                :func:`logos.answer_reuse.context.cache_scope`.
             question_raw: The question as the client sent it.
             question_normalized: The question after placeholder removal; the
                 text the embedding was computed from.

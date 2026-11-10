@@ -25,8 +25,9 @@ curl https://logos.aet.cit.tum.de/v1/chat/completions \
 ## Reusing answers to similar questions
 
 Logos can answer a chat-completions request with a stored answer to a similar
-earlier question, without calling a model. To opt in, name the context your
-questions belong to, such as a shop or a course, in the `logos-context` header:
+question. Then Logos does not send the request to a model. To use this
+function, send the `logos-context` header. Its value is the name of the context
+of your questions, for example a shop or a course:
 
 ```bash
 curl https://logos.aet.cit.tum.de/v1/chat/completions \
@@ -36,24 +37,30 @@ curl https://logos.aet.cit.tum.de/v1/chat/completions \
   -d '{"model":"your-model","messages":[{"role":"user","content":"Where is my package?"}]}'
 ```
 
-A stored answer is reused only when its question is very similar to yours and
-the most similar stored questions agree on what was asked. Answers are shared
-only between requests with the same context from API keys of the same team
-(or from the same key, if it belongs to no team).
+An administrator loads the stored answers for each context (see
+[Operations and Troubleshooting](../admin/operations.md#load-answers-for-answer-reuse)).
+Logos sends a stored answer only if its question is very similar to your
+question. The most similar stored questions must also have the same intent.
+Requests share answers only if they have the same context. Their API keys must
+be in the same team, or they must use the same API key if it is not in a team.
 
-Reuse applies to non-streaming requests that consist of a single user message
-(no system or developer message, no earlier turns) and set no fields beyond
-`model`, `messages`, `stream` (false), `n` (1), `temperature`, `top_p`,
-`seed`, `user`, `metadata`, `store` and `timeout_s`. Fields such as
-`max_tokens`, `stop`, `tools` or `response_format` constrain the reply, which a
-stored answer cannot follow. Other requests, and requests without the header,
-are handled as before. A request that names a model is only answered from
-stored answers if your API key may use that model; otherwise it is rejected as
-usual.
+Logos uses stored answers only for a request with these properties:
 
-A reused answer reports `"model": "logos-answer-cache"`, zero `usage`, and the
-`X-Logos-Cache: hit` response header. The `logos.answer_reuse` object in the
-response names the stored answer and the model that originally wrote it.
+- The request does not use streaming, and `n` is 1 or not set.
+- The request has one user message and no other messages. A system message, a
+  developer message or an earlier turn is not permitted.
+- The request sets no fields other than `model`, `messages`, `stream`, `n`,
+  `temperature`, `top_p`, `seed`, `user`, `metadata`, `store` and `timeout_s`.
+
+Fields such as `max_tokens`, `stop`, `tools` or `response_format` change the
+correct reply, and a stored answer cannot obey them. Logos sends other
+requests, and requests without the header, to a model as usual. If a request
+names a model, your API key must have access to that model. If it does not,
+Logos rejects the request as usual.
+
+A reply with a stored answer has `"model": "logos-answer-cache"`, zero `usage`
+and the `X-Logos-Cache: hit` response header. The `logos.answer_reuse` object
+in the reply identifies the stored answer and the model that wrote it.
 
 For the complete request and response schema, see the Swagger UI at `/docs`.
 
