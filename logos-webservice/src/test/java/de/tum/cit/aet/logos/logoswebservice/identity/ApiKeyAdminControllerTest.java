@@ -97,11 +97,18 @@ class ApiKeyAdminControllerTest {
     }
 
     @Test
-    void deactivateKey_logosAdminDeactivates() throws Exception {
-        mvc.perform(delete("/admin/api-keys/3001")
+    void deactivateKey_logosAdminDeactivatesApplicationKey() throws Exception {
+        mvc.perform(delete("/admin/api-keys/3002")
                 .with(TestJwt.logosAdmin()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.result").value("API Key deleted successfully"));
+    }
+
+    @Test
+    void deactivateKey_rejectsDeveloperKeys() throws Exception {
+        mvc.perform(delete("/admin/api-keys/3001")
+                .with(TestJwt.logosAdmin()))
+           .andExpect(status().isConflict());
     }
 
     @Test
