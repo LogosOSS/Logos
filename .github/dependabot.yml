@@ -37,6 +37,9 @@ updates:
         patterns:
           - "*"
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # The second entry is for the actions that the workflows share: they pin the actions that they use as well.
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"

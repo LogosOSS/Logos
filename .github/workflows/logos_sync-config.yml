@@ -12,7 +12,9 @@ name: Logos - Sync host config
 #    deployer read from the file by themselves are listed in EXTRA_NAMES below.
 #  * The compose file is copied from the branch the workflow runs on. A host of Prod takes it from main only.
 #  * `install-deployer` is off by default. It installs the deployer of a core host, or updates the node manager of a
-#    worker (which also applies new Logos keys). It never touches the services of Logos.
+#    worker (which also applies new Logos keys). It never touches the services of Logos. The deploy workflows of a core
+#    host install the deployer as well (see .github/actions/install-core-deployer), because they are the way to deploy
+#    when Logos cannot deploy itself.
 #
 # The check for main below is in this file, and a branch can change its own copy of the file. Restrict the environments of
 # Prod to the branch main in the settings of the repository to make the rule hold.
@@ -168,46 +170,23 @@ jobs:
           strip_components: 1
           overwrite: true
 
+      # The deploy workflows of a core host run the same action. It copies the compose file of the deployer a second time,
+      # from the same ref, which does no harm.
       - name: Install the deployer of a core host
         if: ${{ inputs.install-deployer && steps.host.outputs.kind == 'core' }}
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        env:
-          LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+        uses: ./.github/actions/install-core-deployer
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
           key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
-          proxy_host: ${{ vars.DEPLOYMENT_GATEWAY_HOST }}
-          proxy_username: ${{ vars.DEPLOYMENT_GATEWAY_USER }}
-          proxy_key: ${{ secrets.DEPLOYMENT_GATEWAY_SSH_KEY }}
-          proxy_port: ${{ vars.DEPLOYMENT_GATEWAY_PORT }}
-          command_timeout: 15m
-          envs: LOGOS_HARBOR_PASSWORD
-          script: |
-            set -eu
-            BASE=${{ steps.host.outputs.base-path }}
-            # The login of the deploy user serves the pull below. The deployer reads its own login from .docker.
-            printf '%s' "$LOGOS_HARBOR_PASSWORD" | docker login ${{ vars.LOGOS_HARBOR_REGISTRY }} -u '${{ vars.LOGOS_HARBOR_USER }}' --password-stdin
-            mkdir -p -m 700 "$BASE/.docker"
-            printf '%s' "$LOGOS_HARBOR_PASSWORD" | DOCKER_CONFIG="$BASE/.docker" docker login ${{ vars.LOGOS_HARBOR_REGISTRY }} -u '${{ vars.LOGOS_HARBOR_USER }}' --password-stdin
-            mkdir -p "$BASE/node-manager"
-            # A project of its own: a deployment of Logos must not restart or remove the deployer.
-            compose() {
-              docker compose -p logos-deployer -f "$BASE/docker-compose.deployer.yml" --env-file="$BASE/.env" "$@"
-            }
-            compose pull logos-deployer
-            compose up -d logos-deployer
-            for attempt in $(seq 1 30); do
-              if docker exec logos-deployer node-manager ping; then
-                docker image prune -a -f --filter label=io.logos.component=node-manager \
-                  || echo "The unused node manager images were not removed." >&2
-                exit 0
-              fi
-              sleep 2
-            done
-            echo "The deployer did not start." >&2
-            docker logs --tail 50 logos-deployer >&2
-            exit 1
+          proxy-host: ${{ vars.DEPLOYMENT_GATEWAY_HOST }}
+          proxy-username: ${{ vars.DEPLOYMENT_GATEWAY_USER }}
+          proxy-key: ${{ secrets.DEPLOYMENT_GATEWAY_SSH_KEY }}
+          proxy-port: ${{ vars.DEPLOYMENT_GATEWAY_PORT }}
+          base-path: ${{ steps.host.outputs.base-path }}
+          registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          registry-user: ${{ vars.LOGOS_HARBOR_USER }}
+          registry-password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
 
       - name: Update the node manager of a worker
         if: ${{ inputs.install-deployer && steps.host.outputs.kind == 'worker' }}

@@ -275,19 +275,26 @@ Do these steps once for each host. Start with Test and Dev.
 2. Run the workflow **Logos - Sync host config** for the core host. Leave
    **Also install or update the deployer** off. The workflow writes the `.env`
    file and the compose file to the host.
-3. Restart the core with a normal deployment. The page **Deployments** is now on.
+3. Deploy the core with the deploy workflow of the environment, for example
+   **Logos - Deploy to Dev**. The page **Deployments** is now on. The workflow
+   also installs the deployer. The deployer has no key yet, so it asks no Logos
+   for orders.
 4. On the page, click **Add a deployer**. Enter the name of the host and the kind
    `core`. Copy the key. Logos shows the key once.
 5. In the GitHub environment of the host, set the secret `LOGOS_DEPLOYER_KEY` to
    the key.
-6. Run the workflow again with **Also install or update the deployer** on. The
-   workflow starts the deployer as the compose project `logos-deployer`.
-7. Do steps 4 to 6 for each worker host with the kind `worker`. A worker already
-   has the node manager. The workflow replaces it with a new one that has the key.
+6. Give the key to the deployer. Run the deploy workflow of the environment
+   again. Or run the workflow **Logos - Sync host config** with **Also install or
+   update the deployer** on. Both start the deployer as the compose project
+   `logos-deployer`.
+7. For each worker host, do steps 4 and 5 with the kind `worker`. Then run the
+   workflow **Logos - Sync host config** for the host with **Also install or
+   update the deployer** on. A worker already has the node manager. The workflow
+   replaces it with a new one that has the key.
 8. For a Dev or Test host, an admin on Prod also adds a deployer for the host on
    the page of Prod. In the GitHub environment of the host, set `LOGOS_PROD_URL`
    to the address of Prod, and the secret `LOGOS_PROD_DEPLOYER_KEY` to that key.
-   Then run the workflow again.
+   Then do step 6 again.
 
 | Variable | Where | Meaning |
 |---|---|---|
@@ -313,6 +320,28 @@ GitHub stays the owner of the settings. Logos stores no secret of a host.
   the next deployment of the host.
 * A host of Prod takes its files from the branch `main` only. To make this rule
   hold, restrict the GitHub environments of Prod to the branch `main`.
+
+### Deploy from GitHub
+
+The workflows **Logos - Deploy to Test**, **Logos - Deploy to Dev** and **Logos -
+Deploy to Prod** stay. Use them if Logos cannot deploy itself, for example if the
+new web service does not start. These workflows do not use the page
+**Deployments**.
+
+A workflow of a core host also installs or updates the deployer. It does this
+only if the variable `LOGOS_DEPLOYMENTS_ENVIRONMENT` is set in the GitHub
+environment of the host. The deployer is a compose project of its own, so a
+deployment of the core does not replace it. The workflow installs the deployer
+last. A problem with the deployer does not stop the deployment.
+
+* The deployer gets the image tag that you deploy. To keep the deployer on
+  another tag, set the variable `NODE_MANAGER_IMAGE_TAG` in the GitHub
+  environment of the host.
+* If the deployer still runs a deployment, the workflow does not replace it. A
+  deployer that restarts continues its old order. That order can replace the
+  services that the workflow started. The workflow shows a warning. Wait until
+  the deployment ends, then run the workflow again.
+* A host without the variable `LOGOS_DEPLOYMENTS_ENVIRONMENT` is not changed.
 
 ### Start a deployment
 

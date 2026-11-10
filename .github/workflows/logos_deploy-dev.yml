@@ -377,3 +377,24 @@ jobs:
               printf '%s' "$LOGOS_HARBOR_PASSWORD" | docker login "$LOGOS_HARBOR_REGISTRY" -u '${{ vars.LOGOS_HARBOR_USER }}' --password-stdin
               docker pull "$LOGOS_HARBOR_REGISTRY/logos/logos-agent-workspace:$WORKSPACE_IMAGE_TAG"
             fi
+
+      # The deployer of a core host obeys Logos. This workflow is the way to deploy when Logos cannot deploy itself, so it
+      # also installs or updates the deployer, and it does so after the services: a problem with the deployer must not
+      # stop the deployment. It runs only on a host where deployments from Logos are on (LOGOS_DEPLOYMENTS_ENVIRONMENT).
+      # The deployer gets the tag that this workflow deploys. NODE_MANAGER_IMAGE_TAG, set in the environment, keeps it on
+      # another tag.
+      - name: Install or update the deployer
+        if: ${{ !matrix.node-manager && vars.LOGOS_DEPLOYMENTS_ENVIRONMENT != '' }}
+        uses: ./.github/actions/install-core-deployer
+        with:
+          host: ${{ vars.VM_HOST }}
+          username: ${{ vars.VM_USERNAME }}
+          key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          proxy-host: ${{ vars.DEPLOYMENT_GATEWAY_HOST }}
+          proxy-username: ${{ vars.DEPLOYMENT_GATEWAY_USER }}
+          proxy-key: ${{ secrets.DEPLOYMENT_GATEWAY_SSH_KEY }}
+          proxy-port: ${{ vars.DEPLOYMENT_GATEWAY_PORT }}
+          base-path: ${{ matrix.base-path }}
+          registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          registry-user: ${{ vars.LOGOS_HARBOR_USER }}
+          registry-password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}

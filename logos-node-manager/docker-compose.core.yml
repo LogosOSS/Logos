@@ -1,8 +1,10 @@
 # docker-compose.core.yml — the deployer of a core host (the host that runs Logos itself).
 #
-# The sync workflow copies this file next to docker-compose.yaml as docker-compose.deployer.yml and starts it as its own
-# compose project:
+# The action .github/actions/install-core-deployer copies this file next to docker-compose.yaml as
+# docker-compose.deployer.yml and starts it as its own compose project:
 #   docker compose -p logos-deployer -f docker-compose.deployer.yml --env-file .env up -d
+# The workflow "Sync host config" (with install-deployer) runs the action, and so do the deploy workflows of a host that
+# has LOGOS_DEPLOYMENTS_ENVIRONMENT.
 #
 # It is a project of its own on purpose. A deployment of Logos runs `docker compose up -d --remove-orphans` for the
 # project `logos`. If the deployer belonged to that project, the same command would restart the deployer in the middle of
@@ -13,6 +15,8 @@
 # it went. It has no drain and no rollback.
 services:
   logos-deployer:
+    # The tag is NODE_MANAGER_IMAGE_TAG, else IMAGE_TAG (the tag that a deploy workflow deploys), else latest. Set
+    # NODE_MANAGER_IMAGE_TAG to keep the deployer on one tag, for example while an older release runs.
     image: ${REGISTRY:-ghcr.io/logososs}/logos-node-manager:${NODE_MANAGER_IMAGE_TAG:-${IMAGE_TAG:-latest}}
     container_name: logos-deployer
     init: true
@@ -35,7 +39,7 @@ services:
       # The directory of docker-compose.yaml and .env. It is mounted at the same path as on the host, because Compose
       # turns the relative bind mounts of Logos into absolute host paths before it sends them to the Docker engine.
       NODE_MANAGER_PROJECT_DIR: ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}
-      # The registry login. The sync workflow writes it to the directory .docker of the project directory.
+      # The registry login. The action that installs the deployer writes it to the directory .docker of the project directory.
       DOCKER_CONFIG: ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}/.docker
       # The Logos instances this host obeys: the own Logos (LOGOS_DEPLOYER_KEY, made on the page Deployments) and, for a
       # Dev or Test host, Prod (LOGOS_PROD_URL with a key that Prod made). An entry without a key is skipped.
