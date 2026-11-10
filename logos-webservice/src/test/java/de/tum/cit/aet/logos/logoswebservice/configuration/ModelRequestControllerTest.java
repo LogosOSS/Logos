@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
 import de.tum.cit.aet.logos.logoswebservice.TestJwt;
-import de.tum.cit.aet.logos.logoswebservice.configuration.service.RequestedModelHfStatusSweeper;
+import de.tum.cit.aet.logos.logoswebservice.configuration.service.RequestedModelHfRechecker;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabilityClient;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabilityClient.HfReachabilityResult;
 
@@ -47,7 +47,7 @@ class ModelRequestControllerTest {
 
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
-    @Autowired RequestedModelHfStatusSweeper hfStatusSweeper;
+    @Autowired RequestedModelHfRechecker hfStatusRechecker;
     @MockitoBean JwtDecoder jwtDecoder;
     @MockitoBean OrchestratorHfReachabilityClient hfReachabilityClient;
 
@@ -541,7 +541,7 @@ class ModelRequestControllerTest {
     }
 
     @Test
-    void sweep_recordsOnlyDecisiveGatingVerdictsOnUnverifiedRows() {
+    void recheck_recordsOnlyDecisiveGatingVerdictsOnUnverifiedRows() {
         // Rows that predate the precheck (no verdict yet) plus one row that
         // already carries one.
         jdbc.update("INSERT INTO requested_models (name) VALUES ('acme/legacy-a'), ('acme/legacy-b'), ('acme/legacy-c'), ('acme/legacy-d')");
@@ -557,7 +557,7 @@ class ModelRequestControllerTest {
         Mockito.when(hfReachabilityClient.check("acme/legacy-d"))
             .thenReturn(HfReachabilityResult.unknown("Hugging Face Hub did not answer within 15s."));
 
-        hfStatusSweeper.sweepUnverified();
+        hfStatusRechecker.recheckUnverified();
 
         // Reachable and non-gated rejections are not gated ...
         assertThat(isGated("acme/legacy-a")).isFalse();
@@ -568,6 +568,24 @@ class ModelRequestControllerTest {
         assertThat(isGated("acme/legacy-d")).isNull();
         // ... and an existing verdict is never clobbered by the sweep.
         assertThat(isGated("acme/legacy-e")).isTrue();
+    }
+
+    @Test
+    void recheck_unflagsAGatedModelWhoseLicenseWasAccepted() {
+        // One pass does both jobs: the flagged row's license was accepted
+        // since it was flagged, and the unverified row gets its verdict.
+        jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/license-accepted', true)");
+        jdbc.update("INSERT INTO requested_models (name) VALUES ('acme/unverified')");
+
+        Mockito.when(hfReachabilityClient.check("acme/license-accepted"))
+            .thenReturn(new HfReachabilityResult(HfReachabilityResult.STATUS_REACHABLE, null, null));
+        Mockito.when(hfReachabilityClient.check("acme/unverified"))
+            .thenReturn(new HfReachabilityResult(HfReachabilityResult.STATUS_REACHABLE, null, null));
+
+        hfStatusRechecker.recheck();
+
+        assertThat(isGated("acme/license-accepted")).isFalse();
+        assertThat(isGated("acme/unverified")).isFalse();
     }
 
     private Boolean isGated(String name) {

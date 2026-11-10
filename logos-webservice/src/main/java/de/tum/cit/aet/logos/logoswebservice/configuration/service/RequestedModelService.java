@@ -54,7 +54,9 @@ import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabil
  * {@code is_gated} (true when the Hub rejects the repository as gated, false
  * when it is reachable); a repository the Hub does not know at all is
  * refused. Rows that predate the precheck are backfilled by
- * {@link RequestedModelHfStatusSweeper} at application start.
+ * {@link RequestedModelHfRechecker}, which also re-checks the flagged rows
+ * hourly, so a license accepted in the meantime clears the flag without
+ * anyone voting again.
  *
  * The first time a row gets the gating verdict, a Logos admin notification
  * ({@code gated_model_requested}) goes out with the vote — that is the
@@ -355,8 +357,8 @@ public class RequestedModelService {
 
     /**
      * Record a decisive Hugging Face gating verdict on a registry row that has
-     * none yet (the application-start sweep path). A row that already carries
-     * a verdict — for instance one a concurrent vote just wrote — is left
+     * none yet (the scheduled recheck path). A row that already carries a
+     * verdict — for instance one a concurrent vote just wrote — is left
      * untouched.
      *
      * @return the number of rows updated (0 when the row already had a verdict)
@@ -380,14 +382,19 @@ public class RequestedModelService {
      * their own short transactions. Only a positive {@code reachable} verdict
      * unflags: still-gated, not-found and timeout are no answer about the
      * license, so the flag stays until a reachable answer comes.
+     *
+     * @return the number of rows unflagged (0 when nothing changed)
      */
-    public void recheckGatedModels() {
+    public int recheckGatedModels() {
+        int cleared = 0;
         for (RequestedModel model : requestedModelRepository.findByIsGatedTrue()) {
             HfReachabilityResult reachability = hfReachabilityClient.check(model.getName());
-            if (HfReachabilityResult.STATUS_REACHABLE.equals(reachability.status())) {
-                requestedModelRepository.clearGatedFlagIfStillSet(model.getId());
+            if (HfReachabilityResult.STATUS_REACHABLE.equals(reachability.status())
+                && requestedModelRepository.clearGatedFlagIfStillSet(model.getId()) > 0) {
+                cleared++;
             }
         }
+        return cleared;
     }
 
     /**
