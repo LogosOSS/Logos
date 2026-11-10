@@ -41,11 +41,11 @@ the most similar stored questions agree on what was asked. Answers are shared
 only between requests with the same context from API keys of the same team
 (or from the same key, if it belongs to no team).
 
-Reuse applies to non-streaming requests with exactly one user message (system
-messages are allowed) and no tools or response format. Other requests, and
-requests without the header, are handled as before. A request that names a
-model is only answered from stored answers if your API key may use that model;
-otherwise it is rejected as usual.
+Reuse applies to non-streaming requests that consist of a single user message
+(no system or developer message, no earlier turns) and use no tools or
+response format. Other requests, and requests without the header, are handled
+as before. A request that names a model is only answered from stored answers
+if your API key may use that model; otherwise it is rejected as usual.
 
 A reused answer reports `"model": "logos-answer-cache"`, zero `usage`, and the
 `X-Logos-Cache: hit` response header. The `logos.answer_reuse` object in the

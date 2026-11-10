@@ -37,12 +37,6 @@ CACHE_TTL_SECONDS = 30.0
 # The ``model`` a cached response reports: no model ran for this request.
 CACHE_MODEL_NAME = "logos-answer-cache"
 
-# Message roles that set up a conversation without asking anything. Any
-# other role besides the single user message (assistant, tool, function)
-# means a multi-turn conversation, whose last question depends on what came
-# before it.
-_SETUP_ROLES = {"system", "developer"}
-
 # Request fields that change what a correct answer looks like. A stored
 # plain-text answer is not a valid reply to a request that sets them.
 _ANSWER_SHAPING_FIELDS = ("tools", "functions", "tool_choice", "function_call", "response_format")
@@ -91,9 +85,8 @@ def reuse_request_from(
         The :class:`ReuseRequest`, or None when the request follows the
         normal path: no ``logos-context`` header, another endpoint,
         streaming, more than one choice, tools or a response format,
-        anything but exactly one plain-text user message (system and
-        developer messages aside), or a question that is empty once
-        placeholders are removed.
+        anything but a single plain-text user message, or a question that
+        is empty once placeholders are removed.
 
     Raises:
         InvalidContextId: The ``logos-context`` header is present but unusable.
@@ -117,18 +110,21 @@ def reuse_request_from(
 
 
 def _single_question(messages: Any) -> Optional[str]:
-    """Return the one plain-text user question of a conversation, or None.
+    """Return the question of a conversation that is one user message, or None.
 
-    None when the conversation has another number of user messages, any
-    role besides user, system and developer, a user message that is not
+    A stored answer is matched on the question alone. Any other message would
+    change what a correct answer is without taking part in the match: a system
+    or developer message can set a language or a format ("Answer only in
+    German"), and earlier turns change what the last question refers to. So
+    None for anything but a single user message, a user message that is not
     plain text, or a question that is empty once placeholders are removed.
     """
-    if not isinstance(messages, list):
+    if not isinstance(messages, list) or len(messages) != 1:
         return None
-    roles = [message.get("role") if isinstance(message, dict) else None for message in messages]
-    if any(role != "user" and role not in _SETUP_ROLES for role in roles) or roles.count("user") != 1:
+    message = messages[0]
+    if not isinstance(message, dict) or message.get("role") != "user":
         return None
-    question = messages[roles.index("user")].get("content")
+    question = message.get("content")
     if not isinstance(question, str) or not normalize(question):
         return None
     return question

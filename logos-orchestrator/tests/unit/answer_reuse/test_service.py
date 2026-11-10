@@ -83,13 +83,15 @@ def test_a_single_choice_is_eligible():
     assert _eligible(_body(n=1)) is not None
 
 
-def test_system_and_developer_messages_are_allowed():
+@pytest.mark.parametrize("role", ["system", "developer"])
+def test_an_instruction_beside_the_question_makes_a_request_ineligible(role):
+    # The match uses the question alone, so an instruction such as a language
+    # would be ignored by a stored answer.
     body = _body(
-        {"role": "system", "content": "You are the support assistant of Shop A."},
-        {"role": "developer", "content": "Be brief."},
+        {"role": role, "content": "Answer only in German."},
         {"role": "user", "content": "Where is my package?"},
     )
-    assert _eligible(body).question == "Where is my package?"
+    assert _eligible(body) is None
 
 
 @pytest.mark.parametrize(
@@ -103,6 +105,7 @@ def test_system_and_developer_messages_are_allowed():
         [{"role": "user", "content": "Hi"}, {"role": "user", "content": "Where is my package?"}],
         [{"role": "user", "content": "Where is it?"}, {"role": "tool", "content": "{}"}],
         [{"role": "system", "content": "Only a setup message."}],
+        ["Where is my package?"],
         [],
     ],
 )
