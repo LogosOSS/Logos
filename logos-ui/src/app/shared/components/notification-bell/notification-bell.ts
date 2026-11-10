@@ -17,7 +17,7 @@ import {
 } from '../../../core/services/notification.service';
 import { formatRelativeTime } from '../../utils/date';
 import { RouterLink } from '@angular/router';
-import { notificationBody, notificationTarget } from '../../../core/services/notification-target';
+import { notificationBody, notificationModelUrl, notificationTarget } from '../../../core/services/notification-target';
 
 const PAGE_SIZE = 15;
 /** Start loading the next page this close (px) to the end of the list. */
@@ -151,6 +151,18 @@ export class NotificationBell implements OnInit, OnDestroy {
   followBenchmark(item: AppNotification): void {
     void this.markRead(item);
     this.open.set(false);
+  }
+
+  /**
+   * A title click reads the item, and for a gated-model notification takes
+   * the caller straight to the model's Hugging Face page — the same target
+   * as the Model requests page' license dialog. The panel stays open: the
+   * tab opens next to it, the page underneath is unchanged.
+   */
+  clickTitle(item: AppNotification): void {
+    void this.markRead(item);
+    const url = notificationModelUrl(item);
+    if (url) window.open(url, '_blank', 'noopener,noreferrer');
   }
 
   async markRead(item: AppNotification): Promise<void> {
