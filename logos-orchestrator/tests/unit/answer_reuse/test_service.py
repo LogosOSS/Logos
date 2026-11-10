@@ -292,6 +292,54 @@ def test_invalidate_forces_a_new_read():
     assert len(store.reads) == 3
 
 
+def _ask(cache, scope):
+    return cache.find(ReuseRequest(scope=scope, question="Where is my package?"))
+
+
+def test_distinct_context_names_never_hold_more_than_the_bound():
+    # Clients choose context names, so memory must not grow with them.
+    store = _Store({})
+    cache, _ = _cache(store, max_scopes=3)
+
+    for i in range(100):
+        _ask(cache, f"team:3:name-{i}")
+
+    assert list(cache._scopes) == ["team:3:name-97", "team:3:name-98", "team:3:name-99"]
+
+
+def test_the_least_recently_used_scope_goes_first():
+    store = _Store({})
+    cache, _ = _cache(store, max_scopes=2)
+
+    _ask(cache, "a")
+    _ask(cache, "b")
+    _ask(cache, "a")  # a is now the most recently used
+    _ask(cache, "c")  # so b goes
+    _ask(cache, "a")
+    _ask(cache, "b")
+
+    assert store.reads == ["a", "b", "c", "b"]
+
+
+def test_inactive_scopes_are_dropped_once_their_ttl_has_passed():
+    store = _Store({})
+    clock = _Clock()
+    cache, _ = _cache(store, clock=clock, ttl_seconds=30)
+
+    _ask(cache, "a")
+    clock.now = 10.0
+    _ask(cache, "b")
+    clock.now = 35.0
+    _ask(cache, "c")
+
+    assert list(cache._scopes) == ["b", "c"]
+
+
+def test_the_bound_must_allow_one_scope():
+    with pytest.raises(ValueError, match="max_scopes"):
+        _cache(_Store({}), max_scopes=0)
+
+
 def test_a_model_answer_keeps_its_source_model():
     store = _Store(
         {"team:3:shop-a": [_entry(i, v, source="model", source_model_id=4) for i, v in enumerate(NEAR, start=1)]}

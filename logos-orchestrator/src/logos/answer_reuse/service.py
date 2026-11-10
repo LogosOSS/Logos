@@ -15,6 +15,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -33,6 +34,10 @@ from logos.answer_reuse.matching import (
 # Stored answers are reloaded from the database at most this often per
 # scope, so answers seeded while Logos runs are picked up without a restart.
 CACHE_TTL_SECONDS = 30.0
+
+# At most this many scopes are held in memory. Clients choose context names
+# freely, so without a bound every new name would stay in memory for good.
+MAX_CACHED_SCOPES = 256
 
 # The ``model`` a cached response reports: no model ran for this request.
 CACHE_MODEL_NAME = "logos-answer-cache"
@@ -185,11 +190,18 @@ class AnswerCache:
     lookup is a single matrix product instead of a conversion of every
     stored vector. A scope is read again after ``ttl_seconds``.
 
+    Memory is bounded: at most ``max_scopes`` scopes are held, the least
+    recently used going first, and a scope past its TTL is dropped whenever a
+    scope is loaded, since its next lookup would read it again anyway. Empty
+    scopes are held too, so a context without answers costs one database read
+    per TTL rather than one per request.
+
     Params:
         load_entries: Reads a scope's entries; returns dicts as
             :meth:`DBManager.get_answer_cache_entries` does.
         encode: Embeds one string and returns its normalized vector.
         ttl_seconds: How long a loaded scope is used before it is read again.
+        max_scopes: How many scopes are held in memory at most.
         threshold: Minimum similarity of the closest stored question.
         k: How many closest stored questions must share one intent.
         clock: Seconds from a monotonic clock (replaceable in tests).
@@ -201,17 +213,22 @@ class AnswerCache:
         encode: Callable[[str], Sequence[float]],
         *,
         ttl_seconds: float = CACHE_TTL_SECONDS,
+        max_scopes: int = MAX_CACHED_SCOPES,
         threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
         k: int = DEFAULT_TOP_K,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._load_entries = load_entries
         self._encode = encode
+        if max_scopes < 1:
+            raise ValueError(f"max_scopes must be at least 1, got {max_scopes}")
         self._ttl_seconds = ttl_seconds
+        self._max_scopes = max_scopes
         self._threshold = threshold
         self._k = k
         self._clock = clock
-        self._scopes: Dict[str, _LoadedScope] = {}
+        # Least recently used first.
+        self._scopes: OrderedDict[str, _LoadedScope] = OrderedDict()
         self._lock = threading.Lock()
 
     def find(self, request: ReuseRequest) -> tuple[Optional[CachedAnswer], Match]:
@@ -255,8 +272,9 @@ class AnswerCache:
         now = self._clock()
         with self._lock:
             loaded = self._scopes.get(name)
-        if loaded is not None and now - loaded.loaded_at < self._ttl_seconds:
-            return loaded
+            if loaded is not None and not self._expired(loaded, now):
+                self._scopes.move_to_end(name)
+                return loaded
 
         entries = self._load_entries(name)
         if entries:
@@ -271,7 +289,19 @@ class AnswerCache:
         )
         with self._lock:
             self._scopes[name] = loaded
+            self._scopes.move_to_end(name)
+            self._evict(now)
         return loaded
+
+    def _expired(self, loaded: _LoadedScope, now: float) -> bool:
+        return now - loaded.loaded_at >= self._ttl_seconds
+
+    def _evict(self, now: float) -> None:
+        """Drop expired scopes, then the least recently used beyond the bound. Caller holds the lock."""
+        for name in [name for name, loaded in self._scopes.items() if self._expired(loaded, now)]:
+            del self._scopes[name]
+        while len(self._scopes) > self._max_scopes:
+            self._scopes.popitem(last=False)
 
 
 def chat_completion_payload(answer: CachedAnswer, created: Optional[int] = None) -> Dict[str, Any]:
