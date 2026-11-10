@@ -169,6 +169,8 @@ async def test_guidellm_rejects_a_cohort_with_a_truncated_response(server):
 def test_only_exact_explicit_output_budgets_count_as_completed(operation, reason, limit):
     field = "max_tokens" if operation == "messages" else "max_completion_tokens"
     source = {"source_log_id": 9, "operation": operation, "body": {field: limit}}
+    if operation == "chat/completions":
+        source["body"]["ignore_eos"] = True
     handler = engine.FrozenRequestHandler(source)
     events = messages_events(reason) if operation == "messages" else chat_events(reason)
     for event in events:
@@ -179,6 +181,7 @@ def test_only_exact_explicit_output_budgets_count_as_completed(operation, reason
     if type(limit) is int and limit == 12:
         handler.post_validation(response)
         assert response.response_metrics["finish_reason"] == "length"
+        assert response.response_metrics.get("fixed_output_budget") == (12 if operation == "chat/completions" else None)
     else:
         with pytest.raises(RuntimeError, match="source_log_id=9"):
             handler.post_validation(response)

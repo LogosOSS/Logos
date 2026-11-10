@@ -2,6 +2,7 @@ import copy
 
 import pytest
 
+from logos.benchmarks import dev_nightly_pilot, optimization
 from logos.benchmarks.workloads import build_snapshot, replay_request, request_body
 
 
@@ -37,6 +38,20 @@ def test_snapshot_is_private_deterministic_and_keeps_source_limits():
     second = build_snapshot([row], "Trial", "synthetic")
     assert second["id"] != first["id"]
     assert second["requests"][0]["body"]["max_completion_tokens"] == 4096
+
+
+def test_dev_pilot_plans_all_50_distinct_fixed_budget_requests_per_configuration():
+    workload = dev_nightly_pilot.build_workload(1)
+    assert workload == dev_nightly_pilot.build_workload(1)
+    bodies = [request["body"] for request in workload["requests"]]
+    assert len({body["messages"][0]["content"] for body in bodies}) == workload["request_count"] == 50
+    assert all(
+        body["max_tokens"] == 1536 and body["ignore_eos"] is True and body["temperature"] == 0 for body in bodies
+    )
+    current = {"max_num_seqs": 5, "max_num_batched_tokens": 2304}
+    plan = optimization.plan(current, optimization.context(current, {}, workload, {}))
+    assert len(plan) > 1
+    assert all(run.samples == 50 and run.workload_id == workload["id"] for run in plan)
 
 
 @pytest.mark.parametrize(
