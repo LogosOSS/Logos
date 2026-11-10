@@ -26,7 +26,13 @@ from grpclocal import model_pb2_grpc
 from grpclocal.grpc_server import LogosServicer
 from logos import perf_trace, refcache, write_queue
 from logos.answer_reuse.context import InvalidContextId
-from logos.answer_reuse.service import AnswerCache, cache_hit_headers, chat_completion_payload, reuse_request_from
+from logos.answer_reuse.service import (
+    CACHE_RESPONSE_HEADERS,
+    AnswerCache,
+    cache_hit_headers,
+    chat_completion_payload,
+    reuse_request_from,
+)
 from logos.anthropic_compat import (
     MessagesStreamTranslator,
     UpstreamDialect,
@@ -906,6 +912,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],  # logos_key, Authorization, etc.
+    # Browser clients can read only exposed response headers.
+    expose_headers=list(CACHE_RESPONSE_HEADERS),
 )
 
 

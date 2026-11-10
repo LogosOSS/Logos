@@ -53,6 +53,23 @@ class SecurityConfigCorsTest {
     }
 
     @Test
+    void inferenceResponsesExposeTheAnswerCacheHeaders() throws IOException {
+        // A browser client reads X-Logos-Cache and friends only if CORS exposes them.
+        for (String path : new String[] {"/v1/chat/completions", "/openai/v1/chat/completions", "/jobs"}) {
+            MockHttpServletRequest request = new MockHttpServletRequest(HttpMethod.POST.name(), path);
+            request.addHeader(HttpHeaders.ORIGIN, "https://app.example");
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            processor.processRequest(source.getCorsConfiguration(request), request, response);
+
+            String exposed = response.getHeader(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS);
+            assertThat(exposed).isNotNull();
+            for (String header : SecurityConfig.ANSWER_CACHE_RESPONSE_HEADERS) {
+                assertThat(exposed).contains(header);
+            }
+        }
+    }
+
+    @Test
     void inferencePreflightRejectsDisallowedHeader() throws IOException {
         // Spring refuses the preflight when Access-Control-Request-Headers
         // names something outside the allowlist.

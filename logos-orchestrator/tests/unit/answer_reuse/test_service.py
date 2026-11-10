@@ -545,6 +545,26 @@ def test_hit_headers_name_the_entry_and_the_source_model():
     }
 
 
+def test_cors_exposes_every_cache_header_in_the_orchestrator_and_the_gateway():
+    # A browser client reads a response header only if CORS exposes it; the
+    # orchestrator and the Java gateway each have their own CORS setup.
+    from pathlib import Path
+
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from logos import main
+
+    (cors,) = [m for m in main.app.user_middleware if m.cls is CORSMiddleware]
+    assert set(cors.kwargs["expose_headers"]) == set(service.CACHE_RESPONSE_HEADERS)
+
+    gateway = Path(__file__).resolve().parents[4] / (
+        "logos-webservice/src/main/java/de/tum/cit/aet/logos/logoswebservice/auth/SecurityConfig.java"
+    )
+    source = gateway.read_text(encoding="utf-8")
+    for header in service.CACHE_RESPONSE_HEADERS:
+        assert f'"{header}"' in source
+
+
 def test_a_seeded_answer_has_no_source_model_header():
     seeded = CachedAnswer(7, "a", "track_order", 0.9, "seed", None)
     assert "X-Logos-Cache-Source-Model" not in cache_hit_headers(seeded)

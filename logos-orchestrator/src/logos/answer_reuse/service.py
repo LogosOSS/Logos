@@ -42,6 +42,14 @@ MAX_CACHED_SCOPES = 256
 # The ``model`` a cached response reports: no model ran for this request.
 CACHE_MODEL_NAME = "logos-answer-cache"
 
+# The response headers that mark a cached answer. CORS must expose them, or a
+# browser client cannot read them (main.py, and SecurityConfig in the gateway).
+CACHE_HEADER = "X-Logos-Cache"
+CACHE_ENTRY_HEADER = "X-Logos-Cache-Entry"
+CACHE_SIMILARITY_HEADER = "X-Logos-Cache-Similarity"
+CACHE_SOURCE_MODEL_HEADER = "X-Logos-Cache-Source-Model"
+CACHE_RESPONSE_HEADERS = (CACHE_HEADER, CACHE_ENTRY_HEADER, CACHE_SIMILARITY_HEADER, CACHE_SOURCE_MODEL_HEADER)
+
 # The only request fields a stored answer can honour. The sampling fields only
 # change how random a fresh answer would be, and a stored answer is one such
 # answer; stream and n are checked separately. Every other field, such as
@@ -403,10 +411,10 @@ def chat_completion_payload(answer: CachedAnswer, created: Optional[int] = None)
 def cache_hit_headers(answer: CachedAnswer) -> Dict[str, str]:
     """Response headers marking a cached answer, readable before parsing the body."""
     headers = {
-        "X-Logos-Cache": "hit",
-        "X-Logos-Cache-Entry": str(answer.entry_id),
-        "X-Logos-Cache-Similarity": f"{answer.similarity:.4f}",
+        CACHE_HEADER: "hit",
+        CACHE_ENTRY_HEADER: str(answer.entry_id),
+        CACHE_SIMILARITY_HEADER: f"{answer.similarity:.4f}",
     }
     if answer.source_model_id is not None:
-        headers["X-Logos-Cache-Source-Model"] = str(answer.source_model_id)
+        headers[CACHE_SOURCE_MODEL_HEADER] = str(answer.source_model_id)
     return headers
