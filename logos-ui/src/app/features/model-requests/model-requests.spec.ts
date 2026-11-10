@@ -238,7 +238,7 @@ describe('the gated model flag', () => {
 
       // The dialog renders into the overlay container, outside the component.
       expect(document.body.textContent).toContain(
-        "You need to accept this gated model's license agreement on Hugging Face",
+        "You need to accept this gated model's license agreement on Hugging Face.",
       );
       // Acceptance is an access request, not an instant grant — say so.
       expect(document.body.textContent).toContain(
