@@ -204,6 +204,21 @@ def test_a_cache_hit_settles_its_log_row_and_counts_the_hit_in_one_commit():
     db.session.commit.assert_called_once()
 
 
+def test_a_cache_hit_is_settled_at_zero_cost_and_finalised(monkeypatch):
+    # Budget reads take a finalised row's settled cost as it stands; an
+    # unfinalised one is priced again from its usage on every read.
+    from logos.dbutils import dbmanager
+
+    monkeypatch.setattr(dbmanager, "text", lambda sql: sql)  # keep the statement inspectable
+    db = _db()
+
+    db.finalize_cache_hit_row(55, 7)
+
+    log_update = " ".join(str(db.session.execute.call_args_list[0].args[0]).split())
+    assert "settled_cost_micro_cents = 0" in log_update
+    assert "cost_finalized = TRUE" in log_update
+
+
 def test_a_pending_log_reference_is_not_written_as_a_row():
     db = _db()
 

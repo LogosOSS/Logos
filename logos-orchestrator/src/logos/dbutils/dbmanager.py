@@ -5395,9 +5395,11 @@ class DBManager:
         """Settle the log row of a request answered from the answer cache.
 
         A cache hit ran no model, so the row gets no model, provider or usage
-        rows and no cost; it is marked successful, stamped with its response
-        time and linked to the answer_cache entry that answered it. The
-        entry's hit count rises in the same commit.
+        rows. Its cost is known to be zero, so it is settled as zero and
+        finalised here; budget reads then take it as settled instead of
+        pricing it again. The row is marked successful, stamped with its
+        response time and linked to the answer_cache entry that answered it.
+        The entry's hit count rises in the same commit.
 
         Params:
             log_id: The request's log_entry row.
@@ -5413,7 +5415,9 @@ class DBManager:
                      timestamp_response = :timestamp,
                      request_id         = COALESCE(:request_id, request_id),
                      cache_hit          = TRUE,
-                     cache_entry_id     = :entry_id
+                     cache_entry_id     = :entry_id,
+                     settled_cost_micro_cents = 0,
+                     cost_finalized     = TRUE
                  WHERE id = :log_id
                  """),
             {
