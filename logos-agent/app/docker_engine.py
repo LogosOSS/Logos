@@ -248,7 +248,7 @@ async def create_session_container(
             "logos.agent.managed": "true",
             **(labels or {}),
         },
-        "WorkingDir": "/tmp" if trust_only else "/workspace",
+        "WorkingDir": "/tmp" if trust_only else "/workspace",  # NOSONAR - the container's own private tmpfs
         "HostConfig": host_config,
         "Tty": False,
         "OpenStdin": False,

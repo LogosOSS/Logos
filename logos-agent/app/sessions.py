@@ -1503,7 +1503,8 @@ class SessionManager:
                 code = await self._run_helper(
                     phase="ssh-trust",
                     session_id=session_id,
-                    env={**env, "LOGOS_SESSION_PHASE": "ssh-trust", "LOGOS_ARTIFACT_DIR": "/tmp"},
+                    # The helper's result goes to its own private tmpfs.
+                    env={**env, "LOGOS_SESSION_PHASE": "ssh-trust", "LOGOS_ARTIFACT_DIR": "/tmp"},  # NOSONAR
                     workspace_volume=workspace_volume,
                     artifact_host_path=artifact_host_path,
                 )

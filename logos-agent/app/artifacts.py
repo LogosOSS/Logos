@@ -33,8 +33,10 @@ def read_artifact(directory: Path, relative: str | Path, *, limit: int | None = 
         flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
         descriptors.append(os.open(directory, flags))
         for part in relative.parts[:-1]:
-            descriptors.append(os.open(part, flags, dir_fd=descriptors[-1]))
-        fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptors[-1])
+            # Each segment is checked above and opened without following links, relative to its parent.
+            descriptors.append(os.open(part, flags, dir_fd=descriptors[-1]))  # NOSONAR - see above
+        # Checked above; opened without following links, relative to its pinned parent.
+        fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptors[-1])  # NOSONAR
         descriptors.append(fd)
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
@@ -57,7 +59,7 @@ def read_artifact(directory: Path, relative: str | Path, *, limit: int | None = 
     except FileNotFoundError:
         raise
     except OSError as exc:
-        logger.warning("unreadable artifact %s/%r: %s", directory, str(relative), exc)
+        logger.warning("unreadable artifact %s/%r: %s", directory, str(relative), exc)  # NOSONAR - quoted with %r
         raise
     finally:
         for descriptor in reversed(descriptors):

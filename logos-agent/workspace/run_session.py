@@ -36,6 +36,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1413,13 +1414,38 @@ def _pr_reviewers() -> list[str]:
     return [name.strip() for name in os.environ.get("LOGOS_SESSION_PR_REVIEWERS", "").split(",") if name.strip()]
 
 
+# The agent phase writes result.json; the finalizer, which holds the push
+# token, reads it. Bounded so a huge file cannot exhaust the finalizer.
+RESULT_FILE_MAX_BYTES = 1024 * 1024
+
+
+def _read_agent_file(path: Path, limit: int) -> str:
+    """Read an agent-written regular file without following a link it planted."""
+    # The agent controls the file, not its directory: the artefact mount is
+    # the runner's. O_NOFOLLOW refuses a link in its place.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # NOSONAR - fixed path under the artefact mount
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("not a regular file")
+        if info.st_size > limit:
+            raise OSError(f"larger than {limit} bytes")
+        data = os.read(fd, limit + 1)
+        if len(data) > limit:
+            raise OSError(f"larger than {limit} bytes")
+        return data.decode("utf-8")
+    finally:
+        os.close(fd)
+
+
 def run_ssh_trust() -> None:
     """Learn or verify host keys without mounting session-controlled files."""
     # Serialise first connections across sessions and runner processes. SSH
     # appends to this same inode; checkout helpers only get a read-only bind.
     with SSH_KNOWN_HOSTS.open("r+") as known_hosts:
         fcntl.flock(known_hosts, fcntl.LOCK_EX)
-        run(["git", "ls-remote", "--", require_env("LOGOS_REPO_URL"), "HEAD"], cwd=Path("/tmp"), quiet=True)
+        scratch = Path("/tmp")  # NOSONAR - the helper container's own private tmpfs
+        run(["git", "ls-remote", "--", require_env("LOGOS_REPO_URL"), "HEAD"], cwd=scratch, quiet=True)
 
 
 def run_prepare(result: Result) -> None:
@@ -1485,11 +1511,12 @@ def run_finalize(result: Result) -> None:
         log("no GitHub token provided; leaving changes uncommitted in the workspace")
         return
     path = Path(os.environ.get("LOGOS_ARTIFACT_DIR", "/artifacts")) / "result.json"
-    if path.is_file():
-        try:
-            result.data.update(json.loads(path.read_text()))
-        except Exception as exc:
-            log(f"ignoring unreadable result file from the agent phase: {exc}")
+    try:
+        result.data.update(json.loads(_read_agent_file(path, RESULT_FILE_MAX_BYTES)))
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log(f"ignoring unreadable result file from the agent phase: {exc}")
 
     count = commit_and_push(branch, task) if finalize_checkout(repo_url, base_branch, branch, token) else 0
     result.data["files_changed"] = count
