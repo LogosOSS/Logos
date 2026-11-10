@@ -1424,9 +1424,7 @@ def _local_batch_contract(content: bytes, json_body: Dict[str, Any]) -> str:
     for number, line in enumerate(parse_request_lines(content), start=1):
         reference = stateful_reference_field(line.get("body"))
         if reference is not None:
-            raise_openai_error(
-                400, f"Line {number}: {stateful_reference_detail(reference)}", code="invalid_batch_line"
-            )
+            raise_openai_error(400, f"Line {number}: {stateful_reference_detail(reference)}", code="invalid_batch_line")
         method = line.get("method")
         if method is None:
             raise_openai_error(

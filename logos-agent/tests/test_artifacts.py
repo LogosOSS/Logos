@@ -5,7 +5,6 @@ from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
-
 from app import analysis_ingest, artifacts, sessions
 
 

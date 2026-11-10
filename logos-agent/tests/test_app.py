@@ -14,10 +14,9 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from app import main
 from fastapi.routing import APIRoute
 from starlette.status import HTTP_204_NO_CONTENT
-
-from app import main
 
 
 @pytest.fixture(scope="module")
@@ -114,9 +113,8 @@ class TestScreenshotContainment:
     async def test_an_oversized_screenshot_is_not_served(self, monkeypatch, tmp_path):
         from dataclasses import replace
 
-        from fastapi import HTTPException
-
         from app import main
+        from fastapi import HTTPException
 
         self._patch_root(monkeypatch, tmp_path)
         monkeypatch.setattr(main, "settings", replace(main.settings, screenshot_max_bytes=4))
@@ -135,7 +133,6 @@ class TestScreenshotContainment:
         # any test that reads body_iterator by hand and still ship zero
         # bytes to the browser.
         import httpx
-
         from app.auth import require_agent_operator
 
         self._patch_root(monkeypatch, tmp_path)
@@ -162,9 +159,8 @@ class TestScreenshotContainment:
         # into runner space (its own /proc/self included): resolving such a
         # link as the trusted root would make every file under it pass the
         # containment check and be served.
-        from fastapi import HTTPException
-
         from app.main import get_screenshot
+        from fastapi import HTTPException
 
         self._patch_root(monkeypatch, tmp_path)
         outside = tmp_path / "outside"
@@ -184,9 +180,8 @@ class TestScreenshotContainment:
     async def test_a_symlinked_file_is_not_served(self, monkeypatch, tmp_path):
         # The same trick one level down: a link named like a screenshot,
         # into a file outside the session's artefact directory.
-        from fastapi import HTTPException
-
         from app.main import get_screenshot
+        from fastapi import HTTPException
 
         self._patch_root(monkeypatch, tmp_path)
         outside = tmp_path / "outside"
@@ -202,9 +197,8 @@ class TestScreenshotContainment:
         assert exc.value.status_code == 404
 
     async def test_a_dangling_symlink_file_is_not_served(self, monkeypatch, tmp_path):
-        from fastapi import HTTPException
-
         from app.main import get_screenshot
+        from fastapi import HTTPException
 
         self._patch_root(monkeypatch, tmp_path)
         directory = tmp_path / "7" / "screenshots"
@@ -217,9 +211,8 @@ class TestScreenshotContainment:
         assert exc.value.status_code == 404
 
     async def test_a_traversal_name_is_refused(self, monkeypatch, tmp_path):
-        from fastapi import HTTPException
-
         from app.main import get_screenshot
+        from fastapi import HTTPException
 
         self._patch_root(monkeypatch, tmp_path)
 
@@ -229,9 +222,8 @@ class TestScreenshotContainment:
         assert exc.value.status_code == 400
 
     async def test_a_missing_file_is_not_found(self, monkeypatch, tmp_path):
-        from fastapi import HTTPException
-
         from app.main import get_screenshot
+        from fastapi import HTTPException
 
         self._patch_root(monkeypatch, tmp_path)
         (tmp_path / "7" / "screenshots").mkdir(parents=True)

@@ -257,8 +257,9 @@ async def test_hello_without_actions_leaves_the_known_set_intact():
 
 @pytest.mark.asyncio
 async def test_closing_the_response_closes_the_worker_stream_at_once(monkeypatch):
-    import logos as main
     from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
+
+    import logos as main
 
     closed = asyncio.Event()
 
@@ -329,8 +330,9 @@ async def test_closing_the_response_closes_the_worker_stream_at_once(monkeypatch
 @pytest.mark.parametrize("disconnect_at", ["yield", "pending_read", "before_first_chunk"])
 async def test_an_abandoned_response_reaches_the_worker_as_a_cancellation(monkeypatch, disconnect_at):
     """Both closing at a yield and cancelling a pending read promptly abort the worker."""
-    import logos as main
     from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
+
+    import logos as main
 
     registry, websocket = _registry_with_session()
 
@@ -476,8 +478,9 @@ async def _run_streamer(
     chunks: list[bytes] | None = None,
     provider_response_calls: list | None = None,
 ):
-    import logos as main
     from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
+
+    import logos as main
 
     if chunks is None:
         chunks = [

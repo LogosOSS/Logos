@@ -128,8 +128,9 @@ def test_usage_is_retained_after_a_later_usage_free_chunk():
 async def test_cloud_response_settles_after_disconnect_using_provider_outcome(monkeypatch, outcome):
     from types import SimpleNamespace
 
-    import logos as main
     from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
+
+    import logos as main
 
     monkeypatch.setenv("LOGOS_STREAM_DRAIN_TIMEOUT_SECONDS", "0.05")
     released = asyncio.Event()

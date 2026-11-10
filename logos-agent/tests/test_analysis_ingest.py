@@ -8,7 +8,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
 from app import analysis_ingest, db
 
 

@@ -217,7 +217,10 @@ async def _run_line(line: Dict[str, Any], auth: AuthContext, headers: Dict[str, 
         # Internal to the audio upload path; a batch line has no form behind it.
         return _result_row(
             line,
-            {"status_code": 400, "data": {"error": {"message": f"Unsupported request field '{MULTIPART_PAYLOAD_KEY}'"}}},
+            {
+                "status_code": 400,
+                "data": {"error": {"message": f"Unsupported request field '{MULTIPART_PAYLOAD_KEY}'"}},
+            },
         )
 
     log_id = _open_line_log(auth, body)
