@@ -19,9 +19,7 @@ from logos.hf_reachability import _TIMEOUT_S, _new_client
 
 logger = logging.getLogger(__name__)
 
-_LICENSE_FILE_NAME = re.compile(
-    r"^(licen[cs]e|copying|community-license-agreement)(\.[a-z0-9]+)?$", re.IGNORECASE
-)
+_LICENSE_FILE_NAME = re.compile(r"^(licen[cs]e|copying|community-license-agreement)(\.[a-z0-9]+)?$", re.IGNORECASE)
 
 # License files live in a handful of conventional names; the repository's
 # tree is scanned for them rather than assuming one spelling.
@@ -65,17 +63,14 @@ async def _fetch(hf_repo_id: str, token: str | None) -> tuple[str | None, str | 
             license_file: str | None = None
             license_ref: str | None = None
             for ref in _DEFAULT_REFS:
-                tree = await client.get(
-                    f"{constants.ENDPOINT}/api/models/{hf_repo_id}/tree/{ref}", headers=headers
-                )
+                tree = await client.get(f"{constants.ENDPOINT}/api/models/{hf_repo_id}/tree/{ref}", headers=headers)
                 if tree.status_code == 404:
                     continue  # not this repository's default branch
                 hf_raise_for_status(tree)
                 candidates = [
                     entry["path"]
                     for entry in tree.json()
-                    if entry.get("type") == "file"
-                    and _LICENSE_FILE_NAME.match(entry["path"].rsplit("/", 1)[-1])
+                    if entry.get("type") == "file" and _LICENSE_FILE_NAME.match(entry["path"].rsplit("/", 1)[-1])
                 ]
                 if candidates:
                     license_file = min(candidates, key=_license_file_rank)

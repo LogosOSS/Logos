@@ -52,12 +52,15 @@ def _hub_with(hub, model_info, tree_by_ref, files):
 
 
 async def test_license_file_and_card_license(hub):
-    _hub_with(hub,
+    _hub_with(
+        hub,
         {"cardData": {"license": "apache-2.0"}},
-        {"main": [
-            {"type": "file", "path": "LICENSE.md"},
-            {"type": "file", "path": "model.safetensors"},
-        ]},
+        {
+            "main": [
+                {"type": "file", "path": "LICENSE.md"},
+                {"type": "file", "path": "model.safetensors"},
+            ]
+        },
         {"LICENSE.md": "Apache License 2.0 ..."},
     )
 
@@ -98,12 +101,15 @@ async def test_lfs_license_file_follows_the_cdn_redirect(hub):
 
 
 async def test_provider_specific_license_file_names_are_found(hub):
-    _hub_with(hub,
+    _hub_with(
+        hub,
         {"cardData": {"license": "llama3_1"}},
-        {"main": [
-            {"type": "file", "path": "model.safetensors"},
-            {"type": "file", "path": "community-license-agreement.md"},
-        ]},
+        {
+            "main": [
+                {"type": "file", "path": "model.safetensors"},
+                {"type": "file", "path": "community-license-agreement.md"},
+            ]
+        },
         {"community-license-agreement.md": "Llama 3.1 Community License ..."},
     )
 
@@ -115,13 +121,16 @@ async def test_provider_specific_license_file_names_are_found(hub):
 
 
 async def test_license_id_wins_when_several_files_match(hub):
-    _hub_with(hub,
+    _hub_with(
+        hub,
         {"cardData": {"license": "mit"}},
-        {"main": [
-            {"type": "file", "path": "LICENSE.txt"},
-            {"type": "file", "path": "COPYING"},
-            {"type": "file", "path": "LICENCES/extra.md"},
-        ]},
+        {
+            "main": [
+                {"type": "file", "path": "LICENSE.txt"},
+                {"type": "file", "path": "COPYING"},
+                {"type": "file", "path": "LICENCES/extra.md"},
+            ]
+        },
         {"LICENSE.txt": "MIT ..."},
     )
 
@@ -163,7 +172,8 @@ async def test_multiple_declared_licenses_become_an_or_expression(hub):
 
 
 async def test_master_is_tried_when_main_is_missing(hub):
-    _hub_with(hub,
+    _hub_with(
+        hub,
         {"cardData": {"license": "bllm"}},
         {"master": [{"type": "file", "path": "LICENSE"}]},
         {"LICENSE": "BigScience License ..."},
