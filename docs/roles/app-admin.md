@@ -27,7 +27,8 @@ delete).
 
 This page shows the users of the deployment, with their role, teams and
 status. An App Admin can create users and assign them to teams. An App Admin
-can create only App Developers, and no higher roles.
+can create only App Developers, and no higher roles. The name and email of an
+existing user can only be changed by a Logos Admin.
 
 ![Users page](/img/roles/app-admin-user-management.png)
 
