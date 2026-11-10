@@ -525,6 +525,41 @@ class TestFinalizer:
         assert parent == base
         assert not marker.exists(), "a planted hook or credential helper ran in the finalizer"
 
+    @pytest.mark.parametrize("workflow", [".github/workflows/\u00e4.yml", ".github/workflows/plain.yml"])
+    def test_a_workflow_file_with_any_name_is_refused_before_the_commit(self, tmp_path, monkeypatch, workflow):
+        # git status quotes a name like ".github/workflows/\u00e4.yml"; the check
+        # must see the path git actually stages, whatever its characters.
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        origin = _make_origin(workspace)
+        checkout, home, marker = _plant_agent_phase(workspace, origin, self.BRANCH)
+        _patch_workspace(monkeypatch, workspace)
+        monkeypatch.setenv("LOGOS_AGENT_WORKFLOW_CHANGES", "deny")
+        assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
+        (checkout / workflow).parent.mkdir(parents=True, exist_ok=True)
+        (checkout / workflow).write_text("on: push\n")
+
+        with pytest.raises(RuntimeError, match="CI workflow files"):
+            commit_and_push(self.BRANCH, "a long enough task description")
+        listed = _git("--git-dir", str(origin), "branch", "--list", self.BRANCH, cwd=workspace).stdout
+        assert listed.strip() == ""
+
+    def test_moving_a_file_into_the_workflows_directory_is_refused(self, tmp_path, monkeypatch):
+        # git status shows a move as "old -> new", which hides the new path.
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        origin = _make_origin(workspace)
+        checkout, home, marker = _plant_agent_phase(workspace, origin, self.BRANCH)
+        _patch_workspace(monkeypatch, workspace)
+        monkeypatch.setenv("LOGOS_AGENT_WORKFLOW_CHANGES", "deny")
+        assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
+        tracked = _git("ls-files", cwd=checkout).stdout.split()[0]
+        (checkout / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+        _git("mv", tracked, ".github/workflows/moved.yml", cwd=checkout)
+
+        with pytest.raises(RuntimeError, match="CI workflow files"):
+            commit_and_push(self.BRANCH, "a long enough task description")
+
     def test_a_retried_session_pushes_against_the_base_not_the_previous_tip(self, tmp_path, monkeypatch):
         # The remote branch exists from an earlier run of the same session.
         # Re-finalizing must not build on that tip: the diff belongs to the

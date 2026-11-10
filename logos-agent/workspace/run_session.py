@@ -1146,6 +1146,18 @@ def changed_files() -> list[str]:
     return [line[3:] for line in process.stdout.splitlines() if line.strip()]
 
 
+def staged_files() -> list[str]:
+    """Every path the next commit adds, changes or removes, exactly as git stores it.
+
+    ``-z`` prints names unquoted and NUL-separated, so unusual characters
+    cannot disguise a path, and ``--no-renames`` lists both sides of a move.
+    """
+    process = run(
+        ["git", "diff", "--cached", "--name-only", "-z", "--no-renames"], cwd=CHECKOUT, check=True, quiet=True
+    )
+    return [path for path in process.stdout.split("\0") if path]
+
+
 def _ref_sha(*refs: str) -> str | None:
     """The commit a ref names, or None when none of them resolves.
 
@@ -1194,14 +1206,16 @@ def _refuse_workflow_changes(files: list[str]) -> None:
 
 
 def commit_and_push(branch: str, task: str) -> int:
-    files = changed_files()
-    if not files:
+    if not changed_files():
         log("agent produced no changes; nothing to commit")
         return 0
+    run(["git", "add", "-A"], cwd=CHECKOUT)
+    # Checked on what is actually staged, not on the human-readable status:
+    # that output quotes unusual names and shows a move as "old -> new".
+    files = staged_files()
     _refuse_workflow_changes(files)
 
     log(f"committing {len(files)} changed file(s)")
-    run(["git", "add", "-A"], cwd=CHECKOUT)
     # One line, and nothing else. What the change is belongs in the subject;
     # why it was made belongs in the pull request, where people read it.
     run(["git", "commit", "-m", _commit_subject(task)], cwd=CHECKOUT)
