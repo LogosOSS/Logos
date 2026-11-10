@@ -2453,26 +2453,29 @@ class LogosBridgeClient:
         except Exception:  # noqa: BLE001
             logger.exception("[Calibration] Sharded conversion errored for %s", model_name)
 
-    # vLLM endpoints that must never be reachable through proxied inference
-    # requests.  These are internal management endpoints (sleep/wake, cache
-    # reset, weight updates, etc.) that should only be triggered by the
-    # lane manager or capacity planner, not by external API clients.
-    _BLOCKED_REQUEST_PATHS: ClassVar[frozenset[str]] = frozenset(
+    # Only inference operations may be relayed to a lane. Management endpoints
+    # remain accessible exclusively through the worker's control plane.
+    _ALLOWED_REQUEST_PATHS: ClassVar[frozenset[str]] = frozenset(
         {
-            "sleep",
-            "wake_up",
-            "is_sleeping",
-            "pause",
-            "resume",
-            "is_paused",
-            "reset_prefix_cache",
-            "reset_mm_cache",
-            "reset_encoder_cache",
-            "update_weights",
-            "init_weight_transfer_engine",
-            "scale_elastic_ep",
-            "is_scaling_elastic_ep",
-            "collective_rpc",
+            "v1/chat/completions",
+            "v1/completions",
+            "v1/embeddings",
+            "v1/responses",
+            "v1/messages",
+            "v1/audio/transcriptions",
+            "v1/audio/translations",
+            "v1/audio/speech",
+            "v1/models",
+            "v1/rerank",
+            "v1/score",
+            "v2/embed",
+            "v2/rerank",
+            "pooling",
+            "score",
+            "rerank",
+            "classify",
+            "tokenize",
+            "detokenize",
         }
     )
 
@@ -2482,16 +2485,17 @@ class LogosBridgeClient:
         payload: dict[str, Any] | None = None,
         request_path: str | None = None,
     ) -> str:
-        # If the caller forwarded the original API path (e.g. "v1/embeddings",
-        # "v2/embed", "tokenize"), use it directly so vLLM decides what it supports.
-        if request_path:
-            endpoint = request_path.strip("/")
-            # Block internal vLLM management endpoints from being reached
-            # through proxied inference requests.
-            if endpoint in LogosBridgeClient._BLOCKED_REQUEST_PATHS:
-                raise ValueError(f"Request path '/{endpoint}' is not allowed through the inference proxy")
-        else:
-            endpoint = str(lane_status.get("inference_endpoint") or "/v1/chat/completions").lstrip("/")
+        if not request_path:
+            request_path = str(lane_status.get("inference_endpoint") or "/v1/chat/completions")
+        # Accept one leading path separator, but reject ambiguous paths before
+        # httpx or the lane server can normalize or decode them.
+        endpoint = request_path.removeprefix("/")
+        if (
+            any(segment in {"", ".", ".."} for segment in endpoint.split("/"))
+            or any(char in "\\%" or ord(char) < 32 or 127 <= ord(char) <= 159 for char in endpoint)
+            or endpoint not in LogosBridgeClient._ALLOWED_REQUEST_PATHS
+        ):
+            raise ValueError(f"Request path '/{endpoint}' is not allowed through the inference proxy")
         return f"http://127.0.0.1:{lane_status['port']}/{endpoint}"
 
     async def _execute_infer_command(self, params: dict[str, Any]) -> dict[str, Any]:
