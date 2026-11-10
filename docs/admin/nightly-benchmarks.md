@@ -245,8 +245,10 @@ An older throughput record alone cannot trigger adoption.
 If no eligible configuration improves throughput, then the original production settings return.
 The fixed reference remains unchanged after adoption. The next round measures the adopted settings first.
 
-The recovery journal records adoption intent before the worker configuration changes.
-The worker must confirm the configuration, restart and model readiness before production traffic resumes.
+The PostgreSQL recovery journal records adoption intent before Logos changes the live lane.
+After the worker confirms the lane is ready, Logos stores the adopted benchmark and its parameters in `nightly_benchmarks.optimizer.production_adoption`.
+Automatic adoption applies to the running lane. Central node model configuration is managed separately.
+Logos allows up to 15 minutes for fresh readiness telemetry after a restart command succeeds.
 If adoption fails, then Logos records a separate notification for Logos Admins and tries to restore the original configuration.
 The notification links to the eligible benchmark and shows the parameter values, throughput gain, and failure reason.
 If rollback fails, then the worker remains reserved until recovery succeeds.

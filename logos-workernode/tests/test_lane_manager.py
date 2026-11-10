@@ -4018,6 +4018,7 @@ async def test_add_lane_reserves_model_for_the_startup_window(monkeypatch) -> No
     (which does not take the lane-manager lock) must see it as protected even
     though the lane is not in _handles yet."""
     seen: dict[str, frozenset[str]] = {}
+    seen_transfers = []
 
     class ReservingHandle(_StubHandle):
         def __init__(self, lane_config: LaneConfig) -> None:
@@ -4028,15 +4029,21 @@ async def test_add_lane_reserves_model_for_the_startup_window(monkeypatch) -> No
         async def init(self) -> None:
             pass
 
+        def status(self) -> ProcessStatus:
+            return ProcessStatus(state=ProcessState.RUNNING, pid=123)
+
         async def spawn(self, _lc: LaneConfig) -> ProcessStatus:
             # The spawn is reading the (possibly tmpfs) model directory —
             # the reservation must be live while the lane is unregistered.
             seen["during_spawn"] = manager.starting_models()  # noqa: F821
             assert "org/new" not in manager.lane_ids  # noqa: F821
+            seen_transfers.extend(await manager.lane_transfer_statuses())
             return ProcessStatus(state=ProcessState.RUNNING)
 
     manager = LaneManager(WorkerConfig(), lane_port_start=15440, lane_port_end=15450)
     monkeypatch.setattr(manager, "_wait_for_vram_headroom", AsyncMock())
+    monkeypatch.setattr(manager, "_estimate_lane_vram_mb", lambda _: 8192)
+    monkeypatch.setattr(manager, "_query_process_vram_map", AsyncMock(return_value={123: 2048}))
     monkeypatch.setattr(
         "logos_worker_node.lane_manager._create_handle",
         lambda *a, **k: ReservingHandle(a[4]),
@@ -4046,8 +4053,36 @@ async def test_add_lane_reserves_model_for_the_startup_window(monkeypatch) -> No
     await manager._add_lane_unlocked("org_new", lane)  # noqa: SLF001
 
     assert seen["during_spawn"] == frozenset({"org/new"})
+    assert len(seen_transfers) == 1
+    assert seen_transfers[0].operation == "loading"
+    assert seen_transfers[0].resident_vram_mb == 2048
+    assert seen_transfers[0].reference_vram_mb == 8192
+    assert await manager.lane_transfer_statuses() == []
     # Registration settled the model's fate — the reservation is gone.
     assert manager.starting_models() == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_unloading_reports_remaining_vram_even_after_detaching(monkeypatch) -> None:
+    handle = _StubHandle(LaneConfig(model="org/model", vllm=True))
+    handle.status = lambda: ProcessStatus(state=ProcessState.RUNNING, pid=123)
+    manager = _manager_with_handles({"lane": handle})
+    monkeypatch.setattr(manager, "_query_process_vram_map", AsyncMock(side_effect=[{123: 8192}, {123: 2048}, {}]))
+
+    async def unload(lane_id):
+        (initial,) = await manager.lane_transfer_statuses()
+        assert initial.operation == "unloading"
+        assert initial.resident_vram_mb == initial.reference_vram_mb == 8192
+        manager._handles.pop(lane_id)  # noqa: SLF001
+        (remaining,) = await manager.lane_transfer_statuses()
+        assert remaining.resident_vram_mb == 2048
+        assert remaining.reference_vram_mb == 8192
+        (unknown,) = await manager.lane_transfer_statuses()
+        assert unknown.resident_vram_mb is None
+
+    monkeypatch.setattr(manager, "_remove_lane_drained", unload)
+    await manager.remove_lane("lane")
+    assert await manager.lane_transfer_statuses() == []
 
 
 @pytest.mark.asyncio

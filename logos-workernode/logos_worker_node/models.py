@@ -987,6 +987,14 @@ class LaneStatus(BaseModel):
     last_wake_from_sleep_s: float | None = None
 
 
+class LaneTransferStatus(BaseModel):
+    lane_id: str
+    model: str
+    operation: Literal["loading", "unloading"]
+    resident_vram_mb: float | None = None
+    reference_vram_mb: float | None = None
+
+
 class WorkerRuntimeStatus(BaseModel):
     supports_benchmark_restart: bool = True
     worker_name: str
@@ -1012,6 +1020,7 @@ class WorkerRuntimeStatus(BaseModel):
     disk: DiskSummary | None = None
     capacity: CapacitySummary
     lanes: list[LaneStatus] = Field(default_factory=list)
+    lane_transfers: list[LaneTransferStatus] = Field(default_factory=list)
     model_profiles: dict[str, dict[str, Any]] | None = None
     max_lanes: int = 0  # 0 = unlimited
     # Operator-declared GPU capability weight (default 100). Used by the

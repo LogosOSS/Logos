@@ -500,6 +500,21 @@ def _build_logosnode_scheduler_signals(runtime: Dict[str, Any]) -> Dict[str, Any
     provider_signals["gpu_faults"] = (
         [str(fault) for fault in raw_gpu_faults if fault] if isinstance(raw_gpu_faults, list) else []
     )
+    transfers = runtime.get("lane_transfers")
+    if isinstance(transfers, list):
+        provider_signals["lane_transfers"] = [
+            {
+                "lane_id": transfer["lane_id"],
+                "model": str(transfer.get("model") or ""),
+                "operation": transfer["operation"],
+                "resident_vram_mb": _safe_float(transfer.get("resident_vram_mb")),
+                "reference_vram_mb": _safe_float(transfer.get("reference_vram_mb")),
+            }
+            for transfer in transfers
+            if isinstance(transfer, dict)
+            and isinstance(transfer.get("lane_id"), str)
+            and transfer.get("operation") in ("loading", "unloading")
+        ]
 
     raw_device_list = devices.get("devices") or []
     provider_signals["devices"] = [

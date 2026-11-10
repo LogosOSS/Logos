@@ -28,7 +28,7 @@ from logos.dbutils.dbrequest import InternalBenchmarkRequest
 from logos.maintenance_window import maintenance_node_limit
 
 logger = logging.getLogger(__name__)
-RESTORE_CONFIRMATION_SECONDS = 30
+RESTORE_CONFIRMATION_SECONDS = 15 * 60
 
 
 class NightlyScheduler:
@@ -219,6 +219,8 @@ class NightlyScheduler:
         try:
             async with asyncio.timeout(RESTORE_CONFIRMATION_SECONDS):
                 while True:
+                    if not LEASE_CHECK.get()() or not self.registry.is_provider_online(provider_id):
+                        raise RuntimeError(f"Lost the worker or maintenance lock while restoring lane {lane_id}")
                     if self.registry.reflects_command(provider_id, answer):
                         snapshot = self.registry.peek_runtime_snapshot(provider_id) or {}
                         lanes = (snapshot.get("runtime") or {}).get("lanes") or []
@@ -233,7 +235,7 @@ class NightlyScheduler:
                                 f"transition={lane.get('transition')}, active_requests={lane.get('active_requests')}"
                             )
                         )
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(1)
         except TimeoutError as exc:
             raise RuntimeError(
                 f"Worker {provider_id} applied the configuration for lane {lane_id}, "

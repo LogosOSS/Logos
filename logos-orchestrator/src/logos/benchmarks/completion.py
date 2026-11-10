@@ -90,7 +90,7 @@ def notification_message(payload):
     if payload.get("recovery_retry_limit_reached"):
         lines.append("The nightly retry limit was reached.")
     if adoption := payload.get("production_adoption"):
-        lines.append(f"Worker confirmed improved configuration #{adoption['benchmark_id']}.")
+        lines.append(f"Worker confirmed configuration from benchmark #{adoption['benchmark_id']} on the running lane.")
     else:
         lines.append("Production settings restored.")
     if measurement := description(payload).strip():
