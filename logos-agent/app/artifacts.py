@@ -25,6 +25,9 @@ def read_artifact(directory: Path, relative: str | Path, *, limit: int | None = 
     try:
         if relative.is_absolute() or ".." in relative.parts or not relative.parts:
             raise OSError("artifact path must stay within its session directory")
+        root = os.path.realpath(directory)
+        if os.path.commonpath([root, os.path.realpath(os.path.join(root, relative))]) != root:
+            raise OSError("artifact path must stay within its session directory")
         if limit < 0:
             raise OSError("artifact size limit must not be negative")
         flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
@@ -54,7 +57,7 @@ def read_artifact(directory: Path, relative: str | Path, *, limit: int | None = 
     except FileNotFoundError:
         raise
     except OSError as exc:
-        logger.warning("unreadable artifact %s/%s: %s", directory, relative, exc)
+        logger.warning("unreadable artifact %s/%r: %s", directory, str(relative), exc)
         raise
     finally:
         for descriptor in reversed(descriptors):
@@ -66,5 +69,5 @@ def read_artifact_text(directory: Path, relative: str | Path, *, limit: int | No
     try:
         return read_artifact(directory, relative, limit=limit).decode("utf-8")
     except UnicodeDecodeError as exc:
-        logger.warning("unreadable UTF-8 artifact %s/%s", directory, relative)
+        logger.warning("unreadable UTF-8 artifact %s/%r", directory, str(relative))
         raise OSError("artifact is not valid UTF-8") from exc
