@@ -240,6 +240,10 @@ describe('the gated model flag', () => {
       expect(document.body.textContent).toContain(
         "You need to accept this gated model's license agreement on Hugging Face",
       );
+      // Acceptance is an access request, not an instant grant — say so.
+      expect(document.body.textContent).toContain(
+        "The repository owner must still approve the access request.",
+      );
       const confirm = [...document.body.querySelectorAll('button')].find(
         (b) => b.textContent?.trim() === 'Go to HuggingFace',
       );

@@ -162,5 +162,11 @@
     icon="pi-exclamation-triangle"
     confirmLabel="Go to HuggingFace"
     [danger]="false"
-  ></app-modal-confirm>
+  >
+    <!-- Acceptance only submits an access request; the flag clears when a
+         recheck sees the Hub actually grant it (after the owner approves). -->
+    <p modal-details class="license-hint">
+      The repository owner must still approve the access request.
+    </p>
+  </app-modal-confirm>
 </section>
