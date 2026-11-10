@@ -636,6 +636,29 @@ class ModelRequestControllerTest {
     }
 
     @Test
+    void vote_storesALicenseExpressionLongerThanSixtyFourCharacters() throws Exception {
+        // The Hub's card can declare OR-joined expressions of any length; the
+        // column must store the expression intact, not truncate or reject it.
+        String expression = "mit OR apache-2.0 OR bsl-1.0 OR ";
+        while (expression.length() < 80) {
+            expression += "mit OR ";
+        }
+        Mockito.when(hfLicenseClient.fetch("openai/gpt-5"))
+            .thenReturn(new HfLicenseResult(expression, null, null, null));
+
+        mvc.perform(post("/logosdb/add_model_request")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"name\": \"openai/gpt-5\", \"team_id\": 2001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.license_status").value("available"));
+
+        assertThat(jdbc.queryForObject(
+            "SELECT license_id FROM requested_models WHERE name = 'openai/gpt-5'", String.class))
+           .isEqualTo(expression);
+    }
+
+    @Test
     void vote_leavesTheLicensePendingForAGatedModel() throws Exception {
         // The token cannot read a gated repository yet, so there is nothing to
         // fetch: the row stays pending until it unflags.

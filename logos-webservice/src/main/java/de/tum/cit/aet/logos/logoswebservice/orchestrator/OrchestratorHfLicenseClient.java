@@ -42,7 +42,7 @@ public class OrchestratorHfLicenseClient {
     @Value("${logos.orchestrator.internal-secret:}")
     private String internalSecret;
 
-    public OrchestratorHfLicenseClient(@Qualifier("hfReachabilityRestTemplate") RestTemplate restTemplate) {
+    public OrchestratorHfLicenseClient(@Qualifier("hfLicenseRestTemplate") RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
 

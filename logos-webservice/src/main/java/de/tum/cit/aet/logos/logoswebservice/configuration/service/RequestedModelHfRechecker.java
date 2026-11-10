@@ -13,7 +13,9 @@ import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabil
 /**
  * Keeps the Hugging Face state of the registry rows current.
  *
- * <p>Runs at application start and then hourly, in three passes:
+ * <p>Runs at application start and then hourly — on its own single-thread
+ * scheduler, so the blocking remote scans never hold up the other scheduled
+ * jobs, and at most one pass is in flight — in three passes:
  *
  * <ul>
  *   <li>rows whose {@code is_gated} is still null (they predate the precheck
@@ -60,7 +62,7 @@ public class RequestedModelHfRechecker {
      * trips, but they only cover the (small) set of pending, flagged and
      * unlicensed rows, at most once an hour.
      */
-    @Scheduled(initialDelay = 0, fixedDelay = 3_600_000)
+    @Scheduled(initialDelay = 0, fixedDelay = 3_600_000, scheduler = "hfRecheckScheduler")
     public void recheck() {
         recheckUnverified();
         int cleared = requestedModelService.recheckGatedModels();

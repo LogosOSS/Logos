@@ -28,7 +28,9 @@
             <not><columnExists tableName="requested_models" columnName="license_text"/></not>
         </preConditions>
         <addColumn tableName="requested_models">
-            <column name="license_id" type="VARCHAR(64)">
+            <!-- TEXT, not a bounded varchar: the Hub's card can declare
+                 OR-joined expressions of any length. -->
+            <column name="license_id" type="TEXT">
                 <constraints nullable="true"/>
             </column>
             <column name="license_text" type="TEXT">
