@@ -786,9 +786,19 @@ class _FakeDB:
         return 0
 
 
-def _patch_env(monkeypatch, db, upstream, auth=None):
-    """Point the Batch API at a fake DB, a canned upstream and a fixed key."""
+def _patch_env(monkeypatch, db, upstream, auth=None, verify_input=False):
+    """Point the Batch API at a fake DB, a canned upstream and a fixed key.
+
+    The re-check of provider-held input files at batch creation downloads the
+    file; tests about other parts of the flow skip it unless they ask for it.
+    """
     seen = []
+    if not verify_input:
+
+        async def _skip_verification(provider, input_file_id):
+            return None
+
+        monkeypatch.setattr(batch_api, "_verify_provider_input_file", _skip_verification)
 
     def handler(request):
         seen.append(request)
@@ -3941,3 +3951,41 @@ def test_a_provider_batch_checks_the_budget_of_its_provider():
     with pytest.raises(HTTPException) as exc:
         batch_api._check_batch_budget(_BudgetDB(), auth, {"execution": "provider", "provider_id": 4})
     assert exc.value.status_code == 402
+
+
+def _creation_against(monkeypatch, content, status=200):
+    db = _FakeDB(
+        [OPENAI_PROVIDER],
+        OPENAI_DEPLOYMENTS,
+        owned={("file", "file-own"): _remote(5, OWN_TEAM)},
+    )
+
+    def upstream(request):
+        if request.method == "GET" and request.url.path.endswith("/files/file-own/content"):
+            return httpx.Response(status, content=content)
+        return httpx.Response(200, json={"id": "batch_1", "status": "validating", "input_file_id": "file-own"})
+
+    seen = _patch_env(monkeypatch, db, upstream, verify_input=True)
+    body = {"input_file_id": "file-own", "endpoint": "/v1/responses", "completion_window": "24h"}
+    return client.post("/v1/batches", json=body), seen
+
+
+def test_an_older_provider_file_with_a_stateful_reference_is_refused_at_creation(monkeypatch):
+    # Uploaded before lines were checked: the creation must not run it on the shared account.
+    line = _line(url="/v1/responses", body={"model": "gpt-4.1", "previous_response_id": "resp_other_team"})
+    resp, seen = _creation_against(monkeypatch, _jsonl(line))
+    assert resp.status_code == 400
+    assert [request.method for request in seen] == ["GET"]
+
+
+def test_a_clean_provider_file_is_handed_over_after_the_check(monkeypatch):
+    line = _line(url="/v1/responses", body={"model": "gpt-4.1", "input": "hi"})
+    resp, seen = _creation_against(monkeypatch, _jsonl(line))
+    assert resp.status_code == 200
+    assert [request.method for request in seen] == ["GET", "POST"]
+
+
+def test_an_unreadable_provider_file_is_not_handed_over(monkeypatch):
+    resp, seen = _creation_against(monkeypatch, b"", status=404)
+    assert resp.status_code == 502
+    assert [request.method for request in seen] == ["GET"]
