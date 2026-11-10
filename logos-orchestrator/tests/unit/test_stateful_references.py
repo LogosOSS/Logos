@@ -17,3 +17,15 @@ def test_reference_is_rejected(field):
 def test_stateless_request_and_explicit_null_pass():
     reject_stateful_references({"model": "gpt-5", "previous_response_id": None, "input": "hi"})
     assert stateful_reference_field({"model": "gpt-5"}) is None
+
+
+def test_stored_item_reference_in_input_is_rejected():
+    body = {"model": "gpt-5", "input": [{"type": "item_reference", "id": "msg_other_team"}]}
+    with pytest.raises(HTTPException) as exc:
+        reject_stateful_references(body)
+    assert exc.value.status_code == 400
+    assert "item_reference" in exc.value.detail
+
+
+def test_inline_input_items_pass():
+    reject_stateful_references({"model": "gpt-5", "input": [{"type": "message", "role": "user", "content": "hi"}]})

@@ -250,11 +250,25 @@ public class InferenceGatewayController {
         for (String field : STATEFUL_REFERENCE_FIELDS) {
             JsonNode value = root.get(field);
             if (value != null && !value.isNull()) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "'" + field
-                    + "' is not supported: Logos does not keep conversation state at the provider. "
-                    + "Send the full conversation in 'input' instead.");
+                throw statefulReferenceRejected("'" + field + "'");
             }
         }
+        // An input item of this type loads a stored item by its ID instead of
+        // carrying the content, so it reaches provider state in the same way.
+        JsonNode input = root.get("input");
+        if (input != null && input.isArray()) {
+            for (JsonNode item : input) {
+                if (item.isObject() && "item_reference".equals(item.path("type").asText(null))) {
+                    throw statefulReferenceRejected("An input item of type 'item_reference'");
+                }
+            }
+        }
+    }
+
+    private static ResponseStatusException statefulReferenceRejected(String what) {
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST, what
+            + " is not supported: Logos does not keep conversation state at the provider. "
+            + "Send the full conversation in 'input' instead.");
     }
 
     private static String extractModelName(JsonNode root) {

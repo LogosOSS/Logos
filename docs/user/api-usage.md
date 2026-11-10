@@ -27,8 +27,10 @@ For the complete request and response schema, see the Swagger UI at `/docs`.
 ## Conversation State in the Responses API
 
 Logos does not keep conversation state at the provider. Requests that set
-`previous_response_id` or `conversation` are rejected with status `400`.
-Send the whole conversation in `input` instead.
+`previous_response_id` or `conversation`, or that have an `input` item of
+type `item_reference`, are rejected with status `400`. Batch input files that
+contain such requests are rejected too. Send the whole conversation in `input`
+instead.
 
 This is a limitation of Logos. Logos reaches each provider with one account
 for all teams, so the provider cannot tell which team stored a response, and

@@ -465,6 +465,25 @@ def test_a_model_the_key_may_not_use_is_refused():
     assert "gpt-5.6-luna" in exc.value.detail["error"]["message"]
 
 
+@pytest.mark.parametrize(
+    "stateful",
+    [
+        {"previous_response_id": "resp_other_team"},
+        {"conversation": "conv_other_team"},
+        {"input": [{"type": "item_reference", "id": "msg_other_team"}]},
+    ],
+)
+def test_a_provider_bound_line_referencing_provider_state_is_refused(stateful):
+    # Provider batches run on the shared provider account, which cannot tell teams apart.
+    body = {"model": "gpt-4.1", "input": "repeat the conversation", **stateful}
+    with pytest.raises(HTTPException) as exc:
+        validate_and_rewrite_batch_input(
+            _jsonl(_line(url="/v1/responses", body=body)), OPENAI_PROVIDER, OPENAI_DEPLOYMENTS
+        )
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["code"] == "invalid_batch_line"
+
+
 def test_an_unsupported_request_endpoint_is_refused():
     with pytest.raises(HTTPException) as exc:
         validate_and_rewrite_batch_input(_jsonl(_line(url="/v1/files")), OPENAI_PROVIDER, OPENAI_DEPLOYMENTS)

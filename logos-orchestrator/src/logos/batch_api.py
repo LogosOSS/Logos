@@ -608,6 +608,9 @@ def validate_and_rewrite_batch_input(
             raise_openai_error(
                 400, f"Line {number} of the batch file has no request 'body'.", code="invalid_batch_line"
             )
+        reference = stateful_reference_field(body)
+        if reference is not None:
+            raise_openai_error(400, f"Line {number}: {stateful_reference_detail(reference)}", code="invalid_batch_line")
         model = body.get("model")
         if not isinstance(model, str) or not model:
             raise_openai_error(400, f"Line {number} of the batch file names no model.", code="invalid_batch_line")

@@ -29,6 +29,20 @@ class GatewayStatefulReferenceTest {
     }
 
     @Test
+    void storedItemReferenceInInputIsRejected() throws Exception {
+        var root = mapper.readTree("{\"model\":\"gpt-5\",\"input\":[{\"type\":\"item_reference\",\"id\":\"msg_other\"}]}");
+        assertThatThrownBy(() -> InferenceGatewayController.rejectStatefulReferences(root))
+            .isInstanceOf(ResponseStatusException.class)
+            .hasMessageContaining("item_reference");
+    }
+
+    @Test
+    void inlineInputItemsPass() throws Exception {
+        var root = mapper.readTree("{\"model\":\"gpt-5\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"hi\"}]}");
+        assertThatCode(() -> InferenceGatewayController.rejectStatefulReferences(root)).doesNotThrowAnyException();
+    }
+
+    @Test
     void statelessAndExplicitNullReferencesPass() throws Exception {
         var root = mapper.readTree("{\"model\":\"gpt-5\",\"previous_response_id\":null,\"input\":\"hi\"}");
         assertThatCode(() -> InferenceGatewayController.rejectStatefulReferences(root)).doesNotThrowAnyException();

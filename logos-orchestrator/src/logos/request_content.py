@@ -60,11 +60,20 @@ def reject_client_multipart_marker(body: Any) -> None:
 STATEFUL_REFERENCE_FIELDS = ("previous_response_id", "conversation")
 
 
+# An input item of this type loads a stored item by its ID instead of carrying
+# the content, so it reaches provider state in the same way.
+STATEFUL_INPUT_ITEM_TYPE = "item_reference"
+
+
 def stateful_reference_field(body: Any) -> Optional[str]:
     """The first provider-state reference a request body sets, if any."""
     if not isinstance(body, dict):
         return None
-    return next((name for name in STATEFUL_REFERENCE_FIELDS if body.get(name) is not None), None)
+    field = next((name for name in STATEFUL_REFERENCE_FIELDS if body.get(name) is not None), None)
+    if field is None and isinstance(body.get("input"), list):
+        if any(isinstance(item, dict) and item.get("type") == STATEFUL_INPUT_ITEM_TYPE for item in body["input"]):
+            field = f"input item of type {STATEFUL_INPUT_ITEM_TYPE}"
+    return field
 
 
 def stateful_reference_detail(field: str) -> str:
