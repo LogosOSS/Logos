@@ -40,6 +40,18 @@ class SecurityConfigCorsTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"logos-context", "logos_context"})
+    void inferencePreflightAllowsContextHeaderSpellings(String header) throws IOException {
+        // Browser clients name their answer-reuse context with this header.
+        for (String path : new String[] {"/v1/chat/completions", "/openai/v1/chat/completions", "/jobs"}) {
+            MockHttpServletResponse response = preflight(path, header);
+            assertThat(response.getStatus()).isEqualTo(200);
+            assertThat(response.getHeader(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS))
+                .containsIgnoringCase(header);
+        }
+    }
+
     @Test
     void inferencePreflightRejectsDisallowedHeader() throws IOException {
         // Spring refuses the preflight when Access-Control-Request-Headers

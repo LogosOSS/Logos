@@ -30,6 +30,8 @@ sentence-transformers = "==5.7.0"
 torch = "==2.14.0"
 prometheus-client = "==0.21.1"
 python-multipart = "==0.0.32"
+# Vector similarity for answer reuse (logos.answer_reuse.matching).
+numpy = "==2.5.4"
 guidellm = {version = "==0.8.1", extras = ["recommended"]}
 
 # Security floors for packages that would otherwise only be transitive.

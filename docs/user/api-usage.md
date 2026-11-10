@@ -22,6 +22,33 @@ curl https://logos.aet.cit.tum.de/v1/chat/completions \
   -d '{"model":"your-model","stream":true,"messages":[{"role":"user","content":"Explain recursion."}]}'
 ```
 
+## Reusing answers to similar questions
+
+Logos can answer a chat-completions request with a stored answer to a similar
+earlier question, without calling a model. To opt in, name the context your
+questions belong to, such as a shop or a course, in the `logos-context` header:
+
+```bash
+curl https://logos.aet.cit.tum.de/v1/chat/completions \
+  -H "Authorization: ******" \
+  -H "Content-Type: application/json" \
+  -H "logos-context: shop-a" \
+  -d '{"model":"your-model","messages":[{"role":"user","content":"Where is my package?"}]}'
+```
+
+A stored answer is reused only when its question is very similar to yours and
+the most similar stored questions agree on what was asked. Answers are shared
+only between requests with the same context from API keys of the same team
+(or from the same key, if it belongs to no team).
+
+Reuse applies to non-streaming requests with exactly one user message (system
+messages are allowed) and no tools or response format. Other requests, and
+requests without the header, are handled as before.
+
+A reused answer reports `"model": "logos-answer-cache"`, zero `usage`, and the
+`X-Logos-Cache: hit` response header. The `logos.answer_reuse` object in the
+response names the stored answer and the model that originally wrote it.
+
 For the complete request and response schema, see the Swagger UI at `/docs`.
 
 ## Audio Transcription and Translation

@@ -130,6 +130,8 @@ public class SecurityConfig {
             "logos-key",
             "logos-logging",
             "logos_logging",
+            "logos-context",
+            "logos_context",
             "policy",
             "X-Request-ID",
             "X-Logos-Batch-Execution"

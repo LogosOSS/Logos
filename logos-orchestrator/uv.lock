@@ -5,10 +5,10 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin'",
     "python_full_version < '3.14' and sys_platform == 'win32'",
     "python_full_version < '3.14' and sys_platform == 'emscripten'",
     "python_full_version < '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'darwin'",
     "python_full_version < '3.14' and sys_platform == 'darwin'",
 ]
 
@@ -1324,6 +1324,7 @@ dependencies = [
     { name = "httpx" },
     { name = "httpx2" },
     { name = "msgpack" },
+    { name = "numpy" },
     { name = "openai" },
     { name = "pillow" },
     { name = "prometheus-client" },
@@ -1357,6 +1358,7 @@ requires-dist = [
     { name = "httpx", specifier = "==0.27.2" },
     { name = "httpx2", specifier = "==2.13.0" },
     { name = "msgpack", specifier = "==1.2.4" },
+    { name = "numpy", specifier = "==2.5.4" },
     { name = "openai", specifier = "==1.109.1" },
     { name = "pillow", specifier = "==13.0.0" },
     { name = "prometheus-client", specifier = "==0.21.1" },

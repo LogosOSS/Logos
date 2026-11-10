@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Answer reuse: stored answers for questions the orchestrator may answer
+         again without a model call.
+
+         Every entry belongs to one scope: the client-supplied logos-context
+         header combined with the owner of the API key (team:<id>:<context>,
+         or key:<id>:<context> for keys without a team). Lookups only ever
+         compare a question with entries of the same scope, so two
+         applications, courses or shops never see each other's answers.
+
+         The embedding is the normalized all-MiniLM-L6-v2 vector (384 floats)
+         of question_normalized, encoded with the "query:" prefix exactly like
+         the classifier encodes prompts. REAL[] keeps it readable from raw SQL;
+         the orchestrator loads all vectors of a context into one in-memory
+         matrix, so no vector index is needed in the database.
+
+         intent is the label assigned when the entry is stored. The reuse rule
+         requires the top-k most similar entries to share one intent.
+
+         source records where the answer came from: 'model' for an answer a
+         model generated (source_model_id names it), 'seed' for an answer
+         loaded from a dataset (source_model_id is NULL). A cached answer can
+         serve a request that named a different model; the response reports
+         source_model_id so the caller knows which model actually wrote it.
+
+         source_log_id points at the log_entry row of the original request. It
+         is a plain column, not a foreign key: log_entry gets a row for every
+         request, and a foreign key would add a check to every deletion there
+         for a reference that is only used for analysis.
+
+         Deleting a model deletes the answers it wrote (deleteCascade), the
+         same rule the other model-owned tables follow: an answer whose model
+         no longer exists cannot report its source.
+
+         The unique (context_id, question_normalized) pair makes seeding
+         idempotent: loading the same dataset twice cannot insert duplicates. -->
+    <changeSet id="072-answer-cache" author="natasya.gunawan">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="answer_cache"/></not>
+        </preConditions>
+        <createTable tableName="answer_cache">
+            <column name="id" type="INTEGER" autoIncrement="true">
+                <constraints primaryKey="true" primaryKeyName="pk_answer_cache"/>
+            </column>
+            <column name="context_id" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="question_raw" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="question_normalized" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="embedding" type="REAL[]">
+                <constraints nullable="false"/>
+            </column>
+            <column name="intent" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="answer_template" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="source" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="source_model_id" type="INTEGER">
+                <constraints nullable="true"
+                             foreignKeyName="fk_answer_cache_source_model"
+                             references="models(id)"
+                             deleteCascade="true"/>
+            </column>
+            <column name="source_log_id" type="INTEGER"/>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="hit_count" type="INTEGER" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="last_hit_at" type="TIMESTAMPTZ"/>
+        </createTable>
+        <sql><![CDATA[
+            ALTER TABLE answer_cache
+                ADD CONSTRAINT ck_answer_cache_source CHECK (source IN ('model', 'seed'));
+
+            -- A model-sourced answer must name its model; a seeded one has none.
+            ALTER TABLE answer_cache
+                ADD CONSTRAINT ck_answer_cache_source_model
+                CHECK ((source = 'model') = (source_model_id IS NOT NULL));
+
+            -- The 384 floats of all-MiniLM-L6-v2; a vector of any other length
+            -- would come from a different model and must not be compared.
+            ALTER TABLE answer_cache
+                ADD CONSTRAINT ck_answer_cache_embedding_dim CHECK (array_length(embedding, 1) = 384);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_answer_cache_context_question
+                ON answer_cache (context_id, question_normalized);
+        ]]></sql>
+        <rollback>
+            <sql>DROP INDEX IF EXISTS uq_answer_cache_context_question;</sql>
+            <dropTable tableName="answer_cache"/>
+        </rollback>
+    </changeSet>
+
+    <!-- Labelled example questions for assigning an intent to a question
+         (nearest-neighbour vote, logos.answer_reuse.matching.assign_intent).
+
+         context_id NULL marks a global example, available to every context;
+         a non-NULL context_id limits the example to that context.
+
+         source tells where the example came from: 'seed' for a labelled
+         dataset question. 'auto' is reserved for intents created at runtime,
+         which nothing creates yet; evaluations can then separate the two,
+         because only seeded intents come from an independent label source. -->
+    <changeSet id="072-intent-exemplar" author="natasya.gunawan">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="intent_exemplar"/></not>
+        </preConditions>
+        <createTable tableName="intent_exemplar">
+            <column name="id" type="INTEGER" autoIncrement="true">
+                <constraints primaryKey="true" primaryKeyName="pk_intent_exemplar"/>
+            </column>
+            <column name="context_id" type="TEXT"/>
+            <column name="intent" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="text" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="embedding" type="REAL[]">
+                <constraints nullable="false"/>
+            </column>
+            <column name="source" type="TEXT" defaultValue="seed">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <sql><![CDATA[
+            ALTER TABLE intent_exemplar
+                ADD CONSTRAINT ck_intent_exemplar_source CHECK (source IN ('seed', 'auto'));
+
+            ALTER TABLE intent_exemplar
+                ADD CONSTRAINT ck_intent_exemplar_embedding_dim CHECK (array_length(embedding, 1) = 384);
+
+            -- COALESCE so global examples (context_id NULL) are deduplicated
+            -- too: a plain unique index treats every NULL as distinct.
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_intent_exemplar_context_text
+                ON intent_exemplar (COALESCE(context_id, ''), text);
+        ]]></sql>
+        <rollback>
+            <sql>DROP INDEX IF EXISTS uq_intent_exemplar_context_text;</sql>
+            <dropTable tableName="intent_exemplar"/>
+        </rollback>
+    </changeSet>
+
+    <!-- Which requests were answered from answer_cache.
+           cache_hit TRUE  — answered from the cache, no model call
+                             (cache_entry_id names the entry);
+           cache_hit FALSE — a lookup ran and found no reusable answer;
+           cache_hit NULL  — no lookup ran (no logos-context header, a streaming
+                             or multi-turn request) or a pre-migration row.
+         Cost and latency savings are measured from these rows. -->
+    <changeSet id="072-log-entry-cache-hit" author="natasya.gunawan">
+        <addColumn tableName="log_entry">
+            <column name="cache_hit" type="BOOLEAN"/>
+            <column name="cache_entry_id" type="INTEGER"/>
+        </addColumn>
+        <rollback>
+            <dropColumn tableName="log_entry" columnName="cache_entry_id"/>
+            <dropColumn tableName="log_entry" columnName="cache_hit"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>
