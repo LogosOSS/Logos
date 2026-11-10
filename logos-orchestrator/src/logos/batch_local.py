@@ -31,9 +31,10 @@ last works either way.
 import asyncio
 import json
 import logging
+import math
 import os
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from logos.auth import AuthContext
@@ -198,12 +199,19 @@ def _open_line_log(auth: AuthContext, body: Dict[str, Any]) -> Optional[int]:
         return None
 
 
-async def _run_line(line: Dict[str, Any], auth: AuthContext, headers: Dict[str, str]) -> Tuple[Dict[str, Any], bool]:
+async def _run_line(
+    line: Dict[str, Any],
+    auth: AuthContext,
+    headers: Dict[str, str],
+    stop: Optional[asyncio.Event] = None,
+) -> Tuple[Dict[str, Any], bool]:
     """Run one request line through the ordinary pipeline.
 
     How many lines run at once is the caller's limit — the runner gives each
     worker of its worker pool exactly one line — not a semaphore inside here,
     so a cancelled worker holds no slot the next line could have taken.
+    Rate-limited attempts wait before retrying; ``stop`` interrupts that wait
+    when the batch is cancelled or its completion window expires.
     """
     # Imported here rather than at module scope: main imports the batch modules,
     # so the reverse edge can only be taken once the app is up.
@@ -233,7 +241,33 @@ async def _run_line(line: Dict[str, Any], auth: AuthContext, headers: Dict[str, 
             line, {"status_code": 500, "data": {"error": {"message": "the request could not be started"}}}
         )
     try:
-        result = await execute_proxy_job(endpoint, dict(headers), dict(body), None, auth, log_id)
+        backoff = 1.0
+        while True:
+            if stop is not None and stop.is_set():
+                raise asyncio.CancelledError
+            result = await execute_proxy_job(endpoint, dict(headers), dict(body), None, auth, log_id)
+            if not isinstance(result, dict) or result.get("status_code") != 429:
+                break
+            retry_after = next(
+                (value for key, value in (result.get("headers") or {}).items() if key.lower() == "retry-after"),
+                None,
+            )
+            try:
+                delay = float(retry_after)
+            except (TypeError, ValueError):
+                delay = backoff
+            if not math.isfinite(delay) or delay <= 0:
+                delay = backoff
+            if stop is None:
+                await asyncio.sleep(delay)
+            else:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=delay)
+                except TimeoutError:
+                    pass
+                else:
+                    raise asyncio.CancelledError
+            backoff = min(backoff * 2, 60.0)
     except Exception:  # noqa: BLE001 - one bad line must not stop the batch
         # The exception itself stays in the server log; the result file is
         # downloadable by the caller, so it carries a generic message
@@ -322,15 +356,23 @@ async def _execute_lines(
     failed = len(finished) - completed
     pending = [line for line in lines if line.get("custom_id") not in finished]
     cancelled = False
+    expired = False
+    # Local batches accept only the 24h completion window. Use the creation
+    # time so resuming a batch cannot extend the time available for retries.
+    created_at = batch.get("created_at")
+    deadline = (
+        (created_at.replace(tzinfo=timezone.utc) if created_at.tzinfo is None else created_at) + timedelta(hours=24)
+        if isinstance(created_at, datetime)
+        else None
+    )
 
     if pending:
         queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
         for line in pending:
             queue.put_nowait(line)
 
-        # The two ways a run stops short of the last line:
         lost = asyncio.Event()  # lease gone: no checkpoint, no finalization
-        no_more = asyncio.Event()  # cancel requested: in-flight lines finish, nothing new starts
+        no_more = asyncio.Event()  # cancelled/expired: admitted lines finish, nothing new starts
 
         # A single line can legitimately run longer than the whole lease, and
         # a worker sitting in one cannot keep the batch alive on its own, so
@@ -344,7 +386,7 @@ async def _execute_lines(
             # A line cancelled before it finished raises here and never
             # reaches the checkpoint below — that is what keeps a deposed
             # runner's unfinished lines out of the new holder's skip list.
-            row, line_failed = await _run_line(line, auth, headers)
+            row, line_failed = await _run_line(line, auth, headers, stop=no_more)
             finished[line.get("custom_id")] = row
             if line_failed:
                 failed += 1
@@ -392,21 +434,34 @@ async def _execute_lines(
                     return
                 try:
                     await _run_and_checkpoint(line)
+                except asyncio.CancelledError:
+                    # A rate-limited line has no result to checkpoint when
+                    # the batch is cancelled. External task cancellation
+                    # still propagates, including lease loss and shutdown.
+                    if no_more.is_set() and not asyncio.current_task().cancelling():
+                        return
+                    raise
                 finally:
                     queue.task_done()
 
         async def _heartbeat() -> None:
-            """Keep the lease alive while lines run, and report a cancel."""
-            nonlocal cancelled
+            """Keep the lease alive while lines run, and report cancellation or expiry."""
+            nonlocal cancelled, expired
             # A None answer — or a check that failed, which fails closed the
             # same way, because a heartbeat that cannot confirm the lease
             # cannot keep it — is the lease being gone: stop the workers
             # before they checkpoint or finalize, and cancel the in-flight
             # lines so the new holder's run of them is not billed twice.
             while not lost.is_set():
-                await asyncio.sleep(heartbeat_interval)
+                delay = heartbeat_interval
+                if deadline is not None and not expired:
+                    delay = min(delay, max(0.0, (deadline - datetime.now(timezone.utc)).total_seconds()))
+                await asyncio.sleep(delay)
                 if lost.is_set():
                     return
+                if deadline is not None and datetime.now(timezone.utc) >= deadline:
+                    expired = True
+                    no_more.set()
                 try:
                     with DBManager() as db:
                         still = db.update_local_batch_progress(
@@ -436,6 +491,9 @@ async def _execute_lines(
             return None
         if still_running:
             cancelled = True
+            no_more.set()
+        if deadline is not None and datetime.now(timezone.utc) >= deadline:
+            expired = True
             no_more.set()
 
         if not no_more.is_set():
@@ -494,7 +552,7 @@ async def _execute_lines(
         finished = db.finish_local_batch(
             batch_object_id,
             RUNNER_ID,
-            status="cancelled" if cancelled else "completed",
+            status="expired" if expired else "cancelled" if cancelled else "completed",
             output_file_id=output_file_id,
             completed=completed,
             failed=failed,
@@ -512,7 +570,7 @@ async def _execute_lines(
         batch.get("upstream_id"),
         completed,
         failed,
-        " (cancelled)" if cancelled else "",
+        " (expired)" if expired else " (cancelled)" if cancelled else "",
     )
     return output_file_id
 

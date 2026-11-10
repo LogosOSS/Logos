@@ -35,7 +35,7 @@ from logos.anthropic_compat import (
     translate_response,
 )
 from logos.anthropic_compat.common import sse
-from logos.auth import AuthContext, authenticate_api_key, resolve_log_level
+from logos.auth import AuthContext, authenticate_api_key, initialize_rate_limits, resolve_log_level
 from logos.batch_api import batch_reconciler_loop, handle_batch_api_request
 from logos.batch_local import local_batch_runner_loop
 from logos.benchmarks.guidellm_runner import (
@@ -3444,6 +3444,7 @@ async def _execute_resource_mode(
                     return {
                         "status_code": 429,
                         "data": {"error": f"Rate limit exceeded: {reason}"},
+                        "headers": {"Retry-After": str(RateLimitConfig.window_seconds)},
                     }
                 # Retry-After: the limiter uses a sliding 60s window, so the
                 # budget is guaranteed to have room again after one window.
@@ -4547,29 +4548,12 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
     if use_profile_auth:
         log_id: Optional[int] = None
 
-        # Rate limits apply to every key, including those owned by
-        # logos_admins. Admin keys derive their limits from their team /
-        # key settings exactly like any other key. Budget is checked later,
-        # once permitted deployments are known (see _check_budget_if_cloud).
-        s = auth.settings or {}
         with perf_trace.phase(request_id, "auth.team_lookup"):
             # The team row (rate-limit defaults) is reference data — the
             # short-TTL ref cache serves it instead of a per-request checkout
             # .
             team_info = _cached_team(auth.team_id)
-
-        generic_rpm = s.get("rpm_limit")
-        generic_tpm = s.get("tpm_limit")
-
-        cloud_rpm = s.get("cloud_rpm_limit") or generic_rpm or (team_info and team_info.get("default_cloud_rpm_limit"))
-        cloud_tpm = s.get("cloud_tpm_limit") or generic_tpm or (team_info and team_info.get("default_cloud_tpm_limit"))
-        local_rpm = s.get("local_rpm_limit") or generic_rpm or (team_info and team_info.get("default_local_rpm_limit"))
-        local_tpm = s.get("local_tpm_limit") or generic_tpm or (team_info and team_info.get("default_local_tpm_limit"))
-
-        if cloud_rpm is not None or cloud_tpm is not None:
-            auth.cloud_rl = {"rpm": cloud_rpm, "tpm": cloud_tpm}
-        if local_rpm is not None or local_tpm is not None:
-            auth.local_rl = {"rpm": local_rpm, "tpm": local_tpm}
+        initialize_rate_limits(auth, team_info)
 
         deployment_cache = refcache.get_ref_cache()
         cached_deployments = deployment_cache.get(("deployments", auth.api_key_id))
@@ -4753,6 +4737,9 @@ async def execute_proxy_job(
     """
     headers = headers or dict()
     json_data = json_data or dict()
+
+    # Jobs and local batch lines can arrive without HTTP authentication setup.
+    initialize_rate_limits(auth, _cached_team(auth.team_id))
 
     request_id = secrets.token_urlsafe(16)
 
