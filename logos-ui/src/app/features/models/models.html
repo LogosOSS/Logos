@@ -1,13 +1,9 @@
 <div class="models">
   <!-- ── Header ──────────────────────────────────────────────────────── -->
   <h1 class="page-title">Model Management</h1>
-  <p class="page-subtitle">
-    @if (activeTab() === 'requests') {
-      Vote for models Logos does not serve yet.
-    } @else {
-      Configure LLM models
-    }
-  </p>
+  @if (activeTab() === 'requests') {
+    <p class="page-subtitle">Vote for models Logos does not serve yet.</p>
+  }
 
   <!-- Two tabs, because the page answers two unrelated questions: what
        Logos serves right now, and what it is asked to serve next. -->
