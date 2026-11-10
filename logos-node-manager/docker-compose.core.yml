@@ -46,6 +46,9 @@ services:
       NODE_MANAGER_LOGOS: "https://${LOGOS_DOMAIN:-localhost}|${LOGOS_DEPLOYER_KEY:-},${LOGOS_PROD_URL:-}|${LOGOS_PROD_DEPLOYER_KEY:-}"
       # How long the services get to come up, in seconds. The webservice applies its database migrations first.
       NODE_MANAGER_CORE_VERIFY_TIMEOUT_S: ${NODE_MANAGER_CORE_VERIFY_TIMEOUT_S:-900}
+      # The address that must answer after a deployment. Empty or not set: <own Logos>/api/info. Set it if this host cannot
+      # reach its own public address. The check cannot be switched off.
+      NODE_MANAGER_CORE_HEALTH_URL: ${NODE_MANAGER_CORE_HEALTH_URL:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}:${NODE_MANAGER_PROJECT_DIR:-/opt/logos}:ro

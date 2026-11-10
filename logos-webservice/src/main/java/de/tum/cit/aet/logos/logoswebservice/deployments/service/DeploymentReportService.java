@@ -90,11 +90,20 @@ public class DeploymentReportService {
 
     // ------------------------------------------------------------------ Orders
 
-    /** The steps that are ordered for the deployer and that it has not taken yet. */
+    /**
+     * The steps that are ordered for the deployer and that it has not taken yet. An order that has waited longer than
+     * the silence limit is not handed out, also if the sweep has not ended it yet, for example in the first minutes
+     * after Logos started again: the deployer would run it at once, and a report cannot call it back. This is the same
+     * test as the one of the sweep.
+     */
     @Transactional(readOnly = true)
     public List<DeployerApi.Order> openOrders(Deployer deployer) {
         List<DeployerApi.Order> orders = new ArrayList<>();
+        Instant cutoff = clock.instant().minus(properties.silenceLimit());
         for (DeploymentStep step : steps.findByDeployerIdAndStatus(deployer.getId(), StepStatus.ordered)) {
+            if (step.getLastActivityAt().isBefore(cutoff)) {
+                continue;
+            }
             plans.findById(step.getPlanId()).ifPresent(plan -> {
                 Map<String, String> facts = new LinkedHashMap<>();
                 facts.put("id", plan.getId().toString());

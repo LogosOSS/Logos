@@ -94,15 +94,14 @@ class CoreTarget:
             self._failing = []
             self.fail_over(deployment, FailureKind.SWAP_FAILED, f"docker compose up failed: {result.tail()}")
             return
-        containers = self.docker.project_containers()
-        if (
-            deployment.previous_container_ids
-            and {container.info.id for container in containers} == set(deployment.previous_container_ids)
-            and all(container.info.running for container in containers)
-        ):
-            # Compose found nothing to replace. The ids of the containers are those of the start of this deployment, so
-            # a step that is repeated after the replacement cannot take the new containers for old ones.
-            self.d.finish(deployment, Outcome.UNCHANGED, message="every service already runs this version")
+        if self._replaced_nothing(deployment):
+            # Compose found nothing to replace. That does not show that the services are fine: a deployment that failed
+            # its checks leaves the same containers behind. So the checks run all the same, and the deployment ends as
+            # ``unchanged`` if they pass. The ids are those of the start of this deployment, so a step that is repeated
+            # after the replacement cannot take the new containers for old ones.
+            self.d.advance(
+                deployment, Phase.VERIFYING, "no service needed replacing; checking that all of them are ready"
+            )
             return
         self.d.advance(deployment, Phase.VERIFYING, f"started the services for tag {deployment.tag}")
 
@@ -122,7 +121,10 @@ class CoreTarget:
                 now = d.clock()
                 ready_since = now if ready_since is None else ready_since
                 if now - ready_since >= settings.stability_window_s:
-                    d.finish(deployment, Outcome.SUCCEEDED, message=f"now running tag {deployment.tag}")
+                    if self._replaced_nothing(deployment):
+                        d.finish(deployment, Outcome.UNCHANGED, message="every service already runs this version")
+                    else:
+                        d.finish(deployment, Outcome.SUCCEEDED, message=f"now running tag {deployment.tag}")
                     return
             else:
                 ready_since = None
@@ -131,6 +133,10 @@ class CoreTarget:
                     return
                 d.progress(deployment, f"waiting: {waiting}")
             d.pause()
+
+    def _replaced_nothing(self, deployment: Deployment) -> bool:
+        before = set(deployment.previous_container_ids)
+        return bool(before) and {container.info.id for container in self.docker.project_containers()} == before
 
     def _fail(self, deployment: Deployment, reason: str) -> None:
         deployment.failure_logs = self.capture_logs()

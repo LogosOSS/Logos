@@ -149,7 +149,8 @@ class Settings:
     report_interval_s: float = 20.0
 
     # Core host only. The service that runs as several copies, the variable of the ``.env`` file that says how many, the
-    # time the services get to come up, and the address that must answer once they did (empty: not checked).
+    # time the services get to come up, and the address that must answer once they did
+    # (empty: not checked, which is the case without a Logos source).
     scale_service: str = "logos-webservice"
     replicas_variable: str = "LOGOS_WEBSERVICE_REPLICAS"
     core_verify_timeout_s: float = 900.0

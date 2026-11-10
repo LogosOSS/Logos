@@ -31,6 +31,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
 import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 import de.tum.cit.aet.logos.logoswebservice.deployments.service.DeploymentReportService;
+import de.tum.cit.aet.logos.logoswebservice.deployments.service.DeployerService;
+import de.tum.cit.aet.logos.logoswebservice.deployments.repository.DeployerRepository;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * The whole way through the webservice: an admin makes deployers, starts a plan, the deployers ask for orders and report,
@@ -63,6 +68,9 @@ class DeploymentFlowTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @Autowired DeploymentReportService reports;
+    @Autowired DeployerService deployerService;
+    @Autowired DeployerRepository deployerRepository;
+    @Autowired TransactionTemplate transactions;
     @MockitoBean JwtDecoder jwtDecoder;
 
     // ------------------------------------------------------------------ helpers
@@ -209,6 +217,29 @@ class DeploymentFlowTest {
         poll(newKey);
         mvc.perform(delete("/deployments/deployers/" + id).with(TestJwt.logosAdmin())).andExpect(status().isNoContent());
         rawPoll(newKey).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void aHeartbeatThatStartedBeforeANewKeyDoesNotBringTheOldKeyBack() throws Exception {
+        JsonNode created = createDeployer("dev-core", "Dev", "core");
+        String oldKey = created.get("key").asText();
+        UUID id = UUID.fromString(created.get("deployer").get("id").asText());
+        AtomicReference<String> newKey = new AtomicReference<>();
+
+        transactions.executeWithoutResult(status -> {
+            deployerRepository.findById(id).orElseThrow(); // the heartbeat has read the row with the old key
+            Thread other = new Thread(() -> newKey.set(deployerService.replaceKey(id).key()));
+            other.start();
+            try {
+                other.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            deployerService.touch(id, "0.2.0");
+        });
+
+        rawPoll(oldKey).andExpect(status().isUnauthorized());
+        poll(newKey.get());
     }
 
     // ------------------------------------------------------------------ starting
@@ -424,6 +455,15 @@ class DeploymentFlowTest {
 
         JsonNode ended = plan(plan.get("id").asText());
         assertThat(step(ended, "dev-core").get("message").asText()).contains("did not take the order");
+    }
+
+    @Test
+    void anOrderThatIsTooOldIsNotHandedOutBeforeTheSweepEndsIt() throws Exception {
+        String[] keys = devEnvironment();
+        body(rawStart("Dev", "pr-93", null).andExpect(status().isCreated()));
+        jdbc.update("UPDATE deployment_steps SET last_activity_at = now() - interval '2 hours' WHERE status = 'ordered'");
+
+        assertThat(poll(keys[0]).get("orders")).isEmpty();
     }
 
     @Test

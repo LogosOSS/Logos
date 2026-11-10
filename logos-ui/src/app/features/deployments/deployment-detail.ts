@@ -60,6 +60,8 @@ export class DeploymentDetail implements OnInit {
   copied = signal(false);
   /** The clock of the running time: it ticks every second while the deployment runs. */
   private now = signal(Date.now());
+  /** The first load failed for a reason that passes (Logos restarts): the timer asks again. */
+  private retryFirstLoad = false;
 
   abandonOpen = signal(false);
   abandoning = signal(false);
@@ -84,7 +86,7 @@ export class DeploymentDetail implements OnInit {
   ngOnInit(): void {
     void this.load();
     const timer = setInterval(() => {
-      if (this.plan()?.status === 'running') void this.load();
+      if (this.plan()?.status === 'running' || (this.plan() === null && this.retryFirstLoad)) void this.load();
     }, POLL_MS);
     const clock = setInterval(() => {
       if (this.plan()?.status === 'running') this.now.set(Date.now());
@@ -102,7 +104,12 @@ export class DeploymentDetail implements OnInit {
       this.plan.set(await this.service.getPlan(id));
       this.loadError.set(null);
     } catch (e) {
-      if (this.plan() === null) this.loadError.set(errorDetail(e) ?? 'The deployment could not be loaded.');
+      if (this.plan() === null) {
+        this.loadError.set(errorDetail(e) ?? 'The deployment could not be loaded.');
+        // No answer (status 0) or a server error: Logos may be restarting. A 403 or 404 does not pass.
+        const status = (e as { status?: number } | null)?.status;
+        this.retryFirstLoad = status === undefined || status === 0 || status >= 500;
+      }
     } finally {
       this.loading.set(false);
     }

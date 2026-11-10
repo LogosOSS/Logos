@@ -49,12 +49,22 @@ _MAX_PLAN_KEYS = 12
 # Asking again after a failure: first pause, and the longest pause.
 RETRY_FIRST_S = 5.0
 RETRY_MAX_S = 300.0
+
 # The intake never asks faster than this, whatever Logos answers.
 MIN_POLL_INTERVAL_S = 1.0
 # The reporter looks at the records this often.
 REPORT_LOOP_S = 2.0
 # A finished deployment is reported while it is this recent.
 REPORT_MAX_AGE_S = 24 * 3600.0
+
+
+def retry_delay(failures: int) -> float:
+    """Seconds to wait after ``failures`` failed tries in a row: 5, 10, 20, ... up to ``RETRY_MAX_S``.
+
+    The exponent is bounded before the power is made. A very large power does not fit in a float, and the error would
+    end the thread that asks for orders after a few days of failures.
+    """
+    return min(RETRY_FIRST_S * 2 ** min(max(failures - 1, 0), 16), RETRY_MAX_S)
 
 
 class LogosError(Exception):
@@ -274,12 +284,12 @@ class LogosLink:
             except LogosError as exc:
                 failures += 1
                 self._complain(name, str(exc))
-                self._stop.wait(min(RETRY_FIRST_S * 2 ** (failures - 1), RETRY_MAX_S))
+                self._stop.wait(retry_delay(failures))
                 continue
             except Exception:  # noqa: BLE001 - an unexpected problem must not end the intake
                 failures += 1
                 logger.exception("Asking %s for orders failed unexpectedly", name)
-                self._stop.wait(min(RETRY_FIRST_S * 2 ** (failures - 1), RETRY_MAX_S))
+                self._stop.wait(retry_delay(failures))
                 continue
             if failures:
                 logger.info("%s answers again", name)
@@ -371,7 +381,7 @@ class LogosLink:
         except LogosError as exc:
             failures = self._failures.get(name, 0) + 1
             self._failures[name] = failures
-            self._next_try[name] = now + min(RETRY_FIRST_S * 2 ** (failures - 1), RETRY_MAX_S)
+            self._next_try[name] = now + retry_delay(failures)
             self._complain(name, str(exc))
             return
         self._failures.pop(name, None)

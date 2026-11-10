@@ -233,6 +233,19 @@ def test_nothing_to_replace_ends_as_unchanged(make_core, project):
     assert ("prune_images",) not in project.calls
 
 
+def test_nothing_to_replace_still_has_to_pass_the_checks(core_settings, make_core, project, probe_answers):
+    # A failed deployment leaves its containers behind, so a repeat of it finds nothing to replace.
+    settings = replace(core_settings, core_health_url="https://logos.example/api/info")
+    project.on_up = lambda: None
+    probe_answers["ok"] = False
+
+    record = run(make_core, settings=settings)
+
+    assert record.outcome is Outcome.FAILED
+    assert record.failure is FailureKind.VERIFY_FAILED
+    assert "does not answer yet" in record.message
+
+
 def test_a_new_container_that_restarted_fails_the_deployment_with_its_log(make_core, project):
     def crash_loop() -> None:
         project.replace_logos_services()

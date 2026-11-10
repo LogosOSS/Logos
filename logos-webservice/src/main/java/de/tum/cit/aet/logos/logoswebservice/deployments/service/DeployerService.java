@@ -109,16 +109,15 @@ public class DeployerService {
         return deployers.findByKeyHash(DeployerKeys.hash(key));
     }
 
-    /** Note that the deployer is alive. */
+    /** Note that the deployer is alive. Only the columns of the heartbeat are written: see the repository. */
     @Transactional
     public void touch(UUID id, String version) {
-        deployers.findById(id).ifPresent(deployer -> {
-            deployer.setLastSeenAt(clock.instant());
-            if (version != null && !version.isBlank()) {
-                deployer.setVersion(version.strip().substring(0, Math.min(version.strip().length(), MAX_VERSION_CHARS)));
-            }
-            deployers.save(deployer);
-        });
+        if (version == null || version.isBlank()) {
+            deployers.markSeen(id, clock.instant());
+            return;
+        }
+        String clean = version.strip();
+        deployers.markSeenWithVersion(id, clock.instant(), clean.substring(0, Math.min(clean.length(), MAX_VERSION_CHARS)));
     }
 
     public boolean isOnline(Deployer deployer, Instant now) {

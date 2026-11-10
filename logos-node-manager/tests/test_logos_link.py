@@ -11,7 +11,16 @@ from conftest import queued
 
 from logos_node_manager.config import LogosSource, Settings, parse_logos_sources
 from logos_node_manager.docker_ops import read_env_value
-from logos_node_manager.logos_link import LogosClient, LogosError, LogosLink, Order, parse_orders, snapshot
+from logos_node_manager.logos_link import (
+    RETRY_MAX_S,
+    LogosClient,
+    LogosError,
+    LogosLink,
+    Order,
+    parse_orders,
+    retry_delay,
+    snapshot,
+)
 from logos_node_manager.state import Deployment, Outcome, Phase, StateStore
 
 KEY = "the-secret-deployer-key"
@@ -602,3 +611,11 @@ def test_the_threads_start_and_end_when_the_link_stops(link_settings, store, clo
 
     assert stop.is_set()
     assert all(not thread.is_alive() for thread in link._threads)
+
+
+def test_the_retry_delay_grows_to_its_limit_and_never_overflows():
+    assert [retry_delay(n) for n in (1, 2, 3)] == [5.0, 10.0, 20.0]
+    assert retry_delay(7) == RETRY_MAX_S
+    # The power of two for the 1025th failure does not fit in a float.
+    assert retry_delay(1025) == RETRY_MAX_S
+    assert retry_delay(10**9) == RETRY_MAX_S

@@ -218,8 +218,8 @@ of a deployment would otherwise restart the manager in the middle of its own dep
 |---|---|
 | `pulling` | Notes the containers of the project, then runs `docker compose pull` for every service. If the pull fails, the running services are not touched. |
 | `draining` | Passes at once. The core has no node to cordon. |
-| `swapping` | Runs `docker compose up -d --remove-orphans --scale <service>=<n>`. The number comes from `LOGOS_WEBSERVICE_REPLICAS` in the `.env` (1 if it is missing or not a number). If every container is the one that ran before, the deployment ends as `unchanged`. |
-| `verifying` | Waits until every service of the active profiles has a running container (the scaled service as many as asked for), until no new container restarted or exited with an error, until no health check reports `unhealthy`, and until `NODE_MANAGER_CORE_HEALTH_URL` answers. All of it must hold for the stability window. The time limit is `CORE_VERIFY_TIMEOUT_S` (15 minutes). The new webservice applies its database migrations first. |
+| `swapping` | Runs `docker compose up -d --remove-orphans --scale <service>=<n>`. The number comes from `LOGOS_WEBSERVICE_REPLICAS` in the `.env` (1 if it is missing or not a number). If every container is the one that ran before, nothing is replaced and the phase `verifying` follows. |
+| `verifying` | Waits until every service of the active profiles has a running container (the scaled service as many as asked for), until no new container restarted or exited with an error, until no health check reports `unhealthy`, and until `NODE_MANAGER_CORE_HEALTH_URL` answers. All of it must hold for the stability window. The time limit is `CORE_VERIFY_TIMEOUT_S` (15 minutes). The new webservice applies its database migrations first. If nothing was replaced, the deployment ends as `unchanged` when all of this holds, and as `failed` if it does not. |
 
 * **There is no rollback.** The new webservice changes the database structure when it starts. The previous version may
   not work with the new structure, and a rollback would hide that. A core deployment that fails ends as `failed`
@@ -230,7 +230,7 @@ of a deployment would otherwise restart the manager in the middle of its own dep
   that image between sessions, so the prune would delete it. After a failure every image stays.
 * **The address that must answer** is `<own Logos>/api/info` by default (the first entry of `NODE_MANAGER_LOGOS`). It
   shows that the whole way, from the proxy to the webservice, works. Set `NODE_MANAGER_CORE_HEALTH_URL` to check another
-  address, or to a value of your own.
+  address, for example if the host cannot reach its own public address. The check cannot be switched off.
 * **The registry login** is the directory `.docker` of the project directory, as for a worker.
 
 ## Use
@@ -335,7 +335,7 @@ All settings are environment variables with the prefix `NODE_MANAGER_`.
 | `REPORT_INTERVAL_S` | 20 | How often a deployment in progress is reported to Logos when nothing changed. |
 | `SCALE_SERVICE`, `REPLICAS_VARIABLE` | `logos-webservice`, `LOGOS_WEBSERVICE_REPLICAS` | Core host: the service that runs as several copies, and the variable of the `.env` that says how many. |
 | `CORE_VERIFY_TIMEOUT_S` | 900 | Core host: how long the services get to come up. |
-| `CORE_HEALTH_URL` | `<first Logos>/api/info` | Core host: the address that must answer after a deployment. Empty: not checked. |
+| `CORE_HEALTH_URL` | `<first Logos>/api/info` | Core host: the address that must answer after a deployment. Empty or not set: the default. The check cannot be switched off. |
 
 A missing, malformed or non-positive timeout falls back to its default.
 
