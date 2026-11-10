@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- License of a requested model, fetched from Hugging Face.
+
+         license_id is the SPDX expression the model card declares (e.g.
+         apache-2.0), license_text the text of the repository's license file,
+         and license_fetched_date when the last fetch ran. The three together
+         carry the state the acceptance flow renders:
+           * license_fetched_date NULL               -> not fetched yet
+             (the fetch happens at the vote, when a gated row unflags, and in
+             the hourly recheck backfill; a failed fetch simply stays pending);
+           * fetched, license_text or license_id set -> a license exists and
+             can be accepted (the card-declared id suffices when the
+             repository carries no license file);
+           * fetched, both NULL                      -> the repository has no
+             license information at all, which is not "no license needed" but
+             "nothing to accept" and is flagged for a look.
+         The fetch runs through the orchestrator with the central HF_TOKEN,
+         so gated repositories are readable as soon as the token's account
+         has been granted access. -->
+    <changeSet id="072-requested-model-license" author="maltebai">
+        <preConditions onFail="MARK_RAN">
+            <not><columnExists tableName="requested_models" columnName="license_text"/></not>
+        </preConditions>
+        <addColumn tableName="requested_models">
+            <column name="license_id" type="VARCHAR(64)">
+                <constraints nullable="true"/>
+            </column>
+            <column name="license_text" type="TEXT">
+                <constraints nullable="true"/>
+            </column>
+            <column name="license_fetched_date" type="TIMESTAMP WITH TIME ZONE">
+                <constraints nullable="true"/>
+            </column>
+        </addColumn>
+        <rollback>
+            <dropColumn tableName="requested_models" columnName="license_fetched_date"/>
+            <dropColumn tableName="requested_models" columnName="license_text"/>
+            <dropColumn tableName="requested_models" columnName="license_id"/>
+        </rollback>
+    </changeSet>
+
+    <!-- License approvals for requested models.
+
+         Accepting a model's license agreement is recorded per scope: a row
+         with team_id NULL is the Logos admin's global acceptance (one per
+         model), and a row with a team_id is that team's app admin acceptance
+         (one per model per team). The team-level acceptance exists only while
+         the global one does — revoking the global acceptance removes the
+         team rows with it. user_id is the accepting user, approved_at when
+         they accepted; together they are the audit record. team_id has no
+         foreign key — team_id columns in this schema are application-managed,
+         like everywhere else. -->
+    <changeSet id="072-model-license-approvals" author="maltebai">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="model_license_approvals"/></not>
+        </preConditions>
+        <createTable tableName="model_license_approvals">
+            <column name="id" type="INTEGER" autoIncrement="true">
+                <constraints primaryKey="true" primaryKeyName="pk_model_license_approvals"/>
+            </column>
+            <column name="requested_model_id" type="INTEGER">
+                <constraints nullable="false"
+                             foreignKeyName="fk_model_license_approvals_model"
+                             references="requested_models(id)"
+                             deleteCascade="true"/>
+            </column>
+            <column name="team_id" type="INTEGER">
+                <constraints nullable="true"/>
+            </column>
+            <column name="user_id" type="INTEGER">
+                <constraints nullable="false"
+                             foreignKeyName="fk_model_license_approvals_user"
+                             references="users(id)"
+                             deleteCascade="true"/>
+            </column>
+            <column name="approved_at" type="TIMESTAMP WITH TIME ZONE">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <sql><![CDATA[
+            -- One acceptance per scope: one global (team_id NULL) row per
+            -- model and one row per (model, team). NULLs are distinct in a
+            -- plain unique index, so the two scopes need their own indexes.
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_model_license_approvals_model
+                ON model_license_approvals (requested_model_id) WHERE team_id IS NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_model_license_approvals_model_team
+                ON model_license_approvals (requested_model_id, team_id) WHERE team_id IS NOT NULL;
+        ]]></sql>
+        <rollback>
+            <sql>
+                DROP INDEX IF EXISTS uq_model_license_approvals_model_team;
+                DROP INDEX IF EXISTS uq_model_license_approvals_model;
+            </sql>
+            <dropTable tableName="model_license_approvals"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

@@ -16,6 +16,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.jdbc.Sql;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -26,6 +27,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
 import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 import de.tum.cit.aet.logos.logoswebservice.configuration.service.RequestedModelHfRechecker;
+import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfLicenseClient;
+import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfLicenseClient.HfLicenseResult;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabilityClient;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabilityClient.HfReachabilityResult;
 
@@ -50,12 +53,32 @@ class ModelRequestControllerTest {
     @Autowired RequestedModelHfRechecker hfStatusRechecker;
     @MockitoBean JwtDecoder jwtDecoder;
     @MockitoBean OrchestratorHfReachabilityClient hfReachabilityClient;
+    @MockitoBean OrchestratorHfLicenseClient hfLicenseClient;
 
     /** The precheck answers "reachable" unless a test says otherwise. */
     @BeforeEach
     void stubHfReachabilityReachable() {
         Mockito.lenient().when(hfReachabilityClient.check(ArgumentMatchers.anyString()))
             .thenReturn(new HfReachabilityResult(HfReachabilityResult.STATUS_REACHABLE, null, null));
+    }
+
+    /** The license fetch answers with a license unless a test says otherwise. */
+    @BeforeEach
+    void stubHfLicenseAvailable() {
+        Mockito.lenient().when(hfLicenseClient.fetch(ArgumentMatchers.anyString()))
+            .thenAnswer(invocation -> new HfLicenseResult(
+                "apache-2.0", "LICENSE.md", "Apache License 2.0 — " + invocation.getArgument(0), null));
+    }
+
+    /** Vote for a model and return the id of its registry row. */
+    private int voteFor(String name, RequestPostProcessor jwt) throws Exception {
+        mvc.perform(post("/logosdb/add_model_request")
+                .with(jwt)
+                .contentType("application/json")
+                .content("{\"name\": \"" + name + "\", \"team_id\": 2001}"))
+           .andExpect(status().isOk());
+        return jdbc.queryForObject(
+            "SELECT id FROM requested_models WHERE name = ?", Integer.class, name);
     }
 
     @Test
@@ -586,6 +609,236 @@ class ModelRequestControllerTest {
 
         assertThat(isGated("acme/license-accepted")).isFalse();
         assertThat(isGated("acme/unverified")).isFalse();
+    }
+
+    // ── License fetch and acceptance ─────────────────────────────────────────
+
+    @Test
+    void vote_fetchesTheLicenseOfANonGatedModel() throws Exception {
+        mvc.perform(post("/logosdb/add_model_request")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"name\": \"openai/gpt-5\", \"team_id\": 2001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.license_status").value("available"))
+           .andExpect(jsonPath("$.license_approved").value(false));
+
+        // The license is stored on the registry row.
+        assertThat(jdbc.queryForObject(
+            "SELECT license_id FROM requested_models WHERE name = 'openai/gpt-5'", String.class))
+           .isEqualTo("apache-2.0");
+        assertThat(jdbc.queryForObject(
+            "SELECT license_text FROM requested_models WHERE name = 'openai/gpt-5'", String.class))
+           .contains("Apache License 2.0");
+        assertThat(jdbc.queryForObject(
+            "SELECT license_fetched_date IS NOT NULL FROM requested_models WHERE name = 'openai/gpt-5'",
+            Boolean.class)).isTrue();
+    }
+
+    @Test
+    void vote_leavesTheLicensePendingForAGatedModel() throws Exception {
+        // The token cannot read a gated repository yet, so there is nothing to
+        // fetch: the row stays pending until it unflags.
+        Mockito.when(hfReachabilityClient.check("meta-llama/llama-3.1-8b-instruct"))
+            .thenReturn(new HfReachabilityResult(
+                HfReachabilityResult.STATUS_REJECTED, HfReachabilityResult.REASON_MODEL_GATED,
+                "Repository access requires an authorized HF_TOKEN."));
+
+        mvc.perform(post("/logosdb/add_model_request")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"name\": \"meta-llama/llama-3.1-8b-instruct\", \"team_id\": 2001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.license_status").value("pending"));
+
+        Mockito.verify(hfLicenseClient, Mockito.never()).fetch(ArgumentMatchers.anyString());
+        assertThat(jdbc.queryForObject(
+            "SELECT license_fetched_date IS NULL FROM requested_models WHERE name = 'meta-llama/llama-3.1-8b-instruct'",
+            Boolean.class)).isTrue();
+    }
+
+    @Test
+    void vote_succeedsWhenTheLicenseFetchFails() throws Exception {
+        // A failed license fetch is a problem for the next recheck, not for
+        // the vote.
+        Mockito.when(hfLicenseClient.fetch("openai/gpt-5"))
+            .thenReturn(HfLicenseResult.failure("The license could not be fetched right now."));
+
+        mvc.perform(post("/logosdb/add_model_request")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"name\": \"openai/gpt-5\", \"team_id\": 2001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.request_count").value(1))
+           .andExpect(jsonPath("$.license_status").value("pending"));
+    }
+
+    @Test
+    void unflaggingFetchesTheLicenseForTheFirstTime() {
+        // The token can read the repository once the license was accepted, so
+        // the unflag and the first license fetch happen together.
+        jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/unlocked', true)");
+
+        hfStatusRechecker.recheck();
+
+        assertThat(isGated("acme/unlocked")).isFalse();
+        assertThat(jdbc.queryForObject(
+            "SELECT license_fetched_date IS NOT NULL FROM requested_models WHERE name = 'acme/unlocked'",
+            Boolean.class)).isTrue();
+        Mockito.verify(hfLicenseClient).fetch("acme/unlocked");
+    }
+
+    @Test
+    void recheckFetchBackfillsReadableRowsWithoutALicense() {
+        jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/backfill', false)");
+        jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/still-gated', true)");
+        // Keep the second row gated against the default "reachable" stub, so
+        // it stays unreadable and must not be fetched.
+        Mockito.when(hfReachabilityClient.check("acme/still-gated"))
+            .thenReturn(new HfReachabilityResult(
+                HfReachabilityResult.STATUS_REJECTED, HfReachabilityResult.REASON_MODEL_GATED,
+                "Repository access requires an authorized HF_TOKEN."));
+
+        hfStatusRechecker.recheck();
+
+        assertThat(jdbc.queryForObject(
+            "SELECT license_fetched_date IS NOT NULL FROM requested_models WHERE name = 'acme/backfill'",
+            Boolean.class)).isTrue();
+        // The gated row is not readable, so it is not fetched.
+        assertThat(jdbc.queryForObject(
+            "SELECT license_fetched_date IS NULL FROM requested_models WHERE name = 'acme/still-gated'",
+            Boolean.class)).isTrue();
+    }
+
+    @Test
+    void getLicense_reportsTheStoredLicense() throws Exception {
+        int id = seedModelWithLicense("acme/licensed", "bllm");
+
+        mvc.perform(post("/logosdb/get_model_license")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"model_id\": " + id + "}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.status").value("available"))
+           .andExpect(jsonPath("$.license_id").value("bllm"))
+           .andExpect(jsonPath("$.license_text").value("License text of acme/licensed"))
+           .andExpect(jsonPath("$.approved").value(false));
+    }
+
+    @Test
+    void getLicense_reportsPendingWhileNoFetchHasRun() throws Exception {
+        int id = voteFor("acme/pending", TestJwt.testUser());
+        jdbc.update("UPDATE requested_models SET license_id = NULL, license_text = NULL, "
+            + "license_fetched_date = NULL WHERE id = ?", id);
+
+        mvc.perform(post("/logosdb/get_model_license")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"model_id\": " + id + "}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.status").value("pending"))
+           .andExpect(jsonPath("$.license_id", org.hamcrest.Matchers.nullValue()))
+           .andExpect(jsonPath("$.license_text", org.hamcrest.Matchers.nullValue()));
+    }
+
+    @Test
+    void approveLicense_recordsTheLogosAdminAcceptance() throws Exception {
+        int id = seedModelWithLicense("acme/licensed", "apache-2.0");
+
+        mvc.perform(post("/logosdb/approve_model_license")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"model_id\": " + id + "}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.approved").value(true))
+           .andExpect(jsonPath("$.approved_at").isNotEmpty());
+
+        // The global row: no team, the accepting Logos admin, a timestamp.
+        assertThat(jdbc.queryForObject(
+            "SELECT user_id FROM model_license_approvals WHERE requested_model_id = ? AND team_id IS NULL",
+            Integer.class, id)).isEqualTo(1003);
+        assertThat(jdbc.queryForObject(
+            "SELECT approved_at IS NOT NULL FROM model_license_approvals WHERE requested_model_id = ?",
+            Boolean.class, id)).isTrue();
+    }
+
+    @Test
+    void approveLicense_isRefusedWithoutALicense() throws Exception {
+        int id = seedModelWithLicense("acme/unlicensed", null);
+
+        mvc.perform(post("/logosdb/approve_model_license")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"model_id\": " + id + "}"))
+           .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void approveLicense_isRefusedForANonAdmin() throws Exception {
+        int id = seedModelWithLicense("acme/licensed", "apache-2.0");
+
+        mvc.perform(post("/logosdb/approve_model_license")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"model_id\": " + id + "}"))
+           .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void revokeLicense_clearsTheGlobalAcceptanceAndTheTeamRows() throws Exception {
+        int id = seedModelWithLicense("acme/licensed", "apache-2.0");
+        mvc.perform(post("/logosdb/approve_model_license")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"model_id\": " + id + "}"))
+           .andExpect(status().isOk());
+        // The team-level acceptance that rests on the global one.
+        jdbc.update("INSERT INTO model_license_approvals (requested_model_id, team_id, user_id, approved_at) "
+            + "VALUES (?, 2002, 1002, now())", id);
+
+        mvc.perform(post("/logosdb/revoke_model_license")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"model_id\": " + id + "}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.approved").value(false));
+
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM model_license_approvals WHERE requested_model_id = ?", Integer.class, id))
+           .isZero();
+    }
+
+    @Test
+    void revokeLicense_isIdempotent() throws Exception {
+        int id = seedModelWithLicense("acme/licensed", "apache-2.0");
+
+        mvc.perform(post("/logosdb/revoke_model_license")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"model_id\": " + id + "}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.approved").value(false));
+    }
+
+    @Test
+    void list_reportsTheLicenseState() throws Exception {
+        voteFor("openai/gpt-5", TestJwt.testUser());
+
+        mvc.perform(post("/logosdb/get_model_requests")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].name").value("openai/gpt-5"))
+           .andExpect(jsonPath("$[0].license_status").value("available"))
+           .andExpect(jsonPath("$[0].license_approved").value(false));
+    }
+
+    private int seedModelWithLicense(String name, String licenseId) {
+        jdbc.update("INSERT INTO requested_models (name, is_gated, license_id, license_text, license_fetched_date) "
+            + "VALUES (?, false, ?, ?, now())",
+            name, licenseId, licenseId == null ? null : "License text of " + name);
+        return jdbc.queryForObject("SELECT id FROM requested_models WHERE name = ?", Integer.class, name);
     }
 
     private Boolean isGated(String name) {
