@@ -104,8 +104,8 @@
                   <button
                     type="button"
                     class="gated-flag"
-                    title="License agreement not yet accepted"
-                    [attr.aria-label]="'License agreement for ' + request.name + ' not yet accepted — open the Hugging Face page'"
+                    title="Model repository is gated"
+                    [attr.aria-label]="'Model ' + request.name + ' repository is gated — open the Hugging Face page'"
                     (click)="openGatedDialog(request)"
                   >
                     <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
@@ -186,7 +186,7 @@
     (visibleChange)="$event || closeGatedDialog()"
     (confirmed)="goToHuggingFace()"
     title="Gated model"
-    message="You need to accept this gated model's license agreement on Hugging Face."
+    message="You have to accept this gated model's conditions on Hugging Face to access its files and content."
     icon="pi-exclamation-triangle"
     confirmLabel="Go to HuggingFace"
     [danger]="false"

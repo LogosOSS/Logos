@@ -331,7 +331,7 @@ describe('the gated model flag', () => {
     const fx = await renderPage('logos_admin');
     const flags = fx.nativeElement.querySelectorAll('.gated-flag');
     expect(flags).toHaveLength(1);
-    expect(flags[0].title).toBe('License agreement not yet accepted');
+    expect(flags[0].title).toBe('Model repository is gated');
     expect(flags[0].closest('td')?.textContent).toContain('meta-llama/llama-3.1-8b');
     fx.destroy();
   });
@@ -351,7 +351,7 @@ describe('the gated model flag', () => {
 
       // The dialog renders into the overlay container, outside the component.
       expect(document.body.textContent).toContain(
-        "You need to accept this gated model's license agreement on Hugging Face.",
+        "You have to accept this gated model's conditions on Hugging Face to access its files and content.",
       );
       // Acceptance is an access request, not an instant grant — say so.
       expect(document.body.textContent).toContain(
