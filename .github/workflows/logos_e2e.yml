@@ -144,7 +144,8 @@ jobs:
   # startup cost, for assertions the SDK tier cannot make.
   browser:
     name: Browser (Playwright)
-    runs-on: ubuntu-latest
+    # Keep browser system dependencies on a fixed runner release.
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - name: Checkout repo
@@ -163,7 +164,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "20"
+          node-version-file: logos-ui/.nvmrc
           cache: "npm"
           cache-dependency-path: logos-ui/package-lock.json
 
