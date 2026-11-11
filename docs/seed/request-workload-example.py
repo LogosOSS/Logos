@@ -162,7 +162,8 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
             marker = "docs-performance-status"
             cursor.execute("DELETE FROM jobs WHERE request_payload->>'purpose' = %s", (marker,))
             cursor.execute(
-                "INSERT INTO jobs(status, environment, request_payload, result_payload, error_message, created_at, updated_at) "
+                "INSERT INTO jobs(status, environment, request_payload, result_payload, error_message, "
+                "created_at, updated_at) "
                 "VALUES (%s, 'model-provider-benchmark', %s, %s, %s, %s, %s)",
                 (
                     "failed" if window_ended else "running",
