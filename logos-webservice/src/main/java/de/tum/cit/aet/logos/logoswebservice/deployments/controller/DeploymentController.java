@@ -64,7 +64,7 @@ public class DeploymentController {
     public ResponseEntity<PlanDTO> start(
             @RequestBody DeploymentRequests.StartPlan body,
             @RequestAttribute("authContext") AuthContext auth) {
-        PlanDTO plan = deployments.start(body.tag(), body.confirmation(), auth);
+        PlanDTO plan = deployments.start(body.tag(), auth);
         return ResponseEntity.status(HttpStatus.CREATED).body(plan);
     }
 

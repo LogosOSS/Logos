@@ -230,11 +230,6 @@
   flex: none;
 }
 
-.new__confirm {
-  width: 200px;
-  flex: none;
-}
-
 .hints {
   display: flex;
   flex-direction: column;
@@ -475,7 +470,6 @@
   }
 
   .new__tag,
-  .new__confirm,
   .add__name,
   .add__kind {
     width: 100%;

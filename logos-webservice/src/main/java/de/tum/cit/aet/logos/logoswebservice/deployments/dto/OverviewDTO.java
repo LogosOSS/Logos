@@ -6,11 +6,12 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
  * What the page needs: the deployers, and whether a new deployment can start. {@code blockedReason} says why not, in a
- * sentence for the admin. {@code confirmationWord} is what the admin has to type to start a deployment on a protected
- * Logos, or null if this Logos needs no confirmation.
+ * sentence for the admin. {@code requiresConfirmation} is true on a protected Logos: the page shows a warning and asks
+ * the admin to confirm in a dialog before it starts a deployment. The dialog is a step of the page only; the Logos does
+ * not check it.
  */
 public record OverviewDTO(
-    @JsonProperty("confirmation_word") String confirmationWord,
+    @JsonProperty("requires_confirmation") boolean requiresConfirmation,
     List<DeployerDTO> deployers,
     @JsonProperty("can_start") boolean canStart,
     @JsonProperty("blocked_reason") String blockedReason,

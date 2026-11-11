@@ -29,14 +29,8 @@ export class DeploymentService {
     return firstValueFrom(this.http.get<DeploymentPlan>(`${DeploymentService.BASE}/plans/${id}`));
   }
 
-  /** `confirmation` is the word that a protected Logos asks for. */
-  startPlan(tag: string, confirmation?: string): Promise<DeploymentPlan> {
-    return firstValueFrom(
-      this.http.post<DeploymentPlan>(`${DeploymentService.BASE}/plans`, {
-        tag,
-        confirmation: confirmation ?? null,
-      }),
-    );
+  startPlan(tag: string): Promise<DeploymentPlan> {
+    return firstValueFrom(this.http.post<DeploymentPlan>(`${DeploymentService.BASE}/plans`, { tag }));
   }
 
   abandonPlan(id: string): Promise<DeploymentPlan> {

@@ -315,8 +315,8 @@ services:
       KEYCLOAK_SYNC_ENABLED: "${KEYCLOAK_SYNC_ENABLED:-false}"
       KEYCLOAK_SYNC_CLIENT_ID: "${KEYCLOAK_SYNC_CLIENT_ID:-logos-sync}"
       KEYCLOAK_SYNC_CLIENT_SECRET: "${KEYCLOAK_SYNC_CLIENT_SECRET:-}"
-      # Deployments from Logos. A Logos deploys only itself. A protected Logos (the default) asks for a typed
-      # confirmation and accepts only latest and release tags. Set LOGOS_DEPLOYMENTS_PROTECTED to false on Dev and Test.
+      # Deployments from Logos. A Logos deploys only itself. A protected Logos (the default) asks for a confirmation in
+      # a dialog and accepts only latest and release tags. Set LOGOS_DEPLOYMENTS_PROTECTED to false on Dev and Test.
       # See docs/deployment.md#deployments-from-logos.
       LOGOS_DEPLOYMENTS_PROTECTED: "${LOGOS_DEPLOYMENTS_PROTECTED:-true}"
       LOGOS_DEPLOYMENTS_SILENCE_LIMIT: "${LOGOS_DEPLOYMENTS_SILENCE_LIMIT:-30m}"

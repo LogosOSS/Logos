@@ -41,19 +41,13 @@ describe('DeploymentService', () => {
     expect((await result).id).toBe('p1');
   });
 
-  it('starts a plan, with the typed word only when there is one', async () => {
-    const first = service.startPlan('latest', 'prod');
+  it('starts a plan with its tag', async () => {
+    const result = service.startPlan('latest');
     const request = http.expectOne('/api/deployments/plans');
     expect(request.request.method).toBe('POST');
-    expect(request.request.body).toEqual({ tag: 'latest', confirmation: 'prod' });
+    expect(request.request.body).toEqual({ tag: 'latest' });
     request.flush({ id: 'new' });
-    await first;
-
-    const second = service.startPlan('pr-93');
-    const unconfirmed = http.expectOne('/api/deployments/plans');
-    expect(unconfirmed.request.body).toEqual({ tag: 'pr-93', confirmation: null });
-    unconfirmed.flush({ id: 'new' });
-    await second;
+    await result;
   });
 
   it('abandons a plan', async () => {

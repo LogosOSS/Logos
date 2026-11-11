@@ -67,6 +67,10 @@ export class Deployments implements OnInit {
   readonly nodeKindLabel = nodeKindLabel;
   readonly fullDate = fullDate;
   readonly age = formatRelativeTime;
+  /** What a protected Logos tells the admin, in the banner and again in the dialog before a deployment starts. */
+  readonly liveWarning =
+    'This Logos serves real traffic. Each node leaves service while it drains and is replaced. ' +
+    'A worker that fails its checks is rolled back. The core has no automatic rollback.';
 
   readonly kindOptions: AppSelectOption[] = [
     { value: 'worker', label: 'Worker' },
@@ -91,8 +95,8 @@ export class Deployments implements OnInit {
 
   // ── starting a deployment ────────────────────────────────────────────────
   tag = signal('latest');
-  /** What the admin typed, for a protected Logos. */
-  confirmation = signal('');
+  /** The dialog that a protected Logos shows before it starts a deployment. */
+  confirmOpen = signal(false);
   starting = signal(false);
   startError = signal<string | null>(null);
 
@@ -121,11 +125,6 @@ export class Deployments implements OnInit {
   history = computed(() => {
     const filter = this.statusFilter();
     return this.plans().filter((p) => filter === 'all' || p.status === filter);
-  });
-  /** True when the typed word fits, or when this Logos asks for none. */
-  confirmed = computed(() => {
-    const word = this.overview()?.confirmation_word;
-    return !word || this.confirmation().trim().toLowerCase() === word.toLowerCase();
   });
   canAbandon = (plan: DeploymentPlan | null) => !!plan && plan.status === 'running';
 
@@ -158,29 +157,35 @@ export class Deployments implements OnInit {
   }
 
   // ── starting ─────────────────────────────────────────────────────────────
+  /** The button Deploy. A protected Logos asks in a dialog first; the others start at once. */
   async deploy(): Promise<void> {
     this.startError.set(null);
-    const word = this.overview()?.confirmation_word;
     if (!this.tag().trim()) {
       this.startError.set('Enter an image tag.');
       return;
     }
-    if (!this.confirmed()) {
-      this.startError.set(`Type ${word} to confirm.`);
+    if (this.overview()?.requires_confirmation) {
+      this.confirmOpen.set(true);
       return;
     }
+    await this.start();
+  }
+
+  closeConfirm(): void {
+    this.confirmOpen.set(false);
+  }
+
+  /** Start the deployment. The dialog calls this when the admin confirms. */
+  async start(): Promise<void> {
     this.starting.set(true);
     try {
-      const plan = await this.service.startPlan(
-        this.tag().trim(),
-        word ? this.confirmation().trim() : undefined,
-      );
-      this.confirmation.set('');
+      const plan = await this.service.startPlan(this.tag().trim());
       await this.router.navigate(['/deployments', plan.id]);
     } catch (e) {
       this.startError.set(errorDetail(e) ?? 'The deployment could not be started.');
     } finally {
       this.starting.set(false);
+      this.confirmOpen.set(false);
     }
   }
 

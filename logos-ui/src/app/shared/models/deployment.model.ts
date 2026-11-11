@@ -89,10 +89,10 @@ export interface DeployerCreated {
 
 export interface DeploymentOverview {
   /**
-   * A protected Logos (Prod) shows a warning and asks for this word, typed, before it starts a deployment. Null on a
-   * Logos that needs no confirmation (Dev and Test).
+   * A protected Logos (Prod) shows a warning, and a dialog asks the admin to confirm before it starts a deployment.
+   * False on a Logos that needs no confirmation (Dev and Test).
    */
-  confirmation_word: string | null;
+  requires_confirmation: boolean;
   deployers: Deployer[];
   can_start: boolean;
   /** Why a deployment cannot start now, in a sentence. */

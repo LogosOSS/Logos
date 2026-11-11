@@ -5,7 +5,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
@@ -26,9 +25,9 @@ import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
 import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 
 /**
- * A Logos that nobody configured is protected (Prod): it asks for a typed word and accepts only {@code latest} and
- * release tags. The test does not set {@code logos.deployments.protect}, so it also pins that default. Dev and Test
- * switch the protection off.
+ * A Logos that nobody configured is protected (Prod): its page asks for a confirmation, and it accepts only
+ * {@code latest} and release tags. The test does not set {@code logos.deployments.protect}, so it also pins that
+ * default. Dev and Test switch the protection off.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -53,14 +52,11 @@ class DeploymentProtectionTest {
     @Autowired ObjectMapper json;
     @MockitoBean JwtDecoder jwtDecoder;
 
-    private ResultActions rawStart(String tag, String confirmation) throws Exception {
-        Map<String, Object> request = new LinkedHashMap<>();
-        request.put("tag", tag);
-        request.put("confirmation", confirmation);
+    private ResultActions rawStart(String tag) throws Exception {
         return mvc.perform(post("/deployments/plans")
             .with(TestJwt.logosAdmin())
             .contentType("application/json")
-            .content(json.writeValueAsString(request)));
+            .content(json.writeValueAsString(Map.of("tag", tag))));
     }
 
     /** A core deployer that was seen just now, so that nothing but the protection can refuse a start. */
@@ -79,21 +75,20 @@ class DeploymentProtectionTest {
     }
 
     @Test
-    void theOverviewTellsThePageWhichWordToAskFor() throws Exception {
+    void theOverviewTellsThePageThatItHasToAskForAConfirmation() throws Exception {
         mvc.perform(get("/deployments/overview").with(TestJwt.logosAdmin()))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.confirmation_word").value("prod"));
+            .andExpect(jsonPath("$.requires_confirmation").value(true));
     }
 
     @Test
-    void aProtectedLogosNeedsTheWordAndAReleaseTag() throws Exception {
+    void aProtectedLogosAcceptsOnlyLatestAndReleaseTags() throws Exception {
         onlineCoreDeployer();
 
-        rawStart("latest", null).andExpect(status().isBadRequest());
-        rawStart("latest", "dev").andExpect(status().isBadRequest());
-        rawStart("pr-93", "prod")
+        rawStart("pr-93")
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.error").value("This Logos accepts only 'latest' and release tags, not 'pr-93'."));
-        rawStart("latest", "PROD").andExpect(status().isCreated());
+        rawStart("main").andExpect(status().isBadRequest());
+        rawStart("latest").andExpect(status().isCreated());
     }
 }

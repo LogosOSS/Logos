@@ -17,16 +17,12 @@
       <div class="lg-alert__body">{{ loadError() }}</div>
     </div>
   } @else if (overview(); as ov) {
-    @if (ov.confirmation_word) {
+    @if (ov.requires_confirmation) {
       <div class="lg-alert lg-alert--error" role="alert">
         <i class="pi pi-exclamation-triangle lg-alert__icon" aria-hidden="true"></i>
         <div class="lg-alert__body">
           <strong>Deployments on this Logos affect live users</strong>
-          <span class="lg-alert__hint">
-            This Logos serves real traffic. Each node leaves service while it drains and is
-            replaced. A worker that fails its checks is rolled back. The core has no automatic
-            rollback.
-          </span>
+          <span class="lg-alert__hint">{{ liveWarning }}</span>
         </div>
       </div>
     }
@@ -140,28 +136,10 @@
               }
             </datalist>
           </div>
-          @if (ov.confirmation_word) {
-            <div class="new__confirm">
-              <label class="lg-label" for="deploy-confirm">
-                Type {{ ov.confirmation_word }} to confirm
-              </label>
-              <input
-                id="deploy-confirm"
-                class="lg-input lg-input--mono"
-                type="text"
-                autocomplete="off"
-                spellcheck="false"
-                [ngModel]="confirmation()"
-                (ngModelChange)="confirmation.set($event)"
-                [disabled]="!ov.can_start"
-                (keydown.enter)="deploy()"
-              />
-            </div>
-          }
           <button
             type="button"
             class="btn-primary"
-            [disabled]="!ov.can_start || starting() || !confirmed()"
+            [disabled]="!ov.can_start || starting()"
             (click)="deploy()"
           >
             @if (starting()) {
@@ -363,6 +341,18 @@
     </section>
   }
 </div>
+
+<!-- ── Start: a protected Logos asks first ──────────────────────────────────── -->
+<app-modal-confirm
+  [visible]="confirmOpen()"
+  (visibleChange)="$event || closeConfirm()"
+  [title]="'Deploy ' + tag().trim() + '?'"
+  [message]="liveWarning"
+  confirmLabel="Deploy"
+  icon="pi-exclamation-triangle"
+  [loading]="starting()"
+  (confirmed)="start()"
+/>
 
 <!-- ── Abandon ──────────────────────────────────────────────────────────────── -->
 <app-modal-confirm

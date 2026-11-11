@@ -43,9 +43,6 @@ import de.tum.cit.aet.logos.logoswebservice.identity.repository.UserRepository;
 @Service
 public class DeploymentService {
 
-    /** What an admin types to start a deployment on a protected Logos. */
-    static final String CONFIRMATION_WORD = "prod";
-
     private static final int MAX_LIST = 50;
     private static final int MAX_SUGGESTED_TAGS = 12;
 
@@ -87,7 +84,7 @@ public class DeploymentService {
         List<Deployer> all = deployers.list();
         String blocked = blockedReason(all, plans.findFirstByStatus(PlanStatus.running).isPresent(), now);
         return new OverviewDTO(
-            properties.protect() ? CONFIRMATION_WORD : null,
+            properties.protect(),
             all.stream().map(deployer -> views.deployer(deployer, now)).toList(),
             blocked == null,
             blocked,
@@ -120,11 +117,8 @@ public class DeploymentService {
      * only wait. An offline worker does not block the start; its step ends by the silence limit.
      */
     @Transactional
-    public PlanDTO start(String tag, String confirmation, AuthContext auth) {
+    public PlanDTO start(String tag, AuthContext auth) {
         tagPolicy.check(tag);
-        if (properties.protect() && (confirmation == null || !confirmation.strip().equalsIgnoreCase(CONFIRMATION_WORD))) {
-            throw new IllegalArgumentException("Type " + CONFIRMATION_WORD + " to confirm.");
-        }
         Instant now = clock.instant();
         List<Deployer> all = deployers.list();
         Optional<DeploymentPlan> running = plans.findFirstByStatus(PlanStatus.running);

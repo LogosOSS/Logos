@@ -267,8 +267,8 @@ Do these steps once for each host. Start with Test and Dev.
 
 1. On Dev and Test, set the variable `LOGOS_DEPLOYMENTS_PROTECTED` to `false` in
    the GitHub environment of the core host. Do not set it on Prod. A protected
-   Logos asks for a typed word and accepts only `latest` and release tags. Every
-   Logos is protected unless you set the variable.
+   Logos asks for a confirmation in a dialog and accepts only `latest` and
+   release tags. Every Logos is protected unless you set the variable.
 2. Make sure that the core of the environment runs a version of Logos that has the
    page **Deployments**. If it does not, deploy it with the deploy workflow of the
    environment, for example **Logos - Deploy to Dev**. The page shows no deployer
@@ -291,7 +291,7 @@ made. Do not give a host a key of another environment.
 
 | Variable | Where | Meaning |
 |---|---|---|
-| `LOGOS_DEPLOYMENTS_PROTECTED` | Core | `true` (default) or `false`. A protected Logos asks for the typed word `prod` and accepts only `latest` and release tags. Set it to `false` on Dev and Test. |
+| `LOGOS_DEPLOYMENTS_PROTECTED` | Core | `true` (default) or `false`. A protected Logos shows a warning, asks you to confirm in a dialog, and accepts only `latest` and release tags. Set it to `false` on Dev and Test. |
 | `LOGOS_DEPLOYMENTS_SILENCE_LIMIT` | Core | How long a started step can stay silent before Logos ends it. Default: `30m`. |
 | `LOGOS_DEPLOYER_KEY` | Every host | The key that the Logos of the environment made for the deployer of the host. |
 
@@ -337,10 +337,11 @@ last. A problem with the deployer does not stop the deployment.
 
 1. Open the page **Deployments** of the Logos of the environment that you want to
    deploy.
-2. Enter an image tag.
-3. On Prod, type `prod` in the field **Type prod to confirm**. Prod accepts only
-   `latest` and release tags. Dev and Test have no such field.
-4. Click **Deploy**. Logos opens the page of the new deployment.
+2. Enter an image tag. Prod accepts only `latest` and release tags.
+3. Click **Deploy**. On Prod, a dialog asks you to confirm. Click **Deploy** in
+   the dialog to start the deployment, or click **Cancel** to not start it. Dev
+   and Test start at once, without a dialog.
+4. Logos opens the page of the new deployment.
 
 Logos refuses a deployment in these cases:
 

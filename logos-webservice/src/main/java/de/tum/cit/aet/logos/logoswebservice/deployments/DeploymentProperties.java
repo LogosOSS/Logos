@@ -9,9 +9,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * Settings for deployments from Logos. A Logos deploys only itself: its deployers obey it, and no setting names an
  * environment. A Logos without deployers has nothing to deploy, and its page says so.
  *
- * @param protect              whether this Logos asks for a typed confirmation and accepts only the tags of
- *                             {@code restrictedTagPattern}. Default: yes, so that a Logos that nobody configured is
- *                             safe. Prod keeps it; Dev and Test switch it off.
+ * @param protect              whether this Logos is protected: its page asks the admin to confirm in a dialog, and the
+ *                             Logos accepts only the tags of {@code restrictedTagPattern}. Default: yes, so that a
+ *                             Logos that nobody configured is safe. Prod keeps it; Dev and Test switch it off.
  * @param restrictedTagPattern which tags a protected Logos accepts. Default: {@code latest} and release tags
  * @param silenceLimit         how long a started step may stay silent before Logos ends it as timed out
  * @param onlineAfter          a deployer counts as online if it was seen within this time

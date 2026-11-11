@@ -28,7 +28,7 @@ const makeDeployer = (overrides: Partial<Deployer> = {}): Deployer => ({
 });
 
 const makeOverview = (overrides: Partial<DeploymentOverview> = {}): DeploymentOverview => ({
-  confirmation_word: null,
+  requires_confirmation: false,
   deployers: [makeDeployer()],
   can_start: true,
   blocked_reason: null,
@@ -121,7 +121,7 @@ describe('Deployments', () => {
   });
 
   it('warns about live users on a protected Logos, and on no other', async () => {
-    overview = makeOverview({ confirmation_word: 'prod' });
+    overview = makeOverview({ requires_confirmation: true });
     await create();
     expect(text()).toContain('Deployments on this Logos affect live users');
 
@@ -161,40 +161,72 @@ describe('Deployments', () => {
     expect(fixture.nativeElement.querySelectorAll('app-phase-bar').length).toBe(1);
   });
 
-  it('keeps Deploy off on a protected Logos until the word is typed, then opens the page of the plan', async () => {
-    overview = makeOverview({ confirmation_word: 'prod' });
-    plans = [];
-    await create();
-    const router = TestBed.inject(Router);
-    const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
-    expect(component.confirmed()).toBe(false);
-    expect(text()).toContain('Type prod to confirm');
-
-    component.confirmation.set('prod');
-    await component.deploy();
-
-    expect(service['startPlan']).toHaveBeenCalledWith('latest', 'prod');
-    expect(navigate).toHaveBeenCalledWith(['/deployments', 'new']);
-  });
-
-  it('does not start without the typed word', async () => {
-    overview = makeOverview({ confirmation_word: 'prod' });
-    await create();
-    await component.deploy();
-    expect(service['startPlan']).not.toHaveBeenCalled();
-    expect(component.startError()).toContain('Type prod to confirm');
-  });
-
-  it('asks for no word on a Logos that is not protected', async () => {
+  it('asks in a dialog on a protected Logos, and starts only when the admin confirms', async () => {
+    overview = makeOverview({ requires_confirmation: true });
     plans = [];
     await create();
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
-    expect(component.confirmed()).toBe(true);
-    expect(text()).not.toContain('to confirm');
 
     await component.deploy();
 
-    expect(service['startPlan']).toHaveBeenCalledWith('latest', undefined);
+    expect(component.confirmOpen()).toBe(true);
+    expect(service['startPlan']).not.toHaveBeenCalled();
+
+    await component.start();
+
+    expect(service['startPlan']).toHaveBeenCalledWith('latest');
+    expect(component.confirmOpen()).toBe(false);
+    expect(navigate).toHaveBeenCalledWith(['/deployments', 'new']);
+  });
+
+  it('shows the dialog with the tag, and its red button starts the deployment', async () => {
+    overview = makeOverview({ requires_confirmation: true });
+    plans = [];
+    await create();
+    vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+
+    await component.deploy();
+    fixture.detectChanges();
+
+    // The dialog is drawn into an overlay on document.body, outside the fixture's own DOM subtree.
+    expect(document.body.textContent).toContain('Deploy latest?');
+    expect(service['startPlan']).not.toHaveBeenCalled();
+    (document.querySelector('.confirm-footer .btn-danger') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(service['startPlan']).toHaveBeenCalledWith('latest'));
+  });
+
+  it('starts nothing when the admin cancels the dialog', async () => {
+    overview = makeOverview({ requires_confirmation: true });
+    await create();
+
+    await component.deploy();
+    component.closeConfirm();
+
+    expect(component.confirmOpen()).toBe(false);
+    expect(service['startPlan']).not.toHaveBeenCalled();
+  });
+
+  it('closes the dialog and shows why when a confirmed start fails', async () => {
+    overview = makeOverview({ requires_confirmation: true });
+    await create();
+    service['startPlan'].mockRejectedValueOnce(new Error('refused'));
+
+    await component.deploy();
+    await component.start();
+
+    expect(component.confirmOpen()).toBe(false);
+    expect(component.startError()).not.toBeNull();
+  });
+
+  it('starts at once on a Logos that is not protected', async () => {
+    plans = [];
+    await create();
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+
+    await component.deploy();
+
+    expect(component.confirmOpen()).toBe(false);
+    expect(service['startPlan']).toHaveBeenCalledWith('latest');
     expect(navigate).toHaveBeenCalledWith(['/deployments', 'new']);
   });
 

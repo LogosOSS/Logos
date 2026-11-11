@@ -366,9 +366,10 @@ The page has these parts:
   to stop the next steps of a deployment that this Logos started. Without a
   running deployment, the part shows the last one.
 * **New deployment.** Enter an image tag and click **Deploy**.
-  Prod shows a red banner and asks you to type `prod` in the field next to the
-  button. Dev and Test ask for nothing. The button is off, with a reason, when
-  the core deployer is not online or a deployment runs.
+  Prod shows a red banner. When you click **Deploy** on Prod, a dialog asks you
+  to confirm: click **Deploy** in the dialog to start, or **Cancel** to not
+  start. Dev and Test start at once. The button is off, with a reason, when the
+  core deployer is not online or a deployment runs.
 * **History.** The latest 50 deployments, each with its number, the person who
   started it and the time. Filter them by status. Click a row to open its page.
 * **Page of a deployment.** Click a row of the history, or **View details**, to open

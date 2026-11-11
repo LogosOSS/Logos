@@ -237,7 +237,7 @@ class DeploymentFlowTest {
     void theOverviewSaysWhyADeploymentCannotStartYet() throws Exception {
         mvc.perform(get("/deployments/overview").with(TestJwt.logosAdmin()))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.confirmation_word").doesNotExist())
+            .andExpect(jsonPath("$.requires_confirmation").value(false))
             .andExpect(jsonPath("$.deployers").isEmpty())
             .andExpect(jsonPath("$.can_start").value(false))
             .andExpect(jsonPath("$.blocked_reason").value("No deployer is set up yet."));
