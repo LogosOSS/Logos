@@ -548,7 +548,7 @@ last successful measurement. The current pair limit is the code constant
 | `continuing` | The production configuration is confirmed. Another round waits for its turn within this window. |
 | `completed` | The night finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
 | `window_closed` | No further configuration can start after 08:00. |
-| `window_closed_below_half` | The 08:00 check found fewer than 25 of 50 successful completions. |
+| `window_closed_below_half` | The window ended before half of the current test requests completed. The UI shows **Stopped · nightly window ended**. |
 | `preparation_timeout` / `stalled` | Preparation exceeded its budget, or measurement stopped making progress. Inspect the attempt report. |
 | `recovery_required` | The original configuration is not ready. Resolve the worker error; keep the reservation and journal intact. |
 | `interrupted_recovered` | The scheduler restored a worker from its persisted recovery journal. |

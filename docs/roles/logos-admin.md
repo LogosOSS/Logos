@@ -208,6 +208,14 @@ The status card separates the provider, request progress and completed runs.
 Select **Stop benchmark** to cancel the active batch.
 
 ![Running benchmark status and progress](../static/img/roles/logos-admin-benchmark-status.png)
+
+**Stopped · nightly window ended** means the schedule stopped a test before half of its requests completed.
+The unfinished test does not produce a completed measurement. Earlier completed measurements remain in **Benchmark runs**.
+Expand **View stop details & configuration** to read the technical reason.
+This stop alone does not confirm that the worker is ready. Actual worker errors remain errors.
+
+![Benchmark stopped at the end of the nightly window](../static/img/roles/logos-admin-benchmark-window-ended.png)
+
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
 The **Performance** tab shows **Currently deployed** and **Timeline**.

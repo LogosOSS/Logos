@@ -22,6 +22,9 @@ A deployment consists of:
   [agent runner reference](https://github.com/LogosOSS/Logos/blob/main/logos-agent/README.md)).
   It is opt-in. To enable it, set `COMPOSE_PROFILES=agent`.
 
+If a change requires no worker update, then set **deploy-workers** to `false` in **Logos - Deploy to Dev**.
+This option updates the central Dev server and leaves the GPU worker unchanged. The default updates both.
+
 ## Images and Registry
 
 | Image | Contents |

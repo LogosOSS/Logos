@@ -7,6 +7,10 @@ on:
         type: string
         description: "Image tag to deploy (default: latest)"
         default: "latest"
+      deploy-workers:
+        type: boolean
+        description: "Also deploy the GPU worker (disable for core-only changes)"
+        default: true
       install-coding-pilot:
         type: boolean
         description: "Select the fixed-size coding workload on the Dev nightly schedule"
@@ -42,15 +46,11 @@ jobs:
       # worker without it replaces its container at once, whatever an earlier
       # worker still drains.
       matrix:
-        include:
-          - environment: "Dev"
-            compose-file: ./docker-compose.yaml
-            base-path: /opt/logos
-          - environment: "hochbruegge-vm-2"
-            compose-file: ./logos-workernode/docker-compose.yml
-            base-path: /opt/logos-workernode
-            node-manager: true
-            drain: true
+        include: >-
+          ${{ fromJSON(inputs.deploy-workers &&
+            '[{"environment":"Dev","compose-file":"./docker-compose.yaml","base-path":"/opt/logos"},
+              {"environment":"hochbruegge-vm-2","compose-file":"./logos-workernode/docker-compose.yml","base-path":"/opt/logos-workernode","node-manager":true,"drain":true}]' ||
+            '[{"environment":"Dev","compose-file":"./docker-compose.yaml","base-path":"/opt/logos"}]') }}
     environment:
       name: ${{ matrix.environment }}
     steps:
