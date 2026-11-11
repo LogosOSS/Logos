@@ -165,9 +165,60 @@ jobs:
             echo "Building worker: build inputs changed since $PREVIOUS_SUCCESSFUL_SHA."
           fi
 
+  # The reusable builder exposes the job token as GIT_AUTH_TOKEN to Dockerfiles.
+  # PR jobs keep a valid read-only token and publish only to Harbor.
+  # Separate non-PR jobs retain package writes; identical display names keep
+  # required checks and successful-worker discovery stable.
+  build-server-pr:
+    name: Build Logos Server
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    permissions:
+      contents: read
+      packages: read
+    with:
+      output: image
+      push: ${{ github.actor != 'dependabot[bot]' }}
+      context: .
+      file: logos-orchestrator/Dockerfile
+      platforms: linux/amd64
+      runner: ubuntu-latest
+      # GHA build cache. Without this the reusable workflow defaults to
+      # cache=false, so every build re-runs every layer on a fresh runner
+      # (apt toolchain, uv venv, full dependency install) even when only
+      # source files changed.
+      #
+      # The GHA cache isolates entries by branch: builds on main populate
+      # the cache, PR builds read it, but PR branches never share caches
+      # with each other and never write into main's — the first build
+      # after a merge is the one that refreshes it. The fixed scope keeps
+      # all of a branch's builds on the same key.
+      #
+      # cache-mode: max — the expensive layers (apt toolchain, uv venv,
+      # full dependency install) live in the non-final `builder` stage;
+      # the default min mode only exports the resulting image's layers
+      # and would leave the builder stage cold on every fresh runner.
+      cache: true
+      cache-scope: logos-orchestrator
+      cache-mode: max
+      sign: false
+      meta-images: |
+        ${{ format('{0}/logos/logos-orchestrator', vars.LOGOS_HARBOR_REGISTRY) }}
+      meta-tags: |
+        type=ref,event=pr
+        type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+        type=semver,pattern={{version}}
+      meta-flavor: |
+        latest=false
+    secrets:
+      registry-auths: |
+        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ vars.LOGOS_HARBOR_USER }}
+          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+
   build-server:
     name: Build Logos Server
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    if: ${{ github.event_name != 'pull_request' }}
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
@@ -217,9 +268,44 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+  build-webservice-pr:
+    name: Build Logos Webservice
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    permissions:
+      contents: read
+      packages: read
+    with:
+      output: image
+      push: ${{ github.actor != 'dependabot[bot]' }}
+      context: ./logos-webservice
+      file: Dockerfile
+      platforms: linux/amd64
+      runner: ubuntu-latest
+      # Same cold-runner problem: the expensive mvn build runs in the
+      # non-final `builder` stage, so max mode is needed to export those
+      # layers (default min would only cache the final JRE stage).
+      cache: true
+      cache-scope: logos-webservice
+      cache-mode: max
+      sign: false
+      meta-images: |
+        ${{ format('{0}/logos/logos-webservice', vars.LOGOS_HARBOR_REGISTRY) }}
+      meta-tags: |
+        type=ref,event=pr
+        type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+        type=semver,pattern={{version}}
+      meta-flavor: |
+        latest=false
+    secrets:
+      registry-auths: |
+        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ vars.LOGOS_HARBOR_USER }}
+          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+
   build-webservice:
     name: Build Logos Webservice
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    if: ${{ github.event_name != 'pull_request' }}
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
@@ -257,9 +343,44 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+  build-ui-pr:
+    name: Build Logos UI
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    permissions:
+      contents: read
+      packages: read
+    with:
+      output: image
+      push: ${{ github.actor != 'dependabot[bot]' }}
+      context: ./logos-ui
+      file: Dockerfile
+      platforms: linux/amd64
+      runner: ubuntu-latest
+      # Same cold-runner problem: `npm ci` and `ng build` run in the
+      # non-final `build` stage, so max mode is needed to export those
+      # layers (default min would only cache the final nginx stage).
+      cache: true
+      cache-scope: logos-ui
+      cache-mode: max
+      sign: false
+      meta-images: |
+        ${{ format('{0}/logos/logos-ui', vars.LOGOS_HARBOR_REGISTRY) }}
+      meta-tags: |
+        type=ref,event=pr
+        type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+        type=semver,pattern={{version}}
+      meta-flavor: |
+        latest=false
+    secrets:
+      registry-auths: |
+        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ vars.LOGOS_HARBOR_USER }}
+          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+
   build-ui:
     name: Build Logos UI
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    if: ${{ github.event_name != 'pull_request' }}
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
@@ -297,9 +418,42 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+  build-db-pr:
+    name: Build Logos DB
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    permissions:
+      contents: read
+      packages: read
+    with:
+      output: image
+      push: ${{ github.actor != 'dependabot[bot]' }}
+      context: ./db
+      file: Dockerfile
+      platforms: linux/amd64
+      runner: ubuntu-latest
+      # min mode (the default) is sufficient: everything runs in the final
+      # stage, so the resulting image's layers are the whole cache.
+      cache: true
+      cache-scope: logos-db
+      sign: false
+      meta-images: |
+        ${{ format('{0}/logos/logos-db', vars.LOGOS_HARBOR_REGISTRY) }}
+      meta-tags: |
+        type=ref,event=pr
+        type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+        type=semver,pattern={{version}}
+      meta-flavor: |
+        latest=false
+    secrets:
+      registry-auths: |
+        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ vars.LOGOS_HARBOR_USER }}
+          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+
   build-db:
     name: Build Logos DB
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    if: ${{ github.event_name != 'pull_request' }}
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
@@ -335,10 +489,54 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+  build-workernode-vllm-pr:
+    name: Build Logos Worker Node (vLLM)
+    needs: check-workernode-build
+    if: ${{ needs.check-workernode-build.outputs.build == 'true' && (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos') }}
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    permissions:
+      contents: read
+      packages: read
+    with:
+      output: image
+      push: ${{ github.actor != 'dependabot[bot]' }}
+      context: ./logos-workernode
+      file: Dockerfile
+      platforms: linux/amd64
+      runner: ubuntu-latest
+      # min mode (the default) stays here: everything runs in the final
+      # stage, and this is by far the largest image — max mode would
+      # export every intermediate CUDA/vLLM layer and could consume the
+      # 10 GB per-repo GHA cache budget on its own, LRU-evicting the
+      # other caches.
+      cache: true
+      cache-scope: logos-workernode-vllm
+      sign: false
+      # GIT_SHA is the commit the image is built from. On a pull request that is
+      # the PR head: github.sha would be the temporary merge commit, which no
+      # one can look up. The image itself is the PR merged into main as of the
+      # build, so there the version names the PR's commit, not the exact tree.
+      build-args: |
+        BASE_IMAGE=ubuntu:24.04
+        GIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
+      meta-images: |
+        ${{ format('{0}/logos/logos-workernode-vllm', vars.LOGOS_HARBOR_REGISTRY) }}
+      meta-tags: |
+        type=ref,event=pr
+        type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+        type=semver,pattern={{version}}
+      meta-flavor: |
+        latest=false
+    secrets:
+      registry-auths: |
+        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ vars.LOGOS_HARBOR_USER }}
+          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+
   build-workernode-vllm:
     name: Build Logos Worker Node (vLLM)
     needs: check-workernode-build
-    if: ${{ needs.check-workernode-build.outputs.build == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos') }}
+    if: ${{ needs.check-workernode-build.outputs.build == 'true' && (github.event_name != 'pull_request') }}
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
@@ -407,7 +605,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -455,9 +653,38 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  build-node-manager-pr:
+    name: Build Logos Node Manager
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    permissions:
+      contents: read
+      packages: read
+    with:
+      output: image
+      push: ${{ github.actor != 'dependabot[bot]' }}
+      context: ./logos-node-manager
+      file: Dockerfile
+      platforms: linux/amd64
+      runner: ubuntu-latest
+      sign: false
+      meta-images: |
+        ${{ format('{0}/logos/logos-node-manager', vars.LOGOS_HARBOR_REGISTRY) }}
+      meta-tags: |
+        type=ref,event=pr
+        type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+        type=semver,pattern={{version}}
+      meta-flavor: |
+        latest=false
+    secrets:
+      registry-auths: |
+        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ vars.LOGOS_HARBOR_USER }}
+          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+
   build-node-manager:
     name: Build Logos Node Manager
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    if: ${{ github.event_name != 'pull_request' }}
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
@@ -489,9 +716,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+  build-agent-pr:
+    name: Build Logos Agent Runner
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    permissions:
+      contents: read
+      packages: read
+    with:
+      output: image
+      push: ${{ github.actor != 'dependabot[bot]' }}
+      # Built from the repository root: the Dockerfile copies paths under
+      # logos-agent, matching how the orchestrator image is built.
+      context: .
+      file: logos-agent/Dockerfile
+      platforms: linux/amd64
+      runner: ubuntu-latest
+      sign: false
+      meta-images: |
+        ${{ format('{0}/logos/logos-agent', vars.LOGOS_HARBOR_REGISTRY) }}
+      meta-tags: |
+        type=ref,event=pr
+        type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+        type=semver,pattern={{version}}
+      meta-flavor: |
+        latest=false
+    secrets:
+      registry-auths: |
+        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ vars.LOGOS_HARBOR_USER }}
+          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+
   build-agent:
     name: Build Logos Agent Runner
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    if: ${{ github.event_name != 'pull_request' }}
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
@@ -525,9 +783,41 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+  build-agent-gateway-pr:
+    name: Build Logos Agent Gateway
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    permissions:
+      contents: read
+      packages: read
+    with:
+      output: image
+      push: ${{ github.actor != 'dependabot[bot]' }}
+      # Built from the repository root like the other agent images: the
+      # `file` path is resolved relative to the context, so a context of the
+      # gateway's own directory would look for the Dockerfile inside itself.
+      context: .
+      file: agent-gateway/Dockerfile
+      platforms: linux/amd64
+      runner: ubuntu-latest
+      sign: false
+      meta-images: |
+        ${{ format('{0}/logos/logos-agent-gateway', vars.LOGOS_HARBOR_REGISTRY) }}
+      meta-tags: |
+        type=ref,event=pr
+        type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+        type=semver,pattern={{version}}
+      meta-flavor: |
+        latest=false
+    secrets:
+      registry-auths: |
+        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ vars.LOGOS_HARBOR_USER }}
+          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+
   build-agent-gateway:
     name: Build Logos Agent Gateway
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    if: ${{ github.event_name != 'pull_request' }}
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
@@ -562,9 +852,41 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+  build-rate-gateway-pr:
+    name: Build Logos Rate Gateway
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    permissions:
+      contents: read
+      packages: read
+    with:
+      output: image
+      push: ${{ github.actor != 'dependabot[bot]' }}
+      # Same root context as the agent gateway: the nginx configuration and
+      # entrypoint are COPYed from rate-limit-gateway/ (and must be
+      # whitelisted in .dockerignore for that to work).
+      context: .
+      file: rate-limit-gateway/Dockerfile
+      platforms: linux/amd64
+      runner: ubuntu-latest
+      sign: false
+      meta-images: |
+        ${{ format('{0}/logos/logos-rate-gateway', vars.LOGOS_HARBOR_REGISTRY) }}
+      meta-tags: |
+        type=ref,event=pr
+        type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+        type=semver,pattern={{version}}
+      meta-flavor: |
+        latest=false
+    secrets:
+      registry-auths: |
+        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ vars.LOGOS_HARBOR_USER }}
+          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+
   build-rate-gateway:
     name: Build Logos Rate Gateway
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    if: ${{ github.event_name != 'pull_request' }}
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
@@ -599,9 +921,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+  build-agent-workspace-pr:
+    name: Build Logos Agent Workspace
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    permissions:
+      contents: read
+      packages: read
+    with:
+      output: image
+      push: ${{ github.actor != 'dependabot[bot]' }}
+      context: .
+      file: logos-agent/workspace/Dockerfile
+      platforms: linux/amd64
+      runner: ubuntu-latest
+      sign: false
+      meta-images: |
+        ${{ format('{0}/logos/logos-agent-workspace', vars.LOGOS_HARBOR_REGISTRY) }}
+      meta-tags: |
+        type=ref,event=pr
+        type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+        type=semver,pattern={{version}}
+      meta-flavor: |
+        latest=false
+    secrets:
+      registry-auths: |
+        - registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
+          username: ${{ vars.LOGOS_HARBOR_USER }}
+          password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
+
   build-agent-workspace:
     name: Build Logos Agent Workspace
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
+    if: ${{ github.event_name != 'pull_request' }}
     uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read

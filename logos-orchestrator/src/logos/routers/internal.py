@@ -64,6 +64,7 @@ from logos.dbutils.dbrequest import (
     InternalWakeLaneRequest,
     LaneLockChangedRequest,
     RefreshPipelineRequest,
+    ReleaseNodeMaintenanceRequest,
 )
 from logos.dbutils.types import Deployment
 from logos.errors import admin_error_response
@@ -1063,7 +1064,27 @@ async def internal_maintenance_status(request: Request):
     for holder in status["calibrations"] + status["benchmarks"] + status["recoveries"]:
         if not holder.get("provider_name") and holder.get("provider_id") is not None:
             holder["provider_name"] = _resolve_provider_name(int(holder["provider_id"]))
+    status["node_maintenance"] = _main._node_maintenance.admin_status() if _main._node_maintenance else []
     return jsonable_encoder(status)
+
+
+def release_node_maintenance(data: ReleaseNodeMaintenanceRequest):
+    """Release the selected lease, preserving newer deployments when the operator view is stale."""
+    if _main._node_maintenance is None:
+        raise HTTPException(status_code=503, detail="Node maintenance is unavailable")
+    try:
+        return _main._node_maintenance.admin_release(data.provider_id, data.deployment_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MaintenanceBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/internal/maintenance/node/release", tags=["admin"])
+async def internal_release_node_maintenance(data: ReleaseNodeMaintenanceRequest, request: Request):
+    """Release a node lease after the application server has checked the administrator's role."""
+    _require_internal_secret(request)
+    return release_node_maintenance(data)
 
 
 @router.post("/internal/maintenance/calibration/release", tags=["admin"])

@@ -658,6 +658,34 @@ class ProviderControllerTest {
     }
 
     @Test
+    void nodeReleaseRequiresLogosAdmin() throws Exception {
+        mvc.perform(post("/logosdb/maintenance/release_node")
+                .with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"provider_id\":6001,\"deployment_id\":\"deploy-1\"}"))
+            .andExpect(status().isForbidden());
+        mvc.perform(post("/logosdb/maintenance/release_node")
+                .with(TestJwt.testUser()).contentType("application/json")
+                .content("{\"provider_id\":6001,\"deployment_id\":\"deploy-1\"}"))
+            .andExpect(status().isForbidden());
+        verify(workerAdminClient, never()).releaseNodeMaintenance(anyInt(), anyString());
+    }
+
+    @Test
+    void nodeReleaseRecordsTheSelectedDeployment() throws Exception {
+        jdbc.update("DELETE FROM audit_log WHERE action = 'provider.node_maintenance_released'");
+        when(workerAdminClient.releaseNodeMaintenance(6001, "deploy-1"))
+            .thenReturn(ResponseEntity.ok(Map.of("released", true)));
+        mvc.perform(post("/logosdb/maintenance/release_node")
+                .with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"provider_id\":6001,\"deployment_id\":\"deploy-1\"}"))
+            .andExpect(status().isOk());
+        verify(workerAdminClient).releaseNodeMaintenance(6001, "deploy-1");
+        assertEquals(1, jdbc.queryForObject(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'provider.node_maintenance_released' "
+                + "AND target_id = '6001'", Integer.class));
+    }
+
+    @Test
     void maintenanceStatus_proxiesTheOrchestratorView() throws Exception {
         when(workerAdminClient.maintenanceStatus())
             .thenReturn(ResponseEntity.ok(Map.of("free", false, "limit", 1)));

@@ -76,6 +76,30 @@ The audit log records every release.
 
 The box updates together with the rest of the page.
 
+### Release a Node Deployment Lease
+
+**Node deployment** shows the worker, deployment ID, lease age and time until expiry without renewal.
+Node deployments use a separate lease. Only 1 node can hold this lease at a time.
+By default, a deployment can hold it for at most 2 hours, even with renewals.
+
+![Node deployment lease in Maintenance](/img/roles/logos-admin-node-maintenance.png)
+
+CAUTION: Stop the deployment on the node before you release its lease.
+The node can receive requests again after the release.
+
+1. Open **Statistics → Local Providers**.
+2. Find the worker and deployment ID in **Maintenance**.
+3. Click **Release node lease**.
+4. Check the worker in the confirmation dialog.
+5. Click **Release node lease** to confirm.
+
+![Confirmation for a node lease release](/img/roles/logos-admin-node-maintenance-release.png)
+
+The lease disappears from **Maintenance**, and a success message confirms the release.
+Another node can then deploy. The released deployment cannot renew or acquire its lease again.
+If the deployment ID changes before confirmation, Logos refuses the release. Refresh the page and check the current deployment.
+The audit log records the release from the web application.
+
 ### Idle Lanes and Lane Locks
 
 The capacity planner puts a lane to sleep after the lane has no requests for

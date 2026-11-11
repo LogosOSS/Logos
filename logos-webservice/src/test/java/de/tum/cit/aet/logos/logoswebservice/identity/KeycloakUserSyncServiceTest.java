@@ -187,6 +187,19 @@ class KeycloakUserSyncServiceTest {
     }
 
     @Test
+    void unlinkedUserWithTheSameNameButAnotherEmail_isNotAdopted() {
+        // Seeded 1005 "Manual User" has no keycloak_id; a namesake must get an account of their own.
+        try {
+            User user = syncService.syncFromClaims(
+                new KeycloakClaims(NEW_SUB, "namesake", "Manual", "User", "namesake@tum.de", Set.of(), null));
+            assertThat(user.getId()).isNotEqualTo(1005);
+            assertThat(userRepository.findById(1005).orElseThrow().getKeycloakId()).isNull();
+        } finally {
+            userRepository.findByKeycloakId(UUID.fromString(NEW_SUB)).ifPresent(userRepository::delete);
+        }
+    }
+
+    @Test
     void existingUserWithDifferentKeycloakId_throwsConflictInsteadOfDuplicateEmail() {
         User existing = new User();
         existing.setUsername("recreated");

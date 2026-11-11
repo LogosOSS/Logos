@@ -63,6 +63,12 @@ public class OrchestratorWorkerAdminClient {
             Map.of("model_provider_id", modelProviderId, "force", force));
     }
 
+    /** Revoke the node lease selected by an administrator. */
+    public ResponseEntity<Map> releaseNodeMaintenance(int providerId, String deploymentId) {
+        return post("/internal/maintenance/node/release",
+            Map.of("provider_id", providerId, "deployment_id", deploymentId));
+    }
+
     public ResponseEntity<Map> deleteLane(int providerId, String laneId) {
         return post("/internal/logosnode/lanes/delete", Map.of("provider_id", providerId, "lane_id", laneId));
     }

@@ -14,7 +14,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import de.tum.cit.aet.logos.logoswebservice.websocket.WebSocketSessionAuth;
 import org.mockito.ArgumentCaptor;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -33,7 +35,14 @@ class NotificationSocketHandlerTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final NotificationRepository notifications = mock(NotificationRepository.class);
-    private final NotificationSocketHandler handler = new NotificationSocketHandler(objectMapper, notifications);
+    private final WebSocketSessionAuth sessionAuth = mock(WebSocketSessionAuth.class);
+    private final NotificationSocketHandler handler = new NotificationSocketHandler(objectMapper, notifications, sessionAuth);
+
+    @BeforeEach
+    void authorizeSessions() {
+        when(sessionAuth.register(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
+        when(sessionAuth.isAuthorized(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
+    }
 
     private WebSocketSession connect(String id, int userId) {
         WebSocketSession session = mock(WebSocketSession.class);

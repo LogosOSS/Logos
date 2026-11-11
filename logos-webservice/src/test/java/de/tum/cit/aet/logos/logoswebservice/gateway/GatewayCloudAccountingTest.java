@@ -103,6 +103,27 @@ class GatewayCloudAccountingTest {
     }
 
     @Test
+    void estimatedUsageIsPricedAndItsMarkerIsStoredWithoutAnExtraCharge() {
+        Fixture f = seedPricedDeployment();
+        int logId = admit(f);
+        accounting.settleSuccess(logId, Map.of("prompt_tokens", 1000L, "completion_tokens", 300L,
+            "total_tokens", 1300L, "usage_estimated", 1L), null, null);
+        assertThat(settledCost(logId)).isEqualTo(56_000L);
+        assertThat(usageTokens(logId)).containsEntry("usage_estimated", 1);
+        assertThat(status(logId)).isEqualTo("success");
+    }
+
+    @Test
+    void anEmptyProviderStreamReleasesTheReservationWithoutCharging() {
+        Fixture f = seedPricedDeployment();
+        int logId = admit(f);
+        accounting.settleSuccess(logId, Map.of("provider_delivered_nothing", 1L), null, null);
+        assertThat(settledCost(logId)).isZero();
+        assertThat(status(logId)).isEqualTo("success");
+        assertThat(usageTokens(logId)).isEmpty();
+    }
+
+    @Test
     void settleSuccess_cachedPromptTokensAreBilledAtTheCacheRate() {
         Fixture f = seedPricedDeployment();
         jdbc.update("INSERT INTO token_prices (type_id, model_id, provider_id, unit, min_context_tokens, "
@@ -246,6 +267,32 @@ class GatewayCloudAccountingTest {
 
         assertThat(cost(logId)).isZero();
         assertThat(status(logId)).isEqualTo("error");
+    }
+
+    @Test
+    void settleFailure_billsOnlyReportedUsageAndSettlesOnce() {
+        Fixture f = seedPricedDeployment();
+        int logId = admit(f);
+        accounting.settleFailure(logId, "provider failed", new GatewayForwardResult(USAGE, null, null));
+
+        assertThat(cost(logId)).isEqualTo(56_000L);
+        assertThat(status(logId)).isEqualTo("error");
+        assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 1000).containsEntry("completion_tokens", 300)
+            .doesNotContainKeys("usage_estimated", "billed_requests");
+        accounting.settleFailure(logId, "duplicate callback");
+        accounting.settleSuccess(logId, Map.of("prompt_tokens", 1L), null, null);
+        assertThat(cost(logId)).isEqualTo(56_000L);
+        assertThat(status(logId)).isEqualTo("error");
+    }
+
+    @Test
+    void settleFailure_withoutPricesDoesNotKeepTheReservation() {
+        Fixture f = seedUnpricedDeployment();
+        int logId = admit(f);
+        accounting.settleFailure(logId, "provider failed", new GatewayForwardResult(USAGE, null, null));
+        assertThat(cost(logId)).isZero();
+        assertThat(status(logId)).isEqualTo("error");
+        assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 1000);
     }
 
     @Test

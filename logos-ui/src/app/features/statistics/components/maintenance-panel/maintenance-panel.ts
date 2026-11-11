@@ -13,6 +13,7 @@ import {
   MaintenanceBenchmark,
   MaintenanceCalibration,
   MaintenanceRecovery,
+  MaintenanceNode,
   MaintenanceStatus,
   StatisticsService,
 } from '../../services/statistics.service';
@@ -21,7 +22,7 @@ import { ModalConfirmComponent } from '../../../../shared/components/modal/modal
 import { formatTimeAgo } from '../../statistics.utils';
 import { messageIn } from '../lane-health-panel/lane-health-panel';
 
-export type MaintenanceHolderKind = 'calibration' | 'benchmark' | 'recovery';
+export type MaintenanceHolderKind = 'calibration' | 'benchmark' | 'recovery' | 'node';
 
 /** One entry of the maintenance status: something that holds the slot, and what can be done about it. */
 export interface MaintenanceHolderRow {
@@ -34,6 +35,7 @@ export interface MaintenanceHolderRow {
   since: string | null;
   providerId: number | null;
   claimToken: string | null;
+  deploymentId?: string;
   jobId: number | null;
   /** The nightly deployment a recovery belongs to. */
   modelProviderId: number | null;
@@ -130,12 +132,35 @@ export function recoveryRow(r: MaintenanceRecovery): MaintenanceHolderRow {
   };
 }
 
+export function nodeRow(node: MaintenanceNode): MaintenanceHolderRow {
+  return {
+    key: `node:${node.provider_id}:${node.deployment_id}`,
+    kind: 'node',
+    label: 'Node deployment',
+    provider: providerLabel(node.provider_name, node.provider_id),
+    details: [node.deployment_id, `Lease held for ${Math.floor(node.age_s / 60)} min`,
+      `Expires in ${Math.ceil(node.remaining_s / 60)} min without renewal`],
+    warning: null,
+    since: null,
+    providerId: node.provider_id,
+    deploymentId: node.deployment_id,
+    claimToken: null,
+    jobId: null,
+    modelProviderId: null,
+    canStop: false,
+    canCancel: false,
+    canReleaseRecovery: false,
+    releaseOffered: false,
+  };
+}
+
 export function holderRows(status: MaintenanceStatus | null): MaintenanceHolderRow[] {
   if (!status) return [];
   return [
     ...status.calibrations.map(calibrationRow),
     ...status.benchmarks.map(benchmarkRow),
     ...status.recoveries.map(recoveryRow),
+    ...(status.node_maintenance ?? []).map(nodeRow),
   ];
 }
 
@@ -178,6 +203,8 @@ export class MaintenancePanel implements OnChanges {
   readonly forceOffered = signal<ReadonlySet<string>>(new Set());
   readonly forceTarget = signal<MaintenanceHolderRow | null>(null);
   readonly forceError = signal<string | null>(null);
+  readonly nodeTarget = signal<MaintenanceHolderRow | null>(null);
+  readonly nodeError = signal<string | null>(null);
 
   readonly formatTimeAgo = formatTimeAgo;
 
@@ -331,6 +358,32 @@ export class MaintenancePanel implements OnChanges {
       await this.refresh();
     } catch (err: unknown) {
       this.forceError.set(failureDetail(err));
+    } finally {
+      this.busyKey.set(null);
+    }
+  }
+
+  askNodeRelease(row: MaintenanceHolderRow): void {
+    this.nodeError.set(null);
+    this.nodeTarget.set(row);
+  }
+
+  closeNodeRelease(visible: boolean): void {
+    if (!visible && this.busyKey() === null) this.nodeTarget.set(null);
+  }
+
+  async confirmNodeRelease(): Promise<void> {
+    const row = this.nodeTarget();
+    if (!row || row.providerId == null || !row.deploymentId || this.busyKey() !== null) return;
+    this.busyKey.set(row.key);
+    this.nodeError.set(null);
+    try {
+      await this.statisticsService.releaseNodeMaintenance(row.providerId, row.deploymentId);
+      this.nodeTarget.set(null);
+      this.notice.set({ kind: 'success', text: `Node lease on ${row.provider} released.` });
+      await this.refresh();
+    } catch (err: unknown) {
+      this.nodeError.set(failureDetail(err));
     } finally {
       this.busyKey.set(null);
     }

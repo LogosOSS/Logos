@@ -443,7 +443,7 @@ export class AiTools implements OnInit, OnDestroy {
     const defModel = this.selected();
 
     const modelsMap: Record<string, { name: string; limit: { context: number; output: number } }> =
-      {};
+      Object.create(null);
     for (const m of allModels) {
       // The widest this model is ever served with: OpenCode reads its config
       // once at startup, so a number that tracks what happens to be loaded
@@ -490,11 +490,11 @@ export class AiTools implements OnInit, OnDestroy {
   );
 
   private openCodePosixMergeCommand(): string {
-    const json = JSON.stringify(this.buildOpenCodeConfig(false)).replace(/'/g, "'\\''");
+    const encoded = utf8Base64(JSON.stringify(this.buildOpenCodeConfig(false)));
     return (
-      "python3 -c 'import json,os,sys;" +
+      "python3 -c 'import base64,json,os,sys;" +
       'p=os.path.expanduser("~/.config/opencode/opencode.json");' +
-      'add=json.loads(sys.argv[1]);' +
+      'add=json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"));' +
       'cfg=json.load(open(p)) if os.path.exists(p) else {};' +
       '"model" in add and cfg.setdefault("model",add["model"]);' +
       'cfg.setdefault("provider",{})["logos"]=add["provider"]["logos"];' +
@@ -502,24 +502,22 @@ export class AiTools implements OnInit, OnDestroy {
       'json.dump(cfg,open(p,"w"),indent=2);' +
       'print("Logos provider written to "+p)\' ' +
       "'" +
-      json +
+      encoded +
       "'"
     );
   }
 
   private openCodeWindowsMergeCommand(): string {
-    const json = JSON.stringify(this.buildOpenCodeConfig(false)).replace(/'/g, "''");
+    const encoded = utf8Base64(JSON.stringify(this.buildOpenCodeConfig(false)));
     return (
       "$p=Join-Path $env:USERPROFILE '.config\\opencode\\opencode.json'; " +
-      "$add='" +
-      json +
-      "' | ConvertFrom-Json; " +
+      `$add=${powerShellDecode(encoded)} | ConvertFrom-Json; ` +
       '$cfg=if(Test-Path $p){Get-Content $p -Raw | ConvertFrom-Json}else{[pscustomobject]@{}}; ' +
       'if($add.model -and !$cfg.model){$cfg | Add-Member model $add.model -Force}; ' +
       'if(!$cfg.provider){$cfg | Add-Member provider ([pscustomobject]@{})}; ' +
       '$cfg.provider | Add-Member logos $add.provider.logos -Force; ' +
       'New-Item -Force -ItemType Directory (Split-Path $p) | Out-Null; ' +
-      '$cfg | ConvertTo-Json -Depth 12 | Set-Content $p; ' +
+      '$cfg | ConvertTo-Json -Depth 12 | Set-Content -Encoding UTF8 $p; ' +
       'Write-Host "Logos provider written to $p"'
     );
   }
@@ -563,35 +561,35 @@ export class AiTools implements OnInit, OnDestroy {
       : this.claudeCodePosixInstall(),
   );
 
-  private claudeCodePosixInstall(): string {
-    const key = this.selectedKey()?.key_value ?? '';
+  private claudeCodeConfig(): string {
     const model = this.selected()?.model_name ?? '';
-    const lines = [
-      `curl -fsSL ${this.wrapperUrl()} -o ~/.claude-logos-install.sh \\`,
-      // Quoted delimiter: an unquoted heredoc would let the shell expand a `$`
-      // or a backtick inside the key before the wrapper ever sees it.
-      "  && bash ~/.claude-logos-install.sh --install <<'LOGOS'",
-      `LOGOS_URL=${this.baseUrl()}`,
-    ];
-    // Omitting LOGOS_MODEL lets Claude Code list Logos models and switch with
-    // /model. A selected model remains an optional default pin.
+    const lines = [`LOGOS_URL=${this.baseUrl()}`];
+    // An omitted pin lets Claude Code discover models and switch with /model.
     if (model) lines.push(`LOGOS_MODEL=${model}`);
-    lines.push(`LOGOS_KEY=${key}`, 'LOGOS', 'rm -f ~/.claude-logos-install.sh');
-    return lines.join('\n');
+    lines.push(`LOGOS_KEY=${this.selectedKey()?.key_value ?? ''}`);
+    return lines.join('\n') + '\n';
+  }
+
+  private claudeCodePosixInstall(): string {
+    const encoded = utf8Base64(this.claudeCodeConfig());
+    return [
+      `curl -fsSL ${quotePosix(this.wrapperUrl())} -o ~/.claude-logos-install.sh \\`,
+      `  && printf '%s' '${encoded}' \\`,
+      '  | base64 -d \\',
+      '  | bash ~/.claude-logos-install.sh --install',
+      'rm -f ~/.claude-logos-install.sh',
+    ].join('\n');
   }
 
   private claudeCodeWindowsInstall(): string {
-    const key = this.selectedKey()?.key_value ?? '';
-    const model = this.selected()?.model_name ?? '';
-    const lines = [
+    const encoded = utf8Base64(this.claudeCodeConfig());
+    return [
       "$p = Join-Path $env:TEMP 'claude-logos-install.ps1'",
-      `Invoke-WebRequest -UseBasicParsing '${this.wrapperUrl()}' -OutFile $p`,
-      "& $p -Install -LogosConfig @'",
-      `LOGOS_URL=${this.baseUrl()}`,
-    ];
-    if (model) lines.push(`LOGOS_MODEL=${model}`);
-    lines.push(`LOGOS_KEY=${key}`, "'@", 'Remove-Item $p');
-    return lines.join('\n');
+      `Invoke-WebRequest -UseBasicParsing ${powerShellDecode(utf8Base64(this.wrapperUrl()))} -OutFile $p`,
+      `$config = ${powerShellDecode(encoded)}`,
+      '& $p -Install -LogosConfig $config',
+      'Remove-Item $p',
+    ].join('\n');
   }
 
   readonly claudeCodeUninstallCommand = computed(() =>
@@ -630,7 +628,7 @@ export class AiTools implements OnInit, OnDestroy {
   readonly modelOverrideExample = computed(() =>
     this.installTab() === 'windows'
       ? "$env:LOGOS_MODEL='<model>'; claude-logos"
-      : 'LOGOS_MODEL=<model> claude-logos',
+      : "LOGOS_MODEL='<model>' claude-logos",
   );
 
   readonly openCodeConfigPath = computed(() =>
@@ -861,4 +859,18 @@ function navigatorOs(): OsTab {
   if (platform.includes('win')) return 'windows';
   if (platform.includes('linux') && !platform.includes('android')) return 'linux';
   return 'mac';
+}
+
+/** UTF-8 bytes keep arbitrary configuration values outside shell syntax. */
+function utf8Base64(value: string): string {
+  return btoa(Array.from(new TextEncoder().encode(value), (byte) => String.fromCharCode(byte)).join(''));
+}
+
+function quotePosix(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
+/** Only the base64 alphabet is interpolated into PowerShell source. */
+function powerShellDecode(encoded: string): string {
+  return `([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${encoded}')))`;
 }

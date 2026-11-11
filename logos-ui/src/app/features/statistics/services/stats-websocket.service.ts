@@ -103,6 +103,7 @@ export class StatsWebsocketService {
   private wakeProbeTimer: ReturnType<typeof setTimeout> | null = null;
   private backoff = 2000;
   private active = false;
+  private forceTokenRefresh = false;
 
   // Stored at connect-time so reconnects use the same options
   private opts: StatsWsConnectOptions | null = null;
@@ -333,7 +334,8 @@ export class StatsWebsocketService {
 
     // A transient token-refresh failure (network blip, wake from sleep) must
     // not end the reconnect chain — retry with backoff like a dropped socket.
-    const token = await this.auth.freshToken();
+    const token = await this.auth.freshToken(this.forceTokenRefresh);
+    if (!this.active || !this.opts) return;
     if (!token) {
       this._scheduleReconnect();
       return;
@@ -345,6 +347,7 @@ export class StatsWebsocketService {
     this._closeSocket();
 
     const opts = this.opts;
+    this.forceTokenRefresh = false;
     const ws = new WebSocket(buildStatsWsUrl(token));
     this.ws = ws;
 
@@ -414,9 +417,11 @@ export class StatsWebsocketService {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event: CloseEvent) => {
       // If we already replaced the socket, skip stale close events
       if (this.ws !== ws) return;
+      // 4001 means the server rejected the token expiry; force a refresh before retrying.
+      if (event.code === 4001) this.forceTokenRefresh = true;
       this._clearPingTimer();
       this.ws = null;
 

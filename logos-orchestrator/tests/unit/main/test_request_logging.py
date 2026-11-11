@@ -855,6 +855,7 @@ async def test_cloud_streaming_closing_after_done_preserves_the_response_stamp(m
     await body.__anext__()
     await body.__anext__()
     await body.aclose()
+    await asyncio.wait_for(body.drain_task, 1)
 
     assert completion_calls[-1]["result_status"] == "success"
     assert len(provider_response_calls) == 1

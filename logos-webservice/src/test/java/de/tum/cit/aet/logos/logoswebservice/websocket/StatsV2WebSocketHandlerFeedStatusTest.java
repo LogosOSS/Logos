@@ -93,9 +93,12 @@ class StatsV2WebSocketHandlerFeedStatusTest {
         when(restTemplate.exchange(anyString(), any(HttpMethod.class), any(HttpEntity.class), any(Class.class)))
             .thenReturn(ResponseEntity.ok(Map.of("streams", List.of())));
 
+        WebSocketSessionAuth sessionAuth = mock(WebSocketSessionAuth.class);
+        when(sessionAuth.register(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
+        when(sessionAuth.isAuthorized(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
         handler = new StatsV2WebSocketHandler(
             vramService, requestLogService, statsService,
-            liveStreamClient, objectMapper);
+            liveStreamClient, objectMapper, sessionAuth);
         // The tests below drive the tick themselves; the scheduled one would
         // advance the same session in between.
         handler.shutdown();

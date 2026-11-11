@@ -255,6 +255,22 @@ class VllmConfig(BaseModel):
 class VllmEngineConfig(BaseModel):
     """Worker-wide vLLM defaults and telemetry settings."""
 
+    allowed_media_domains: list[str] = Field(
+        default_factory=list,
+        description="Exact HTTP(S) media hostnames allowed by the bridge and vLLM. Empty permits only embedded media.",
+    )
+
+    @field_validator("allowed_media_domains")
+    @classmethod
+    def _validate_media_domains(cls, domains: list[str]) -> list[str]:
+        """Accept bare ASCII hostnames, without wildcards, ports, paths or credentials."""
+        for domain in domains:
+            if len(domain) > 253 or any(
+                not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label) for label in domain.split(".")
+            ):
+                raise ValueError("allowed_media_domains entries must be bare ASCII hostnames")
+        return list(dict.fromkeys(domain.lower() for domain in domains))
+
     metrics_path: str = "/metrics"
     metrics_timeout_seconds: int = Field(default=5, ge=1)
     flashinfer_loglevel: int = Field(
