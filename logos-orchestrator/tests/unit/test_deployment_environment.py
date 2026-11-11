@@ -2,6 +2,7 @@
 
 import json
 import runpy
+import sys
 from pathlib import Path
 
 import pytest
@@ -58,3 +59,21 @@ def test_dollars_quotes_and_backslashes_are_preserved():
 def test_unknown_target_is_rejected():
     with pytest.raises(ValueError, match="Unknown"):
         render_secrets("other", _environment())
+
+
+def test_cli_writes_only_selected_credentials(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["write-deployment-secrets.py", "worker"])
+    monkeypatch.setenv("DEPLOY_SECRET_LOGOS_API_KEY", "worker-key")
+    monkeypatch.setenv("DEPLOY_SECRET_HF_TOKEN", "")
+    monkeypatch.setenv("DEPLOY_SECRET_LOGOS_DB_PASSWORD", "core-password")
+    runpy.run_path(SCRIPT["__file__"], run_name="__main__")
+    assert capsys.readouterr().out == 'LOGOS_API_KEY="worker-key"\n'
+
+
+def test_cli_missing_credential_exits_without_partial_output(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["write-deployment-secrets.py", "core"])
+    monkeypatch.setenv("DEPLOY_SECRET_LOGOS_DB_PASSWORD", "core-password")
+    monkeypatch.setenv("DEPLOY_SECRET_LOGOS_REDIS_PASSWORD", "")
+    with pytest.raises(SystemExit, match="LOGOS_REDIS_PASSWORD"):
+        runpy.run_path(SCRIPT["__file__"], run_name="__main__")
+    assert capsys.readouterr().out == ""

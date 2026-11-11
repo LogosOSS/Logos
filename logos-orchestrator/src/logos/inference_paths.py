@@ -42,7 +42,7 @@ def require_inference_path(path: str) -> None:
         raise HTTPException(status_code=404, detail="Not found")
 
 
-def require_canonical_path(request: Request) -> None:
+async def require_canonical_path(request: Request) -> None:
     """Reject ambiguous public paths before any route authenticates the caller."""
     path = request.scope["path"].removeprefix("/")
     raw = request.scope.get("raw_path", b"").lower()
