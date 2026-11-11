@@ -832,6 +832,46 @@ async def test_inference_rejects_path_traversal_before_http_request(stream):
 
 
 @pytest.mark.asyncio
+async def test_decision_readout_is_relayed_to_the_lane(monkeypatch):
+    # The orchestrator's system_one route forwards v1/systemone to the lane for
+    # models without a decision profile.
+    app = _DummyApp()
+    app.state.lane_manager = SimpleNamespace(
+        acquire_lane_for_infer=AsyncMock(return_value=_make_lane_status()),
+        decrement_active_requests=AsyncMock(return_value=None),
+    )
+    client = LogosBridgeClient(app, LogosConfig(enabled=True, logos_url="https://logos.example", shared_key="secret"))
+    posted: list[str] = []
+
+    class _Resp:
+        status_code = 200
+        content = b'{"answer": "ok"}'
+        text = '{"answer": "ok"}'
+
+        def __init__(self):
+            self.headers = {"content-type": "application/json"}
+
+        @staticmethod
+        def json():
+            return {"answer": "ok"}
+
+    class _HttpClient:
+        async def post(self, url, headers=None, **kwargs):  # noqa: ARG002
+            posted.append(url)
+            return _Resp()
+
+    monkeypatch.setattr(client, "_relay_client", _HttpClient())  # noqa: SLF001
+
+    result = await client._execute_infer_command(  # noqa: SLF001
+        {"lane_id": "lane-a", "request_path": "v1/systemone", "payload": {"model": "m", "questions": ["q"]}}
+    )
+
+    assert posted == ["http://127.0.0.1:19001/v1/systemone"]
+    assert result["status_code"] == 200
+    app.state.lane_manager.decrement_active_requests.assert_awaited_once_with("lane-a")
+
+
+@pytest.mark.asyncio
 async def test_send_heartbeat_uses_lightweight_payload():
     cfg = LogosConfig(enabled=True, logos_url="https://logos.example", shared_key="secret")
     client = LogosBridgeClient(_DummyApp(), cfg)
