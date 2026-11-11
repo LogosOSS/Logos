@@ -67,10 +67,6 @@ The security process includes:
 
 - **Dependabot**: detection of known vulnerabilities in project dependencies.
 - **SonarQube Cloud**: static analysis with a quality gate on pull requests.
-
-Planned checks (not currently enabled):
-
-- **CodeQL**: static analysis to identify potential security vulnerabilities in source code.
 - **Secret scanning**: detection of accidentally exposed credentials.
 
 ## Weekly Security Audits
