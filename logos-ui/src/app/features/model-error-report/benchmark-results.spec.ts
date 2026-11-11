@@ -171,36 +171,42 @@ function measured(id: number, rate: number, baseline: number, day: number, concu
 }
 
 describe('Nightly progress', () => {
-  it('starts at the earliest baseline and keeps the best result across completed nights', () => {
-    const groups = benchmarkProgress([measured(3, 40, 3, 22), measured(4, 44, 3, 22), measured(5, 42, 3, 22),
-      measured(1, 40, 1, 21), measured(2, 38, 1, 21)]);
-    expect(groups).toHaveLength(1);
-    expect(groups[0].reference.id).toBe(1);
-    expect(groups[0].points.map(point => point.run.id)).toEqual([1, 4]);
-    expect(groups[0].points[0].gain).toBe(0);
-    expect(groups[0].points[1].gain).toBeCloseTo(10);
-    expect(groups[0].min).toBeLessThan(40);
-    expect(groups[0].max).toBeGreaterThan(44);
-    expect(benchmarkProgress([measured(1, 40, 1, 21), measured(2, 38, 1, 21),
-      measured(3, 40, 3, 22), measured(5, 42, 3, 22), measured(4, 44, 3, 22)])[0].line).toBe(groups[0].line);
+  it('keeps slower runs and compares each measurement with its own round baseline', () => {
+    const rows = [measured(3, 42, 3, 22), measured(4, 44, 3, 22), measured(5, 39, 3, 22),
+      measured(1, 40, 1, 21), measured(2, 38, 1, 21)];
+    const chart = benchmarkProgress(rows)[0];
+    expect(chart.reference.id).toBe(3);
+    expect(chart.baselineRate).toBe(42);
+    expect(chart.points.map(point => point.run.id)).toEqual([1, 2, 3, 4, 5]);
+    expect(chart.points.map(point => point.gain)).toEqual([0, expect.closeTo(-5), 0,
+      expect.closeTo(100 * (44 / 42 - 1)), expect.closeTo(100 * (39 / 42 - 1))]);
+    expect(chart.points.filter(point => point.isBaseline).map(point => point.run.id)).toEqual([1, 3]);
+    expect(chart.maxRate).toBeGreaterThan(44);
+    expect(chart.points[0].y).toBeCloseTo(100 * (1 - 40 / chart.maxRate));
+    expect(chart.baselineLine).toContain('100,');
+    expect(benchmarkProgress([...rows].reverse())[0].line).toBe(chart.line);
   });
 
-  it('keeps actual record dates and configurations across worker releases and daily references', () => {
-    const first = measured(1, 40, 1, 21), record = measured(2, 45, 1, 22), worse = measured(3, 42, 3, 23);
+  it('keeps actual dates and configurations across worker releases and daily baselines', () => {
+    const first = measured(1, 40, 1, 21), record = measured(2, 45, 1, 22), current = measured(3, 42, 3, 23);
     first.configuration['nightly'] = { baseline_id: 1, series_key: 'old-release' };
     record.configuration['nightly'] = { baseline_id: 1, series_key: 'old-release' };
-    worse.configuration['nightly'] = { baseline_id: 3, reference_id: 3, series_key: 'new-release' };
-    const chart = benchmarkProgress([worse, record, first])[0];
-    expect(chart.points.map(point => [point.run.id, point.rate])).toEqual([[1, 40], [2, 45]]);
+    current.configuration['nightly'] = { baseline_id: 3, reference_id: 3, series_key: 'new-release' };
+    const chart = benchmarkProgress([current, record, first])[0];
+    expect(chart.points.map(point => [point.run.id, point.rate])).toEqual([[1, 40], [2, 45], [3, 42]]);
+    expect(chart.reference.id).toBe(3);
     expect(chart.points[1].time).toBe(Date.parse('2026-10-22T05:10:00Z'));
     expect(chart.points[1].configuration).toContain('Sequences 8');
     expect(chart.last).toBe(Date.parse('2026-10-23T05:10:00Z'));
   });
 
-  it('includes complete manual records after a captured starting baseline', () => {
-    const first = measured(1, 40, 1, 21), manual = measured(2, 48, 1, 22);
+  it('shows manual measurements without inventing a baseline comparison', () => {
+    const first = measured(1, 40, 1, 21), manual = measured(2, 38, 1, 22);
     delete manual.configuration['nightly'];
-    expect(benchmarkProgress([first, manual])[0].points.map(point => point.run.id)).toEqual([1, 2]);
+    const points = benchmarkProgress([first, manual])[0].points;
+    expect(points.map(point => point.run.id)).toEqual([1, 2]);
+    expect(points[1].gain).toBeNull();
+    expect(points[1].baselineId).toBeUndefined();
   });
 
   it('separates workloads and rejects changes to input generation within a comparison', () => {
@@ -216,12 +222,14 @@ describe('Nightly progress', () => {
     expect(groups.every(group => !group.line.includes('NaN'))).toBe(true);
   });
 
-  it('renders the starting baseline and measured result and removes deleted comparisons', () => {
+  it('renders absolute throughput with a baseline line and removes deleted comparisons', () => {
     const fixture = TestBed.createComponent(BenchmarkResults);
     fixture.componentRef.setInput('runs', [measured(1, 40, 1, 21), measured(2, 44, 1, 21)]);
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelectorAll('.progress-point')).toHaveLength(2);
-    expect(fixture.nativeElement.querySelector('polyline')).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('.progress-baseline')).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('.progress-axis--zero').textContent).toBe('0');
+    expect(fixture.nativeElement.querySelector('.progress-axis--top').textContent).toContain('tok/s');
     fixture.componentRef.setInput('runs', [measured(2, 44, 1, 21)]);
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelectorAll('.progress-point')).toHaveLength(0);
@@ -279,14 +287,15 @@ describe.each(['logos-replay', 'guidellm'])('Fixed request reference (%s)', (too
     return row;
   }
 
-  it('keeps one reference and cumulative gains across nights without counting rejected trials', () => {
+  it('keeps all complete observations and marks rejected faster trials', () => {
     const groups = benchmarkProgress([replay(1, 40), replay(2, 60, 1), replay(3, 20, 3),
       replay(4, 50, 3), replay(5, 100, 3, false), replay(6, 200, 3, true, 'other')]);
     expect(groups).toHaveLength(1);
-    expect(groups[0].fixed).toBe(true);
-    expect(groups[0].points.map(point => point.gain)).toEqual([0, 50]);
-    expect(groups[0].points.map(point => point.run.id)).toEqual([1, 2]);
-    expect(new Set(groups[0].points.map(point => point.key)).size).toBe(2);
+    expect(groups[0].reference.id).toBe(3);
+    expect(groups[0].points.map(point => point.run.id)).toEqual([1, 2, 3, 4, 5]);
+    expect(groups[0].points[3].gain).toBe(150);
+    expect(groups[0].points[4].selectionNote).toContain('Not eligible');
+    expect(new Set(groups[0].points.map(point => point.key)).size).toBe(5);
   });
 
   it('distinguishes legacy replay from GuideLLM measurements of the same dataset', () => {
@@ -299,27 +308,26 @@ describe.each(['logos-replay', 'guidellm'])('Fixed request reference (%s)', (too
     expect(charts.map(chart => chart.label).join(' ')).toContain('Legacy replay');
   });
 
-  it('shows total growth from the baseline and relative improvement from the previous point', () => {
-    const rows = [replay(1, 40), replay(2, 42, 1), replay(3, 44), replay(4, 41)];
+  it('shows gains against the newly measured baseline after a configuration change', () => {
+    const rows = [replay(1, 40), replay(2, 42, 1), replay(3, 44), replay(4, 41, 3)];
     const chart = benchmarkProgress(rows)[0];
-    expect(chart.points.map(point => point.gain)).toEqual([0, expect.closeTo(5), expect.closeTo(10)]);
-    expect(chart.points.map(point => point.stepGain)).toEqual([null, expect.closeTo(5), expect.closeTo(100 * (44 / 42 - 1))]);
-    expect(chart.points.map(point => point.previousRunId)).toEqual([null, 1, 2]);
-    expect(chart.points.map(point => point.run.id)).toEqual([1, 2, 3]);
+    expect(chart.reference.id).toBe(3);
+    expect(chart.points.map(point => point.gain)).toEqual([0, expect.closeTo(5), 0, expect.closeTo(100 * (41 / 44 - 1))]);
     const fixture = TestBed.createComponent(BenchmarkResults);
     fixture.componentRef.setInput('runs', rows);
     fixture.detectChanges();
     const points = fixture.nativeElement.querySelectorAll('.progress-point') as NodeListOf<HTMLAnchorElement>;
-    expect(points[2].getAttribute('aria-label')).toContain('10.0% total vs. starting baseline, 4.8% vs. previous point');
-    expect(points[2].textContent).toContain('+4.8% vs. previous point (run #2)');
-    expect(points[0].textContent).toContain('Starting baseline · 0%');
+    expect(points[3].getAttribute('aria-label')).toContain('-6.8% vs. baseline #3');
+    expect(points[3].textContent).toContain('baseline #3');
+    expect(fixture.nativeElement.querySelector('.timeline-baseline').textContent).toContain('Latest round baseline #3');
+    expect(points[0].textContent).toContain('Round baseline');
   });
 
-  it('does not invent a new observation when a round fails to improve the baseline', () => {
+  it('shows a completed regression instead of hiding it from the timeline', () => {
     const baseline = replay(1, 40), worse = replay(2, 38, 1);
     const chart = benchmarkProgress([worse, baseline])[0];
-    expect(chart.points.map(point => point.gain)).toEqual([0]);
+    expect(chart.points.map(point => point.run.id)).toEqual([1, 2]);
+    expect(chart.latest.gain).toBeCloseTo(-5);
     expect(chart.points[0].time).toBe(Date.parse('2026-10-21T04:00:00Z'));
-    expect(chart.points[0].run.id).toBe(1);
   });
 });

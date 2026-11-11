@@ -10,7 +10,7 @@ import {
 } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { NightlyBenchmarks } from './nightly-benchmarks';
-import { BenchmarkRunFailure } from './benchmark-run-failure';
+import { BenchmarkRunFailure, isBenchmarkWindowStop } from './benchmark-run-failure';
 import { BenchmarkResults } from './benchmark-results';
 import { DeployedConfiguration } from './deployed-configuration';
 import { benchmarkDatasetLabel } from './benchmark-configuration';
@@ -1460,7 +1460,10 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     return `${run.result.completed_runs ?? 0}/${total} runs completed${this.isBenchmarkActive(run) && run.result.run_index ? ' · current run ' + run.result.run_index : ''}`;
   }
 
+  readonly isBenchmarkWindowStop = isBenchmarkWindowStop;
+
   benchmarkStatusLabel(run: ModelBenchmarkRun): string {
+    if (isBenchmarkWindowStop(run)) return `Stopped · nightly window ended ${this.formatBenchmarkTimestamp(run.updated_at)}`;
     if (run.status === 'pending') return 'Queued';
     if (run.status === 'running') {
       if (run.result.stage === 'preparing_worker') return 'Preparing worker';

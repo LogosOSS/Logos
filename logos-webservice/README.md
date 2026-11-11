@@ -39,6 +39,10 @@ docker compose -f docker-compose.dev.yaml up --build
 
 The service starts on port `18082` (direct) and is reachable through Traefik on port `18081` at `/api/*`.
 
+The amd64 runtime image installs Git and SSH through the kernel.org mirror of
+Ubuntu's signed release and security archives. Ubuntu signature verification
+remains enabled. ARM64 retains the Ubuntu ports repositories.
+
 ## Running locally (outside Docker)
 
 Start the database first:

@@ -172,7 +172,7 @@ jobs:
   build-server-pr:
     name: Build Logos Server
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       packages: read
@@ -219,7 +219,7 @@ jobs:
   build-server:
     name: Build Logos Server
     if: ${{ github.event_name != 'pull_request' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       id-token: write
@@ -271,7 +271,7 @@ jobs:
   build-webservice-pr:
     name: Build Logos Webservice
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       packages: read
@@ -306,7 +306,7 @@ jobs:
   build-webservice:
     name: Build Logos Webservice
     if: ${{ github.event_name != 'pull_request' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       id-token: write
@@ -346,7 +346,7 @@ jobs:
   build-ui-pr:
     name: Build Logos UI
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       packages: read
@@ -381,7 +381,7 @@ jobs:
   build-ui:
     name: Build Logos UI
     if: ${{ github.event_name != 'pull_request' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       id-token: write
@@ -421,7 +421,7 @@ jobs:
   build-db-pr:
     name: Build Logos DB
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       packages: read
@@ -454,7 +454,7 @@ jobs:
   build-db:
     name: Build Logos DB
     if: ${{ github.event_name != 'pull_request' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       id-token: write
@@ -493,7 +493,7 @@ jobs:
     name: Build Logos Worker Node (vLLM)
     needs: check-workernode-build
     if: ${{ needs.check-workernode-build.outputs.build == 'true' && (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos') }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       packages: read
@@ -537,7 +537,7 @@ jobs:
     name: Build Logos Worker Node (vLLM)
     needs: check-workernode-build
     if: ${{ needs.check-workernode-build.outputs.build == 'true' && (github.event_name != 'pull_request') }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       id-token: write
@@ -656,7 +656,7 @@ jobs:
   build-node-manager-pr:
     name: Build Logos Node Manager
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       packages: read
@@ -685,7 +685,7 @@ jobs:
   build-node-manager:
     name: Build Logos Node Manager
     if: ${{ github.event_name != 'pull_request' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       id-token: write
@@ -719,7 +719,7 @@ jobs:
   build-agent-pr:
     name: Build Logos Agent Runner
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       packages: read
@@ -750,7 +750,7 @@ jobs:
   build-agent:
     name: Build Logos Agent Runner
     if: ${{ github.event_name != 'pull_request' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       id-token: write
@@ -786,7 +786,7 @@ jobs:
   build-agent-gateway-pr:
     name: Build Logos Agent Gateway
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       packages: read
@@ -818,7 +818,7 @@ jobs:
   build-agent-gateway:
     name: Build Logos Agent Gateway
     if: ${{ github.event_name != 'pull_request' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       id-token: write
@@ -855,7 +855,7 @@ jobs:
   build-rate-gateway-pr:
     name: Build Logos Rate Gateway
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       packages: read
@@ -887,7 +887,7 @@ jobs:
   build-rate-gateway:
     name: Build Logos Rate Gateway
     if: ${{ github.event_name != 'pull_request' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       id-token: write
@@ -924,7 +924,7 @@ jobs:
   build-agent-workspace-pr:
     name: Build Logos Agent Workspace
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'LogosOSS/Logos' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       packages: read
@@ -953,7 +953,7 @@ jobs:
   build-agent-workspace:
     name: Build Logos Agent Workspace
     if: ${{ github.event_name != 'pull_request' }}
-    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
     permissions:
       contents: read
       id-token: write

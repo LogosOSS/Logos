@@ -651,6 +651,8 @@ class LogosBridgeClient:
         )
 
     def _runtime_has_transient_lanes(self) -> bool:
+        if self._last_runtime_payload.get("lane_transfers"):
+            return True
         lanes = self._last_runtime_payload.get("lanes") or []
         if not isinstance(lanes, list):
             return False

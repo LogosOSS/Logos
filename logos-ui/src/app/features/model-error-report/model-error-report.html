@@ -528,7 +528,7 @@
                   <div class="benchmark-current-run__content">
                   <h3>{{ pair.provider_name }}</h3>
                   <div class="benchmark-pair__state">
-                        <span class="run-status" [ngClass]="'run-status--' + run.status">
+                        <span class="run-status" [ngClass]="'run-status--' + (isBenchmarkWindowStop(run) ? 'stopped' : run.status)">
                           @if (isBenchmarkActive(run)) {
                             <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
                           }
@@ -536,7 +536,7 @@
                         </span>
                         @if (benchmarkBatchProgress(run); as progress) {
                           <small aria-live="polite">{{ progress }}</small>
-                          @if (run.result.total_runs) { <progress [value]="run.result.completed_runs ?? 0" [max]="run.result.total_runs" aria-label="Completed benchmark runs"></progress> }
+                          @if (isBenchmarkActive(run) && run.result.total_runs) { <progress [value]="run.result.completed_runs ?? 0" [max]="run.result.total_runs" aria-label="Completed benchmark runs"></progress> }
                         }
                         @if (run.status === 'failed' && run.error_message) {
                           <app-benchmark-run-failure [run]="run" />

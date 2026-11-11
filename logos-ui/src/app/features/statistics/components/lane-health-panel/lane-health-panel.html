@@ -35,7 +35,7 @@
   }
 </ng-template>
 
-@if (!canAdd && lanes.length === 0) {
+@if (!canAdd && lanes.length === 0 && !laneTransfers?.length) {
   @if (lockError()) {
     <div class="action-error">{{ lockError() }}</div>
   }
@@ -53,7 +53,32 @@
       <div class="action-error">{{ lockError() }}</div>
     }
     <ng-container *ngTemplateOutlet="workerLock" />
-    @if (lanes.length === 0) {
+    @for (transfer of laneTransfers; track transfer.lane_id) {
+      @let loading = transfer.operation === 'loading';
+      @let label = (loading ? 'Loading ' : 'Unloading ') + (transfer.model || transfer.lane_id);
+      <div class="lane-row lane-transfer">
+        <div class="lane-transfer__header">
+          <span class="lane-transfer__title">{{ label }}</span>
+          @if (transfer.resident_vram_mb != null) {
+            <span class="stat-label">
+              {{ vramGiB(transfer.resident_vram_mb) }}
+              @if (loading && transfer.reference_vram_mb != null) {
+                / ~{{ vramGiB(transfer.reference_vram_mb) }}
+              }
+              {{ loading ? 'in VRAM' : 'still in VRAM' }}
+            </span>
+          } @else {
+            <span class="stat-label">Waiting for VRAM data</span>
+          }
+        </div>
+        <progress
+          [attr.aria-label]="label + ' (VRAM)'"
+          [attr.value]="transferProgress(transfer)"
+          max="1"
+        ></progress>
+      </div>
+    }
+    @if (lanes.length === 0 && !laneTransfers?.length) {
       <div class="lane-empty">No lanes loaded.</div>
     }
     @for (row of lanes; track row.laneId) {
@@ -264,11 +289,10 @@
             <i class="pi pi-plus" aria-hidden="true"></i> Load lane
           </button>
         }
-        @if (acceptedModel()) {
+        @if (acceptedModel() && !acceptedLoadHasTelemetry) {
           <div class="lane-load__pending" aria-live="polite">
             <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
-            Loading <strong>{{ acceptedModel() }}</strong> — this can take minutes; the lane
-            appears here once the worker reports it.
+            Preparing <strong>{{ acceptedModel() }}</strong> for loading.
           </div>
         }
       </div>

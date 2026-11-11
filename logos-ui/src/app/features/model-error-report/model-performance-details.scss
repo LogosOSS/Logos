@@ -258,6 +258,7 @@
 .run-status--running,
 .run-status--pending { color: rgb(var(--color-primary-500)) !important; }
 .run-status--success { color: rgb(var(--color-success)) !important; }
+.run-status--stopped { color: rgb(var(--color-typography-500)) !important; }
 .run-status--failed { color: rgb(var(--color-error)) !important; }
 
 .benchmark-run-button {
