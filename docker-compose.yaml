@@ -559,7 +559,14 @@ services:
     restart: unless-stopped
     environment:
       REDISCLI_AUTH: "${LOGOS_REDIS_PASSWORD:?LOGOS_REDIS_PASSWORD must be set}"
-    command: ["sh", "-ec", 'exec redis-server --save "" --appendonly no --requirepass "$$REDISCLI_AUTH"']
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --requirepass
+      - "${LOGOS_REDIS_PASSWORD:?LOGOS_REDIS_PASSWORD must be set}"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
