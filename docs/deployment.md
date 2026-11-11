@@ -63,6 +63,19 @@ Redis uses `requirepass`. The web service and Redis health check use the same `L
 Redis has no persistent data in this stack, so no stored password migration is necessary.
 For a later Redis password change, update `.env` and the GitHub secret, then recreate Redis and the web service together.
 
+## Container privileges
+
+The orchestrator and web service images run as UID `10001`.
+Their production containers drop all Linux capabilities and enable `no-new-privileges`.
+Traefik uses the same capability restrictions.
+The agent runner retains only `CHOWN`, `DAC_OVERRIDE`, and `FOWNER` for session files.
+It also enables `no-new-privileges`.
+
+Traefik and the agent runner still mount the host's Docker socket.
+These restrictions do not limit Docker API access through that socket.
+A socket proxy needs a separate design and deployment change.
+PostgreSQL, Redis, nginx, and GPU worker images retain their existing startup users and capabilities.
+
 ## Images and Registry
 
 | Image | Contents |

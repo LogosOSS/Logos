@@ -16,5 +16,9 @@ RUN sed -i -E \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /build/target/*.war app.war
+RUN groupadd --system --gid 10001 logos \
+  && useradd --uid 10001 --gid logos --create-home --no-log-init logos
+ENV HOME=/home/logos
+USER 10001:10001
 EXPOSE 8081
 ENTRYPOINT ["java", "-jar", "app.war"]

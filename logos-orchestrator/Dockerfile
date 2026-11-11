@@ -79,6 +79,14 @@ RUN if [ -f src/grpclocal/model.proto ]; then \
 # Copy other project files
 COPY db/ ./logos/db/
 
+# The classifier cache is relative to /app; model downloads use the user's home.
+RUN groupadd --system --gid 10001 logos \
+  && useradd --uid 10001 --gid logos --create-home --no-log-init logos \
+  && chown logos:logos /app
+ENV HOME=/home/logos
+ENV PYTHONDONTWRITEBYTECODE=1
+USER 10001:10001
+
 EXPOSE 8080 50051
 
 CMD ["uvicorn", "logos.main:app", "--host", "0.0.0.0", "--port", "8080", "--ws-ping-interval", "60", "--ws-ping-timeout", "60", "--ws-max-size", "268435456"]
