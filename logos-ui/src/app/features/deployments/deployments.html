@@ -240,11 +240,13 @@
         <div>
           <div class="lg-panel__title">Deployers</div>
           <div class="lg-panel__sub">
-            The programs on the hosts that take the orders of this page. A key is shown once.
+            The programs on the hosts that take the orders of this page. A worker needs no key of its own: it uses its
+            worker key and shows up here when its node manager asks Logos for orders. The key of a core deployer is
+            shown once.
           </div>
         </div>
         <button type="button" class="btn-secondary" (click)="toggleAdd()">
-          <i class="pi pi-plus" aria-hidden="true"></i> Add a deployer
+          <i class="pi pi-plus" aria-hidden="true"></i> Add a core deployer
         </button>
       </div>
       <div class="lg-panel__body">
@@ -261,15 +263,6 @@
                 placeholder="The name of the host"
                 [ngModel]="newName()"
                 (ngModelChange)="newName.set($event)"
-              />
-            </div>
-            <div class="add__kind">
-              <span class="lg-label">Kind</span>
-              <app-select
-                ariaLabel="Kind"
-                [options]="kindOptions"
-                [value]="newKind()"
-                (valueChange)="newKind.set($event === 'core' ? 'core' : 'worker')"
               />
             </div>
             <button type="submit" class="btn-primary" [disabled]="creating()">
@@ -323,7 +316,9 @@
                   </td>
                   <td data-label="Version">{{ d.version ?? '—' }}</td>
                   <td class="deployers__actions">
-                    <button type="button" class="btn-secondary" (click)="replaceTarget.set(d)">New key</button>
+                    @if (d.kind === 'core') {
+                      <button type="button" class="btn-secondary" (click)="replaceTarget.set(d)">New key</button>
+                    }
                     <button type="button" class="btn-secondary" (click)="removeTarget.set(d)">Remove</button>
                   </td>
                 </tr>
@@ -417,7 +412,7 @@
   [visible]="removeTarget() !== null"
   (visibleChange)="$event || removeTarget.set(null)"
   [title]="'Remove ' + (removeTarget()?.name ?? '') + '?'"
-  message="Its key stops working. The history of its deployments stays."
+  [message]="removeMessage()"
   confirmLabel="Remove"
   [loading]="deployerBusy()"
   (confirmed)="confirmRemove()"

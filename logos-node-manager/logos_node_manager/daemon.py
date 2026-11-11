@@ -138,7 +138,8 @@ class Daemon:
             logger.info("Orders come from %s, which gets the reports of the deployments it ordered", s.logos_url)
         else:
             logger.info(
-                "NODE_MANAGER_LOGOS_URL or NODE_MANAGER_DEPLOYER_KEY is empty: only the command line gives orders"
+                "NODE_MANAGER_LOGOS_URL or the key for orders is empty (NODE_MANAGER_DEPLOYER_KEY on a core host, "
+                "NODE_MANAGER_NODE_KEY on a worker): only the command line gives orders"
             )
         if s.kind == "core":
             logger.info(

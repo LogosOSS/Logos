@@ -181,9 +181,17 @@ by ID with `docker rmi`. A host without the deploy workflow keeps its old manage
 A host obeys one Logos: the Logos of its own environment. The manager asks that Logos for orders, and tells it how the
 deployments go. A host never obeys the Logos of another environment, so Dev cannot deploy Prod, and Prod cannot deploy
 Dev. Nothing calls into the host: the manager only makes outgoing requests, so it still has no port and no server. The
-address is `NODE_MANAGER_LOGOS_URL` and the key is `NODE_MANAGER_DEPLOYER_KEY`. The compose files build them from
-`LOGOS_URL` (on a core host: the domain of the host) and `LOGOS_DEPLOYER_KEY`. Without both, the host takes no orders
-from Logos.
+address is `NODE_MANAGER_LOGOS_URL`. The key depends on the kind of host:
+
+* A **worker** is known to Logos by its worker key, `LOGOS_API_KEY`. This is the key that the worker also uses with the
+  orchestrator, and the manager already has it as `NODE_MANAGER_NODE_KEY`. A worker needs no deployer key. Its row on the
+  page Deployments appears when its manager asks Logos for orders for the first time. The worker compose file builds the
+  address from `LOGOS_URL`.
+* A **core host** has no worker key. It has a deployer key that its Logos made on the page Deployments:
+  `NODE_MANAGER_DEPLOYER_KEY`. The core compose file builds it from `LOGOS_DEPLOYER_KEY`, and the address from the domain
+  of the host.
+
+Without the address and the key, the host takes no orders from Logos.
 
 * **Orders.** One thread sends `POST /api/deployments/deployer/poll` with the key in the header
   `Authorization: Bearer`. Logos holds the request until an order appears or `ORDER_WAIT_S` (25 s) pass. An order starts
@@ -320,7 +328,7 @@ All settings are environment variables with the prefix `NODE_MANAGER_`.
 | `STABILITY_WINDOW_S` | 60 | How long the container must stay healthy. 0 switches the wait off. |
 | `POLL_INTERVAL_S`, `LOOP_INTERVAL_S` | 5, 2 | |
 | `DRAIN_ENABLED` | false | Whether a deployment drains the node before it replaces the container (see "Draining"). It needs `ORCHESTRATOR_URL` and `NODE_KEY`. The worker compose file sets it from `NODE_MANAGER_DRAIN_ENABLED` in the `.env` of the worker. |
-| `ORCHESTRATOR_URL`, `NODE_KEY` | empty | The address of the orchestrator and the key of the worker. The worker compose file passes `LOGOS_URL` and `LOGOS_API_KEY` of the `.env`. The drain needs them, and the report of the end of a deployment (see "Reports") as well. |
+| `ORCHESTRATOR_URL`, `NODE_KEY` | empty | The address of the orchestrator and the key of the worker. The worker compose file passes `LOGOS_URL` and `LOGOS_API_KEY` of the `.env`. The drain needs them, and the report of the end of a deployment (see "Reports") as well. On a worker, `NODE_KEY` is also the key for the orders from Logos (see `DEPLOYER_KEY`). |
 | `DRAIN_TIMEOUT_S` | 900 | How long the node may take to drain, counted from the grant of the cordon. |
 | `TURN_TIMEOUT_S` | 7200 | How long the manager waits for the cordon while another node is being replaced. |
 | `ORCHESTRATOR_RETRY_WINDOW_S` | 120 | How long the manager asks one call again while the orchestrator does not answer. Before the cordon is granted, the drain is skipped after that. After the cordon is granted, the manager asks again until `DRAIN_TIMEOUT_S` is over. |
@@ -328,7 +336,7 @@ All settings are environment variables with the prefix `NODE_MANAGER_`.
 | `RECONNECT_TIMEOUT_S` | 300 | How long the new worker may take to show up at the orchestrator after the Docker checks passed. |
 | `LOG_LEVEL` | `INFO` | |
 | `KIND` | `worker` | `worker` or `core`. Anything else counts as `worker`. A core host has other defaults: `PROJECT_DIR` is `/opt/logos` and `COMPOSE_FILE` is `<PROJECT_DIR>/docker-compose.yaml`. |
-| `LOGOS_URL`, `DEPLOYER_KEY` | empty | The Logos that this host obeys: its address, and the key that this Logos made for the deployer of the host (see "Orders from Logos"). Without both, only the command line gives orders. |
+| `LOGOS_URL`, `DEPLOYER_KEY` | empty | The Logos that this host obeys: its address, and the key that this Logos made for the deployer of a core host (see "Orders from Logos"). A worker needs no `DEPLOYER_KEY`: if it is empty, the manager uses `NODE_KEY`, the worker key. Without the address and a key, only the command line gives orders. |
 | `ORDER_WAIT_S`, `ORDER_TIMEOUT_MARGIN_S` | 25, 15 | How long a request for orders waits at Logos, and the margin that the connection gets on top of it. |
 | `REPORT_INTERVAL_S` | 20 | How often a deployment in progress is reported to Logos when nothing changed. |
 | `SCALE_SERVICE`, `REPLICAS_VARIABLE` | `logos-webservice`, `LOGOS_WEBSERVICE_REPLICAS` | Core host: the service that runs as several copies, and the variable of the `.env` that says how many. |
@@ -365,11 +373,13 @@ for the worker. The risk is accepted for these reasons:
 * The manager has no way in from the network. It publishes no port and runs no server. It is reached with
   `docker exec`, which needs access to `docker` on the host (root-equivalent anyway), and through the files in its state
   directory. Whoever can write there can queue a deployment of any tag that exists in the registry.
-* The lines out are the HTTPS calls to the orchestrator for the drain, and, if the host has a deployer key, the calls to
-  its Logos for orders and reports (see "Orders from Logos"). Nothing is reached from outside. The manager
-  authenticates with the key of the worker, which Compose passes in its environment. The container can read the `.env`
-  with that key anyway, so it gains no secret, and the key lets it cordon its own node only. A person with the key can
-  do the same from any machine, as they could already connect as the worker.
+* The lines out are the HTTPS calls to the orchestrator for the drain, and, if the host has a key for it, the calls to
+  its Logos for orders and reports (see "Orders from Logos"). Nothing is reached from outside. The manager of a worker
+  authenticates with the key of the worker, which Compose passes in its environment, for the drain and for the calls to
+  Logos. The container can read the `.env` with that key anyway, so it gains no secret. The key lets it cordon its own
+  node, fetch the orders of its own host and report on them, and nothing else: Logos ignores a report about the step of
+  another host. A person with the key can do the same from any machine, as they could already connect as the worker.
+  The manager of a core host has no worker key. It authenticates with the deployer key that Logos made for it.
 * Every command is an argument list and never goes through a shell. The command line checks a deployment id and a tag
   against strict patterns before it accepts a request. The free text of `--requested-by` is only stored in the record.
   An order from Logos goes through the same checks, and the manager takes nothing else from it that reaches a command.

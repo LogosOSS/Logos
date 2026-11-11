@@ -14,7 +14,6 @@ import { DeploymentService } from '../../core/services/deployment.service';
 import {
   Deployer,
   DeployerCreated,
-  DeployerKind,
   DeploymentOverview,
   DeploymentPlan,
   PLAN_STATUS_LABEL,
@@ -30,7 +29,6 @@ import {
 import { formatRelativeTime } from '../../shared/utils/date';
 import { errorDetail } from '../../shared/utils/error-detail';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
-import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
 import { PhaseBar } from './phase-bar';
 import { StatusPill } from './status-pill';
 
@@ -44,7 +42,6 @@ const POLL_MS = 5000;
     CommonModule,
     FormsModule,
     RouterLink,
-    SelectComponent,
     ModalConfirmComponent,
     PhaseBar,
     StatusPill,
@@ -72,10 +69,6 @@ export class Deployments implements OnInit {
     'This Logos serves real traffic. Each node leaves service while it drains and is replaced. ' +
     'A worker that fails its checks is rolled back. The core has no automatic rollback.';
 
-  readonly kindOptions: AppSelectOption[] = [
-    { value: 'worker', label: 'Worker' },
-    { value: 'core', label: 'Core' },
-  ];
   readonly statusChips: { value: 'all' | PlanStatus; label: string }[] = [
     { value: 'all', label: 'All' },
     { value: 'running', label: PLAN_STATUS_LABEL.running },
@@ -108,7 +101,6 @@ export class Deployments implements OnInit {
   // ── deployers ────────────────────────────────────────────────────────────
   addOpen = signal(false);
   newName = signal('');
-  newKind = signal<DeployerKind>('worker');
   creating = signal(false);
   createError = signal<string | null>(null);
   /** The key of a deployer that was just made or given a new key. It is shown once. */
@@ -127,6 +119,12 @@ export class Deployments implements OnInit {
     return this.plans().filter((p) => filter === 'all' || p.status === filter);
   });
   canAbandon = (plan: DeploymentPlan | null) => !!plan && plan.status === 'running';
+  /** What the removal dialog says. A worker comes back by itself as long as its node manager runs. */
+  removeMessage = computed(() =>
+    this.removeTarget()?.kind === 'worker'
+      ? 'It shows up here again when its node manager asks Logos for orders. The history of its deployments stays.'
+      : 'Its key stops working. The history of its deployments stays.',
+  );
 
   ngOnInit(): void {
     void this.load(true);
@@ -229,7 +227,7 @@ export class Deployments implements OnInit {
     this.creating.set(true);
     this.createError.set(null);
     try {
-      const created = await this.service.createDeployer(name, this.newKind());
+      const created = await this.service.createDeployer(name);
       this.createdKey.set(created);
       this.keyCopied.set(false);
       this.addOpen.set(false);

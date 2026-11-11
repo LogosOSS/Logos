@@ -297,24 +297,37 @@ describe('Deployments', () => {
   });
 
   describe('deployers', () => {
-    const created = { deployer: makeDeployer({ id: 'd-new', name: 'deioma', kind: 'worker' }), key: 'secret-key' };
+    const created = { deployer: makeDeployer({ id: 'd-new', name: 'prod-core', kind: 'core' }), key: 'secret-key' };
 
-    it('makes a deployer and shows its key once', async () => {
+    it('makes a core deployer and shows its key once', async () => {
       service['createDeployer'].mockResolvedValue(created);
       await create();
       component.toggleAdd();
       expect(component.addOpen()).toBe(true);
-      component.newName.set('  deioma ');
-      component.newKind.set('worker');
+      component.newName.set('  prod-core ');
 
       await component.createDeployer();
 
-      expect(service['createDeployer']).toHaveBeenCalledWith('deioma', 'worker');
+      expect(service['createDeployer']).toHaveBeenCalledWith('prod-core');
       expect(component.createdKey()).toEqual(created);
       expect(component.addOpen()).toBe(false);
       expect(component.newName()).toBe('');
       component.closeKey();
       expect(component.createdKey()).toBeNull();
+    });
+
+    it('offers a new key for a core deployer only, because a worker uses its worker key', async () => {
+      overview = makeOverview({
+        deployers: [makeDeployer(), makeDeployer({ id: 'd-worker', name: 'deioma', kind: 'worker' })],
+      });
+      await create();
+
+      const labels = Array.from(
+        (fixture.nativeElement as HTMLElement).querySelectorAll('.deployers__actions button'),
+      ).map((button) => button.textContent?.trim());
+
+      expect(labels.filter((label) => label === 'New key')).toHaveLength(1);
+      expect(labels.filter((label) => label === 'Remove')).toHaveLength(2);
     });
 
     it('asks for a name', async () => {

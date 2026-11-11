@@ -107,9 +107,10 @@ class Settings:
     # container. A core host replaces the services of the whole compose project, and the manager sits outside that
     # project so that it survives the replacement of Logos.
     kind: str = WORKER
-    # The Logos that this host obeys: its address, and the key that this Logos made for the deployer of the host. The
-    # manager asks it for orders and tells it how they go. A host obeys one Logos only. Without both values, only the
-    # command line gives orders.
+    # The Logos that this host obeys: its address, and the key that Logos knows the host by. A core host has a deployer
+    # key that this Logos made for it. A worker is known by its worker key, the key that it also uses with the
+    # orchestrator, so it needs no key of its own for orders. The manager asks Logos for orders and tells it how they
+    # go. A host obeys one Logos only. Without both values, only the command line gives orders.
     logos_url: str = ""
     deployer_key: str = field(default="", repr=False)
     # How long a request for orders may wait at Logos before it answers with none, and the margin that the connection
@@ -146,7 +147,9 @@ class Settings:
         logos_url = _text(env, "LOGOS_URL", "").rstrip("/")
         if not logos_url.startswith(("https://", "http://")):
             logos_url = ""
-        deployer_key = _text(env, "DEPLOYER_KEY", "")
+        node_key = _text(env, "NODE_KEY", "")
+        # A core host has no worker key, so it needs the deployer key. A worker uses its worker key unless a key is set.
+        deployer_key = _text(env, "DEPLOYER_KEY", "") or ("" if core else node_key)
         health_default = f"{logos_url}/api/info" if core and logos_url and deployer_key else ""
         return cls(
             kind=kind,
@@ -175,7 +178,7 @@ class Settings:
             loop_interval_s=_seconds(env, "LOOP_INTERVAL_S", 2.0),
             drain_enabled=_flag(env, "DRAIN_ENABLED", False),
             orchestrator_url=_text(env, "ORCHESTRATOR_URL", "").rstrip("/"),
-            node_key=_text(env, "NODE_KEY", ""),
+            node_key=node_key,
             drain_timeout_s=_seconds(env, "DRAIN_TIMEOUT_S", 900.0),
             turn_timeout_s=_seconds(env, "TURN_TIMEOUT_S", 7200.0),
             orchestrator_retry_window_s=_seconds(env, "ORCHESTRATOR_RETRY_WINDOW_S", 120.0),

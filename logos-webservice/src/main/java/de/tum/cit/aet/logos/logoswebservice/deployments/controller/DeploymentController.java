@@ -79,7 +79,10 @@ public class DeploymentController {
         return deployers.list().stream().map(deployer -> views.deployer(deployer, now)).toList();
     }
 
-    /** Make a deployer. The key in the answer is shown once and cannot be read again. */
+    /**
+     * Make a core deployer. The key in the answer is shown once and cannot be read again. A worker is not made here: it
+     * uses the worker key of its provider and shows up when its node manager asks for orders for the first time.
+     */
     @PostMapping("/deployers")
     public ResponseEntity<DeployerDTO.Created> createDeployer(
             @RequestBody DeploymentRequests.CreateDeployer body,
@@ -88,7 +91,7 @@ public class DeploymentController {
         return ResponseEntity.status(HttpStatus.CREATED).body(created(created));
     }
 
-    /** Give a deployer a new key. The old key stops working at once. */
+    /** Give a core deployer a new key. The old key stops working at once. A worker has no deployer key. */
     @PostMapping("/deployers/{id}/key")
     public DeployerDTO.Created replaceKey(@PathVariable UUID id) {
         return created(deployers.replaceKey(id));

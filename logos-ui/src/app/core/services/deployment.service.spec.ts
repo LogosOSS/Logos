@@ -58,10 +58,10 @@ describe('DeploymentService', () => {
     await result;
   });
 
-  it('makes a deployer', async () => {
-    const result = service.createDeployer('deioma', 'worker');
+  it('makes a core deployer', async () => {
+    const result = service.createDeployer('dev-core');
     const request = http.expectOne('/api/deployments/deployers');
-    expect(request.request.body).toEqual({ name: 'deioma', kind: 'worker' });
+    expect(request.request.body).toEqual({ name: 'dev-core' });
     request.flush({ key: 'k' });
     expect((await result).key).toBe('k');
   });

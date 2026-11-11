@@ -16,6 +16,26 @@ public interface DeployerRepository extends JpaRepository<Deployer, UUID> {
 
     Optional<Deployer> findByKeyHash(String keyHash);
 
+    Optional<Deployer> findByProviderId(Integer providerId);
+
+    /**
+     * Make the row of a worker at its first contact. The unique provider makes the insert safe: two first contacts at
+     * the same moment, for example at two copies of the webservice, give one row, and the loser changes nothing and
+     * does not abort its transaction.
+     */
+    @Modifying(flushAutomatically = true)
+    @Query(value = """
+        INSERT INTO deployers (id, name, kind, provider_id)
+        VALUES (:id, :name, 'worker', :providerId)
+        ON CONFLICT (provider_id) DO NOTHING
+        """, nativeQuery = true)
+    int insertWorkerIfAbsent(@Param("id") UUID id, @Param("name") String name, @Param("providerId") Integer providerId);
+
+    /** A worker follows the name of its provider. The name is the only column that is written. */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("update Deployer d set d.name = :name where d.id = :id")
+    int rename(@Param("id") UUID id, @Param("name") String name);
+
     /** The core deployer first: {@code core} sorts before {@code worker}. */
     List<Deployer> findAllByOrderByKindAscNameAsc();
 

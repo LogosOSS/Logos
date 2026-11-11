@@ -8,5 +8,6 @@ public final class DeploymentRequests {
 
     public record StartPlan(String tag) {}
 
+    /** {@code kind} is optional. Only {@code core} is made here: a worker needs no deployer made. */
     public record CreateDeployer(String name, String kind) {}
 }

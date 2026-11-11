@@ -19,8 +19,10 @@ import de.tum.cit.aet.logos.logoswebservice.deployments.service.DeployerService;
 import de.tum.cit.aet.logos.logoswebservice.deployments.service.DeploymentReportService;
 
 /**
- * The door for the deployers on the hosts. They authenticate with their own key ({@code Authorization: Bearer}), not
- * with a login. Logos never calls a host: a deployer asks for orders here and tells how they go.
+ * The door for the deployers on the hosts. They authenticate with a key ({@code Authorization: Bearer}), not with a
+ * login: a core deployer with its own key, a worker with the worker key of its provider. Logos never calls a host: a
+ * deployer asks for orders here and tells how they go. What a deployer says about its own kind in the request is not
+ * used; its key decides.
  *
  * <p>A request for orders is held until an order appears or the wait is over (long polling). Each check re-reads the
  * database, because the order may have been made by another copy of the webservice. The request also shows that the

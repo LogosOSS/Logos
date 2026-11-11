@@ -263,7 +263,8 @@ the Logos on Dev.
 
 ### Install the deployers
 
-Do these steps once for each host. Start with Test and Dev.
+Do these steps once for each environment. Start with Test and Dev. The core host
+and a worker host need different steps, because a worker needs no key of its own.
 
 1. On Dev and Test, set the variable `LOGOS_DEPLOYMENTS_PROTECTED` to `false` in
    the GitHub environment of the core host. Do not set it on Prod. A protected
@@ -273,27 +274,34 @@ Do these steps once for each host. Start with Test and Dev.
    page **Deployments**. If it does not, deploy it with the deploy workflow of the
    environment, for example **Logos - Deploy to Dev**. The page shows no deployer
    yet.
-3. On the page, click **Add a deployer**. Enter the name of the host and the kind
-   `core`. Copy the key. Logos shows the key once.
-4. In the GitHub environment of the host, set the secret `LOGOS_DEPLOYER_KEY` to
-   the key.
-5. Give the key to the host. Run the workflow **Logos - Sync host config** for the
-   host with **Also install or update the deployer** on. Or run the deploy
+3. On the page, click **Add a core deployer**. Enter the name of the core host.
+   Copy the key. Logos shows the key once.
+4. In the GitHub environment of the core host, set the secret `LOGOS_DEPLOYER_KEY`
+   to the key.
+5. Give the key to the core host. Run the workflow **Logos - Sync host config** for
+   the host with **Also install or update the deployer** on. Or run the deploy
    workflow of the environment again: it installs the deployer on a core host that
    has the key. Both start the deployer as the compose project `logos-deployer`.
-6. For each worker host, do steps 3 to 5 with the kind `worker`. A worker already
-   has the node manager. The workflow **Logos - Sync host config** with **Also
-   install or update the deployer** on replaces it with a new one that has the
-   key.
+6. For each worker host, run the workflow **Logos - Sync host config** with **Also
+   install or update the deployer** on. A worker already has the node manager.
+   The workflow replaces it with a new one.
+
+A worker needs no deployer key. Its node manager uses the address `LOGOS_URL` and
+the worker key `LOGOS_API_KEY` of the `.env` file of the worker. The worker uses
+the same key with the orchestrator. When the new node manager asks Logos for
+orders for the first time, the worker appears on the page **Deployments**. If a
+worker does not appear, check its node manager. Make sure that it runs. Make sure
+that the `.env` file of the worker has `LOGOS_URL` and `LOGOS_API_KEY`.
 
 A host obeys the Logos of its own environment only. Use the key that this Logos
-made. Do not give a host a key of another environment.
+made for the core host. Do not give a host a key of another environment.
 
 | Variable | Where | Meaning |
 |---|---|---|
 | `LOGOS_DEPLOYMENTS_PROTECTED` | Core | `true` (default) or `false`. A protected Logos shows a warning, asks you to confirm in a dialog, and accepts only `latest` and release tags. Set it to `false` on Dev and Test. |
 | `LOGOS_DEPLOYMENTS_SILENCE_LIMIT` | Core | How long a started step can stay silent before Logos ends it. Default: `30m`. |
-| `LOGOS_DEPLOYER_KEY` | Every host | The key that the Logos of the environment made for the deployer of the host. |
+| `LOGOS_DEPLOYER_KEY` | Core host | The key that the Logos of the environment made for the core deployer. |
+| `LOGOS_API_KEY` | Worker host | The worker key. The node manager of the worker uses it to ask the Logos of the environment for orders. A worker needs no `LOGOS_DEPLOYER_KEY`. |
 
 ### Sync the settings of a host
 
@@ -346,8 +354,10 @@ last. A problem with the deployer does not stop the deployment.
 Logos refuses a deployment in these cases:
 
 * A deployment runs. Wait for it, or abandon it.
-* The core deployer is not online. The button is off and the page shows why. A
-  worker deployer that is not online does not block the start.
+* The core deployer is not online, or Logos has no core deployer yet. The button
+  is off and the page shows why. A worker can be on the page before the core
+  deployer is, but the core goes first. A worker deployer that is not online does
+  not block the start.
 * The tag is not a Docker tag, or a protected Logos does not accept it.
 
 ### A deployment that does not move
@@ -370,11 +380,19 @@ its real result later. The page then shows the real result.
 
 ### Keys of the deployers
 
-* A deployer authenticates with a key of its own, not with a login.
-* Logos shows the key once and stores only its hash. If you lose a key, click
-  **New key** for the deployer. The old key stops working at once.
+* A deployer authenticates with a key, not with a login.
+* The core deployer has a key of its own. Logos shows the key once and stores
+  only its hash. If you lose the key, click **New key** for the core deployer. The
+  old key stops working at once.
+* A worker deployer has no key of its own. It uses the worker key of its
+  provider, `LOGOS_API_KEY`: the key that the worker also uses with the
+  orchestrator. Logos stores this key as plain text, and each Logos admin can read
+  it on the page **Providers**. To change it, change the key of the provider and
+  `LOGOS_API_KEY` in the `.env` file of the worker.
 * A key lets a host fetch its own orders and report for itself. It cannot place
   an order or read anything else.
+* If you remove a provider, Logos removes its worker from the page
+  **Deployments**. The history of its deployments stays.
 
 ## Nightly Benchmarks
 

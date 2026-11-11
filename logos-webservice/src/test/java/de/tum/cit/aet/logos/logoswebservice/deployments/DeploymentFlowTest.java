@@ -38,9 +38,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * The whole way through the webservice: an admin makes deployers, starts a plan, the deployers ask for orders and report,
- * and the plan moves on. The database is a real PostgreSQL, so the changelog and the mapping of the entities are checked
- * as well. This Logos is not protected (like Dev and Test); {@link DeploymentProtectionTest} covers the protected one.
+ * The whole way through the webservice: an admin makes the core deployer, the worker asks for orders with the key of its
+ * provider, the admin starts a plan, the deployers ask for orders and report, and the plan moves on. The database is a
+ * real PostgreSQL, so the changelog and the mapping of the entities are checked as well. This Logos is not protected
+ * (like Dev and Test); {@link DeploymentProtectionTest} covers the protected one.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -58,10 +59,15 @@ import org.springframework.transaction.support.TransactionTemplate;
     "DELETE FROM deployment_steps",
     "DELETE FROM deployment_plans",
     "DELETE FROM deployers",
+    "DELETE FROM providers WHERE id BETWEEN 9201 AND 9209",
     "DELETE FROM notifications WHERE type IN ('deployment', 'deployment_failed')",
 }, executionPhase = Sql.ExecutionPhase.AFTER_TEST_METHOD)
 @Sql(scripts = "/sql/cleanup-identity.sql", executionPhase = Sql.ExecutionPhase.AFTER_TEST_METHOD)
 class DeploymentFlowTest {
+
+    /** The logosnode provider of the worker of most tests, and the worker key that its node manager presents. */
+    private static final int WORKER_PROVIDER = 9201;
+    private static final String WORKER_KEY = "worker-key-of-dev-worker";
 
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
@@ -138,13 +144,19 @@ class DeploymentFlowTest {
         throw new AssertionError("no step for " + deployerName + " in " + plan);
     }
 
+    /** A provider the way a worker registers: its key is the worker key that the node manager presents as LOGOS_API_KEY. */
+    private void provider(int id, String name, String type, String key) {
+        jdbc.update("INSERT INTO providers (id, name, base_url, provider_type, auth_name, auth_format, api_key) "
+            + "VALUES (?, ?, '', CAST(? AS provider_type_enum), '', '{}', ?)", id, name, type, key);
+    }
+
     /** An online core deployer and one worker. Returns {coreKey, workerKey}. */
     private String[] coreAndWorker() throws Exception {
         String coreKey = createDeployer("dev-core", "core").get("key").asText();
-        String workerKey = createDeployer("dev-worker", "worker").get("key").asText();
+        provider(WORKER_PROVIDER, "dev-worker", "logosnode", WORKER_KEY);
         poll(coreKey);
-        poll(workerKey);
-        return new String[] {coreKey, workerKey};
+        poll(WORKER_KEY);
+        return new String[] {coreKey, WORKER_KEY};
     }
 
     // ------------------------------------------------------------------ deployers
@@ -231,7 +243,106 @@ class DeploymentFlowTest {
         poll(newKey.get());
     }
 
+    // ------------------------------------------------------------------ workers
+
+    @Test
+    void aWorkerNeedsNoKeyOfItsOwnAndItsRowIsMadeAtTheFirstContact() throws Exception {
+        provider(WORKER_PROVIDER, "dev-worker", "logosnode", WORKER_KEY);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM deployers", Integer.class)).isZero();
+
+        poll(WORKER_KEY);
+        poll(WORKER_KEY);
+
+        Map<String, Object> row = jdbc.queryForMap("SELECT name, kind, key_hash, provider_id FROM deployers");
+        assertThat(row.get("name")).isEqualTo("dev-worker");
+        assertThat(row.get("kind")).isEqualTo("worker");
+        assertThat(row.get("key_hash")).isNull();
+        assertThat(row.get("provider_id")).isEqualTo(WORKER_PROVIDER);
+        mvc.perform(get("/deployments/deployers").with(TestJwt.logosAdmin()))
+            .andExpect(jsonPath("$[0].name").value("dev-worker"))
+            .andExpect(jsonPath("$[0].kind").value("worker"))
+            .andExpect(jsonPath("$[0].online").value(true));
+        // Two first contacts at the same moment make one row: the second insert is a no-op.
+        Integer again = transactions.execute(status ->
+            deployerRepository.insertWorkerIfAbsent(UUID.randomUUID(), "other", WORKER_PROVIDER));
+        assertThat(again).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM deployers", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void aKeyThatIsNotAWorkerKeyIsRefused() throws Exception {
+        provider(9202, "azure", "cloud", "key-of-another-service");
+        provider(9203, "twin-a", "logosnode", "key-of-two-providers");
+        provider(9204, "twin-b", "logosnode", "key-of-two-providers");
+
+        // The key of a cloud provider belongs to another service. A key of two providers names no worker.
+        rawPoll("key-of-another-service").andExpect(status().isUnauthorized());
+        rawPoll("key-of-two-providers").andExpect(status().isUnauthorized());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM deployers", Integer.class)).isZero();
+    }
+
+    @Test
+    void aWorkerIsNotMadeOnThePageAndHasNoKeyToReplace() throws Exception {
+        JsonNode refused = body(mvc.perform(post("/deployments/deployers")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"name\":\"deioma\",\"kind\":\"worker\"}"))
+            .andExpect(status().isBadRequest()));
+        assertThat(refused.get("error").asText()).contains("worker key");
+        // A request without a kind makes a core deployer.
+        mvc.perform(post("/deployments/deployers")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"name\":\"dev-core\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.deployer.kind").value("core"));
+
+        provider(WORKER_PROVIDER, "dev-worker", "logosnode", WORKER_KEY);
+        poll(WORKER_KEY);
+        String workerId = jdbc.queryForObject("SELECT id::text FROM deployers WHERE kind = 'worker'", String.class);
+        mvc.perform(post("/deployments/deployers/" + workerId + "/key").with(TestJwt.logosAdmin()))
+            .andExpect(status().isBadRequest());
+        poll(WORKER_KEY);
+    }
+
+    @Test
+    void aWorkerFollowsTheNameOfItsProvider() throws Exception {
+        provider(WORKER_PROVIDER, "deioma", "logosnode", WORKER_KEY);
+        poll(WORKER_KEY);
+
+        jdbc.update("UPDATE providers SET name = 'deioma-gpu' WHERE id = ?", WORKER_PROVIDER);
+        poll(WORKER_KEY);
+
+        assertThat(jdbc.queryForObject("SELECT name FROM deployers", String.class)).isEqualTo("deioma-gpu");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM deployers", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void removingAProviderRemovesItsWorkerButNotTheHistory() throws Exception {
+        String[] keys = coreAndWorker();
+        JsonNode plan = body(rawStart("pr-93").andExpect(status().isCreated()));
+
+        jdbc.update("DELETE FROM providers WHERE id = ?", WORKER_PROVIDER);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM deployers WHERE kind = 'worker'", Integer.class)).isZero();
+        rawPoll(keys[1]).andExpect(status().isUnauthorized());
+        JsonNode kept = plan(plan.get("id").asText());
+        assertThat(step(kept, "dev-worker").get("status").asText()).isEqualTo("waiting");
+    }
+
     // ------------------------------------------------------------------ starting
+
+    @Test
+    void workersAloneDoNotMakeADeploymentPossible() throws Exception {
+        provider(WORKER_PROVIDER, "dev-worker", "logosnode", WORKER_KEY);
+        poll(WORKER_KEY);
+
+        // The core goes first. A worker makes its own row, so it can be there before the core deployer is.
+        mvc.perform(get("/deployments/overview").with(TestJwt.logosAdmin()))
+            .andExpect(jsonPath("$.can_start").value(false))
+            .andExpect(jsonPath("$.blocked_reason").value("No core deployer is set up yet. The core deployer goes first."));
+        rawStart("pr-93").andExpect(status().isConflict());
+    }
 
     @Test
     void theOverviewSaysWhyADeploymentCannotStartYet() throws Exception {

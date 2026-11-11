@@ -8,8 +8,12 @@
     <!-- Deployments of Logos from Logos itself. A Logos deploys only itself: its deployers obey it, and it has one
          environment, so no table names an environment.
 
-         `deployers` are the programs on the hosts (the node manager) that obey this Logos: one row per host, with the
-         SHA-256 hash of its key. The key itself is shown once, when the row is made, and never stored.
+         `deployers` are the programs on the hosts (the node manager) that obey this Logos: one row per host.
+         A core deployer has a key of its own. Only the SHA-256 hash of the key is stored (`key_hash`). The key itself is
+         shown once, when the row is made, and never stored.
+         A worker deployer has no key of its own. It is the logosnode provider (`provider_id`) whose worker key the node
+         manager presents (LOGOS_API_KEY of the worker). Logos makes its row at the first contact, and the row goes when
+         the provider goes. The check makes sure that a row is one of the two kinds and not a mix.
 
          `deployment_plans` are the to-do lists of one deployment: the core first, then all the workers.
 
@@ -23,15 +27,21 @@
             <not><tableExists tableName="deployers"/></not>
         </preConditions>
         <sql><![CDATA[
+            -- The name is not unique: a worker takes the name of its provider, and providers share names.
             CREATE TABLE deployers (
                 id UUID PRIMARY KEY,
-                name VARCHAR(100) NOT NULL UNIQUE,
+                name VARCHAR(100) NOT NULL,
                 kind VARCHAR(16) NOT NULL CHECK (kind IN ('core', 'worker')),
-                key_hash VARCHAR(64) NOT NULL UNIQUE,
+                key_hash VARCHAR(64) NULL UNIQUE,
+                provider_id INTEGER NULL UNIQUE REFERENCES providers(id) ON DELETE CASCADE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
                 last_seen_at TIMESTAMPTZ NULL,
-                version VARCHAR(40) NULL
+                version VARCHAR(40) NULL,
+                CONSTRAINT ck_deployers_identity CHECK (
+                    (kind = 'core' AND key_hash IS NOT NULL AND provider_id IS NULL)
+                    OR (kind = 'worker' AND key_hash IS NULL AND provider_id IS NOT NULL)
+                )
             );
         ]]></sql>
         <rollback>

@@ -113,8 +113,9 @@ public class DeploymentService {
     // ------------------------------------------------------------------ Starting and abandoning
 
     /**
-     * Start a deployment. The core deployer has to be online: the core goes first, and an order that nobody takes would
-     * only wait. An offline worker does not block the start; its step ends by the silence limit.
+     * Start a deployment. A core deployer has to exist and to be online: the core goes first, and an order that nobody
+     * takes would only wait. A worker makes its own row when its node manager asks for orders, so workers can be there
+     * before the core deployer is. An offline worker does not block the start; its step ends by the silence limit.
      */
     @Transactional
     public PlanDTO start(String tag, AuthContext auth) {
@@ -137,7 +138,6 @@ public class DeploymentService {
         plan.setCreatedAt(now);
         plan.setLastActivityAt(now);
 
-        boolean hasCore = all.stream().anyMatch(deployer -> deployer.getKind() == DeployerKind.core);
         List<DeploymentStep> planSteps = new ArrayList<>();
         int position = 0;
         for (Deployer deployer : all) {
@@ -148,7 +148,7 @@ public class DeploymentService {
             step.setKind(deployer.getKind());
             step.setDeployerId(deployer.getId());
             step.setDeployerName(deployer.getName());
-            step.setStatus(deployer.getKind() == DeployerKind.core || !hasCore ? StepStatus.ordered : StepStatus.waiting);
+            step.setStatus(deployer.getKind() == DeployerKind.core ? StepStatus.ordered : StepStatus.waiting);
             step.setLastActivityAt(now);
             planSteps.add(step);
         }
@@ -187,6 +187,9 @@ public class DeploymentService {
         }
         if (all.isEmpty()) {
             return "No deployer is set up yet.";
+        }
+        if (all.stream().noneMatch(deployer -> deployer.getKind() == DeployerKind.core)) {
+            return "No core deployer is set up yet. The core deployer goes first.";
         }
         for (Deployer deployer : all) {
             if (deployer.getKind() == DeployerKind.core && !deployers.isOnline(deployer, now)) {

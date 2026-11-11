@@ -51,8 +51,33 @@ def test_a_host_without_a_usable_address_and_key_obeys_no_logos(environ):
     assert not Settings.from_env(environ).logos_enabled
 
 
+def test_a_worker_is_known_to_logos_by_its_worker_key():
+    settings = Settings.from_env({"NODE_MANAGER_LOGOS_URL": "https://a.example", "NODE_MANAGER_NODE_KEY": KEY})
+
+    assert settings.deployer_key == KEY
+    assert settings.logos_enabled
+
+
+def test_a_deployer_key_that_is_set_wins_over_the_worker_key():
+    settings = Settings.from_env({**LOGOS, "NODE_MANAGER_NODE_KEY": "the-worker-key"})
+
+    assert settings.deployer_key == KEY
+
+
+def test_a_core_host_never_takes_a_worker_key_for_its_deployer_key():
+    environ = {"NODE_MANAGER_KIND": "core", "NODE_MANAGER_LOGOS_URL": "https://a.example", "NODE_MANAGER_NODE_KEY": KEY}
+
+    settings = Settings.from_env(environ)
+
+    assert settings.deployer_key == ""
+    assert not settings.logos_enabled
+
+
 def test_the_key_is_not_part_of_the_text_of_the_settings():
     assert KEY not in repr(Settings.from_env(LOGOS))
+    assert KEY not in repr(
+        Settings.from_env({"NODE_MANAGER_LOGOS_URL": "https://a.example", "NODE_MANAGER_NODE_KEY": KEY})
+    )
 
 
 def test_a_core_host_has_its_own_defaults(tmp_path):

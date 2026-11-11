@@ -3,7 +3,6 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import {
   DeployerCreated,
-  DeployerKind,
   DeploymentOverview,
   DeploymentPlan,
 } from '../../shared/models/deployment.model';
@@ -39,9 +38,10 @@ export class DeploymentService {
     );
   }
 
-  createDeployer(name: string, kind: DeployerKind): Promise<DeployerCreated> {
+  /** Makes a core deployer. A worker needs none made: it uses the worker key of its provider. */
+  createDeployer(name: string): Promise<DeployerCreated> {
     return firstValueFrom(
-      this.http.post<DeployerCreated>(`${DeploymentService.BASE}/deployers`, { name, kind }),
+      this.http.post<DeployerCreated>(`${DeploymentService.BASE}/deployers`, { name }),
     );
   }
 

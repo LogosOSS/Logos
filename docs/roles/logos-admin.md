@@ -376,7 +376,9 @@ The page has these parts:
   it. The page shows the status, the events of each node and, for a
   failed part, the end of the container log. A running deployment updates itself.
 * **Deployers.** The deployers of this Logos, when each was seen, and its
-  version. Click **Add a deployer** to make one. Logos shows the key once.
+  version. A worker appears in this list when its node manager asks Logos for
+  orders for the first time. It uses its worker key. Click **Add a core
+  deployer** to make the core deployer. Logos shows its key once.
 
 ## Policies
 
