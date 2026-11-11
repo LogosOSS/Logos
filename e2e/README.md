@@ -40,7 +40,10 @@ to start it.
 
 The browser CI job uses Ubuntu 24.04 and the Node.js version from
 `logos-ui/.nvmrc`. This keeps its system packages on one runner release and
-matches the Node.js version used by the UI unit tests.
+matches the Node.js version used by the UI unit tests. The job downloads the
+Playwright-pinned Chromium and verifies its system libraries with a browser
+launch before starting the stack. It uses the runner's existing browser
+libraries instead of reinstalling them from Ubuntu package mirrors.
 
 The `--ui` profile roughly triples startup time (a Keycloak boot and an Angular
 production build), which is why the inter-node and SDK tiers run without it.

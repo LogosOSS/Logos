@@ -178,8 +178,16 @@ jobs:
         run: npm ci
         working-directory: logos-ui
 
-      - name: Install Playwright browser
-        run: npm run e2e:install
+      - name: Install and verify Playwright browser
+        # Hosted runners provide Chromium's system libraries. Launch the pinned
+        # browser to validate them before starting the Docker stack.
+        run: |
+          npx playwright install chromium
+          node --input-type=module <<'JS'
+          import { chromium } from '@playwright/test';
+          const browser = await chromium.launch();
+          await browser.close();
+          JS
         working-directory: logos-ui
 
       - name: Start the stack with the UI profile
