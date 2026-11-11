@@ -1,7 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.common;
 
 import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.concurrent.ConcurrentHashMap;
@@ -207,10 +206,20 @@ public class IpRateLimiterService {
     public String clientIp(HttpServletRequest request) {
         String remoteAddr = request.getRemoteAddr();
         String forwardedFor = request.getHeader("X-Forwarded-For");
-        if (isTrustedProxy(remoteAddr) && forwardedFor != null && !forwardedFor.isBlank()) {
-            return forwardedFor.split(",")[0].strip();
+        String address = remoteAddr;
+        if (forwardedFor == null || forwardedFor.isBlank()) {
+            return address;
         }
-        return remoteAddr;
+        String[] hops = forwardedFor.split(",", -1);
+        for (int i = hops.length - 1; i >= 0 && isTrustedProxy(address); i--) {
+            try {
+                address = InetAddress.ofLiteral(hops[i].strip()).getHostAddress();
+            } catch (IllegalArgumentException e) {
+                // A malformed chain must not create arbitrary limiter buckets.
+                return remoteAddr;
+            }
+        }
+        return address;
     }
 
     private boolean isTrustedProxy(String address) {
@@ -228,8 +237,8 @@ public class IpRateLimiterService {
     private static boolean addressInCidr(String address, String cidr) {
         try {
             int slash = cidr.indexOf('/');
-            InetAddress candidate = InetAddress.getByName(address);
-            InetAddress network = InetAddress.getByName(slash < 0 ? cidr : cidr.substring(0, slash));
+            InetAddress candidate = InetAddress.ofLiteral(address);
+            InetAddress network = InetAddress.ofLiteral(slash < 0 ? cidr : cidr.substring(0, slash));
             byte[] candidateBytes = candidate.getAddress();
             byte[] networkBytes = network.getAddress();
             if (candidateBytes.length != networkBytes.length) {
@@ -249,7 +258,7 @@ public class IpRateLimiterService {
             int mask = (0xFF << (8 - remainingBits)) & 0xFF;
             return remainingBits == 0
                 || ((candidateBytes[fullBytes] & 0xFF) & mask) == ((networkBytes[fullBytes] & 0xFF) & mask);
-        } catch (UnknownHostException | NumberFormatException e) {
+        } catch (IllegalArgumentException e) {
             return false;
         }
     }

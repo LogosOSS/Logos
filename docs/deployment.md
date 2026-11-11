@@ -6,8 +6,7 @@ A pinned tag selects one specific build. Logos also mirrors builds of `main` to
 public GHCR. A self-hosted installation can therefore pull images without
 credentials (see the [installation guide](admin/installation.md)). Deployments
 use Harbor. A deployment is the compose file plus a `.env` file on each node. To
-update, run `docker compose pull` and `docker compose up -d`. CI sends nothing to
-a node. A worker node needs no inbound port (see the
+update, run `docker compose pull` and `docker compose up -d`. The deploy workflows copy the compose file and `.env` to each selected node. A worker node needs no inbound port (see the
 [architecture overview](developer/architecture) for the subsystem breakdown).
 
 A deployment consists of:
@@ -24,6 +23,45 @@ A deployment consists of:
 
 If a change requires no worker update, then set **deploy-workers** to `false` in **Logos - Deploy to Dev**.
 This option updates the central Dev server and leaves the GPU worker unchanged. The default updates both.
+
+## Deployment credentials
+
+The workflows export only the secret names in `scripts/write-deployment-secrets.py`.
+New repository secrets stay on GitHub until the workflow and this list include them.
+Core hosts receive the database, Redis, internal-service, repository, optional agent, Keycloak sync, metrics, and Hugging Face credentials.
+Worker hosts receive only `LOGOS_API_KEY` and `HF_TOKEN`.
+SSH keys and registry passwords stay in their dedicated workflow steps.
+The workflows create `.env` with file mode `0600`.
+
+### Data service passwords
+
+Set `LOGOS_DB_PASSWORD` and `LOGOS_REDIS_PASSWORD` in the core host's `.env` before you start production compose.
+Use separate random values, for example the output of `openssl rand -hex 32`.
+For workflow deployments, also set these values as secrets in the target GitHub environment.
+Compose stops if either value is empty.
+Local development and e2e stacks keep their seed credentials.
+
+**An existing PostgreSQL volume keeps its previous password.** A change to `.env` does not change the database role.
+Schedule a maintenance period for this change:
+
+1. Back up the database.
+2. Stop the application services with `docker compose stop logos-orchestrator logos-webservice`.
+3. If the agent profile is active, stop `logos-agent` too.
+4. Open a database shell with `docker exec -it logos-db psql -U postgres -d logosdb`.
+5. Run `\password postgres` and enter the new database password twice.
+6. Set the same value for `LOGOS_DB_PASSWORD` in `.env` and the GitHub environment secret.
+7. Set a separate `LOGOS_REDIS_PASSWORD` in both locations.
+8. Run `docker compose --env-file .env up -d` with your usual profiles and web service replica count.
+9. Check the service health and complete a test inference request.
+
+The SQL equivalent is `ALTER USER postgres WITH PASSWORD '<new-password>';`.
+Prefer `\password`: it keeps the cleartext value out of command history and SQL logs.
+See the [PostgreSQL password instructions](https://www.postgresql.org/docs/17/sql-alterrole.html).
+Do not delete the volume to change its password.
+
+Redis uses `requirepass`. The web service and Redis health check use the same `LOGOS_REDIS_PASSWORD`.
+Redis has no persistent data in this stack, so no stored password migration is necessary.
+For a later Redis password change, update `.env` and the GitHub secret, then recreate Redis and the web service together.
 
 ## Images and Registry
 
@@ -51,6 +89,13 @@ publishes its version tag to Harbor. Nothing prunes a public package, so PR
 builds and release builds do not go to the mirror. When a package appears for the
 first time, check that it is public. A private package gives a 403 to a
 self-hosted installation. To fix this, use Package settings → Change visibility.
+
+## Local development ports
+
+The development compose file publishes all ports on `127.0.0.1`.
+Use the existing `localhost` URLs for the web application, Keycloak, and the database.
+The e2e stack uses its own compose file and ports.
+For access from another computer, use an SSH tunnel to the development host.
 
 ## Updating
 
@@ -341,6 +386,11 @@ Tune the limits for each deployment in the `.env` of the node (all optional):
   The gateway skips malformed entries and writes a line to `docker logs
   logos-rate-gateway`. A typo in the `.env` gives "no whitelist". It cannot
   crash-loop the gateway (and with it the whole stack).
+- `LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS` — the proxy ranges trusted by the orchestrator and web service.
+  Both services select the rightmost untrusted address in `X-Forwarded-For`.
+  The default is `172.16.0.0/12`. Set the actual application-facing proxy subnets if Docker uses another range.
+  Untrusted peers cannot supply a client address or the orchestrator's TLS signal.
+  The rate-limit gateway forwards its resolved address. The agent gateway replaces the header with the session address.
 - `LOGOS_GATEWAY_TRUSTED_PROXY_CIDRS` — the source ranges that can carry
   `X-Forwarded-For`. The default is `172.16.0.0/12` (the Docker bridge ranges).
   This range matches no public client. A header that someone forges from the
@@ -602,6 +652,8 @@ variables:
 |---|---|---|
 | `LOGOS_DOMAIN` | the core node's fully qualified domain | — |
 | `ACME_EMAIL` | the Let's Encrypt contact address | — |
+| `LOGOS_DB_PASSWORD` | required — PostgreSQL password; see the migration procedure above | — |
+| `LOGOS_REDIS_PASSWORD` | required — Redis password | — |
 | `LOGOS_INTERNAL_SECRET` | a strong random string — the shared secret between web service and orchestrator | — |
 | `KEYCLOAK_ISSUER_URI` | your identity provider's issuer (`https://<idp>/realms/<realm>`) | — |
 | `KEYCLOAK_ROLES_LOGOS_ADMIN` / `KEYCLOAK_ROLES_APP_ADMIN` | the OIDC role names that map to the Logos roles (see [roles](developer/architecture#roles)) | — |

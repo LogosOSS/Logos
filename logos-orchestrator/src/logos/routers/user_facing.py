@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
@@ -28,6 +28,7 @@ from logos.dbutils.dbmodules import JobStatus
 from logos.dbutils.dbrequest import SystemOneRequest, WebSearchRequest
 from logos.decision import DecisionError, answer_system_one, profile_for
 from logos.errors import coerce_upstream_error
+from logos.inference_paths import require_canonical_path, require_inference_path
 from logos.jobs.job_service import JobService
 from logos.logosnode_snapshot import _resolve_requested_model_name, claude_visible_id
 from logos.main import _model_context_fields, _served_context_window_stats, handle_sync_request, submit_job_request
@@ -434,6 +435,7 @@ _AUDIO_UPLOAD_RESPONSES = {
 @router.post(
     "/v1/audio/transcriptions",
     tags=["audio"],
+    dependencies=[Depends(require_canonical_path)],
     summary="Create an audio transcription",
     response_class=Response,
     responses=_AUDIO_UPLOAD_RESPONSES,
@@ -447,6 +449,7 @@ async def create_audio_transcription(request: Request):
 @router.post(
     "/v1/audio/translations",
     tags=["audio"],
+    dependencies=[Depends(require_canonical_path)],
     summary="Create an English audio translation",
     response_class=Response,
     responses=_AUDIO_UPLOAD_RESPONSES,
@@ -621,7 +624,12 @@ async def _serve_server_web_search(request: Request, payload: dict, tool: dict):
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-@router.post("/v1/systemone", tags=["decisions"], summary="Answer typed questions with a decision model")
+@router.post(
+    "/v1/systemone",
+    tags=["decisions"],
+    summary="Answer typed questions with a decision model",
+    dependencies=[Depends(require_canonical_path)],
+)
 async def system_one(request: Request):
     """Answer noul, choice and score questions about a state with probabilities.
 
@@ -696,7 +704,7 @@ async def _answer_with_decision_profile(body: SystemOneRequest, request: Request
     return JSONResponse(status_code=499, content={"detail": "Client closed request"})
 
 
-@router.post("/v1/{path:path}", tags=["user-facing"])
+@router.post("/v1/{path:path}", tags=["user-facing"], dependencies=[Depends(require_canonical_path)])
 async def logos_service_sync(path: str, request: Request):
     """
     Dynamic proxy for OpenAI-compatible API endpoints (/v1/*).
@@ -707,6 +715,7 @@ async def logos_service_sync(path: str, request: Request):
     get a proper 405 from the router instead of the misleading
     "400 Invalid JSON body" the body parser used to raise on body-less GETs.
     """
+    require_inference_path(f"v1/{path}")
     if path == "messages":
         raw = await request.body()
         if b'"web_search_' in raw:
@@ -720,17 +729,19 @@ async def logos_service_sync(path: str, request: Request):
     return await handle_sync_request(f"v1/{path}", request)
 
 
-@router.post("/v2/{path:path}", tags=["user-facing"])
+@router.post("/v2/{path:path}", tags=["user-facing"], dependencies=[Depends(require_canonical_path)])
 async def logos_service_v2_sync(path: str, request: Request):
     """
     Dynamic proxy for Cohere-compatible API endpoints (/v2/embed, /v2/rerank).
     """
+    require_inference_path(f"v2/{path}")
     return await handle_sync_request(f"v2/{path}", request)
 
 
 @router.post(
     "/openai/{path:path}",
     tags=["user-facing"],
+    dependencies=[Depends(require_canonical_path)],
 )
 async def logos_service_long_sync(request: Request, path: str = None):
     """
@@ -743,6 +754,7 @@ async def logos_service_long_sync(request: Request, path: str = None):
     :param path: API endpoint path (e.g., 'chat/completions', 'completions', 'embeddings')
     :return: StreamingResponse for streaming requests, JSONResponse for synchronous requests
     """
+    require_inference_path(f"v1/{path}")
     return await handle_sync_request(f"v1/{path}", request)
 
 
@@ -761,6 +773,7 @@ for _vllm_path in ("/pooling", "/score", "/rerank", "/classify", "/tokenize", "/
         _handle_vllm_native,
         methods=["POST"],
         tags=["user-facing"],
+        dependencies=[Depends(require_canonical_path)],
         name=f"vllm_native_{_vllm_path.lstrip('/')}",
     )
 
@@ -768,6 +781,7 @@ for _vllm_path in ("/pooling", "/score", "/rerank", "/classify", "/tokenize", "/
 @router.post(
     "/jobs/v1/{path:path}",
     tags=["user-facing"],
+    dependencies=[Depends(require_canonical_path)],
 )
 async def logos_service_async(path: str, request: Request):
     """
@@ -780,21 +794,25 @@ async def logos_service_async(path: str, request: Request):
     Returns:
         202 with job metadata; poll /jobs/{id} for result.
     """
+    require_inference_path(f"v1/{path}")
     return await submit_job_request(f"v1/{path}", request)
 
 
 @router.post(
     "/jobs/v2/{path:path}",
     tags=["user-facing"],
+    dependencies=[Depends(require_canonical_path)],
 )
 async def logos_service_v2_async(path: str, request: Request):
     """Async job-based proxy for Cohere-compatible endpoints."""
+    require_inference_path(f"v2/{path}")
     return await submit_job_request(f"v2/{path}", request)
 
 
 @router.post(
     "/jobs/openai/{path:path}",
     tags=["user-facing"],
+    dependencies=[Depends(require_canonical_path)],
 )
 async def logos_service_long_async(path: str, request: Request):
     """
@@ -807,6 +825,7 @@ async def logos_service_long_async(path: str, request: Request):
     Returns:
         202 with job metadata; poll /jobs/{id} for result.
     """
+    require_inference_path(f"v1/{path}")
     return await submit_job_request(f"v1/{path}", request)
 
 

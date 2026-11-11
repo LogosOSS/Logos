@@ -51,7 +51,11 @@ their roles. Do not use them in a production deployment.
 
 For production, use `docker-compose.yaml`. Every image is on the public mirror
 at `ghcr.io/logososs`. The compose file pulls from this mirror
-by default. You do not need registry configuration or a login:
+by default. You do not need registry configuration or a login.
+Set `LOGOS_DB_PASSWORD` and `LOGOS_REDIS_PASSWORD` in `.env` first.
+Use separate random values. For an existing database, follow the
+[password migration procedure](../deployment.md#data-service-passwords).
+Then start the services:
 
 ```bash
 docker compose --env-file .env up -d
