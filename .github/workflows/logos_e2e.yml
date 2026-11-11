@@ -182,7 +182,7 @@ jobs:
         # Hosted runners provide Chromium's system libraries. Launch the pinned
         # browser to validate them before starting the Docker stack.
         run: |
-          npx playwright install chromium
+          ./node_modules/.bin/playwright install chromium
           node --input-type=module <<'JS'
           import { chromium } from '@playwright/test';
           const browser = await chromium.launch();
