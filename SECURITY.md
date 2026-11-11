@@ -13,15 +13,9 @@ Older versions do not receive security patches.
 
 ## Reporting a Vulnerability
 
-Please use [Github's security advisory feature](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability) to report any security vulnerabilities.
-
 **Please do not report vulnerabilities through public issues, discussions or pull requests.**
 
-Report privately through one of these channels:
-
-1. **GitHub Private Vulnerability Reporting** (preferred):
-   <https://github.com/LogosOSS/Logos/security/advisories/new>
-2. **E-mail**: <TODO: security team alias>
+Report privately through [GitHub Private Vulnerability Reporting](https://github.com/LogosOSS/Logos/security/advisories/new).
 
 Please include:
 
@@ -70,9 +64,11 @@ The security process includes:
 
 - **Dependabot**: detection of known vulnerabilities in project dependencies.
 - **SonarQube Cloud**: static analysis with a quality gate on pull requests.
-<!-- TODO: CodeQL and secret scanning are not enabled yet (Settings > Advanced Security). Enable both before publishing this file. -->
+
+Planned checks (not currently enabled):
+
 - **CodeQL**: static analysis to identify potential security vulnerabilities in source code.
-- **Secret Scanning**: detection of accidentally exposed credentials, where enabled.
+- **Secret scanning**: detection of accidentally exposed credentials.
 
 ## Weekly Security Audits
 
