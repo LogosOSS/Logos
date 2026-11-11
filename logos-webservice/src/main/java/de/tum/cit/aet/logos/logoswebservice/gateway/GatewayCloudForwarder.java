@@ -286,7 +286,10 @@ public class GatewayCloudForwarder {
             if (error == null && (status < 200 || status >= 400)) {
                 error = "Upstream HTTP " + status;
             }
-            if (error == null && capture.firstByteAt() == null) {
+            // An empty body is an empty response only when the stream ended. A
+            // provider still silent at the drain deadline may be processing the
+            // prompt, so a successful stream is then billed by estimate.
+            if (error == null && capture.firstByteAt() == null && !(timedOut && eventStream)) {
                 error = "Provider delivered no response body";
             }
             if (error != null || upstreamError != null) {

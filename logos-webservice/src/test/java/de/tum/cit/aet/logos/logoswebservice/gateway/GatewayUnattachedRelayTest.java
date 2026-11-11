@@ -147,7 +147,14 @@ class GatewayUnattachedRelayTest {
                     .containsEntry("prompt_tokens", (REQUEST.length + 3L) / 4)
                     .containsEntry("usage_estimated", 1L);
             }
-            case SILENT, EMPTY_EOF -> {
+            case SILENT -> {
+                // Still silent at the drain deadline: the prompt may be processing.
+                assertThat(failure.get()).isNull();
+                assertThat(success.get().usage()).containsEntry("completion_tokens", 0L)
+                    .containsEntry("prompt_tokens", (REQUEST.length + 3L) / 4)
+                    .containsEntry("usage_estimated", 1L);
+            }
+            case EMPTY_EOF -> {
                 assertThat(success.get()).isNull();
                 assertThat(error.get()).isEqualTo("Provider delivered no response body");
                 assertThat(failure.get().usage()).isEmpty();
