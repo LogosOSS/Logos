@@ -181,6 +181,31 @@ async def test_batch_cancellation_stops_waiting_without_checkpointing_a_failure(
     assert runtime.db.finish_local_batch.call_args.kwargs["failed"] == 0
 
 
+async def test_a_rate_limited_attempt_is_closed_before_the_wait(runtime, monkeypatch):
+    # Stopping the batch during the wait must leave no request that looks as if it still runs.
+    closed = []
+    monkeypatch.setattr(
+        main, "_record_log_failure", lambda log_id, request_id, message, **kwargs: closed.append((log_id, message))
+    )
+    log_ids = iter(range(100, 110))
+    runtime.db.log_usage.side_effect = lambda **kwargs: ({"log-id": next(log_ids)}, 200)
+    await batch_local._run_line(runtime.line, runtime.auth, {})
+    stop = asyncio.Event()
+    task = asyncio.create_task(batch_local._run_line(runtime.line, runtime.auth, {}, stop=stop))
+    for _ in range(50):
+        if closed:
+            break
+        await asyncio.sleep(0.01)
+    stop.set()
+    with pytest.raises(batch_local._BatchStopped):
+        await task
+
+    assert len(closed) == 1
+    assert closed[0][0] == 101
+    assert closed[0][1].startswith("Rate limit exceeded")
+    assert runtime.db.log_usage.call_count == 2
+
+
 async def test_runner_task_cancellation_stops_rate_limit_wait(runtime):
     await batch_local._run_line(runtime.line, runtime.auth, {})
     task = asyncio.create_task(batch_local._run_line(runtime.line, runtime.auth, {}))

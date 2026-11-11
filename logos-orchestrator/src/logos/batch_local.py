@@ -235,20 +235,23 @@ async def _run_line(
             },
         )
 
-    log_id = _open_line_log(auth, body)
-    if log_id is None:
-        # Fail closed: without the log row the pipeline would run the
-        # request and bill nothing, so the line is refused instead of run
-        # unbilled. The batch reports it as a failed line like any other.
-        logger.error("No usage log for batch line %s; refusing to run it unbilled", line.get("custom_id"))
-        return _result_row(
-            line, {"status_code": 500, "data": {"error": {"message": "the request could not be started"}}}
-        )
     try:
         backoff = 1.0
         while True:
             if stop is not None and stop.is_set():
                 raise _BatchStopped
+            # Every attempt has its own log row: a rate-limited attempt is
+            # closed as rejected before the wait, so a batch stopped while a
+            # line waits leaves no request looking as if it still ran.
+            log_id = _open_line_log(auth, body)
+            if log_id is None:
+                # Fail closed: without the log row the pipeline would run the
+                # request and bill nothing, so the line is refused instead of
+                # run unbilled. The batch reports it as a failed line like any other.
+                logger.error("No usage log for batch line %s; refusing to run it unbilled", line.get("custom_id"))
+                return _result_row(
+                    line, {"status_code": 500, "data": {"error": {"message": "the request could not be started"}}}
+                )
             result = await execute_proxy_job(endpoint, dict(headers), dict(body), None, auth, log_id)
             if not isinstance(result, dict) or result.get("status_code") != 429:
                 break

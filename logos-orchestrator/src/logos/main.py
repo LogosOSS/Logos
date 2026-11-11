@@ -3441,6 +3441,16 @@ async def _execute_resource_mode(
                 except Exception:
                     logger.warning("Failed to release scheduler slot after rate limit reject")
                 if is_async_job:
+                    # The sync path closes the log row in its HTTPException
+                    # handler; a returned rejection must close it here.
+                    _record_log_failure(
+                        log_id,
+                        result.scheduling_stats.get("request_id") or request_id,
+                        f"Rate limit exceeded: {reason}",
+                        result_status="error",
+                        provider_id=result.provider_id,
+                        model_id=result.model_id,
+                    )
                     return {
                         "status_code": 429,
                         "data": {"error": f"Rate limit exceeded: {reason}"},
