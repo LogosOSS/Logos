@@ -235,7 +235,7 @@ async def test_adoption_keeps_the_ready_lane_when_it_already_runs_the_winner(sch
 
 
 async def test_adoption_rolls_back_if_worker_never_reports_the_applied_settings_ready(scheduler, monkeypatch):
-    monkeypatch.setattr(module, "RESTORE_CONFIRMATION_SECONDS", 0.01)
+    monkeypatch.setattr(module, "LANE_READY_STATUS_TIMEOUT_SECONDS", 0.01)
     scheduler.restore = module.NightlyScheduler.restore.__get__(scheduler)
     original = {"max_num_seqs": 16}
     lane = {

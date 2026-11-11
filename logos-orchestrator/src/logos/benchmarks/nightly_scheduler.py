@@ -28,7 +28,8 @@ from logos.dbutils.dbrequest import InternalBenchmarkRequest
 from logos.maintenance_window import maintenance_node_limit
 
 logger = logging.getLogger(__name__)
-RESTORE_CONFIRMATION_SECONDS = 15 * 60
+# After add/reconfigure succeeds, wait for fresh worker status confirming the expected lane config is ready.
+LANE_READY_STATUS_TIMEOUT_SECONDS = 15 * 60
 
 
 class NightlyScheduler:
@@ -217,7 +218,7 @@ class NightlyScheduler:
         answer = replies[0].result()
         state = "awaiting a fresh status"
         try:
-            async with asyncio.timeout(RESTORE_CONFIRMATION_SECONDS):
+            async with asyncio.timeout(LANE_READY_STATUS_TIMEOUT_SECONDS):
                 while True:
                     if not LEASE_CHECK.get()() or not self.registry.is_provider_online(provider_id):
                         raise RuntimeError(f"Lost the worker or maintenance lock while restoring lane {lane_id}")
@@ -240,7 +241,7 @@ class NightlyScheduler:
             raise RuntimeError(
                 f"Worker {provider_id} applied the configuration for lane {lane_id}, "
                 f"but it did not report that lane ready with those settings "
-                f"within {RESTORE_CONFIRMATION_SECONDS:g}s ({state})."
+                f"within {LANE_READY_STATUS_TIMEOUT_SECONDS:g}s ({state})."
             ) from exc
 
     @staticmethod
