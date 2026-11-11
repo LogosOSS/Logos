@@ -7,9 +7,9 @@ import org.springframework.stereotype.Component;
 import de.tum.cit.aet.logos.logoswebservice.deployments.DeploymentProperties;
 
 /**
- * Which image tags an environment may be given. Every tag must be a Docker tag, because the deployer passes it to
- * Compose. A protected environment (Prod) accepts only {@code latest} and release tags, which come from reviewed code.
- * A pull request build can run on Dev and Test.
+ * Which image tags this Logos may be given. Every tag must be a Docker tag, because the deployer passes it to Compose.
+ * A protected Logos (Prod) accepts only {@code latest} and release tags, which come from reviewed code. A pull request
+ * build can run on Dev and Test, which are not protected.
  */
 @Component
 public class TagPolicy {
@@ -27,16 +27,16 @@ public class TagPolicy {
     }
 
     /** @throws IllegalArgumentException with a message for the admin if the tag is not allowed */
-    public void check(String environment, String tag) {
+    public void check(String tag) {
         if (tag == null || !DOCKER_TAG.matcher(tag).matches()) {
             throw new IllegalArgumentException("The tag is not a Docker image tag.");
         }
         if (RESERVED.equals(tag)) {
             throw new IllegalArgumentException("The tag 'previous' is reserved for the previous version on the hosts.");
         }
-        if (properties.isProtected(environment) && !restricted.matcher(tag).matches()) {
+        if (properties.protect() && !restricted.matcher(tag).matches()) {
             throw new IllegalArgumentException(
-                environment + " accepts only 'latest' and release tags, not '" + tag + "'.");
+                "This Logos accepts only 'latest' and release tags, not '" + tag + "'.");
         }
     }
 }

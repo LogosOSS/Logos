@@ -349,18 +349,15 @@ worker control actions (calibrate, sleep, wake, lane management).
 ## Deployments
 
 The page **Deployments** deploys Logos from Logos. It is for Logos admins only. A
-deployer on each host takes the orders. See
-[Deployments from Logos](../deployment.md#deployments-from-logos) to install the
-deployers.
+deployer on each host takes the orders. A Logos deploys only itself: use the page
+of Prod to deploy Prod, the page of Dev to deploy Dev, and the page of Test to
+deploy Test. See [Deployments from Logos](../deployment.md#deployments-from-logos)
+to install the deployers.
 
-If no deployer is set up, the page says so and shows nothing to start.
+If no deployer is set up, the page says so, and the button **Deploy** is off.
 
 The page has these parts:
 
-* **Environment switch.** At the top right, one button for each environment that
-  this Logos can deploy: Prod, Dev and Test. The dot shows how the latest deployment of the
-  environment ended: blue for running, green for succeeded, red for failed,
-  yellow for rolled back. An empty ring means that there is none yet.
 * **Current deployment.** The deployment that runs now, with one row for each
   node. Each row shows how far the node is: Pull, Drain, Swap and Verify. A node
   is *Waiting for the core*, *Waiting for the deployer*, *Running*,
@@ -370,16 +367,14 @@ The page has these parts:
   running deployment, the part shows the last one.
 * **New deployment.** Enter an image tag and click **Deploy**.
   Prod shows a red banner and asks you to type `prod` in the field next to the
-  button. The button is off, with a reason, when the core deployer is not online
-  or a deployment runs.
-* **History.** The latest 50 deployments of the environment, each with its
-  number, the person who started it and the time. The number counts all
-  deployments of this Logos, so the numbers of one environment can skip. Filter
-  them by status. Click a row to open its page.
+  button. Dev and Test ask for nothing. The button is off, with a reason, when
+  the core deployer is not online or a deployment runs.
+* **History.** The latest 50 deployments, each with its number, the person who
+  started it and the time. Filter them by status. Click a row to open its page.
 * **Page of a deployment.** Click a row of the history, or **View details**, to open
   it. The page shows the status, the events of each node and, for a
   failed part, the end of the container log. A running deployment updates itself.
-* **Deployers.** The deployers of the environment, when each was seen, and its
+* **Deployers.** The deployers of this Logos, when each was seen, and its
   version. Click **Add a deployer** to make one. Logos shows the key once.
 
 ## Policies

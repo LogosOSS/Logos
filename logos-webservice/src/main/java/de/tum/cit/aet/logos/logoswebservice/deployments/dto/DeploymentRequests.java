@@ -7,9 +7,9 @@ public final class DeploymentRequests {
     }
 
     /**
-     * Start a deployment. {@code confirmation} is the typed name of the environment, needed for a protected one.
+     * Start a deployment. {@code confirmation} is the typed word that a protected Logos asks for.
      */
-    public record StartPlan(String environment, String tag, String confirmation) {}
+    public record StartPlan(String tag, String confirmation) {}
 
-    public record CreateDeployer(String name, String environment, String kind) {}
+    public record CreateDeployer(String name, String kind) {}
 }

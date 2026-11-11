@@ -4,15 +4,14 @@
 # docker-compose.deployer.yml and starts it as its own compose project:
 #   docker compose -p logos-deployer -f docker-compose.deployer.yml --env-file .env up -d
 # The workflow "Sync host config" (with install-deployer) runs the action, and so do the deploy workflows of a host that
-# has LOGOS_DEPLOYMENTS_ENVIRONMENT.
+# has LOGOS_DEPLOYER_KEY.
 #
 # It is a project of its own on purpose. A deployment of Logos runs `docker compose up -d --remove-orphans` for the
 # project `logos`. If the deployer belonged to that project, the same command would restart the deployer in the middle of
 # its own deployment, or remove it as an orphan.
 #
-# The deployer asks the Logos of this host, and for a Dev or Test host also Prod, for orders (see the node manager
-# README, "Core host"). It replaces the services of docker-compose.yaml, checks them, and tells the Logos instances how
-# it went. It has no drain and no rollback.
+# The deployer asks the Logos of this host for orders (see the node manager README, "Core host"). It replaces the
+# services of docker-compose.yaml, checks them, and tells that Logos how it went. It has no drain and no rollback.
 services:
   logos-deployer:
     # The tag is NODE_MANAGER_IMAGE_TAG, else IMAGE_TAG (the tag that a deploy workflow deploys), else latest. Set
@@ -41,12 +40,13 @@ services:
       NODE_MANAGER_PROJECT_DIR: ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}
       # The registry login. The action that installs the deployer writes it to the directory .docker of the project directory.
       DOCKER_CONFIG: ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}/.docker
-      # The Logos instances this host obeys: the own Logos (LOGOS_DEPLOYER_KEY, made on the page Deployments) and, for a
-      # Dev or Test host, Prod (LOGOS_PROD_URL with a key that Prod made). An entry without a key is skipped.
-      NODE_MANAGER_LOGOS: "https://${LOGOS_DOMAIN:-localhost}|${LOGOS_DEPLOYER_KEY:-},${LOGOS_PROD_URL:-}|${LOGOS_PROD_DEPLOYER_KEY:-}"
+      # The Logos that this host obeys: the Logos that runs on it. LOGOS_DEPLOYER_KEY is the key that this Logos made on
+      # the page Deployments. Without the key, the host takes no orders from Logos.
+      NODE_MANAGER_LOGOS_URL: https://${LOGOS_DOMAIN:-localhost}
+      NODE_MANAGER_DEPLOYER_KEY: ${LOGOS_DEPLOYER_KEY:-}
       # How long the services get to come up, in seconds. The webservice applies its database migrations first.
       NODE_MANAGER_CORE_VERIFY_TIMEOUT_S: ${NODE_MANAGER_CORE_VERIFY_TIMEOUT_S:-900}
-      # The address that must answer after a deployment. Empty or not set: <own Logos>/api/info. Set it if this host cannot
+      # The address that must answer after a deployment. Empty or not set: <Logos>/api/info. Set it if this host cannot
       # reach its own public address. The check cannot be switched off.
       NODE_MANAGER_CORE_HEALTH_URL: ${NODE_MANAGER_CORE_HEALTH_URL:-}
     volumes:

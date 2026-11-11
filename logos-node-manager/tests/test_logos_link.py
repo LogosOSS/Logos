@@ -1,4 +1,4 @@
-"""The link to Logos: parsing, the requests, accepting orders and reporting deployments."""
+"""The link to Logos: settings, the requests, accepting orders and reporting deployments."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from conftest import queued
 
-from logos_node_manager.config import LogosSource, Settings, parse_logos_sources
+from logos_node_manager.config import Settings
 from logos_node_manager.docker_ops import read_env_value
 from logos_node_manager.logos_link import (
     RETRY_MAX_S,
@@ -24,56 +24,52 @@ from logos_node_manager.logos_link import (
 from logos_node_manager.state import Deployment, Outcome, Phase, StateStore
 
 KEY = "the-secret-deployer-key"
+LOGOS = {"NODE_MANAGER_LOGOS_URL": "https://a.example", "NODE_MANAGER_DEPLOYER_KEY": KEY}
 
 
 # ---------------------------------------------------------------------- Settings
 
 
-def test_logos_sources_are_read_from_pairs_of_address_and_key():
-    sources = parse_logos_sources("https://dev.example/|key-dev, https://prod.example|key-prod")
+def test_the_logos_address_and_the_key_are_read_from_the_environment():
+    settings = Settings.from_env({"NODE_MANAGER_LOGOS_URL": "https://dev.example/", "NODE_MANAGER_DEPLOYER_KEY": KEY})
 
-    assert [(s.url, s.key) for s in sources] == [
-        ("https://dev.example", "key-dev"),
-        ("https://prod.example", "key-prod"),
-    ]
-    assert [s.name for s in sources] == ["dev.example", "prod.example"]
+    assert (settings.logos_url, settings.deployer_key) == ("https://dev.example", KEY)
+    assert settings.logos_enabled
 
 
-def test_an_entry_with_a_missing_part_or_a_bad_address_is_skipped():
-    sources = parse_logos_sources("https://a.example|, |key, ftp://b.example|key, https://c.example|key|more, nonsense")
+@pytest.mark.parametrize(
+    "environ",
+    [
+        {},
+        {"NODE_MANAGER_LOGOS_URL": "https://a.example"},
+        {"NODE_MANAGER_DEPLOYER_KEY": KEY},
+        {"NODE_MANAGER_LOGOS_URL": "ftp://a.example", "NODE_MANAGER_DEPLOYER_KEY": KEY},
+        {"NODE_MANAGER_LOGOS_URL": "nonsense", "NODE_MANAGER_DEPLOYER_KEY": KEY},
+    ],
+)
+def test_a_host_without_a_usable_address_and_key_obeys_no_logos(environ):
+    assert not Settings.from_env(environ).logos_enabled
 
-    assert [(s.url, s.key) for s in sources] == [("https://c.example", "key|more")]
 
-
-def test_the_first_entry_for_an_address_wins():
-    sources = parse_logos_sources("https://a.example|one https://a.example/|two")
-
-    assert [(s.url, s.key) for s in sources] == [("https://a.example", "one")]
-
-
-def test_the_key_is_not_part_of_the_text_of_a_source():
-    assert KEY not in repr(LogosSource(url="https://a.example", key=KEY))
+def test_the_key_is_not_part_of_the_text_of_the_settings():
+    assert KEY not in repr(Settings.from_env(LOGOS))
 
 
 def test_a_core_host_has_its_own_defaults(tmp_path):
-    settings = Settings.from_env({"NODE_MANAGER_KIND": "core", "NODE_MANAGER_LOGOS": f"https://prod.example|{KEY}"})
+    settings = Settings.from_env({"NODE_MANAGER_KIND": "core", **LOGOS})
 
     assert settings.kind == "core"
     assert str(settings.project_dir) == "/opt/logos"
     assert settings.compose_file.name == "docker-compose.yaml"
     assert settings.project_name == "logos"
-    assert settings.core_health_url == "https://prod.example/api/info"
+    assert settings.core_health_url == "https://a.example/api/info"
 
 
 def test_the_health_address_can_be_set_and_a_worker_has_none():
     core = Settings.from_env(
-        {
-            "NODE_MANAGER_KIND": "core",
-            "NODE_MANAGER_LOGOS": f"https://a.example|{KEY}",
-            "NODE_MANAGER_CORE_HEALTH_URL": "https://b.example/up",
-        }
+        {"NODE_MANAGER_KIND": "core", "NODE_MANAGER_CORE_HEALTH_URL": "https://b.example/up", **LOGOS}
     )
-    worker = Settings.from_env({"NODE_MANAGER_LOGOS": f"https://a.example|{KEY}"})
+    worker = Settings.from_env(LOGOS)
 
     assert core.core_health_url == "https://b.example/up"
     assert worker.kind == "worker"
@@ -114,12 +110,7 @@ def test_valid_orders_are_parsed_and_invalid_ones_are_rejected():
     orders, rejections = parse_orders(
         {
             "orders": [
-                {
-                    "id": "plan-1-core",
-                    "tag": "v2",
-                    "requested_by": "Jane",
-                    "plan": {"id": "p1", "position": 0, "extra": [1]},
-                },
+                {"id": "plan-1-core", "tag": "v2", "requested_by": "Jane", "kind": "core"},
                 {"id": "plan-1-bad", "tag": "bad tag!"},
                 {"id": "bad id!", "tag": "v2"},
                 "nonsense",
@@ -127,7 +118,7 @@ def test_valid_orders_are_parsed_and_invalid_ones_are_rejected():
         }
     )
 
-    assert orders == [Order(id="plan-1-core", tag="v2", requested_by="Jane", plan={"id": "p1", "position": "0"})]
+    assert orders == [Order(id="plan-1-core", tag="v2", requested_by="Jane", kind="core")]
     assert [item["id"] for item in rejections] == ["plan-1-bad", "bad id!"]
     assert "invalid image tag" in rejections[0]["rejected"]
 
@@ -193,11 +184,11 @@ def logos():
 
 
 def client_for(logos: FakeLogos) -> LogosClient:
-    return LogosClient(LogosSource(url=logos.url, key=KEY), kind="core", timeout_margin_s=5.0)
+    return LogosClient(logos.url, KEY, kind="core", timeout_margin_s=5.0)
 
 
 def test_a_poll_sends_the_key_in_a_header_and_returns_the_orders(logos):
-    logos.answers = [(200, {"orders": [{"id": "plan-1-core", "tag": "v2", "plan": {"kind": "core"}}]})]
+    logos.answers = [(200, {"orders": [{"id": "plan-1-core", "tag": "v2", "kind": "core"}]})]
 
     orders, rejections = client_for(logos).poll(25.0)
 
@@ -252,13 +243,6 @@ def test_an_error_answer_without_json_has_no_detail(logos):
     assert ":" not in str(caught.value).split("500", 1)[1]
 
 
-def test_the_plan_of_an_order_that_is_not_an_object_is_dropped():
-    orders, rejections = parse_orders({"orders": [{"id": "o1", "tag": "v2", "plan": "text"}]})
-
-    assert orders == [Order(id="o1", tag="v2", requested_by="", plan={})]
-    assert rejections == []
-
-
 def test_an_answer_that_is_not_json_is_an_error(logos):
     logos.answers = [(200, b"<html>")]
 
@@ -267,7 +251,7 @@ def test_an_answer_that_is_not_json_is_an_error(logos):
 
 
 def test_an_unreachable_logos_is_a_retryable_error():
-    client = LogosClient(LogosSource(url="http://127.0.0.1:9", key=KEY), kind="core", timeout_margin_s=1.0)
+    client = LogosClient("http://127.0.0.1:9", KEY, kind="core", timeout_margin_s=1.0)
 
     with pytest.raises(LogosError) as caught:
         client.poll(0.1)
@@ -282,8 +266,7 @@ def test_an_unreachable_logos_is_a_retryable_error():
 class FakeClient:
     """Stands in for a LogosClient when a test is about the link and not the request."""
 
-    def __init__(self, name: str = "dev.example") -> None:
-        self.source = LogosSource(url=f"https://{name}", key=KEY)
+    def __init__(self) -> None:
         self.sent: list[list[dict]] = []
         self.error: LogosError | None = None
         self.acks: set[str] | None = None
@@ -303,117 +286,101 @@ def link_settings(settings) -> Settings:
 
 
 @pytest.fixture
-def link(link_settings, store, clock):
-    def build(*clients: FakeClient) -> LogosLink:
-        return LogosLink(link_settings, store, threading.Event(), list(clients) or [FakeClient()], clock=clock)
-
-    return build
+def client() -> FakeClient:
+    return FakeClient()
 
 
-def order(order_id: str = "plan-1-w1", tag: str = "v2", **plan) -> Order:
-    return Order(id=order_id, tag=tag, requested_by="Jane Doe", plan={"id": "plan-1", "kind": "worker", **plan})
+@pytest.fixture
+def link(link_settings, store, clock, client) -> LogosLink:
+    return LogosLink(link_settings, store, threading.Event(), client, clock=clock)
 
 
-def test_an_order_becomes_a_queued_record_with_its_source_and_plan(link, store):
-    client = FakeClient()
+def order(order_id: str = "plan-1-w1", tag: str = "v2", kind: str = "worker") -> Order:
+    return Order(id=order_id, tag=tag, requested_by="Jane Doe", kind=kind)
 
-    link(client).accept(client, order())
+
+def from_logos(deployment_id: str = "d1") -> Deployment:
+    return Deployment(id=deployment_id, tag="v2", requested_at="2026-01-01T00:00:00+00:00", from_logos=True)
+
+
+def test_an_order_becomes_a_queued_record_that_came_from_logos(link, store):
+    link.accept(order())
 
     record = store.load("plan-1-w1")
     assert record is not None and record.phase is Phase.QUEUED
-    assert (record.tag, record.requested_by, record.source) == ("v2", "Jane Doe", "dev.example")
-    assert record.plan == {"id": "plan-1", "kind": "worker"}
+    assert (record.tag, record.requested_by, record.from_logos) == ("v2", "Jane Doe", True)
 
 
 def test_the_same_order_twice_is_one_deployment(link, store):
-    client = FakeClient()
-    the_link = link(client)
-
-    the_link.accept(client, order())
-    the_link.accept(client, order())
+    link.accept(order())
+    link.accept(order())
 
     assert [record.id for record in store.all()] == ["plan-1-w1"]
 
 
-def test_an_order_for_the_other_kind_of_host_is_rejected(link, store):
-    client = FakeClient()
-    the_link = link(client)
-
-    the_link.accept(client, order(kind="core"))
+def test_an_order_for_the_other_kind_of_host_is_rejected(link, client, store):
+    link.accept(order(kind="core"))
 
     assert store.all() == []
-    the_link.report_once(client)
+    link.report_once()
     assert client.sent[0][0]["id"] == "plan-1-w1"
     assert "worker host" in client.sent[0][0]["rejected"]
 
 
-def test_an_order_whose_id_is_used_for_another_tag_is_rejected(link, store):
-    client = FakeClient()
-    the_link = link(client)
-    the_link.accept(client, order(tag="v2"))
+def test_an_order_whose_id_is_used_for_another_tag_is_rejected(link, client, store):
+    link.accept(order(tag="v2"))
 
-    the_link.accept(client, order(tag="v3"))
+    link.accept(order(tag="v3"))
 
     assert store.load("plan-1-w1").tag == "v2"
-    the_link.report_once(client)
+    link.report_once()
     assert "already used for tag v2" in next(item for item in client.sent[0] if "rejected" in item)["rejected"]
 
 
-def test_a_rejection_is_sent_until_logos_takes_it(link):
-    client = FakeClient()
+def test_a_rejection_is_sent_until_logos_takes_it(link, client):
     client.acks = set()
-    the_link = link(client)
-    the_link.accept(client, order(kind="core"))
+    link.accept(order(kind="core"))
 
-    the_link.report_once(client)
+    link.report_once()
     assert len(client.sent) == 1
     client.acks = None
-    the_link.report_once(client)
+    link.report_once()
     assert len(client.sent) == 2
-    the_link.report_once(client)
+    link.report_once()
 
     # Sent twice, because Logos took it the second time. A third pass has nothing left to send.
     assert len(client.sent) == 2
 
 
-def test_only_deployments_from_logos_are_reported(link, store):
-    client = FakeClient()
+def test_only_deployments_from_logos_are_reported(link, client, store):
     queued(store, deployment_id="by-hand")
-    store.submit(
-        Deployment(
-            id="from-logos", tag="v2", requested_at="2026-01-01T00:00:00+00:00", source="dev.example", plan={"id": "p"}
-        )
-    )
+    store.submit(from_logos("from-logos"))
 
-    link(client).report_once(client)
+    link.report_once()
 
     assert [item["id"] for item in client.sent[0]] == ["from-logos"]
 
 
-def test_a_deployment_in_progress_is_sent_again_when_it_changed_or_after_the_interval(link, store, clock):
-    client = FakeClient()
-    the_link = link(client)
-    record = store.submit(Deployment(id="d1", tag="v2", requested_at="2026-01-01T00:00:00+00:00", plan={"id": "p"}))
+def test_a_deployment_in_progress_is_sent_again_when_it_changed_or_after_the_interval(link, client, store, clock):
+    record = store.submit(from_logos())
 
-    the_link.report_once(client)
-    the_link.report_once(client)
+    link.report_once()
+    link.report_once()
     assert len(client.sent) == 1
 
     record.phase = Phase.PULLING
     record.events.append({"at": "2026-01-01T00:00:01+00:00", "phase": "pulling", "note": "x"})
     store.save(record)
-    the_link.report_once(client)
+    link.report_once()
     assert len(client.sent) == 2
 
     clock.sleep(21.0)
-    the_link.report_once(client)
+    link.report_once()
     assert len(client.sent) == 3
 
 
 def finished(store: StateStore, deployment_id: str = "d1") -> Deployment:
-    record = store.submit(
-        Deployment(id=deployment_id, tag="v2", requested_at="2026-01-01T00:00:00+00:00", plan={"id": "p"})
-    )
+    record = store.submit(from_logos(deployment_id))
     record.phase = Phase.DONE
     record.outcome = Outcome.SUCCEEDED
     record.finished_at = "2099-01-01T00:00:00+00:00"
@@ -421,60 +388,44 @@ def finished(store: StateStore, deployment_id: str = "d1") -> Deployment:
     return record
 
 
-def test_a_finished_deployment_is_sent_until_every_logos_took_it(link, store):
-    dev, prod = FakeClient("dev.example"), FakeClient("prod.example")
-    the_link = link(dev, prod)
+def test_a_finished_deployment_is_sent_until_logos_took_it(link, client, store):
     finished(store)
-    prod.acks = set()
+    client.acks = set()
 
-    the_link.report_once(dev)
-    the_link.report_once(prod)
+    link.report_once()
+    link.report_once()
+    assert len(client.sent) == 2
+    assert store.load("d1").reported_at is None
 
-    assert store.load("d1").final_acked == ["dev.example"]
-    the_link.report_once(dev)
-    assert len(dev.sent) == 1
-    prod.acks = None
-    the_link._next_try.clear()
-    the_link.report_once(prod)
-    assert store.load("d1").final_acked == ["dev.example", "prod.example"]
+    client.acks = None
+    link.report_once()
+    assert store.load("d1").reported_at is not None
+    link.report_once()
+
+    # Sent a third time, because Logos took it then. A fourth pass has nothing left to send.
+    assert len(client.sent) == 3
 
 
-def test_every_logos_gets_the_same_snapshot_of_a_deployment(link, store):
-    dev, prod = FakeClient("dev.example"), FakeClient("prod.example")
-    the_link = link(dev, prod)
+def test_logos_that_cannot_be_reached_is_asked_again_after_a_growing_pause(link, client, store, clock):
     finished(store)
+    client.error = LogosError("Logos could not be reached")
 
-    the_link.report_once(dev)
-    the_link.report_once(prod)
-
-    assert dev.sent[0] == prod.sent[0]
-    assert dev.sent[0][0]["outcome"] == "succeeded"
-    assert dev.sent[0][0]["plan"] == {"id": "p"}
-
-
-def test_a_logos_that_cannot_be_reached_is_asked_again_after_a_growing_pause(link, store, clock):
-    client = FakeClient()
-    the_link = link(client)
-    finished(store)
-    client.error = LogosError("dev.example could not be reached")
-
-    the_link.report_once(client)
+    link.report_once()
     client.error = None
-    the_link.report_once(client)
+    link.report_once()
     assert client.sent == []
 
     clock.sleep(6.0)
-    the_link.report_once(client)
+    link.report_once()
     assert len(client.sent) == 1
 
 
-def test_an_old_ending_is_not_reported_any_more(link, store):
-    client = FakeClient()
+def test_an_old_ending_is_not_reported_any_more(link, client, store):
     record = finished(store)
     record.finished_at = "2020-01-01T00:00:00+00:00"
     store.save(record)
 
-    link(client).report_once(client)
+    link.report_once()
 
     assert client.sent == []
 
@@ -496,9 +447,7 @@ def test_the_snapshot_carries_the_state_the_page_needs(store):
 
 def test_an_ending_from_logos_is_not_reported_to_the_orchestrator(make_deployer, store, orchestrator):
     deployer = make_deployer(orchestrator=orchestrator)
-    record = store.submit(
-        Deployment(id="from-logos", tag="v2", requested_at="2026-01-01T00:00:00+00:00", plan={"id": "p"})
-    )
+    record = store.submit(from_logos("from-logos"))
     other = queued(store, deployment_id="by-hand")
 
     deployer.process(record)
@@ -514,8 +463,8 @@ def test_an_ending_from_logos_is_not_reported_to_the_orchestrator(make_deployer,
 class PollClient(FakeClient):
     """Answers a poll from a script and stops the link when the script is used up."""
 
-    def __init__(self, stop: threading.Event, script: list, name: str = "dev.example") -> None:
-        super().__init__(name)
+    def __init__(self, stop: threading.Event, script: list) -> None:
+        super().__init__()
         self.stop = stop
         self.script = list(script)
 
@@ -531,30 +480,29 @@ class PollClient(FakeClient):
 def intake(link_settings, store, clock, script):
     stop = threading.Event()
     client = PollClient(stop, script)
-    link = LogosLink(link_settings, store, stop, [client], clock=clock)
+    link = LogosLink(link_settings, store, stop, client, clock=clock)
     return link, client, stop
 
 
 def test_the_link_exists_only_for_a_host_that_obeys_a_logos(settings, store):
     stop = threading.Event()
-    with_logos = Settings.from_env({"NODE_MANAGER_LOGOS": f"https://a.example|{KEY}"})
 
     assert LogosLink.from_settings(settings, store, stop) is None
-    assert LogosLink.from_settings(with_logos, store, stop) is not None
+    assert LogosLink.from_settings(Settings.from_env(LOGOS), store, stop) is not None
 
 
 def test_the_intake_accepts_orders_and_keeps_rejections_for_the_next_report(link_settings, store, clock):
-    link, client, _ = intake(
+    link, _, _ = intake(
         link_settings,
         store,
         clock,
         [([order("o1")], [{"id": "o2", "rejected": "bad tag"}])],
     )
 
-    link._intake_loop(client)
+    link._intake_loop()
 
     assert store.load("o1") is not None
-    assert link._rejections["dev.example"] == [{"id": "o2", "rejected": "bad tag"}]
+    assert link._rejections == [{"id": "o2", "rejected": "bad tag"}]
     assert link._wake.is_set()
 
 
@@ -562,28 +510,26 @@ def test_the_intake_goes_on_after_an_error_of_logos(link_settings, store, clock)
     link, client, _ = intake(link_settings, store, clock, [LogosError("down"), LogosError("down"), ([], [])])
     link._stop.wait = lambda timeout=None: False  # no real pause between the tries
 
-    link._intake_loop(client)
+    link._intake_loop()
 
     assert client.script == []
-    assert link._complained == {}
+    assert link._complained is None
 
 
 def test_the_intake_goes_on_after_an_unexpected_error(link_settings, store, clock):
     link, client, _ = intake(link_settings, store, clock, [RuntimeError("boom"), ([], [])])
     link._stop.wait = lambda timeout=None: False
 
-    link._intake_loop(client)
+    link._intake_loop()
 
     assert client.script == []
 
 
-def test_a_problem_with_a_logos_is_logged_once(link_settings, store, clock, caplog):
-    link = LogosLink(link_settings, store, threading.Event(), [FakeClient()], clock=clock)
-
+def test_a_problem_with_logos_is_logged_once(link, caplog):
     with caplog.at_level("WARNING"):
-        link._complain("dev.example", "down")
-        link._complain("dev.example", "down")
-        link._complain("dev.example", "other")
+        link._complain("down")
+        link._complain("down")
+        link._complain("other")
 
     assert [r.getMessage() for r in caplog.records] == ["down", "other"]
 
@@ -591,7 +537,7 @@ def test_a_problem_with_a_logos_is_logged_once(link_settings, store, clock, capl
 def test_a_report_that_fails_unexpectedly_does_not_stop_the_reporter(link_settings, store, clock):
     link, client, stop = intake(link_settings, store, clock, [([], [])])
 
-    def explode(c):
+    def explode():
         stop.set()
         raise RuntimeError("boom")
 

@@ -1,21 +1,21 @@
-"""The link to the Logos instances this host obeys: orders in, reports out.
+"""The link to the Logos that this host obeys: orders in, reports out.
 
-A host asks every Logos on its list for orders and tells every one of them how its deployments go. Nothing calls into
-the host: the manager only makes outgoing requests. An order is a deployment id, a tag and a few words about the plan
-it belongs to. The manager writes it to the state directory like any other request, so the queue, the phases and the
-limits are the same for an order from the command line and an order from Logos.
+A host obeys one Logos: the one it belongs to. It asks that Logos for orders and tells it how its deployments go.
+Nothing calls into the host: the manager only makes outgoing requests. An order is a deployment id, a tag and the kind
+of host it is for. The manager writes it to the state directory like any other request, so the queue, the phases and
+the limits are the same for an order from the command line and an order from Logos.
 
-Two kinds of thread run next to the deployments:
+Two threads run next to the deployments:
 
-* One *intake* per Logos asks for orders. The request waits at Logos until an order appears (long polling), so an order
-  starts within seconds and an idle host makes a request about every ``order_wait_s`` seconds. The request is also how
-  Logos sees that the host is alive.
-* One *reporter* sends the state of the deployments that came from Logos to every Logos on the list: the deployments in
-  progress at a regular pace, a finished one until every Logos took it. A Logos that cannot be reached is asked again
-  after a pause that grows. A report that fails never changes how a deployment goes.
+* The *intake* asks for orders. The request waits at Logos until an order appears (long polling), so an order starts
+  within seconds and an idle host makes a request about every ``order_wait_s`` seconds. The request is also how Logos
+  sees that the host is alive.
+* The *reporter* sends the state of the deployments that came from Logos: the deployments in progress at a regular pace,
+  a finished one until Logos took it. A Logos that cannot be reached is asked again after a pause that grows. A report
+  that fails never changes how a deployment goes.
 
-Only the standard library is used: the manager has no runtime dependencies. The key of a Logos is sent in a header and
-never written to a log.
+Only the standard library is used: the manager has no runtime dependencies. The key of the deployer is sent in a header
+and never written to a log.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from logos_node_manager import __version__
-from logos_node_manager.config import LogosSource, Settings
+from logos_node_manager.config import Settings
 from logos_node_manager.deployer import Deployer
 from logos_node_manager.errors import StateError
 from logos_node_manager.state import Deployment, StateStore, utc_now, validate_id, validate_tag
@@ -45,7 +45,7 @@ MAX_ORDERS_PER_POLL = 20
 _MAX_FIELD_CHARS = 300
 _MAX_MESSAGE_CHARS = 1500
 _MAX_LOG_CHARS = 6000
-_MAX_PLAN_KEYS = 12
+_MAX_KIND_CHARS = 16
 # Asking again after a failure: first pause, and the longest pause.
 RETRY_FIRST_S = 5.0
 RETRY_MAX_S = 300.0
@@ -68,7 +68,7 @@ def retry_delay(failures: int) -> float:
 
 
 class LogosError(Exception):
-    """A Logos gave no usable answer. ``retryable`` tells whether asking again can help."""
+    """Logos gave no usable answer. ``retryable`` tells whether asking again can help."""
 
     def __init__(self, message: str, *, retryable: bool = True) -> None:
         super().__init__(message)
@@ -80,18 +80,8 @@ class Order:
     id: str
     tag: str
     requested_by: str
-    plan: dict[str, str]
-
-
-def _clean_plan(raw: Any) -> dict[str, str]:
-    """The plan data of an order as short strings. Anything else is dropped: it only goes back in the reports."""
-    if not isinstance(raw, dict):
-        return {}
-    plan: dict[str, str] = {}
-    for key, value in list(raw.items())[:_MAX_PLAN_KEYS]:
-        if isinstance(key, str) and isinstance(value, (str, int)) and not isinstance(value, bool):
-            plan[key[:40]] = str(value)[:_MAX_FIELD_CHARS]
-    return plan
+    # The kind of host the order is for (``worker`` or ``core``). Empty: not said.
+    kind: str
 
 
 def parse_orders(payload: Any) -> tuple[list[Order], list[dict[str, str]]]:
@@ -111,7 +101,7 @@ def parse_orders(payload: Any) -> tuple[list[Order], list[dict[str, str]]]:
                     id=validate_id(raw_id),
                     tag=validate_tag(str(raw.get("tag") or "")),
                     requested_by=str(raw.get("requested_by") or "")[:_MAX_FIELD_CHARS],
-                    plan=_clean_plan(raw.get("plan")),
+                    kind=str(raw.get("kind") or "")[:_MAX_KIND_CHARS],
                 )
             )
         except ValueError as exc:
@@ -121,10 +111,11 @@ def parse_orders(payload: Any) -> tuple[list[Order], list[dict[str, str]]]:
 
 
 class LogosClient:
-    """Requests to one Logos."""
+    """Requests to Logos."""
 
-    def __init__(self, source: LogosSource, *, kind: str, timeout_margin_s: float) -> None:
-        self.source = source
+    def __init__(self, url: str, key: str, *, kind: str, timeout_margin_s: float) -> None:
+        self._url = url
+        self._key = key
         self._kind = kind
         self._margin_s = timeout_margin_s
 
@@ -142,28 +133,26 @@ class LogosClient:
     def _post(self, path: str, body: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
         payload = json.dumps({**body, "kind": self._kind, "version": __version__}).encode("utf-8")
         request = urllib.request.Request(
-            f"{self.source.url}{API_PREFIX}{path}",
+            f"{self._url}{API_PREFIX}{path}",
             data=payload,
             method="POST",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.source.key}"},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._key}"},
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310 - http(s) only
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             retryable = exc.code >= 500 or exc.code in (408, 429)
-            raise LogosError(
-                f"{self.source.name} answered {exc.code} to {path}{self._detail(exc)}", retryable=retryable
-            ) from None
+            raise LogosError(f"Logos answered {exc.code} to {path}{self._detail(exc)}", retryable=retryable) from None
         except (urllib.error.URLError, OSError, ValueError) as exc:
             # The text can name the address, but it never holds the key: that is in a header only.
-            raise LogosError(f"{self.source.name} could not be reached for {path}: {exc}") from None
+            raise LogosError(f"Logos could not be reached for {path}: {exc}") from None
         try:
             answer = json.loads(raw)
         except ValueError:
-            raise LogosError(f"the answer of {self.source.name} to {path} is not JSON") from None
+            raise LogosError(f"the answer of Logos to {path} is not JSON") from None
         if not isinstance(answer, dict):
-            raise LogosError(f"the answer of {self.source.name} to {path} is not a JSON object", retryable=False)
+            raise LogosError(f"the answer of Logos to {path} is not a JSON object", retryable=False)
         return answer
 
     @staticmethod
@@ -177,13 +166,12 @@ class LogosClient:
 
 
 def snapshot(record: Deployment) -> dict[str, Any]:
-    """The state of a deployment as a report carries it. The same data goes to every Logos on the list."""
+    """The state of a deployment as a report carries it."""
     drain_seconds = None
     if record.cordoned_at and record.drained_at:
         drain_seconds = int(Deployer.seconds_between(record.cordoned_at, record.drained_at))
     return {
         "id": record.id,
-        "tag": record.tag,
         "phase": record.phase.value,
         "outcome": record.outcome.value if record.outcome else None,
         "failure": record.failure.value if record.failure else None,
@@ -204,8 +192,6 @@ def snapshot(record: Deployment) -> dict[str, Any]:
         "drained_requests": record.drained_requests,
         "drain_seconds": drain_seconds,
         "sole_replica_models": record.sole_replica_models,
-        "plan": record.plan or {},
-        "source": record.source,
     }
 
 
@@ -216,56 +202,53 @@ def _digest(record: Deployment) -> tuple:
 
 
 class LogosLink:
-    """The intake and the reporter of a host that obeys one or more Logos instances."""
+    """The intake and the reporter of a host that obeys a Logos."""
 
     def __init__(
         self,
         settings: Settings,
         store: StateStore,
         stop: threading.Event,
-        clients: list[LogosClient],
+        client: LogosClient,
         *,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._settings = settings
         self._store = store
         self._stop = stop
-        self._clients = clients
+        self._client = client
         self._clock = clock
         self._threads: list[threading.Thread] = []
         self._wake = threading.Event()
         self._lock = threading.Lock()
-        # Orders that cannot be run, per Logos. They go out with the next report.
-        self._rejections: dict[str, list[dict[str, str]]] = {client.source.name: [] for client in clients}
-        # Per Logos and deployment: what was sent last and when. Only the reporter reads and writes it.
-        self._sent: dict[tuple[str, str], tuple[tuple, float]] = {}
-        self._failures: dict[str, int] = {}
-        self._next_try: dict[str, float] = {}
-        self._complained: dict[str, str] = {}
+        # Orders that cannot be run. They go out with the next report.
+        self._rejections: list[dict[str, str]] = []
+        # Per deployment: what was sent last and when. Only the reporter reads and writes it.
+        self._sent: dict[str, tuple[tuple, float]] = {}
+        self._failures = 0
+        self._next_try = 0.0
+        self._complained: str | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings, store: StateStore, stop: threading.Event) -> "LogosLink | None":
         """The link, or None when the host obeys no Logos."""
-        if not settings.logos_sources:
+        if not settings.logos_enabled:
             return None
-        clients = [
-            LogosClient(source, kind=settings.kind, timeout_margin_s=settings.order_timeout_margin_s)
-            for source in settings.logos_sources
-        ]
-        return cls(settings, store, stop, clients)
+        client = LogosClient(
+            settings.logos_url,
+            settings.deployer_key,
+            kind=settings.kind,
+            timeout_margin_s=settings.order_timeout_margin_s,
+        )
+        return cls(settings, store, stop, client)
 
     # ------------------------------------------------------------------ Threads
 
     def start(self) -> None:
-        for client in self._clients:
-            thread = threading.Thread(
-                target=self._intake_loop, args=(client,), name=f"orders-{client.source.name}", daemon=True
-            )
+        for target, name in ((self._intake_loop, "orders"), (self._report_loop, "reports")):
+            thread = threading.Thread(target=target, name=name, daemon=True)
             thread.start()
             self._threads.append(thread)
-        reporter = threading.Thread(target=self._report_loop, name="reports", daemon=True)
-        reporter.start()
-        self._threads.append(reporter)
 
     def join(self, timeout_s: float = 2.0) -> None:
         self._wake.set()
@@ -274,43 +257,40 @@ class LogosLink:
 
     # ------------------------------------------------------------------ Intake
 
-    def _intake_loop(self, client: LogosClient) -> None:
-        name = client.source.name
+    def _intake_loop(self) -> None:
         failures = 0
         while not self._stop.is_set():
             began = self._clock()
             try:
-                orders, rejections = client.poll(self._settings.order_wait_s)
+                orders, rejections = self._client.poll(self._settings.order_wait_s)
             except LogosError as exc:
                 failures += 1
-                self._complain(name, str(exc))
+                self._complain(str(exc))
                 self._stop.wait(retry_delay(failures))
                 continue
             except Exception:  # noqa: BLE001 - an unexpected problem must not end the intake
                 failures += 1
-                logger.exception("Asking %s for orders failed unexpectedly", name)
+                logger.exception("Asking Logos for orders failed unexpectedly")
                 self._stop.wait(retry_delay(failures))
                 continue
             if failures:
-                logger.info("%s answers again", name)
+                logger.info("Logos answers again")
             failures = 0
-            self._complained.pop(name, None)
+            self._complained = None
             with self._lock:
-                self._rejections[name].extend(rejections)
+                self._rejections.extend(rejections)
             for order in orders:
-                self.accept(client, order)
+                self.accept(order)
             if orders or rejections:
                 self._wake.set()
             spent = self._clock() - began
             if spent < MIN_POLL_INTERVAL_S:
                 self._stop.wait(MIN_POLL_INTERVAL_S - spent)
 
-    def accept(self, client: LogosClient, order: Order) -> None:
+    def accept(self, order: Order) -> None:
         """Write an order to the state directory, or note why it cannot be run."""
-        name = client.source.name
-        wanted = order.plan.get("kind")
-        if wanted and wanted != self._settings.kind:
-            self._reject(name, order.id, f"this is a {self._settings.kind} host, and the order is for a {wanted} host")
+        if order.kind and order.kind != self._settings.kind:
+            self._reject(order.id, f"this is a {self._settings.kind} host, and the order is for a {order.kind} host")
             return
         try:
             existing = self._store.load(order.id)
@@ -320,84 +300,80 @@ class LogosLink:
                     tag=order.tag,
                     requested_at=utc_now(),
                     requested_by=order.requested_by,
-                    source=name,
-                    plan=dict(order.plan),
+                    from_logos=True,
                 )
             )
         except (ValueError, StateError) as exc:
-            self._reject(name, order.id, str(exc))
+            self._reject(order.id, str(exc))
             return
         if existing is None:
-            logger.info("Order %s from %s: deploy tag %s", order.id, name, order.tag)
+            logger.info("Order %s from Logos: deploy tag %s", order.id, order.tag)
 
-    def _reject(self, name: str, order_id: str, reason: str) -> None:
-        logger.warning("Order %s from %s is refused: %s", order_id, name, reason)
+    def _reject(self, order_id: str, reason: str) -> None:
+        logger.warning("Order %s from Logos is refused: %s", order_id, reason)
         with self._lock:
-            self._rejections[name].append({"id": order_id, "rejected": reason[:_MAX_FIELD_CHARS]})
+            self._rejections.append({"id": order_id, "rejected": reason[:_MAX_FIELD_CHARS]})
 
-    def _complain(self, name: str, message: str) -> None:
-        """Log a problem with a Logos once, not at every try."""
-        if self._complained.get(name) != message:
-            self._complained[name] = message
+    def _complain(self, message: str) -> None:
+        """Log a problem with Logos once, not at every try."""
+        if self._complained != message:
+            self._complained = message
             logger.warning("%s", message)
 
     # ------------------------------------------------------------------ Reports
 
     def _report_loop(self) -> None:
         while not self._stop.is_set():
-            for client in self._clients:
-                try:
-                    self.report_once(client)
-                except Exception:  # noqa: BLE001 - a report must never stop the manager
-                    logger.exception("Reporting to %s failed unexpectedly", client.source.name)
+            try:
+                self.report_once()
+            except Exception:  # noqa: BLE001 - a report must never stop the manager
+                logger.exception("Reporting to Logos failed unexpectedly")
             self._wake.wait(REPORT_LOOP_S)
             self._wake.clear()
 
-    def report_once(self, client: LogosClient) -> None:
-        """One pass for one Logos: send what is due, note what it took."""
-        name = client.source.name
+    def report_once(self) -> None:
+        """One pass: send what is due, note what Logos took."""
         now = self._clock()
-        if self._next_try.get(name, 0.0) > now:
+        if self._next_try > now:
             return
         with self._lock:
-            pending_rejections = list(self._rejections[name])
+            pending_rejections = list(self._rejections)
         due: list[Deployment] = []
         for record in self._store.all():
-            if record.plan is None:
+            if not record.from_logos:
                 continue
             if record.finished:
-                if name in record.final_acked or self._too_old(record):
+                if record.reported_at is not None or self._too_old(record):
                     continue
                 due.append(record)
                 continue
-            sent = self._sent.get((name, record.id))
+            sent = self._sent.get(record.id)
             if sent is None or sent[0] != _digest(record) or now - sent[1] >= self._settings.report_interval_s:
                 due.append(record)
         if not due and not pending_rejections:
             return
         payload = [snapshot(record) for record in due] + pending_rejections
         try:
-            acked = client.report(payload)
+            acked = self._client.report(payload)
         except LogosError as exc:
-            failures = self._failures.get(name, 0) + 1
-            self._failures[name] = failures
-            self._next_try[name] = now + retry_delay(failures)
-            self._complain(name, str(exc))
+            self._failures += 1
+            self._next_try = now + retry_delay(self._failures)
+            self._complain(str(exc))
             return
-        self._failures.pop(name, None)
-        self._next_try.pop(name, None)
-        self._complained.pop(name, None)
+        self._failures = 0
+        self._next_try = 0.0
+        self._complained = None
         for record in due:
             if record.id not in acked:
                 continue
             if record.finished:
-                self._store.mark_acked(record.id, name)
+                self._store.mark_reported(record.id)
             else:
-                self._sent[(name, record.id)] = (_digest(record), now)
+                self._sent[record.id] = (_digest(record), now)
         with self._lock:
             for item in pending_rejections:
-                if item["id"] in acked and item in self._rejections[name]:
-                    self._rejections[name].remove(item)
+                if item["id"] in acked and item in self._rejections:
+                    self._rejections.remove(item)
 
     def _too_old(self, record: Deployment) -> bool:
         return Deployer.seconds_between(record.finished_at or utc_now(), utc_now()) > REPORT_MAX_AGE_S

@@ -8,7 +8,6 @@ import {
   DeploymentOverview,
   DeploymentPlan,
   DeploymentStep,
-  DeploymentTarget,
   phaseStates,
   stepStatusText,
 } from '../../shared/models/deployment.model';
@@ -20,7 +19,6 @@ const NOW = '2026-11-07T10:00:00.000Z';
 const makeDeployer = (overrides: Partial<Deployer> = {}): Deployer => ({
   id: 'd-core',
   name: 'dev-core',
-  environment: 'Dev',
   kind: 'core',
   online: true,
   last_seen_at: NOW,
@@ -29,22 +27,11 @@ const makeDeployer = (overrides: Partial<Deployer> = {}): Deployer => ({
   ...overrides,
 });
 
-const makeTarget = (overrides: Partial<DeploymentTarget> = {}): DeploymentTarget => ({
-  name: 'Dev',
-  own: true,
-  requires_confirmation: false,
+const makeOverview = (overrides: Partial<DeploymentOverview> = {}): DeploymentOverview => ({
+  confirmation_word: null,
   deployers: [makeDeployer()],
-  running_plan_id: null,
-  last_status: 'succeeded',
   can_start: true,
   blocked_reason: null,
-  ...overrides,
-});
-
-const makeOverview = (overrides: Partial<DeploymentOverview> = {}): DeploymentOverview => ({
-  enabled: true,
-  environment: 'Dev',
-  targets: [makeTarget()],
   suggested_tags: ['latest', 'pr-93'],
   ...overrides,
 });
@@ -70,10 +57,8 @@ const makeStep = (overrides: Partial<DeploymentStep> = {}): DeploymentStep => ({
 const makePlan = (overrides: Partial<DeploymentPlan> = {}): DeploymentPlan => ({
   id: 'p1',
   number: 7,
-  environment: 'Dev',
   tag: 'pr-93',
   status: 'succeeded',
-  origin: 'local',
   initiator: 'Tobias Wasner',
   reason: null,
   abandoned_by: null,
@@ -91,7 +76,6 @@ describe('Deployments', () => {
   let service: Record<string, ReturnType<typeof vi.fn>>;
   let overview: DeploymentOverview;
   let plans: DeploymentPlan[];
-  let route: { query: Record<string, string> };
 
   const text = (): string => (fixture.nativeElement as HTMLElement).textContent ?? '';
 
@@ -106,7 +90,6 @@ describe('Deployments', () => {
   beforeEach(async () => {
     overview = makeOverview();
     plans = [makePlan()];
-    route = { query: {} };
     service = {
       getOverview: vi.fn().mockImplementation(async () => overview),
       getPlans: vi.fn().mockImplementation(async () => plans),
@@ -122,40 +105,30 @@ describe('Deployments', () => {
     };
     await TestBed.configureTestingModule({
       imports: [Deployments],
-      providers: [
-        provideRouter([]),
-        { provide: DeploymentService, useValue: service },
-        {
-          provide: ActivatedRoute,
-          useValue: { snapshot: { paramMap: convertToParamMap({}), queryParamMap: convertToParamMap(route.query) } },
-        },
-      ],
+      providers: [provideRouter([]), { provide: DeploymentService, useValue: service }],
     }).compileComponents();
   });
 
-  it('says that deployments are not set up on a Logos without deployers', async () => {
-    overview = makeOverview({ enabled: false, targets: [] });
+  it('tells an admin how to set up a deployer when there is none, and offers nothing to start', async () => {
+    overview = makeOverview({ deployers: [], can_start: false, blocked_reason: 'No deployer is set up yet.' });
     await create();
-    expect(text()).toContain('Deployments are not set up on this Logos');
-    expect(service['getPlans']).not.toHaveBeenCalled();
+    expect(text()).toContain('No deployer is set up yet');
+    expect(text()).toContain('Deployments from Logos');
+    const deploy = Array.from(fixture.nativeElement.querySelectorAll('button')).find(
+      (b) => (b as HTMLElement).textContent?.trim() === 'Deploy',
+    ) as HTMLButtonElement;
+    expect(deploy.disabled).toBe(true);
   });
 
-  it('shows the switch in the order Prod, Dev, Test and never says "this Logos" next to an environment', async () => {
-    overview = makeOverview({
-      environment: 'Prod',
-      targets: [
-        makeTarget({ name: 'Prod', requires_confirmation: true }),
-        makeTarget({ name: 'Dev' }),
-        makeTarget({ name: 'Test' }),
-      ],
-    });
+  it('warns about live users on a protected Logos, and on no other', async () => {
+    overview = makeOverview({ confirmation_word: 'prod' });
     await create();
-    const pills = Array.from(fixture.nativeElement.querySelectorAll('.lg-pill')).map((e) =>
-      (e as HTMLElement).textContent?.trim(),
-    );
-    expect(pills).toEqual(['Prod', 'Dev', 'Test']);
-    expect(text()).not.toContain('this Logos');
-    expect(text()).toContain('Deployments on Prod affect live users');
+    expect(text()).toContain('Deployments on this Logos affect live users');
+
+    overview = makeOverview();
+    await component.load(false);
+    fixture.detectChanges();
+    expect(text()).not.toContain('affect live users');
   });
 
   it('lists the history with numbers and links each row to its page', async () => {
@@ -163,6 +136,7 @@ describe('Deployments', () => {
     await create();
     const rows = fixture.nativeElement.querySelectorAll('a.lg-trow') as NodeListOf<HTMLAnchorElement>;
     expect(rows.length).toBe(2);
+    expect(service['getPlans']).toHaveBeenCalledWith(50);
     expect(rows[0].getAttribute('href')).toBe('/deployments/a');
     expect(text()).toContain('#9');
     expect(text()).toContain('Tobias Wasner');
@@ -187,8 +161,8 @@ describe('Deployments', () => {
     expect(fixture.nativeElement.querySelectorAll('app-phase-bar').length).toBe(1);
   });
 
-  it('keeps Deploy off on a protected environment until its name is typed, then opens the page of the plan', async () => {
-    overview = makeOverview({ environment: 'Prod', targets: [makeTarget({ name: 'Prod', requires_confirmation: true })] });
+  it('keeps Deploy off on a protected Logos until the word is typed, then opens the page of the plan', async () => {
+    overview = makeOverview({ confirmation_word: 'prod' });
     plans = [];
     await create();
     const router = TestBed.inject(Router);
@@ -199,16 +173,29 @@ describe('Deployments', () => {
     component.confirmation.set('prod');
     await component.deploy();
 
-    expect(service['startPlan']).toHaveBeenCalledWith('Prod', 'latest', 'prod');
+    expect(service['startPlan']).toHaveBeenCalledWith('latest', 'prod');
     expect(navigate).toHaveBeenCalledWith(['/deployments', 'new']);
   });
 
-  it('does not start without the typed name', async () => {
-    overview = makeOverview({ environment: 'Prod', targets: [makeTarget({ name: 'Prod', requires_confirmation: true })] });
+  it('does not start without the typed word', async () => {
+    overview = makeOverview({ confirmation_word: 'prod' });
     await create();
     await component.deploy();
     expect(service['startPlan']).not.toHaveBeenCalled();
     expect(component.startError()).toContain('Type prod to confirm');
+  });
+
+  it('asks for no word on a Logos that is not protected', async () => {
+    plans = [];
+    await create();
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    expect(component.confirmed()).toBe(true);
+    expect(text()).not.toContain('to confirm');
+
+    await component.deploy();
+
+    expect(service['startPlan']).toHaveBeenCalledWith('latest', undefined);
+    expect(navigate).toHaveBeenCalledWith(['/deployments', 'new']);
   });
 
   it('shows why the page could not load', async () => {
@@ -218,72 +205,12 @@ describe('Deployments', () => {
     expect(text()).toContain('could not be loaded');
   });
 
-  it('loads the plans of another environment when it is chosen, and does nothing for the chosen one', async () => {
-    overview = makeOverview({ targets: [makeTarget({ name: 'Dev' }), makeTarget({ name: 'Test' })] });
-    await create();
-    service['getPlans'].mockClear();
-
-    await component.selectEnv('Dev');
-    expect(service['getPlans']).not.toHaveBeenCalled();
-
-    component.confirmation.set('typed');
-    await component.selectEnv('Test');
-    expect(component.selectedEnv()).toBe('Test');
-    expect(component.confirmation()).toBe('');
-    expect(service['getPlans']).toHaveBeenCalledWith('Test', 50);
-  });
-
-  it('shows an error when the plans of the chosen environment cannot be loaded', async () => {
-    overview = makeOverview({ targets: [makeTarget({ name: 'Dev' }), makeTarget({ name: 'Test' })] });
-    await create();
-    service['getPlans'].mockRejectedValueOnce(new Error('down'));
-    await component.selectEnv('Test');
-    expect(component.loadError()).not.toBeNull();
-  });
-
   it('keeps the page when a later reload fails', async () => {
     await create();
     service['getOverview'].mockRejectedValueOnce(new Error('down'));
     await component.load(false);
     expect(component.loadError()).toBeNull();
     expect(component.overview()).not.toBeNull();
-  });
-
-  it('opens the environment named in the address, and writes the chosen one back to it', async () => {
-    overview = makeOverview({
-      environment: 'Prod',
-      targets: [makeTarget({ name: 'Prod' }), makeTarget({ name: 'Dev' })],
-    });
-    route.query = { env: 'Dev' };
-    TestBed.overrideProvider(ActivatedRoute, {
-      useValue: { snapshot: { paramMap: convertToParamMap({}), queryParamMap: convertToParamMap(route.query) } },
-    });
-    await create();
-    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
-
-    expect(component.selectedEnv()).toBe('Dev');
-
-    await component.selectEnv('Prod');
-    expect(navigate).toHaveBeenCalledWith([], {
-      queryParams: { env: 'Prod' },
-      queryParamsHandling: 'merge',
-      replaceUrl: true,
-    });
-  });
-
-  it('ignores an environment in the address that does not exist', async () => {
-    overview = makeOverview({ environment: 'Dev', targets: [makeTarget({ name: 'Dev' })] });
-    TestBed.overrideProvider(ActivatedRoute, {
-      useValue: { snapshot: { paramMap: convertToParamMap({}), queryParamMap: convertToParamMap({ env: 'Nope' }) } },
-    });
-    await create();
-    expect(component.selectedEnv()).toBe('Dev');
-  });
-
-  it('shows the dot of an environment: the end of its last deployment, or an empty ring', async () => {
-    await create();
-    expect(component.envDot(makeTarget({ last_status: 'rolled_back' }))).toBe('rolled-back');
-    expect(component.envDot(makeTarget({ last_status: null }))).toBe('none');
   });
 
   it('refuses to start without a tag', async () => {
@@ -350,7 +277,7 @@ describe('Deployments', () => {
 
       await component.createDeployer();
 
-      expect(service['createDeployer']).toHaveBeenCalledWith('deioma', 'Dev', 'worker');
+      expect(service['createDeployer']).toHaveBeenCalledWith('deioma', 'worker');
       expect(component.createdKey()).toEqual(created);
       expect(component.addOpen()).toBe(false);
       expect(component.newName()).toBe('');
@@ -574,10 +501,10 @@ describe('DeploymentDetail', () => {
     expect(fixture.componentInstance.loadError()).not.toBeNull();
   });
 
-  it('leads back to the environment of the deployment', async () => {
-    await create(makePlan({ environment: 'Dev', step_details: [makeStep()] }));
+  it('leads back to the page Deployments', async () => {
+    await create(makePlan({ step_details: [makeStep()] }));
     const link = fixture.nativeElement.querySelector('a.lg-breadcrumb') as HTMLAnchorElement;
-    expect(link.getAttribute('href')).toBe('/deployments?env=Dev');
+    expect(link.getAttribute('href')).toBe('/deployments');
   });
 
   it('has no log panel and no abandon button for a deployment that succeeded', async () => {

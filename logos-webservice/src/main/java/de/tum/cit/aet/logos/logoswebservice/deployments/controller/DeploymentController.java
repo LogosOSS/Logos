@@ -17,7 +17,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
-import de.tum.cit.aet.logos.logoswebservice.common.NotFoundException;
 import de.tum.cit.aet.logos.logoswebservice.deployments.dto.DeployerDTO;
 import de.tum.cit.aet.logos.logoswebservice.deployments.dto.DeploymentRequests;
 import de.tum.cit.aet.logos.logoswebservice.deployments.dto.OverviewDTO;
@@ -28,15 +27,13 @@ import de.tum.cit.aet.logos.logoswebservice.deployments.service.DeploymentViews;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 
 /**
- * The deployments page: environments, history, starting and abandoning a deployment, and the deployers. Only Logos
- * admins may use it. When the feature is off the overview says so and everything else answers 404.
+ * The deployments page: the overview, the history, starting and abandoning a deployment, and the deployers. Only Logos
+ * admins may use it.
  */
 @RestController
 @RequestMapping("/deployments")
 @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
 public class DeploymentController {
-
-    private static final String NOT_SET_UP = "Deployments are not set up on this Logos.";
 
     private final DeploymentService deployments;
     private final DeployerService deployers;
@@ -54,16 +51,12 @@ public class DeploymentController {
     }
 
     @GetMapping("/plans")
-    public List<PlanDTO> plans(
-            @RequestParam(required = false) String environment,
-            @RequestParam(defaultValue = "50") int limit) {
-        requireEnabled();
-        return deployments.plans(environment, limit);
+    public List<PlanDTO> plans(@RequestParam(defaultValue = "50") int limit) {
+        return deployments.plans(limit);
     }
 
     @GetMapping("/plans/{id}")
     public PlanDTO plan(@PathVariable UUID id) {
-        requireEnabled();
         return deployments.plan(id);
     }
 
@@ -71,20 +64,17 @@ public class DeploymentController {
     public ResponseEntity<PlanDTO> start(
             @RequestBody DeploymentRequests.StartPlan body,
             @RequestAttribute("authContext") AuthContext auth) {
-        requireEnabled();
-        PlanDTO plan = deployments.start(body.environment(), body.tag(), body.confirmation(), auth);
+        PlanDTO plan = deployments.start(body.tag(), body.confirmation(), auth);
         return ResponseEntity.status(HttpStatus.CREATED).body(plan);
     }
 
     @PostMapping("/plans/{id}/abandon")
     public PlanDTO abandon(@PathVariable UUID id, @RequestAttribute("authContext") AuthContext auth) {
-        requireEnabled();
         return deployments.abandon(id, auth);
     }
 
     @GetMapping("/deployers")
     public List<DeployerDTO> deployers() {
-        requireEnabled();
         var now = java.time.Instant.now();
         return deployers.list().stream().map(deployer -> views.deployer(deployer, now)).toList();
     }
@@ -94,32 +84,23 @@ public class DeploymentController {
     public ResponseEntity<DeployerDTO.Created> createDeployer(
             @RequestBody DeploymentRequests.CreateDeployer body,
             @RequestAttribute("authContext") AuthContext auth) {
-        requireEnabled();
-        DeployerService.Created created = deployers.create(body.name(), body.environment(), body.kind(), auth.userId());
+        DeployerService.Created created = deployers.create(body.name(), body.kind(), auth.userId());
         return ResponseEntity.status(HttpStatus.CREATED).body(created(created));
     }
 
     /** Give a deployer a new key. The old key stops working at once. */
     @PostMapping("/deployers/{id}/key")
     public DeployerDTO.Created replaceKey(@PathVariable UUID id) {
-        requireEnabled();
         return created(deployers.replaceKey(id));
     }
 
     @DeleteMapping("/deployers/{id}")
     public ResponseEntity<Void> deleteDeployer(@PathVariable UUID id) {
-        requireEnabled();
         deployers.delete(id);
         return ResponseEntity.noContent().build();
     }
 
     private DeployerDTO.Created created(DeployerService.Created created) {
         return new DeployerDTO.Created(views.deployer(created.deployer(), java.time.Instant.now()), created.key());
-    }
-
-    private void requireEnabled() {
-        if (!deployments.enabled()) {
-            throw new NotFoundException(NOT_SET_UP);
-        }
     }
 }

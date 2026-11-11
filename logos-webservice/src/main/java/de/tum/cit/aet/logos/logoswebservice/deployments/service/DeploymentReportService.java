@@ -23,10 +23,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import de.tum.cit.aet.logos.logoswebservice.deployments.DeploymentProperties;
 import de.tum.cit.aet.logos.logoswebservice.deployments.dto.DeployerApi;
 import de.tum.cit.aet.logos.logoswebservice.deployments.entity.Deployer;
-import de.tum.cit.aet.logos.logoswebservice.deployments.entity.DeployerKind;
 import de.tum.cit.aet.logos.logoswebservice.deployments.entity.DeploymentPlan;
 import de.tum.cit.aet.logos.logoswebservice.deployments.entity.DeploymentStep;
-import de.tum.cit.aet.logos.logoswebservice.deployments.entity.PlanOrigin;
 import de.tum.cit.aet.logos.logoswebservice.deployments.entity.PlanStatus;
 import de.tum.cit.aet.logos.logoswebservice.deployments.entity.StepStatus;
 import de.tum.cit.aet.logos.logoswebservice.deployments.repository.DeploymentPlanRepository;
@@ -41,8 +39,8 @@ import jakarta.persistence.EntityManager;
  * handing the order out again. An ended step does not move on, except for one that Logos ended itself (timed out or
  * never started): the host may have run it after all, and the page should show what happened.
  *
- * <p>A deployment that Logos did not order is shown as an observed plan. The deployer is trusted for its own
- * deployments only; the environment and the name of the step come from the deployer record, not from the message.
+ * <p>A deployer is trusted for its own steps only. A report about a step that does not exist, or that belongs to another
+ * deployer, changes nothing.
  */
 @Service
 public class DeploymentReportService {
@@ -104,16 +102,8 @@ public class DeploymentReportService {
             if (step.getLastActivityAt().isBefore(cutoff)) {
                 continue;
             }
-            plans.findById(step.getPlanId()).ifPresent(plan -> {
-                Map<String, String> facts = new LinkedHashMap<>();
-                facts.put("id", plan.getId().toString());
-                facts.put("environment", plan.getEnvironment());
-                facts.put("position", String.valueOf(step.getPosition()));
-                facts.put("kind", step.getKind().name());
-                facts.put("initiator", plan.getInitiator());
-                facts.put("ordered_at", plan.getCreatedAt().toString());
-                orders.add(new DeployerApi.Order(step.getId().toString(), plan.getTag(), plan.getInitiator(), facts));
-            });
+            plans.findById(step.getPlanId()).ifPresent(plan -> orders.add(
+                new DeployerApi.Order(step.getId().toString(), plan.getTag(), plan.getInitiator(), step.getKind().name())));
         }
         return orders;
     }
@@ -136,7 +126,8 @@ public class DeploymentReportService {
             if (stepId != null) {
                 applyItem(deployer, stepId, item, now);
             }
-            // An id that is no UUID is not one of ours. Taking it stops the deployer from sending it for ever.
+            // An id that is no UUID, or that names no step, is not one of ours. Taking it stops the deployer from
+            // sending it for ever.
             acked.add(item.id());
         }
         return acked;
@@ -145,7 +136,7 @@ public class DeploymentReportService {
     private void applyItem(Deployer deployer, UUID stepId, DeployerApi.ReportItem item, Instant now) {
         DeploymentStep step = steps.findById(stepId).orElse(null);
         if (step == null) {
-            observe(deployer, stepId, item, now);
+            log.warn("Deployer {} reported on an unknown step {}; ignored", deployer.getName(), stepId);
             return;
         }
         if (!deployer.getId().equals(step.getDeployerId())) {
@@ -179,7 +170,7 @@ public class DeploymentReportService {
         }
         settle(plan, planSteps, now);
         steps.saveAll(planSteps);
-        ended.forEach(step -> notifyIfLocal(plan, step));
+        ended.forEach(step -> notifier.stepEnded(plan, step));
     }
 
     private void change(
@@ -209,14 +200,12 @@ public class DeploymentReportService {
         steps.saveAll(planSteps);
         plans.save(plan);
         if (!late && !before.isTerminal() && step.getStatus().isTerminal()) {
-            notifyIfLocal(plan, step);
+            notifier.stepEnded(plan, step);
         }
     }
 
     private void settle(DeploymentPlan plan, List<DeploymentStep> planSteps, Instant now) {
-        if (plan.getOrigin() == PlanOrigin.observed) {
-            PlanSequencer.refreshObserved(plan, planSteps, now);
-        } else if (plan.getStatus() == PlanStatus.running) {
+        if (plan.getStatus() == PlanStatus.running) {
             PlanSequencer.advance(plan, planSteps, now);
         } else {
             PlanSequencer.refreshAfterLateReport(plan, planSteps, now);
@@ -249,41 +238,6 @@ public class DeploymentReportService {
             step.setStatus(StepStatus.running);
             step.setFinishedAt(null);
         }
-    }
-
-    /** A deployment that this Logos did not order: make it part of an observed plan. */
-    private void observe(Deployer deployer, UUID stepId, DeployerApi.ReportItem item, Instant now) {
-        Map<String, Object> facts = item.plan();
-        UUID planId = facts == null ? null : uuid(text(facts.get("id")));
-        if (planId == null || item.rejected() != null) {
-            return;
-        }
-        String initiator = firstNonBlank(text(facts.get("initiator")), item.requestedBy(), "unknown");
-        Instant ordered = instant(text(facts.get("ordered_at")));
-        plans.insertObservedIfAbsent(
-            planId, deployer.getEnvironment(), clip(item.tag(), 128), clip(initiator, 200), ordered != null ? ordered : now);
-        DeploymentPlan plan = plans.findByIdForUpdate(planId).orElse(null);
-        if (plan == null
-                || plan.getOrigin() != PlanOrigin.observed
-                || !plan.getEnvironment().equalsIgnoreCase(deployer.getEnvironment())) {
-            // The id belongs to a plan of this Logos or of another environment: a deployer may not add to it.
-            return;
-        }
-        DeploymentStep step = new DeploymentStep();
-        step.setId(stepId);
-        step.setPlanId(planId);
-        step.setPosition(position(facts, deployer));
-        step.setKind(deployer.getKind());
-        step.setDeployerId(deployer.getId());
-        step.setDeployerName(deployer.getName());
-        step.setStatus(StepStatus.ordered);
-        step.setLastActivityAt(now);
-        List<DeploymentStep> planSteps = new ArrayList<>(steps.findByPlanIdOrderByPositionAscDeployerNameAsc(planId));
-        planSteps.add(step);
-        copy(step, item, now);
-        plan.setLastActivityAt(now);
-        settle(plan, planSteps, now);
-        steps.saveAll(planSteps);
     }
 
     // ------------------------------------------------------------------ Silence
@@ -322,17 +276,11 @@ public class DeploymentReportService {
         }
         settle(plan, planSteps, now);
         steps.saveAll(planSteps);
-        ended.forEach(step -> notifyIfLocal(plan, step));
+        ended.forEach(step -> notifier.stepEnded(plan, step));
         return ended.size();
     }
 
     // ------------------------------------------------------------------ Helpers
-
-    private void notifyIfLocal(DeploymentPlan plan, DeploymentStep step) {
-        if (plan.getOrigin() == PlanOrigin.local) {
-            notifier.stepEnded(plan, step);
-        }
-    }
 
     private String events(List<Map<String, Object>> raw) {
         List<Map<String, String>> clean = new ArrayList<>();
@@ -375,14 +323,6 @@ public class DeploymentReportService {
         }
     }
 
-    private static int position(Map<String, Object> facts, Deployer deployer) {
-        try {
-            return Math.max(0, Integer.parseInt(text(facts.get("position"))));
-        } catch (NumberFormatException e) {
-            return deployer.getKind() == DeployerKind.core ? 0 : 1;
-        }
-    }
-
     private static UUID uuid(String value) {
         try {
             return value == null ? null : UUID.fromString(value);
@@ -412,14 +352,5 @@ public class DeploymentReportService {
             return null;
         }
         return value.length() <= max ? value : value.substring(0, max);
-    }
-
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.isBlank()) {
-                return value.strip();
-            }
-        }
-        return "";
     }
 }

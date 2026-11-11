@@ -178,32 +178,30 @@ by ID with `docker rmi`. A host without the deploy workflow keeps its old manage
 
 ## Orders from Logos
 
-A host can obey one or more Logos instances. The manager then asks each of them for orders, and tells each of them how
-the deployments go. Nothing calls into the host: the manager only makes outgoing requests, so it still has no port and
-no server. The list comes from `NODE_MANAGER_LOGOS`: entries `url|key`, separated by commas. The worker compose file
-builds it from `LOGOS_URL` and `LOGOS_DEPLOYER_KEY` (the own Logos) and `LOGOS_PROD_URL` and `LOGOS_PROD_DEPLOYER_KEY`
-(Prod, for a Dev or Test host). An entry without a key is skipped.
+A host obeys one Logos: the Logos of its own environment. The manager asks that Logos for orders, and tells it how the
+deployments go. A host never obeys the Logos of another environment, so Dev cannot deploy Prod, and Prod cannot deploy
+Dev. Nothing calls into the host: the manager only makes outgoing requests, so it still has no port and no server. The
+address is `NODE_MANAGER_LOGOS_URL` and the key is `NODE_MANAGER_DEPLOYER_KEY`. The compose files build them from
+`LOGOS_URL` (on a core host: the domain of the host) and `LOGOS_DEPLOYER_KEY`. Without both, the host takes no orders
+from Logos.
 
-* **Orders.** One thread for each Logos sends `POST /api/deployments/deployer/poll` with the key in the header
+* **Orders.** One thread sends `POST /api/deployments/deployer/poll` with the key in the header
   `Authorization: Bearer`. Logos holds the request until an order appears or `ORDER_WAIT_S` (25 s) pass. An order starts
-  within seconds, and an idle host makes about 3 requests a minute for each Logos. The request also tells Logos that the
-  host is alive: the page greys out the button of an environment whose core deployer was not seen for 90 s.
-* **The order.** An order is a deployment id, a tag and a few facts about the plan it belongs to (the plan, the
-  environment, the kind of host, who started it). The manager checks the id and the tag with the same patterns as for
-  the command line, and checks that the kind of host fits (a worker takes no order for a core). It writes the order to
-  the state directory like any other request, so the queue, the phases and the time limits are the same. An order that
-  is repeated gives the same deployment. An order that cannot be run is refused in the next report, and Logos ends the
+  within seconds, and an idle host makes about 3 requests a minute. The request also tells Logos that the host is
+  alive: the page greys out the button while the core deployer was not seen for 90 s.
+* **The order.** An order is a deployment id, a tag, who started it and the kind of host it is for. The manager checks
+  the id and the tag with the same patterns as for the command line, and checks that the kind of host fits (a worker
+  takes no order for a core). The kind shows that a host has the key of another host. It writes the order to the state
+  directory like any other request, so the queue, the phases and the time limits are the same. An order that is
+  repeated gives the same deployment. An order that cannot be run is refused in the next report, and Logos ends the
   step as failed.
-* **Reports.** One thread sends `POST /api/deployments/deployer/report` to every Logos on the list. A report carries the
-  whole state of a deployment (phase, outcome, message, events, the end of a failure log), so a lost report is made up by
-  the next one. A deployment in progress is reported when it changes and at least every `REPORT_INTERVAL_S` (20 s): Logos
-  reads the reports as a sign of life, and ends a step that stays silent for 30 minutes as timed out. The first report
-  of an order also tells Logos that the order was taken. A finished deployment is reported until every Logos took it, for
-  up to 24 hours. A Logos that does not answer is asked again after 5 s, then after twice as long each time, up to
-  5 minutes. A report never changes how a deployment ends.
-* **All Logos instances get the same report.** A Logos that did not give the order shows the deployment as well, with
-  the plan data the order carried. This is how Prod shows what happened on Dev and Test, also when the Logos of Dev is
-  down.
+* **Reports.** One thread sends `POST /api/deployments/deployer/report`. A report carries the whole state of a
+  deployment (phase, outcome, message, events, the end of a failure log), so a lost report is made up by the next one. A
+  deployment in progress is reported when it changes and at least every `REPORT_INTERVAL_S` (20 s): Logos reads the
+  reports as a sign of life, and ends a step that stays silent for 30 minutes as timed out. The first report of an order
+  also tells Logos that the order was taken. A finished deployment is reported until Logos took it, for up to 24 hours.
+  If Logos does not answer, the manager asks again after 5 s, then after twice as long each time, up to 5 minutes. A
+  report never changes how a deployment ends.
 * **Notifications.** A deployment that came from Logos is not reported to the orchestrator (see "Reports"): Logos
   notifies its admins itself. A deployment from the command line is reported to the orchestrator as before.
 
@@ -228,7 +226,7 @@ of a deployment would otherwise restart the manager in the middle of its own dep
 * **After a success** the manager removes the images that no container uses (`docker image prune -af`), and then pulls
   `<REGISTRY>/logos-agent-workspace:<tag>` if the `.env` has the profile `agent`. The order matters: nothing references
   that image between sessions, so the prune would delete it. After a failure every image stays.
-* **The address that must answer** is `<own Logos>/api/info` by default (the first entry of `NODE_MANAGER_LOGOS`). It
+* **The address that must answer** is `<Logos>/api/info` by default (`NODE_MANAGER_LOGOS_URL`). It
   shows that the whole way, from the proxy to the webservice, works. Set `NODE_MANAGER_CORE_HEALTH_URL` to check another
   address, for example if the host cannot reach its own public address. The check cannot be switched off.
 * **The registry login** is the directory `.docker` of the project directory, as for a worker.
@@ -330,12 +328,12 @@ All settings are environment variables with the prefix `NODE_MANAGER_`.
 | `RECONNECT_TIMEOUT_S` | 300 | How long the new worker may take to show up at the orchestrator after the Docker checks passed. |
 | `LOG_LEVEL` | `INFO` | |
 | `KIND` | `worker` | `worker` or `core`. Anything else counts as `worker`. A core host has other defaults: `PROJECT_DIR` is `/opt/logos` and `COMPOSE_FILE` is `<PROJECT_DIR>/docker-compose.yaml`. |
-| `LOGOS` | empty | The Logos instances this host obeys: entries `url\|key`, separated by commas (see "Orders from Logos"). Empty: only the command line gives orders. |
+| `LOGOS_URL`, `DEPLOYER_KEY` | empty | The Logos that this host obeys: its address, and the key that this Logos made for the deployer of the host (see "Orders from Logos"). Without both, only the command line gives orders. |
 | `ORDER_WAIT_S`, `ORDER_TIMEOUT_MARGIN_S` | 25, 15 | How long a request for orders waits at Logos, and the margin that the connection gets on top of it. |
 | `REPORT_INTERVAL_S` | 20 | How often a deployment in progress is reported to Logos when nothing changed. |
 | `SCALE_SERVICE`, `REPLICAS_VARIABLE` | `logos-webservice`, `LOGOS_WEBSERVICE_REPLICAS` | Core host: the service that runs as several copies, and the variable of the `.env` that says how many. |
 | `CORE_VERIFY_TIMEOUT_S` | 900 | Core host: how long the services get to come up. |
-| `CORE_HEALTH_URL` | `<first Logos>/api/info` | Core host: the address that must answer after a deployment. Empty or not set: the default. The check cannot be switched off. |
+| `CORE_HEALTH_URL` | `<Logos>/api/info` | Core host: the address that must answer after a deployment. Empty or not set: the default. The check cannot be switched off. |
 
 A missing, malformed or non-positive timeout falls back to its default.
 
@@ -367,17 +365,17 @@ for the worker. The risk is accepted for these reasons:
 * The manager has no way in from the network. It publishes no port and runs no server. It is reached with
   `docker exec`, which needs access to `docker` on the host (root-equivalent anyway), and through the files in its state
   directory. Whoever can write there can queue a deployment of any tag that exists in the registry.
-* The lines out are the HTTPS calls to the orchestrator for the drain, and, if the host obeys a Logos, the calls to that
-  Logos for orders and reports (see "Orders from Logos"). Nothing is reached from outside. The manager authenticates with
-  the key of the worker, which Compose passes in its environment. The container can read the `.env` with that key anyway, so it gains no
-  secret, and the key lets it cordon its own node only. A person with the key can do the same from any machine, as they
-  could already connect as the worker.
+* The lines out are the HTTPS calls to the orchestrator for the drain, and, if the host has a deployer key, the calls to
+  its Logos for orders and reports (see "Orders from Logos"). Nothing is reached from outside. The manager
+  authenticates with the key of the worker, which Compose passes in its environment. The container can read the `.env`
+  with that key anyway, so it gains no secret, and the key lets it cordon its own node only. A person with the key can
+  do the same from any machine, as they could already connect as the worker.
 * Every command is an argument list and never goes through a shell. The command line checks a deployment id and a tag
   against strict patterns before it accepts a request. The free text of `--requested-by` is only stored in the record.
   An order from Logos goes through the same checks, and the manager takes nothing else from it that reaches a command.
-  The facts about the plan are only kept in the record and sent back in the reports. A Logos can therefore order any
-  tag that exists in the registry for its own hosts, and nothing more. Prod accepts only `latest` and release tags,
-  which Logos checks before it makes the order.
+  A Logos can therefore order any tag that exists in the registry for its own hosts, and nothing more. Prod accepts
+  only `latest` and release tags, which Logos checks before it makes the order. A host obeys its own Logos only, so no
+  other Logos can order anything on it.
 * The key that a Logos made for a host fetches the orders of that host and reports for that host only. It cannot place
   an order or read anything else. Logos stores only a hash of the key.
 * The container sees little of the host: the worker directory (read-only), its own state directory and the socket. The

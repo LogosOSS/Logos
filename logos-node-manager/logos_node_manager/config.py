@@ -12,7 +12,6 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
-from urllib.parse import urlparse
 
 PREFIX = "NODE_MANAGER_"
 
@@ -63,35 +62,6 @@ CORE = "core"
 
 
 @dataclass(frozen=True)
-class LogosSource:
-    """A Logos instance that this host obeys: it gives orders, and it is told how they go."""
-
-    url: str
-    key: str = field(repr=False)
-
-    @property
-    def name(self) -> str:
-        """A short name for logs and for the records, without the key."""
-        return urlparse(self.url).netloc or self.url
-
-
-def parse_logos_sources(raw: str) -> tuple[LogosSource, ...]:
-    """The Logos instances of ``NODE_MANAGER_LOGOS``: entries ``url|key`` separated by commas or white space.
-
-    An entry with a missing part, or with an address that is not http(s), is skipped: one bad entry must not stop the
-    manager at start, or hide the entries that are fine. The first entry for an address wins.
-    """
-    sources: dict[str, LogosSource] = {}
-    for entry in re.split(r"[,\s]+", raw.strip()):
-        url, _, key = entry.partition("|")
-        url, key = url.strip().rstrip("/"), key.strip()
-        if not url or not key or not url.startswith(("https://", "http://")):
-            continue
-        sources.setdefault(url, LogosSource(url=url, key=key))
-    return tuple(sources.values())
-
-
-@dataclass(frozen=True)
 class Settings:
     """What the manager needs to know about its host."""
 
@@ -137,9 +107,11 @@ class Settings:
     # container. A core host replaces the services of the whole compose project, and the manager sits outside that
     # project so that it survives the replacement of Logos.
     kind: str = WORKER
-    # The Logos instances this host obeys. The manager asks each for orders and tells each how they go. Empty: only the
+    # The Logos that this host obeys: its address, and the key that this Logos made for the deployer of the host. The
+    # manager asks it for orders and tells it how they go. A host obeys one Logos only. Without both values, only the
     # command line gives orders.
-    logos_sources: tuple[LogosSource, ...] = ()
+    logos_url: str = ""
+    deployer_key: str = field(default="", repr=False)
     # How long a request for orders may wait at Logos before it answers with none, and the margin that the connection
     # gets on top of it.
     order_wait_s: float = 25.0
@@ -150,11 +122,16 @@ class Settings:
 
     # Core host only. The service that runs as several copies, the variable of the ``.env`` file that says how many, the
     # time the services get to come up, and the address that must answer once they did
-    # (empty: not checked, which is the case without a Logos source).
+    # (empty: not checked, which is the case without a Logos).
     scale_service: str = "logos-webservice"
     replicas_variable: str = "LOGOS_WEBSERVICE_REPLICAS"
     core_verify_timeout_s: float = 900.0
     core_health_url: str = ""
+
+    @property
+    def logos_enabled(self) -> bool:
+        """Whether this host takes orders from a Logos: it needs the address and the key."""
+        return bool(self.logos_url and self.deployer_key)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -165,11 +142,16 @@ class Settings:
         core = kind == CORE
         project_dir = Path(_text(env, "PROJECT_DIR", "/opt/logos" if core else "/opt/logos-workernode"))
         compose_name = "docker-compose.yaml" if core else "docker-compose.yml"
-        logos_sources = parse_logos_sources(_text(env, "LOGOS", ""))
-        health_default = f"{logos_sources[0].url}/api/info" if core and logos_sources else ""
+        # An address that is not http(s) counts as none: a bad value must not stop the manager at start.
+        logos_url = _text(env, "LOGOS_URL", "").rstrip("/")
+        if not logos_url.startswith(("https://", "http://")):
+            logos_url = ""
+        deployer_key = _text(env, "DEPLOYER_KEY", "")
+        health_default = f"{logos_url}/api/info" if core and logos_url and deployer_key else ""
         return cls(
             kind=kind,
-            logos_sources=logos_sources,
+            logos_url=logos_url,
+            deployer_key=deployer_key,
             order_wait_s=_seconds(env, "ORDER_WAIT_S", 25.0),
             order_timeout_margin_s=_seconds(env, "ORDER_TIMEOUT_MARGIN_S", 15.0),
             report_interval_s=_seconds(env, "REPORT_INTERVAL_S", 20.0),

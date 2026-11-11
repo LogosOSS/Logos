@@ -19,26 +19,20 @@ describe('DeploymentService', () => {
 
   it('reads the overview', async () => {
     const result = service.getOverview();
-    http.expectOne('/api/deployments/overview').flush({ enabled: true });
-    expect(await result).toEqual({ enabled: true });
+    http.expectOne('/api/deployments/overview').flush({ can_start: true });
+    expect(await result).toEqual({ can_start: true });
   });
 
-  it('reads the plans of an environment with a limit', async () => {
-    const result = service.getPlans('Dev', 20);
+  it('reads the plans with a limit, 50 by default', async () => {
+    const limited = service.getPlans(20);
     const request = http.expectOne((r) => r.url === '/api/deployments/plans');
-    expect(request.request.params.get('environment')).toBe('Dev');
     expect(request.request.params.get('limit')).toBe('20');
     request.flush([]);
-    expect(await result).toEqual([]);
-  });
+    expect(await limited).toEqual([]);
 
-  it('reads the plans of all environments when none is given', async () => {
-    const result = service.getPlans();
-    const request = http.expectOne((r) => r.url === '/api/deployments/plans');
-    expect(request.request.params.has('environment')).toBe(false);
-    expect(request.request.params.get('limit')).toBe('50');
-    request.flush([]);
-    await result;
+    const all = service.getPlans();
+    http.expectOne((r) => r.url === '/api/deployments/plans' && r.params.get('limit') === '50').flush([]);
+    await all;
   });
 
   it('reads one plan', async () => {
@@ -47,16 +41,18 @@ describe('DeploymentService', () => {
     expect((await result).id).toBe('p1');
   });
 
-  it('starts a plan, with the typed name only when there is one', async () => {
-    const first = service.startPlan('Prod', 'latest', 'prod');
+  it('starts a plan, with the typed word only when there is one', async () => {
+    const first = service.startPlan('latest', 'prod');
     const request = http.expectOne('/api/deployments/plans');
     expect(request.request.method).toBe('POST');
-    expect(request.request.body).toEqual({ environment: 'Prod', tag: 'latest', confirmation: 'prod' });
+    expect(request.request.body).toEqual({ tag: 'latest', confirmation: 'prod' });
     request.flush({ id: 'new' });
     await first;
 
-    const second = service.startPlan('Dev', 'pr-93');
-    http.expectOne('/api/deployments/plans').flush({ id: 'new' });
+    const second = service.startPlan('pr-93');
+    const unconfirmed = http.expectOne('/api/deployments/plans');
+    expect(unconfirmed.request.body).toEqual({ tag: 'pr-93', confirmation: null });
+    unconfirmed.flush({ id: 'new' });
     await second;
   });
 
@@ -69,9 +65,9 @@ describe('DeploymentService', () => {
   });
 
   it('makes a deployer', async () => {
-    const result = service.createDeployer('deioma', 'Prod', 'worker');
+    const result = service.createDeployer('deioma', 'worker');
     const request = http.expectOne('/api/deployments/deployers');
-    expect(request.request.body).toEqual({ name: 'deioma', environment: 'Prod', kind: 'worker' });
+    expect(request.request.body).toEqual({ name: 'deioma', kind: 'worker' });
     request.flush({ key: 'k' });
     expect((await result).key).toBe('k');
   });

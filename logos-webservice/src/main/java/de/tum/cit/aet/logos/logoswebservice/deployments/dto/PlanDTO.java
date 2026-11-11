@@ -14,10 +14,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 public record PlanDTO(
     UUID id,
     long number,
-    String environment,
     String tag,
     String status,
-    String origin,
     String initiator,
     String reason,
     @JsonProperty("abandoned_by") String abandonedBy,

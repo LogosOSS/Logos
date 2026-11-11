@@ -5,20 +5,19 @@
     xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
-    <!-- Deployments of Logos from Logos itself.
+    <!-- Deployments of Logos from Logos itself. A Logos deploys only itself: its deployers obey it, and it has one
+         environment, so no table names an environment.
 
          `deployers` are the programs on the hosts (the node manager) that obey this Logos: one row per host, with the
          SHA-256 hash of its key. The key itself is shown once, when the row is made, and never stored.
 
-         `deployment_plans` are the to-do lists of one deployment of an environment: the core first, then all the
-         workers. A plan is `local` when an admin of this Logos started it, and `observed` when a deployer of another
-         environment reported it (a Logos that obeys several Logos instances reports to all of them).
+         `deployment_plans` are the to-do lists of one deployment: the core first, then all the workers.
 
          `deployment_steps` are the work of one deployer within a plan. The id of a step is the deployment id that the
          deployer knows. The status of a step is what Logos knows; `phase` is the phase the deployer reported.
 
-         A plan that is `local` and `running` is unique per environment: a second one is refused. The index makes
-         that true across several webservice copies. -->
+         A plan that is `running` is unique: a second one is refused. The index makes that true across several
+         webservice copies. -->
     <changeSet id="072-deployers" author="logos">
         <preConditions onFail="MARK_RAN">
             <not><tableExists tableName="deployers"/></not>
@@ -26,15 +25,13 @@
         <sql><![CDATA[
             CREATE TABLE deployers (
                 id UUID PRIMARY KEY,
-                name VARCHAR(100) NOT NULL,
-                environment VARCHAR(40) NOT NULL,
+                name VARCHAR(100) NOT NULL UNIQUE,
                 kind VARCHAR(16) NOT NULL CHECK (kind IN ('core', 'worker')),
                 key_hash VARCHAR(64) NOT NULL UNIQUE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
                 last_seen_at TIMESTAMPTZ NULL,
-                version VARCHAR(40) NULL,
-                UNIQUE (environment, name)
+                version VARCHAR(40) NULL
             );
         ]]></sql>
         <rollback>
@@ -53,11 +50,9 @@
             CREATE TABLE deployment_plans (
                 id UUID PRIMARY KEY,
                 number BIGINT NOT NULL UNIQUE,
-                environment VARCHAR(40) NOT NULL,
                 tag VARCHAR(128) NOT NULL,
                 status VARCHAR(16) NOT NULL
                     CHECK (status IN ('running', 'succeeded', 'failed', 'rolled_back')),
-                origin VARCHAR(16) NOT NULL CHECK (origin IN ('local', 'observed')),
                 initiator VARCHAR(200) NOT NULL,
                 initiator_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
                 reason TEXT NULL,
@@ -71,10 +66,10 @@
             CREATE INDEX idx_deployment_plans_created
                 ON deployment_plans (created_at DESC);
 
-            -- At most one running plan that this Logos started, per environment.
+            -- At most one running plan. The index is on a constant, so every running plan has the same key.
             CREATE UNIQUE INDEX uq_deployment_plans_one_running
-                ON deployment_plans (environment)
-                WHERE status = 'running' AND origin = 'local';
+                ON deployment_plans ((true))
+                WHERE status = 'running';
         ]]></sql>
         <rollback>
             <sql>DROP TABLE IF EXISTS deployment_plans; DROP SEQUENCE IF EXISTS deployment_plan_number_seq;</sql>

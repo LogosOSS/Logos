@@ -16,9 +16,8 @@ public interface DeployerRepository extends JpaRepository<Deployer, UUID> {
 
     Optional<Deployer> findByKeyHash(String keyHash);
 
-    List<Deployer> findAllByOrderByEnvironmentAscKindAscNameAsc();
-
-    List<Deployer> findByEnvironmentOrderByKindAscNameAsc(String environment);
+    /** The core deployer first: {@code core} sorts before {@code worker}. */
+    List<Deployer> findAllByOrderByKindAscNameAsc();
 
     /**
      * The heartbeat writes its own columns and no others. Loading the row and saving it would write the key hash as
@@ -32,5 +31,5 @@ public interface DeployerRepository extends JpaRepository<Deployer, UUID> {
     @Query("update Deployer d set d.lastSeenAt = :seenAt, d.version = :version where d.id = :id")
     int markSeenWithVersion(@Param("id") UUID id, @Param("seenAt") Instant seenAt, @Param("version") String version);
 
-    boolean existsByEnvironmentIgnoreCaseAndNameIgnoreCase(String environment, String name);
+    boolean existsByNameIgnoreCase(String name);
 }

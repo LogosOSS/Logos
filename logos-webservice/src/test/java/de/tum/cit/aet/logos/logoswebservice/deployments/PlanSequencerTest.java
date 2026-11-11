@@ -12,7 +12,6 @@ import org.junit.jupiter.api.Test;
 import de.tum.cit.aet.logos.logoswebservice.deployments.entity.DeployerKind;
 import de.tum.cit.aet.logos.logoswebservice.deployments.entity.DeploymentPlan;
 import de.tum.cit.aet.logos.logoswebservice.deployments.entity.DeploymentStep;
-import de.tum.cit.aet.logos.logoswebservice.deployments.entity.PlanOrigin;
 import de.tum.cit.aet.logos.logoswebservice.deployments.entity.PlanStatus;
 import de.tum.cit.aet.logos.logoswebservice.deployments.entity.StepStatus;
 import de.tum.cit.aet.logos.logoswebservice.deployments.service.PlanSequencer;
@@ -25,10 +24,8 @@ class PlanSequencerTest {
     private static DeploymentPlan plan() {
         DeploymentPlan plan = new DeploymentPlan();
         plan.setId(UUID.randomUUID());
-        plan.setEnvironment("Dev");
         plan.setTag("v1");
         plan.setStatus(PlanStatus.running);
-        plan.setOrigin(PlanOrigin.local);
         plan.setInitiator("Jane Doe");
         plan.setCreatedAt(T0);
         plan.setLastActivityAt(T0);
@@ -230,22 +227,6 @@ class PlanSequencerTest {
 
         assertThat(plan.getStatus()).isEqualTo(PlanStatus.failed);
         assertThat(steps.get(1).getStatus()).isEqualTo(StepStatus.cancelled);
-    }
-
-    @Test
-    void anObservedPlanRunsWhileAStepRunsAndEndsWithTheLast() {
-        DeploymentPlan plan = plan();
-        plan.setOrigin(PlanOrigin.observed);
-        List<DeploymentStep> steps = List.of(core(StepStatus.succeeded));
-
-        PlanSequencer.refreshObserved(plan, steps, NOW);
-        assertThat(plan.getStatus()).isEqualTo(PlanStatus.succeeded);
-
-        List<DeploymentStep> more = List.of(core(StepStatus.succeeded), worker("w1", 1, StepStatus.running));
-        PlanSequencer.refreshObserved(plan, more, NOW);
-
-        assertThat(plan.getStatus()).isEqualTo(PlanStatus.running);
-        assertThat(plan.getFinishedAt()).isNull();
     }
 
     @Test

@@ -20,12 +20,15 @@ public final class DeployerApi {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record PollRequest(@JsonProperty("wait_s") Double waitS, String kind, String version) {}
 
-    /** What a deployer is told to do: the deployment id, the tag, and a few facts about the plan it belongs to. */
+    /**
+     * What a deployer is told to do: the deployment id, the tag, who asked for it, and the kind of deployer the order is
+     * for. The deployer refuses an order for the other kind: it shows that a host has the key of another host.
+     */
     public record Order(
         String id,
         String tag,
         @JsonProperty("requested_by") String requestedBy,
-        Map<String, String> plan
+        String kind
     ) {}
 
     public record PollResponse(List<Order> orders) {}
@@ -33,14 +36,10 @@ public final class DeployerApi {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ReportRequest(String kind, String version, List<ReportItem> deployments) {}
 
-    /**
-     * The state of one deployment on a host, or the refusal of an order ({@code rejected}). A host sends the same
-     * item to every Logos it obeys, so a Logos that did not order the deployment can still show it.
-     */
+    /** The state of one deployment on a host, or the refusal of an order ({@code rejected}). */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ReportItem(
         String id,
-        String tag,
         String phase,
         String outcome,
         String failure,
@@ -54,8 +53,6 @@ public final class DeployerApi {
         @JsonProperty("drained_requests") Integer drainedRequests,
         @JsonProperty("drain_seconds") Integer drainSeconds,
         @JsonProperty("sole_replica_models") List<String> soleReplicaModels,
-        Map<String, Object> plan,
-        String source,
         String rejected
     ) {}
 

@@ -244,66 +244,56 @@ rollback. The new web service changes the database structure when it starts. The
 previous version may not work with the new structure. After a failure, fix the
 cause and deploy again, or restore a backup.
 
-The feature is off by default. A Logos that you install from the installation
-guide has no deployers. Its page **Deployments** says that deployments are not
-set up.
+A Logos that you install from the installation guide has no deployers. Its page
+**Deployments** shows no deployer, and the button **Deploy** is off. The feature
+does nothing until you set up a deployer.
 
-### Environments
+### One Logos for each environment
 
-Each environment has its own Logos. A host obeys the Logos of its environment.
-A Dev or Test host also obeys Prod.
+Each environment has its own Logos, and a Logos deploys only itself. The hosts of
+an environment obey the Logos of that environment and no other.
 
-| Environment | Hosts obey | Who can deploy it |
-|---|---|---|
-| Prod | Prod | An admin on Prod |
-| Dev | Dev and Prod | An admin on Dev, or an admin on Prod |
-| Test | Test and Prod | An admin on Test, or an admin on Prod |
+* An admin on Prod can deploy Prod only.
+* An admin on Dev can deploy Dev only.
+* An admin on Test can deploy Test only.
 
-A deployment changes one environment only. A deployment of Prod never changes
-Dev or Test. An admin on Prod deploys Dev or Test with the button in the section
-of that environment. Dev and Test cannot deploy Prod, because no Prod host obeys
-them.
+Dev and Test cannot deploy Prod, because no Prod host obeys them. An admin on
+Prod cannot deploy Dev or Test. To deploy Dev, use the page **Deployments** of
+the Logos on Dev.
 
 ### Install the deployers
 
 Do these steps once for each host. Start with Test and Dev.
 
-1. In the GitHub environment of the core host, set the variable
-   `LOGOS_DEPLOYMENTS_ENVIRONMENT` to the name of the environment, for example
-   `Dev`. On Prod, also set `LOGOS_DEPLOYMENTS_ORDERABLE_ENVIRONMENTS` to
-   `Prod,Dev,Test`.
-2. Run the workflow **Logos - Sync host config** for the core host. Leave
-   **Also install or update the deployer** off. The workflow writes the `.env`
-   file and the compose file to the host.
-3. Deploy the core with the deploy workflow of the environment, for example
-   **Logos - Deploy to Dev**. The page **Deployments** is now on. The workflow
-   also installs the deployer. The deployer has no key yet, so it asks no Logos
-   for orders.
-4. On the page, click **Add a deployer**. Enter the name of the host and the kind
+1. On Dev and Test, set the variable `LOGOS_DEPLOYMENTS_PROTECTED` to `false` in
+   the GitHub environment of the core host. Do not set it on Prod. A protected
+   Logos asks for a typed word and accepts only `latest` and release tags. Every
+   Logos is protected unless you set the variable.
+2. Make sure that the core of the environment runs a version of Logos that has the
+   page **Deployments**. If it does not, deploy it with the deploy workflow of the
+   environment, for example **Logos - Deploy to Dev**. The page shows no deployer
+   yet.
+3. On the page, click **Add a deployer**. Enter the name of the host and the kind
    `core`. Copy the key. Logos shows the key once.
-5. In the GitHub environment of the host, set the secret `LOGOS_DEPLOYER_KEY` to
+4. In the GitHub environment of the host, set the secret `LOGOS_DEPLOYER_KEY` to
    the key.
-6. Give the key to the deployer. Run the deploy workflow of the environment
-   again. Or run the workflow **Logos - Sync host config** with **Also install or
-   update the deployer** on. Both start the deployer as the compose project
-   `logos-deployer`.
-7. For each worker host, do steps 4 and 5 with the kind `worker`. Then run the
-   workflow **Logos - Sync host config** for the host with **Also install or
-   update the deployer** on. A worker already has the node manager. The workflow
-   replaces it with a new one that has the key.
-8. For a Dev or Test host, an admin on Prod also adds a deployer for the host on
-   the page of Prod. In the GitHub environment of the host, set `LOGOS_PROD_URL`
-   to the address of Prod, and the secret `LOGOS_PROD_DEPLOYER_KEY` to that key.
-   Then do step 6 again.
+5. Give the key to the host. Run the workflow **Logos - Sync host config** for the
+   host with **Also install or update the deployer** on. Or run the deploy
+   workflow of the environment again: it installs the deployer on a core host that
+   has the key. Both start the deployer as the compose project `logos-deployer`.
+6. For each worker host, do steps 3 to 5 with the kind `worker`. A worker already
+   has the node manager. The workflow **Logos - Sync host config** with **Also
+   install or update the deployer** on replaces it with a new one that has the
+   key.
+
+A host obeys the Logos of its own environment only. Use the key that this Logos
+made. Do not give a host a key of another environment.
 
 | Variable | Where | Meaning |
 |---|---|---|
-| `LOGOS_DEPLOYMENTS_ENVIRONMENT` | Core | The name of this Logos. The feature is off while it is empty. |
-| `LOGOS_DEPLOYMENTS_ORDERABLE_ENVIRONMENTS` | Core | The environments this Logos can deploy. Default: only its own. |
-| `LOGOS_DEPLOYMENTS_PROTECTED_ENVIRONMENTS` | Core | Environments that need the typed name and accept only `latest` and release tags. Default: `Prod`. |
+| `LOGOS_DEPLOYMENTS_PROTECTED` | Core | `true` (default) or `false`. A protected Logos asks for the typed word `prod` and accepts only `latest` and release tags. Set it to `false` on Dev and Test. |
 | `LOGOS_DEPLOYMENTS_SILENCE_LIMIT` | Core | How long a started step can stay silent before Logos ends it. Default: `30m`. |
-| `LOGOS_DEPLOYER_KEY` | Every host | The key that this Logos made for the deployer of the host. |
-| `LOGOS_PROD_URL`, `LOGOS_PROD_DEPLOYER_KEY` | Dev and Test hosts | The address of Prod and the key that Prod made for the host. |
+| `LOGOS_DEPLOYER_KEY` | Every host | The key that the Logos of the environment made for the deployer of the host. |
 
 ### Sync the settings of a host
 
@@ -329,8 +319,8 @@ new web service does not start. These workflows do not use the page
 **Deployments**.
 
 A workflow of a core host also installs or updates the deployer. It does this
-only if the variable `LOGOS_DEPLOYMENTS_ENVIRONMENT` is set in the GitHub
-environment of the host. The deployer is a compose project of its own, so a
+only if the secret `LOGOS_DEPLOYER_KEY` is set in the GitHub environment of the
+host. The deployer is a compose project of its own, so a
 deployment of the core does not replace it. The workflow installs the deployer
 last. A problem with the deployer does not stop the deployment.
 
@@ -341,22 +331,23 @@ last. A problem with the deployer does not stop the deployment.
   deployer that restarts continues its old order. That order can replace the
   services that the workflow started. The workflow shows a warning. Wait until
   the deployment ends, then run the workflow again.
-* A host without the variable `LOGOS_DEPLOYMENTS_ENVIRONMENT` is not changed.
+* A host without the secret `LOGOS_DEPLOYER_KEY` is not changed.
 
 ### Start a deployment
 
-1. Open the page **Deployments**. Choose the environment at the top right.
+1. Open the page **Deployments** of the Logos of the environment that you want to
+   deploy.
 2. Enter an image tag.
-3. For Prod, type `prod` in the field **Type prod to confirm**. Prod accepts
-   only `latest` and release tags.
+3. On Prod, type `prod` in the field **Type prod to confirm**. Prod accepts only
+   `latest` and release tags. Dev and Test have no such field.
 4. Click **Deploy**. Logos opens the page of the new deployment.
 
 Logos refuses a deployment in these cases:
 
-* A deployment of the same environment runs. Wait for it, or abandon it.
-* The core deployer of the environment is not online. The button is off and the
-  page shows why. A worker deployer that is not online does not block the start.
-* The tag is not a Docker tag, or Prod does not accept it.
+* A deployment runs. Wait for it, or abandon it.
+* The core deployer is not online. The button is off and the page shows why. A
+  worker deployer that is not online does not block the start.
+* The tag is not a Docker tag, or a protected Logos does not accept it.
 
 ### A deployment that does not move
 

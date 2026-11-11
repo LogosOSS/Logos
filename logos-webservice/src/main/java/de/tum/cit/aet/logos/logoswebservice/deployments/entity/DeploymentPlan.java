@@ -11,7 +11,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 /**
- * The to-do list of one deployment of an environment: the core first, then all workers. The steps are in
+ * The to-do list of one deployment of this Logos: the core first, then all workers. The steps are in
  * {@link DeploymentStep}.
  */
 @Entity
@@ -25,18 +25,11 @@ public class DeploymentPlan {
     private long number;
 
     @Column(nullable = false)
-    private String environment;
-
-    @Column(nullable = false)
     private String tag;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private PlanStatus status;
-
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
-    private PlanOrigin origin;
 
     @Column(nullable = false)
     private String initiator;
@@ -57,10 +50,8 @@ public class DeploymentPlan {
 
     public UUID getId() { return id; }
     public long getNumber() { return number; }
-    public String getEnvironment() { return environment; }
     public String getTag() { return tag; }
     public PlanStatus getStatus() { return status; }
-    public PlanOrigin getOrigin() { return origin; }
     public String getInitiator() { return initiator; }
     public Integer getInitiatorUserId() { return initiatorUserId; }
     public String getReason() { return reason; }
@@ -71,10 +62,8 @@ public class DeploymentPlan {
 
     public void setId(UUID id) { this.id = id; }
     public void setNumber(long number) { this.number = number; }
-    public void setEnvironment(String environment) { this.environment = environment; }
     public void setTag(String tag) { this.tag = tag; }
     public void setStatus(PlanStatus status) { this.status = status; }
-    public void setOrigin(PlanOrigin origin) { this.origin = origin; }
     public void setInitiator(String initiator) { this.initiator = initiator; }
     public void setInitiatorUserId(Integer initiatorUserId) { this.initiatorUserId = initiatorUserId; }
     public void setReason(String reason) { this.reason = reason; }

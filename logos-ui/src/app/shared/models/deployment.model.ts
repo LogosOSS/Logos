@@ -17,9 +17,6 @@ export type StepStatus =
 
 export type DeployerKind = 'core' | 'worker';
 
-/** `local`: an admin of this Logos started it. `observed`: deployers reported it, another Logos ordered it. */
-export type PlanOrigin = 'local' | 'observed';
-
 export interface StepBrief {
   name: string;
   kind: DeployerKind;
@@ -59,10 +56,8 @@ export interface DeploymentPlan {
   id: string;
   /** The number of the deployment on its Logos, as the page shows it: #142. */
   number: number;
-  environment: string;
   tag: string;
   status: PlanStatus;
-  origin: PlanOrigin;
   initiator: string;
   reason: string | null;
   abandoned_by: string | null;
@@ -78,9 +73,8 @@ export interface DeploymentPlan {
 export interface Deployer {
   id: string;
   name: string;
-  environment: string;
   kind: DeployerKind;
-  /** Seen recently. The button of an environment is off while its core deployer is not online. */
+  /** Seen recently. The button to deploy is off while the core deployer is not online. */
   online: boolean;
   last_seen_at: string | null;
   version: string | null;
@@ -93,25 +87,16 @@ export interface DeployerCreated {
   key: string;
 }
 
-export interface DeploymentTarget {
-  name: string;
-  own: boolean;
-  /** A protected environment (Prod) asks for its typed name and shows a warning first. */
-  requires_confirmation: boolean;
+export interface DeploymentOverview {
+  /**
+   * A protected Logos (Prod) shows a warning and asks for this word, typed, before it starts a deployment. Null on a
+   * Logos that needs no confirmation (Dev and Test).
+   */
+  confirmation_word: string | null;
   deployers: Deployer[];
-  running_plan_id: string | null;
-  /** How the latest deployment of the environment ended. The switch shows it as a dot. */
-  last_status: PlanStatus | null;
   can_start: boolean;
   /** Why a deployment cannot start now, in a sentence. */
   blocked_reason: string | null;
-}
-
-export interface DeploymentOverview {
-  /** False on a Logos without deployers (for example one from the installation guide). */
-  enabled: boolean;
-  environment: string;
-  targets: DeploymentTarget[];
   suggested_tags: string[];
 }
 

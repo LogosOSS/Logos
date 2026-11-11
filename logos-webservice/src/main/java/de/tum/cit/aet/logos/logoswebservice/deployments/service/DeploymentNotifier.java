@@ -39,7 +39,6 @@ public class DeploymentNotifier {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("plan_id", plan.getId().toString());
         payload.put("step_id", step.getId().toString());
-        payload.put("environment", plan.getEnvironment());
         payload.put("tag", plan.getTag());
         payload.put("deployer", step.getDeployerName());
         payload.put("outcome", step.getStatus().name());
@@ -48,7 +47,7 @@ public class DeploymentNotifier {
         notifications.publishOnce(
             new PublishNotificationRequestDTO(
                 good ? "deployment" : "deployment_failed",
-                plan.getEnvironment() + " " + step.getDeployerName() + ": " + plan.getTag() + " " + what,
+                step.getDeployerName() + ": " + plan.getTag() + " " + what,
                 firstLine(step.getMessage()),
                 payload,
                 "webservice",

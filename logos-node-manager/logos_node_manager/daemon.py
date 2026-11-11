@@ -1,8 +1,8 @@
 """The long-running part of the manager.
 
 The daemon takes the queued deployments from the state directory, oldest first and one at a time. Whoever wants a
-deployment writes a record: the command line does, and so does the intake of the Logos link, which asks the Logos
-instances of the host for orders. The daemon finds the record on its next pass.
+deployment writes a record: the command line does, and so does the intake of the Logos link, which asks the Logos of the
+host for orders. The daemon finds the record on its next pass.
 """
 
 from __future__ import annotations
@@ -134,13 +134,12 @@ class Daemon:
         for path in (s.compose_file, s.env_file):
             if not path.is_file():
                 logger.warning("%s does not exist; deployments fail until it does", path)
-        if s.logos_sources:
-            logger.info(
-                "Orders come from %s, and they get the reports of the deployments they ordered",
-                ", ".join(source.name for source in s.logos_sources),
-            )
+        if s.logos_enabled:
+            logger.info("Orders come from %s, which gets the reports of the deployments it ordered", s.logos_url)
         else:
-            logger.info("NODE_MANAGER_LOGOS is empty: only the command line gives orders")
+            logger.info(
+                "NODE_MANAGER_LOGOS_URL or NODE_MANAGER_DEPLOYER_KEY is empty: only the command line gives orders"
+            )
         if s.kind == "core":
             logger.info(
                 "A core host: no drain and no rollback; %s must answer after a deployment",

@@ -70,7 +70,7 @@ export class DeploymentDetail implements OnInit {
   steps = computed(() => this.plan()?.step_details ?? []);
   /** The container log of the first node that failed. Nodes that did not fail have none. */
   logStep = computed<DeploymentStep | null>(() => this.steps().find((s) => !!s.failure_logs) ?? null);
-  canAbandon = computed(() => this.plan()?.status === 'running' && this.plan()?.origin === 'local');
+  canAbandon = computed(() => this.plan()?.status === 'running');
   /** "6m 12s", or "3h 4m" for a long one. A running deployment counts up. */
   duration = computed(() => {
     const plan = this.plan();

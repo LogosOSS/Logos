@@ -164,9 +164,9 @@ class Deployer:
         deployment.phase = Phase.DONE
         self.event(deployment, f"{outcome.value}: {message}" if message else outcome.value)
         self.store.save(deployment)
-        if self.orchestrator is not None and deployment.plan is None:
+        if self.orchestrator is not None and not deployment.from_logos:
             # Every ending passes here, also the one by ``give_up``: this is where a report becomes due. A deployment
-            # that came from Logos is reported to the Logos instances instead (see ``logos_link``).
+            # that came from Logos is reported to Logos instead (see ``logos_link``).
             self._pending_reports.setdefault(deployment.id, _PendingReport(due_at=self.clock()))
 
     def fail_over(self, deployment: Deployment, kind: FailureKind, reason: str) -> None:
@@ -291,7 +291,7 @@ class Deployer:
                 deployment.finished
                 and deployment.outcome is not None
                 and deployment.reported_at is None
-                and deployment.plan is None
+                and not deployment.from_logos
             ):
                 self._pending_reports.setdefault(deployment.id, _PendingReport(due_at=self.clock()))
         self._looked_for_unreported = True

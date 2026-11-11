@@ -44,36 +44,27 @@ public class DeployerService {
     /** A deployer that was just made, with the key that is shown once. */
     public record Created(Deployer deployer, String key) {}
 
+    /** All deployers, the core one first. */
     @Transactional(readOnly = true)
     public List<Deployer> list() {
-        return deployers.findAllByOrderByEnvironmentAscKindAscNameAsc();
-    }
-
-    @Transactional(readOnly = true)
-    public List<Deployer> listFor(String environment) {
-        return deployers.findByEnvironmentOrderByKindAscNameAsc(environment);
+        return deployers.findAllByOrderByKindAscNameAsc();
     }
 
     @Transactional
-    public Created create(String name, String environment, String kind, Integer createdBy) {
+    public Created create(String name, String kind, Integer createdBy) {
         String cleanName = name == null ? "" : name.strip();
         if (!NAME.matcher(cleanName).matches()) {
             throw new IllegalArgumentException(
                 "The name needs 1 to 100 letters, digits, spaces, '.', '_' or '-', and must start with a letter or digit.");
         }
-        String env = properties.orderable(environment);
-        if (env == null) {
-            throw new IllegalArgumentException("This Logos does not deploy the environment '" + environment + "'.");
-        }
         DeployerKind deployerKind = parseKind(kind);
-        if (deployers.existsByEnvironmentIgnoreCaseAndNameIgnoreCase(env, cleanName)) {
-            throw new ConflictException("The environment " + env + " has a deployer called '" + cleanName + "' already.");
+        if (deployers.existsByNameIgnoreCase(cleanName)) {
+            throw new ConflictException("A deployer called '" + cleanName + "' exists already.");
         }
         String key = DeployerKeys.newKey();
         Deployer deployer = new Deployer();
         deployer.setId(UUID.randomUUID());
         deployer.setName(cleanName);
-        deployer.setEnvironment(env);
         deployer.setKind(deployerKind);
         deployer.setKeyHash(DeployerKeys.hash(key));
         deployer.setCreatedAt(clock.instant());

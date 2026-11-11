@@ -417,12 +417,10 @@ services:
       KEYCLOAK_SYNC_ENABLED: "${KEYCLOAK_SYNC_ENABLED:-false}"
       KEYCLOAK_SYNC_CLIENT_ID: "${KEYCLOAK_SYNC_CLIENT_ID:-logos-sync}"
       KEYCLOAK_SYNC_CLIENT_SECRET: "${KEYCLOAK_SYNC_CLIENT_SECRET:-}"
-      # Deployments from Logos. Off while LOGOS_DEPLOYMENTS_ENVIRONMENT is empty. The environment is the name of this
-      # Logos (Prod, Dev or Test). Prod lists Dev and Test in LOGOS_DEPLOYMENTS_ORDERABLE_ENVIRONMENTS as well.
+      # Deployments from Logos. A Logos deploys only itself. A protected Logos (the default) asks for a typed
+      # confirmation and accepts only latest and release tags. Set LOGOS_DEPLOYMENTS_PROTECTED to false on Dev and Test.
       # See docs/deployment.md#deployments-from-logos.
-      LOGOS_DEPLOYMENTS_ENVIRONMENT: "${LOGOS_DEPLOYMENTS_ENVIRONMENT:-}"
-      LOGOS_DEPLOYMENTS_ORDERABLE_ENVIRONMENTS: "${LOGOS_DEPLOYMENTS_ORDERABLE_ENVIRONMENTS:-}"
-      LOGOS_DEPLOYMENTS_PROTECTED_ENVIRONMENTS: "${LOGOS_DEPLOYMENTS_PROTECTED_ENVIRONMENTS:-Prod}"
+      LOGOS_DEPLOYMENTS_PROTECTED: "${LOGOS_DEPLOYMENTS_PROTECTED:-true}"
       LOGOS_DEPLOYMENTS_SILENCE_LIMIT: "${LOGOS_DEPLOYMENTS_SILENCE_LIMIT:-30m}"
       # Origins the webservice accepts browser requests from. Browsers attach an
       # Origin header to POST requests and WebSocket handshakes even when the UI

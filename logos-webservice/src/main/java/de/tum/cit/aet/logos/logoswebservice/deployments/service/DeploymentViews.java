@@ -43,10 +43,8 @@ public class DeploymentViews {
         return new PlanDTO(
             plan.getId(),
             plan.getNumber(),
-            plan.getEnvironment(),
             plan.getTag(),
             plan.getStatus().name(),
-            plan.getOrigin().name(),
             plan.getInitiator(),
             plan.getReason(),
             plan.getAbandonedBy(),
@@ -83,7 +81,6 @@ public class DeploymentViews {
         return new DeployerDTO(
             deployer.getId(),
             deployer.getName(),
-            deployer.getEnvironment(),
             deployer.getKind().name(),
             online,
             deployer.getLastSeenAt(),

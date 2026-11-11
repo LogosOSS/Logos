@@ -24,9 +24,6 @@ public class Deployer {
     @Column(nullable = false)
     private String name;
 
-    @Column(nullable = false)
-    private String environment;
-
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private DeployerKind kind;
@@ -45,7 +42,6 @@ public class Deployer {
 
     public UUID getId() { return id; }
     public String getName() { return name; }
-    public String getEnvironment() { return environment; }
     public DeployerKind getKind() { return kind; }
     public String getKeyHash() { return keyHash; }
     public Instant getCreatedAt() { return createdAt; }
@@ -55,7 +51,6 @@ public class Deployer {
 
     public void setId(UUID id) { this.id = id; }
     public void setName(String name) { this.name = name; }
-    public void setEnvironment(String environment) { this.environment = environment; }
     public void setKind(DeployerKind kind) { this.kind = kind; }
     public void setKeyHash(String keyHash) { this.keyHash = keyHash; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }

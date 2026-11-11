@@ -12,9 +12,9 @@ name: Logos - Sync host config
 #    deployer read from the file by themselves are listed in EXTRA_NAMES below.
 #  * The compose file is copied from the branch the workflow runs on. A host of Prod takes it from main only.
 #  * `install-deployer` is off by default. It installs the deployer of a core host, or updates the node manager of a
-#    worker (which also applies new Logos keys). It never touches the services of Logos. The deploy workflows of a core
-#    host install the deployer as well (see .github/actions/install-core-deployer), because they are the way to deploy
-#    when Logos cannot deploy itself.
+#    worker (which also applies a new deployer key). It never touches the services of Logos. The deploy workflows of a
+#    core host install the deployer as well, if the host has a deployer key (see .github/actions/install-core-deployer),
+#    because they are the way to deploy when Logos cannot deploy itself.
 #
 # The check for main below is in this file, and a branch can change its own copy of the file. Restrict the environments of
 # Prod to the branch main in the settings of the repository to make the rule hold.
@@ -212,7 +212,7 @@ jobs:
             compose() {
               docker compose -f "$BASE/docker-compose.yml" --env-file="$BASE/.env" "$@"
             }
-            # Compose replaces the node manager if its image or its settings (the Logos keys) changed.
+            # Compose replaces the node manager if its image or its settings (the deployer key) changed.
             compose pull logos-node-manager
             compose up -d logos-node-manager
             for attempt in $(seq 1 30); do

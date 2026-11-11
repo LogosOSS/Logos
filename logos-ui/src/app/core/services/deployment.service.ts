@@ -8,7 +8,7 @@ import {
   DeploymentPlan,
 } from '../../shared/models/deployment.model';
 
-/** The page Deployments: environments, history, starting and abandoning a deployment, and the deployers. */
+/** The page Deployments: history, starting and abandoning a deployment, and the deployers of this Logos. */
 @Injectable({ providedIn: 'root' })
 export class DeploymentService {
   private http = inject(HttpClient);
@@ -18,9 +18,8 @@ export class DeploymentService {
     return firstValueFrom(this.http.get<DeploymentOverview>(`${DeploymentService.BASE}/overview`));
   }
 
-  getPlans(environment?: string, limit = 50): Promise<DeploymentPlan[]> {
-    let params = new HttpParams().set('limit', limit);
-    if (environment) params = params.set('environment', environment);
+  getPlans(limit = 50): Promise<DeploymentPlan[]> {
+    const params = new HttpParams().set('limit', limit);
     return firstValueFrom(
       this.http.get<DeploymentPlan[]>(`${DeploymentService.BASE}/plans`, { params }),
     );
@@ -30,15 +29,10 @@ export class DeploymentService {
     return firstValueFrom(this.http.get<DeploymentPlan>(`${DeploymentService.BASE}/plans/${id}`));
   }
 
-  /** `confirmation` is the typed name of a protected environment. */
-  startPlan(
-    environment: string,
-    tag: string,
-    confirmation?: string,
-  ): Promise<DeploymentPlan> {
+  /** `confirmation` is the word that a protected Logos asks for. */
+  startPlan(tag: string, confirmation?: string): Promise<DeploymentPlan> {
     return firstValueFrom(
       this.http.post<DeploymentPlan>(`${DeploymentService.BASE}/plans`, {
-        environment,
         tag,
         confirmation: confirmation ?? null,
       }),
@@ -51,13 +45,9 @@ export class DeploymentService {
     );
   }
 
-  createDeployer(name: string, environment: string, kind: DeployerKind): Promise<DeployerCreated> {
+  createDeployer(name: string, kind: DeployerKind): Promise<DeployerCreated> {
     return firstValueFrom(
-      this.http.post<DeployerCreated>(`${DeploymentService.BASE}/deployers`, {
-        name,
-        environment,
-        kind,
-      }),
+      this.http.post<DeployerCreated>(`${DeploymentService.BASE}/deployers`, { name, kind }),
     );
   }
 

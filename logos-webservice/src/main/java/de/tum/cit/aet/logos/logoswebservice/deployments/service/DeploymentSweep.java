@@ -29,9 +29,6 @@ public class DeploymentSweep {
     @Scheduled(initialDelayString = "${logos.deployments.sweep-initial-delay:PT2M}",
                fixedDelayString = "${logos.deployments.sweep-interval:PT1M}")
     public void run() {
-        if (!properties.enabled()) {
-            return;
-        }
         try {
             int ended = reports.closeSilentSteps();
             if (ended > 0) {

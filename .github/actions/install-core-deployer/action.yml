@@ -1,7 +1,7 @@
 name: Install or update the deployer of a core host
 description: >-
   Copies the compose file of the deployer to a core host and starts it as the compose project logos-deployer. The .env
-  file of the host has to be there already: the deployer reads its Logos keys and its image tag from it.
+  file of the host has to be there already: the deployer reads its key and its image tag from it.
 
 # The deployer is the node manager in core mode. It is a compose project of its own on purpose. A deployment of Logos runs
 # `docker compose up -d --remove-orphans` for the project `logos`. If the deployer belonged to that project, the same
@@ -111,7 +111,7 @@ runs:
             echo "::warning::The deployer still runs a deployment, so it was not replaced. Wait until the deployment ends, then run this workflow again."
             exit 0
           fi
-          # Compose replaces the deployer if its image or its settings (the Logos keys) changed.
+          # Compose replaces the deployer if its image or its settings (the deployer key) changed.
           compose pull logos-deployer
           compose up -d logos-deployer
           for attempt in $(seq 1 30); do

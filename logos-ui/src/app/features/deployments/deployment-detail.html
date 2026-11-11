@@ -1,9 +1,5 @@
 <div class="deployments">
-  <a
-    class="lg-breadcrumb"
-    routerLink="/deployments"
-    [queryParams]="plan() ? { env: plan()?.environment } : null"
-  >
+  <a class="lg-breadcrumb" routerLink="/deployments">
     <i class="pi pi-chevron-left" aria-hidden="true"></i> Deployments
   </a>
 
@@ -23,7 +19,7 @@
           <app-status-pill [tone]="planTone(p.status)" [label]="planLabel[p.status]" />
         </div>
         <p class="page-subtitle">
-          {{ p.environment }} · started by {{ p.initiator }} ·
+          Started by {{ p.initiator }} ·
           <span>{{ fullDate(p.created_at) }}</span>
           @if (duration()) {
             · {{ duration() }}

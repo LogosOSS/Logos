@@ -28,7 +28,7 @@ public final class PlanSequencer {
     private PlanSequencer() {
     }
 
-    /** Move a plan that this Logos started on after one of its steps changed. */
+    /** Move a plan on after one of its steps changed. */
     public static void advance(DeploymentPlan plan, List<DeploymentStep> steps, Instant now) {
         if (plan.getStatus() != PlanStatus.running || steps.isEmpty()) {
             return;
@@ -51,18 +51,6 @@ public final class PlanSequencer {
         if (allTerminal(steps)) {
             finish(plan, steps, now);
         }
-    }
-
-    /** Keep the status of a plan that deployers of another environment reported. Nothing is released. */
-    public static void refreshObserved(DeploymentPlan plan, List<DeploymentStep> steps, Instant now) {
-        plan.setLastActivityAt(now);
-        if (steps.isEmpty() || !allTerminal(steps)) {
-            plan.setStatus(PlanStatus.running);
-            plan.setFinishedAt(null);
-            plan.setReason(null);
-            return;
-        }
-        finish(plan, steps, now);
     }
 
     /** A step that ended after its plan was closed changes what the plan shows, unless an admin abandoned the plan. */

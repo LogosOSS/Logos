@@ -12,7 +12,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
-import de.tum.cit.aet.logos.logoswebservice.common.NotFoundException;
 import de.tum.cit.aet.logos.logoswebservice.deployments.DeploymentProperties;
 import de.tum.cit.aet.logos.logoswebservice.deployments.dto.DeployerApi;
 import de.tum.cit.aet.logos.logoswebservice.deployments.entity.Deployer;
@@ -80,9 +79,6 @@ public class DeployerApiController {
     }
 
     private Deployer authenticate(String authorization) {
-        if (!properties.enabled()) {
-            throw new NotFoundException("Deployments are not set up on this Logos.");
-        }
         return deployers.authenticate(authorization)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unknown deployer key"));
     }
