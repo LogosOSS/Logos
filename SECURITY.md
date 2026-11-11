@@ -15,7 +15,10 @@ Older versions do not receive security patches.
 
 **Please do not report vulnerabilities through public issues, discussions or pull requests.**
 
-Report privately through [GitHub Private Vulnerability Reporting](https://github.com/LogosOSS/Logos/security/advisories/new).
+Report privately through either of these channels:
+
+- [GitHub Private Vulnerability Reporting](https://github.com/LogosOSS/Logos/security/advisories/new) (preferred).
+- Email: [it-admins@aet.cit.tum.de](mailto:it-admins@aet.cit.tum.de).
 
 Please include:
 
