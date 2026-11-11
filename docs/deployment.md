@@ -107,6 +107,8 @@ self-hosted installation. To fix this, use Package settings → Change visibilit
 
 The development compose file publishes all ports on `127.0.0.1`.
 Use the existing `localhost` URLs for the web application, Keycloak, and the database.
+For an application outside Compose, set `DB_PASSWORD=root` to use the development database.
+Also set `DB_HOST=localhost` for the orchestrator or agent.
 The e2e stack uses its own compose file and ports.
 For access from another computer, use an SSH tunnel to the development host.
 

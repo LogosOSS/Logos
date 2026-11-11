@@ -2,31 +2,37 @@
 
 from fastapi import HTTPException, Request
 
-# Keep in sync with LogosBridgeClient._ALLOWED_REQUEST_PATHS. The worker also
+# Image operations are billed by the cloud pipeline; GPU lanes do not serve them.
+CLOUD_ONLY_INFERENCE_PATHS = frozenset({"v1/images/generations", "v1/images/edits", "v1/images/variations"})
+
+# Keep the common operations in sync with LogosBridgeClient._ALLOWED_REQUEST_PATHS. The worker also
 # allows v1/models for its model catalogue; the public catalogue is served
 # locally and must never enter the POST inference pipeline.
-ALLOWED_INFERENCE_PATHS = frozenset(
-    {
-        "v1/chat/completions",
-        "v1/completions",
-        "v1/embeddings",
-        "v1/responses",
-        "v1/messages",
-        "v1/audio/transcriptions",
-        "v1/audio/translations",
-        "v1/audio/speech",
-        "v1/systemone",
-        "v1/rerank",
-        "v1/score",
-        "v2/embed",
-        "v2/rerank",
-        "pooling",
-        "score",
-        "rerank",
-        "classify",
-        "tokenize",
-        "detokenize",
-    }
+ALLOWED_INFERENCE_PATHS = (
+    frozenset(
+        {
+            "v1/chat/completions",
+            "v1/completions",
+            "v1/embeddings",
+            "v1/responses",
+            "v1/messages",
+            "v1/audio/transcriptions",
+            "v1/audio/translations",
+            "v1/audio/speech",
+            "v1/systemone",
+            "v1/rerank",
+            "v1/score",
+            "v2/embed",
+            "v2/rerank",
+            "pooling",
+            "score",
+            "rerank",
+            "classify",
+            "tokenize",
+            "detokenize",
+        }
+    )
+    | CLOUD_ONLY_INFERENCE_PATHS
 )
 
 

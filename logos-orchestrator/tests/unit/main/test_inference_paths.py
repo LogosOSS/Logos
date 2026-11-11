@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 import logos as main
-from logos.inference_paths import ALLOWED_INFERENCE_PATHS
+from logos.inference_paths import ALLOWED_INFERENCE_PATHS, CLOUD_ONLY_INFERENCE_PATHS
 from logos.pipeline.context_resolver import ContextResolver
 from logos.routers import user_facing
 
@@ -130,4 +130,6 @@ def test_worker_and_orchestrator_operations_stay_consistent():
         and isinstance(node.target, ast.Name)
         and node.target.id == "_ALLOWED_REQUEST_PATHS"
     )
-    assert ast.literal_eval(declaration.value.args[0]) == ALLOWED_INFERENCE_PATHS | {"v1/models"}
+    assert ast.literal_eval(declaration.value.args[0]) == (ALLOWED_INFERENCE_PATHS - CLOUD_ONLY_INFERENCE_PATHS) | {
+        "v1/models"
+    }
