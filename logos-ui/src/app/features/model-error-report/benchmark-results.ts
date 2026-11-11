@@ -30,9 +30,9 @@ export class BenchmarkResults {
   readonly progress = computed(() => benchmarkProgress(this.runs()));
   readonly progressKey = signal('');
   readonly activeProgress = computed(() => {
-    const reference = (this.selectedRow()?.run.configuration['nightly'] as { reference_id?: number } | undefined)?.reference_id;
+    const selected = this.selectedRunId();
     return this.progress().find(group => group.key === this.progressKey())
-      ?? this.progress().find(group => group.reference.id === reference) ?? this.progress()[0];
+      ?? this.progress().find(group => selected !== null && group.runIds.includes(selected)) ?? this.progress()[0];
   });
   readonly showAll = signal(false);
   readonly sort = signal<{ key: ResultColumn; direction: 'ascending' | 'descending' } | null>(null);

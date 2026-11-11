@@ -42,27 +42,27 @@ def test_snapshot_is_private_deterministic_and_keeps_source_limits():
     assert second["requests"][0]["body"]["max_completion_tokens"] == 4096
 
 
-def test_dev_pilot_plans_all_50_distinct_fixed_budget_requests_per_configuration():
+def test_dev_pilot_plans_50_distinct_requests_with_natural_output_per_configuration():
     workload = dev_nightly_pilot.build_workload(1)
     assert workload == dev_nightly_pilot.build_workload(1)
     bodies = [request["body"] for request in workload["requests"]]
     assert len({body["messages"][0]["content"] for body in bodies}) == workload["request_count"] == 50
-    assert all(
-        body["max_tokens"] == 1536 and body["ignore_eos"] is True and body["temperature"] == 0 for body in bodies
-    )
+    assert all("max_tokens" not in body and "ignore_eos" not in body and body["temperature"] == 0 for body in bodies)
     current = {"max_num_seqs": 5, "max_num_batched_tokens": 2304}
     plan = optimization.plan(current, optimization.context(current, {}, workload, {}))
     assert len(plan) > 1
     assert all(run.samples == 50 and run.workload_id == workload["id"] for run in plan)
 
 
-@pytest.mark.parametrize("state", ["previous", "installed", "changed", "disabled"])
+@pytest.mark.parametrize("state", ["previous", "fixed", "installed", "changed", "disabled"])
 def test_dev_pilot_replaces_only_the_enabled_previous_workload(monkeypatch, state):
     pilot = dev_nightly_pilot
     monkeypatch.delenv("LOGOS_NIGHTLY_REQUEST_USERNAME", raising=False)
     snapshot = pilot.build_workload(1)
-    previous_id = pilot.PREVIOUS_WORKLOAD_ID
-    selected_id = {"installed": snapshot["id"], "changed": "another-workload"}.get(state, previous_id)
+    previous_id, fixed_id = sorted(pilot.PREVIOUS_WORKLOAD_IDS)
+    selected_id = {"installed": snapshot["id"], "changed": "another-workload", "fixed": fixed_id}.get(
+        state, previous_id
+    )
     db_manager = MagicMock()
     session = db_manager.return_value.__enter__.return_value.session
     session.execute.return_value.one.return_value = SimpleNamespace(pair_id=2, model_id=1)
@@ -88,9 +88,9 @@ def test_dev_pilot_replaces_only_the_enabled_previous_workload(monkeypatch, stat
         load.assert_called_once_with(snapshot["id"], 1)
         insert_parameters = session.execute.call_args.args[1]
         assert insert_parameters["request_count"] == 50 and insert_parameters["id"] == snapshot["id"]
-    if state == "previous":
+    if state in {"previous", "fixed"}:
         update.assert_called_once_with(
-            2, True, expected=True, workload_id=snapshot["id"], expected_workload_id=previous_id
+            2, True, expected=True, workload_id=snapshot["id"], expected_workload_id=selected_id
         )
     else:
         update.assert_not_called()

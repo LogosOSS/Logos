@@ -243,7 +243,7 @@ If it exceeds the current production baseline, then Logos applies its sequence a
 Logos compares measurements from the same frozen dataset and environment.
 An older throughput record alone cannot trigger adoption.
 If no eligible configuration improves throughput, then the original production settings return.
-The fixed reference remains unchanged after adoption. The next round measures the adopted settings first.
+The optimizer keeps its historical reference after adoption. The next round measures the adopted settings as a fresh baseline.
 
 The PostgreSQL recovery journal records adoption intent before Logos changes the live lane.
 After the worker confirms the lane is ready, Logos stores the adopted benchmark and its parameters in `nightly_benchmarks.optimizer.production_adoption`.
@@ -257,19 +257,23 @@ A disabled schedule cancels pending adoption.
 The round report identifies an adopted benchmark or an adoption failure.
 
 The **Performance** tab contains the **Timeline** section.
-The chart starts with the first comparable baseline for each dataset and provider.
-The vertical axis shows the percentage change from the starting baseline (0%).
-Subsequent points show only new throughput records. Select a point to see the rate in output tokens per second.
-Each point keeps the measurement date and configuration. Slower runs do not add points.
-Saved-request variants must pass the response and latency checks before they set a record.
-Select a point to open its benchmark. Expand **Record configurations** to read dates and parameters.
-The chart separates captured workloads and test settings. Records can span worker releases.
+The vertical axis shows throughput in output tokens per second (tok/s).
+The solid line shows complete measurements, including slower runs and repeated baselines.
+The dashed line shows the measured production baseline of each round.
+Each new round measures the current production settings first, including previously adopted improvements.
+Each point keeps its measurement date and configuration. Its percentage change uses the captured baseline from the same round.
+Outlined points fail automatic selection checks. They remain visible so that the chart shows measurement variation.
+Select a point to open its benchmark. Expand **Measured configurations** to read dates and parameters.
+The chart separates captured workloads and test settings. Measurements can span worker releases.
 A historical record does not replace the fresh comparison required for production adoption.
 Expand **Currently deployed → Configuration & selection details** to inspect current settings and selection failures.
 A completed eligible winner is saved before the next trial starts.
 Recovery can apply this saved winner if a later trial is interrupted. Disabling the schedule cancels pending adoption.
 These measurements do not establish statistical significance.
-Ten synthetic requests provide an integration pilot, not a representative thesis evaluation dataset.
+The Dev coding pilot uses 50 stored synthetic prompts with natural output lengths.
+Each replay uses the same prompts, seeds, temperature and concurrent request count.
+The model can end each answer naturally. Logos does not force a fixed output length.
+This pilot does not reproduce the full production request distribution or guarantee a standard deviation below 2%.
 Use repeated measurements and a separate evaluation dataset before drawing performance conclusions.
 
 ## Completion Notifications

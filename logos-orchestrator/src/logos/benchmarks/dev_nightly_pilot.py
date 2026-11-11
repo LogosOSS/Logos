@@ -1,4 +1,4 @@
-"""Install the fixed-size coding workload on the existing Dev nightly schedule."""
+"""Install the coding workload with natural output lengths on the Dev nightly schedule."""
 
 from sqlalchemy import text
 
@@ -7,9 +7,11 @@ from logos.dbutils.dbmanager import DBManager
 
 MODEL_NAME = "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
 WORKER_NAME = "Hochbruegge VM2"
-PREVIOUS_WORKLOAD_ID = "c42aaea0ddc7f578082cf43683fca8bd61b0b259492ad0070a47064b75517671"
-NAME = "Qwen coding pilot · 50 synthetic requests · fixed output"
-OUTPUT_TOKENS = 1536
+PREVIOUS_WORKLOAD_IDS = {
+    "c42aaea0ddc7f578082cf43683fca8bd61b0b259492ad0070a47064b75517671",
+    "c8ae56bf8f9d348214a9a7e993aa085f7ed113db7aed4824c55052c5b8260529",
+}
+NAME = "Qwen coding pilot · 50 synthetic requests · natural output"
 
 COMPONENTS = (
     "an idempotent job queue",
@@ -45,8 +47,6 @@ def build_workload(model_id):
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
                 "seed": index,
-                "max_tokens": OUTPUT_TOKENS,
-                "ignore_eos": True,
             },
         }
         for index, prompt in enumerate(prompts, 1)
@@ -69,7 +69,7 @@ def install():
     pair_id = target.pair_id
     snapshot = build_workload(target.model_id)
     schedule = nightly_store.status(pair_id)
-    if not schedule["enabled"] or schedule["workload_id"] not in {PREVIOUS_WORKLOAD_ID, snapshot["id"]}:
+    if not schedule["enabled"] or schedule["workload_id"] not in PREVIOUS_WORKLOAD_IDS | {snapshot["id"]}:
         raise RuntimeError("The expected enabled Dev pilot schedule has changed")
     with DBManager() as db:
         workloads.save_snapshot(db, snapshot)
@@ -77,14 +77,14 @@ def install():
     stored = workloads.load(snapshot["id"], target.model_id)
     if schedule["workload_id"] != snapshot["id"]:
         schedule = nightly_store.set_enabled(
-            pair_id, True, expected=True, workload_id=snapshot["id"], expected_workload_id=PREVIOUS_WORKLOAD_ID
+            pair_id, True, expected=True, workload_id=snapshot["id"], expected_workload_id=schedule["workload_id"]
         )
     else:
         schedule = nightly_store.status(pair_id)
     if not schedule["enabled"] or schedule["workload_id"] != stored["id"]:
-        raise RuntimeError("The fixed-size workload is not selected on the Dev schedule")
+        raise RuntimeError("The natural-output workload is not selected on the Dev schedule")
     print(
-        f"Dev nightly pair {pair_id}: {stored['request_count']} requests × {OUTPUT_TOKENS} output tokens; "
+        f"Dev nightly pair {pair_id}: {stored['request_count']} requests with natural output lengths; "
         f"workload {stored['id']} ({schedule['status']})"
     )
 

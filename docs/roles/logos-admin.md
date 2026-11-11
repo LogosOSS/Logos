@@ -207,22 +207,22 @@ A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
-The **Timeline** starts with the first comparable baseline for the dataset.
-The vertical axis shows the percentage change from the starting baseline (0%).
-Each subsequent point is a new throughput record.
-Slower runs do not add points. Each point keeps its actual measurement date and configuration.
-The chart separates datasets, providers and captured test settings. Worker releases can share a record history.
+The **Timeline** shows absolute throughput in output tokens per second (tok/s).
+The solid line includes complete slower runs and repeated baselines.
+The dashed line shows the freshly measured production baseline of each round.
+Each point keeps its actual measurement date and configuration.
+The percentage change compares each measurement with its captured baseline from the same round.
+The chart separates datasets, providers and captured test settings. Worker releases can share a measurement history.
 Select a point to open its benchmark result.
-Expand **Record configurations** to read the dates and parameters.
-Saved-request variants must pass the response and latency checks before they enter the timeline.
-For example, 40 → 42 → 44 tok/s gives 10% total improvement and 4.8% improvement from the previous point.
-The chart does not show automatic parameter adoption or statistical significance.
+Expand **Measured configurations** to read the dates and parameters.
+Outlined points fail automatic selection checks and remain visible to show measurement variation.
+The chart does not establish automatic parameter adoption or statistical significance.
 Expand **Benchmark runs** to see the latest 5 results per dataset.
 A baseline shows its own throughput and 0% change. Missing comparisons show why the baseline is unavailable. Select **Show all** to read older results.
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
 Select the same column again to reverse the order. Missing values stay at the end.
 
-![Performance overview with current configuration and record timeline](../static/img/roles/logos-admin-nightly-results.png)
+![Performance overview with current configuration and absolute throughput timeline](../static/img/roles/logos-admin-nightly-results.png)
 
 Read **Currently deployed** at the top of **Performance**.
 The summary shows throughput, baseline, change and the main batching parameters.
