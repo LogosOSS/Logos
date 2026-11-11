@@ -291,6 +291,8 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 
 | File | Login as | Route / state | Documented in |
 |---|---|---|---|
+| `logos-admin-node-maintenance.png` | `tobias.wasner` | `/statistics` — active node deployment lease | `roles/logos-admin.md#release-a-node-deployment-lease` |
+| `logos-admin-node-maintenance-release.png` | `tobias.wasner` | `/statistics` — **Release node lease** confirmation | `roles/logos-admin.md#release-a-node-deployment-lease` |
 | `logos-admin-statistics.png` | `tobias.wasner` | `/statistics?tab=requests` (the plain route opens **Local Providers**) | `roles/logos-admin.md` |
 | `logos-admin-statistics-lanes.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a lane locked (needs a connected worker: the e2e stack, `../e2e`, with a lane loaded) | `roles/logos-admin.md#idle-lanes-and-lane-locks` |
 | `logos-admin-statistics-worker-lock.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a worker locked with two lanes (e2e stack; capture the lane panel) | `roles/logos-admin.md#worker-locks` |

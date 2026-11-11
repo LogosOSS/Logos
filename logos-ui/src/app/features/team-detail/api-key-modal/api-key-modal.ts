@@ -266,7 +266,7 @@ export class ApiKeyModalComponent implements OnChanges {
       // cached list. The object is the same reference held by the team-detail
       // apiKeys signal and the tab that opened this modal (no refetch happens
       // in between), so both keep displaying the new key.
-      key.key_value = res.api_key;
+      if (res.api_key) key.key_value = res.api_key;
       this.rotateConfirm.set(false);
     } catch {
       this.rotateError.set('Failed to rotate key, please try again.');

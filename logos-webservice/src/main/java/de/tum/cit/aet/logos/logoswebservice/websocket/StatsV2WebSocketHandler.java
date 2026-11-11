@@ -180,6 +180,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
     private final RequestLogStatsService statsService;
     private final OrchestratorLiveStreamClient liveStreamClient;
     private final ObjectMapper objectMapper;
+    private final WebSocketSessionAuth sessionAuth;
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, SessionState> states = new ConcurrentHashMap<>();
@@ -192,12 +193,13 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
                                    RequestLogService requestLogService,
                                    RequestLogStatsService statsService,
                                    OrchestratorLiveStreamClient liveStreamClient,
-                                   ObjectMapper objectMapper) {
+                                   ObjectMapper objectMapper, WebSocketSessionAuth sessionAuth) {
         this.vramService = vramService;
         this.requestLogService = requestLogService;
         this.statsService = statsService;
         this.liveStreamClient = liveStreamClient;
         this.objectMapper = objectMapper;
+        this.sessionAuth = sessionAuth;
         this.scheduler = Executors.newSingleThreadScheduledExecutor();
         this.scheduler.scheduleAtFixedRate(this::tick, 1, 1, TimeUnit.SECONDS);
         // The orchestrator pushes a fresh live snapshot as it happens; forward
@@ -208,6 +210,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
+        if (!sessionAuth.register(session, true)) return;
         sessions.put(session.getId(), session);
         SessionState state = new SessionState();
         Object key = session.getAttributes().get("logosKey");
@@ -218,6 +221,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        sessionAuth.unregister(session);
         sessions.remove(session.getId());
         states.remove(session.getId());
         sendLocks.remove(session.getId());
@@ -227,6 +231,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
     @Override
     @SuppressWarnings("unchecked")
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        if (!sessionAuth.isAuthorized(session, true)) return;
         SessionState state = states.get(session.getId());
         if (state == null) return;
 
@@ -460,6 +465,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         for (Map.Entry<String, WebSocketSession> entry : sessions.entrySet()) {
             WebSocketSession session = entry.getValue();
             SessionState state = states.get(entry.getKey());
+            if (!sessionAuth.isAuthorized(session, false)) continue;
             if (state == null || !state.initialized || !session.isOpen()) continue;
 
             try {
@@ -791,6 +797,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         for (Map.Entry<String, WebSocketSession> entry : sessions.entrySet()) {
             WebSocketSession session = entry.getValue();
             SessionState state = states.get(entry.getKey());
+            if (!sessionAuth.isAuthorized(session, false)) continue;
             if (state == null || !state.initialized || !session.isOpen()) continue;
             if (!state.wantsRequests()) continue;
             try {
@@ -906,7 +913,9 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
             String json = objectMapper.writeValueAsString(payload);
             if (!session.isOpen()) return;
             synchronized (sendLocks.computeIfAbsent(session.getId(), id -> new Object())) {
-                if (session.isOpen()) session.sendMessage(new TextMessage(json));
+                if (sessionAuth.isAuthorized(session, false) && session.isOpen()) {
+                    session.sendMessage(new TextMessage(json));
+                }
             }
         } catch (IOException e) {
             sessions.remove(session.getId());

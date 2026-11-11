@@ -82,9 +82,12 @@ class StatsV2WebSocketHandlerInterestTest {
         when(restTemplate.exchange(anyString(), any(HttpMethod.class), any(HttpEntity.class), any(Class.class)))
             .thenReturn(ResponseEntity.ok(Map.of("streams", List.of())));
 
+        WebSocketSessionAuth sessionAuth = mock(WebSocketSessionAuth.class);
+        when(sessionAuth.register(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
+        when(sessionAuth.isAuthorized(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
         handler = new StatsV2WebSocketHandler(
             vramService, requestLogService, statsService,
-            liveStreamClient, objectMapper);
+            liveStreamClient, objectMapper, sessionAuth);
         handler.shutdown();
 
         session = mock(WebSocketSession.class);

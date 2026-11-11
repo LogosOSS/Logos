@@ -139,6 +139,7 @@ describe('MaintenancePanel', () => {
   let releaseCalibrationClaim: ReturnType<typeof vi.fn>;
   let cancelBenchmark: ReturnType<typeof vi.fn>;
   let releaseRecovery: ReturnType<typeof vi.fn>;
+  let releaseNodeMaintenance: ReturnType<typeof vi.fn>;
 
   async function render(initial: MaintenanceStatus): Promise<HTMLElement> {
     getMaintenanceStatus.mockResolvedValue(initial);
@@ -160,13 +161,57 @@ describe('MaintenancePanel', () => {
     releaseCalibrationClaim = vi.fn().mockResolvedValue({ released: true, forced: true });
     cancelBenchmark = vi.fn().mockResolvedValue({ job_id: 7, status: 'failed' });
     releaseRecovery = vi.fn().mockResolvedValue({ released: true, forced: false });
+    releaseNodeMaintenance = vi.fn().mockResolvedValue({ released: true });
     await TestBed.configureTestingModule({
       imports: [MaintenancePanel],
       providers: [
-        { provide: StatisticsService, useValue: { getMaintenanceStatus, stopCalibration, releaseCalibrationClaim, releaseRecovery } },
+        { provide: StatisticsService, useValue: { getMaintenanceStatus, stopCalibration, releaseCalibrationClaim, releaseRecovery, releaseNodeMaintenance } },
         { provide: ModelManagementService, useValue: { cancelBenchmark } },
       ],
     }).compileComponents();
+  });
+
+  const NODE = {
+    provider_id: 24, provider_name: 'worker-a', deployment_id: 'deploy-1', age_s: 120, remaining_s: 1800,
+  };
+
+  it('shows a node lease even when the calibration slot is free and confirms its release', async () => {
+    const root = await render({ ...FREE, node_maintenance: [NODE] });
+    expect(root.querySelector('.maintenance__badge')!.textContent!.trim()).toBe('In use');
+    expect(root.textContent).toContain('deploy-1');
+    expect(buttons(root)).toEqual(['Release node lease']);
+    (root.querySelector('.maintenance__btn') as HTMLButtonElement).click();
+    expect(releaseNodeMaintenance).not.toHaveBeenCalled();
+    expect(component.nodeTarget()?.deploymentId).toBe('deploy-1');
+    getMaintenanceStatus.mockResolvedValue(FREE);
+    await component.confirmNodeRelease();
+    expect(releaseNodeMaintenance).toHaveBeenCalledWith(24, 'deploy-1');
+    expect(component.nodeTarget()).toBeNull();
+    expect(component.rows()).toEqual([]);
+  });
+
+  it('keeps a refused node release visible and allows retry', async () => {
+    await render({ ...FREE, node_maintenance: [NODE] });
+    component.askNodeRelease(component.rows()[0]);
+    releaseNodeMaintenance.mockRejectedValue({ status: 409, error: { detail: 'Deployment changed' } });
+    await component.confirmNodeRelease();
+    expect(component.nodeError()).toBe('Deployment changed');
+    expect(component.nodeTarget()).not.toBeNull();
+    expect(component.busyKey()).toBeNull();
+  });
+
+  it('sends only one node release while the request is pending', async () => {
+    await render({ ...FREE, node_maintenance: [NODE] });
+    component.askNodeRelease(component.rows()[0]);
+    let finish!: (value: { released: boolean }) => void;
+    releaseNodeMaintenance.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const pending = component.confirmNodeRelease();
+    await component.confirmNodeRelease();
+    component.closeNodeRelease(false);
+    expect(component.nodeTarget()).not.toBeNull();
+    expect(releaseNodeMaintenance).toHaveBeenCalledTimes(1);
+    finish({ released: true });
+    await pending;
   });
 
   it('says that the slot is free when nothing holds it', async () => {

@@ -303,9 +303,10 @@ export class TeamManagementService {
     return { id: res.id, key_value: res.api_key };
   }
 
-  rotateApiKey(keyId: number): Promise<{ result: string; api_key: string }> {
+  /** Rotating another member's personal key returns no value: only its holder sees it. */
+  rotateApiKey(keyId: number): Promise<{ result: string; api_key?: string }> {
     return firstValueFrom(
-      this.http.post<{ result: string; api_key: string }>(`/api/admin/api-keys/${keyId}/rotate`, {}),
+      this.http.post<{ result: string; api_key?: string }>(`/api/admin/api-keys/${keyId}/rotate`, {}),
     );
   }
 

@@ -135,6 +135,24 @@ describe('ApiKeyModalComponent', () => {
       expect(component.rotateError()).toBe('');
     });
 
+    it('lets a manager rotate a personal key whose value is withheld', async () => {
+      key.key_value = undefined;
+      teamService.rotateApiKey.mockResolvedValueOnce({ result: 'API key rotated successfully' });
+      component.ngOnChanges({ key: new SimpleChange(null, key, false) });
+      fixture.changeDetectorRef.markForCheck();
+      await fixture.whenStable();
+
+      // The dialog renders into an overlay on document.body.
+      expect(document.querySelector('.btn-rotate')).not.toBeNull();
+      expect(document.querySelector('.btn-copy')).toBeNull();
+
+      await component.confirmRotate();
+
+      expect(teamService.rotateApiKey).toHaveBeenCalledWith(42);
+      expect(key.key_value).toBeUndefined();
+      expect(component.rotateConfirm()).toBe(false);
+    });
+
     it('shows the rotated key when the modal is closed and reopened', async () => {
       key.key_value = 'lg-old-key-42';
 

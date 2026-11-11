@@ -356,6 +356,8 @@ async def test_job_waits_for_the_worker_to_reconnect(monkeypatch):
 
     auth = MagicMock()
     auth.api_key_id = 88
+    auth.team_id = None
+    auth.settings = {}
     result = await main.execute_proxy_job("chat/completions", {}, {"model": MODEL_NAME}, "127.0.0.1", auth, None)
 
     assert result == {"status_code": 200, "data": {}}

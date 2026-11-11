@@ -40,7 +40,7 @@ class VramControllerTest {
     @Test
     void getVramStats_returnsProvidersArray() throws Exception {
         mvc.perform(post("/logosdb/get_ollama_vram_stats")
-                .with(TestJwt.testUser())
+                .with(TestJwt.logosAdmin())
                 .contentType("application/json")
                 .content("{}"))
            .andExpect(status().isOk())
@@ -53,7 +53,7 @@ class VramControllerTest {
     void getVramStats_withExplicitDay_returnsProviders() throws Exception {
         String today = java.time.LocalDate.now(java.time.ZoneOffset.UTC).toString();
         mvc.perform(post("/logosdb/get_ollama_vram_stats")
-                .with(TestJwt.testUser())
+                .with(TestJwt.logosAdmin())
                 .contentType("application/json")
                 .content("{\"day\": \"" + today + "\"}"))
            .andExpect(status().isOk())
@@ -64,7 +64,7 @@ class VramControllerTest {
     void getVramStats_downsamplesToLatestSnapshotPerMinute() throws Exception {
 
         mvc.perform(post("/logosdb/get_ollama_vram_stats")
-                .with(TestJwt.testUser())
+                .with(TestJwt.logosAdmin())
                 .contentType("application/json")
                 .content("{\"day\": \"2024-06-01\"}"))
            .andExpect(status().isOk())
@@ -79,7 +79,7 @@ class VramControllerTest {
     void getVramStats_secondResolution_keepsEverySnapshot() throws Exception {
         // resolution=second must bypass the per-minute downsampling: all three
         // seeded snapshots (10:00:05, 10:00:25, 10:01:10) are returned
-        when(jwtDecoder.decode("dev-key-1")).thenReturn(TestJwt.testUserJwt());
+        when(jwtDecoder.decode("dev-key-1")).thenReturn(TestJwt.logosAdminJwt());
 
         mvc.perform(post("/logosdb/get_ollama_vram_stats")
                 .header("logos-key", "dev-key-1")
@@ -95,7 +95,7 @@ class VramControllerTest {
 
     @Test
     void getVramStats_afterSnapshotId_returnsOnlyNewerSnapshots() throws Exception {
-        when(jwtDecoder.decode("dev-key-1")).thenReturn(TestJwt.testUserJwt());
+        when(jwtDecoder.decode("dev-key-1")).thenReturn(TestJwt.logosAdminJwt());
 
         mvc.perform(post("/logosdb/get_ollama_vram_stats")
                 .header("logos-key", "dev-key-1")
@@ -109,7 +109,7 @@ class VramControllerTest {
 
     @Test
     void getVramStats_invalidResolution_returns400() throws Exception {
-        when(jwtDecoder.decode("dev-key-1")).thenReturn(TestJwt.testUserJwt());
+        when(jwtDecoder.decode("dev-key-1")).thenReturn(TestJwt.logosAdminJwt());
 
         mvc.perform(post("/logosdb/get_ollama_vram_stats")
                 .header("logos-key", "dev-key-1")
@@ -121,10 +121,25 @@ class VramControllerTest {
     @Test
     void getVramStats_futureDay_returns400() throws Exception {
         mvc.perform(post("/logosdb/get_ollama_vram_stats")
-                .with(TestJwt.testUser())
+                .with(TestJwt.logosAdmin())
                 .contentType("application/json")
                 .content("{\"day\": \"2099-01-01\"}"))
            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void getVramStats_forbiddenForNonAdmins() throws Exception {
+        // Platform-wide telemetry: an app developer or app admin sees no other teams' providers.
+        mvc.perform(post("/logosdb/get_ollama_vram_stats")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{}"))
+           .andExpect(status().isForbidden());
+        mvc.perform(post("/logosdb/get_ollama_vram_stats")
+                .with(TestJwt.adminUser())
+                .contentType("application/json")
+                .content("{}"))
+           .andExpect(status().isForbidden());
     }
 
     @Test

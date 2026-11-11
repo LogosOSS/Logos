@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Entrypoint of an agent session container.
 
-One session runs in three phases of this image, selected by
+Sessions run in separate phases of this image, selected by
 ``LOGOS_SESSION_PHASE`` and run by the runner as separate containers:
 
+* ``ssh-trust`` — isolated, trusted: persist and verify SSH host keys before
+  checkout, without access to the workspace or session artefacts.
 * ``prepare`` — trusted, with egress and the scoped push token: clone or
   reset the working copy, rebuild its git metadata, and replace the agent's
   home.
@@ -22,25 +24,30 @@ has settled.
 Everything here runs unprivileged inside a container with no Docker socket, no
 workflow-scoped token, and no route to production. That sandbox is what lets
 the agent run with permission prompts disabled: there is nothing inside the
-agent phase worth protecting from it — and the two trusted phases only ever
+agent phase worth protecting from it — and the trusted phases only ever
 run fixed harness code, never the agent.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 WORKSPACE = Path("/workspace")
 CHECKOUT = WORKSPACE / "repo"
+SSH_KNOWN_HOSTS = Path("/logos/ssh_known_hosts")
 
 # The one line the agent writes about what it changed, in its artefact
 # directory. The finalizer commits with it. Kept in step with the runner's
@@ -123,11 +130,35 @@ def run(
     shown = _redact(cmd)
     if not quiet:
         log(f"$ {' '.join(shlex.quote(c) for c in shown)}")
-    process = subprocess.run(_without_auto_maintenance(cmd), cwd=cwd, text=True, capture_output=True, timeout=1800)
+    # Only trusted harness commands use this wrapper. Each invocation gets
+    # empty configuration directories outside the persistent workspace.
+    with tempfile.TemporaryDirectory(prefix="logos-command-home-") as home:
+        gh_config = Path(home) / "gh"
+        xdg_config = Path(home) / "xdg"
+        gh_config.mkdir()
+        xdg_config.mkdir()
+        environment = {
+            **os.environ,
+            "HOME": home,
+            "GH_CONFIG_DIR": str(gh_config),
+            "XDG_CONFIG_HOME": str(xdg_config),
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+        process = subprocess.run(
+            _without_auto_maintenance(cmd), cwd=cwd, text=True, capture_output=True, timeout=1800, env=environment
+        )
     if process.stdout and not quiet:
         print(process.stdout, end="", flush=True)
     if process.stderr:
         print(process.stderr, end="", file=sys.stderr, flush=True)
+    if "failed to add the host to the list of known hosts" in (process.stderr or "").lower():
+        raise RuntimeError("SSH host key could not be persisted in the runner's known_hosts file")
+    if process.returncode != 0 and any(
+        marker in (process.stderr or "").lower()
+        for marker in ("remote host identification has changed", "host key verification failed")
+    ):
+        raise RuntimeError("SSH host key verification failed: the git host key changed or is not trusted")
     if check and process.returncode != 0:
         raise RuntimeError(f"command failed ({process.returncode}): {' '.join(shown)}")
     return process
@@ -539,6 +570,13 @@ def _configure_git_identity() -> None:
     )
 
 
+class _NoIdentityRedirects(HTTPRedirectHandler):
+    """An authenticated identity request must never leave its fixed endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def verify_token_identity(token: str) -> None:
     """Refuse to push with a token that is not the agent account's.
 
@@ -549,17 +587,25 @@ def verify_token_identity(token: str) -> None:
     a human contributor's name.
     """
     expected = agent_login().lower()
-    result = subprocess.run(
-        ["gh", "api", "user", "--jq", ".login"],
-        cwd=str(CHECKOUT) if CHECKOUT.is_dir() else None,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "GH_TOKEN": token, "GITHUB_TOKEN": token},
-        timeout=60,
+    request = Request(
+        "https://api.github.com/user",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "logos-agent",
+        },
     )
-    if result.returncode != 0:
-        raise RuntimeError(f"could not establish the identity of the push token: {result.stderr.strip()[:200]}")
-    login = (result.stdout or "").strip()
+    # Neither gh configuration, environment proxies nor redirects may select
+    # the host receiving this credential. urllib verifies HTTPS certificates.
+    opener = build_opener(ProxyHandler({}), _NoIdentityRedirects())
+    try:
+        with opener.open(request, timeout=60) as response:
+            identity = json.loads(response.read(65536))
+        login = identity["login"].strip()
+        if not login:
+            raise ValueError("missing login")
+    except (URLError, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise RuntimeError("could not establish the identity of the push token") from exc
     if login.lower() != expected:
         raise RuntimeError(
             f"the push token authenticates as '{login}', not as the agent account "
@@ -595,6 +641,7 @@ def finalize_checkout(repo_url: str, base_branch: str, branch: str, token: str) 
     # the conversation that produced it rather than starting over.
     _save_conversation()
     _reset_agent_home()
+    verify_token_identity(token)
     if CHECKOUT.is_symlink() or (CHECKOUT.exists() and not CHECKOUT.is_dir()):
         log("the checkout is not a directory; there is no work to finalize")
         if CHECKOUT.is_symlink():
@@ -1111,6 +1158,18 @@ def changed_files() -> list[str]:
     return [line[3:] for line in process.stdout.splitlines() if line.strip()]
 
 
+def staged_files() -> list[str]:
+    """Every path the next commit adds, changes or removes, exactly as git stores it.
+
+    ``-z`` prints names unquoted and NUL-separated, so unusual characters
+    cannot disguise a path, and ``--no-renames`` lists both sides of a move.
+    """
+    process = run(
+        ["git", "diff", "--cached", "--name-only", "-z", "--no-renames"], cwd=CHECKOUT, check=True, quiet=True
+    )
+    return [path for path in process.stdout.split("\0") if path]
+
+
 def _ref_sha(*refs: str) -> str | None:
     """The commit a ref names, or None when none of them resolves.
 
@@ -1159,14 +1218,16 @@ def _refuse_workflow_changes(files: list[str]) -> None:
 
 
 def commit_and_push(branch: str, task: str) -> int:
-    files = changed_files()
-    if not files:
+    if not changed_files():
         log("agent produced no changes; nothing to commit")
         return 0
+    run(["git", "add", "-A"], cwd=CHECKOUT)
+    # Checked on what is actually staged, not on the human-readable status:
+    # that output quotes unusual names and shows a move as "old -> new".
+    files = staged_files()
     _refuse_workflow_changes(files)
 
     log(f"committing {len(files)} changed file(s)")
-    run(["git", "add", "-A"], cwd=CHECKOUT)
     # One line, and nothing else. What the change is belongs in the subject;
     # why it was made belongs in the pull request, where people read it.
     run(["git", "commit", "-m", _commit_subject(task)], cwd=CHECKOUT)
@@ -1353,6 +1414,40 @@ def _pr_reviewers() -> list[str]:
     return [name.strip() for name in os.environ.get("LOGOS_SESSION_PR_REVIEWERS", "").split(",") if name.strip()]
 
 
+# The agent phase writes result.json; the finalizer, which holds the push
+# token, reads it. Bounded so a huge file cannot exhaust the finalizer.
+RESULT_FILE_MAX_BYTES = 1024 * 1024
+
+
+def _read_agent_file(path: Path, limit: int) -> str:
+    """Read an agent-written regular file without following a link it planted."""
+    # The agent controls the file, not its directory: the artefact mount is
+    # the runner's. O_NOFOLLOW refuses a link in its place.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # NOSONAR - fixed path under the artefact mount
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("not a regular file")
+        if info.st_size > limit:
+            raise OSError(f"larger than {limit} bytes")
+        data = os.read(fd, limit + 1)
+        if len(data) > limit:
+            raise OSError(f"larger than {limit} bytes")
+        return data.decode("utf-8")
+    finally:
+        os.close(fd)
+
+
+def run_ssh_trust() -> None:
+    """Learn or verify host keys without mounting session-controlled files."""
+    # Serialise first connections across sessions and runner processes. SSH
+    # appends to this same inode; checkout helpers only get a read-only bind.
+    with SSH_KNOWN_HOSTS.open("r+") as known_hosts:
+        fcntl.flock(known_hosts, fcntl.LOCK_EX)
+        scratch = Path("/tmp")  # NOSONAR - the helper container's own private tmpfs
+        run(["git", "ls-remote", "--", require_env("LOGOS_REPO_URL"), "HEAD"], cwd=scratch, quiet=True)
+
+
 def run_prepare(result: Result) -> None:
     """Trusted phase one: bring the working copy to a trusted state.
 
@@ -1415,17 +1510,13 @@ def run_finalize(result: Result) -> None:
     if not token:
         log("no GitHub token provided; leaving changes uncommitted in the workspace")
         return
-    # Whose work this is about to become. Checked before anything is
-    # committed or pushed, so a wrong token fails the session instead of
-    # putting agent commits under a contributor's name.
-    verify_token_identity(token)
-
     path = Path(os.environ.get("LOGOS_ARTIFACT_DIR", "/artifacts")) / "result.json"
-    if path.is_file():
-        try:
-            result.data.update(json.loads(path.read_text()))
-        except Exception as exc:
-            log(f"ignoring unreadable result file from the agent phase: {exc}")
+    try:
+        result.data.update(json.loads(_read_agent_file(path, RESULT_FILE_MAX_BYTES)))
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log(f"ignoring unreadable result file from the agent phase: {exc}")
 
     count = commit_and_push(branch, task) if finalize_checkout(repo_url, base_branch, branch, token) else 0
     result.data["files_changed"] = count
@@ -1452,14 +1543,16 @@ def run_finalize(result: Result) -> None:
 def main() -> int:
     """Run whichever phase of the session this container was asked for.
 
-    The runner runs ``prepare``, ``agent``, and ``finalize`` as separate
-    containers: the two trusted phases carry credentials and egress, the
+    The runner runs SSH trust, preparation, agent work, and finalization in
+    separate containers: trusted phases carry credentials and egress, the
     untrusted agent phase carries neither.
     """
     phase = os.environ.get("LOGOS_SESSION_PHASE", "agent").strip().lower()
     result = Result()
     try:
-        if phase == "prepare":
+        if phase == "ssh-trust":
+            run_ssh_trust()
+        elif phase == "prepare":
             run_prepare(result)
         elif phase == "finalize":
             run_finalize(result)

@@ -10,10 +10,10 @@ class Socket {
   readonly send = vi.fn();
   readonly close = vi.fn();
   onopen: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: CloseEvent) => void) | null = null;
   onmessage: unknown;
   onerror: unknown;
-  constructor() {
+  constructor(readonly url: string) {
     Socket.instances.push(this);
   }
 }
@@ -66,7 +66,7 @@ describe('statistics websocket feed filters', () => {
       team_id: 7,
       api_key_id: 41,
     });
-    socket.onclose!();
+    socket.onclose!({ code: 1006 } as CloseEvent);
     service.setFeedFilters('finished', [2], [4]);
     await vi.advanceTimersByTimeAsync(2000);
     const reconnected = Socket.instances[1];
@@ -81,4 +81,47 @@ describe('statistics websocket feed filters', () => {
       provider_ids: [4],
     });
   });
+
+  it('forces a fresh token after expiry and retries refresh failures without reusing the old token', async () => {
+    const freshToken = vi.mocked(TestBed.inject(AuthService).freshToken);
+    freshToken.mockResolvedValueOnce('old-token').mockResolvedValueOnce('').mockResolvedValueOnce('fresh-token');
+    service.connect({
+      vramDayOffset: -1,
+      timeline: { start: '2026-09-01T00:00:00Z', end: '2026-10-01T00:00:00Z', targetBuckets: 60 },
+      handlers: {
+        onVramInit: vi.fn(), onVramDelta: vi.fn(), onTimelineInit: vi.fn(),
+        onStats: vi.fn(), onRequestsData: vi.fn(),
+      },
+    });
+    await Promise.resolve();
+    const socket = Socket.instances[0];
+    expect(socket.url).toContain('key=old-token');
+    socket.onclose!({ code: 4001 } as CloseEvent);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(freshToken).toHaveBeenLastCalledWith(true);
+    expect(Socket.instances).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(freshToken).toHaveBeenLastCalledWith(true);
+    expect(Socket.instances).toHaveLength(2);
+    expect(Socket.instances[1].url).toContain('key=fresh-token');
+  });
+
+  it('does not open a socket if disconnected during token refresh', async () => {
+    let resolveToken!: (token: string) => void;
+    vi.mocked(TestBed.inject(AuthService).freshToken).mockReturnValue(new Promise(resolve => resolveToken = resolve));
+    service.connect({
+      vramDayOffset: -1,
+      timeline: { start: '', end: '', targetBuckets: 60 },
+      handlers: {
+        onVramInit: vi.fn(), onVramDelta: vi.fn(), onTimelineInit: vi.fn(),
+        onStats: vi.fn(), onRequestsData: vi.fn(),
+      },
+    });
+    service.disconnect();
+    resolveToken('fresh-token');
+    await Promise.resolve();
+    expect(Socket.instances).toHaveLength(0);
+  });
+
 });

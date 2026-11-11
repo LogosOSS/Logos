@@ -130,16 +130,15 @@ def test_the_lease_is_idempotent_for_the_same_deployment(maintenance, clock):
     assert second["idle_for_s"] == pytest.approx(12)
 
 
-def test_a_new_deployment_of_the_same_node_takes_the_lease_over(maintenance, clock):
+def test_a_new_deployment_cannot_take_over_an_active_lease(maintenance, clock):
     maintenance.request(1, "d1")
     clock.advance(20)
 
     answer = maintenance.request(1, "d2")
 
-    assert answer["status"] == "granted"
-    assert answer["drained"] is False
-    assert maintenance.release(1, "d1") == {"status": "held_by_other_deployment"}
-    assert maintenance.release(1, "d2") == {"status": "released"}
+    assert answer == {"status": "denied", "reason": "held_by_other_deployment"}
+    assert maintenance.release(1, "d2") == {"status": "held_by_other_deployment"}
+    assert maintenance.release(1, "d1") == {"status": "released"}
 
 
 def test_a_second_node_is_denied_while_the_first_is_cordoned(maintenance):
@@ -454,3 +453,107 @@ def test_the_registry_passes_the_question_to_the_service(clock):
 
     assert registry.is_cordoned(7) is True
     assert registry.is_cordoned(8) is False
+
+
+@pytest.mark.parametrize("renew", ["request", "status"])
+def test_renewals_cannot_extend_the_absolute_deadline(registry, clock, renew):
+    service = NodeMaintenance(registry, ttl_s=60, max_lease_s=100, clock=clock)
+    service.request(1, "d1")
+    clock.advance(50)
+    getattr(service, renew)(1, "d1")
+    clock.advance(50)
+    answer = getattr(service, renew)(1, "d1")
+    assert answer["status"] == ("denied" if renew == "request" else "no_lease")
+    assert not service.is_cordoned(1)
+    assert service.request(1, "d1") == {"status": "denied", "reason": "lease_duration_exceeded"}
+    assert service.request(2, "d2")["status"] == "granted"
+
+
+@pytest.mark.parametrize("expire_via", ["is_cordoned", "admin_status", "other_node"])
+def test_all_lease_reads_expire_at_the_duration_limit(registry, clock, expire_via):
+    service = NodeMaintenance(registry, max_lease_s=100, clock=clock)
+    service.request(1, "d1")
+    clock.advance(100)
+    if expire_via == "is_cordoned":
+        assert not service.is_cordoned(1)
+    elif expire_via == "admin_status":
+        assert service.admin_status() == []
+    else:
+        assert service.request(2, "d2")["status"] == "granted"
+    assert service.request(1, "d1")["reason"] == "lease_duration_exceeded"
+
+
+@pytest.mark.parametrize("release", [True, False])
+def test_reacquiring_does_not_reset_the_deployment_deadline(registry, clock, release):
+    service = NodeMaintenance(registry, ttl_s=30, max_lease_s=100, clock=clock)
+    service.request(1, "d1")
+    if release:
+        service.release(1, "d1")
+    clock.advance(40)
+    assert service.request(1, "d1")["status"] == "granted"
+    clock.advance(60)
+    assert service.request(1, "d1")["reason"] == "lease_duration_exceeded"
+
+
+def test_admin_release_revokes_the_deployment_and_notifies_the_scheduler(maintenance):
+    released = []
+    maintenance.on_released = released.append
+    maintenance.request(1, "d1")
+    assert maintenance.admin_status()[0]["deployment_id"] == "d1"
+    assert maintenance.admin_release(1, "d1")["released"] is True
+    assert released == [1]
+    assert maintenance.admin_status() == []
+    assert maintenance.request(1, "d1")["reason"] == "lease_revoked"
+    assert maintenance.request(2, "d2")["status"] == "granted"
+
+
+def test_stale_admin_release_preserves_the_current_deployment(maintenance):
+    from logos.logosnode_registry import MaintenanceBusyError
+
+    maintenance.request(1, "d2")
+    with pytest.raises(MaintenanceBusyError):
+        maintenance.admin_release(1, "d1")
+    assert maintenance.is_cordoned(1)
+    with pytest.raises(LookupError):
+        maintenance.admin_release(2, "d1")
+
+
+def test_configuration_controls_lease_duration_and_report_budget(registry, clock, monkeypatch):
+    monkeypatch.setenv("LOGOS_NODE_MAINTENANCE_MAX_LEASE_S", "90")
+    monkeypatch.setenv("LOGOS_NODE_MAINTENANCE_REPORTS_PER_HOUR", "1")
+    service = NodeMaintenance(registry, clock=clock)
+    service.request(1, "d1")
+    assert service.accept_report(1, "d1")
+    assert not service.accept_report(1, "d1")
+    clock.advance(90)
+    assert service.request(1, "d1")["reason"] == "lease_duration_exceeded"
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-1", "invalid"])
+def test_invalid_configuration_uses_safe_defaults(registry, clock, monkeypatch, value):
+    monkeypatch.setenv("LOGOS_NODE_MAINTENANCE_MAX_LEASE_S", value)
+    monkeypatch.setenv("LOGOS_NODE_MAINTENANCE_REPORTS_PER_HOUR", value)
+    service = NodeMaintenance(registry, clock=clock)
+    service.request(1, "d1")
+    for _ in range(20):
+        assert service.accept_report(1, "d1")
+    assert not service.accept_report(1, "d1")
+    clock.advance(7200)
+    assert service.request(1, "d1")["reason"] == "lease_duration_exceeded"
+
+
+def test_history_is_bounded_without_forgetting_revocations(maintenance, monkeypatch):
+    import sys
+
+    monkeypatch.setattr(sys.modules["logos.node_maintenance"], "MAX_DEPLOYMENTS_PER_NODE", 1)
+    maintenance.request(1, "d1")
+    maintenance.admin_release(1, "d1")
+    assert maintenance.request(1, "d2")["reason"] == "deployment_history_full"
+    assert maintenance.request(1, "d1")["reason"] == "lease_revoked"
+
+
+def test_zero_duration_grants_no_lease_or_report_evidence(registry, clock):
+    service = NodeMaintenance(registry, max_lease_s=0, clock=clock)
+    assert service.request(1, "d1")["status"] == "denied"
+    assert not service.is_cordoned(1)
+    assert not service.accept_report(1, "d1")
