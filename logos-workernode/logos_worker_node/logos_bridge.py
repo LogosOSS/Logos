@@ -2471,6 +2471,8 @@ class LogosBridgeClient:
             "v1/audio/translations",
             "v1/audio/speech",
             "v1/models",
+            # Decision readouts for models without a decision profile (orchestrator system_one route).
+            "v1/systemone",
             "v1/rerank",
             "v1/score",
             "v2/embed",
