@@ -764,6 +764,7 @@ async def logos_service_long_sync(request: Request, path: str = None):
 async def _handle_vllm_native(request: Request):
     """Forward to vLLM using the original request path."""
     path = request.url.path.lstrip("/")
+    require_inference_path(path)
     return await handle_sync_request(path, request)
 
 
@@ -775,6 +776,14 @@ for _vllm_path in ("/pooling", "/score", "/rerank", "/classify", "/tokenize", "/
         tags=["user-facing"],
         dependencies=[Depends(require_canonical_path)],
         name=f"vllm_native_{_vllm_path.lstrip('/')}",
+    )
+    # Match suffixes before FastAPI can redirect trailing slashes to a valid operation.
+    router.add_api_route(
+        f"{_vllm_path}/{{path:path}}",
+        _handle_vllm_native,
+        methods=["POST"],
+        dependencies=[Depends(require_canonical_path)],
+        include_in_schema=False,
     )
 
 

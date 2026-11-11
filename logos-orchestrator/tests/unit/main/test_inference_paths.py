@@ -133,3 +133,11 @@ def test_worker_and_orchestrator_operations_stay_consistent():
     assert ast.literal_eval(declaration.value.args[0]) == (ALLOWED_INFERENCE_PATHS - CLOUD_ONLY_INFERENCE_PATHS) | {
         "v1/models"
     }
+
+
+@pytest.mark.parametrize("path", sorted(p for p in ALLOWED_INFERENCE_PATHS if "/" not in p))
+@pytest.mark.parametrize("suffix", ["/", "//", "/unknown", "/%2e", "/%2f"])
+def test_native_paths_reject_suffixes_without_redirect(path, suffix, forwarding):
+    response = TestClient(main.app, follow_redirects=False).post(f"/{path}{suffix}", json={})
+    assert response.status_code == 404
+    forwarding.assert_not_called()
