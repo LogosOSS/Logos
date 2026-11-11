@@ -166,7 +166,7 @@ public class InferenceGatewayController {
                     GatewayLoggingLevel.storesPayloads(logLevel),
                     result -> cloudAccounting.settleSuccess(
                         logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings()),
-                    (err, timings) -> cloudAccounting.settleFailure(logId, err, timings));
+                    (err, result) -> cloudAccounting.settleFailure(logId, err, result));
             }
             log.debug("Orchestrator proxy {} {} reason={}",
                 request.getMethod(), path, decision.reason());

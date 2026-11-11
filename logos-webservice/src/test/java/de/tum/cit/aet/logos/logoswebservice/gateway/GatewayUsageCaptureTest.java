@@ -50,6 +50,30 @@ class GatewayUsageCaptureTest {
     }
 
     @Test
+    void splitErrorFrameWaitsForReportedUsageBeforeStoppingDrain() throws Exception {
+        GatewayUsageCapture capture = new GatewayUsageCapture(java.io.OutputStream.nullOutputStream(), mapper, SSE);
+        capture.detachClient();
+        capture.write("event: error\n".getBytes(StandardCharsets.UTF_8));
+        assertThat(capture.drainComplete()).isFalse();
+        capture.write(("data: {\"message\":\"provider failed\","
+            + "\"usage\":{\"prompt_tokens\":37,\"completion_tokens\":19}}\n\n").getBytes(StandardCharsets.UTF_8));
+        assertThat(capture.drainComplete()).isTrue();
+        assertThat(capture.upstreamError()).isEqualTo("provider failed");
+        assertThat(capture.disconnectedUsage(new byte[0], false))
+            .containsExactlyInAnyOrderEntriesOf(Map.of("prompt_tokens", 37L, "completion_tokens", 19L));
+    }
+
+    @Test
+    void failedResponseWithoutErrorDetailsNeverEstimatesUsage() throws Exception {
+        GatewayUsageCapture capture = new GatewayUsageCapture(java.io.OutputStream.nullOutputStream(), mapper, SSE);
+        capture.write("data: {\"type\":\"response.failed\",\"response\":{\"usage\":null}}\n\n"
+            .getBytes(StandardCharsets.UTF_8));
+        assertThat(capture.drainComplete()).isTrue();
+        assertThat(capture.upstreamError()).contains("response.failed");
+        assertThat(capture.disconnectedUsage("prompt".getBytes(StandardCharsets.UTF_8), true)).isEmpty();
+    }
+
+    @Test
     void jsonResponse_isForwardedVerbatimAndPriced() throws IOException {
         String body = """
             {"id":"chatcmpl-1","choices":[{"message":{"content":"hello"}}],

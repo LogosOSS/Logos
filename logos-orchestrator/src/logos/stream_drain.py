@@ -72,7 +72,11 @@ class UsageDrainIterator:
         try:
             async with asyncio.timeout_at(deadline):
                 if self.pending is not None:
-                    if self.accumulator.has_final_usage() or self.accumulator.terminal_event_received:
+                    if (
+                        self.accumulator.has_final_usage()
+                        or self.accumulator.terminal_event_received
+                        or self.accumulator.upstream_error
+                    ):
                         self.pending.cancel()
                         with suppress(asyncio.CancelledError, StopAsyncIteration):
                             await self.pending

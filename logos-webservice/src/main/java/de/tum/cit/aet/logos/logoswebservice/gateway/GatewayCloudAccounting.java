@@ -52,7 +52,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * reads the key's whole month, so admission would slow down with every
  * request the key makes. Only a response that reports no usage at all, or
  * usage that prices to nothing, keeps the flat reservation, and failure
- * zeros it.
+ * bills only provider-reported usage.
  *
  * <p>{@link #finalizeUnsettled} finalizes successful rows that still carry no
  * stored price, in bounded batches on a schedule.
@@ -87,7 +87,7 @@ public class GatewayCloudAccounting {
                          WHERE ut.log_entry_id = le.id)),
                    CAST(:reservation AS BIGINT)),
                cost_finalized = TRUE
-         WHERE le.result_status = 'success'
+         WHERE le.result_status = CAST(:resultStatus AS result_status_enum)
            AND le.cost_finalized = FALSE
            AND %s
         """;
@@ -398,7 +398,7 @@ public class GatewayCloudAccounting {
     /** The reservation an unpriced success keeps; NULL when reservations are off. */
     private MapSqlParameterSource snapshotParams() {
         return new MapSqlParameterSource("reservation",
-            reservationMicroCents > 0 ? reservationMicroCents : null);
+            reservationMicroCents > 0 ? reservationMicroCents : null).addValue("resultStatus", "success");
     }
 
     /**
@@ -600,34 +600,49 @@ public class GatewayCloudAccounting {
         }
     }
 
-    /** Drop the reservation so a failed upstream does not consume budget. */
+    /** Release a failed request's reservation when the provider reported no usage. */
+    @Transactional
     public void settleFailure(Integer logEntryId, String errorMessage) {
-        settleFailure(logEntryId, errorMessage, GatewayForwardTimings.NONE);
+        settleFailure(logEntryId, errorMessage, GatewayForwardResult.none());
     }
 
-    /**
-     * Drop the reservation so a failed upstream does not consume budget, and
-     * keep the instants the forward reached so the failure's provider time is
-     * not read as Logos-side wait.
-     */
+    @Transactional
     public void settleFailure(Integer logEntryId, String errorMessage, GatewayForwardTimings timings) {
+        settleFailure(logEntryId, errorMessage, new GatewayForwardResult(Map.of(), null, null, timings));
+    }
+
+    /** Bill only provider-reported usage on failure, with no reservation or estimate fallback. */
+    @Transactional
+    public void settleFailure(Integer logEntryId, String errorMessage, GatewayForwardResult result) {
         if (logEntryId == null) {
             return;
         }
         String msg = errorMessage == null ? null
             : (errorMessage.length() > 500 ? errorMessage.substring(0, 500) : errorMessage);
-        jdbc.update("""
+        int claimed = jdbc.update("""
             UPDATE log_entry
                SET timestamp_response = :responded,
                    %s,
                    result_status = 'error',
+                   service_tier = :serviceTier,
                    settled_cost_micro_cents = 0,
-                   cost_finalized = TRUE,
+                   cost_finalized = FALSE,
                    error_message = :err
-             WHERE id = :id
-            """.formatted(TIMINGS_SET), timingParams(timings)
+             WHERE id = :id AND result_status IS NULL
+            """.formatted(TIMINGS_SET), timingParams(result.timings())
             .addValue("id", logEntryId)
+            .addValue("serviceTier", result.serviceTier())
             .addValue("err", msg));
+        if (claimed == 0) {
+            return;
+        }
+        storeResponsePayload(logEntryId, result.responseBody());
+        if (result.usage() != null && !result.usage().isEmpty()) {
+            upsertUsageTokens(logEntryId, result.usage());
+        }
+        jdbc.update(SETTLED_COST_SNAPSHOT_SQL.formatted("le.id = :id"),
+            new MapSqlParameterSource("id", logEntryId)
+                .addValue("reservation", 0L).addValue("resultStatus", "error"));
     }
 
     /**

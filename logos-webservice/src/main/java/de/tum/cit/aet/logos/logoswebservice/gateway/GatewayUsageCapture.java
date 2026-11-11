@@ -49,6 +49,8 @@ final class GatewayUsageCapture extends OutputStream {
     private OutputStream delegate;
     private boolean finalUsage;
     private boolean terminalEvent;
+    private String upstreamError;
+    private String sseEventType = "";
     private long completionCharacters;
     private final ObjectMapper objectMapper;
     private final boolean sse;
@@ -194,8 +196,15 @@ final class GatewayUsageCapture extends OutputStream {
         return finalUsage || terminalEvent;
     }
 
+    String upstreamError() {
+        return upstreamError;
+    }
+
     /** Persist the estimate marker alongside canonical, priceable token counts. */
     Map<String, Long> disconnectedUsage(byte[] request, boolean timedOut) {
+        if (upstreamError != null) {
+            return usage;
+        }
         if (finalUsage) {
             return usage.isEmpty() ? Map.of("provider_delivered_nothing", 1L) : usage;
         }
@@ -223,6 +232,18 @@ final class GatewayUsageCapture extends OutputStream {
     }
 
     private void observeEvent(JsonNode event) {
+        String type = event.path("type").asText(sseEventType);
+        JsonNode error = event.path("error");
+        if (java.util.Set.of("response.failed", "response.error", "error").contains(type)
+                || "error".equals(sseEventType) || (error.isObject() && !error.isEmpty())
+                || nonEmptyText(error)) {
+            if (error.isMissingNode() || error.isNull()) {
+                error = event.path("response").path("error");
+            }
+            upstreamError = error.isTextual() ? error.asText()
+                : error.path("message").asText(event.path("message").asText("Provider stream reported " + type));
+            terminalEvent = true;
+        }
         JsonNode reported = event.path("response").path("usage");
         if (!reported.isObject()) {
             reported = event.path("usage");
@@ -240,7 +261,6 @@ final class GatewayUsageCapture extends OutputStream {
                 completionCharacters += textLength(tool.path("function").path("arguments"));
             }
         }
-        String type = event.path("type").asText("");
         if (java.util.Set.of("response.completed", "response.incomplete", "response.failed", "message_stop")
                 .contains(type)) {
             terminalEvent = true;
@@ -309,10 +329,23 @@ final class GatewayUsageCapture extends OutputStream {
             return;
         }
         if (buffer.size() == 0) {
+            sseEventType = "";
             return;
         }
         String line = buffer.toString(StandardCharsets.UTF_8);
         buffer.reset();
+        if (line.isBlank()) {
+            sseEventType = "";
+            return;
+        }
+        if (line.startsWith("event:")) {
+            sseEventType = line.substring(6).strip();
+            if (java.util.Set.of("response.failed", "response.error", "error").contains(sseEventType)) {
+                upstreamError = "Provider stream reported " + sseEventType;
+                // Wait for the data line before stopping the drain: it can carry usage.
+            }
+            return;
+        }
         if ("data: [DONE]".equals(line.strip())) {
             terminalEvent = true;
         }

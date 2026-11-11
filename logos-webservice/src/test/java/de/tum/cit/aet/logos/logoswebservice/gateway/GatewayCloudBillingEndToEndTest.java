@@ -658,7 +658,7 @@ class GatewayCloudBillingEndToEndTest {
             f.key().logsFullPayloads(),
             result -> accounting.settleSuccess(
                 logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings()),
-            (err, timings) -> accounting.settleFailure(logId, err, timings));
+            (err, result) -> accounting.settleFailure(logId, err, result));
     }
 
     /** The reservation this forward belongs to — the one the controller just made. */

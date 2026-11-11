@@ -2447,12 +2447,12 @@ async def _streaming_response(
                 yield b"data: [DONE]\n\n"
         finally:
             _live_streams.finish(request_id)
+            stream_log.finish()
             if error_message is None:
                 error_message = stream_status.error
             if error_message is None and stream_log.upstream_error:
                 error_message = str(stream_log.upstream_error.get("message") or stream_log.upstream_error)
             failed = error_message is not None
-            stream_log.finish()
             # Client close after [DONE] jumps here via GeneratorExit before the
             # post-loop stamp. Persist the captured terminal arrival so the
             # exec figure does not fall back to completion (billing) time.

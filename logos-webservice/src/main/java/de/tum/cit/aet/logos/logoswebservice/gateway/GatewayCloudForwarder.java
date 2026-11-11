@@ -78,7 +78,7 @@ public class GatewayCloudForwarder {
      *                      response's canonical token usage and, when retained,
      *                      its body
      * @param onFailure     invoked when the upstream call or stream fails, with the
-     *                      error and the instants the forward reached
+     *                      error, provider-reported usage and the instants the forward reached
      */
     public ResponseEntity<StreamingResponseBody> forward(
             GatewayDeployment deployment,
@@ -89,7 +89,7 @@ public class GatewayCloudForwarder {
             Map<String, List<String>> inboundHeaders,
             boolean retainResponseBody,
             java.util.function.Consumer<GatewayForwardResult> onSuccess,
-            java.util.function.BiConsumer<String, GatewayForwardTimings> onFailure) throws IOException {
+            java.util.function.BiConsumer<String, GatewayForwardResult> onFailure) throws IOException {
 
         String forwardUrl = CloudForwardUrlBuilder.build(
             deployment.baseUrl(), inferencePath, deployment.endpoint());
@@ -148,12 +148,14 @@ public class GatewayCloudForwarder {
             Thread.currentThread().interrupt();
             if (onFailure != null) {
                 onFailure.accept("Interrupted while forwarding to cloud",
-                    new GatewayForwardTimings(providerCall, null, Instant.now()));
+                    new GatewayForwardResult(Map.of(), null, null,
+                        new GatewayForwardTimings(providerCall, null, Instant.now())));
             }
             throw new IOException("Interrupted while forwarding to cloud", e);
         } catch (IOException e) {
             if (onFailure != null) {
-                onFailure.accept(e.getMessage(), new GatewayForwardTimings(providerCall, null, Instant.now()));
+                onFailure.accept(e.getMessage(), new GatewayForwardResult(Map.of(), null, null,
+                        new GatewayForwardTimings(providerCall, null, Instant.now())));
             }
             throw e;
         }
@@ -215,9 +217,12 @@ public class GatewayCloudForwarder {
                         }
                         GatewayForwardTimings drainedTimings = new GatewayForwardTimings(
                             providerCall, capture.firstTokenAt(), pump.endedAt());
-                        if (upstreamError != null) {
+                        if (upstreamError != null || capture.upstreamError() != null) {
                             if (onFailure != null) {
-                                onFailure.accept(upstreamError.getMessage(), drainedTimings);
+                                onFailure.accept(capture.upstreamError() != null ? capture.upstreamError()
+                                        : upstreamError.getMessage(),
+                                    new GatewayForwardResult(capture.usage(), capture.capturedBody(),
+                                        capture.serviceTier(), drainedTimings));
                             }
                         } else if (onSuccess != null) {
                             onSuccess.accept(new GatewayForwardResult(capture.disconnectedUsage(body, timedOut),
@@ -242,17 +247,24 @@ public class GatewayCloudForwarder {
                 providerCall, capture.firstTokenAt(), pump.endedAt());
             if (streamError != null) {
                 if (onFailure != null) {
-                    onFailure.accept(streamError.getMessage(), timings);
+                    onFailure.accept(streamError.getMessage(), new GatewayForwardResult(
+                        capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
                 }
                 throw streamError;
             }
-            if (upstreamOk) {
+            if (capture.upstreamError() != null) {
+                if (onFailure != null) {
+                    onFailure.accept(capture.upstreamError(), new GatewayForwardResult(
+                        capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
+                }
+            } else if (upstreamOk) {
                 if (onSuccess != null) {
                     onSuccess.accept(new GatewayForwardResult(
                         capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
                 }
             } else if (onFailure != null) {
-                onFailure.accept("Upstream HTTP " + status, timings);
+                onFailure.accept("Upstream HTTP " + status, new GatewayForwardResult(
+                    capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
             }
         };
 

@@ -170,6 +170,7 @@ class _StreamingLogAccumulator:
     received_bytes: bool = False
     completion_characters: int = 0
     buffer: str = ""
+    _sse_event_type: str = ""
     full_text: str = ""
     first_chunk: Optional[Dict[str, Any]] = None
     last_chunk: Optional[Dict[str, Any]] = None
@@ -219,12 +220,11 @@ class _StreamingLogAccumulator:
     def finish(self) -> None:
         self.buffer += self._decoder.decode(b"", final=True)
         self._decoder.reset()
-        if not self.buffer:
-            return
         remainder = self.buffer
         self.buffer = ""
         for line in remainder.splitlines():
             self._consume_line(line.rstrip("\r"))
+        self._consume_line("")
 
     def streamed_tokens(self) -> Dict[str, int]:
         """Best current view of this request's tokens, mid-stream.
@@ -350,28 +350,58 @@ class _StreamingLogAccumulator:
     def _consume_line(self, line: str) -> None:
         stripped = line.strip()
         if not stripped:
+            if self._sse_event_type in {"error", "response.error", "response.failed"} and not self.upstream_error:
+                self.upstream_error = {"message": f"Provider stream reported {self._sse_event_type}"}
+                self.terminal_event_received = True
+            self._sse_event_type = ""
+            return
+        if stripped.startswith("event:"):
+            self._sse_event_type = stripped[6:].strip()
             return
         if stripped == "data: [DONE]":
             self.terminal_event_received = True
             return
-        if not stripped.startswith("data: "):
+        if not stripped.startswith("data:"):
             return
         try:
-            blob = json.loads(stripped[6:])
+            blob = json.loads(stripped[5:].lstrip())
         except json.JSONDecodeError:
             return
         if not isinstance(blob, dict):
             return
 
+        event_type = blob.get("type") or self._sse_event_type
+        response = blob.get("response")
         blob_error = blob.get("error")
-        if isinstance(blob_error, dict) and blob_error:
-            self.upstream_error = blob_error
-            return
-        if isinstance(blob_error, str) and blob_error:
-            self.upstream_error = {"message": blob_error}
+        is_failure = (
+            event_type in {"response.failed", "response.error", "error"} if isinstance(event_type, str) else False
+        )
+        is_failure = is_failure or self._sse_event_type in {"response.failed", "response.error", "error"}
+        if (isinstance(blob_error, (dict, str)) and blob_error) or is_failure:
+            if not blob_error and isinstance(response, dict):
+                blob_error = response.get("error")
+            if isinstance(blob_error, dict) and blob_error:
+                self.upstream_error = blob_error
+            else:
+                self.upstream_error = {
+                    "message": (
+                        blob_error
+                        if isinstance(blob_error, str) and blob_error
+                        else blob.get("message") or f"Provider stream reported {event_type}"
+                    )
+                }
+            self.terminal_event_received = True
+            # Capture usage before returning: failed generations can still carry
+            # provider-reported billable work, but must never gain an estimate.
+            usage = response.get("usage") if isinstance(response, dict) else None
+            if not isinstance(usage, dict):
+                usage = blob.get("usage")
+            if isinstance(usage, dict):
+                self.provider_usage = usage
+            if isinstance(response, dict):
+                self.responses_final = response
             return
 
-        event_type = blob.get("type")
         if isinstance(event_type, str) and event_type.startswith("response."):
             if event_type in {"response.completed", "response.incomplete", "response.failed"}:
                 self.terminal_event_received = True
@@ -418,20 +448,6 @@ class _StreamingLogAccumulator:
             response = blob.get("response")
             if isinstance(response, dict):
                 self.responses_final = response
-            # A terminal ``response.failed`` is the Responses-API equivalent of a
-            # mid-stream ``data: {"error": {...}}`` frame: generation began, the
-            # bytes reached the client, but the request is not a success and must
-            # not be billed. ``response.incomplete`` is deliberately excluded: it
-            # means the generation stopped at max_output_tokens or a content
-            # filter, and the partial output it carries is real, billed usage.
-            if event_type == "response.failed":
-                err = response.get("error") if isinstance(response, dict) else None
-                if isinstance(err, dict) and err:
-                    self.upstream_error = err
-                elif isinstance(err, str) and err:
-                    self.upstream_error = {"message": err}
-                else:
-                    self.upstream_error = {"message": "Responses API stream reported response.failed"}
 
     def _consume_messages_event(self, event_type: str, blob: Dict[str, Any]) -> None:
         """Consume one Anthropic Messages SSE event.

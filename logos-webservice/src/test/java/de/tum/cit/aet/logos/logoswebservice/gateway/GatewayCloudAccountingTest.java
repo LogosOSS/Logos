@@ -270,6 +270,32 @@ class GatewayCloudAccountingTest {
     }
 
     @Test
+    void settleFailure_billsOnlyReportedUsageAndSettlesOnce() {
+        Fixture f = seedPricedDeployment();
+        int logId = admit(f);
+        accounting.settleFailure(logId, "provider failed", new GatewayForwardResult(USAGE, null, null));
+
+        assertThat(cost(logId)).isEqualTo(56_000L);
+        assertThat(status(logId)).isEqualTo("error");
+        assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 1000).containsEntry("completion_tokens", 300)
+            .doesNotContainKeys("usage_estimated", "billed_requests");
+        accounting.settleFailure(logId, "duplicate callback");
+        accounting.settleSuccess(logId, Map.of("prompt_tokens", 1L), null, null);
+        assertThat(cost(logId)).isEqualTo(56_000L);
+        assertThat(status(logId)).isEqualTo("error");
+    }
+
+    @Test
+    void settleFailure_withoutPricesDoesNotKeepTheReservation() {
+        Fixture f = seedUnpricedDeployment();
+        int logId = admit(f);
+        accounting.settleFailure(logId, "provider failed", new GatewayForwardResult(USAGE, null, null));
+        assertThat(cost(logId)).isZero();
+        assertThat(status(logId)).isEqualTo("error");
+        assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 1000);
+    }
+
+    @Test
     void settleSuccess_registersATokenTypeTheDeploymentHasNotReportedBefore() {
         Fixture f = seedPricedDeployment();
         int logId = admit(f);

@@ -124,8 +124,24 @@ def test_usage_is_retained_after_a_later_usage_free_chunk():
     assert accumulator.usage() == {"prompt_tokens": 10, "completion_tokens": 0}
 
 
-@pytest.mark.parametrize("outcome", ["usage", "eof", "timeout", "error"])
-async def test_cloud_response_settles_after_disconnect_using_provider_outcome(monkeypatch, outcome):
+@pytest.mark.parametrize(
+    "outcome,reported_usage,disconnect",
+    [(outcome, False, True) for outcome in ("usage", "eof", "timeout", "error")]
+    + [
+        (outcome, reported, disconnected)
+        for outcome in (
+            "response.failed",
+            "response.error",
+            "error_event",
+            "error_frame",
+            "error_chunk",
+            "anthropic_error",
+        )
+        for reported in (False, True)
+        for disconnected in (False, True)
+    ],
+)
+async def test_cloud_response_settles_using_provider_outcome(monkeypatch, outcome, reported_usage, disconnect):
     from types import SimpleNamespace
 
     from tests.unit.main.test_request_logging import _make_dummy_db, _make_pipeline
@@ -150,6 +166,33 @@ async def test_cloud_response_settles_after_disconnect_using_provider_outcome(mo
                 raise OSError("provider read failed")
             elif outcome == "timeout":
                 await asyncio.Event().wait()
+            elif outcome in {
+                "response.failed",
+                "response.error",
+                "error_event",
+                "error_frame",
+                "error_chunk",
+                "anthropic_error",
+            }:
+                usage = {"input_tokens": 101, "output_tokens": 73, "total_tokens": 174} if reported_usage else None
+                if outcome.startswith("response."):
+                    event = {"type": outcome, "response": {"error": {"message": "provider failed"}, "usage": usage}}
+                elif outcome == "error_event":
+                    event = {"type": "error", "message": "provider failed", "usage": usage}
+                elif outcome == "anthropic_error":
+                    event = {
+                        "type": "error",
+                        "error": {"type": "overloaded_error", "message": "provider failed"},
+                        "usage": usage,
+                    }
+                elif outcome == "error_frame":
+                    event = {"message": "provider failed", "usage": usage}
+                else:
+                    event = {"error": {"message": "provider failed"}, "usage": usage}
+                prefix = "event: error\n" if outcome == "error_frame" else ""
+                # No trailing newline: EOF must flush the final buffered data line
+                # before settlement decides whether this generation succeeded.
+                yield f"{prefix}data: {json.dumps(event)}".encode()
             else:
                 yield b'data: {"choices":[{"delta":{"content":" world!"}}]}\n\n'
         finally:
@@ -185,24 +228,35 @@ async def test_cloud_response_settles_after_disconnect_using_provider_outcome(mo
     )
     body = response.body_iterator
     await anext(body)
-    await body.aclose()
-    assert not upstream_closed.is_set()
-    assert completions == []
+    if disconnect:
+        await body.aclose()
+        assert not upstream_closed.is_set()
+        assert completions == []
     released.set()
-    await asyncio.wait_for(body.drain_task, 1)
+    if disconnect:
+        await asyncio.wait_for(body.drain_task, 1)
+    else:
+        async for _ in body:
+            pass
     assert upstream_closed.is_set()
     assert len(completions) == 1
     assert len(db.payload_calls) == 1
     usage = completions[0]["usage_tokens"]
-    if outcome == "error":
+    if outcome not in {"usage", "eof", "timeout"}:
         assert completions[0]["result_status"] == "error"
         assert "usage_estimated" not in usage
         assert "billed_requests" not in usage
+        if reported_usage and outcome != "error":
+            assert usage["prompt_tokens"] == 101
+            assert usage["completion_tokens"] == 73
+        else:
+            assert not usage.get("prompt_tokens")
+            assert not usage.get("completion_tokens")
     elif outcome == "usage":
         assert usage["prompt_tokens"] == 101
         assert usage["completion_tokens"] == 73
         assert "usage_estimated" not in usage
-    else:
+    elif disconnect:
         assert usage["usage_estimated"] == 1
         assert usage["prompt_tokens"] > 0
         assert usage["completion_tokens"] == (3 if outcome == "eof" else 2)
@@ -254,4 +308,32 @@ async def test_usage_already_received_does_not_wait_for_an_outstanding_transport
         await reader
     await asyncio.wait_for(body.drain_task, 0.2)
     assert closed.is_set()
+    assert not accumulator.drain_timed_out
+
+
+async def test_split_error_frame_drains_usage_and_stops_without_waiting_for_eof():
+    accumulator = _StreamingLogAccumulator()
+    closed = asyncio.Event()
+
+    async def source():
+        try:
+            accumulator.feed('data: {"choices":[{"delta":{"content":"hello"}}]}\n\n')
+            yield b"first"
+            accumulator.feed("event: error\n")
+            yield b"header"
+            accumulator.feed('data: {"message":"provider failed","usage":{"input_tokens":37,"output_tokens":19}}\n\n')
+            yield b"error"
+            await asyncio.Event().wait()
+        finally:
+            accumulator.finish()
+            accumulator.estimate_disconnected_usage({"messages": [{"content": "prompt"}]})
+            closed.set()
+
+    body = UsageDrainIterator(source(), accumulator, timeout=5)
+    await anext(body)
+    await body.aclose()
+    await asyncio.wait_for(body.drain_task, 0.2)
+    assert closed.is_set()
+    assert accumulator.upstream_error == {"message": "provider failed"}
+    assert accumulator.usage() == {"input_tokens": 37, "output_tokens": 19}
     assert not accumulator.drain_timed_out

@@ -22,6 +22,8 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
@@ -37,6 +39,7 @@ class GatewayClientFlushTest {
     private final CountDownLatch settled = new CountDownLatch(1);
     private final AtomicReference<GatewayForwardResult> success = new AtomicReference<>();
     private final AtomicReference<String> failure = new AtomicReference<>();
+    private final AtomicReference<GatewayForwardResult> failureResult = new AtomicReference<>();
     private String tail = "data: {\"usage\":{\"prompt_tokens\":37,\"completion_tokens\":19,\"total_tokens\":56}}\n\n";
     private static final byte[] REQUEST = "{\"model\":\"m\",\"stream\":true}".getBytes(StandardCharsets.UTF_8);
 
@@ -80,7 +83,7 @@ class GatewayClientFlushTest {
         return forwarder.forward(deployment, "/v1/chat/completions", null, "POST", REQUEST,
             Map.of("content-type", List.of("application/json")), false,
             result -> { success.set(result); settled.countDown(); },
-            (error, timings) -> { failure.set(error); settled.countDown(); });
+            (error, result) -> { failure.set(error); failureResult.set(result); settled.countDown(); });
     }
 
     private void disconnectOnFlush(ResponseEntity<StreamingResponseBody> forwarded) throws Exception {
@@ -170,6 +173,47 @@ class GatewayClientFlushTest {
         assertThat(failure.get()).isNull();
         assertThat(success.get().usage()).containsEntry("completion_tokens", 3L)
             .containsEntry("prompt_tokens", (REQUEST.length + 3L) / 4).containsEntry("usage_estimated", 1L);
+    }
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> providerFailures() {
+        return java.util.stream.Stream.of("response.failed", "response.error", "error", "error_frame", "error_chunk")
+            .flatMap(type -> java.util.stream.Stream.of(false, true).flatMap(reported ->
+                java.util.stream.Stream.of(false, true).map(disconnected ->
+                    org.junit.jupiter.params.provider.Arguments.of(type, reported, disconnected))));
+    }
+
+    @ParameterizedTest
+    @MethodSource("providerFailures")
+    void providerFailureSettlesAsErrorWithOnlyReportedUsage(String type, boolean reported, boolean disconnected)
+            throws Exception {
+        String usage = reported ? "{\"input_tokens\":37,\"output_tokens\":19,\"total_tokens\":56}" : "null";
+        if (type.startsWith("response.")) {
+            tail = "data: {\"type\":\"" + type + "\",\"response\":{\"error\":{\"message\":\"provider failed\"},"
+                + "\"usage\":" + usage + "}}";
+        } else if ("error_frame".equals(type)) {
+            tail = "event: error\ndata: {\"message\":\"provider failed\",\"usage\":" + usage + "}";
+        } else if ("error_chunk".equals(type)) {
+            tail = "data: {\"error\":{\"message\":\"provider failed\"},\"usage\":" + usage + "}";
+        } else {
+            tail = "data: {\"type\":\"error\",\"error\":{\"message\":\"provider failed\"},\"usage\":" + usage + "}";
+        }
+        ResponseEntity<StreamingResponseBody> forwarded = forward(Duration.ofSeconds(5));
+        if (disconnected) {
+            disconnectOnFlush(forwarded);
+            continueUpstream.countDown();
+        } else {
+            continueUpstream.countDown();
+            forwarded.getBody().writeTo(new ByteArrayOutputStream());
+        }
+        assertThat(settled.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(success.get()).isNull();
+        assertThat(failure.get()).isEqualTo("provider failed");
+        if (reported) {
+            assertThat(failureResult.get().usage()).containsExactlyInAnyOrderEntriesOf(
+                Map.of("prompt_tokens", 37L, "completion_tokens", 19L, "total_tokens", 56L));
+        } else {
+            assertThat(failureResult.get().usage()).isEmpty();
+        }
     }
 
     @Test
