@@ -79,6 +79,8 @@ It then gives the other admitted pair its turn.
 Further rounds use the same saved inputs and refine the candidate until 08:00.
 The daily quota limits distinct pairs, not rounds.
 A failed baseline or a round without successful variants does not schedule another round.
+If the baseline fails, the scheduler stops the remaining variants and restores the worker.
+The round has status `failed` because the variants have no valid comparison baseline.
 Disabling a schedule stops further rounds. Pending recovery always takes priority.
 
 ## Time and Failure Policy
@@ -171,6 +173,9 @@ GuideLLM measures every configuration on the complete snapshot with 4 concurrent
 Each request retains its temperature, tools and output limits.
 If the source omits an output limit, then Logos adds no output limit.
 Worker context limits still apply. A truncated or incomplete response fails the configuration.
+Failure details show successful, errored and incomplete request counts.
+Known response failures also show the source request ID and a fixed error description.
+HTTP failures show the status code. Provider error text, request content and credentials remain excluded.
 GuideLLM measures throughput, request latency, TTFT and TPOT.
 The result distributions include the maximum observation, shown as p100.
 The saved results also contain token counts and completion reasons.

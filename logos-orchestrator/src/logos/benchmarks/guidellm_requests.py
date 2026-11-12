@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import copy
 import json
+import re
 from importlib.metadata import version
 from pathlib import Path
 
@@ -21,6 +22,37 @@ from guidellm.schemas.backends import OpenAIHTTPBackendArgs
 from guidellm.schemas.benchmark.profiles import ConcurrentProfileArgs
 from guidellm.schemas.scheduler import ConstraintArgs
 
+FAILURE_REASONS = {
+    "inference_error": "the stream reported an inference error",
+    "stream_incomplete": "the stream ended without its terminal event",
+    "output_limit": "the response hit an output/context limit without completing an explicit token budget",
+    "finish_reason": "the response did not report a supported completion reason",
+    "output_usage": "the response omitted valid output token usage",
+}
+
+
+class FrozenResponseError(RuntimeError):
+    """Fixed-format diagnostics that contain no provider text or request content."""
+
+
+def incomplete_measurement(benchmark, expected, successful):
+    """Expose counts and only recognized adapter failures from GuideLLM's error records."""
+    failed = benchmark.requests.errored
+    incomplete = benchmark.requests.incomplete
+    message = (
+        "GuideLLM did not complete every frozen input exactly once "
+        f"(successful={successful}/{expected}, errored={len(failed)}, incomplete={len(incomplete)})"
+    )
+    for stat in failed:
+        error = stat.info.error or ""
+        match = re.fullmatch(r"FrozenResponseError\('source_log_id=(-?\d+); reason=([a-z_]+)'\)", error)
+        if match and match[2] in FAILURE_REASONS:
+            return message + f"; source_log_id={match[1]}: {FAILURE_REASONS[match[2]]}"
+        status = re.match(r"HTTPStatusError\([\"'](?:Client|Server) error '([45]\d{2}) ", error)
+        if status:
+            return message + f"; inference endpoint returned HTTP {status[1]}"
+    return message + "; transport or provider error details withheld"
+
 
 class FrozenRequestHandler(ChatCompletionsRequestHandler):
     """Preserve caller controls and require an accounted, complete response."""
@@ -31,6 +63,11 @@ class FrozenRequestHandler(ChatCompletionsRequestHandler):
         self.finish_reason = None
         self.terminal = False
 
+    def reject(self, reason):
+        source_id = self.source["source_log_id"]
+        source_id = source_id if type(source_id) is int else 0
+        raise FrozenResponseError(f"source_log_id={source_id}; reason={reason}")
+
     def add_streaming_line(self, line):
         if not line.startswith("data:"):
             return 0
@@ -39,8 +76,8 @@ class FrozenRequestHandler(ChatCompletionsRequestHandler):
             self.terminal = True
             return None
         data = json.loads(raw)
-        if data.get("error"):
-            raise RuntimeError("Frozen request stream reported an inference error")
+        if data.get("error") or data.get("type") == "error":
+            self.reject("inference_error")
         if self.source.get("operation", "chat/completions") == "messages":
             return self._messages_event(data)
         for choice in data.get("choices", []):
@@ -99,14 +136,14 @@ class FrozenRequestHandler(ChatCompletionsRequestHandler):
             self.finish_reason, self.finish_reason
         )
         completed_budget = reason == "length" and type(limit) is int and limit > 0 and tokens == limit
-        if not self.terminal or (reason not in {"stop", "tool_calls", "function_call"} and not completed_budget):
-            raise RuntimeError(
-                "Frozen response was incomplete or reached an output/context limit "
-                f"(source_log_id={self.source['source_log_id']}, finish_reason={self.finish_reason!r}, "
-                f"stream_complete={self.terminal})"
-            )
+        if not self.terminal:
+            self.reject("stream_incomplete")
+        if reason == "length" and not completed_budget:
+            self.reject("output_limit")
+        if reason not in {"stop", "tool_calls", "function_call"} and not completed_budget:
+            self.reject("finish_reason")
         if type(tokens) is not int or tokens < 0:
-            raise RuntimeError("Frozen response omitted valid output token usage")
+            self.reject("output_usage")
         response.response_metrics = {
             "source_log_id": self.source["source_log_id"],
             "finish_reason": reason,
@@ -222,7 +259,7 @@ async def measure_frozen_requests(*, snapshot, target, model, api_key, request_h
             )
         order = {source["source_log_id"]: index for index, source in enumerate(snapshot["requests"])}
         if len(samples) != snapshot["request_count"] or {row["source_log_id"] for row in samples} != set(order):
-            raise RuntimeError("GuideLLM did not complete every frozen input exactly once")
+            raise RuntimeError(incomplete_measurement(benchmark, snapshot["request_count"], len(samples)))
         samples.sort(key=lambda row: order[row["source_log_id"]])
         metrics["replay_samples"] = samples
         metrics["aggregate_output_tokens_per_second"] = metrics["output_tokens_per_second"]["successful"]["mean"]

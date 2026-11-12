@@ -547,6 +547,12 @@ class NightlyScheduler:
                         report.append({"configuration": index + 1, "status": "failed", "reason": str(exc)[:1000]})
                         store.save(pair_id, "running", report, recovery)
                         break
+                if index == 0 and not any(
+                    item.get("configuration") == 1 and item.get("status") == "success" for item in report
+                ):
+                    if state == "completed":
+                        state = "failed"
+                    break
         except NightlyStopped as exc:
             state = exc.reason
         except asyncio.CancelledError:

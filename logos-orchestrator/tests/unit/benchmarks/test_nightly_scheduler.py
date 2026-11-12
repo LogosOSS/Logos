@@ -307,14 +307,15 @@ async def test_pending_adoption_is_completed_after_restart(scheduler):
     assert report == [{"status": "adopted", **adoption()}]
 
 
-async def test_stall_retries_same_configuration_once_then_moves_on(scheduler):
+@pytest.mark.parametrize("baseline_stalls", [False, True])
+async def test_stall_retries_once_and_requires_a_successful_baseline(scheduler, baseline_stalls):
     calls = []
 
     async def submit(pair, settings):
         calls.append(settings.model_dump())
 
         async def execute():
-            if len(calls) <= 2:
+            if (baseline_stalls and len(calls) <= 2) or (not baseline_stalls and len(calls) in {2, 3}):
                 raise NightlyStopped("stalled")
             return len(calls)
 
@@ -322,10 +323,15 @@ async def test_stall_retries_same_configuration_once_then_moves_on(scheduler):
 
     scheduler.submit = submit
     assert await scheduler.run_schedule(31, MagicMock())
-    assert len(calls) == 6
-    assert calls[0] == calls[1]
-    assert calls[2] != calls[1]
-    assert scheduler.saved[-1][1] == "completed"
+    if baseline_stalls:
+        assert len(calls) == 2
+        assert calls[0] == calls[1]
+        assert scheduler.saved[-1][1] == "failed"
+    else:
+        assert len(calls) == 6
+        assert calls[1] == calls[2]
+        assert calls[3] != calls[2]
+        assert scheduler.saved[-1][1] == "continuing"
     assert scheduler.saved[-1][3] is None
     assert benchmark_reservations.owner(20, "other") is None
 
@@ -954,17 +960,23 @@ async def test_a_round_that_finishes_at_window_end_restores_and_reports_completi
     assert scheduler.saved[-1][1] == "window_closed"
 
 
-async def test_failed_baseline_does_not_schedule_unbounded_further_rounds(scheduler):
+@pytest.mark.parametrize("raises", [False, True])
+async def test_failed_baseline_stops_variants_and_restores_production(scheduler, raises):
     count = 0
 
     async def submit(*args):
         nonlocal count
         count += 1
+        if raises:
+            raise RuntimeError("Baseline measurement failed")
         return count, asyncio.create_task(asyncio.sleep(0, result=None if count == 1 else count))
 
     scheduler.submit = submit
     assert await scheduler.run_schedule(31, MagicMock())
-    assert scheduler.saved[-1][1] == "completed"
+    assert count == 1
+    scheduler.restore.assert_awaited_once()
+    assert scheduler.saved[-1][1] == "failed"
+    assert benchmark_reservations.allows(20, "model", "production")
 
 
 async def test_completed_winner_is_durable_before_a_later_trial_is_interrupted(scheduler, monkeypatch):
