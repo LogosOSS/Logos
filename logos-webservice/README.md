@@ -202,8 +202,9 @@ represented by changes to team grants, rather than fabricated per-key changes.
 
 The history begins when changelog 072 is installed. It cannot reconstruct rows
 removed by older migrations. To restore access, use the recorded IDs with the
-existing permission endpoints; current authorization and team-boundary rules
-still apply.
+existing permission endpoints; current authorization rules still apply.
+Custom key grants stay independent of team defaults. Changing team defaults
+does not remove or record revocations for those key grants.
 
 ### Permission changes in data migrations
 

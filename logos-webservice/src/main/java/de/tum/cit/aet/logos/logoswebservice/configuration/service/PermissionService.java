@@ -213,5 +213,4 @@ public class PermissionService {
         repository.deleteAll(current.stream().filter(p -> !desired.contains(targetId.applyAsInt(p))).toList());
         repository.saveAll(desired.stream().filter(id -> !existing.contains(id)).map(create).toList());
     }
-
 }
