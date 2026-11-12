@@ -48,7 +48,15 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 
 .benchmark-progress h3 small { display: block; margin-top: .35rem; font-weight: 400; }
 .benchmark-progress select { max-width: 100%; padding: .6rem .75rem; border: 1px solid rgb(var(--color-outline-300)); border-radius: .5rem; background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-100)); font: inherit; font-size: var(--model-detail-font-size, .875rem); }
-.progress-plot { position: relative; height: 150px; margin: 1.5rem 1rem .75rem 3.5rem; }
+.progress-plot { position: relative; height: 240px; margin: 1.5rem 1rem .75rem 3.5rem; }
+.timeline-legend { display: flex; flex-wrap: wrap; gap: .65rem 1.25rem; list-style: none; padding: 0; margin: .75rem 0; color: rgb(var(--color-typography-100)); font-size: var(--model-detail-font-size, .875rem); }
+.timeline-legend li { display: inline-flex; align-items: center; gap: .5rem; }
+.timeline-symbol { display: inline-block; flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: rgb(var(--color-primary-500)); }
+.timeline-symbol--baseline { border-radius: 0; background: rgb(var(--color-typography-500)); }
+.timeline-symbol--rejected { background: rgb(var(--color-surface-0)); border: 1px solid rgb(var(--color-primary-500)); }
+.timeline-symbol--line, .timeline-symbol--reference { width: 22px; height: 0; border-radius: 0; background: transparent; border-top: 2px solid rgb(var(--color-primary-500)); }
+.timeline-symbol--reference { border-top: 2px dashed rgb(var(--color-typography-500)); }
+.timeline-explanation { max-width: 75ch; }
 .progress-plot svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .progress-zero { stroke: rgb(var(--color-outline-300)); stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
 .progress-line { fill: none; stroke: rgb(var(--color-primary-500)); stroke-width: 2; vector-effect: non-scaling-stroke; }

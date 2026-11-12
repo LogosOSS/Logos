@@ -62,7 +62,14 @@
       </select>
     } @else { <p class="results-note timeline-context">{{ datasetLabel(chart.reference) }}</p> }
     <p class="results-note timeline-baseline">Latest round baseline #{{ chart.reference.id }} · {{ chart.baselineRate | number:'1.1-1' }} tok/s</p>
-    <p class="results-note">Solid line · measured runs. Dashed line · baseline of each round.</p>
+    <ul class="timeline-legend" aria-label="Timeline legend">
+      <li><span class="timeline-symbol timeline-symbol--baseline" aria-hidden="true"></span>Round baseline</li>
+      <li><span class="timeline-symbol" aria-hidden="true"></span>Measured trial</li>
+      <li><span class="timeline-symbol timeline-symbol--rejected" aria-hidden="true"></span>Not eligible for adoption</li>
+      <li><span class="timeline-symbol timeline-symbol--line" aria-hidden="true"></span>All measured runs</li>
+      <li><span class="timeline-symbol timeline-symbol--reference" aria-hidden="true"></span>Baseline of each round</li>
+    </ul>
+    <p class="results-note timeline-explanation">Each point is a complete benchmark run, not one request. Trials can be slower than their baseline. A filled point does not mean the configuration was deployed.</p>
     <div class="progress-plot" role="group" aria-label="Measured throughput in output tokens per second">
       <span class="progress-axis progress-axis--top">{{ chart.maxRate | number }} tok/s</span>
       <span class="progress-axis progress-axis--zero">0</span>

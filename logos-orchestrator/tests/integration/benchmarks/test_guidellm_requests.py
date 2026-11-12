@@ -145,20 +145,26 @@ async def test_guidellm_measures_complete_frozen_requests_and_all_latency_metric
 
 
 @pytest.mark.asyncio
-async def test_guidellm_measures_all_fifty_natural_output_requests(server):
+async def test_guidellm_measures_all_fifty_contextual_coding_requests(server):
     target, received = server
+    corpus = json.loads(Path(engine.__file__).with_name("dev_coding_workload.json").read_text(encoding="utf-8"))
     snapshot = {
         "id": "a" * 64,
         "request_count": 50,
-        "requests": [
-            {"source_log_id": index, "body": {"messages": [{"role": "user", "content": f"Question {index}"}]}}
-            for index in range(1, 51)
-        ],
+        "requests": [{"source_log_id": row["id"], "body": row["body"]} for row in corpus],
     }
     report = await engine.measure_frozen_requests(
         snapshot=snapshot, target=target, model="test-model", api_key=None, request_headers={}, concurrency=4
     )
     assert len(received) == 50
+    by_seed = {body["seed"]: body for _, body, _ in received}
+    for row in corpus:
+        assert by_seed[row["id"]] == {
+            **row["body"],
+            "model": "test-model",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
     samples = report["benchmarks"][0]["metrics"]["replay_samples"]
     assert [sample["source_log_id"] for sample in samples] == list(range(1, 51))
 

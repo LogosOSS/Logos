@@ -1,4 +1,7 @@
-"""Install the coding workload with natural output lengths on the Dev nightly schedule."""
+"""Install the synthetic coding conversations on the Dev nightly schedule."""
+
+import json
+from pathlib import Path
 
 from sqlalchemy import text
 
@@ -10,46 +13,24 @@ WORKER_NAME = "Hochbruegge VM2"
 PREVIOUS_WORKLOAD_IDS = {
     "c42aaea0ddc7f578082cf43683fca8bd61b0b259492ad0070a47064b75517671",
     "c8ae56bf8f9d348214a9a7e993aa085f7ed113db7aed4824c55052c5b8260529",
+    "5fe0f1924cff8ac2d7c585af59c66e829da7229a6bc8a9bc5c17f1bfe6cf3a9c",
 }
-NAME = "Qwen coding pilot · 50 synthetic requests · natural output"
-
-COMPONENTS = (
-    "an idempotent job queue",
-    "a bounded LRU cache",
-    "a cursor-paginated HTTP endpoint",
-    "a rolling rate limiter",
-    "an append-only event store",
-    "a resumable file upload service",
-    "an inventory reservation system",
-    "a signed webhook dispatcher",
-    "a feature flag evaluator",
-    "a dependency graph scheduler",
-)
-TASKS = (
-    "Implement the core in Python with typed interfaces, error handling and a usage example.",
-    "Write a pytest suite covering edge cases, invalid inputs, concurrency and recovery.",
-    "Design the PostgreSQL schema and write transaction-safe SQL for the critical operations.",
-    "Show a plausible implementation bug, give reproduction steps and write the corrected code.",
-    "Write a TypeScript client with retries, cancellation, structured errors and tests.",
-)
+NAME = "Qwen coding pilot · 50 realistic coding conversations · v3"
+WORKLOAD_PATH = Path(__file__).with_name("dev_coding_workload.json")
 
 
 def build_workload(model_id):
-    prompts = (f"Work on {component}. {task}" for component in COMPONENTS for task in TASKS)
+    """Freeze supplied code, incident context and follow-ups without real production data."""
     rows = [
         {
-            "id": index,
+            "id": request["id"],
             "model_id": model_id,
             "model_name": MODEL_NAME,
             "privacy_level": "FULL",
             "result_status": "success",
-            "input_payload": {
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0,
-                "seed": index,
-            },
+            "input_payload": request["body"],
         }
-        for index, prompt in enumerate(prompts, 1)
+        for request in json.loads(WORKLOAD_PATH.read_text(encoding="utf-8"))
     ]
     return workloads.build_snapshot(rows, NAME, "synthetic")
 

@@ -321,6 +321,11 @@ describe.each(['logos-replay', 'guidellm'])('Fixed request reference (%s)', (too
     expect(points[3].textContent).toContain('baseline #3');
     expect(fixture.nativeElement.querySelector('.timeline-baseline').textContent).toContain('Latest round baseline #3');
     expect(points[0].textContent).toContain('Round baseline');
+    const legend = fixture.nativeElement.querySelector('[aria-label="Timeline legend"]');
+    expect(legend.textContent).toContain('Round baseline');
+    expect(legend.textContent).toContain('Measured trial');
+    expect(legend.textContent).toContain('Not eligible for adoption');
+    expect(fixture.nativeElement.querySelector('.timeline-explanation').textContent).toContain('not one request');
   });
 
   it('shows a completed regression instead of hiding it from the timeline', () => {
