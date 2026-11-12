@@ -108,7 +108,7 @@ This design has three properties:
 | **Provider** | The place where a model runs. It is a cloud provider (Azure, OpenAI, …) configured on the core node, or a connected worker node. The **Providers** page of the UI lists both kinds. |
 | **Policy** | A rule that limits the models that a team or an API key can use. Use the **Policies** page of the UI to manage policies. |
 | **Team** | A group of users. API keys and budgets belong to teams. The policies of a team apply to the API keys of the team. |
-| **API key** | A secret that a client uses to call the Logos API. An API key belongs to a team and has the model permissions of the team. An API key can have a fixed queue priority. |
+| **API key** | A secret that a client uses to call the Logos API. An API key belongs to a team. By default, it has the model permissions of the team. An API key with custom permissions has its own model permissions, and these can include models that the team permissions do not include. An API key can have a fixed queue priority. |
 | **Inference gateway** | The web service path that ends `/v1`, `/openai`, and `/jobs`. It does authentication and budget checks. Then it sends the request directly to the cloud or through a proxy to the orchestrator. |
 | **Batch** | An OpenAI Batch API job (`/v1/batches`). It is many requests in one `.jsonl` upload. These requests can wait for the result. See [batch processing](../batch-processing.md). |
 | **Agent session** | One run of a coding agent in an isolated container. The agent runner starts the run from a task (usually a GitHub issue or pull request). |

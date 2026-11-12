@@ -29,18 +29,4 @@ public interface ApiKeyModelPermissionRepository
           )
         """, nativeQuery = true)
     void deleteCascadeForApiKey(@Param("keyId") int keyId);
-
-    @Transactional
-    @Modifying
-    @Query(value = """
-        DELETE FROM api_key_model_permissions akmp
-        USING api_keys ak
-        WHERE akmp.api_key_id = ak.id
-          AND ak.team_id = :teamId
-          AND NOT EXISTS (
-              SELECT 1 FROM team_model_permissions tmp
-              WHERE tmp.team_id = ak.team_id AND tmp.model_id = akmp.model_id
-          )
-        """, nativeQuery = true)
-    void deleteOutsideTeamPermissions(@Param("teamId") int teamId);
 }
