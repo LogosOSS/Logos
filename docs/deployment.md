@@ -29,20 +29,24 @@ This option updates the central Dev server and leaves the GPU worker unchanged. 
 The workflows export only the secret names in `scripts/write-deployment-secrets.py`.
 New repository secrets stay on GitHub until the workflow and this list include them.
 Core hosts receive the database, Redis, internal-service, repository, optional agent, Keycloak sync, metrics, and Hugging Face credentials.
-Worker hosts receive only `LOGOS_API_KEY` and `HF_TOKEN`.
+Worker hosts receive only `LOGOS_API_KEY` from the deployment workflow.
+The worker obtains its Hugging Face token from the orchestrator when it starts.
 SSH keys and registry passwords stay in their dedicated workflow steps.
 The workflows create `.env` with file mode `0600`.
 
 ### Data service passwords
 
 Set `LOGOS_DB_PASSWORD` and `LOGOS_REDIS_PASSWORD` in the core host's `.env` before you start production compose.
-Use separate random values, for example the output of `openssl rand -hex 32`.
+For a new installation, use separate random values, for example the output of `openssl rand -hex 32`.
 For workflow deployments, also set these values as secrets in the target GitHub environment.
 Compose stops if either value is empty.
 Local development and e2e stacks keep their seed credentials.
 
 **An existing PostgreSQL volume keeps its previous password.** A change to `.env` does not change the database role.
-Schedule a maintenance period for this change:
+To keep the database password, set `LOGOS_DB_PASSWORD` to its current value in `.env` and the GitHub environment secret.
+No database password change is necessary.
+
+If you choose to change the database password, schedule a maintenance period and follow these steps:
 
 1. Back up the database.
 2. Stop the application services with `docker compose stop logos-orchestrator logos-webservice`.

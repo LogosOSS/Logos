@@ -46,7 +46,7 @@ RUN mkdir -p src/logos && echo '__version__ = "0.1.0"' > src/logos/__init__.py \
 # explicit index in pyproject.toml, so no extra install-time flags are needed
 # here to steer it away from PyPI's default CUDA build.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-install-project
+    uv sync --locked --no-install-project --compile-bytecode
 
 # ──────────────────────────────────────────────────────────
 # Stage 2: Runtime – slim image without compilers or build tools
@@ -79,12 +79,14 @@ RUN if [ -f src/grpclocal/model.proto ]; then \
 # Copy other project files
 COPY db/ ./logos/db/
 
+# Compile application bytecode before switching to the runtime user.
+RUN python -m compileall -q /app/src
+
 # The classifier cache is relative to /app; model downloads use the user's home.
 RUN groupadd --system --gid 10001 logos \
   && useradd --uid 10001 --gid logos --create-home --no-log-init logos \
   && chown logos:logos /app
 ENV HOME=/home/logos
-ENV PYTHONDONTWRITEBYTECODE=1
 USER 10001:10001
 
 EXPOSE 8080 50051

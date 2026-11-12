@@ -132,7 +132,7 @@ jobs:
         env:
           VARS_CONTEXT: ${{ toJson(vars) }}
           DEPLOY_TARGET: ${{ matrix.compose-file == './docker-compose.yaml' && 'core' || 'worker' }}
-          DEPLOY_SECRET_HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          DEPLOY_SECRET_HF_TOKEN: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.HF_TOKEN || '' }}
           DEPLOY_SECRET_KEYCLOAK_SYNC_CLIENT_SECRET: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.KEYCLOAK_SYNC_CLIENT_SECRET || '' }}
           DEPLOY_SECRET_LOGOS_AGENT_API_KEY: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_AGENT_API_KEY || '' }}
           DEPLOY_SECRET_LOGOS_AGENT_GITHUB_TOKEN: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_AGENT_GITHUB_TOKEN || '' }}

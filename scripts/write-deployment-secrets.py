@@ -18,7 +18,7 @@ CORE_SECRETS = (
     "PROMETHEUS_API_KEY",
     "HF_TOKEN",
 )
-WORKER_SECRETS = ("LOGOS_API_KEY", "HF_TOKEN")
+WORKER_SECRETS = ("LOGOS_API_KEY",)
 
 
 def render_secrets(target: str, environment: Mapping[str, str]) -> str:

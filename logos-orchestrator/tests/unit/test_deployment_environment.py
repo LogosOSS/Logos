@@ -37,8 +37,16 @@ def test_worker_key_is_required():
         render_secrets("worker", {})
 
 
+def test_worker_receives_only_its_api_key():
+    output = render_secrets("worker", _environment())
+    assert output == 'LOGOS_API_KEY="test-LOGOS_API_KEY"\n'
+
+
 def test_optional_credentials_are_omitted():
-    assert render_secrets("worker", {"DEPLOY_SECRET_LOGOS_API_KEY": "key"}) == 'LOGOS_API_KEY="key"\n'
+    output = render_secrets(
+        "core", {"DEPLOY_SECRET_LOGOS_DB_PASSWORD": "database", "DEPLOY_SECRET_LOGOS_REDIS_PASSWORD": "redis"}
+    )
+    assert output == 'LOGOS_DB_PASSWORD="database"\nLOGOS_REDIS_PASSWORD="redis"\n'
 
 
 @pytest.mark.parametrize("value", ["test\ninjected=value", "test\rvalue", "test\0value"])
@@ -64,7 +72,7 @@ def test_unknown_target_is_rejected():
 def test_cli_writes_only_selected_credentials(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["write-deployment-secrets.py", "worker"])
     monkeypatch.setenv("DEPLOY_SECRET_LOGOS_API_KEY", "worker-key")
-    monkeypatch.setenv("DEPLOY_SECRET_HF_TOKEN", "")
+    monkeypatch.setenv("DEPLOY_SECRET_HF_TOKEN", "central-token")
     monkeypatch.setenv("DEPLOY_SECRET_LOGOS_DB_PASSWORD", "core-password")
     runpy.run_path(SCRIPT["__file__"], run_name="__main__")
     assert capsys.readouterr().out == 'LOGOS_API_KEY="worker-key"\n'
