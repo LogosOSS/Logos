@@ -11,6 +11,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
+import de.tum.cit.aet.logos.logoswebservice.audit.PermissionAuditContext;
 import de.tum.cit.aet.logos.logoswebservice.common.ForbiddenException;
 import de.tum.cit.aet.logos.logoswebservice.configuration.controller.PermissionController;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.SetModelPermissionsRequestDTO;
@@ -39,6 +40,7 @@ class PermissionBoundaryUnitTest {
     @Mock ApiKeyProviderPermissionRepository apiKeyProviderRepo;
     @Mock TeamModelPermissionRepository teamModelRepo;
     @Mock TeamProviderPermissionRepository teamProviderRepo;
+    @Mock PermissionAuditContext audit;
     @Mock ApiKeyAdminService apiKeyAdminService;
 
     private PermissionController controller;
@@ -47,7 +49,7 @@ class PermissionBoundaryUnitTest {
     @BeforeEach
     void setUp() {
         PermissionService permissionService = new PermissionService(
-            apiKeyModelRepo, apiKeyProviderRepo, teamModelRepo, teamProviderRepo);
+            apiKeyModelRepo, apiKeyProviderRepo, teamModelRepo, teamProviderRepo, audit);
         controller = new PermissionController(permissionService, apiKeyAdminService);
         appAdmin = new AuthContext(USER_ID, Role.Names.APP_ADMIN);
 

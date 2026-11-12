@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- No foreign keys: names and IDs are snapshots that survive deletion of
+         the actor, team, key, model or provider. No API exposes writes here. -->
+    <changeSet id="072-permission-audit-log" author="logos">
+        <sql splitStatements="false"><![CDATA[
+            CREATE TABLE permission_audit_log (
+                id BIGSERIAL PRIMARY KEY,
+                occurred_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                actor_user_id INTEGER,
+                actor_role TEXT NOT NULL,
+                team_id INTEGER,
+                team_name TEXT,
+                api_key_id INTEGER,
+                scope_type TEXT NOT NULL CHECK (scope_type IN ('team', 'api_key')),
+                scope_id INTEGER NOT NULL,
+                scope_name TEXT,
+                target_type TEXT NOT NULL CHECK (target_type IN ('model', 'provider')),
+                target_id INTEGER NOT NULL,
+                target_name TEXT,
+                action TEXT NOT NULL CHECK (action IN ('grant', 'revoke')),
+                cause TEXT NOT NULL CHECK (cause IN ('direct', 'cascade', 'migration', 'repair'))
+            );
+            CREATE INDEX idx_permission_audit_team ON permission_audit_log (team_id, id DESC);
+            CREATE INDEX idx_permission_audit_key ON permission_audit_log (api_key_id, id DESC);
+            CREATE INDEX idx_permission_audit_target ON permission_audit_log (target_type, target_id, id DESC);
+            CREATE INDEX idx_permission_audit_time ON permission_audit_log (occurred_at);
+
+            CREATE FUNCTION logos_record_permission_change(scope_kind TEXT, target_kind TEXT,
+                                                           permission JSONB, operation TEXT)
+            RETURNS void LANGUAGE plpgsql AS $function$
+            DECLARE
+                scope_identifier INTEGER;
+                target_identifier INTEGER;
+                owning_team INTEGER;
+                owning_team_name TEXT;
+                scope_label TEXT;
+                target_label TEXT;
+                change_cause TEXT := COALESCE(NULLIF(current_setting('logos.permission_cause', true), ''), 'migration');
+                actor_id INTEGER := NULLIF(current_setting('logos.permission_actor_id', true), '')::INTEGER;
+                actor_role TEXT := COALESCE(NULLIF(current_setting('logos.permission_actor_role', true), ''), 'system');
+            BEGIN
+                scope_identifier := (permission ->> (scope_kind || '_id'))::INTEGER;
+                target_identifier := (permission ->> (target_kind || '_id'))::INTEGER;
+                IF scope_kind = 'team' THEN
+                    owning_team := scope_identifier;
+                    SELECT name INTO scope_label FROM teams WHERE id = scope_identifier;
+                ELSE
+                    SELECT team_id, name INTO owning_team, scope_label FROM api_keys WHERE id = scope_identifier;
+                END IF;
+                SELECT name INTO owning_team_name FROM teams WHERE id = owning_team;
+                IF target_kind = 'model' THEN
+                    SELECT name INTO target_label FROM models WHERE id = target_identifier;
+                ELSE
+                    SELECT name INTO target_label FROM providers WHERE id = target_identifier;
+                END IF;
+                -- Parent-delete triggers run while names and ownership still exist.
+                IF pg_trigger_depth() > 1 THEN
+                    change_cause := 'cascade';
+                END IF;
+                IF change_cause IN ('cascade', 'migration') THEN
+                    actor_id := NULL;
+                    actor_role := 'system';
+                END IF;
+                INSERT INTO permission_audit_log
+                    (actor_user_id, actor_role, team_id, team_name, api_key_id,
+                     scope_type, scope_id, scope_name, target_type, target_id, target_name, action, cause)
+                VALUES (actor_id, actor_role, owning_team, owning_team_name,
+                        CASE WHEN scope_kind = 'api_key' THEN scope_identifier END,
+                        scope_kind, scope_identifier, scope_label, target_kind, target_identifier,
+                        target_label, operation, change_cause);
+            END;
+            $function$;
+
+            CREATE FUNCTION logos_audit_permission_row() RETURNS trigger LANGUAGE plpgsql AS $function$
+            BEGIN
+                IF TG_OP = 'UPDATE' AND OLD IS NOT DISTINCT FROM NEW THEN
+                    RETURN NEW;
+                END IF;
+                IF TG_OP IN ('DELETE', 'UPDATE') THEN
+                    PERFORM logos_record_permission_change(TG_ARGV[0], TG_ARGV[1], to_jsonb(OLD), 'revoke');
+                END IF;
+                IF TG_OP IN ('INSERT', 'UPDATE') THEN
+                    PERFORM logos_record_permission_change(TG_ARGV[0], TG_ARGV[1], to_jsonb(NEW), 'grant');
+                END IF;
+                RETURN NULL;
+            END;
+            $function$;
+
+            -- TRUNCATE has no row triggers, including during an admin import.
+            CREATE FUNCTION logos_audit_permission_truncate() RETURNS trigger LANGUAGE plpgsql AS $function$
+            DECLARE permission JSONB;
+            BEGIN
+                FOR permission IN EXECUTE format('SELECT to_jsonb(p) FROM %I.%I p', TG_TABLE_SCHEMA, TG_TABLE_NAME) LOOP
+                    PERFORM logos_record_permission_change(TG_ARGV[0], TG_ARGV[1], permission, 'revoke');
+                END LOOP;
+                RETURN NULL;
+            END;
+            $function$;
+
+            -- Delete grants before their parent disappears so each cascade keeps
+            -- its original names and team ID, even for grants predating this log.
+            CREATE FUNCTION logos_audit_permission_parent_delete() RETURNS trigger LANGUAGE plpgsql AS $function$
+            BEGIN
+                IF TG_TABLE_NAME = 'teams' THEN
+                    DELETE FROM api_key_model_permissions WHERE api_key_id IN (SELECT id FROM api_keys WHERE team_id = OLD.id);
+                    DELETE FROM api_key_provider_permissions WHERE api_key_id IN (SELECT id FROM api_keys WHERE team_id = OLD.id);
+                    DELETE FROM team_model_permissions WHERE team_id = OLD.id;
+                    DELETE FROM team_provider_permissions WHERE team_id = OLD.id;
+                ELSIF TG_TABLE_NAME = 'api_keys' THEN
+                    DELETE FROM api_key_model_permissions WHERE api_key_id = OLD.id;
+                    DELETE FROM api_key_provider_permissions WHERE api_key_id = OLD.id;
+                ELSIF TG_TABLE_NAME = 'models' THEN
+                    DELETE FROM team_model_permissions WHERE model_id = OLD.id;
+                    DELETE FROM api_key_model_permissions WHERE model_id = OLD.id;
+                ELSIF TG_TABLE_NAME = 'providers' THEN
+                    DELETE FROM team_provider_permissions WHERE provider_id = OLD.id;
+                    DELETE FROM api_key_provider_permissions WHERE provider_id = OLD.id;
+                END IF;
+                RETURN OLD;
+            END;
+            $function$;
+            CREATE TRIGGER permission_audit_row AFTER INSERT OR UPDATE OR DELETE ON team_model_permissions
+                FOR EACH ROW EXECUTE FUNCTION logos_audit_permission_row('team', 'model');
+            CREATE TRIGGER permission_audit_truncate BEFORE TRUNCATE ON team_model_permissions
+                FOR EACH STATEMENT EXECUTE FUNCTION logos_audit_permission_truncate('team', 'model');
+            CREATE TRIGGER permission_audit_row AFTER INSERT OR UPDATE OR DELETE ON team_provider_permissions
+                FOR EACH ROW EXECUTE FUNCTION logos_audit_permission_row('team', 'provider');
+            CREATE TRIGGER permission_audit_truncate BEFORE TRUNCATE ON team_provider_permissions
+                FOR EACH STATEMENT EXECUTE FUNCTION logos_audit_permission_truncate('team', 'provider');
+            CREATE TRIGGER permission_audit_row AFTER INSERT OR UPDATE OR DELETE ON api_key_model_permissions
+                FOR EACH ROW EXECUTE FUNCTION logos_audit_permission_row('api_key', 'model');
+            CREATE TRIGGER permission_audit_truncate BEFORE TRUNCATE ON api_key_model_permissions
+                FOR EACH STATEMENT EXECUTE FUNCTION logos_audit_permission_truncate('api_key', 'model');
+            CREATE TRIGGER permission_audit_row AFTER INSERT OR UPDATE OR DELETE ON api_key_provider_permissions
+                FOR EACH ROW EXECUTE FUNCTION logos_audit_permission_row('api_key', 'provider');
+            CREATE TRIGGER permission_audit_truncate BEFORE TRUNCATE ON api_key_provider_permissions
+                FOR EACH STATEMENT EXECUTE FUNCTION logos_audit_permission_truncate('api_key', 'provider');
+            CREATE TRIGGER permission_audit_parent_delete BEFORE DELETE ON teams
+                FOR EACH ROW EXECUTE FUNCTION logos_audit_permission_parent_delete();
+            CREATE TRIGGER permission_audit_parent_delete BEFORE DELETE ON api_keys
+                FOR EACH ROW EXECUTE FUNCTION logos_audit_permission_parent_delete();
+            CREATE TRIGGER permission_audit_parent_delete BEFORE DELETE ON models
+                FOR EACH ROW EXECUTE FUNCTION logos_audit_permission_parent_delete();
+            CREATE TRIGGER permission_audit_parent_delete BEFORE DELETE ON providers
+                FOR EACH ROW EXECUTE FUNCTION logos_audit_permission_parent_delete();
+        ]]></sql>
+        <rollback>
+            <sql splitStatements="false"><![CDATA[
+                DROP TRIGGER permission_audit_parent_delete ON teams;
+                DROP TRIGGER permission_audit_parent_delete ON api_keys;
+                DROP TRIGGER permission_audit_parent_delete ON models;
+                DROP TRIGGER permission_audit_parent_delete ON providers;
+                DROP TRIGGER permission_audit_row ON team_model_permissions;
+                DROP TRIGGER permission_audit_truncate ON team_model_permissions;
+                DROP TRIGGER permission_audit_row ON team_provider_permissions;
+                DROP TRIGGER permission_audit_truncate ON team_provider_permissions;
+                DROP TRIGGER permission_audit_row ON api_key_model_permissions;
+                DROP TRIGGER permission_audit_truncate ON api_key_model_permissions;
+                DROP TRIGGER permission_audit_row ON api_key_provider_permissions;
+                DROP TRIGGER permission_audit_truncate ON api_key_provider_permissions;
+                DROP FUNCTION logos_audit_permission_parent_delete();
+                DROP FUNCTION logos_audit_permission_truncate();
+                DROP FUNCTION logos_audit_permission_row();
+                DROP FUNCTION logos_record_permission_change(TEXT, TEXT, JSONB, TEXT);
+                DROP TABLE permission_audit_log;
+            ]]></sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>
