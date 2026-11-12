@@ -109,8 +109,9 @@ class Settings:
     kind: str = WORKER
     # The Logos that this host obeys: its address, and the key that Logos knows the host by. A core host has a deployer
     # key that this Logos made for it. A worker is known by its worker key, the key that it also uses with the
-    # orchestrator, so it needs no key of its own for orders. The manager asks Logos for orders and tells it how they
-    # go. A host obeys one Logos only. Without both values, only the command line gives orders.
+    # orchestrator. It has no deployer key, and a DEPLOYER_KEY on a worker is not read. The manager asks Logos for
+    # orders and tells it how they go. A host obeys one Logos only. Without both values, only the command line gives
+    # orders.
     logos_url: str = ""
     deployer_key: str = field(default="", repr=False)
     # How long a request for orders may wait at Logos before it answers with none, and the margin that the connection
@@ -148,8 +149,9 @@ class Settings:
         if not logos_url.startswith(("https://", "http://")):
             logos_url = ""
         node_key = _text(env, "NODE_KEY", "")
-        # A core host has no worker key, so it needs the deployer key. A worker uses its worker key unless a key is set.
-        deployer_key = _text(env, "DEPLOYER_KEY", "") or ("" if core else node_key)
+        # Logos knows a worker by its worker key and a core host by its deployer key. A host reads only its own key. A
+        # worker has no deployer key, so DEPLOYER_KEY means nothing on a worker. A core host has no worker key.
+        deployer_key = _text(env, "DEPLOYER_KEY", "") if core else node_key
         health_default = f"{logos_url}/api/info" if core and logos_url and deployer_key else ""
         return cls(
             kind=kind,

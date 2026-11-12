@@ -23,17 +23,31 @@ from logos_node_manager.logos_link import (
 )
 from logos_node_manager.state import Deployment, Outcome, Phase, StateStore
 
-KEY = "the-secret-deployer-key"
-LOGOS = {"NODE_MANAGER_LOGOS_URL": "https://a.example", "NODE_MANAGER_DEPLOYER_KEY": KEY}
+KEY = "the-secret-key"
+# Logos knows a worker by its worker key (the node key) and a core host by the deployer key that its Logos made. A host
+# reads only its own key, so the two environments are separate.
+LOGOS = {"NODE_MANAGER_LOGOS_URL": "https://a.example", "NODE_MANAGER_NODE_KEY": KEY}
+CORE_LOGOS = {
+    "NODE_MANAGER_KIND": "core",
+    "NODE_MANAGER_LOGOS_URL": "https://a.example",
+    "NODE_MANAGER_DEPLOYER_KEY": KEY,
+}
 
 
 # ---------------------------------------------------------------------- Settings
 
 
-def test_the_logos_address_and_the_key_are_read_from_the_environment():
-    settings = Settings.from_env({"NODE_MANAGER_LOGOS_URL": "https://dev.example/", "NODE_MANAGER_DEPLOYER_KEY": KEY})
+def test_a_worker_is_known_to_logos_by_its_worker_key():
+    settings = Settings.from_env({"NODE_MANAGER_LOGOS_URL": "https://dev.example/", "NODE_MANAGER_NODE_KEY": KEY})
 
     assert (settings.logos_url, settings.deployer_key) == ("https://dev.example", KEY)
+    assert settings.logos_enabled
+
+
+def test_a_core_host_is_known_to_logos_by_its_deployer_key():
+    settings = Settings.from_env(CORE_LOGOS)
+
+    assert settings.deployer_key == KEY
     assert settings.logos_enabled
 
 
@@ -42,26 +56,21 @@ def test_the_logos_address_and_the_key_are_read_from_the_environment():
     [
         {},
         {"NODE_MANAGER_LOGOS_URL": "https://a.example"},
-        {"NODE_MANAGER_DEPLOYER_KEY": KEY},
-        {"NODE_MANAGER_LOGOS_URL": "ftp://a.example", "NODE_MANAGER_DEPLOYER_KEY": KEY},
-        {"NODE_MANAGER_LOGOS_URL": "nonsense", "NODE_MANAGER_DEPLOYER_KEY": KEY},
+        {"NODE_MANAGER_NODE_KEY": KEY},
+        {"NODE_MANAGER_LOGOS_URL": "ftp://a.example", "NODE_MANAGER_NODE_KEY": KEY},
+        {"NODE_MANAGER_LOGOS_URL": "nonsense", "NODE_MANAGER_NODE_KEY": KEY},
     ],
 )
 def test_a_host_without_a_usable_address_and_key_obeys_no_logos(environ):
     assert not Settings.from_env(environ).logos_enabled
 
 
-def test_a_worker_is_known_to_logos_by_its_worker_key():
-    settings = Settings.from_env({"NODE_MANAGER_LOGOS_URL": "https://a.example", "NODE_MANAGER_NODE_KEY": KEY})
+def test_a_worker_has_no_deployer_key_and_never_reads_one():
+    only_a_deployer_key = {"NODE_MANAGER_LOGOS_URL": "https://a.example", "NODE_MANAGER_DEPLOYER_KEY": "a-deployer-key"}
+    both_keys = {**only_a_deployer_key, "NODE_MANAGER_NODE_KEY": KEY}
 
-    assert settings.deployer_key == KEY
-    assert settings.logos_enabled
-
-
-def test_a_deployer_key_that_is_set_wins_over_the_worker_key():
-    settings = Settings.from_env({**LOGOS, "NODE_MANAGER_NODE_KEY": "the-worker-key"})
-
-    assert settings.deployer_key == KEY
+    assert not Settings.from_env(only_a_deployer_key).logos_enabled
+    assert Settings.from_env(both_keys).deployer_key == KEY
 
 
 def test_a_core_host_never_takes_a_worker_key_for_its_deployer_key():
@@ -75,13 +84,11 @@ def test_a_core_host_never_takes_a_worker_key_for_its_deployer_key():
 
 def test_the_key_is_not_part_of_the_text_of_the_settings():
     assert KEY not in repr(Settings.from_env(LOGOS))
-    assert KEY not in repr(
-        Settings.from_env({"NODE_MANAGER_LOGOS_URL": "https://a.example", "NODE_MANAGER_NODE_KEY": KEY})
-    )
+    assert KEY not in repr(Settings.from_env(CORE_LOGOS))
 
 
 def test_a_core_host_has_its_own_defaults(tmp_path):
-    settings = Settings.from_env({"NODE_MANAGER_KIND": "core", **LOGOS})
+    settings = Settings.from_env(CORE_LOGOS)
 
     assert settings.kind == "core"
     assert str(settings.project_dir) == "/opt/logos"
@@ -91,9 +98,7 @@ def test_a_core_host_has_its_own_defaults(tmp_path):
 
 
 def test_the_health_address_can_be_set_and_a_worker_has_none():
-    core = Settings.from_env(
-        {"NODE_MANAGER_KIND": "core", "NODE_MANAGER_CORE_HEALTH_URL": "https://b.example/up", **LOGOS}
-    )
+    core = Settings.from_env({**CORE_LOGOS, "NODE_MANAGER_CORE_HEALTH_URL": "https://b.example/up"})
     worker = Settings.from_env(LOGOS)
 
     assert core.core_health_url == "https://b.example/up"

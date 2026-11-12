@@ -184,9 +184,9 @@ Dev. Nothing calls into the host: the manager only makes outgoing requests, so i
 address is `NODE_MANAGER_LOGOS_URL`. The key depends on the kind of host:
 
 * A **worker** is known to Logos by its worker key, `LOGOS_API_KEY`. This is the key that the worker also uses with the
-  orchestrator, and the manager already has it as `NODE_MANAGER_NODE_KEY`. A worker needs no deployer key. Its row on the
-  page Deployments appears when its manager asks Logos for orders for the first time. The worker compose file builds the
-  address from `LOGOS_URL`.
+  orchestrator, and the manager already has it as `NODE_MANAGER_NODE_KEY`. A worker has no deployer key, and its manager
+  does not read `NODE_MANAGER_DEPLOYER_KEY`. Its row on the page Deployments appears when its manager asks Logos for
+  orders for the first time. The worker compose file builds the address from `LOGOS_URL`.
 * A **core host** has no worker key. It has a deployer key that its Logos made on the page Deployments:
   `NODE_MANAGER_DEPLOYER_KEY`. The core compose file builds it from `LOGOS_DEPLOYER_KEY`, and the address from the domain
   of the host.
@@ -336,7 +336,7 @@ All settings are environment variables with the prefix `NODE_MANAGER_`.
 | `RECONNECT_TIMEOUT_S` | 300 | How long the new worker may take to show up at the orchestrator after the Docker checks passed. |
 | `LOG_LEVEL` | `INFO` | |
 | `KIND` | `worker` | `worker` or `core`. Anything else counts as `worker`. A core host has other defaults: `PROJECT_DIR` is `/opt/logos` and `COMPOSE_FILE` is `<PROJECT_DIR>/docker-compose.yaml`. |
-| `LOGOS_URL`, `DEPLOYER_KEY` | empty | The Logos that this host obeys: its address, and the key that this Logos made for the deployer of a core host (see "Orders from Logos"). A worker needs no `DEPLOYER_KEY`: if it is empty, the manager uses `NODE_KEY`, the worker key. Without the address and a key, only the command line gives orders. |
+| `LOGOS_URL`, `DEPLOYER_KEY` | empty | The Logos that this host obeys: its address, and the key that this Logos made for the deployer of a core host (see "Orders from Logos"). A worker has no deployer key and does not read `DEPLOYER_KEY`: it uses `NODE_KEY`, the worker key. A core host does not read `NODE_KEY`. Without the address and the key, only the command line gives orders. |
 | `ORDER_WAIT_S`, `ORDER_TIMEOUT_MARGIN_S` | 25, 15 | How long a request for orders waits at Logos, and the margin that the connection gets on top of it. |
 | `REPORT_INTERVAL_S` | 20 | How often a deployment in progress is reported to Logos when nothing changed. |
 | `SCALE_SERVICE`, `REPLICAS_VARIABLE` | `logos-webservice`, `LOGOS_WEBSERVICE_REPLICAS` | Core host: the service that runs as several copies, and the variable of the `.env` that says how many. |
