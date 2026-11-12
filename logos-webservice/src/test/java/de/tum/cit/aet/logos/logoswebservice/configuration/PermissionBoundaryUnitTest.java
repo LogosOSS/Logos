@@ -70,6 +70,7 @@ class PermissionBoundaryUnitTest {
         assertEquals(200, controller.setApiKeyProviderPermissions(
             KEY_ID, new SetProviderPermissionsRequestDTO(List.of(6001)), appAdmin).getStatusCode().value());
 
+        verify(apiKeyProviderRepo).lockApiKeyPermissions(PermissionService.apiKeyPermsLockKey(KEY_ID));
         verify(apiKeyProviderRepo).deleteById_ApiKeyId(KEY_ID);
         verify(apiKeyProviderRepo).saveAll(anyList());
         verify(apiKeyModelRepo).deleteCascadeForApiKey(KEY_ID);
@@ -83,6 +84,7 @@ class PermissionBoundaryUnitTest {
         assertEquals(200, controller.setApiKeyModelPermissions(
             KEY_ID, new SetModelPermissionsRequestDTO(List.of(5001)), appAdmin).getStatusCode().value());
 
+        verify(apiKeyProviderRepo).lockApiKeyPermissions(PermissionService.apiKeyPermsLockKey(KEY_ID));
         verify(apiKeyModelRepo).deleteById_ApiKeyId(KEY_ID);
         verify(apiKeyModelRepo).saveAll(anyList());
         verifyNoInteractions(teamProviderRepo, teamModelRepo);

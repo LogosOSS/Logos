@@ -33,6 +33,24 @@ public class PermissionService {
         return TEAM_PROVIDER_PERMS_LOCK_BASE + teamId;
     }
 
+    /**
+     * Stable key space for per-key permission mutation locks:
+     * {@code API_KEY_PERMS_LOCK_BASE + keyId}, disjoint from
+     * {@link #TEAM_PROVIDER_PERMS_LOCK_BASE}.
+     */
+    private static final long API_KEY_PERMS_LOCK_BASE = 0x4150494B50455200L; // "APIKPER"
+
+    /**
+     * Advisory-lock key serializing one API key's model and provider
+     * permission mutations. Each replacement deletes and re-inserts the key's
+     * grants, so without the lock two concurrent replacements under READ
+     * COMMITTED can both delete before either inserts and commit the union
+     * of both requested sets.
+     */
+    public static long apiKeyPermsLockKey(int keyId) {
+        return API_KEY_PERMS_LOCK_BASE + keyId;
+    }
+
     private final ApiKeyModelPermissionRepository apiKeyModelRepo;
     private final ApiKeyProviderPermissionRepository apiKeyProviderRepo;
     private final TeamModelPermissionRepository teamModelRepo;
@@ -61,6 +79,7 @@ public class PermissionService {
      */
     @Transactional
     public void setApiKeyModelPermissions(int keyId, List<Integer> modelIds) {
+        apiKeyProviderRepo.lockApiKeyPermissions(apiKeyPermsLockKey(keyId));
         apiKeyModelRepo.deleteById_ApiKeyId(keyId);
         apiKeyModelRepo.saveAll(modelIds.stream()
             .map(mid -> new ApiKeyModelPermission(keyId, mid)).toList());
@@ -78,6 +97,7 @@ public class PermissionService {
      */
     @Transactional
     public void setApiKeyProviderPermissions(int keyId, List<Integer> providerIds) {
+        apiKeyProviderRepo.lockApiKeyPermissions(apiKeyPermsLockKey(keyId));
         apiKeyProviderRepo.deleteById_ApiKeyId(keyId);
         apiKeyProviderRepo.saveAll(providerIds.stream()
             .map(pid -> new ApiKeyProviderPermission(keyId, pid)).toList());

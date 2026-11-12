@@ -18,6 +18,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
+import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ApiKeyProviderPermissionRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.TeamProviderPermissionRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.service.PermissionService;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -53,6 +54,7 @@ class PermissionControllerTest {
     @Autowired DataSource dataSource;
     @Autowired PlatformTransactionManager txManager;
     @Autowired TeamProviderPermissionRepository teamProviderRepo;
+    @Autowired ApiKeyProviderPermissionRepository apiKeyProviderRepo;
     @MockitoBean JwtDecoder jwtDecoder;
 
     @Test
@@ -424,6 +426,21 @@ class PermissionControllerTest {
         assertTrue(jdbc.queryForObject(
             "SELECT EXISTS (SELECT 1 FROM api_key_model_permissions WHERE api_key_id = 3001 AND model_id = 5001)",
             Boolean.class));
+    }
+
+    @Test
+    void apiKeyPermissionMutations_areSerializedPerKey() throws Exception {
+        DefaultTransactionDefinition def = new DefaultTransactionDefinition();
+        TransactionStatus status = txManager.getTransaction(def);
+        try {
+            apiKeyProviderRepo.lockApiKeyPermissions(PermissionService.apiKeyPermsLockKey(3001));
+
+            assertFalse(tryLockOnFreshConnection(PermissionService.apiKeyPermsLockKey(3001)));
+            assertTrue(tryLockOnFreshConnection(PermissionService.apiKeyPermsLockKey(3002)));
+            assertTrue(tryLockOnFreshConnection(PermissionService.teamProviderPermsLockKey(3001)));
+        } finally {
+            txManager.rollback(status);
+        }
     }
 
     /**
