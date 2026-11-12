@@ -6,13 +6,19 @@
 >
   @if (key) {
     <div class="kd-body">
-      <!-- Key value -->
-      @if (key.key_value) {
+      <!-- Key value. Another member's personal key is redacted by the server;
+           a manager can still rotate it to revoke the current value. -->
+      @if (key.key_value || canEdit) {
         <div class="key-value-row">
           <div class="key-value-left">
             <div class="kv-label">SECRET KEY</div>
-            <code class="kv-text">{{ maskedKey() }}</code>
+            @if (key.key_value) {
+              <code class="kv-text">{{ maskedKey() }}</code>
+            } @else {
+              <span class="kv-hidden">Only the key holder can see this key.</span>
+            }
           </div>
+          @if (key.key_value) {
           <button
             class="btn-copy"
             type="button"
@@ -25,6 +31,7 @@
               <i class="pi pi-copy"></i> Copy
             }
           </button>
+          }
           <button
             class="btn-rotate"
             type="button"
@@ -40,6 +47,9 @@
             <p class="rotate-warn">
               <i class="pi pi-exclamation-triangle"></i>
               Rotating will immediately invalidate the current key. Any system using it will stop working until updated.
+              @if (!key.key_value) {
+                The key holder finds the new key in My Workspace.
+              }
             </p>
             @if (rotateError()) {
               <p class="rotate-error">{{ rotateError() }}</p>

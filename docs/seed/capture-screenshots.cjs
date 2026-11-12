@@ -312,6 +312,16 @@ const SHOTS = [
     full: true,
     needs: "an owner-edited diagram with a differing agent update (Edited / Agent update / Keep mine)", go: (p, ids) => teamTab(p, ids, "Workflows") },
 
+  {
+    file: "roles/logos-admin-benchmark-window-ended.png",
+    user: ADMIN,
+    full: true,
+    needs: "LOGOS_DOCS_WINDOW_ENDED=true request-workload-example.py seed",
+    go: async (p, ids) => {
+      await resultsView(p, ids);
+      await p.getByRole("status", { name: "Benchmark stopped" }).waitFor();
+    },
+  },
   // Model performance: overview, results and analysis
   {
     file: "roles/logos-admin-nightly-results.png",

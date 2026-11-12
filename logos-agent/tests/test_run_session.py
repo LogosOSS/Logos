@@ -100,7 +100,7 @@ def _patch_workspace(monkeypatch, workspace: Path) -> None:
     monkeypatch.setenv("HOME", str(workspace / ".home"))
     # These tests push to a bare repository on disk, so there is no GitHub
     # account behind the token to resolve. The check itself is covered by
-    # TestPushIdentity below, against a stubbed `gh`.
+    # TestPushIdentity below, against a stubbed HTTPS endpoint.
     monkeypatch.setattr(run_session, "verify_token_identity", lambda _token: None)
 
 
@@ -525,6 +525,41 @@ class TestFinalizer:
         assert parent == base
         assert not marker.exists(), "a planted hook or credential helper ran in the finalizer"
 
+    @pytest.mark.parametrize("workflow", [".github/workflows/\u00e4.yml", ".github/workflows/plain.yml"])
+    def test_a_workflow_file_with_any_name_is_refused_before_the_commit(self, tmp_path, monkeypatch, workflow):
+        # git status quotes a name like ".github/workflows/\u00e4.yml"; the check
+        # must see the path git actually stages, whatever its characters.
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        origin = _make_origin(workspace)
+        checkout, home, marker = _plant_agent_phase(workspace, origin, self.BRANCH)
+        _patch_workspace(monkeypatch, workspace)
+        monkeypatch.setenv("LOGOS_AGENT_WORKFLOW_CHANGES", "deny")
+        assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
+        (checkout / workflow).parent.mkdir(parents=True, exist_ok=True)
+        (checkout / workflow).write_text("on: push\n")
+
+        with pytest.raises(RuntimeError, match="CI workflow files"):
+            commit_and_push(self.BRANCH, "a long enough task description")
+        listed = _git("--git-dir", str(origin), "branch", "--list", self.BRANCH, cwd=workspace).stdout
+        assert listed.strip() == ""
+
+    def test_moving_a_file_into_the_workflows_directory_is_refused(self, tmp_path, monkeypatch):
+        # git status shows a move as "old -> new", which hides the new path.
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        origin = _make_origin(workspace)
+        checkout, home, marker = _plant_agent_phase(workspace, origin, self.BRANCH)
+        _patch_workspace(monkeypatch, workspace)
+        monkeypatch.setenv("LOGOS_AGENT_WORKFLOW_CHANGES", "deny")
+        assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
+        tracked = _git("ls-files", cwd=checkout).stdout.split()[0]
+        (checkout / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+        _git("mv", tracked, ".github/workflows/moved.yml", cwd=checkout)
+
+        with pytest.raises(RuntimeError, match="CI workflow files"):
+            commit_and_push(self.BRANCH, "a long enough task description")
+
     def test_a_retried_session_pushes_against_the_base_not_the_previous_tip(self, tmp_path, monkeypatch):
         # The remote branch exists from an earlier run of the same session.
         # Re-finalizing must not build on that tip: the diff belongs to the
@@ -693,38 +728,44 @@ class TestPushIdentity:
     """
 
     @staticmethod
-    def _stub_gh(monkeypatch, *, login: str = "LogosOSSAgent", returncode: int = 0, stderr: str = ""):
-        import run_session
+    def _stub_identity(monkeypatch, *, login="LogosOSSAgent", fail=False):
+        import io
+        from urllib.error import URLError
 
-        calls: list = []
+        calls = []
 
-        def fake_run(cmd, **kwargs):
-            calls.append((cmd, kwargs))
-            return subprocess.CompletedProcess(cmd, returncode, stdout=login + "\n", stderr=stderr)
+        class Opener:
+            def open(self, request, **kwargs):
+                calls.append((request, kwargs))
+                if fail:
+                    raise URLError("Bad credentials")
+                return io.BytesIO(json.dumps({"login": login}).encode())
 
-        monkeypatch.setattr(run_session.subprocess, "run", fake_run)
+        monkeypatch.setattr(run_session, "build_opener", lambda *handlers: Opener())
         return calls
 
-    def test_the_agent_account_is_accepted(self, monkeypatch):
-        import run_session
-
+    def test_the_agent_account_is_accepted(self, monkeypatch, tmp_path):
         monkeypatch.delenv("LOGOS_AGENT_GITHUB_LOGIN", raising=False)
-        calls = self._stub_gh(monkeypatch)
+        home = tmp_path / "home"
+        config = home / ".config" / "gh"
+        config.mkdir(parents=True)
+        (config / "hosts.yml").write_text("github.com:\n    api_host: attacker.invalid\n")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("GH_CONFIG_DIR", str(config))
+        calls = self._stub_identity(monkeypatch)
 
         run_session.verify_token_identity("ghp-token")
 
-        # The token is passed to gh through the environment, never on the
-        # command line where it would land in a process listing.
-        cmd, kwargs = calls[0]
-        assert cmd[:3] == ["gh", "api", "user"]
-        assert kwargs["env"]["GH_TOKEN"] == "ghp-token"
-        assert "ghp-token" not in " ".join(cmd)
+        request, kwargs = calls[0]
+        assert request.full_url == "https://api.github.com/user"
+        assert request.get_header("Authorization") == "Bearer ghp-token"
+        assert kwargs["timeout"] == 60
 
     def test_a_configured_account_is_honoured(self, monkeypatch):
         import run_session
 
         monkeypatch.setenv("LOGOS_AGENT_GITHUB_LOGIN", "SomeOtherBot")
-        self._stub_gh(monkeypatch, login="SomeOtherBot")
+        self._stub_identity(monkeypatch, login="SomeOtherBot")
 
         run_session.verify_token_identity("ghp-token")
 
@@ -732,7 +773,7 @@ class TestPushIdentity:
         import run_session
 
         monkeypatch.delenv("LOGOS_AGENT_GITHUB_LOGIN", raising=False)
-        self._stub_gh(monkeypatch, login="wasnertobias")
+        self._stub_identity(monkeypatch, login="wasnertobias")
 
         with pytest.raises(RuntimeError, match="not as the agent account"):
             run_session.verify_token_identity("ghp-token")
@@ -741,7 +782,7 @@ class TestPushIdentity:
         import run_session
 
         monkeypatch.delenv("LOGOS_AGENT_GITHUB_LOGIN", raising=False)
-        self._stub_gh(monkeypatch, returncode=1, stderr="gh: Bad credentials (HTTP 401)")
+        self._stub_identity(monkeypatch, fail=True)
 
         with pytest.raises(RuntimeError, match="could not establish the identity"):
             run_session.verify_token_identity("ghp-token")
@@ -750,7 +791,7 @@ class TestPushIdentity:
         import run_session
 
         monkeypatch.setenv("LOGOS_AGENT_GITHUB_LOGIN", "logosossagent")
-        self._stub_gh(monkeypatch, login="LogosOSSAgent")
+        self._stub_identity(monkeypatch, login="LogosOSSAgent")
 
         run_session.verify_token_identity("ghp-token")
 
@@ -1697,3 +1738,103 @@ class TestGitStartsNoBackgroundMaintenance:
             ["git", "-c", "maintenance.auto=false", "fetch", "--depth", "50", "origin", "main"],
             ["ls", "-la"],
         ]
+
+
+@pytest.mark.parametrize("command", [["gh", "api", "user"], ["git", "fetch", "origin"]])
+def test_token_commands_get_fresh_configuration_directories(tmp_path, monkeypatch, command):
+    home = tmp_path / "agent-home"
+    config = home / ".config" / "gh"
+    config.mkdir(parents=True)
+    (config / "hosts.yml").write_text("github.com:\n    api_host: attacker.invalid\n")
+    (home / ".gitconfig").write_text("[credential]\n    helper = !echo stolen\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GH_CONFIG_DIR", str(config))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(home / ".gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "0")
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    homes = []
+
+    def inspect_command(cmd, **kwargs):
+        env = kwargs["env"]
+        clean_home = Path(env["HOME"])
+        homes.append(clean_home)
+        assert clean_home != home
+        assert not (clean_home / ".gitconfig").exists()
+        assert set(clean_home.iterdir()) == {Path(env["GH_CONFIG_DIR"]), Path(env["XDG_CONFIG_HOME"])}
+        for name in ["GH_CONFIG_DIR", "XDG_CONFIG_HOME"]:
+            assert Path(env[name]).is_relative_to(clean_home)
+            assert list(Path(env[name]).iterdir()) == []
+        assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert env["GH_TOKEN"] == env["GITHUB_TOKEN"] == "test-token"
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(run_session.subprocess, "run", inspect_command)
+    run_session.run(command)
+    run_session.run(command)
+    assert homes[0] != homes[1]
+    assert all(not path.exists() for path in homes)
+    assert (config / "hosts.yml").exists()
+
+
+def test_git_ignores_the_agent_global_configuration(tmp_path, monkeypatch):
+    home = tmp_path / "agent-home"
+    home.mkdir()
+    planted = home / ".gitconfig"
+    planted.write_text("[credential]\n    helper = !echo stolen\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(planted))
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    result = run_session.run(["git", "config", "--global", "--get", "credential.helper"], check=False, quiet=True)
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
+def test_finalize_resets_home_before_verifying_identity(tmp_path, monkeypatch):
+    _patch_workspace(monkeypatch, tmp_path)
+    home = tmp_path / ".home"
+    config = home / ".config" / "gh"
+    config.mkdir(parents=True)
+    (config / "hosts.yml").write_text("github.com:\n    api_host: attacker.invalid\n")
+    (home / ".gitconfig").write_text("[credential]\n    helper = !echo stolen\n")
+    monkeypatch.setenv("LOGOS_SESSION_BRANCH", "logos/agent/test")
+    monkeypatch.setenv("LOGOS_SESSION_TASK", "task")
+    monkeypatch.setenv("LOGOS_REPO_URL", REPO_URL)
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    calls = []
+
+    def verify(token):
+        assert not (config / "hosts.yml").exists()
+        assert not (home / ".gitconfig").exists()
+        calls.append(token)
+
+    monkeypatch.setattr(run_session, "verify_token_identity", verify)
+    (tmp_path / "repo").mkdir()
+    run_finalize(Result())
+    assert calls == ["test-token"]
+
+
+def test_identity_opener_disables_proxies_and_redirects(monkeypatch):
+    from urllib.error import HTTPError
+    from urllib.request import Request
+
+    real_build_opener = run_session.build_opener
+
+    def inspect_opener(*handlers):
+        proxy = next(h for h in handlers if isinstance(h, run_session.ProxyHandler))
+        assert proxy.proxies == {}
+        opener = real_build_opener(*handlers)
+        request = Request("https://api.github.com/user", headers={"Authorization": "Bearer test-token"})
+        redirects = [h for h in opener.handlers if isinstance(h, run_session.HTTPRedirectHandler)]
+        assert len(redirects) == 1
+        for code in [301, 302, 303, 307, 308]:
+            with pytest.raises(HTTPError):
+                opener.error("http", request, None, code, "redirect", {"location": "https://attacker.invalid/"})
+        raise RuntimeError("checked before network")
+
+    monkeypatch.setattr(run_session, "build_opener", inspect_opener)
+    with pytest.raises(RuntimeError, match="checked before network"):
+        run_session.verify_token_identity("test-token")

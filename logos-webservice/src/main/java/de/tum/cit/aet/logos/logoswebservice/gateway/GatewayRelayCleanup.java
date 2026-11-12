@@ -8,14 +8,15 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.async.CallableProcessingInterceptor;
 
 /**
- * Closes the upstream reader of a cloud relay when its request ends.
+ * Releases the client relay and preserves provider accounting when its request ends.
  *
  * <p>The forwarder starts reading the upstream before the relay task runs.
  * When MVC rejects that task, times it out, or the request fails before the
- * task ran, nothing else would stop the reader. Spring calls
+ * task ran, the bounded usage drain takes ownership of the reader. Spring calls
  * {@link #afterCompletion} for every async request once it is over, however
  * it ended; for a relay that ran to the end the pump is already closed and
- * closing it again does nothing.
+ * cleanup does nothing. A detached usage drain owns its pump until
+ * provider usage, EOF or its deadline; request completion leaves that pump open.
  */
 public final class GatewayRelayCleanup implements CallableProcessingInterceptor {
 
@@ -30,10 +31,26 @@ public final class GatewayRelayCleanup implements CallableProcessingInterceptor 
     }
 
     @Override
+    public <T> Object handleTimeout(NativeWebRequest request, Callable<T> task) {
+        releaseClient(request);
+        return RESULT_NONE;
+    }
+
+    @Override
+    public <T> Object handleError(NativeWebRequest request, Callable<T> task, Throwable error) {
+        releaseClient(request);
+        return RESULT_NONE;
+    }
+
+    @Override
     public <T> void afterCompletion(NativeWebRequest request, Callable<T> task) {
+        releaseClient(request);
+    }
+
+    private void releaseClient(NativeWebRequest request) {
         if (request.getAttribute(ATTRIBUTE, RequestAttributes.SCOPE_REQUEST)
                 instanceof GatewayCloudForwarder.UpstreamPump pump) {
-            pump.close();
+            pump.closeClientRequest();
         }
     }
 }

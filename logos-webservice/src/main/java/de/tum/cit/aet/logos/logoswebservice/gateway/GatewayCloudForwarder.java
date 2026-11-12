@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -36,11 +37,24 @@ public class GatewayCloudForwarder {
     /**
      * How long the upstream reader waits for the relay to start. A relay that
      * was rejected or cancelled before it ran never starts; the pump then
-     * closes the upstream if {@link GatewayRelayCleanup} has not already.
+     * hands the upstream to the usage drain if request cleanup has not already.
      * Matches the default async request timeout, after which the relay is
      * gone anyway.
      */
     static final Duration RELAY_ATTACH_TIMEOUT = Duration.ofMinutes(30);
+
+    @Value("${logos.gateway.stream-drain-timeout-seconds:120}")
+    private double streamDrainTimeoutSeconds = 120;
+
+    void setStreamDrainTimeout(Duration timeout) {
+        streamDrainTimeoutSeconds = timeout.toNanos() / 1_000_000_000.0;
+    }
+
+    private Duration relayAttachTimeout = RELAY_ATTACH_TIMEOUT;
+
+    void setRelayAttachTimeout(Duration timeout) {
+        relayAttachTimeout = timeout;
+    }
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -70,7 +84,7 @@ public class GatewayCloudForwarder {
      *                      response's canonical token usage and, when retained,
      *                      its body
      * @param onFailure     invoked when the upstream call or stream fails, with the
-     *                      error and the instants the forward reached
+     *                      error, provider-reported usage and the instants the forward reached
      */
     public ResponseEntity<StreamingResponseBody> forward(
             GatewayDeployment deployment,
@@ -81,7 +95,7 @@ public class GatewayCloudForwarder {
             Map<String, List<String>> inboundHeaders,
             boolean retainResponseBody,
             java.util.function.Consumer<GatewayForwardResult> onSuccess,
-            java.util.function.BiConsumer<String, GatewayForwardTimings> onFailure) throws IOException {
+            java.util.function.BiConsumer<String, GatewayForwardResult> onFailure) throws IOException {
 
         String forwardUrl = CloudForwardUrlBuilder.build(
             deployment.baseUrl(), inferencePath, deployment.endpoint());
@@ -140,12 +154,14 @@ public class GatewayCloudForwarder {
             Thread.currentThread().interrupt();
             if (onFailure != null) {
                 onFailure.accept("Interrupted while forwarding to cloud",
-                    new GatewayForwardTimings(providerCall, null, Instant.now()));
+                    new GatewayForwardResult(Map.of(), null, null,
+                        new GatewayForwardTimings(providerCall, null, Instant.now())));
             }
             throw new IOException("Interrupted while forwarding to cloud", e);
         } catch (IOException e) {
             if (onFailure != null) {
-                onFailure.accept(e.getMessage(), new GatewayForwardTimings(providerCall, null, Instant.now()));
+                onFailure.accept(e.getMessage(), new GatewayForwardResult(Map.of(), null, null,
+                        new GatewayForwardTimings(providerCall, null, Instant.now())));
             }
             throw e;
         }
@@ -167,42 +183,127 @@ public class GatewayCloudForwarder {
         // so neither a client that is slow to take the bytes nor the wait for
         // an executor thread to run the relay shifts the provider's timestamps.
         // It starts here, not in the relay, for the second reason.
-        UpstreamPump pump = UpstreamPump.start(upstream.body(), headersAt, RELAY_ATTACH_TIMEOUT);
-        GatewayRelayCleanup.closeWhenRequestEnds(pump);
         String upstreamContentType = upstream.headers().firstValue("content-type").orElse(null);
+        UpstreamPump pump = UpstreamPump.start(upstream.body(), headersAt, relayAttachTimeout, abandoned -> {
+            GatewayUsageCapture capture = new GatewayUsageCapture(OutputStream.nullOutputStream(),
+                objectMapper, upstreamContentType, retainResponseBody, abandoned::currentChunkAt);
+            drain(abandoned, capture, providerCall, body, status,
+                GatewayUsageCapture.isEventStream(upstreamContentType), onSuccess, onFailure);
+        });
+        pump.drainOnClientEnd = upstreamOk && GatewayUsageCapture.isEventStream(upstreamContentType);
+        GatewayRelayCleanup.closeWhenRequestEnds(pump);
         StreamingResponseBody stream = outputStream -> {
+            // Claim ownership before creating capture or entering the settlement path.
+            // A request-end drain may already own the buffered provider bytes.
+            pump.attachRelay();
             IOException streamError = null;
             // The capture sits between the upstream and the client so the
             // reported token counts can be billed; it never delays or alters
             // the bytes the client receives.
             GatewayUsageCapture capture = new GatewayUsageCapture(
                 outputStream, objectMapper, upstreamContentType, retainResponseBody, pump::currentChunkAt);
-            try (pump; OutputStream out = capture) {
-                pump.transferTo(out);
-                out.flush();
+            boolean draining = false;
+            try {
+                pump.transferAttachedTo(capture);
+                capture.flush();
+            } catch (GatewayUsageCapture.ClientDisconnectedException e) {
+                if (upstreamOk && GatewayUsageCapture.isEventStream(upstreamContentType)) {
+                    draining = true;
+                    drain(pump, capture, providerCall, body, status, true, onSuccess, onFailure);
+                    throw e;
+                }
+                streamError = e;
             } catch (IOException e) {
                 streamError = e;
+            } finally {
+                if (!draining) {
+                    pump.close();
+                    // Closing the servlet output is MVC's responsibility. Parsing
+                    // the final buffered line must not flush to a disconnected client.
+                    capture.detachClient();
+                    capture.close();
+                }
             }
             GatewayForwardTimings timings = new GatewayForwardTimings(
                 providerCall, capture.firstTokenAt(), pump.endedAt());
             if (streamError != null) {
                 if (onFailure != null) {
-                    onFailure.accept(streamError.getMessage(), timings);
+                    onFailure.accept(streamError.getMessage(), new GatewayForwardResult(
+                        capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
                 }
                 throw streamError;
             }
-            if (upstreamOk) {
+            if (capture.upstreamError() != null) {
+                if (onFailure != null) {
+                    onFailure.accept(capture.upstreamError(), new GatewayForwardResult(
+                        capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
+                }
+            } else if (upstreamOk) {
                 if (onSuccess != null) {
                     onSuccess.accept(new GatewayForwardResult(
                         capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
                 }
             } else if (onFailure != null) {
-                onFailure.accept("Upstream HTTP " + status, timings);
+                onFailure.accept("Upstream HTTP " + status, new GatewayForwardResult(
+                    capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
             }
         };
 
         return ResponseEntity.status(status).headers(responseHeaders)
             .body(GatewayRelayOccupancy.track(stream));
+    }
+
+    /** Transfers capture to a single background owner, independent of MVC's relay executor. */
+    private void drain(UpstreamPump pump, GatewayUsageCapture capture, Instant providerCall, byte[] request,
+                       int status, boolean eventStream, java.util.function.Consumer<GatewayForwardResult> onSuccess,
+                       java.util.function.BiConsumer<String, GatewayForwardResult> onFailure) {
+        capture.detachClient();
+        pump.beginDrain();
+        Thread.ofVirtual().name("gateway-usage-drain").start(() -> {
+            boolean timedOut = false;
+            IOException upstreamError = null;
+            try {
+                pump.drainTo(capture, Duration.ofNanos((long) (Math.max(0, streamDrainTimeoutSeconds)
+                    * 1_000_000_000)), capture::drainComplete);
+            } catch (java.util.concurrent.TimeoutException timeout) {
+                timedOut = true;
+            } catch (IOException failure) {
+                upstreamError = failure;
+            } finally {
+                pump.close();
+                try {
+                    capture.close();
+                } catch (IOException ignored) {
+                    // The detached capture owns no client resources.
+                }
+            }
+            GatewayForwardTimings timings = new GatewayForwardTimings(
+                providerCall, capture.firstTokenAt(), pump.endedAt());
+            String error = capture.upstreamError();
+            if (error == null && upstreamError != null) {
+                error = upstreamError.getMessage();
+            }
+            if (error == null && (status < 200 || status >= 400)) {
+                error = "Upstream HTTP " + status;
+            }
+            // An empty body is an empty response only when the stream ended. A
+            // provider still silent at the drain deadline may be processing the
+            // prompt, so a successful stream is then billed by estimate.
+            if (error == null && capture.firstByteAt() == null && !(timedOut && eventStream)) {
+                error = "Provider delivered no response body";
+            }
+            if (error != null || upstreamError != null) {
+                if (onFailure != null) {
+                    onFailure.accept(error, new GatewayForwardResult(capture.usage(), capture.capturedBody(),
+                        capture.serviceTier(), timings));
+                }
+            } else if (onSuccess != null) {
+                Map<String, Long> usage = eventStream
+                    ? capture.disconnectedUsage(request, timedOut) : capture.usage();
+                onSuccess.accept(new GatewayForwardResult(usage, capture.capturedBody(),
+                    capture.serviceTier(), timings));
+            }
+        });
     }
 
     /**
@@ -218,9 +319,10 @@ public class GatewayCloudForwarder {
      *
      * <p>The reader starts before the relay runs. A relay that never starts
      * (rejected or cancelled before it ran) must not leave the reader and the
-     * upstream connection behind: {@link GatewayRelayCleanup} closes the pump
-     * when the request ends, and a watchdog closes it when no relay attached
-     * within the attach timeout, whether or not the buffer is full.
+     * upstream connection behind: request cleanup and the attachment watchdog
+     * hand the pump to a bounded usage drain, whether or not the buffer is full.
+     * Attachment and abandonment share a monitor so only one consumer can own
+     * the capture and settlement callbacks.
      */
     static final class UpstreamPump implements AutoCloseable {
 
@@ -260,14 +362,21 @@ public class GatewayCloudForwarder {
             new java.util.concurrent.ArrayBlockingQueue<>(MAX_CHUNKS);
         private final Thread reader;
         private final Thread watchdog;
+        private final java.util.function.Consumer<UpstreamPump> onAbandoned;
         private final java.util.concurrent.atomic.AtomicBoolean closed =
             new java.util.concurrent.atomic.AtomicBoolean();
         private volatile Instant endedAt;
         private volatile boolean attached;
+        private volatile boolean draining;
+        private volatile boolean drainOnClientEnd;
+        private volatile boolean clientEnded;
+        private volatile Thread relayThread;
         private Instant currentChunkAt;
 
-        private UpstreamPump(InputStream in, Instant headersAt, Duration attachTimeout) {
+        private UpstreamPump(InputStream in, Instant headersAt, Duration attachTimeout,
+                             java.util.function.Consumer<UpstreamPump> onAbandoned) {
             this.in = in;
+            this.onAbandoned = onAbandoned;
             this.currentChunkAt = headersAt;
             this.endedAt = headersAt;
             this.reader = Thread.ofVirtual().name("gateway-upstream-reader").unstarted(this::pump);
@@ -279,19 +388,22 @@ public class GatewayCloudForwarder {
                     Thread.currentThread().interrupt();
                     return;
                 }
-                if (!attached) {
-                    close();
-                }
+                abandonBeforeAttachment();
             });
         }
 
         /**
          * Starts reading {@code in} at once. If no relay starts taking chunks
-         * within {@code attachTimeout}, the pump closes the upstream and a late
-         * relay fails.
+         * within {@code attachTimeout}, the abandonment handler takes ownership
+         * and a late relay fails. Without a handler the upstream is closed.
          */
         static UpstreamPump start(InputStream in, Instant headersAt, Duration attachTimeout) {
-            UpstreamPump pump = new UpstreamPump(in, headersAt, attachTimeout);
+            return start(in, headersAt, attachTimeout, null);
+        }
+
+        static UpstreamPump start(InputStream in, Instant headersAt, Duration attachTimeout,
+                                  java.util.function.Consumer<UpstreamPump> onAbandoned) {
+            UpstreamPump pump = new UpstreamPump(in, headersAt, attachTimeout, onAbandoned);
             pump.reader.start();
             pump.watchdog.start();
             return pump;
@@ -332,16 +444,32 @@ public class GatewayCloudForwarder {
          * flushing whenever it has caught up with the upstream.
          */
         void transferTo(OutputStream out) throws IOException {
+            attachRelay();
+            transferAttachedTo(out);
+        }
+
+        private synchronized void attachRelay() throws IOException {
+            if (attached || draining || closed.get()) {
+                throw new IOException("The upstream body is no longer available to the relay");
+            }
+            relayThread = Thread.currentThread();
             attached = true;
             watchdog.interrupt();
-            if (closed.get()) {
-                throw new IOException("The upstream body was released before the relay started");
-            }
+        }
+
+        private void transferAttachedTo(OutputStream out) throws IOException {
             while (true) {
+                if (clientEnded) {
+                    throw new GatewayUsageCapture.ClientDisconnectedException(new IOException("Client request ended"));
+                }
                 Chunk chunk;
                 try {
                     chunk = chunks.take();
                 } catch (InterruptedException e) {
+                    if (drainOnClientEnd) {
+                        throw new GatewayUsageCapture.ClientDisconnectedException(
+                            new java.io.InterruptedIOException("Client relay interrupted"));
+                    }
                     Thread.currentThread().interrupt();
                     throw new java.io.InterruptedIOException("Relay interrupted");
                 }
@@ -358,6 +486,70 @@ public class GatewayCloudForwarder {
                     // leave it in the response buffer until more follows.
                     out.flush();
                 }
+            }
+        }
+
+        synchronized void beginDrain() {
+            draining = true;
+            relayThread = null;
+            watchdog.interrupt();
+        }
+
+        private synchronized void abandonBeforeAttachment() {
+            if (attached || draining || closed.get()) {
+                return;
+            }
+            if (onAbandoned == null) {
+                close();
+            } else {
+                beginDrain();
+                onAbandoned.accept(this);
+            }
+        }
+
+        synchronized void closeClientRequest() {
+            if (draining || closed.get()) {
+                return;
+            }
+            if (!attached) {
+                abandonBeforeAttachment();
+            } else if (drainOnClientEnd) {
+                clientEnded = true;
+                // Wake a relay waiting for provider bytes so its catch block
+                // can hand capture and pump ownership to the bounded drain.
+                relayThread.interrupt();
+            } else {
+                close();
+            }
+        }
+
+        /** Drain on the background owner, bounded even when the provider is silent. */
+        void drainTo(OutputStream out, Duration timeout, java.util.function.BooleanSupplier complete)
+                throws IOException, java.util.concurrent.TimeoutException {
+            long deadline = System.nanoTime() + timeout.toNanos();
+            while (!complete.getAsBoolean()) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
+                    throw new java.util.concurrent.TimeoutException();
+                }
+                Chunk chunk;
+                try {
+                    chunk = chunks.poll(remaining, java.util.concurrent.TimeUnit.NANOSECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new java.io.InterruptedIOException("Usage drain interrupted");
+                }
+                if (chunk == null) {
+                    throw new java.util.concurrent.TimeoutException();
+                }
+                if (chunk.error() != null) {
+                    throw chunk.error();
+                }
+                if (chunk.bytes() == null) {
+                    return;
+                }
+                currentChunkAt = chunk.at();
+                out.write(chunk.bytes());
             }
         }
 

@@ -165,6 +165,14 @@ export type LaneSignalData = {
   max_model_len: number | null;
 };
 
+export type LaneTransferStatus = {
+  lane_id: string;
+  model: string;
+  operation: 'loading' | 'unloading';
+  resident_vram_mb: number | null;
+  reference_vram_mb: number | null;
+};
+
 // VramV2Sample from logos-ui-old/hooks/use-stats-websocket-v2.ts
 export interface VramV2Sample {
   snapshot_id?: number;
@@ -205,6 +213,7 @@ export interface VramV2Sample {
       sleeping_lane_count?: number;
       cold_lane_count?: number;
       total_effective_vram_mb?: number;
+      lane_transfers?: LaneTransferStatus[];
       devices?: DeviceInfo[];
       /** One line per GPU the worker reports as failed, e.g. "gpu0 (GPU-…): GPU requires reset". */
       gpu_faults?: string[];

@@ -1,5 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.websocket;
 
+import java.time.Instant;
 import java.util.Map;
 
 import org.springframework.dao.DataAccessException;
@@ -48,6 +49,12 @@ public class WebSocketAuthInterceptor implements HandshakeInterceptor {
             return false;
         }
 
+        Instant expiresAt = jwtAuth.getToken().getExpiresAt();
+        if (expiresAt == null || !Instant.now().isBefore(expiresAt)) {
+            response.setStatusCode(HttpStatus.UNAUTHORIZED);
+            return false;
+        }
+
         User user;
         try {
             user = syncService.syncIfStale(claimExtractor.extract(jwtAuth.getToken()));
@@ -61,7 +68,8 @@ public class WebSocketAuthInterceptor implements HandshakeInterceptor {
         }
 
         attributes.put("logosKey", jwtAuth.getToken().getTokenValue());
-        attributes.put("userId", user.getId());
+        attributes.put(WebSocketSessionAuth.USER_ID, user.getId());
+        attributes.put(WebSocketSessionAuth.EXPIRES_AT, expiresAt);
         return true;
     }
 

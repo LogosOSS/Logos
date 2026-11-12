@@ -20,6 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.ResponseEntity;
@@ -129,6 +131,54 @@ class GatewayCloudBillingEndToEndTest {
         if (upstream != null) {
             upstream.stop(0);
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void requestCompletedBeforeRelayBillsProviderUsageOnce(boolean providerError) throws Exception {
+        responseContentType = "text/event-stream";
+        responseBody = "data: {\"usage\":{\"prompt_tokens\":37,\"completion_tokens\":19},"
+            + (providerError ? "\"error\":{\"message\":\"provider failed\"}" : "\"choices\":[]") + "}\n\n";
+        Fixture f = seedPricedDeployment();
+        byte[] body = requestBody(true);
+        int logId = admit(f, body);
+        var request = new org.springframework.web.context.request.ServletWebRequest(
+            new org.springframework.mock.web.MockHttpServletRequest());
+        var settled = new java.util.concurrent.CountDownLatch(1);
+        AtomicInteger callbacks = new AtomicInteger();
+        ResponseEntity<StreamingResponseBody> response;
+        org.springframework.web.context.request.RequestContextHolder.setRequestAttributes(request);
+        try {
+            response = forwarder.forward(f.deployment(), "/v1/chat/completions", null, "POST", body,
+                Map.of("content-type", List.of("application/json")), false,
+                result -> {
+                    accounting.settleSuccess(logId, result.usage(), result.responseBody(),
+                        result.serviceTier(), result.timings());
+                    callbacks.incrementAndGet();
+                    settled.countDown();
+                },
+                (error, result) -> {
+                    accounting.settleFailure(logId, error, result);
+                    callbacks.incrementAndGet();
+                    settled.countDown();
+                });
+        } finally {
+            org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
+        }
+        new GatewayRelayCleanup().afterCompletion(request, () -> null);
+        assertThat(settled.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        assertThat(status(logId)).isEqualTo(providerError ? "error" : "success");
+        assertThat(settledCost(logId)).isEqualTo(37 * 20L + 19 * 120L);
+        assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 37).containsEntry("completion_tokens", 19);
+
+        assertThatThrownBy(() -> response.getBody().writeTo(new ByteArrayOutputStream()))
+            .isInstanceOf(IOException.class);
+        new GatewayRelayCleanup().afterCompletion(request, () -> null);
+        jdbc.update("UPDATE log_entry SET timestamp_request = NOW() - INTERVAL '2 hours' WHERE id = ?", logId);
+        accounting.reconcileStale();
+        assertThat(callbacks.get()).isEqualTo(1);
+        assertThat(settledCost(logId)).isEqualTo(37 * 20L + 19 * 120L);
+        assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 37).containsEntry("completion_tokens", 19);
     }
 
     // ------------------------------------------------------ non-streaming
@@ -526,7 +576,7 @@ class GatewayCloudBillingEndToEndTest {
     }
 
     @Test
-    void clientDisconnectMidStream_isNotBilled() throws Exception {
+    void clientDisconnectMidStream_isBilledFromProviderUsage() throws Exception {
         responseContentType = "text/event-stream";
         responseBody = "data: {\"usage\":{\"prompt_tokens\":10}}\n\n";
         Fixture f = seedPricedDeployment();
@@ -545,8 +595,13 @@ class GatewayCloudBillingEndToEndTest {
             }
         })).isInstanceOf(IOException.class);
 
-        assertThat(cost(logId)).isZero();
-        assertThat(status(logId)).isEqualTo("error");
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (status(logId) == null && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(status(logId)).isEqualTo("success");
+        assertThat(cost(logId)).isEqualTo(200L);
+        assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 10);
     }
 
     // ------------------------------------------------------- payload logging
@@ -653,7 +708,7 @@ class GatewayCloudBillingEndToEndTest {
             f.key().logsFullPayloads(),
             result -> accounting.settleSuccess(
                 logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings()),
-            (err, timings) -> accounting.settleFailure(logId, err, timings));
+            (err, result) -> accounting.settleFailure(logId, err, result));
     }
 
     /** The reservation this forward belongs to — the one the controller just made. */

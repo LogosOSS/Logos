@@ -30,6 +30,13 @@ the API keys in these teams. On this page, you can create, rotate and revoke
 keys. You can also set model permissions for each key. Use this page to get the
 secret that you need to call the [Logos API](../user/api-usage.md).
 
+A key without custom permissions uses the model permissions of its team. A key
+with **Override Team Permissions** uses its own providers and models. These can
+include models that the team permissions do not include. The key settings show
+all models of the selected providers. The **Models** page shows the models that
+you can use now. For more information, see
+[API Key Model Permissions](app-admin.md#api-key-model-permissions).
+
 ![My Workspace page](/img/roles/app-developer-my-workspace.png)
 
 ## AI Tools

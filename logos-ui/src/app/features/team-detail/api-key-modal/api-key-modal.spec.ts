@@ -13,6 +13,11 @@ describe('ApiKeyModalComponent', () => {
     setApiKeyProviderPermissions: ReturnType<typeof vi.fn>;
     setApiKeyModelPermissions: ReturnType<typeof vi.fn>;
     rotateApiKey: ReturnType<typeof vi.fn>;
+    getApiKeyPermissionCatalog: ReturnType<typeof vi.fn>;
+    getApiKeyProviderPermissions: ReturnType<typeof vi.fn>;
+    getApiKeyModelPermissions: ReturnType<typeof vi.fn>;
+    getTeamProviderPermissions: ReturnType<typeof vi.fn>;
+    getTeamModelPermissions: ReturnType<typeof vi.fn>;
   };
 
   const key: TeamApiKey = {
@@ -32,6 +37,21 @@ describe('ApiKeyModalComponent', () => {
       setApiKeyProviderPermissions: vi.fn().mockResolvedValue(undefined),
       setApiKeyModelPermissions: vi.fn().mockResolvedValue(undefined),
       rotateApiKey: vi.fn().mockResolvedValue({ result: 'ok', api_key: 'lg-rotated-123' }),
+      getApiKeyPermissionCatalog: vi.fn().mockResolvedValue([
+        { id: 10, name: 'team-provider', models: [{ model_id: 20, model_name: 'team-model' }] },
+        {
+          id: 11,
+          name: 'other-provider',
+          models: [
+            { model_id: 21, model_name: 'other-model' },
+            { model_id: 20, model_name: 'team-model' },
+          ],
+        },
+      ]),
+      getApiKeyProviderPermissions: vi.fn().mockResolvedValue([]),
+      getApiKeyModelPermissions: vi.fn().mockResolvedValue([]),
+      getTeamProviderPermissions: vi.fn().mockResolvedValue([10]),
+      getTeamModelPermissions: vi.fn().mockResolvedValue([20]),
     };
 
     await TestBed.configureTestingModule({
@@ -59,6 +79,21 @@ describe('ApiKeyModalComponent', () => {
     toggle.click();
 
     expect(component.fCustom()).toBe(true);
+  });
+
+  it('offers every catalog provider and its models, not only the team permissions', async () => {
+    component.teamId = 7;
+    component.ngOnChanges({ visible: new SimpleChange(false, true, false) });
+    await fixture.whenStable();
+
+    expect(teamService.getApiKeyPermissionCatalog).toHaveBeenCalledWith(42);
+    expect(component.allProviders().map((p) => p.id)).toEqual([10, 11]);
+    expect(component.allModels().map((m) => m.id).sort()).toEqual([20, 21]);
+
+    component.fCustom.set(true);
+    component.selectedProviderIds.set(new Set([11]));
+
+    expect(component.filteredModels().map((m) => m.id).sort()).toEqual([20, 21]);
   });
 
   it('updates provider and model permissions when saving an override', async () => {
@@ -133,6 +168,24 @@ describe('ApiKeyModalComponent', () => {
       expect(component.effectiveKeyValue()).toBe('lg-rotated-123');
       expect(component.rotateConfirm()).toBe(false);
       expect(component.rotateError()).toBe('');
+    });
+
+    it('lets a manager rotate a personal key whose value is withheld', async () => {
+      key.key_value = undefined;
+      teamService.rotateApiKey.mockResolvedValueOnce({ result: 'API key rotated successfully' });
+      component.ngOnChanges({ key: new SimpleChange(null, key, false) });
+      fixture.changeDetectorRef.markForCheck();
+      await fixture.whenStable();
+
+      // The dialog renders into an overlay on document.body.
+      expect(document.querySelector('.btn-rotate')).not.toBeNull();
+      expect(document.querySelector('.btn-copy')).toBeNull();
+
+      await component.confirmRotate();
+
+      expect(teamService.rotateApiKey).toHaveBeenCalledWith(42);
+      expect(key.key_value).toBeUndefined();
+      expect(component.rotateConfirm()).toBe(false);
     });
 
     it('shows the rotated key when the modal is closed and reopened', async () => {

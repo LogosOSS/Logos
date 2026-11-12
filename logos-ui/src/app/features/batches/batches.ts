@@ -8,7 +8,9 @@ import {
   signal,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { BatchKey, BatchObject, BatchService } from '../../core/services/batch.service';
+import { BatchKey, BatchModelPrice, BatchObject, BatchService } from '../../core/services/batch.service';
+
+import { BatchInputSummary, estimateBatchCost, summarizeBatchInput } from './batch-estimate';
 
 /** Batch states the provider (or Logos) will not move away from on its own. */
 const TERMINAL = new Set(['completed', 'failed', 'expired', 'cancelled']);
@@ -42,6 +44,17 @@ export class Batches implements OnInit, OnDestroy {
   notice = signal<string | null>(null);
 
   file = signal<File | null>(null);
+  inputSummary = signal<BatchInputSummary | null>(null);
+  readingFile = signal(false);
+  estimateError = signal<string | null>(null);
+  modelPrices = signal<BatchModelPrice[]>([]);
+  loadingPrices = signal(false);
+  priceError = signal<string | null>(null);
+  averageResponseTokens = signal<number | null>(500);
+  estimatedCost = computed(() => {
+    const summary = this.inputSummary();
+    return summary ? estimateBatchCost(summary, this.modelPrices(), this.averageResponseTokens()) : null;
+  });
   endpoint = signal('/v1/chat/completions');
   execution = signal('auto');
 
@@ -56,7 +69,7 @@ export class Batches implements OnInit, OnDestroy {
       this.keys.set(keys);
       if (keys.length > 0) {
         this.selectedKeyId.set(keys[0].id);
-        await this.refresh();
+        await Promise.all([this.refresh(), this.loadPrices()]);
       }
     } catch {
       this.error.set('Could not load your API keys.');
@@ -79,11 +92,48 @@ export class Batches implements OnInit, OnDestroy {
   onKeyChange(value: string): void {
     this.selectedKeyId.set(Number(value));
     void this.refresh();
+    void this.loadPrices();
   }
 
-  onFileSelected(event: Event): void {
+  async onFileSelected(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
-    this.file.set(input.files && input.files.length > 0 ? input.files[0] : null);
+    const file = input.files?.[0] ?? null;
+    this.file.set(file);
+    this.inputSummary.set(null);
+    this.estimateError.set(null);
+    this.readingFile.set(!!file);
+    if (!file) return;
+    try {
+      const summary = summarizeBatchInput(await file.text());
+      if (this.file() !== file) return;
+      this.inputSummary.set(summary);
+      this.averageResponseTokens.set(summary.defaultResponseTokens);
+    } catch (err) {
+      if (this.file() !== file) return;
+      this.estimateError.set(err instanceof Error ? err.message : 'Could not read the input file for the estimate.');
+    } finally {
+      if (this.file() === file) this.readingFile.set(false);
+    }
+  }
+
+  onResponseTokensChange(value: string): void {
+    this.averageResponseTokens.set(value.trim() ? Number(value) : null);
+  }
+
+  async loadPrices(): Promise<void> {
+    const keyId = this.selectedKeyId();
+    this.modelPrices.set([]);
+    this.priceError.set(null);
+    if (keyId === null) return;
+    this.loadingPrices.set(true);
+    try {
+      const prices = await this.batchService.getPrices(keyId);
+      if (this.selectedKeyId() === keyId) this.modelPrices.set(prices);
+    } catch {
+      if (this.selectedKeyId() === keyId) this.priceError.set('Could not load model prices. Cost estimate unavailable.');
+    } finally {
+      if (this.selectedKeyId() === keyId) this.loadingPrices.set(false);
+    }
   }
 
   async refresh(quiet = false): Promise<void> {
@@ -121,6 +171,8 @@ export class Batches implements OnInit, OnDestroy {
           : `Batch ${created.id} handed to the provider's batch endpoint.`,
       );
       this.file.set(null);
+      this.inputSummary.set(null);
+      this.estimateError.set(null);
       await this.refresh();
     } catch (err: unknown) {
       // The orchestrator's message names the offending line or model, which is

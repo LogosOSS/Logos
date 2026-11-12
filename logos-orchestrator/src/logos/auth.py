@@ -157,6 +157,26 @@ class AuthContext:
     role: Optional[str] = None
 
 
+def initialize_rate_limits(auth: AuthContext, team_info: Optional[dict]) -> None:
+    """Set effective cloud/local limits from key settings and team defaults.
+
+    Provider-specific key limits take precedence over generic key limits,
+    then team defaults. This applies to every key, including admin keys.
+    """
+    settings = auth.settings or {}
+    team_info = team_info or {}
+    for scope in ("cloud", "local"):
+        limits = {
+            unit: (
+                settings.get(f"{scope}_{unit}_limit")
+                or settings.get(f"{unit}_limit")
+                or team_info.get(f"default_{scope}_{unit}_limit")
+            )
+            for unit in ("rpm", "tpm")
+        }
+        setattr(auth, f"{scope}_rl", limits if any(value is not None for value in limits.values()) else None)
+
+
 def _resolve_batch_credential(credential: str) -> Optional[Dict[str, Any]]:
     """The key row a scoped batch credential names, or None.
 

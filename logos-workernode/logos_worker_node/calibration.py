@@ -64,6 +64,7 @@ from logos_worker_node.vllm_compat import (
     _extract_vllm_max_num_seqs_suggestion,
     _extract_vllm_max_seq_len,
     _extract_vllm_served_context,
+    strip_host_args,
 )
 
 try:
@@ -1129,6 +1130,8 @@ def _build_vllm_cmd(
     kv_cache_memory_bytes: str,
 ) -> list[str]:
     """Build the vLLM command list without spawning a process."""
+    if host != "127.0.0.1":
+        raise ValueError("Model servers must bind to 127.0.0.1")
     model = plan["model"]
     tp = int(plan.get("tensor_parallel_size", 1))
     dtype = str(plan.get("dtype", "auto"))
@@ -1208,7 +1211,7 @@ def _build_vllm_cmd(
         from logos_worker_node.vllm_process import ATTENTION_BACKEND_FLAG  # noqa: PLC0415
 
         cmd.extend([ATTENTION_BACKEND_FLAG, backend])
-    cmd.extend(extra_args)
+    cmd.extend(strip_host_args(extra_args))
     return cmd
 
 

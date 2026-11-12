@@ -68,7 +68,7 @@ def scheduler(monkeypatch):
     monkeypatch.setattr(module.store, "adoption_candidate", MagicMock(return_value=None))
     monkeypatch.setattr(module.store, "finalize_continuations", MagicMock())
     service.saved = []
-    monkeypatch.setattr(module.store, "save", lambda *args: service.saved.append(args))
+    monkeypatch.setattr(module.store, "save", MagicMock(side_effect=lambda *args, **_: service.saved.append(args)))
     monkeypatch.setattr(
         module.store,
         "finish",
@@ -135,7 +135,8 @@ async def test_improvement_is_journaled_and_confirmed_before_production_is_relea
     assert benchmark_reservations.allows(20, "model", "production")
 
 
-async def test_adopted_parameters_keep_unrelated_lane_settings_and_use_worker_flags(scheduler):
+@pytest.mark.parametrize("command", ["reconfigure_lane", "add_lane"])
+async def test_adoption_waits_for_the_worker_status_without_cold_loading(scheduler, command):
     scheduler.restore = module.NightlyScheduler.restore.__get__(scheduler)
     original = {
         "max_num_seqs": 16,
@@ -155,14 +156,127 @@ async def test_adopted_parameters_keep_unrelated_lane_settings_and_use_worker_fl
         "lane_config": {"vllm_config": original},
         "adoption": adoption(),
     }
-    scheduler.registry.send_command.side_effect = [
-        {"lanes": [{"lane_id": "lane"}]},
-        {"restarted": True, "lane_config": {"vllm_config": expected}},
+    ready_lane = {
+        "lane_id": "lane",
+        "model": "model",
+        "lane_config": {"vllm_config": expected},
+        "runtime_state": "loaded",
+        "sleep_state": "awake",
+        "active_requests": 0,
+    }
+    answer = {"lifecycle_revision": 42}
+    command_count = 0
+
+    async def send_command(_pid, action, params, timeout_seconds=None, on_dispatched=None):
+        nonlocal command_count
+        if action == "get_lanes":
+            return {"lanes": [{"lane_id": "lane"}] if command == "reconfigure_lane" else []}
+        command_count += 1
+        assert action == command
+        config = params["updates"] if command == "reconfigure_lane" else params
+        assert config["vllm_config"] == expected
+        if on_dispatched is not None:
+            future = asyncio.get_running_loop().create_future()
+            on_dispatched(future)
+            future.set_result(answer)
+        return {**ready_lane, "restarted": command == "reconfigure_lane"}
+
+    scheduler.registry.send_command.side_effect = send_command
+    scheduler.registry.reflects_command.side_effect = [False, True, True, True]
+    scheduler.registry.peek_runtime_snapshot.side_effect = [
+        {"runtime": {}},  # Health check before the command.
+        {"runtime": {"lanes": [{**ready_lane, "lane_config": {"vllm_config": original}}]}},
+        {"runtime": {"lanes": [{**ready_lane, "runtime_state": "starting"}]}},
+        {"runtime": {"lanes": [ready_lane]}},
     ]
-    scheduler.planner.prepare_benchmark_lane = AsyncMock(return_value=True)
-    await scheduler.restore(31, journal)
-    assert scheduler.registry.send_command.await_args_list[1].args[2]["updates"]["vllm_config"] == expected
+    scheduler.planner.prepare_benchmark_lane = AsyncMock(side_effect=RuntimeError("No capacity for a cold load"))
+    report = []
+    await scheduler.settle(31, journal, report)
+
+    assert report == [{"status": "adopted", **adoption()}]
+    assert command_count == 1
+    assert scheduler.registry.reflects_command.call_count == 4
+    scheduler.registry.reflects_command.assert_called_with(20, answer)
+    scheduler.planner.prepare_benchmark_lane.assert_not_called()
     assert journal["vllm_config"] == original
+
+
+async def test_adoption_keeps_the_ready_lane_when_it_already_runs_the_winner(scheduler):
+    scheduler.restore = module.NightlyScheduler.restore.__get__(scheduler)
+    original = {"max_num_seqs": 16}
+    current = {"max_num_seqs": 20, "extra_args": ["--max-num-batched-tokens", "5120"]}
+    journal = {
+        "provider_id": 20,
+        "model": "model",
+        "lane_id": "lane",
+        "vllm_config": original,
+        "lane_config": {"vllm_config": original},
+        "adoption": adoption(),
+    }
+    scheduler.registry.send_command.return_value = {
+        "lanes": [
+            {
+                "lane_id": "lane",
+                "model": "model",
+                "lane_config": {"vllm_config": current},
+                "runtime_state": "loaded",
+                "sleep_state": "awake",
+                "active_requests": 0,
+            }
+        ]
+    }
+
+    report = []
+    await scheduler.settle(31, journal, report)
+
+    scheduler.registry.send_command.assert_awaited_once_with(20, "get_lanes", {}, timeout_seconds=30)
+    scheduler.planner.prepare_benchmark_lane.assert_not_called()
+    assert report == [{"status": "adopted", **adoption()}]
+
+
+async def test_adoption_rolls_back_if_worker_never_reports_the_applied_settings_ready(scheduler, monkeypatch):
+    monkeypatch.setattr(module, "LANE_READY_STATUS_TIMEOUT_SECONDS", 0.01)
+    scheduler.restore = module.NightlyScheduler.restore.__get__(scheduler)
+    original = {"max_num_seqs": 16}
+    lane = {
+        "lane_id": "lane",
+        "model": "model",
+        "lane_config": {"vllm_config": original},
+        "runtime_state": "loaded",
+        "sleep_state": "awake",
+        "active_requests": 0,
+    }
+    journal = {
+        "provider_id": 20,
+        "model": "model",
+        "lane_id": "lane",
+        "vllm_config": original,
+        "lane_config": lane["lane_config"],
+        "adoption": adoption(),
+    }
+    updates = []
+
+    async def send_command(_pid, action, params, timeout_seconds=None, on_dispatched=None):
+        if action == "get_lanes":
+            return {"lanes": [lane]}
+        assert action == "reconfigure_lane"
+        updates.append(params["updates"])
+        future = asyncio.get_running_loop().create_future()
+        on_dispatched(future)
+        future.set_result({"lifecycle_revision": len(updates)})
+        return {"restarted": True, "lane_config": params["updates"]}
+
+    scheduler.registry.send_command.side_effect = send_command
+    scheduler.registry.reflects_command.return_value = True
+    scheduler.registry.peek_runtime_snapshot.return_value = {"runtime": {"lanes": [lane]}}
+    report = []
+    await scheduler.settle(31, journal, report)
+
+    assert len(updates) == 2 and updates[-1] == {"vllm_config": original}
+    assert report[0]["status"] == "adoption_failed"
+    assert "did not report that lane ready with those settings" in report[0]["reason"]
+    assert module.store.save.call_args.kwargs["adoption_failure"] == report[0]
+    assert "adoption" not in journal
 
 
 async def test_disabled_schedule_discards_pending_adoption_during_recovery(scheduler, monkeypatch):
@@ -182,7 +296,8 @@ async def test_confirmation_failure_keeps_worker_reserved_until_original_setting
     with pytest.raises(RuntimeError, match="Rollback failed"):
         await scheduler.settle(31, journal, report)
     assert "adoption" not in journal
-    assert report[0]["status"] == "adoption_failed"
+    assert report[0] == {**adoption(), "status": "adoption_failed", "reason": "Adoption failed"}
+    assert module.store.save.call_args.kwargs["adoption_failure"] == report[0]
 
 
 async def test_pending_adoption_is_completed_after_restart(scheduler):
@@ -751,11 +866,6 @@ async def test_live_sibling_execution_prevents_parallel_wave_recovery(scheduler,
 
 
 async def test_recovery_completes_although_the_orchestrator_counter_is_stale(scheduler, rotation):
-    """The whole path: idle check, restore, planner preparation, journal release."""
-    from types import SimpleNamespace
-
-    from logos.capacity.capacity_planner import CapacityPlanner
-
     rows, _ = rotation
     original = {"max_num_seqs": 16, "max_num_batched_tokens": 4096}
     recovery = {
@@ -767,29 +877,34 @@ async def test_recovery_completes_although_the_orchestrator_counter_is_stale(sch
         "mutated": True,
     }
     rows[0]["recovery"] = recovery
-    idle_lane = {"lane_id": "lane", "model": "model", "active_requests": 0, "backend_metrics": {}}
+    idle_lane = {
+        "lane_id": "lane",
+        "model": "model",
+        "lane_config": recovery["lane_config"],
+        "runtime_state": "running",
+        "sleep_state": "unsupported",
+        "active_requests": 0,
+        "backend_metrics": {},
+    }
 
-    async def send_command(_pid, action, params, timeout_seconds=None):
+    async def send_command(_pid, action, params, timeout_seconds=None, on_dispatched=None):
         if action in {"get_runtime", "get_lanes"}:
             return {"lanes": [idle_lane]}
         assert action == "reconfigure_lane" and params["updates"] == {"vllm_config": original}
-        return {"restarted": True, "lane_config": {"vllm_config": original}}
+        future = asyncio.get_running_loop().create_future()
+        on_dispatched(future)
+        future.set_result({"lifecycle_revision": 2})
+        return {**idle_lane, "restarted": True}
 
     scheduler.registry.send_command = AsyncMock(side_effect=send_command)
-    planner = object.__new__(CapacityPlanner)
-    planner._registry = scheduler.registry
-    planner._facade = MagicMock()
-    planner._facade.model_inflight_requests.return_value = 2  # never drops: stale
-    ready = SimpleNamespace(lane_id="lane", runtime_state="running", sleep_state="awake")
-    planner._pick_request_target_lane = MagicMock(return_value=ready)
-    planner._drain_lane = AsyncMock(return_value=True)
-    planner.is_worker_locked = MagicMock(return_value=False)
-    scheduler.planner = planner
+    scheduler.registry.peek_runtime_snapshot.return_value = {"runtime": {"lanes": [idle_lane]}}
+    scheduler.registry.reflects_command.return_value = True
+    scheduler.planner._facade.model_inflight_requests.return_value = 2  # never drops: stale
     scheduler.restore = module.NightlyScheduler.restore.__get__(scheduler)
 
     await asyncio.wait_for(scheduler.tick(), timeout=5)
 
-    planner._drain_lane.assert_awaited_once()
+    scheduler.planner.prepare_benchmark_lane.assert_not_called()
     assert scheduler.saved[-1][1:] == ("interrupted_recovered", [], None)
     assert benchmark_reservations.owner(20, "model") is None
 

@@ -39,6 +39,8 @@ User (role: app_developer | app_admin | logos_admin)
                     use_custom_permissions=false → team's team_*_permissions (default)
 ```
 
+Team permissions are only the **default** that keys with `use_custom_permissions=false` (typically developer keys) inherit — they are **not a ceiling**. A key with custom permissions (typically an application or production key) may hold any model or provider from the Logos catalog, including ones the team default does not contain, and a team owner (`app_admin`) granting that to a key of their own team is intended behavior, not a privilege escalation. Changing team permissions therefore never prunes custom key grants; only removing a provider from a key drops that key's models of the provider.
+
 The older Process/Profile hierarchy (`process`, `profiles`, `profile_model_permissions`, `model_api_keys` tables) **no longer exists** — never design against it.
 
 ### Git workflow (MANDATORY)

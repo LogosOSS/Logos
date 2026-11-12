@@ -32,6 +32,51 @@
         </small>
       </label>
 
+      @if (readingFile()) {
+        <p class="notice" role="status">Reading input file for the cost estimate…</p>
+      }
+      @if (estimateError()) {
+        <p class="error" role="status">{{ estimateError() }}</p>
+      }
+      @if (inputSummary(); as summary) {
+        <div class="estimate">
+          <h3>Estimated cost</h3>
+          <p class="estimate-models">
+            Models from input file:
+            @for (model of summary.models; track model.name; let last = $last) {
+              <strong>{{ model.name }}</strong>{{ last ? '' : ', ' }}
+            }
+          </p>
+          <label class="field">
+            <span>Average response length (tokens per request)</span>
+            <input type="number" min="0" step="1" [value]="averageResponseTokens() ?? ''"
+              (input)="onResponseTokensChange($any($event.target).value)" />
+            <small>Prefilled from each line's output token limit, or 500 when absent. Embeddings have no output tokens.</small>
+          </label>
+          <p>{{ summary.requestCount | number }} requests · approximately {{ summary.inputTokens | number }} input tokens</p>
+          <p role="status" aria-live="polite">
+            @if (loadingPrices()) {
+              Loading model prices…
+            } @else if (priceError()) {
+              {{ priceError() }}
+            } @else if (estimatedCost() !== null) {
+              <strong>Estimated cost: {{ estimatedCost() | currency:'USD':'symbol':'1.2-6' }}</strong>
+            } @else {
+              Cost estimate unavailable. Check the response length and whether this key has prices for every model in the file.
+            }
+          </p>
+          <small>
+            Estimate only: input tokens use body characters ÷ 4. Uses the highest current standard token prices
+            across permitted providers and context tiers. Batch discounts, cache discounts and non-token charges
+            are not included. Actual cost can differ.
+          </small>
+        </div>
+      }
+      <p class="notice">
+        No budget is reserved for provider batches. The creation check uses already settled costs.
+        Running provider batches count only after they finish, so batches can exceed the key or team budget.
+      </p>
+
       <label class="field">
         <span>Endpoint</span>
         <select (change)="endpoint.set($any($event.target).value)">
@@ -50,7 +95,7 @@
         </select>
       </label>
 
-      <button class="primary" [disabled]="!file() || uploading()" (click)="submit()">
+      <button class="primary" [disabled]="!file() || uploading() || readingFile()" (click)="submit()">
         {{ uploading() ? 'Starting…' : 'Start batch' }}
       </button>
 

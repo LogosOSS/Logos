@@ -175,8 +175,13 @@ provider can do. Logos therefore does not pass requests through without checks:
   cursors of the provider describe its own unfiltered list. They would mislead a
   client that walks the list of Logos.
 - **Budget.** If the key or its team is already over its monthly budget, then
-  Logos refuses the creation of a batch with `402`. Logos settles the cost of
-  the batch when the batch finishes (see below). The cost is not known before.
+  Logos refuses the creation of a batch with `402`. This check uses only costs that Logos already settled.
+
+  Provider batches do not reserve budget. A provider batch does not count against the budget until it finishes and Logos settles its costs.
+  Thus, a key with little budget left can start many batches, each with up to 50,000 request lines.
+  These batches can exceed the key or team budget. This is a known limit of the budget check.
+
+  Logos-run batches count request by request, as described above.
 
 Logos limits an upload to `LOGOS_MAX_BATCH_FILE_BYTES` (default 50 MiB) and to
 `LOGOS_MAX_BATCH_REQUESTS` lines (default 50 000, the limit of the provider).
@@ -261,6 +266,19 @@ one of your API keys, upload a `.jsonl` file, and look at the list. A running
 batch shows its progress. A finished batch offers its results as a download. You
 can cancel a batch that is not finished. The page refreshes every 30 seconds
 while a batch is in progress.
+
+The **New batch** form reads the model names from the request bodies in the input file.
+It shows the request count, an input token estimate and an **Estimated cost** in USD.
+The input estimate uses the number of characters in each body divided by 4, rounded up.
+Set **Average response length (tokens per request)** to the expected response length.
+The initial value uses the mean output token limit from the lines, with 500 tokens for each line without a limit.
+Embedding requests have no output tokens.
+
+The estimate multiplies input and output tokens by the highest current standard prices across permitted providers and context tiers.
+It adds these costs for all models in the file.
+It excludes batch discounts, cache discounts and charges that do not use tokens.
+If a required price is missing, then the form shows that the estimate is unavailable.
+The estimate does not reserve budget or change the request bodies. Actual costs can differ.
 
 The page is an admin function. Only app admins and logos admins see the menu
 item, and the endpoints behind it refuse all other users. Script use does not

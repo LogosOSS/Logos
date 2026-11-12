@@ -48,6 +48,22 @@ def test_tolerates_naive_runtime_timestamp():
     assert sample["timestamp"] == heartbeat
 
 
+def test_lane_transfer_is_visible_without_registering_a_routable_lane():
+    heartbeat = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    snapshot = _snapshot(heartbeat, heartbeat)
+    transfer = {
+        "lane_id": "pending",
+        "model": "org/model",
+        "operation": "loading",
+        "resident_vram_mb": 4096,
+        "reference_vram_mb": 8192,
+    }
+    snapshot["runtime"]["lane_transfers"] = [transfer, {"operation": "invalid"}]
+    signals = _build_live_local_provider_sample({}, snapshot)["scheduler_signals"]
+    assert signals["provider"]["lane_transfers"] == [transfer]
+    assert signals["lanes"] == {}
+
+
 def test_ignores_unparseable_runtime_timestamp():
     # (The now-fallback in the builder is only reachable when last_heartbeat
     # itself is unusable — which _logosnode_snapshot_is_connected already

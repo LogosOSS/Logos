@@ -53,7 +53,13 @@ from logos.billing.finalize import finalize_billing_inputs
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.types import cloud_auth_header
 from logos.errors import openai_error_response, raise_openai_error
-from logos.request_content import parse_batch_file_upload, sanitized_headers_for_persistence, strip_proxy_prefixes
+from logos.request_content import (
+    parse_batch_file_upload,
+    sanitized_headers_for_persistence,
+    stateful_reference_detail,
+    stateful_reference_field,
+    strip_proxy_prefixes,
+)
 from logos.responses import get_client_ip
 from logos.sdi.azure_deployment_sync import azure_host_from_base_url
 from logos.sdi.providers.azure_provider import extract_azure_deployment_name
@@ -536,6 +542,14 @@ def batch_input_models(content: bytes) -> set:
     return names
 
 
+def reject_stateful_batch_lines(content: bytes) -> None:
+    """Refuse a batch input file whose lines reference provider-side state."""
+    for number, line in enumerate(parse_request_lines(content), start=1):
+        reference = stateful_reference_field(line.get("body"))
+        if reference is not None:
+            raise_openai_error(400, f"Line {number}: {stateful_reference_detail(reference)}", code="invalid_batch_line")
+
+
 def validate_and_rewrite_batch_input(
     content: bytes,
     provider: Optional[Dict[str, Any]],
@@ -602,6 +616,9 @@ def validate_and_rewrite_batch_input(
             raise_openai_error(
                 400, f"Line {number} of the batch file has no request 'body'.", code="invalid_batch_line"
             )
+        reference = stateful_reference_field(body)
+        if reference is not None:
+            raise_openai_error(400, f"Line {number}: {stateful_reference_detail(reference)}", code="invalid_batch_line")
         model = body.get("model")
         if not isinstance(model, str) or not model:
             raise_openai_error(400, f"Line {number} of the batch file names no model.", code="invalid_batch_line")
@@ -1415,6 +1432,7 @@ def _local_batch_contract(content: bytes, json_body: Dict[str, Any]) -> str:
     if json_body.get("completion_window") != "24h":
         raise_openai_error(400, "completion_window must be '24h'.", code="invalid_request_error")
 
+    reject_stateful_batch_lines(content)
     for number, line in enumerate(parse_request_lines(content), start=1):
         method = line.get("method")
         if method is None:
@@ -1439,6 +1457,20 @@ def _local_batch_contract(content: bytes, json_body: Dict[str, Any]) -> str:
     return f"/v1/{wanted}"
 
 
+async def _verify_provider_input_file(provider: Dict[str, Any], input_file_id: str) -> None:
+    """Check the provider-held input file again before a batch runs it.
+
+    Lines are checked at upload; a file uploaded before that check existed
+    must not run provider-state references on the shared provider account.
+    """
+    content = await _download_file(provider, input_file_id)
+    if content is None:
+        raise_openai_error(
+            502, "The input file could not be read from the provider to check it.", code="batch_upstream_unreachable"
+        )
+    reject_stateful_batch_lines(content)
+
+
 async def _handle_batch_creation(
     json_body: Dict[str, Any], auth: AuthContext, db: DBManager, consent_level: Optional[str] = None
 ):
@@ -1457,6 +1489,7 @@ async def _handle_batch_creation(
         if provider is None:
             raise_openai_error(502, "The provider holding this file is gone.", code="batch_upstream_unreachable")
         _assert_still_permitted(db, auth, provider, input_file)
+        await _verify_provider_input_file(provider, input_file_id)
         return None, provider
 
     content = db.get_local_batch_file_content(int(input_file["id"])) or b""

@@ -120,6 +120,7 @@ public class InferenceGatewayController {
         GatewayKey key = authService.requireActiveKey(apiKeyValue);
         byte[] body = GatewayBodyReader.read(request.getInputStream());
         JsonNode root = parseJsonBody(body, contentType);
+        rejectStatefulReferences(root);
         String modelName = extractModelName(root);
 
         if (modelName != null
@@ -165,7 +166,7 @@ public class InferenceGatewayController {
                     GatewayLoggingLevel.storesPayloads(logLevel),
                     result -> cloudAccounting.settleSuccess(
                         logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings()),
-                    (err, timings) -> cloudAccounting.settleFailure(logId, err, timings));
+                    (err, result) -> cloudAccounting.settleFailure(logId, err, result));
             }
             log.debug("Orchestrator proxy {} {} reason={}",
                 request.getMethod(), path, decision.reason());
@@ -236,6 +237,43 @@ public class InferenceGatewayController {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * Responses API fields that point at state the provider keeps. Providers
+     * are reached with one shared account, so the provider cannot tell teams
+     * apart: a reference would load whatever response or conversation it
+     * names, also another team's. Requests carry their full history instead.
+     * The orchestrator applies the same rule to the requests proxied to it.
+     */
+    static final List<String> STATEFUL_REFERENCE_FIELDS = List.of("previous_response_id", "conversation");
+
+    static void rejectStatefulReferences(JsonNode root) {
+        if (root == null || !root.isObject()) {
+            return;
+        }
+        for (String field : STATEFUL_REFERENCE_FIELDS) {
+            JsonNode value = root.get(field);
+            if (value != null && !value.isNull()) {
+                throw statefulReferenceRejected("'" + field + "'");
+            }
+        }
+        // An input item of this type loads a stored item by its ID instead of
+        // carrying the content, so it reaches provider state in the same way.
+        JsonNode input = root.get("input");
+        if (input != null && input.isArray()) {
+            for (JsonNode item : input) {
+                if (item.isObject() && "item_reference".equals(item.path("type").asText(null))) {
+                    throw statefulReferenceRejected("An input item of type 'item_reference'");
+                }
+            }
+        }
+    }
+
+    private static ResponseStatusException statefulReferenceRejected(String what) {
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST, what
+            + " is not supported: Logos does not keep conversation state at the provider. "
+            + "Send the full conversation in 'input' instead.");
     }
 
     private static String extractModelName(JsonNode root) {

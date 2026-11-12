@@ -112,6 +112,8 @@ class FrozenRequestHandler(ChatCompletionsRequestHandler):
             "finish_reason": reason,
             **({"native_finish_reason": self.finish_reason} if self.source.get("operation") == "messages" else {}),
         }
+        if completed_budget and body.get("ignore_eos") is True:
+            response.response_metrics["fixed_output_budget"] = limit
 
 
 class FrozenRequests:

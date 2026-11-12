@@ -344,6 +344,8 @@ def start_vllm(
     port: int,
     log_path: Path,
 ) -> tuple[subprocess.Popen[str], list[str]]:
+    if host != "127.0.0.1":
+        raise ValueError("Model servers must bind to 127.0.0.1")
     model = str(plan["name"])
     tp = int(plan.get("tensor_parallel_size", 1))
     dtype = str(plan.get("dtype", "float16"))
@@ -432,7 +434,7 @@ def main() -> int:
         default=str(Path(".venv/bin/vllm")),
         help="Path to vLLM CLI binary.",
     )
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1"])
     parser.add_argument("--port-start", type=int, default=11560)
     parser.add_argument("--sleep-levels", default="1,2")
     parser.add_argument("--sleep-mode", default="wait", choices=["abort", "wait", "keep"])

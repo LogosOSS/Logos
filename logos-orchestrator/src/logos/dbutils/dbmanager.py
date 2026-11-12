@@ -24,6 +24,7 @@ from logos.dbutils.types import (
     infer_cloud_provider_type,
     normalize_provider_type,
 )
+from logos.model_names import is_safe_model_name
 from logos.model_profile_store import CALIBRATION_FIELDS, base_residency_agrees
 
 # Backwards-compatible re-export (temporary; remove once all imports are migrated)
@@ -1083,7 +1084,7 @@ class DBManager:
         ).fetchall()
         existing_by_name: dict[str, int] = {row.name: row.model_id for row in existing_rows}
 
-        announced = set(model_names)
+        announced = {name for name in model_names if is_safe_model_name(name)}
         current = set(existing_by_name.keys())
         newly_inserted: list[str] = []
 
@@ -1175,7 +1176,7 @@ class DBManager:
         per-provider price rows are created only on first link.
         """
         pid = int(provider_id)
-        desired = {d["model_name"]: d["endpoint"] for d in deployments}
+        desired = {d["model_name"]: d["endpoint"] for d in deployments if is_safe_model_name(d["model_name"])}
 
         existing_rows = self.session.execute(
             text("""
@@ -1325,7 +1326,7 @@ class DBManager:
         meaning as :meth:`sync_azure_deployments`.
         """
         pid = int(provider_id)
-        desired = {name for name in model_names if name}
+        desired = {name for name in model_names if name and is_safe_model_name(name)}
 
         existing_rows = self.session.execute(
             text("""

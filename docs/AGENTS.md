@@ -291,6 +291,8 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 
 | File | Login as | Route / state | Documented in |
 |---|---|---|---|
+| `logos-admin-node-maintenance.png` | `tobias.wasner` | `/statistics` — active node deployment lease | `roles/logos-admin.md#release-a-node-deployment-lease` |
+| `logos-admin-node-maintenance-release.png` | `tobias.wasner` | `/statistics` — **Release node lease** confirmation | `roles/logos-admin.md#release-a-node-deployment-lease` |
 | `logos-admin-statistics.png` | `tobias.wasner` | `/statistics?tab=requests` (the plain route opens **Local Providers**) | `roles/logos-admin.md` |
 | `logos-admin-statistics-lanes.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a lane locked (needs a connected worker: the e2e stack, `../e2e`, with a lane loaded) | `roles/logos-admin.md#idle-lanes-and-lane-locks` |
 | `logos-admin-statistics-worker-lock.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a worker locked with two lanes (e2e stack; capture the lane panel) | `roles/logos-admin.md#worker-locks` |
@@ -306,6 +308,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-benchmark-saved-requests.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark with a saved request dataset | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-frozen-batch.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — frozen request batch plan and fixed settings | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-status.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — illustrative running batch status with progress and stop action | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-benchmark-window-ended.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — seed `LOGOS_DOCS_WINDOW_ENDED=true` | `roles/logos-admin.md` |
 | `logos-admin-benchmark-confirmation.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark confirmation dialog | `admin/model-benchmarks.md#confirm-the-start` |
 | `logos-admin-benchmark-worker-settings.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — expanded vLLM controls and worker limits | `admin/model-benchmarks.md` |
 | `logos-admin-benchmark-comparison.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — selected parameter comparison with reference | `roles/logos-admin.md#model-benchmarks` |

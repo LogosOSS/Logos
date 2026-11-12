@@ -814,8 +814,9 @@ async def logos_service_long_async(path: str, request: Request):
 async def get_job_status(job_id: int, request: Request):
     """
     Return current state of a submitted job, including result or error when finished.
-    Uses team-based authorization - you can only view jobs created by your current team.
-    Logos Admins can view all jobs.
+    Only the API key that submitted the job, within the same team, may read it. The role of
+    the key's holder grants nothing here: a key acts for its own team only, and cross-team
+    views belong to the authenticated administration interface.
     """
     auth = authenticate_api_key(dict(request.headers), client_ip=get_client_ip(request))
 
@@ -827,15 +828,10 @@ async def get_job_status(job_id: int, request: Request):
     job_api_key_id = job.get("api_key_id")
     job_team_id = job.get("team_id")
 
-    with DBManager() as db:
-        user_info = db.get_user_by_api_key(auth.key_value)
-        is_admin = user_info and user_info.get("role") == "logos_admin"
-
-    if not is_admin:
-        if job_api_key_id != auth.api_key_id:
-            raise HTTPException(status_code=403, detail="Not authorized to access this job")
-        if job_team_id != auth.team_id:
-            raise HTTPException(status_code=403, detail="Job belongs to a different team.")
+    if job_api_key_id != auth.api_key_id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this job")
+    if job_team_id != auth.team_id:
+        raise HTTPException(status_code=403, detail="Job belongs to a different team.")
 
     return_payload = {
         "job_id": job_id,

@@ -27,7 +27,8 @@ delete).
 
 This page shows the users of the deployment, with their role, teams and
 status. An App Admin can create users and assign them to teams. An App Admin
-can create only App Developers, and no higher roles.
+can create only App Developers, and no higher roles. The name and email of an
+existing user can only be changed by a Logos Admin.
 
 ![Users page](/img/roles/app-admin-user-management.png)
 
@@ -67,6 +68,26 @@ rotate and revoke keys. You can also set limits and model permissions for each
 key.
 
 ![Team detail — Application Keys](/img/roles/team-detail-application-keys.png)
+
+#### API Key Model Permissions
+
+The model and provider permissions of the team are the default for the API
+keys of the team. They are not a maximum.
+
+| **Override Team Permissions** | Models and providers that the key can use |
+|-------------------------------|-------------------------------------------|
+| Off | The key uses the team permissions. If the team permissions change, then the key permissions also change. |
+| On | The key uses its own providers and models. You can select providers and models that the team permissions do not include. |
+
+Use custom permissions for a key that needs more models than the team
+default, for example a production key. A team owner can set custom
+permissions on each key of the team. If you remove models or providers from
+the team permissions, then the custom permissions of the keys do not change.
+If you remove a provider from a key, then the key also loses the models of
+that provider.
+
+In the key settings, the model list shows all models that the selected
+providers serve. The **Models** page shows the models that you can use now.
 
 ### Repositories
 
@@ -147,6 +168,11 @@ If a Keycloak group is linked to the team, then the tab shows the name of the
 group and no delete control. Only a Logos Admin can change or remove the link.
 See [Logos Admin → Keycloak Group Links](logos-admin.md#keycloak-group-links).
 
+Provider batches do not reserve budget. At batch creation, Logos checks only costs that it already settled.
+A provider batch counts against the budget only after it finishes and Logos settles its costs.
+Thus, several batches can start with the same budget left and exceed the key or team budget.
+See [Batch budget checks](../batch-processing.md#permission-ownership-and-budget-checks).
+
 ![Team detail — Settings](/img/roles/team-detail-settings.png)
 
 ## My Workspace
@@ -171,5 +197,10 @@ This page is the OpenAI Batch API in the browser. Upload a `.jsonl` file, look
 at the progress of the job and download the result file. For the server-side
 process, see [batch processing](../batch-processing.md). The page is the same
 for every role that can open it (App Admin and Logos Admin).
+
+In **New batch**, select an API key and an input file.
+The form reads the model names from the file and shows an **Estimated cost**.
+Set **Average response length (tokens per request)** to change the estimate.
+The estimate uses standard token prices. It does not reserve budget, and actual costs can differ.
 
 ![Batches page](/img/roles/batches.png)

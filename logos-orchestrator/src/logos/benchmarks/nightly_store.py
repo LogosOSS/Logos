@@ -165,7 +165,19 @@ def claimed_today(day) -> int:
         ).scalar_one()
 
 
-def save(pair_id: int, state: str, report: list, recovery: dict | None) -> None:
+def _enqueue_completion_event(db, event_id: str, payload: dict) -> None:
+    db.session.execute(
+        text(
+            "INSERT INTO benchmark_completion_events(event_id, payload) "
+            "VALUES (:event, CAST(:payload AS jsonb)) ON CONFLICT (event_id) DO NOTHING"
+        ),
+        {"event": event_id, "payload": json.dumps(payload)},
+    )
+
+
+def save(
+    pair_id: int, state: str, report: list, recovery: dict | None, *, adoption_failure: dict | None = None
+) -> None:
     with DBManager() as db:
         db.session.execute(
             text(
@@ -180,6 +192,24 @@ def save(pair_id: int, state: str, report: list, recovery: dict | None) -> None:
             },
         )
 
+        if adoption_failure is not None:
+            target = (
+                db.session.execute(
+                    text(
+                        "SELECT mp.model_id, p.name AS provider_name FROM model_provider mp "
+                        "JOIN providers p ON p.id = mp.provider_id WHERE mp.id = :id"
+                    ),
+                    {"id": pair_id},
+                )
+                .mappings()
+                .first()
+            )
+            if target is not None:
+                _enqueue_completion_event(
+                    db,
+                    f"nightly-adoption-failed:{pair_id}:{adoption_failure['benchmark_id']}",
+                    {**adoption_failure, **target, "model_provider_id": pair_id},
+                )
         db.session.commit()
 
 
@@ -681,14 +711,7 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
                 "benchmark_id": None,
                 **event_optimizer.get("last_round_result", {}),
             }
-            db.session.execute(
-                text(
-                    "INSERT INTO benchmark_completion_events(event_id, payload) "
-                    "VALUES (:event, CAST(:payload AS jsonb)) "
-                    "ON CONFLICT (event_id) DO NOTHING"
-                ),
-                {"event": f"nightly:{pair_id}:{row['last_run_date']}", "payload": json.dumps(payload)},
-            )
+            _enqueue_completion_event(db, f"nightly:{pair_id}:{row['last_run_date']}", payload)
         db.session.commit()
 
 
