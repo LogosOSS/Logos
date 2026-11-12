@@ -26,25 +26,22 @@ This option updates the central Dev server and leaves the GPU worker unchanged. 
 
 ## Deployment credentials
 
-The workflows export only the secret names in `scripts/write-deployment-secrets.py`.
-New repository secrets stay on GitHub until the workflow and this list include them.
-Core hosts receive the database, Redis, internal-service, repository, optional agent, Keycloak sync, metrics, and Hugging Face credentials.
-Worker hosts receive only `LOGOS_API_KEY` from the deployment workflow.
+Store each host's credentials in its `.env` file.
+Core hosts need the database, Redis, internal-service, repository, optional agent, Keycloak sync, metrics, and Hugging Face credentials.
+Worker hosts need only `LOGOS_API_KEY` in `.env`.
 The worker obtains its Hugging Face token from the orchestrator when it starts.
-SSH keys and registry passwords stay in their dedicated workflow steps.
-The workflows create `.env` with file mode `0600`.
+Restrict access to the file with `chmod 600 .env`.
 
 ### Data service passwords
 
 Set `LOGOS_DB_PASSWORD` and `LOGOS_REDIS_PASSWORD` in the core host's `.env` before you start production compose.
 For a new installation, use separate random values, for example the output of `openssl rand -hex 32`.
-For workflow deployments, also set these values as secrets in the target GitHub environment.
 Compose stops if either value is empty.
 Local development and e2e stacks keep their seed credentials.
 
-**An existing PostgreSQL volume keeps its previous password.** A change to `.env` does not change the database role.
-To keep the database password, set `LOGOS_DB_PASSWORD` to its current value in `.env` and the GitHub environment secret.
-No database password change is necessary.
+PostgreSQL stores the database password in its data volume.
+The value of `LOGOS_DB_PASSWORD` in `.env` must match that password.
+A change to `.env` does not change the database role.
 
 If you choose to change the database password, schedule a maintenance period and follow these steps:
 
@@ -53,10 +50,9 @@ If you choose to change the database password, schedule a maintenance period and
 3. If the agent profile is active, stop `logos-agent` too.
 4. Open a database shell with `docker exec -it logos-db psql -U postgres -d logosdb`.
 5. Run `\password postgres` and enter the new database password twice.
-6. Set the same value for `LOGOS_DB_PASSWORD` in `.env` and the GitHub environment secret.
-7. Set a separate `LOGOS_REDIS_PASSWORD` in both locations.
-8. Run `docker compose --env-file .env up -d` with your usual profiles and web service replica count.
-9. Check the service health and complete a test inference request.
+6. Set the same value for `LOGOS_DB_PASSWORD` in `.env`.
+7. Run `docker compose --env-file .env up -d` with your usual profiles and web service replica count.
+8. Check the service health and complete a test inference request.
 
 The SQL equivalent is `ALTER USER postgres WITH PASSWORD '<new-password>';`.
 Prefer `\password`: it keeps the cleartext value out of command history and SQL logs.
@@ -64,8 +60,7 @@ See the [PostgreSQL password instructions](https://www.postgresql.org/docs/17/sq
 Do not delete the volume to change its password.
 
 Redis uses `requirepass`. The web service and Redis health check use the same `LOGOS_REDIS_PASSWORD`.
-Redis has no persistent data in this stack, so no stored password migration is necessary.
-For a later Redis password change, update `.env` and the GitHub secret, then recreate Redis and the web service together.
+To change the Redis password, update `.env`, then recreate Redis and the web service together.
 
 ## Container privileges
 
@@ -671,7 +666,7 @@ variables:
 |---|---|---|
 | `LOGOS_DOMAIN` | the core node's fully qualified domain | — |
 | `ACME_EMAIL` | the Let's Encrypt contact address | — |
-| `LOGOS_DB_PASSWORD` | required — PostgreSQL password; see the migration procedure above | — |
+| `LOGOS_DB_PASSWORD` | required — PostgreSQL password; see Data service passwords above | — |
 | `LOGOS_REDIS_PASSWORD` | required — Redis password | — |
 | `LOGOS_INTERNAL_SECRET` | a strong random string — the shared secret between web service and orchestrator | — |
 | `KEYCLOAK_ISSUER_URI` | your identity provider's issuer (`https://<idp>/realms/<realm>`) | — |
