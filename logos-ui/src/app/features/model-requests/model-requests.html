@@ -7,7 +7,7 @@
         vote per model — the most-voted missing models rise to the top.
       </p>
     </div>
-    <button class="ghost" (click)="refresh()" [disabled]="loading()">Refresh</button>
+    <button class="ghost" (click)="refresh()" [disabled]="loading() || rechecking()">Refresh</button>
   </div>
 
   <section class="card">
@@ -95,7 +95,20 @@
         <tbody>
           @for (request of requests(); track request.id) {
             <tr>
-              <td class="mono">{{ request.name }}</td>
+              <td class="mono">
+                {{ request.name }}
+                @if (request.is_gated && isLogosAdmin()) {
+                  <button
+                    type="button"
+                    class="gated-flag"
+                    title="Model repository is gated"
+                    [attr.aria-label]="'Model ' + request.name + ' repository is gated — open the Hugging Face page'"
+                    (click)="openGatedDialog(request)"
+                  >
+                    <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+                  </button>
+                }
+              </td>
               <td>
                 {{ request.request_count }}
                 {{ request.request_count === 1 ? 'vote' : 'votes' }}
@@ -138,4 +151,22 @@
     [confirmOnly]="true"
     [danger]="false"
   ></app-modal-confirm>
+
+  <!-- ── Gated Model Dialog ──────────────────────────────────────────────── -->
+  <app-modal-confirm
+    [visible]="gatedTarget() !== null"
+    (visibleChange)="$event || closeGatedDialog()"
+    (confirmed)="goToHuggingFace()"
+    title="Gated model"
+    message="You have to accept this gated model's conditions on Hugging Face to access its files and content."
+    icon="pi-exclamation-triangle"
+    confirmLabel="Go to HuggingFace"
+    [danger]="false"
+  >
+    <!-- Acceptance only submits an access request; the flag clears when a
+         recheck sees the Hub actually grant it (after the owner approves). -->
+    <p modal-details class="license-hint">
+      The repository owner must still approve the access request.
+    </p>
+  </app-modal-confirm>
 </section>

@@ -68,6 +68,7 @@ from logos.dbutils.dbrequest import (
 )
 from logos.dbutils.types import Deployment
 from logos.errors import admin_error_response
+from logos.hf_license import fetch_hf_license
 from logos.hf_reachability import check_hf_reachability
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeOfflineError, MaintenanceBusyError
 from logos.logosnode_snapshot import _logosnode_snapshot_is_connected
@@ -367,6 +368,23 @@ async def internal_hf_reachability(data: HfReachabilityRequest, request: Request
     """
     _require_internal_secret(request)
     result = await check_hf_reachability(data.hf_repo_id)
+    return JSONResponse(content=asdict(result))
+
+
+@router.post("/internal/hf_license", tags=["admin"])
+async def internal_hf_license(data: HfReachabilityRequest, request: Request):
+    """The license of a Hugging Face model repository, read with the central
+    HF_TOKEN: the SPDX expression the model card declares plus the license
+    file's text when the repository carries one.
+
+    Gated repositories are only readable for a token whose account was
+    granted access, so call this for a repository the reachability check has
+    answered ``reachable`` for. A non-null ``error`` means the license could
+    not be determined (not that the model is unlicensed) — the caller leaves
+    its row pending and retries later.
+    """
+    _require_internal_secret(request)
+    result = await fetch_hf_license(data.hf_repo_id)
     return JSONResponse(content=asdict(result))
 
 

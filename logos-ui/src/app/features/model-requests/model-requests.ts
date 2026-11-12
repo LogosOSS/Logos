@@ -32,6 +32,8 @@ export class ModelRequests implements OnInit {
 
   requests = signal<ModelRequest[]>([]);
   loading = signal(false);
+  /** True while the (slow, remote) recheck of a refresh is running. */
+  rechecking = signal(false);
   submitting = signal(false);
   /** Load failure for the list, shown inline (load errors are not vote outcomes). */
   error = signal<string | null>(null);
@@ -44,6 +46,9 @@ export class ModelRequests implements OnInit {
   teams = computed(() => this.auth.currentUser()?.teams ?? []);
   /** The team the next request is for; null while none is (or can be) chosen. */
   teamId = signal<number | null>(null);
+  /** The gated model whose Hugging Face dialog is open; null while closed. */
+  gatedTarget = signal<ModelRequest | null>(null);
+  readonly isLogosAdmin = computed(() => this.auth.role() === 'logos_admin');
 
   async ngOnInit(): Promise<void> {
     // Preselect the first team: a member of exactly one team should not have
@@ -53,10 +58,30 @@ export class ModelRequests implements OnInit {
     await this.refresh();
   }
 
+  /**
+   * Refresh = render what is stored, then re-verify, then render the fresh
+   * verdicts. The recheck is a slow remote scan, so the (local) list is
+   * loaded and rendered first instead of waiting behind it.
+   */
   async refresh(): Promise<void> {
+    await this.loadRequests();
+    this.rechecking.set(true);
+    try {
+      // Best effort: a license accepted since the last check unflags the row,
+      // and a precheck failure must not keep the list from re-rendering.
+      await this.service.recheckGated().catch(() => {});
+    } finally {
+      this.rechecking.set(false);
+    }
+    await this.loadRequests();
+  }
+
+  /** Load the stored list (no recheck) and render it, or report the failure. */
+  private async loadRequests(): Promise<void> {
     this.loading.set(true);
     try {
       this.requests.set(await this.service.list());
+      this.error.set(null);
     } catch {
       this.error.set('Could not load model requests.');
     } finally {
@@ -107,7 +132,9 @@ export class ModelRequests implements OnInit {
         );
       }
       onSuccess?.();
-      await this.refresh();
+      // The vote just updated the server state for this row; a plain list
+      // reload picks it up without re-running the remote recheck.
+      await this.loadRequests();
     } catch (err: unknown) {
       // Vote outcomes are surfaced in a modal, not inline: the message needs
       // to be seen even though the user's attention is on the button.
@@ -120,6 +147,32 @@ export class ModelRequests implements OnInit {
   /** Close the failed-vote modal. */
   closeVoteError(): void {
     this.voteError.set(null);
+  }
+
+  /** Open the Hugging Face dialog for a gated model. */
+  openGatedDialog(request: ModelRequest): void {
+    this.gatedTarget.set(request);
+  }
+
+  /** Close the Hugging Face dialog (cancel, the backdrop or the close button). */
+  closeGatedDialog(): void {
+    this.gatedTarget.set(null);
+  }
+
+  /**
+   * Open the model's Hugging Face page — where the license agreement is
+   * accepted — in a new tab, then dismiss the dialog.
+   */
+  goToHuggingFace(): void {
+    const target = this.gatedTarget();
+    if (target) {
+      this.openHuggingFacePage(target.name);
+    }
+    this.gatedTarget.set(null);
+  }
+
+  private openHuggingFacePage(name: string): void {
+    window.open('https://huggingface.co/' + name, '_blank', 'noopener,noreferrer');
   }
 
   /** Team selector change; the empty option clears the selection. */

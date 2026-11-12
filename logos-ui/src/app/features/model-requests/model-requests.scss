@@ -196,6 +196,40 @@ table {
   font-size: 0.85rem;
 }
 
+// Second line of the gated model dialog: the acceptance is an access
+// request, not an instant grant.
+.license-hint {
+  margin: 0 0 8px;
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-500));
+}
+
+// Gated-model flag (Logos admin only): the license is not accepted yet, so
+// the model cannot be pulled. Hover explains, click opens the Hugging Face
+// license page via a dialog.
+.gated-flag {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+  cursor: pointer;
+  color: rgb(var(--color-warning));
+  font-size: 0.9rem;
+  line-height: 1;
+
+  &:hover {
+    opacity: 0.8;
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgb(var(--color-text-accent));
+    outline-offset: 1px;
+    border-radius: 4px;
+  }
+}
+
 .empty {
   opacity: 0.7;
 }

@@ -1,5 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.configuration.service;
 
+import java.time.OffsetDateTime;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -8,7 +9,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -17,14 +21,23 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.HfReachabilityUnavaila
 import de.tum.cit.aet.logos.logoswebservice.configuration.ModelAlreadyAvailableException;
 import de.tum.cit.aet.logos.logoswebservice.configuration.ModelNames;
 import de.tum.cit.aet.logos.logoswebservice.configuration.ModelNotOnHuggingFaceException;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ModelLicenseResponse;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.RequestedModelResponse;
+import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ModelLicenseApproval;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.RequestedModel;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.RequestedModelVote;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ModelAliasRepository;
+import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ModelLicenseApprovalRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ModelRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.RequestedModelRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.RequestedModelVoteRepository;
+import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.TeamMemberRepository;
+import de.tum.cit.aet.logos.logoswebservice.notifications.dto.NotificationTargetDTO;
+import de.tum.cit.aet.logos.logoswebservice.notifications.entity.NotificationType;
+import de.tum.cit.aet.logos.logoswebservice.notifications.service.NotificationService;
+import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfLicenseClient;
+import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfLicenseClient.HfLicenseResult;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabilityClient;
 import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabilityClient.HfReachabilityResult;
 
@@ -51,16 +64,33 @@ import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabil
  * {@code is_gated} (true when the Hub rejects the repository as gated, false
  * when it is reachable); a repository the Hub does not know at all is
  * refused. Rows that predate the precheck are backfilled by
- * {@link RequestedModelHfStatusSweeper} at application start.
+ * {@link RequestedModelHfRechecker}, which also re-checks the flagged rows
+ * hourly, so a license accepted in the meantime clears the flag without
+ * anyone voting again.
+ *
+ * The first time a row gets the gating verdict, a Logos admin notification
+ * ({@code gated_model_requested}) goes out with the vote — that is the
+ * admins' cue that a license acceptance is pending.
  *
  * Every vote names the team the model is wanted for; the first team to ask is
  * recorded on the row ({@code first_requesting_team}) and never overwritten —
  * later votes from other teams count toward the total, they just do not
  * change who requested first. That team's app admin is the one who accepts a
  * gated model's license agreement.
+ *
+ * The license itself — the SPDX expression the model's Hugging Face card
+ * declares plus the license file's text — is fetched from the Hub through the
+ * orchestrator's central HF_TOKEN and stored on the row: with the vote for a
+ * non-gated model, when a gated row unflags (the token can read the
+ * repository for the first time), and in the hourly recheck's backfill.
+ * Accepting the agreement — the Logos admin globally, a team's app admin per
+ * team — is recorded in {@code model_license_approvals}; revoking the global
+ * acceptance removes the team acceptances that depend on it.
  */
 @Service
 public class RequestedModelService {
+
+    private static final Logger log = LoggerFactory.getLogger(RequestedModelService.class);
 
     /**
      * Arbitrary stable key identifying the requested-model name namespace to
@@ -92,12 +122,22 @@ public class RequestedModelService {
     private static final Pattern MODEL_NAME_PATTERN =
         Pattern.compile("[A-Za-z0-9._-]+/[A-Za-z0-9._-]+");
 
+    /** License state: no fetch has run yet (pending retry by the recheck). */
+    public static final String LICENSE_STATUS_PENDING = "pending";
+    /** A license exists to accept (the file text, or the card-declared SPDX id). */
+    public static final String LICENSE_STATUS_AVAILABLE = "available";
+    /** The repository carries no license information at all. */
+    public static final String LICENSE_STATUS_NO_LICENSE = "no_license";
+
     private final RequestedModelRepository requestedModelRepository;
     private final RequestedModelVoteRepository voteRepository;
     private final ModelRepository modelRepository;
     private final ModelAliasRepository modelAliasRepository;
     private final TeamMemberRepository teamMemberRepository;
+    private final ModelLicenseApprovalRepository licenseApprovalRepository;
     private final OrchestratorHfReachabilityClient hfReachabilityClient;
+    private final OrchestratorHfLicenseClient hfLicenseClient;
+    private final NotificationService notificationService;
     private final TransactionTemplate transactionTemplate;
 
     public RequestedModelService(RequestedModelRepository requestedModelRepository,
@@ -105,14 +145,20 @@ public class RequestedModelService {
                                  ModelRepository modelRepository,
                                  ModelAliasRepository modelAliasRepository,
                                  TeamMemberRepository teamMemberRepository,
+                                 ModelLicenseApprovalRepository licenseApprovalRepository,
                                  OrchestratorHfReachabilityClient hfReachabilityClient,
+                                 OrchestratorHfLicenseClient hfLicenseClient,
+                                 NotificationService notificationService,
                                  TransactionTemplate transactionTemplate) {
         this.requestedModelRepository = requestedModelRepository;
         this.voteRepository = voteRepository;
         this.modelRepository = modelRepository;
         this.modelAliasRepository = modelAliasRepository;
         this.teamMemberRepository = teamMemberRepository;
+        this.licenseApprovalRepository = licenseApprovalRepository;
         this.hfReachabilityClient = hfReachabilityClient;
+        this.hfLicenseClient = hfLicenseClient;
+        this.notificationService = notificationService;
         this.transactionTemplate = transactionTemplate;
     }
 
@@ -138,6 +184,10 @@ public class RequestedModelService {
                 myVotedModelIds.add(vote.getRequestedModelId());
             }
         }
+        Set<Integer> licensedModelIds = licenseApprovalRepository.findAll().stream()
+            .filter(approval -> approval.getTeamId() == null)
+            .map(ModelLicenseApproval::getRequestedModelId)
+            .collect(Collectors.toSet());
 
         return requestedModelRepository.findAll().stream()
             .filter(model -> !available.contains(model.getName().toLowerCase(Locale.ROOT)))
@@ -147,7 +197,9 @@ public class RequestedModelService {
                 voteCounts.getOrDefault(model.getId(), 0L).intValue(),
                 myVotedModelIds.contains(model.getId()),
                 model.getIsGated(),
-                model.getFirstRequestingTeam()))
+                model.getFirstRequestingTeam(),
+                licenseStatusOf(model),
+                licensedModelIds.contains(model.getId())))
             .sorted(Comparator
                 .comparingInt(RequestedModelResponse::requestCount).reversed()
                 .thenComparing(RequestedModelResponse::name, String.CASE_INSENSITIVE_ORDER))
@@ -172,13 +224,20 @@ public class RequestedModelService {
      * gated (the row is then flagged with {@code is_gated = true}), refused
      * when the Hub does not know it, and retriable when the Hub could not be
      * asked. Otherwise the model's registry row is created if needed and the
-     * user's vote recorded. The unique (model, user) index means a second
-     * vote by the same user is a no-op — everyone still gets exactly one
-     * vote.
+     * user's vote recorded. For a non-gated model the license is fetched with
+     * the vote (best effort — a failure leaves the row pending for the
+     * recheck, it never fails the vote) and recorded on the row. The unique
+     * (model, user) index means a second vote by the same user is a no-op —
+     * everyone still gets exactly one vote.
      *
      * The vote names the team the model is wanted for: the caller must be a
      * member of it, and the first team to ask is recorded on the row (a row
      * that already carries one keeps it, so later teams only add votes).
+     *
+     * When this vote is the one that first flags the row gated, a Logos
+     * admin notification ({@code gated_model_requested}) is published in the
+     * same transaction: a rolled-back vote notifies no one, and later votes
+     * for an already flagged model stay silent.
      *
      * @throws IllegalArgumentException when no name is given, the name is not
      *     in {@code provider/model} form, it exceeds the maximum length, no
@@ -214,10 +273,15 @@ public class RequestedModelService {
             throw new ModelAlreadyAvailableException("This model is already available in Logos.");
         }
         boolean gated = requireModelOnHuggingFace(normalized);
+        // A non-gated model's license is readable right now, so it is fetched
+        // with the vote — outside the transaction, like the precheck, and
+        // best effort: a failure leaves the row pending for the recheck and
+        // never fails the vote.
+        HfLicenseResult license = fetchLicenseBestEffort(gated, normalized);
 
         // Only the registry/vote persistence is transactional, so the advisory
         // locks are bound to the same transaction they protect.
-        return transactionTemplate.execute(status -> {
+        RequestedModelResponse response = transactionTemplate.execute(status -> {
             // The availability check above ran before the precheck, so a model
             // or alias may have been added since. Re-check under the shared
             // model-name/alias namespace lock — the same lock ModelService takes
@@ -236,6 +300,7 @@ public class RequestedModelService {
             });
             // The precheck just answered: record its gating verdict with the
             // row.
+            Boolean previousGated = model.getIsGated();
             model.setIsGated(gated);
             // The first team to request the model is recorded with the row —
             // also filling in rows that predate the column. A row that
@@ -245,6 +310,31 @@ public class RequestedModelService {
                 model.setFirstRequestingTeam(teamId);
             }
             model = requestedModelRepository.save(model);
+            if (license != null) {
+                OffsetDateTime fetchedAt = OffsetDateTime.now();
+                if (requestedModelRepository.storeLicenseIfAbsent(
+                        model.getId(), license.licenseId(), license.licenseText(), fetchedAt) > 0) {
+                    // The conditional update is a bulk statement that bypasses
+                    // the managed entity — mirror it there, so the vote's
+                    // response already reports the stored license state.
+                    model.setLicenseId(license.licenseId());
+                    model.setLicenseText(license.licenseText());
+                    model.setLicenseFetchedDate(fetchedAt);
+                }
+            }
+
+            if (gated && !Boolean.TRUE.equals(previousGated)) {
+                // This vote is the one that flags the row gated: the Logos
+                // admins accept the license, so they are the ones who need to
+                // know. Published in this transaction, so a rolled-back vote
+                // notifies no one; a row that was already flagged stays quiet.
+                notificationService.publish(
+                    NotificationType.gated_model_requested,
+                    "Gated model requested",
+                    "Gated model " + normalized + " has been requested.",
+                    Map.of("model", normalized),
+                    List.of(NotificationTargetDTO.role(Role.LOGOS_ADMIN)));
+            }
 
             if (!voteRepository.existsByRequestedModelIdAndUserId(model.getId(), userId)) {
                 RequestedModelVote vote = new RequestedModelVote();
@@ -254,6 +344,7 @@ public class RequestedModelService {
             }
             return toResponse(model, (int) voteRepository.countByRequestedModelId(model.getId()), true);
         });
+        return response;
     }
 
     /**
@@ -279,14 +370,18 @@ public class RequestedModelService {
         requestedModelRepository.lockRequestedModelsNamespace(REQUESTED_MODELS_NAMESPACE_LOCK_KEY);
         RequestedModel model = requestedModelRepository.findByNameIgnoreCase(normalized).orElse(null);
         if (model == null) {
-            return new RequestedModelResponse(null, normalized, 0, false, null, null);
+            // No row: nothing was requested, so no license state either.
+            return new RequestedModelResponse(null, normalized, 0, false, null, null, LICENSE_STATUS_PENDING, false);
         }
         voteRepository.findByRequestedModelIdAndUserId(model.getId(), userId)
             .ifPresent(voteRepository::delete);
         if (voteRepository.countByRequestedModelId(model.getId()) == 0) {
+            // The row goes, and with it its license acceptance (the foreign
+            // key cascades), so the response reports the row as it was.
             requestedModelRepository.delete(model);
             return new RequestedModelResponse(
-                model.getId(), model.getName(), 0, false, model.getIsGated(), model.getFirstRequestingTeam());
+                model.getId(), model.getName(), 0, false, model.getIsGated(), model.getFirstRequestingTeam(),
+                licenseStatusOf(model), false);
         }
         return toResponse(model, (int) voteRepository.countByRequestedModelId(model.getId()), false);
     }
@@ -322,13 +417,17 @@ public class RequestedModelService {
 
     private RequestedModelResponse toResponse(RequestedModel model, int count, boolean hasVoted) {
         return new RequestedModelResponse(
-            model.getId(), model.getName(), count, hasVoted, model.getIsGated(), model.getFirstRequestingTeam());
+            model.getId(), model.getName(), count, hasVoted, model.getIsGated(), model.getFirstRequestingTeam(),
+            licenseStatusOf(model),
+            model.getId() == null
+                ? false
+                : licenseApprovalRepository.existsByRequestedModelIdAndTeamIdIsNull(model.getId()));
     }
 
     /**
      * Record a decisive Hugging Face gating verdict on a registry row that has
-     * none yet (the application-start sweep path). A row that already carries
-     * a verdict — for instance one a concurrent vote just wrote — is left
+     * none yet (the scheduled recheck path). A row that already carries a
+     * verdict — for instance one a concurrent vote just wrote — is left
      * untouched.
      *
      * @return the number of rows updated (0 when the row already had a verdict)
@@ -336,6 +435,179 @@ public class RequestedModelService {
     @Transactional
     public int recordGatedVerdictIfAbsent(Integer modelId, Boolean status) {
         return requestedModelRepository.setIsGatedIfNull(modelId, status);
+    }
+
+    /**
+     * Re-verify every flagged model against Hugging Face and clear the flag
+     * from the ones the central HF_TOKEN can see now — the license agreement
+     * was accepted since the row was flagged. The Model requests' refresh
+     * button calls this before re-reading the list, so an accepted license
+     * unflags the row without anyone voting again.
+     *
+     * Deliberately not transactional around the loop: the prechecks are
+     * remote round trips and must not hold a pooled database connection while
+     * waiting (the same reason the vote's precheck runs before its
+     * transaction), so the read, the checks and each conditional clear run in
+     * their own short transactions. Only a positive {@code reachable} verdict
+     * unflags: still-gated, not-found and timeout are no answer about the
+     * license, so the flag stays until a reachable answer comes.
+     *
+     * @return the number of rows unflagged (0 when nothing changed)
+     */
+    public int recheckGatedModels() {
+        int cleared = 0;
+        for (RequestedModel model : requestedModelRepository.findByIsGatedTrue()) {
+            HfReachabilityResult reachability = hfReachabilityClient.check(model.getName());
+            if (HfReachabilityResult.STATUS_REACHABLE.equals(reachability.status())
+                && requestedModelRepository.clearGatedFlagIfStillSet(model.getId()) > 0) {
+                cleared++;
+                // The token can read the repository now, so its license is
+                // readable for the first time — fetch it (best effort).
+                fetchAndStoreLicense(model);
+            }
+        }
+        return cleared;
+    }
+
+    /**
+     * Fetch a model's license best effort — null for a gated model (whose
+     * license is only readable after the owner grants access) or when the
+     * fetch failed, so the caller can simply skip storing a null.
+     */
+    private HfLicenseResult fetchLicenseBestEffort(boolean gated, String normalized) {
+        if (gated) {
+            return null;
+        }
+        HfLicenseResult fetched = hfLicenseClient.fetch(normalized);
+        if (fetched.error() != null) {
+            log.info("License fetch for {} will be retried: {}", normalized, fetched.error());
+            return null;
+        }
+        return fetched;
+    }
+
+    /**
+     * Fetch one model's license from Hugging Face — the SPDX expression the
+     * model card declares plus the license file's text — through the
+     * orchestrator's central HF_TOKEN, and record it on the row. Only rows
+     * without a license yet are written (the update is conditional, so a vote
+     * and the recheck racing never clobber each other). A fetch failure
+     * leaves the row pending for the next pass — the hourly recheck or the
+     * next vote. Never throws.
+     *
+     * @return true when a license was recorded on a row that had none
+     */
+    public boolean fetchAndStoreLicense(RequestedModel model) {
+        HfLicenseResult license = hfLicenseClient.fetch(model.getName());
+        if (license.error() != null) {
+            log.info("License fetch for {} will be retried: {}", model.getName(), license.error());
+            return false;
+        }
+        return requestedModelRepository.storeLicenseIfAbsent(
+            model.getId(), license.licenseId(), license.licenseText(), OffsetDateTime.now()) > 0;
+    }
+
+    /**
+     * Backfill the license of every row the central HF_TOKEN can read but
+     * that carries no license yet: rows requested before the license feature,
+     * rows whose fetch failed, and rows that unflagged since. Deliberately not
+     * transactional around the loop — the fetches are remote round trips, the
+     * same reason the gated recheck is not.
+     *
+     * @return the number of rows a license was recorded on
+     */
+    public int fetchMissingLicenses() {
+        int stored = 0;
+        for (RequestedModel model : requestedModelRepository.findByIsGatedFalseAndLicenseFetchedDateIsNull()) {
+            if (fetchAndStoreLicense(model)) {
+                stored++;
+            }
+        }
+        return stored;
+    }
+
+    /**
+     * The license state of a registry row: pending while no fetch has run,
+     * available when a license exists to accept (the file text, or the SPDX
+     * id the model card declares when the repository carries no file),
+     * no_license when the repository has no license information at all —
+     * which is not "no license needed" but "nothing to accept", so it is
+     * flagged for a look rather than treated as accepted.
+     */
+    public static String licenseStatusOf(RequestedModel model) {
+        if (model.getLicenseFetchedDate() == null) {
+            return LICENSE_STATUS_PENDING;
+        }
+        if (model.getLicenseText() != null || model.getLicenseId() != null) {
+            return LICENSE_STATUS_AVAILABLE;
+        }
+        return LICENSE_STATUS_NO_LICENSE;
+    }
+
+    /** The model's license as the acceptance dialog renders it. */
+    @Transactional(readOnly = true)
+    public ModelLicenseResponse license(Integer modelId) {
+        RequestedModel model = requireModel(modelId);
+        ModelLicenseApproval approval = licenseApprovalRepository
+            .findByRequestedModelIdAndTeamIdIsNull(modelId)
+            .orElse(null);
+        return new ModelLicenseResponse(
+            licenseStatusOf(model),
+            model.getLicenseId(),
+            model.getLicenseText(),
+            approval != null,
+            approval == null ? null : approval.getApprovedAt());
+    }
+
+    /**
+     * Record the Logos admin's global acceptance of the model's license. Only
+     * a model whose license exists can be accepted — the dialog offers the
+     * control only then, this is the backstop. Accepting while already
+     * accepted (for instance after another admin took over) refreshes who and
+     * when; the audit trail is the row, not a flag.
+     *
+     * @throws IllegalArgumentException when the model is unknown or no license
+     *     exists to accept
+     */
+    @Transactional
+    public ModelLicenseResponse approveLicense(Integer modelId, Integer userId) {
+        requireUser(userId);
+        RequestedModel model = requireModel(modelId);
+        if (!LICENSE_STATUS_AVAILABLE.equals(licenseStatusOf(model))) {
+            throw new IllegalArgumentException(
+                "The license agreement cannot be accepted: no license information is available for this model yet.");
+        }
+        ModelLicenseApproval approval = licenseApprovalRepository
+            .findByRequestedModelIdAndTeamIdIsNull(modelId)
+            .orElseGet(ModelLicenseApproval::new);
+        if (approval.getId() == null) {
+            approval.setRequestedModelId(modelId);
+        }
+        approval.setUserId(userId);
+        approval.setApprovedAt(OffsetDateTime.now());
+        licenseApprovalRepository.save(approval);
+        return license(modelId);
+    }
+
+    /**
+     * Revoke the Logos admin's acceptance of the model's license — the global
+     * row and the team-level acceptances that depend on it, which are void the
+     * moment the global acceptance is gone. Idempotent: revoking an absent
+     * acceptance is a no-op.
+     */
+    @Transactional
+    public ModelLicenseResponse revokeLicense(Integer modelId) {
+        RequestedModel model = requireModel(modelId);
+        licenseApprovalRepository.deleteByRequestedModelId(modelId);
+        return license(modelId);
+    }
+
+    private RequestedModel requireModel(Integer modelId) {
+        if (modelId == null) {
+            throw new IllegalArgumentException("A model id is required.");
+        }
+        return requestedModelRepository.findById(modelId)
+            .orElseThrow(() -> new IllegalArgumentException("Unknown requested model."));
     }
 
     /**

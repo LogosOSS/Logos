@@ -36,6 +36,15 @@ export class ModelRequestService {
   }
 
   /**
+   * Re-verify every flagged model against Hugging Face so a license accepted
+   * since the flag was set clears it. Call it before {@link list} on a
+   * refresh; a failure there must not prevent the list from loading.
+   */
+  recheckGated(): Promise<void> {
+    return firstValueFrom(this.http.post<void>('/api/logosdb/recheck_model_requests', {}));
+  }
+
+  /**
    * Cast the caller's vote for a model, naming the team it is wanted for (a
    * no-op if they already voted).
    */

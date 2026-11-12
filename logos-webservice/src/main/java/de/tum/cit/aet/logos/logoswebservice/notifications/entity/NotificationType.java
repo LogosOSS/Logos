@@ -28,6 +28,8 @@ public enum NotificationType {
     new_models_available,
     /** A developer requested a model the team cannot use yet (audience: App admin). */
     model_access_requested,
+    /** A gated model was requested (audience: Logos admin). */
+    gated_model_requested,
     /** Benchmark results are ready for review (audience: Logos admin). */
     benchmark_result_ready,
     /** A calibration run failed (audience: Logos admin). */
