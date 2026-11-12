@@ -24,9 +24,6 @@ public interface TeamProviderPermissionRepository
     @Query(value = "SELECT pg_advisory_xact_lock(:key)", nativeQuery = true)
     void lockTeamProviderPermissions(@Param("key") long key);
 
-    @Query(value = "SELECT COALESCE(team_id, -id) FROM api_keys WHERE id = :keyId", nativeQuery = true)
-    Integer findApiKeyPermissionLockScope(@Param("keyId") int keyId);
-
     @Transactional
     void deleteById_TeamId(Integer teamId);
 

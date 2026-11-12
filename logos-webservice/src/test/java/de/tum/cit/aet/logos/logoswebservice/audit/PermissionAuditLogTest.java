@@ -102,23 +102,26 @@ class PermissionAuditLogTest {
         } else {
             putPermissions("/admin/teams/2001/provider-permissions", "provider", "[]");
         }
-        assertThat(events()).hasSize(4);
+        assertThat(events()).hasSize(2);
         assertThat(events().getFirst()).containsEntry("action", "revoke").containsEntry("cause", "direct")
             .containsEntry("actor_user_id", 1003);
-        assertThat(events().subList(1, 4)).allSatisfy(row -> assertThat(row)
+        assertThat(events().subList(1, 2)).allSatisfy(row -> assertThat(row)
             .containsEntry("action", "revoke").containsEntry("cause", "cascade")
             .containsEntry("actor_user_id", null).containsEntry("actor_role", "system"));
         assertThat(events()).extracting(row -> row.get("scope_type") + ":" + row.get("target_type"))
-            .containsExactlyInAnyOrder("team:provider", "team:model", "api_key:provider", "api_key:model");
+            .containsExactlyInAnyOrder("team:provider", "team:model");
+        assertThat(permissions.getApiKeyProviderPermissions(3001)).containsExactly(6001);
+        assertThat(permissions.getApiKeyModelPermissions(3001)).containsExactly(5001);
     }
 
     @Test
-    void modelRevocationPrunesKeyGrantsWithCascadeCause() throws Exception {
+    void teamModelRevocationLeavesKeyGrantsAndTheirHistoryUnchanged() throws Exception {
         seedAllGrants();
         clearHistory();
         putPermissions("/admin/teams/2001/model-permissions", "model", "[]");
-        assertThat(events()).hasSize(2);
-        assertThat(events().getLast()).containsEntry("scope_type", "api_key").containsEntry("cause", "cascade");
+        assertThat(events()).hasSize(1);
+        assertThat(events().getFirst()).containsEntry("scope_type", "team").containsEntry("cause", "direct");
+        assertThat(permissions.getApiKeyModelPermissions(3001)).containsExactly(5001);
     }
 
     @Test

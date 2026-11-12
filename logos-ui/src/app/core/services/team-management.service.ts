@@ -11,6 +11,13 @@ import {
   StoreDeployKeyPayload, AiLlmCallRecommendation, AiWorkflow, KeycloakGroupDirectory,
 } from '../../shared/models/team.model';
 
+/** One provider of the catalog that the custom permissions of an API key can include. */
+export interface PermissionCatalogProvider {
+  id: number;
+  name: string;
+  models: { model_id: number; model_name: string }[];
+}
+
 export interface TeamMembersResponse {
   team: TeamDetail;
   members: TeamMember[];
@@ -282,6 +289,13 @@ export class TeamManagementService {
 
   getApiKeyModelPermissions(keyId: number): Promise<number[]> {
     return firstValueFrom(this.http.get<number[]>(`/api/admin/api-keys/${keyId}/model-permissions`));
+  }
+
+  /** Every provider with its models, for choosing the custom permissions of the key. */
+  getApiKeyPermissionCatalog(keyId: number): Promise<PermissionCatalogProvider[]> {
+    return firstValueFrom(
+      this.http.get<PermissionCatalogProvider[]>(`/api/admin/api-keys/${keyId}/permission-catalog`),
+    );
   }
 
   getApiKeyProviderPermissions(keyId: number): Promise<number[]> {
