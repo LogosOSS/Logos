@@ -48,8 +48,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Read from the .env file by Compose or by the deployer, without a ${NAME} in a compose file.
-  EXTRA_NAMES: "COMPOSE_PROFILES LOGOS_WEBSERVICE_REPLICAS"
+  # Read from the .env file by Compose or by the deployer, without a ${NAME} in a compose file. The last three are the
+  # registry login and the switch for the compose file from the tag, which the node manager reads from the file itself.
+  EXTRA_NAMES: "COMPOSE_PROFILES LOGOS_WEBSERVICE_REPLICAS REGISTRY_USER REGISTRY_PASSWORD NODE_MANAGER_COMPOSE_FROM_TAG"
 
 jobs:
   sync:

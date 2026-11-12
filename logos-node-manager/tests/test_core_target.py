@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from itertools import count
+from pathlib import Path
 
 import pytest
-from conftest import queued
+from conftest import FakeEngine, queued
 
+from logos_node_manager.compose_source import ComposeSource
 from logos_node_manager.config import Settings
 from logos_node_manager.core_target import NO_ROLLBACK, CoreTarget
 from logos_node_manager.deployer import Deployer
@@ -106,6 +108,13 @@ class FakeProject:
         self.calls.append(("pull_image", reference))
         return CommandResult(("pull",), 1 if self.pull_image_error else 0, stderr="denied")
 
+    def use_compose(self, path) -> None:
+        self.calls.append(("use_compose", path))
+
+    def validate(self, tag: str) -> CommandResult:
+        self.calls.append(("validate", tag))
+        return CommandResult(("config",), 0)
+
 
 @pytest.fixture
 def core_settings(tmp_path) -> Settings:
@@ -171,6 +180,36 @@ def test_a_good_deployment_replaces_checks_and_cleans_up(make_core, project):
     assert record.message == "now running tag v2"
     assert [call[0] for call in project.calls] == ["pull_project", "up_project", "prune_images"]
     assert project.calls[1] == ("up_project", "v2", 1)
+
+
+def test_a_core_host_takes_the_file_of_the_core_from_the_tag_and_keeps_nothing_for_a_rollback(
+    core_settings, project, clock
+):
+    core_settings.env_file.parent.mkdir(parents=True, exist_ok=True)
+    core_settings.env_file.write_text(
+        "REGISTRY=harbor.example/logos\nNODE_MANAGER_COMPOSE_FROM_TAG=true\n", encoding="utf-8"
+    )
+    store = StateStore(core_settings.state_dir)
+    source = ComposeSource(core_settings, FakeEngine(), store.compose_dir)
+    deployer = Deployer(
+        core_settings,
+        project,
+        store,
+        target_factory=lambda d: CoreTarget(d, project, probe=lambda url: True),
+        clock=clock,
+        sleep=clock.sleep,
+        now=lambda: "2026-01-01T00:00:00.000000+00:00",
+        compose=source,
+    )
+
+    record = deployer.process(queued(store, "v2"))
+
+    assert record.outcome is Outcome.SUCCEEDED
+    assert Path(record.compose_file).name == "core.yaml"
+    assert ("use_compose", Path(record.compose_file)) in project.calls and ("validate", "v2") in project.calls
+    # A core deployment has no rollback, so there is no previous file to keep.
+    assert record.previous_compose_file == ""
+    assert source.current_path() is None
 
 
 def test_the_record_notes_the_containers_that_ran_before(make_core):

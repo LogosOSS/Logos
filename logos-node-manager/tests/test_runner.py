@@ -45,6 +45,28 @@ def test_the_extra_environment_is_added_to_the_process_environment(monkeypatch):
     assert result.stdout.strip() == "base extra"
 
 
+def test_a_secret_reaches_the_command_through_stdin_and_never_through_the_command_line():
+    result = SubprocessRunner().run(
+        [sys.executable, "-c", "import sys; print(sys.stdin.read())"], timeout_s=20, stdin="the-secret"
+    )
+
+    assert result.stdout.strip() == "the-secret"
+    assert "the-secret" not in " ".join(result.argv)
+
+
+def test_a_variable_set_on_the_runner_reaches_every_later_command_until_it_is_taken_away(monkeypatch):
+    monkeypatch.delenv("NM_SET", raising=False)
+    show = [sys.executable, "-c", "import os; print(os.environ.get('NM_SET', 'unset'))"]
+    runner = SubprocessRunner()
+
+    runner.set_env("NM_SET", "first")
+    assert runner.run(show, timeout_s=20).stdout.strip() == "first"
+    # The variable of one command wins over the one of the runner.
+    assert runner.run(show, timeout_s=20, env={"NM_SET": "second"}).stdout.strip() == "second"
+    runner.set_env("NM_SET", None)
+    assert runner.run(show, timeout_s=20).stdout.strip() == "unset"
+
+
 def test_a_command_that_runs_too_long_is_killed():
     result = SubprocessRunner().run([sys.executable, "-c", "import time; time.sleep(30)"], timeout_s=0.5)
 

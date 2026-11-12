@@ -11,6 +11,7 @@ Images are removed when the deployment has ended and not earlier: until then a r
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from logos_node_manager.docker_ops import Docker, split_image_ref
@@ -408,6 +409,12 @@ class WorkerTarget:
 
     def roll_back(self, deployment: Deployment) -> None:
         d = self.d
+        if d.compose is not None:
+            # The previous image goes with the previous settings. The compose file of the new version may ask for
+            # things that the old image does not know. Without a file of its own, the previous version ran with the
+            # file of the host.
+            previous = Path(deployment.previous_compose_file) if deployment.previous_compose_file else None
+            self.docker.use_compose(previous if previous is not None and previous.is_file() else None)
         result = restore_previous(
             self.docker,
             d.settings,

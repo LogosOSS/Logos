@@ -31,6 +31,8 @@ QUERY_TIMEOUT_S = 30.0
 CONFIG_TIMEOUT_S = 60.0
 # The label on which Compose keeps the hash of the configuration a container was made from.
 CONFIG_HASH_LABEL = "com.docker.compose.config-hash"
+# The registry and namespace that the images come from when the ``.env`` file names none. It is the public mirror.
+DEFAULT_REGISTRY = "ghcr.io/logososs"
 
 
 @dataclass(frozen=True)
@@ -107,26 +109,36 @@ class Docker:
     def __init__(self, settings: Settings, runner: Runner) -> None:
         self._settings = settings
         self._runner = runner
+        # The compose file the commands use. None means the one of the host, ``settings.compose_file``.
+        self._compose_file: Path | None = None
 
     # ------------------------------------------------------------------ Compose
 
+    def use_compose(self, path: Path | None) -> None:
+        """Aim the compose commands at another compose file. ``None`` goes back to the compose file of the host."""
+        self._compose_file = path
+
     def _compose(self, *args: str) -> list[str]:
         s = self._settings
-        return [
-            "docker",
-            "compose",
-            "-p",
-            s.project_name,
-            "-f",
-            str(s.compose_file),
-            "--env-file",
-            str(s.env_file),
-            *args,
-        ]
+        if self._compose_file is None:
+            files = ["-f", str(s.compose_file)]
+        else:
+            # The file lies outside the project directory, but a relative path in it, for example the bind mounts of the
+            # worker, means the project directory. Compose takes the directory of the file unless it is told.
+            files = ["--project-directory", str(s.project_dir), "-f", str(self._compose_file)]
+        return ["docker", "compose", "-p", s.project_name, *files, "--env-file", str(s.env_file), *args]
 
     @staticmethod
     def _tag_env(tag: str | None) -> dict[str, str] | None:
         return {"IMAGE_TAG": tag} if tag else None
+
+    def validate(self, tag: str) -> CommandResult:
+        """Check that Compose accepts the compose file together with the ``.env`` file of the host.
+
+        ``-q`` prints nothing, so no value of the configuration reaches the output. A missing variable that the file
+        requires, or an error in the file, ends up in the error text.
+        """
+        return self._runner.run(self._compose("config", "-q"), timeout_s=CONFIG_TIMEOUT_S, env=self._tag_env(tag))
 
     def pull(self, tag: str) -> CommandResult:
         """Download the image of the worker service for ``tag``."""

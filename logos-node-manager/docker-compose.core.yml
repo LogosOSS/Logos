@@ -39,6 +39,8 @@ services:
       # turns the relative bind mounts of Logos into absolute host paths before it sends them to the Docker engine.
       NODE_MANAGER_PROJECT_DIR: ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}
       # The registry login. The action that installs the deployer writes it to the directory .docker of the project directory.
+      # Or the manager logs in itself: with REGISTRY_USER and REGISTRY_PASSWORD in the .env file it runs `docker login`
+      # before each deployment, and this directory is not used. It reads those two lines from the file itself.
       DOCKER_CONFIG: ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}/.docker
       # The Logos that this host obeys: the Logos that runs on it. LOGOS_DEPLOYER_KEY is the key that this Logos made on
       # the page Deployments. Without the key, the host takes no orders from Logos.

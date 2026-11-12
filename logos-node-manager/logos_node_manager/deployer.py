@@ -18,12 +18,15 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, TypeVar
 
+from logos_node_manager.compose_source import ComposeSource
 from logos_node_manager.config import Settings
 from logos_node_manager.docker_ops import Docker
-from logos_node_manager.errors import Interrupted
+from logos_node_manager.errors import ComposeError, DockerError, Interrupted
 from logos_node_manager.orchestrator import OrchestratorClient, OrchestratorUnavailable
+from logos_node_manager.registry import RegistryLogin
 from logos_node_manager.state import MAX_EVENTS, Deployment, FailureKind, Outcome, Phase, StateStore, utc_now
 from logos_node_manager.targets import Target
 from logos_node_manager.worker_target import WorkerTarget
@@ -66,10 +69,14 @@ class Deployer:
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], str] = utc_now,
         should_stop: Callable[[], bool] = lambda: False,
+        registry: RegistryLogin | None = None,
+        compose: ComposeSource | None = None,
     ) -> None:
         """``target_factory`` builds the target of the host from this deployer, which the target needs for its helpers.
 
-        Without it the host is a worker host and ``docker`` is its Docker object.
+        Without it the host is a worker host and ``docker`` is its Docker object. ``registry`` logs in to the registry
+        before a deployment pulls, and ``compose`` takes the compose file out of the image of the tag. Without them the
+        deployment does neither, and the host has to have its login and its compose file by other means.
         """
         self.settings = settings
         self.docker = docker
@@ -79,6 +86,8 @@ class Deployer:
         self.sleep = sleep
         self.now = now
         self.should_stop = should_stop
+        self.registry = registry
+        self.compose = compose
         if target_factory is None:
             if docker is None:
                 raise ValueError("a deployer without a target factory needs a Docker object for the worker target")
@@ -98,6 +107,7 @@ class Deployer:
         """Run the deployment to its end and clean up. Raises ``Interrupted`` if the daemon is asked to stop first."""
         if deployment.started_at is None:
             deployment.started_at = self.now()
+        self._prepare(deployment)
         target = self.target
         steps = {
             Phase.QUEUED: target.begin,
@@ -113,6 +123,85 @@ class Deployer:
             steps[deployment.phase](deployment)
         target.clean_up(deployment)
         return deployment
+
+    def _prepare(self, deployment: Deployment) -> None:
+        """Settle what the phases need: which compose file the deployment uses, and the registry login.
+
+        The login and the choice of the compose file belong to the start of a deployment, before anything is pulled. A
+        deployment that goes on after a restart only takes up the compose file it began with, so that it ends with the
+        settings it started with. If the start fails, the deployment ends as failed before it touches the host.
+        """
+        docker = self.docker
+        if self.compose is not None and docker is not None:
+            docker.use_compose(self._recorded_compose(deployment))
+        if deployment.phase not in (Phase.QUEUED, Phase.PULLING):
+            return
+        if self.registry is not None:
+            problem = self.registry.login()
+            if problem:
+                self.finish(
+                    deployment, Outcome.FAILED, FailureKind.PULL_FAILED, f"{problem}. Nothing on the host was touched."
+                )
+                return
+        if self.compose is not None and docker is not None and not deployment.compose_settled:
+            self._settle_compose(deployment, docker, self.compose)
+
+    @staticmethod
+    def _recorded_compose(deployment: Deployment) -> Path | None:
+        """The compose file that the record names, or None for the compose file of the host."""
+        if not deployment.compose_file:
+            return None
+        path = Path(deployment.compose_file)
+        if not path.is_file():
+            raise DockerError(f"the compose file of this deployment is missing: {path}")
+        return path
+
+    def _settle_compose(self, deployment: Deployment, docker: Docker, compose: ComposeSource) -> None:
+        """Take the compose file out of the image of the tag, if the host is set to, and check it before it is used."""
+        if not compose.enabled():
+            deployment.compose_settled = True
+            self.store.save(deployment)
+            return
+        try:
+            fetched = compose.fetch(deployment)
+        except ComposeError as exc:
+            self.finish(deployment, Outcome.FAILED, FailureKind.PULL_FAILED, f"{exc}. Nothing on the host was touched.")
+            return
+        if fetched is None:
+            deployment.compose_settled = True
+            self.event(deployment, "the image of the tag carries no compose file: using the compose file of the host")
+            self.store.save(deployment)
+            return
+        docker.use_compose(fetched.path)
+        checked = docker.validate(deployment.tag)
+        if not checked.ok:
+            docker.use_compose(None)
+            self.finish(
+                deployment,
+                Outcome.FAILED,
+                FailureKind.PULL_FAILED,
+                f"the compose file of tag {deployment.tag} does not work with the .env file of this host: "
+                f"{checked.tail()}. Nothing on the host was touched.",
+            )
+            return
+        deployment.compose_file = str(fetched.path)
+        deployment.compose_sha256 = fetched.sha256
+        if self.target.can_roll_back:
+            current = compose.current_path()
+            deployment.previous_compose_file = str(current) if current else ""
+        deployment.compose_settled = True
+        self.event(
+            deployment,
+            f"using the compose file {fetched.path.name} of tag {deployment.tag} (sha256 {fetched.sha256[:12]})",
+        )
+        self.store.save(deployment)
+
+    def _remember_compose(self, deployment: Deployment, compose: ComposeSource) -> None:
+        """Note which compose file ran last, for the rollback of the next deployment. A problem here is only logged."""
+        try:
+            compose.remember(deployment)
+        except OSError:
+            logger.warning("Deployment %s: the compose file that ran was not noted", deployment.id, exc_info=True)
 
     def give_up(self, deployment: Deployment, error: Exception) -> None:
         """End the attempts after the manager itself failed again and again in the phase of the record.
@@ -157,6 +246,9 @@ class Deployer:
     ) -> None:
         # Before the record says it is over: a stop in between then repeats this step instead of losing the release.
         self.target.before_finish(deployment)
+        compose = self.compose
+        if compose is not None and self.target.can_roll_back and outcome in (Outcome.SUCCEEDED, Outcome.UNCHANGED):
+            self._remember_compose(deployment, compose)
         deployment.outcome = outcome
         deployment.failure = failure
         deployment.message = message

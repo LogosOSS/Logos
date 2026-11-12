@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Callable, TextIO
 
+from logos_node_manager.compose_source import ComposeSource
 from logos_node_manager.config import CORE, Settings
 from logos_node_manager.core_target import CoreTarget
 from logos_node_manager.daemon import Daemon
@@ -31,6 +32,7 @@ from logos_node_manager.docker_ops import Docker, ProjectDocker
 from logos_node_manager.errors import StateError
 from logos_node_manager.logos_link import LogosLink
 from logos_node_manager.orchestrator import OrchestratorClient
+from logos_node_manager.registry import RegistryLogin
 from logos_node_manager.runner import SubprocessRunner
 from logos_node_manager.state import Deployment, Outcome, Phase, StateStore, utc_now, validate_id, validate_tag
 
@@ -235,6 +237,9 @@ def cmd_status(args: argparse.Namespace, settings: Settings, *, out: TextIO | No
         print(json.dumps(record.to_dict(), indent=2, sort_keys=True), file=out)
         return EXIT_OK
     print(f"Deployment {record.id}: tag {record.tag}, phase {record.phase.value}", file=out)
+    if record.compose_file:
+        # A person who repairs a host by hand needs this file: the one on the host is not the one that ran.
+        print(f"compose file: {record.compose_file} (sha256 {record.compose_sha256[:12]})", file=out)
     for event in record.events:
         print(format_event(event), file=out)
     if record.finished:
@@ -253,20 +258,34 @@ def cmd_ping(args: argparse.Namespace, settings: Settings) -> int:
 def cmd_run(args: argparse.Namespace, settings: Settings) -> int:
     stop = threading.Event()
     store = StateStore(settings.state_dir)
+    # One runner for every command: the registry login sets DOCKER_CONFIG on it, and every command that follows uses it.
+    runner = SubprocessRunner()
+    registry = RegistryLogin(settings, runner)
+    compose = ComposeSource(settings, runner, store.compose_dir)
     if settings.kind == CORE:
         # A core host has no node to cordon and no orchestrator to ask: the Logos link is how it hears and reports.
-        docker: Docker = ProjectDocker(settings, SubprocessRunner())
+        docker: Docker = ProjectDocker(settings, runner)
         deployer = Deployer(
             settings,
             docker,
             store,
             target_factory=lambda deployer: CoreTarget(deployer, docker),  # type: ignore[arg-type]
             should_stop=stop.is_set,
+            registry=registry,
+            compose=compose,
         )
     else:
-        docker = Docker(settings, SubprocessRunner())
+        docker = Docker(settings, runner)
         orchestrator = OrchestratorClient.from_settings(settings)
-        deployer = Deployer(settings, docker, store, orchestrator=orchestrator, should_stop=stop.is_set)
+        deployer = Deployer(
+            settings,
+            docker,
+            store,
+            orchestrator=orchestrator,
+            should_stop=stop.is_set,
+            registry=registry,
+            compose=compose,
+        )
     link = LogosLink.from_settings(settings, store, stop)
     daemon = Daemon(settings, store, deployer, stop, docker=docker, registry_login_file=DOCKER_CONFIG_FILE, link=link)
     # Stop between steps. A deployment that is cut off continues from its recorded phase at the next start.

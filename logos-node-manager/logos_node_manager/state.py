@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -153,6 +154,16 @@ class Deployment:
     # deployment from the command line is reported to the orchestrator.
     from_logos: bool = False
 
+    # The compose file of the deployment. Empty means the compose file of the host. Otherwise it is the file that the
+    # manager took out of the image of the tag. The deployment uses it from the pull to the end, also after a restart of
+    # the manager and when the tag has moved on in the meantime.
+    compose_file: str = ""
+    compose_sha256: str = ""
+    # Whether it is settled which compose file the deployment uses, so that a step that is repeated does not ask again.
+    compose_settled: bool = False
+    # Worker only: the compose file that ran before, which the rollback needs. Empty means the compose file of the host.
+    previous_compose_file: str = ""
+
     @property
     def finished(self) -> bool:
         return self.phase is Phase.DONE
@@ -227,6 +238,9 @@ class StateStore:
         self.state_dir = state_dir
         self.deployments_dir = state_dir / "deployments"
         self.heartbeat_file = state_dir / "heartbeat"
+        # The compose files that were taken out of images: one directory for each deployment, and ``.current`` for the
+        # one that ran last. The name of the latter starts with a dot, so no deployment id can be the same.
+        self.compose_dir = state_dir / "compose"
         # Names of files that were skipped, so that the daemon reports each one once and not on every pass.
         self._ignored: set[str] = set()
 
@@ -308,11 +322,12 @@ class StateStore:
         return records[-1] if records else None
 
     def prune(self, keep: int = KEEP_FINISHED) -> None:
-        """Delete the oldest finished records beyond ``keep``."""
+        """Delete the oldest finished records beyond ``keep``, and the compose files that belong to them."""
         finished = [record for record in self.all() if record.finished]
         for record in finished[: max(0, len(finished) - keep)]:
             with contextlib.suppress(FileNotFoundError):
                 self._path(record.id).unlink()
+            shutil.rmtree(self.compose_dir / record.id, ignore_errors=True)
 
     # ------------------------------------------------------------------ Heartbeat
 

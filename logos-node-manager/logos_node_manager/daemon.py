@@ -131,7 +131,16 @@ class Daemon:
             logger.info("Docker: %s", self._docker.versions())
         if self._registry_login_file is not None:
             logger.info("%s", describe_registry_login(self._registry_login_file))
-        for path in (s.compose_file, s.env_file):
+        registry = getattr(self._deployer, "registry", None)
+        compose = getattr(self._deployer, "compose", None)
+        if registry is not None:
+            logger.info("Registry: %s", registry.describe())
+        if compose is not None:
+            logger.info("Compose file: %s", compose.describe())
+        # With the compose file from the tag, the file of the host is not needed, and a deployment only falls back to it
+        # when the image of a tag carries none.
+        needed = (s.env_file,) if compose is not None and compose.enabled() else (s.compose_file, s.env_file)
+        for path in needed:
             if not path.is_file():
                 logger.warning("%s does not exist; deployments fail until it does", path)
         if s.logos_enabled:

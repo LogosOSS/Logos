@@ -87,6 +87,41 @@ def test_pull_names_the_project_files_and_only_the_worker_service(settings):
     assert timeout_s == settings.pull_timeout_s
 
 
+def test_a_compose_file_from_the_state_directory_gets_the_project_directory_and_the_host_file_comes_back(settings):
+    docker, runner = docker_with(settings, ok(), ok())
+    fetched = settings.state_dir / "compose" / "run-1" / "worker.yml"
+
+    docker.use_compose(fetched)
+    docker.pull("v2")
+    docker.use_compose(None)
+    docker.pull("v2")
+
+    from_tag, from_host = (call[0] for call in runner.calls)
+    # Relative paths in the file, such as ./config.yml, must still mean the project directory of the host.
+    assert from_tag[:9] == (
+        "docker",
+        "compose",
+        "-p",
+        settings.project_name,
+        "--project-directory",
+        str(settings.project_dir),
+        "-f",
+        str(fetched),
+        "--env-file",
+    )
+    assert "--project-directory" not in from_host and str(settings.compose_file) in from_host
+
+
+def test_validate_asks_compose_to_check_the_file_quietly_with_the_requested_tag(settings):
+    docker, runner = docker_with(settings, ok())
+
+    assert docker.validate("v2").ok
+
+    argv, _, env = runner.calls[0]
+    assert argv[-2:] == ("config", "-q")
+    assert env == {"IMAGE_TAG": "v2"}
+
+
 def test_the_requested_tag_overrides_the_env_file_through_the_process_environment(settings):
     docker, runner = docker_with(settings, ok(), ok())
 

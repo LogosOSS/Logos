@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING, Callable
 
-from logos_node_manager.docker_ops import ProjectContainer, ProjectDocker, read_env_value
+from logos_node_manager.docker_ops import DEFAULT_REGISTRY, ProjectContainer, ProjectDocker, read_env_value
 from logos_node_manager.state import Deployment, FailureKind, Outcome, Phase
 
 if TYPE_CHECKING:
@@ -28,8 +28,6 @@ logger = logging.getLogger(__name__)
 
 # The saved log of failed services is limited, so the record stays small.
 MAX_LOG_CHARS = 6000
-# The registry Compose uses when the ``.env`` file names none.
-DEFAULT_REGISTRY = "ghcr.io/logososs"
 NO_ROLLBACK = (
     "The core has no automatic rollback: some services may run the new version and some the old one. "
     "Fix the cause and deploy again, or restore a backup."

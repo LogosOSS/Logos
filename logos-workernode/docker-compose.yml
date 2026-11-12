@@ -129,6 +129,10 @@ services:
   # runs `docker compose`, and a new login is visible at once. The deploy
   # workflows write the login there. Without them, run this on the host:
   #   DOCKER_CONFIG=<worker directory>/.docker docker login <registry>
+  # Or let the manager log in itself: with REGISTRY_USER and REGISTRY_PASSWORD in
+  # the .env file it runs `docker login` before each deployment, and the login of
+  # this directory is not used. The manager reads these two lines from the file
+  # itself, so they need no entry in this compose file.
   # A host without a login still starts the service. Only a pull from a registry
   # that needs a login fails.
   #

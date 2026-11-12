@@ -14,6 +14,11 @@ page Deployments of that Logos (see "Orders from Logos").
 
 A deployment is one request to run a given image tag. The daemon takes requests one at a time, oldest first.
 
+Before the first phase, the manager settles two things, if the host is set up for them. It logs in to the registry with
+the login of the `.env` file (see "Registry login"), and it takes the compose file out of the image of the tag (see
+"Compose file from the tag"). If one of them fails, the deployment ends as `failed` (`pull_failed`) before it touches
+anything. A deployment that goes on after a restart of the manager keeps the compose file it began with.
+
 | Phase | What happens |
 |---|---|
 | `pulling` | Notes the running container, then pulls the new image. If the pull fails, nothing else happens and the running container is not touched. |
@@ -176,6 +181,69 @@ run again.
 A problem during the removal does not fail the step. Images built before the label existed have none: remove them once
 by ID with `docker rmi`. A host without the deploy workflow keeps its old manager images and needs the same command.
 
+## Registry login
+
+A registry that needs a login needs one on every host. The manager can make the login itself, from the `.env` file of
+the host:
+
+```bash
+# in the .env of the host
+REGISTRY=<registry-host>/logos     # where the images come from, as before
+REGISTRY_USER=<user>
+REGISTRY_PASSWORD=<password or token>
+```
+
+* At the start of every deployment, the manager runs `docker login <registry-host>` with these values. The host name is
+  the part of `REGISTRY` before the first slash. A new password is a new line in the `.env` file: there is no restart and
+  no command on the host. The file is read at every deployment.
+* The password goes to `docker login` through stdin. It is on no command line, in no log and in no record. The login is
+  stored in a directory of its own in the temporary file system of the container, so it is gone when the container
+  stops, and nothing of it is written to the host.
+* Without `REGISTRY_USER` and `REGISTRY_PASSWORD`, the manager does not log in, and the login of the host (the directory
+  `.docker` of the project directory, see "Use") is used as before. With only one of the two, the manager warns once and
+  does not log in.
+* If the login fails, for example because the password is wrong, the deployment ends as `failed` (`pull_failed`) with the
+  reason, before it touches anything.
+* If a value has a `$`, put it in single quotes, for example `REGISTRY_USER='robot$logos'`. Compose also reads the `.env`
+  file and would take `$logos` for a variable. The manager takes the quotes off.
+* Use an account that can pull but not push.
+
+## Compose file from the tag
+
+Every host has a copy of its compose file, and a release that needs a new entry in it ran with the old settings until
+somebody replaced the copy. With this switch the file travels with the tag instead:
+
+```bash
+# in the .env of the host
+NODE_MANAGER_COMPOSE_FROM_TAG=true
+```
+
+The switch is off by default. It is read at the start of every deployment, so a change needs no restart.
+
+* The image of the manager, `<REGISTRY>/logos-node-manager:<tag>`, carries the compose files of the commit it was built
+  from: `/compose/core.yaml` for a core host and `/compose/worker.yml` for a worker. The label `io.logos.compose-bundle`
+  says so. Its value is the version of the layout, which is `1`. The build of the image has the root of the repository as
+  its context for this reason.
+* At the start of a deployment, the manager pulls that image, makes a container from it that it never starts, copies the
+  file of its host kind out of it and removes the container. It keeps the file in `<state dir>/compose/<deployment id>/`.
+  Then it checks the file with `docker compose config -q` and the `.env` file of the host. A missing variable that the
+  file requires shows up here, before anything runs.
+* The deployment uses that file for every step: the pull, the swap, the check and, on a worker, the roll back. A restart
+  of the manager continues with the same file, also if the tag has moved on in the meantime.
+* A worker that has to roll back restores the previous image together with the previous compose file, the one that ran
+  last (`<state dir>/compose/.current`). The file of the new version may ask for things that the old image does not know.
+* A relative path in the file, for example `./config.yml`, means the project directory of the host. The manager passes it
+  with `--project-directory`.
+* An image without the compose files, for example the image of an older tag, is no error. The deployment uses the compose
+  file of the host, and the record says so.
+* Any other problem ends the deployment as `failed` (`pull_failed`) before it touches anything: the image cannot be
+  downloaded, it has a layout that this manager does not know (update the node manager), the file is empty or far too
+  large, or the file does not work with the `.env` file.
+* `node-manager status <id>` shows which file a deployment used. A person who repairs a host by hand must use that file
+  and not the copy on the host, or Compose recreates the services with the settings of the copy.
+* These files are not part of it, and stay on the host: the `.env`, and what the worker compose file mounts from the
+  project directory (`config.yml`, `certs`, `chat-templates`, `data`).
+
 ## Orders from Logos
 
 A host obeys one Logos: the Logos of its own environment. The manager asks that Logos for orders, and tells it how the
@@ -268,10 +336,11 @@ The service needs two things from the host:
 * the worker directory, mounted at the same path as on the host (Compose turns relative bind mounts into absolute host
   paths before it sends them to the Docker engine).
 
-To pull from a registry that needs a login, the manager reads the login from the directory `.docker` of the worker
-directory. The compose file sets `DOCKER_CONFIG` to this directory. Because the directory is part of the mount of the
-worker directory, the login does not depend on the user who runs `docker compose`. A new login is visible at once. The
-deploy workflows write the login there. On a host without them, run this command:
+To pull from a registry that needs a login, the manager can log in itself with the user and the password of the `.env`
+file (see "Registry login"). Without them, it reads the login from the directory `.docker` of the worker directory. The
+compose file sets `DOCKER_CONFIG` to this directory. Because the directory is part of the mount of the worker directory,
+the login does not depend on the user who runs `docker compose`. A new login is visible at once. The deploy workflows
+write the login there. On a host without them, and without a login in the `.env` file, run this command:
 
 ```bash
 DOCKER_CONFIG=/opt/logos-workernode/.docker docker login <registry>
@@ -345,6 +414,10 @@ All settings are environment variables with the prefix `NODE_MANAGER_`.
 
 A missing, malformed or non-positive timeout falls back to its default.
 
+A few settings are not environment variables of the container. The manager reads them from the `.env` file of the host
+at the start of every deployment, so a change needs no restart: `REGISTRY`, `REGISTRY_USER` and `REGISTRY_PASSWORD` (see
+"Registry login") and `NODE_MANAGER_COMPOSE_FROM_TAG` (see "Compose file from the tag").
+
 ## Rules the code keeps
 
 * Only `docker compose` creates the worker container, so Compose stays the one definition of its GPUs, volumes and
@@ -390,7 +463,15 @@ for the worker. The risk is accepted for these reasons:
   an order or read anything else. Logos stores only a hash of the key.
 * The container sees little of the host: the worker directory (read-only), its own state directory and the socket. The
   worker directory includes the `.env` with the secrets of the worker, because Compose needs that file, and the Docker
-  login in `.docker`. No output of `docker compose config` and no environment is logged (see "Rules the code keeps").
+  login in `.docker`. If the `.env` has a registry login (see "Registry login"), the manager reads the password from
+  it and gives it to `docker login` through stdin. It keeps the resulting login in the temporary file system of the
+  container only. No output of `docker compose config` and no environment is logged (see "Rules the code keeps").
+* With `NODE_MANAGER_COMPOSE_FROM_TAG`, the compose file comes from the registry (see "Compose file from the tag").
+  Compose treats a compose file as trusted input: it can ask for privileged containers and for any host mount. Whoever
+  can push an image to the tag of the registry then decides what runs as root on that host. This is already true of the
+  image of the manager itself, which holds the socket, but that image changes only when a person updates it. Keep push
+  access to the registry limited, and let Prod take only `latest` and release tags (Logos checks that before it makes the
+  order). The manager checks the file with `docker compose config -q` and does not judge what it asks for.
 
 The container gets nothing more than that. It starts with `no-new-privileges`, drops all Linux capabilities except
 `DAC_OVERRIDE`, and has a read-only root filesystem with a 16 MB `/tmp`. `DAC_OVERRIDE` stays because the manager runs
@@ -404,8 +485,8 @@ host. A proxy would add a second container that holds the socket and would not r
 
 For operators:
 
-* Use a registry account that can pull but not push for the login in `.docker` of the worker directory. The manager can
-  read the login file, and so can every user who can run `docker` on the host.
+* Use a registry account that can pull but not push, for the login in the `.env` file or in `.docker` of the worker
+  directory. The manager can read both, and so can every user who can read the project directory.
 * Limit who can run `docker` and `docker exec` on the host, and who can write to the state directory. These users are
   root-equivalent with or without the manager.
 
@@ -414,6 +495,7 @@ For people who change the code:
 * Do not publish a port or add a network listener.
 * Do not start a command through a shell. Check every value that comes from outside before it reaches a command.
 * Do not write the key of the node, or a request that carries it, to a log or a record.
+* Do not put the registry password on a command line, in a log or in a record. It goes through stdin.
 * Do not mount more of the host into the container, and do not add capabilities.
 
 ## Tests
@@ -430,7 +512,12 @@ The unit tests need no Docker. `FakeDocker` in `tests/conftest.py` simulates the
 and no GPU. It covers a normal deployment, a broken release that is rolled back, a tag that does not exist, a deployment
 with nothing to change, a manager that restarts in the middle of a deployment, and a later release that removes the
 image from two versions back. After each of them it counts the images on the host, to see that none is left without a
-purpose. It needs a running Docker engine and network access to pull the base images.
+purpose. Two more checks use real Docker for the parts that the unit tests can only simulate: the compose file taken out
+of the image of a tag (including that a relative path in it still means the project directory of the host, and the
+fallback for a tag without such an image), and the login from the `.env` file against a second registry that wants a
+password (a wrong password, the right one, and that no password reaches the log). The script builds the image of the
+manager from the root of the repository, like the build of the image. It needs a running Docker engine and network
+access to pull the base images.
 
 ## Limits of this version
 
@@ -460,7 +547,15 @@ replaces the container at once, as a manual `docker compose up` does. With the d
   of time (exit code 12), and the deployment goes on. If the host gets two deployments in a row, it replaces the container
   twice.
 * **A newer run can change the files of an older deployment.** Each run copies the compose file and the `.env` to the
-  host. A deployment that still waits for its turn uses the files of the newer run when it replaces the container.
+  host. A deployment that still waits for its turn uses the files of the newer run when it replaces the container. With
+  the compose file from the tag, a deployment keeps the compose file it took at its start, but it still reads the `.env`
+  file when it replaces the container.
+* **The manager does not update itself.** A deployment replaces the services of Logos, or the worker. The manager, and
+  on a core host the compose file of the deployer (`docker-compose.deployer.yml`), stay as they are. A person, or the
+  deploy workflows, updates them. The manager cannot safely recreate its own container with `docker compose up`: the
+  command would remove the container it runs in. A short-lived helper container could do it, and this version has none.
+* **The compose file from the tag is checked, not judged.** `docker compose config -q` finds a file that does not work
+  with the `.env` file of the host. It does not find a file that asks for more than it should.
 * **A failure after the job ended shows up in the next run.** The job is green when the image is pulled. The step "Show
   how the previous deployment ended" of the next run prints the events and the log of a failed container, and
   `node-manager status --logs` shows them on the host. The Logos admins also get a notification when the

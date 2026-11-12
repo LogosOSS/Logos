@@ -140,7 +140,8 @@ To use the node manager on a host without the deploy workflow, do these steps:
 
 1. If the registry needs a login, run
    `DOCKER_CONFIG=<worker directory>/.docker docker login <registry>` on the
-   host.
+   host. Or let the node manager log in with the `.env` file. See
+   [Let the Node Manager Log In and Get the Compose File](#let-the-node-manager-log-in-and-get-the-compose-file).
 2. Add `COMPOSE_PROFILES=node-manager` to the `.env` file of the worker.
 3. To pull a version tag, set `REGISTRY` in the `.env` file of the worker to
    the deployment registry (`<registry>/logos`). Then set `IMAGE_TAG`. The
@@ -160,6 +161,65 @@ docker exec logos-node-manager node-manager deploy --id manual-1 --tag latest --
 The node manager reserves the tag `previous`. Do not deploy that tag.
 
 To see the latest deployment, run `docker exec logos-node-manager node-manager status`.
+
+### Let the Node Manager Log In and Get the Compose File
+
+The node manager can do two jobs that a person or a workflow does on each host.
+Both are set in the `.env` file of the host. The node manager reads that file at
+the start of each deployment, so it needs no restart. The same lines work on a
+core host.
+
+**The registry login.** Without this, a person runs `docker login` on each host.
+
+1. Make a registry account that can pull images but cannot push them.
+2. Add these lines to the `.env` file of the host:
+
+   ```bash
+   REGISTRY=<registry-host>/logos
+   REGISTRY_USER=<user>
+   REGISTRY_PASSWORD=<password or token>
+   ```
+
+3. If a value has a `$`, put the value in single quotes.
+
+Before each deployment, the node manager runs `docker login` with these values.
+It sends the password through stdin. The login stays in the temporary storage of
+the container, so nothing of it stays on the host. If the login fails, the
+deployment fails and the host does not change. To change the password, change the
+`.env` file. If the `.env` file has no login, the node manager uses the login of
+the directory `.docker`, as before.
+
+**The compose file of the tag.** Without this, a person or a workflow copies the
+compose file to each host. A new version can then run with old settings.
+
+1. Add this line to the `.env` file of the host:
+
+   ```bash
+   NODE_MANAGER_COMPOSE_FROM_TAG=true
+   ```
+
+The image `logos-node-manager` of each tag holds the compose files of the commit
+that built it. At the start of a deployment, the node manager takes the compose
+file of its host out of the image of the tag. It checks the file with the `.env`
+file of the host. Then it uses the file for the whole deployment, also after a
+restart. A worker that rolls back uses the compose file that ran before.
+
+* If the image of the tag has no compose file, the node manager uses the compose
+  file of the host. The record of the deployment says so.
+* If the file does not work with the `.env` file, the deployment fails and the
+  host does not change. A variable that the file needs but the `.env` file does
+  not have is one such case.
+* The `.env` file, `config.yml`, `certs` and `chat-templates` stay on the host.
+
+CAUTION: With this switch, the registry decides which compose file runs on the
+host. Limit who can push images to the registry.
+
+To see which compose file a deployment used, run
+`docker exec logos-node-manager node-manager status`. To repair the host by hand,
+use that file. The copy on the host can be different.
+
+The node manager does not update itself. After a new version of the node manager,
+a person or a workflow replaces its container.
 
 ### Drain a Worker Node During an Update
 
