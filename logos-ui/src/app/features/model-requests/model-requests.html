@@ -89,9 +89,6 @@
           <tr>
             <th>Model</th>
             <th>Votes</th>
-            @if (isLogosAdmin()) {
-              <th>License agreement status</th>
-            }
             <th></th>
           </tr>
         </thead>
@@ -116,31 +113,6 @@
                 {{ request.request_count }}
                 {{ request.request_count === 1 ? 'vote' : 'votes' }}
               </td>
-              @if (isLogosAdmin()) {
-                <td class="row-action row-action--license">
-                  @if (request.license_approved) {
-                    <button
-                      type="button"
-                      class="license-state license-state--ok"
-                      title="License agreement accepted — view details"
-                      [attr.aria-label]="'License agreement for ' + request.name + ' accepted — view details'"
-                      (click)="openLicenseDialog(request)"
-                    >
-                      <i class="pi pi-check" aria-hidden="true"></i>
-                    </button>
-                  } @else {
-                    <button
-                      type="button"
-                      class="license-state license-state--open"
-                      [title]="licenseFlagTitle(request)"
-                      [attr.aria-label]="'License agreement for ' + request.name + ': ' + licenseFlagTitle(request)"
-                      (click)="openLicenseDialog(request)"
-                    >
-                      <i class="pi pi-times" aria-hidden="true"></i>
-                    </button>
-                  }
-                </td>
-              }
               <td class="row-action">
                 @if (request.has_voted) {
                   <button
@@ -197,126 +169,4 @@
       The repository owner must still approve the access request.
     </p>
   </app-modal-confirm>
-
-  <!-- ── License Agreement Dialog (Logos admin) ──────────────────────────── -->
-  <app-modal-form
-    [visible]="licenseTarget() !== null"
-    (visibleChange)="$event || closeLicenseDialog()"
-    [title]="'License agreement — ' + (licenseTarget()?.name ?? '')"
-    size="lg"
-  >
-    <div class="form-body license-dialog">
-      @if (licenseError()) {
-        <app-error-message [message]="licenseError()!" />
-      } @else if (licenseLoading()) {
-        <p class="license-note">Loading the license…</p>
-      } @else if (license()) {
-        @if (license()!.status === 'pending') {
-          @if (licenseTarget()?.is_gated) {
-            <p>
-              This model is gated: its license is only readable on Hugging Face after the
-              repository owner approves the access request. Accept it there — the next
-              recheck fetches and records the agreement, and the flag clears with it.
-            </p>
-          } @else {
-            <p>
-              The license has not been fetched yet. It is picked up on the next recheck —
-              use the refresh button and open this dialog again.
-            </p>
-          }
-        } @else if (license()!.status === 'no_license') {
-          <p>
-            No license information was found for this model on Hugging Face — neither a
-            license file in the repository nor a license declared on the model card.
-          </p>
-          <p class="license-note">
-            There is nothing to accept here; the row stays flagged so it can be reviewed.
-          </p>
-        } @else {
-          @if (license()!.license_text) {
-            <pre class="license-text">{{ license()!.license_text }}</pre>
-          } @else {
-            <p>
-              No license file was found in the repository; the model card declares the
-              <code>{{ license()!.license_id }}</code> license.
-            </p>
-          }
-          @if (license()!.approved) {
-            <p class="license-note license-approved">
-              Accepted on {{ license()!.approved_at | date: 'medium' }}.
-            </p>
-          } @else {
-            <label class="license-accept">
-              <input
-                type="checkbox"
-                [checked]="acceptChecked()"
-                (change)="acceptChecked.set($any($event.target).checked)"
-                [disabled]="accepting()"
-              />
-              I accept this model's license agreement.
-            </label>
-          }
-        }
-      }
-    </div>
-
-    @if (licenseTarget() !== null && license()) {
-      @if (license()!.status === 'pending' && licenseTarget()?.is_gated) {
-        <div class="modal-footer" modal-footer>
-          <button class="btn-secondary" type="button" (click)="closeLicenseDialog()">Cancel</button>
-          <button class="btn-primary" type="button" (click)="goToHuggingFaceFromLicense()">
-            Go to HuggingFace
-          </button>
-        </div>
-      } @else if (license()!.status === 'available' && !license()!.approved) {
-        <div class="modal-footer" modal-footer>
-          <button
-            class="btn-secondary"
-            type="button"
-            [disabled]="accepting()"
-            (click)="closeLicenseDialog()"
-          >
-            Cancel
-          </button>
-          <button
-            class="btn-primary"
-            type="button"
-            [disabled]="!acceptChecked() || accepting()"
-            (click)="acceptLicense()"
-          >
-            @if (accepting()) {
-              <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
-            }
-            Save
-          </button>
-        </div>
-      } @else if (license()!.status === 'available' && license()!.approved) {
-        <div class="modal-footer" modal-footer>
-          <button
-            class="btn-secondary"
-            type="button"
-            [disabled]="revoking()"
-            (click)="closeLicenseDialog()"
-          >
-            Cancel
-          </button>
-          <button
-            class="btn-danger"
-            type="button"
-            [disabled]="revoking()"
-            (click)="revokeLicense()"
-          >
-            @if (revoking()) {
-              <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
-            }
-            Revoke acceptance
-          </button>
-        </div>
-      } @else {
-        <div class="modal-footer" modal-footer>
-          <button class="btn-secondary" type="button" (click)="closeLicenseDialog()">Cancel</button>
-        </div>
-      }
-    }
-  </app-modal-form>
 </section>
