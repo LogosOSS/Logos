@@ -177,6 +177,31 @@ class PermissionControllerTest {
     }
 
     @Test
+    void teamOwnerGetsTheFullPermissionCatalogWithoutCredentials() throws Exception {
+        // Team 2001 has no team permissions, and the owner has no provider
+        // access of their own; the catalog still lists every provider.
+        mvc.perform(get("/admin/api-keys/3001/permission-catalog")
+                .with(TestJwt.adminUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[?(@.id == 6001)].name").value("openai-provider"))
+           .andExpect(jsonPath("$[?(@.id == 6001)].models[0].model_id").value(5001))
+           .andExpect(jsonPath("$[?(@.id == 6001)].models[0].model_name").value("gpt-4"))
+           .andExpect(jsonPath("$[*].base_url").doesNotExist())
+           .andExpect(jsonPath("$[*].api_key").doesNotExist())
+           .andExpect(jsonPath("$[*].auth_name").doesNotExist())
+           .andExpect(jsonPath("$[*].auth_format").doesNotExist())
+           .andExpect(jsonPath("$[*].models[*].endpoint").doesNotExist())
+           .andExpect(jsonPath("$[*].models[*].api_key").doesNotExist());
+    }
+
+    @Test
+    void appAdminCannotReadThePermissionCatalogOfAKeyOutsideOwnedTeam() throws Exception {
+        mvc.perform(get("/admin/api-keys/3001/permission-catalog")
+                .with(TestJwt.forSeededUser(1006, "kcmember", "chair-member")))
+           .andExpect(status().isForbidden());
+    }
+
+    @Test
     void removingAProviderFromAnApiKeyRemovesThatKeysModelsOfTheProvider() throws Exception {
         jdbc.update("INSERT INTO api_key_provider_permissions (api_key_id, provider_id) VALUES (3001, 6001)");
         jdbc.update("INSERT INTO api_key_model_permissions (api_key_id, model_id) VALUES (3001, 5001)");

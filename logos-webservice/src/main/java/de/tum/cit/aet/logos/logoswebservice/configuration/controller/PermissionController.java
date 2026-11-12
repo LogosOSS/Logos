@@ -38,6 +38,20 @@ public class PermissionController {
         this.apiKeyService = apiKeyService;
     }
 
+    /**
+     * Providers and their models that the custom permissions of the key can
+     * include: the whole catalog, without provider URLs or credentials. Open
+     * to Logos admins and to the owner of the key's team.
+     */
+    @GetMapping("/api-keys/{keyId}/permission-catalog")
+    @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
+    public ResponseEntity<?> getApiKeyPermissionCatalog(
+            @PathVariable Integer keyId,
+            @RequestAttribute("authContext") AuthContext auth) {
+        enforceKeyAccess(keyId, auth);
+        return ResponseEntity.ok(permissionService.getPermissionCatalog());
+    }
+
     @GetMapping("/api-keys/{keyId}/model-permissions")
     @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
     public ResponseEntity<?> getApiKeyModelPermissions(

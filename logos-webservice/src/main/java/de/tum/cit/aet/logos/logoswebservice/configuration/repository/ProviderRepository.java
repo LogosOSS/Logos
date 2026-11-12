@@ -39,6 +39,19 @@ public interface ProviderRepository extends JpaRepository<Provider, Integer> {
         """, nativeQuery = true)
     List<ProviderProjection> findAllForUser(@Param("userId") Integer userId);
 
+    /**
+     * Every provider with the models it serves, for choosing the custom
+     * permissions of an API key. Selects names and ids only.
+     */
+    @Query(value = """
+        SELECT p.id AS provider_id, p.name AS provider_name, m.id AS model_id, m.name AS model_name
+        FROM providers p
+        LEFT JOIN model_provider mp ON mp.provider_id = p.id
+        LEFT JOIN models m ON m.id = mp.model_id
+        ORDER BY p.name ASC, p.id ASC, m.name ASC, m.id ASC
+        """, nativeQuery = true)
+    List<PermissionCatalogProjection> findPermissionCatalog();
+
     @Query(value = """
         SELECT EXISTS (
             SELECT 1

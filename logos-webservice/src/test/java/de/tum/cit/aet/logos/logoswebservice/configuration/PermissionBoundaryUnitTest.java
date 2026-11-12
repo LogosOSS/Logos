@@ -16,6 +16,8 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.dto.SetModelPermission
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.SetProviderPermissionsRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ApiKeyModelPermissionRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ApiKeyProviderPermissionRepository;
+import de.tum.cit.aet.logos.logoswebservice.configuration.repository.PermissionCatalogProjection;
+import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ProviderRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.TeamModelPermissionRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.TeamProviderPermissionRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.service.PermissionService;
@@ -43,6 +45,7 @@ class PermissionBoundaryUnitTest {
     @Mock ApiKeyProviderPermissionRepository apiKeyProviderRepo;
     @Mock TeamModelPermissionRepository teamModelRepo;
     @Mock TeamProviderPermissionRepository teamProviderRepo;
+    @Mock ProviderRepository providerRepo;
     @Mock ApiKeyAdminService apiKeyAdminService;
 
     private PermissionService permissionService;
@@ -52,7 +55,7 @@ class PermissionBoundaryUnitTest {
     @BeforeEach
     void setUp() {
         permissionService = new PermissionService(
-            apiKeyModelRepo, apiKeyProviderRepo, teamModelRepo, teamProviderRepo);
+            apiKeyModelRepo, apiKeyProviderRepo, teamModelRepo, teamProviderRepo, providerRepo);
         controller = new PermissionController(permissionService, apiKeyAdminService);
         appAdmin = new AuthContext(USER_ID, Role.Names.APP_ADMIN);
     }
@@ -103,5 +106,31 @@ class PermissionBoundaryUnitTest {
         permissionService.removeTeamProviderPermission(TEAM_ID, 6001);
 
         verifyNoInteractions(apiKeyModelRepo, apiKeyProviderRepo);
+    }
+
+    @Test
+    void permissionCatalogGroupsModelsByProviderAndKeepsProvidersWithoutModels() {
+        when(providerRepo.findPermissionCatalog()).thenReturn(List.of(
+            row(6001, "cloud", 5001, "gpt-4"),
+            row(6001, "cloud", 5002, "gpt-3.5"),
+            row(6002, "empty", null, null)));
+
+        List<Map<String, Object>> catalog = permissionService.getPermissionCatalog();
+
+        assertEquals(List.of(
+            Map.of("id", 6001, "name", "cloud", "models", List.of(
+                Map.of("model_id", 5001, "model_name", "gpt-4"),
+                Map.of("model_id", 5002, "model_name", "gpt-3.5"))),
+            Map.of("id", 6002, "name", "empty", "models", List.of())), catalog);
+    }
+
+    private static PermissionCatalogProjection row(
+            Integer providerId, String providerName, Integer modelId, String modelName) {
+        return new PermissionCatalogProjection() {
+            @Override public Integer getProviderId() { return providerId; }
+            @Override public String getProviderName() { return providerName; }
+            @Override public Integer getModelId() { return modelId; }
+            @Override public String getModelName() { return modelName; }
+        };
     }
 }

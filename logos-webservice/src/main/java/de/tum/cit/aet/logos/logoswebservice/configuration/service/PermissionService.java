@@ -1,6 +1,9 @@
 package de.tum.cit.aet.logos.logoswebservice.configuration.service;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ApiKeyModelPermission;
@@ -9,6 +12,8 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.entity.TeamModelPermis
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.TeamProviderPermission;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ApiKeyModelPermissionRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ApiKeyProviderPermissionRepository;
+import de.tum.cit.aet.logos.logoswebservice.configuration.repository.PermissionCatalogProjection;
+import de.tum.cit.aet.logos.logoswebservice.configuration.repository.ProviderRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.TeamModelPermissionRepository;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.TeamProviderPermissionRepository;
 
@@ -55,15 +60,44 @@ public class PermissionService {
     private final ApiKeyProviderPermissionRepository apiKeyProviderRepo;
     private final TeamModelPermissionRepository teamModelRepo;
     private final TeamProviderPermissionRepository teamProviderRepo;
+    private final ProviderRepository providerRepo;
 
     public PermissionService(ApiKeyModelPermissionRepository apiKeyModelRepo,
                              ApiKeyProviderPermissionRepository apiKeyProviderRepo,
                              TeamModelPermissionRepository teamModelRepo,
-                             TeamProviderPermissionRepository teamProviderRepo) {
+                             TeamProviderPermissionRepository teamProviderRepo,
+                             ProviderRepository providerRepo) {
         this.apiKeyModelRepo = apiKeyModelRepo;
         this.apiKeyProviderRepo = apiKeyProviderRepo;
         this.teamModelRepo = teamModelRepo;
         this.teamProviderRepo = teamProviderRepo;
+        this.providerRepo = providerRepo;
+    }
+
+    /**
+     * The full Logos catalog an API key's custom permissions can be chosen
+     * from: every provider with the models it serves. Custom permissions are
+     * not limited to the team's permissions or to the caller's own access, so
+     * the catalog is not filtered. It carries only ids and names, never
+     * provider URLs or credentials.
+     */
+    public List<Map<String, Object>> getPermissionCatalog() {
+        Map<Integer, Map<String, Object>> providers = new LinkedHashMap<>();
+        for (PermissionCatalogProjection row : providerRepo.findPermissionCatalog()) {
+            Map<String, Object> provider = providers.computeIfAbsent(row.getProviderId(), id -> {
+                Map<String, Object> p = new LinkedHashMap<>();
+                p.put("id", id);
+                p.put("name", row.getProviderName());
+                p.put("models", new ArrayList<Map<String, Object>>());
+                return p;
+            });
+            if (row.getModelId() != null) {
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> models = (List<Map<String, Object>>) provider.get("models");
+                models.add(Map.of("model_id", row.getModelId(), "model_name", row.getModelName()));
+            }
+        }
+        return List.copyOf(providers.values());
     }
 
     public List<Integer> getApiKeyModelPermissions(int keyId) {
