@@ -172,10 +172,13 @@ Example changeset:
 
 ## Permission audit history
 
+Logos admins can open **Permission Audit** in the navigation or use a team’s
+**View permission history** action on the Teams page. Both open the same history
+page; the team action selects its team filter.
+
 `GET /api/admin/permission-audit-log` returns model/provider grant and revoke
-history, newest ID first. Logos admins can query all history. Team owners must
-supply `team_id` and can only read their own teams, including those teams' deleted
-keys. This is a read-only API; no endpoint can edit or delete entries. The audit
+history, newest ID first. Only Logos admins can query this history, including
+deleted teams and keys. This is a read-only API; no endpoint can edit or delete entries. The audit
 table is also excluded from configuration import/export replacement.
 
 | Query parameter | Meaning |

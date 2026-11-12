@@ -196,6 +196,10 @@ export class TeamManagement implements OnInit {
     return this.createOwnerIds().includes(id);
   }
 
+  viewPermissionHistory(id: number): void {
+    this.router.navigate(['/permission-audit-log'], { queryParams: { team_id: id } });
+  }
+
   navigateToTeam(id: number): void {
     this.router.navigate(['/teams', id]);
   }

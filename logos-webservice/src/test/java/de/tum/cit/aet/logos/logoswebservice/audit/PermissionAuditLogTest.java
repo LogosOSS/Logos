@@ -208,7 +208,7 @@ class PermissionAuditLogTest {
     }
 
     @Test
-    void adminsCanFilterAndPageWhileOwnersAreIsolated() throws Exception {
+    void adminsCanFilterAndPageWhileOtherRolesAreDenied() throws Exception {
         seedAllGrants();
         jdbc.update("INSERT INTO team_model_permissions VALUES (2002, 5002)");
         long lastId = ((Number) events().getLast().get("id")).longValue();
@@ -218,13 +218,15 @@ class PermissionAuditLogTest {
                 .param("before_id", Long.toString(lastId)).param("limit", "1"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
             .andExpect(jsonPath("$[0].api_key_id").value(3001));
-        mvc.perform(get("/admin/permission-audit-log").with(TestJwt.adminUser()).param("team_id", "2001")
+        mvc.perform(get("/admin/permission-audit-log").with(TestJwt.logosAdmin()).param("team_id", "2001")
                 .param("api_key_id", "3001").param("model_id", "5001")
                 .param("from", "2000-01-01T00:00:00Z").param("to", "2100-01-01T00:00:00Z"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
             .andExpect(jsonPath("$[0].scope_name").value("dev key"));
         mvc.perform(get("/admin/permission-audit-log").with(TestJwt.testUser()).param("team_id", "2001"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(4));
+            .andExpect(status().isForbidden());
+        mvc.perform(get("/admin/permission-audit-log").with(TestJwt.adminUser()).param("team_id", "2001"))
+            .andExpect(status().isForbidden());
         mvc.perform(get("/admin/permission-audit-log").with(TestJwt.adminUser()).param("team_id", "2002"))
             .andExpect(status().isForbidden());
         mvc.perform(get("/admin/permission-audit-log").with(TestJwt.adminUser()))
@@ -240,13 +242,24 @@ class PermissionAuditLogTest {
     }
 
     @Test
-    void deletedKeyHistoryRemainsVisibleToItsTeamOwner() throws Exception {
+    void deletedKeyHistoryRemainsVisibleToLogosAdmins() throws Exception {
         seedAllGrants();
         jdbc.update("DELETE FROM api_keys WHERE id = 3001");
-        mvc.perform(get("/admin/permission-audit-log").with(TestJwt.adminUser())
+        mvc.perform(get("/admin/permission-audit-log").with(TestJwt.logosAdmin())
                 .param("team_id", "2001").param("api_key_id", "3001"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(4))
             .andExpect(jsonPath("$[0].scope_name").value("dev key"));
+    }
+
+    @Test
+    void deletedTeamHistoryRemainsQueryableByItsRecordedId() throws Exception {
+        seedAllGrants();
+        jdbc.update("DELETE FROM teams WHERE id = 2001");
+        mvc.perform(get("/admin/permission-audit-log").with(TestJwt.logosAdmin()).param("team_id", "2001"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(8))
+            .andExpect(jsonPath("$[0].team_name").value("test-team"))
+            .andExpect(jsonPath("$[0].action").value("revoke"))
+            .andExpect(jsonPath("$[0].cause").value("cascade"));
     }
 
     @Test
