@@ -11,7 +11,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
-import de.tum.cit.aet.logos.logoswebservice.common.ForbiddenException;
 import de.tum.cit.aet.logos.logoswebservice.configuration.controller.PermissionController;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.SetModelPermissionsRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.SetProviderPermissionsRequestDTO;
@@ -23,11 +22,16 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.service.PermissionServ
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.identity.service.ApiKeyAdminService;
 
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.never;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+/**
+ * Team permissions are the default for API keys without custom permissions,
+ * not a ceiling for keys with custom permissions.
+ */
 @ExtendWith(MockitoExtension.class)
 class PermissionBoundaryUnitTest {
 
@@ -41,38 +45,61 @@ class PermissionBoundaryUnitTest {
     @Mock TeamProviderPermissionRepository teamProviderRepo;
     @Mock ApiKeyAdminService apiKeyAdminService;
 
+    private PermissionService permissionService;
     private PermissionController controller;
     private AuthContext appAdmin;
 
     @BeforeEach
     void setUp() {
-        PermissionService permissionService = new PermissionService(
+        permissionService = new PermissionService(
             apiKeyModelRepo, apiKeyProviderRepo, teamModelRepo, teamProviderRepo);
         controller = new PermissionController(permissionService, apiKeyAdminService);
         appAdmin = new AuthContext(USER_ID, Role.Names.APP_ADMIN);
+    }
 
+    private void keyBelongsToOwnedTeam() {
         when(apiKeyAdminService.getKeyById(KEY_ID))
             .thenReturn(Optional.of(Map.of("team_id", TEAM_ID)));
         when(apiKeyAdminService.isTeamOwner(TEAM_ID, USER_ID)).thenReturn(true);
     }
 
     @Test
-    void teamOwnerCannotGrantAProviderThatTheTeamDoesNotHave() {
-        when(teamProviderRepo.findById_TeamId(TEAM_ID)).thenReturn(List.of());
+    void teamOwnerCanGrantAProviderThatTheTeamDoesNotHave() {
+        keyBelongsToOwnedTeam();
 
-        assertThrows(ForbiddenException.class, () -> controller.setApiKeyProviderPermissions(
-            KEY_ID, new SetProviderPermissionsRequestDTO(List.of(6001)), appAdmin));
+        assertEquals(200, controller.setApiKeyProviderPermissions(
+            KEY_ID, new SetProviderPermissionsRequestDTO(List.of(6001)), appAdmin).getStatusCode().value());
 
-        verify(apiKeyProviderRepo, never()).deleteById_ApiKeyId(KEY_ID);
+        verify(apiKeyProviderRepo).deleteById_ApiKeyId(KEY_ID);
+        verify(apiKeyProviderRepo).saveAll(anyList());
+        verify(apiKeyModelRepo).deleteCascadeForApiKey(KEY_ID);
+        verifyNoInteractions(teamProviderRepo, teamModelRepo);
     }
 
     @Test
-    void teamOwnerCannotGrantAModelThatTheTeamDoesNotHave() {
-        when(teamModelRepo.findById_TeamId(TEAM_ID)).thenReturn(List.of());
+    void teamOwnerCanGrantAModelThatTheTeamDoesNotHave() {
+        keyBelongsToOwnedTeam();
 
-        assertThrows(ForbiddenException.class, () -> controller.setApiKeyModelPermissions(
-            KEY_ID, new SetModelPermissionsRequestDTO(List.of(5001)), appAdmin));
+        assertEquals(200, controller.setApiKeyModelPermissions(
+            KEY_ID, new SetModelPermissionsRequestDTO(List.of(5001)), appAdmin).getStatusCode().value());
 
-        verify(apiKeyModelRepo, never()).deleteById_ApiKeyId(KEY_ID);
+        verify(apiKeyModelRepo).deleteById_ApiKeyId(KEY_ID);
+        verify(apiKeyModelRepo).saveAll(anyList());
+        verifyNoInteractions(teamProviderRepo, teamModelRepo);
+    }
+
+    @Test
+    void changingTeamModelPermissionsLeavesApiKeyGrantsAlone() {
+        permissionService.setTeamModelPermissions(TEAM_ID, List.of());
+
+        verifyNoInteractions(apiKeyModelRepo, apiKeyProviderRepo);
+    }
+
+    @Test
+    void changingTeamProviderPermissionsLeavesApiKeyGrantsAlone() {
+        permissionService.setTeamProviderPermissions(TEAM_ID, List.of());
+        permissionService.removeTeamProviderPermission(TEAM_ID, 6001);
+
+        verifyNoInteractions(apiKeyModelRepo, apiKeyProviderRepo);
     }
 }

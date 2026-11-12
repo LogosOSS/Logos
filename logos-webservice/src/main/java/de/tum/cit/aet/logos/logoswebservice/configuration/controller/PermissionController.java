@@ -53,9 +53,8 @@ public class PermissionController {
             @PathVariable Integer keyId,
             @RequestBody SetModelPermissionsRequestDTO body,
             @RequestAttribute("authContext") AuthContext auth) {
-        Integer teamId = enforceKeyAccess(keyId, auth);
-        permissionService.setApiKeyModelPermissions(
-            keyId, body.modelIds(), isLogosAdmin(auth) ? null : teamId);
+        enforceKeyAccess(keyId, auth);
+        permissionService.setApiKeyModelPermissions(keyId, body.modelIds());
         return ResponseEntity.ok(Map.of("result", "API Key model permissions updated"));
     }
 
@@ -74,9 +73,8 @@ public class PermissionController {
             @PathVariable Integer keyId,
             @RequestBody SetProviderPermissionsRequestDTO body,
             @RequestAttribute("authContext") AuthContext auth) {
-        Integer teamId = enforceKeyAccess(keyId, auth);
-        permissionService.setApiKeyProviderPermissions(
-            keyId, body.providerIds(), isLogosAdmin(auth) ? null : teamId);
+        enforceKeyAccess(keyId, auth);
+        permissionService.setApiKeyProviderPermissions(keyId, body.providerIds());
         return ResponseEntity.ok(Map.of("result", "API Key provider permissions updated"));
     }
 
@@ -145,16 +143,15 @@ public class PermissionController {
         return ResponseEntity.ok(Map.of("result", "Team provider permission removed"));
     }
 
-    private Integer enforceKeyAccess(Integer keyId, AuthContext auth) {
+    private void enforceKeyAccess(Integer keyId, AuthContext auth) {
         Optional<Map<String, Object>> keyInfo = apiKeyService.getKeyById(keyId);
         if (keyInfo.isEmpty()) throw new NotFoundException("API Key not found");
-        Integer teamId = (Integer) keyInfo.get().get("team_id");
         if (Role.APP_ADMIN.matches(auth.role())) {
+            Integer teamId = (Integer) keyInfo.get().get("team_id");
             if (teamId == null || auth.userId() == null || !apiKeyService.isTeamOwner(teamId, auth.userId())) {
                 throw new ForbiddenException("Team owner access required");
             }
         }
-        return teamId;
     }
 
     private void enforceTeamAccess(Integer teamId, AuthContext auth) {

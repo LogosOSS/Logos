@@ -119,9 +119,6 @@ class PermissionControllerTest {
 
     @Test
     void appAdminTeamOwnerCanOverrideApiKeyPermissions() throws Exception {
-        jdbc.update("INSERT INTO team_provider_permissions (team_id, provider_id) VALUES (2001, 6001)");
-        jdbc.update("INSERT INTO team_model_permissions (team_id, model_id) VALUES (2001, 5001)");
-
         mvc.perform(put("/admin/api-keys/3001/provider-permissions")
                 .with(TestJwt.adminUser())
                 .contentType("application/json")
@@ -155,24 +152,39 @@ class PermissionControllerTest {
     }
 
     @Test
-    void appAdminCannotGrantApiKeyPermissionsOutsideTheTeamBoundary() throws Exception {
+    void appAdminTeamOwnerCanGrantApiKeyPermissionsBeyondTheTeamPermissions() throws Exception {
+        // Team 2001 has no team-level permissions at all.
         mvc.perform(put("/admin/api-keys/3001/provider-permissions")
                 .with(TestJwt.adminUser())
                 .contentType("application/json")
                 .content("{\"provider_ids\":[6001]}"))
-           .andExpect(status().isForbidden())
-           .andExpect(jsonPath("$.detail").value("API key provider permissions must be a subset of its team's permissions"));
+           .andExpect(status().isOk());
 
         mvc.perform(put("/admin/api-keys/3001/model-permissions")
                 .with(TestJwt.adminUser())
                 .contentType("application/json")
                 .content("{\"model_ids\":[5001]}"))
-           .andExpect(status().isForbidden())
-           .andExpect(jsonPath("$.detail").value("API key model permissions must be a subset of its team's permissions"));
+           .andExpect(status().isOk());
 
-        assertFalse(jdbc.queryForObject(
-            "SELECT EXISTS (SELECT 1 FROM api_key_provider_permissions WHERE api_key_id = 3001)",
+        assertTrue(jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM api_key_provider_permissions WHERE api_key_id = 3001 AND provider_id = 6001)",
             Boolean.class));
+        assertTrue(jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM api_key_model_permissions WHERE api_key_id = 3001 AND model_id = 5001)",
+            Boolean.class));
+    }
+
+    @Test
+    void removingAProviderFromAnApiKeyRemovesThatKeysModelsOfTheProvider() throws Exception {
+        jdbc.update("INSERT INTO api_key_provider_permissions (api_key_id, provider_id) VALUES (3001, 6001)");
+        jdbc.update("INSERT INTO api_key_model_permissions (api_key_id, model_id) VALUES (3001, 5001)");
+
+        mvc.perform(put("/admin/api-keys/3001/provider-permissions")
+                .with(TestJwt.adminUser())
+                .contentType("application/json")
+                .content("{\"provider_ids\":[]}"))
+           .andExpect(status().isOk());
+
         assertFalse(jdbc.queryForObject(
             "SELECT EXISTS (SELECT 1 FROM api_key_model_permissions WHERE api_key_id = 3001)",
             Boolean.class));
@@ -384,7 +396,7 @@ class PermissionControllerTest {
     }
 
     @Test
-    void reducingTeamPermissionsPrunesCustomApiKeyPermissions() throws Exception {
+    void reducingTeamPermissionsKeepsCustomApiKeyPermissions() throws Exception {
         jdbc.update("INSERT INTO team_provider_permissions (team_id, provider_id) VALUES (2001, 6001)");
         jdbc.update("INSERT INTO team_model_permissions (team_id, model_id) VALUES (2001, 5001)");
         jdbc.update("INSERT INTO api_key_provider_permissions (api_key_id, provider_id) VALUES (3001, 6001)");
@@ -396,12 +408,9 @@ class PermissionControllerTest {
                 .content("{\"model_ids\":[]}"))
            .andExpect(status().isOk());
 
-        assertFalse(jdbc.queryForObject(
-            "SELECT EXISTS (SELECT 1 FROM api_key_model_permissions WHERE api_key_id = 3001)",
-            Boolean.class));
-        assertTrue(jdbc.queryForObject(
-            "SELECT EXISTS (SELECT 1 FROM api_key_provider_permissions WHERE api_key_id = 3001)",
-            Boolean.class));
+        mvc.perform(delete("/admin/teams/2001/provider-permissions/6001")
+                .with(TestJwt.logosAdmin()))
+           .andExpect(status().isOk());
 
         mvc.perform(put("/admin/teams/2001/provider-permissions")
                 .with(TestJwt.logosAdmin())
@@ -409,8 +418,11 @@ class PermissionControllerTest {
                 .content("{\"provider_ids\":[]}"))
            .andExpect(status().isOk());
 
-        assertFalse(jdbc.queryForObject(
-            "SELECT EXISTS (SELECT 1 FROM api_key_provider_permissions WHERE api_key_id = 3001)",
+        assertTrue(jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM api_key_provider_permissions WHERE api_key_id = 3001 AND provider_id = 6001)",
+            Boolean.class));
+        assertTrue(jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM api_key_model_permissions WHERE api_key_id = 3001 AND model_id = 5001)",
             Boolean.class));
     }
 

@@ -1,10 +1,8 @@
 package de.tum.cit.aet.logos.logoswebservice.configuration.service;
 
 import java.util.List;
-import java.util.Set;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import de.tum.cit.aet.logos.logoswebservice.common.ForbiddenException;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ApiKeyModelPermission;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ApiKeyProviderPermission;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.TeamModelPermission;
@@ -55,21 +53,14 @@ public class PermissionService {
             .map(p -> p.getId().getModelId()).toList();
     }
 
+    /**
+     * Replaces a key's custom model grants. The team's model permissions are
+     * the default for keys without custom permissions, not a ceiling: a key
+     * with custom permissions (for example an application key) may hold models
+     * the team default does not include.
+     */
     @Transactional
     public void setApiKeyModelPermissions(int keyId, List<Integer> modelIds) {
-        setApiKeyModelPermissions(keyId, modelIds, null);
-    }
-
-    @Transactional
-    public void setApiKeyModelPermissions(int keyId, List<Integer> modelIds, Integer teamIdConstraint) {
-        if (teamIdConstraint != null) {
-            teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamIdConstraint));
-            Set<Integer> allowed = teamModelRepo.findById_TeamId(teamIdConstraint).stream()
-                .map(p -> p.getId().getModelId()).collect(java.util.stream.Collectors.toSet());
-            if (!allowed.containsAll(modelIds)) {
-                throw new ForbiddenException("API key model permissions must be a subset of its team's permissions");
-            }
-        }
         apiKeyModelRepo.deleteById_ApiKeyId(keyId);
         apiKeyModelRepo.saveAll(modelIds.stream()
             .map(mid -> new ApiKeyModelPermission(keyId, mid)).toList());
@@ -80,21 +71,13 @@ public class PermissionService {
             .map(p -> p.getId().getProviderId()).toList();
     }
 
+    /**
+     * Replaces a key's custom provider grants independently of the team's
+     * provider permissions, then drops the key's model grants that none of its
+     * remaining providers serve.
+     */
     @Transactional
     public void setApiKeyProviderPermissions(int keyId, List<Integer> providerIds) {
-        setApiKeyProviderPermissions(keyId, providerIds, null);
-    }
-
-    @Transactional
-    public void setApiKeyProviderPermissions(int keyId, List<Integer> providerIds, Integer teamIdConstraint) {
-        if (teamIdConstraint != null) {
-            teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamIdConstraint));
-            Set<Integer> allowed = teamProviderRepo.findById_TeamId(teamIdConstraint).stream()
-                .map(p -> p.getId().getProviderId()).collect(java.util.stream.Collectors.toSet());
-            if (!allowed.containsAll(providerIds)) {
-                throw new ForbiddenException("API key provider permissions must be a subset of its team's permissions");
-            }
-        }
         apiKeyProviderRepo.deleteById_ApiKeyId(keyId);
         apiKeyProviderRepo.saveAll(providerIds.stream()
             .map(pid -> new ApiKeyProviderPermission(keyId, pid)).toList());
@@ -112,7 +95,6 @@ public class PermissionService {
         teamModelRepo.deleteById_TeamId(teamId);
         teamModelRepo.saveAll(modelIds.stream()
             .map(mid -> new TeamModelPermission(teamId, mid)).toList());
-        apiKeyModelRepo.deleteOutsideTeamPermissions(teamId);
     }
 
     public List<Integer> getTeamProviderPermissions(int teamId) {
@@ -127,7 +109,6 @@ public class PermissionService {
         teamProviderRepo.saveAll(providerIds.stream()
             .map(pid -> new TeamProviderPermission(teamId, pid)).toList());
         teamModelRepo.deleteCascadeForTeam(teamId);
-        pruneApiKeyPermissionsToTeam(teamId);
     }
 
     /**
@@ -160,11 +141,5 @@ public class PermissionService {
         teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
         teamProviderRepo.revoke(teamId, providerId);
         teamModelRepo.deleteCascadeForTeam(teamId);
-        pruneApiKeyPermissionsToTeam(teamId);
-    }
-
-    private void pruneApiKeyPermissionsToTeam(int teamId) {
-        apiKeyProviderRepo.deleteOutsideTeamPermissions(teamId);
-        apiKeyModelRepo.deleteOutsideTeamPermissions(teamId);
     }
 }
