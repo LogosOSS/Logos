@@ -10,6 +10,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import de.tum.cit.aet.logos.logoswebservice.audit.PermissionAuditContext;
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
 import de.tum.cit.aet.logos.logoswebservice.configuration.controller.PermissionController;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.SetModelPermissionsRequestDTO;
@@ -46,6 +47,7 @@ class PermissionBoundaryUnitTest {
     @Mock TeamModelPermissionRepository teamModelRepo;
     @Mock TeamProviderPermissionRepository teamProviderRepo;
     @Mock ProviderRepository providerRepo;
+    @Mock PermissionAuditContext audit;
     @Mock ApiKeyAdminService apiKeyAdminService;
 
     private PermissionService permissionService;
@@ -55,7 +57,11 @@ class PermissionBoundaryUnitTest {
     @BeforeEach
     void setUp() {
         permissionService = new PermissionService(
-            apiKeyModelRepo, apiKeyProviderRepo, teamModelRepo, teamProviderRepo, providerRepo);
+            apiKeyModelRepo, apiKeyProviderRepo, teamModelRepo, teamProviderRepo, providerRepo, audit);
+        org.mockito.Mockito.lenient().doAnswer(invocation -> {
+            invocation.getArgument(1, Runnable.class).run();
+            return null;
+        }).when(audit).withCause(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(Runnable.class));
         controller = new PermissionController(permissionService, apiKeyAdminService);
         appAdmin = new AuthContext(USER_ID, Role.Names.APP_ADMIN);
     }
@@ -74,7 +80,7 @@ class PermissionBoundaryUnitTest {
             KEY_ID, new SetProviderPermissionsRequestDTO(List.of(6001)), appAdmin).getStatusCode().value());
 
         verify(apiKeyProviderRepo).lockApiKeyPermissions(PermissionService.apiKeyPermsLockKey(KEY_ID));
-        verify(apiKeyProviderRepo).deleteById_ApiKeyId(KEY_ID);
+        verify(apiKeyProviderRepo).deleteAll(anyList());
         verify(apiKeyProviderRepo).saveAll(anyList());
         verify(apiKeyModelRepo).deleteCascadeForApiKey(KEY_ID);
         verifyNoInteractions(teamProviderRepo, teamModelRepo);
@@ -88,7 +94,7 @@ class PermissionBoundaryUnitTest {
             KEY_ID, new SetModelPermissionsRequestDTO(List.of(5001)), appAdmin).getStatusCode().value());
 
         verify(apiKeyProviderRepo).lockApiKeyPermissions(PermissionService.apiKeyPermsLockKey(KEY_ID));
-        verify(apiKeyModelRepo).deleteById_ApiKeyId(KEY_ID);
+        verify(apiKeyModelRepo).deleteAll(anyList());
         verify(apiKeyModelRepo).saveAll(anyList());
         verifyNoInteractions(teamProviderRepo, teamModelRepo);
     }

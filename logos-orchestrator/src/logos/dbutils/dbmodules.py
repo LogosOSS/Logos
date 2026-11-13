@@ -568,3 +568,24 @@ class NightlyBenchmark(Base):
     report = Column(JSON, nullable=False, default=list)
     recovery = Column(JSON)
     updated_at = Column(TIMESTAMP(timezone=True))
+
+
+class PermissionAuditLog(Base):
+    """Read-only permission history written by Postgres triggers, without foreign keys."""
+
+    __tablename__ = "permission_audit_log"
+    id = Column(BigInteger, primary_key=True)
+    occurred_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    actor_user_id = Column(Integer)
+    actor_role = Column(Text, nullable=False)
+    team_id = Column(Integer)
+    team_name = Column(Text)
+    api_key_id = Column(Integer)
+    scope_type = Column(Text, nullable=False)
+    scope_id = Column(Integer, nullable=False)
+    scope_name = Column(Text)
+    target_type = Column(Text, nullable=False)
+    target_id = Column(Integer, nullable=False)
+    target_name = Column(Text)
+    action = Column(Text, nullable=False)
+    cause = Column(Text, nullable=False)

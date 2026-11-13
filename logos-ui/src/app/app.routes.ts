@@ -22,6 +22,7 @@ export const routes: Routes = [
       { path: 'models',         title: 'Models · Logos',           data: { roles: ALL_ROLES },                canActivate: [roleGuard, hasTeamGuard], loadComponent: () => import('./features/models/models').then(m => m.Models) },
       { path: 'models/:id/details', title: 'Model Details · Logos', data: { roles: ['logos_admin'] },                canActivate: [roleGuard], loadComponent: () => import('./features/model-error-report/model-error-report').then(m => m.ModelErrorReport) },
       { path: 'models/:id/errors', redirectTo: 'models/:id/details', pathMatch: 'full' },
+      { path: 'permission-audit-log', title: 'Permission Audit · Logos', data: { roles: ['logos_admin'] }, canActivate: [roleGuard], loadComponent: () => import('./features/permission-audit/permission-audit').then(m => m.PermissionAudit) },
       { path: 'providers',      title: 'Providers · Logos',        data: { roles: ['logos_admin'] },                canActivate: [roleGuard], loadComponent: () => import('./features/providers/providers').then(m => m.Providers) },
       { path: 'policies',       title: 'Policies · Logos',         data: { roles: ['logos_admin'] },                canActivate: [roleGuard], loadComponent: () => import('./features/policies/policies').then(m => m.Policies) },
       { path: 'billing',        title: 'Billing · Logos',          data: { roles: ['logos_admin'] },                canActivate: [roleGuard], loadComponent: () => import('./features/billing/billing').then(m => m.Billing) },

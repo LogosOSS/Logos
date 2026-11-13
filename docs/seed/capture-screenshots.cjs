@@ -300,6 +300,7 @@ const SHOTS = [
   { file: "roles/logos-admin-billing.png", user: ADMIN, go: (p) => p.goto(BASE + "/billing") },
   { file: "roles/logos-admin-user-management.png", user: ADMIN, go: (p) => p.goto(BASE + "/user-management") },
   { file: "roles/logos-admin-team-management.png", user: ADMIN, go: (p) => p.goto(BASE + "/team-management") },
+  { file: "roles/logos-admin-permission-audit.png", user: ADMIN, full: true, go: (p, ids) => p.goto(`${BASE}/permission-audit-log?team_id=${ids.team}`) },
   {
     file: "roles/logos-admin-new-team.png",
     user: ADMIN,
