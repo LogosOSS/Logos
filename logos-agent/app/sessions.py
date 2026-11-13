@@ -92,6 +92,7 @@ _MAX_REPLY_ATTEMPTS = 5
 # ids that are dealt with, and whether the summary and the re-requested
 # review have gone out.
 _REVIEW_REPLY_STATE_FILE = "review_reply_state.json"
+_CHECKOUT_BASELINE_FILE = "checkout_baseline.json"
 
 # GraphQL error types that will not change on a retry: the thread is gone,
 # or this token may never act on it. Everything else — rate limits, server
@@ -226,6 +227,11 @@ def state_dir(session_id: int) -> Path:
     return Path(settings.state_root) / str(session_id)
 
 
+def publication_path(workspace_id: int) -> Path:
+    """A successful push survives session retries outside agent-writable mounts."""
+    return Path(settings.state_root) / "workspaces" / str(workspace_id) / "publication.json"
+
+
 SSH_KNOWN_HOSTS = "/logos/ssh_known_hosts"
 SSH_COMMAND = (
     "ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes "
@@ -334,7 +340,7 @@ def _older_than(moment: Any, seconds: float) -> bool:
 
 def _another_attempt_at(session: dict[str, Any]) -> str:
     """What a replacement session is told about the attempt before it."""
-    reason = str(session.get("error") or "").strip()[:400]
+    reason = str(session.get("error") or "").strip()[:4000]
     return (
         "Your last attempt at this did not finish"
         + (f": {reason}" if reason else ".")
@@ -1485,7 +1491,7 @@ class SessionManager:
         """
         known_hosts_host_path = None
         ssh_key_host_path = None
-        if _uses_ssh(env.get("LOGOS_REPO_URL", "")):
+        if phase != "verify" and _uses_ssh(env.get("LOGOS_REPO_URL", "")):
             known_hosts = Path(settings.state_root) / "ssh_known_hosts"
             known_hosts.parent.mkdir(parents=True, exist_ok=True)
             known_hosts.touch(exist_ok=True)
@@ -1513,6 +1519,10 @@ class SessionManager:
                 launch = self._launches.get(session_id)
                 if launch and launch.cancelled:
                     return 137
+        if phase in {"snapshot", "verify", "finalize"}:
+            row = await db.get_session(session_id)
+            if not row or row.get("status") in {state.value for state in TERMINAL_STATUSES}:
+                return 137
         # Tracked before the create is even awaited: a cancel that lands
         # while the create request is in flight must find the record here
         # and wait for it — not report a clean cancellation for a helper
@@ -1530,7 +1540,7 @@ class SessionManager:
                     workspace_volume=workspace_volume,
                     artifact_host_path=artifact_host_path,
                     session_id=session_id,
-                    network=settings.session_egress_network,
+                    network="none" if phase == "verify" else settings.session_egress_network,
                     labels={"logos.agent.helper": phase},
                     ssh_known_hosts_host_path=known_hosts_host_path,
                     ssh_key_host_path=ssh_key_host_path,
@@ -1562,14 +1572,16 @@ class SessionManager:
                 logger.warning("helper %s for session %s timed out; stopping it", phase, session_id)
                 await docker_engine.stop_container(container_id)
                 code = 124
-            if code != 0:
+            if code != 0 or phase == "verify":
                 # The exit code used to be the whole protocol, and it says
                 # nothing: "checkout preparation failed (exit 1)" reached a
                 # thread and a page while the one thing that could explain
                 # it — what the helper printed — was removed with the
                 # container in the block below. Read before that happens,
                 # and only on the path where somebody will want it.
-                self._last_helper_output[session_id] = await self._what_it_printed(container_id)
+                self._last_helper_output[session_id] = await self._what_it_printed(
+                    container_id, lines=40 if phase == "verify" else 12
+                )
             return code
         finally:
             self._helpers.pop(session_id, None)
@@ -1631,6 +1643,19 @@ class SessionManager:
         continuing: bool = False,
     ) -> None:
         """Phase one: the helper that makes the working copy trustworthy."""
+        pr_base = ""
+        workspace_id = session.get("workspace_id")
+        if workspace_id is not None:
+            try:
+                publication = json.loads(publication_path(int(workspace_id)).read_text())
+            except FileNotFoundError:
+                publication = {}
+            if publication.get("branch") == branch:
+                pr_base = str(publication["pr_base_branch"])
+                # Recover a push whose later PR API call failed, including a
+                # transient failure to update the workspace row after recording it.
+                await db.set_workspace_base_branch(int(workspace_id), branch)
+                workspace = {**workspace, "base_branch": branch}
         env = {
             "LOGOS_SESSION_PHASE": "prepare",
             # Carries the conversation across the home wipe, and nothing
@@ -1640,6 +1665,7 @@ class SessionManager:
             "LOGOS_SESSION_ID": str(session["id"]),
             "LOGOS_SESSION_BRANCH": branch,
             "LOGOS_SESSION_BASE_BRANCH": workspace["base_branch"],
+            "LOGOS_SESSION_PR_BASE_BRANCH": pr_base,
             "LOGOS_REPO_URL": session.get("repo_url") or settings.repo_url,
             "LOGOS_REPO_SLUG": session.get("repo_slug") or settings.repo_slug,
             "LOGOS_ARTIFACT_DIR": "/artifacts",
@@ -1703,6 +1729,7 @@ class SessionManager:
         if code != 0:
             said = self._last_helper_output.pop(session["id"], "")
             raise RuntimeError(f"checkout preparation failed (exit {code}){f': {said}' if said else ''}")
+        self._capture_checkout_baseline(int(session["id"]))
         if str(session.get("trigger_kind") or "") == "review-request":
             # Read now, while only the trusted helper has written the result
             # file: the agent phase runs next and could write anything there.
@@ -1712,14 +1739,121 @@ class SessionManager:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(sha)
 
+    def _capture_checkout_baseline(self, session_id: int) -> None:
+        """Keep the preparation's proof before any untrusted process starts."""
+        prepared = self._read_result(session_id)
+        sha = prepared.get("checkout_sha")
+        branch_sha = prepared.get("checkout_branch_sha")
+        comparison_sha = prepared.get("checkout_comparison_sha")
+        pr_base = prepared.get("checkout_pr_base_branch")
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+            raise RuntimeError("checkout preparation did not report its original commit")
+        if not isinstance(branch_sha, str) or (
+            branch_sha and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", branch_sha)
+        ):
+            raise RuntimeError("checkout preparation did not report the original branch tip")
+        if not isinstance(comparison_sha, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", comparison_sha):
+            raise RuntimeError("checkout preparation did not report the PR comparison commit")
+        if not isinstance(pr_base, str) or not pr_base.strip():
+            raise RuntimeError("checkout preparation did not report the PR target branch")
+        path = state_dir(session_id) / _CHECKOUT_BASELINE_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "checkout_sha": sha,
+                    "branch_sha": branch_sha,
+                    "comparison_sha": comparison_sha,
+                    "pr_base_branch": pr_base,
+                }
+            )
+        )
+
+    async def _verify_before_push(
+        self, session_id: int, workspace: dict[str, Any], env: dict[str, str], artifact_host_path: str
+    ) -> dict[str, str]:
+        """Snapshot with trusted Git, execute checks without credentials, bind their result to the tree."""
+        try:
+            baseline = json.loads((state_dir(session_id) / _CHECKOUT_BASELINE_FILE).read_text())
+            sha, branch_sha = baseline["checkout_sha"], baseline["branch_sha"]
+            comparison_sha = baseline["comparison_sha"]
+            pr_base = baseline["pr_base_branch"]
+            if (
+                not isinstance(branch_sha, str)
+                or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha)
+                or (branch_sha and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", branch_sha))
+                or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", comparison_sha)
+                or not isinstance(pr_base, str)
+                or not pr_base.strip()
+            ):
+                raise ValueError("invalid commit")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError("missing trusted checkout baseline; start a new session before publishing") from exc
+        env = {
+            **env,
+            "LOGOS_SESSION_CHECKOUT_SHA": sha,
+            "LOGOS_SESSION_BRANCH_SHA": branch_sha,
+            "LOGOS_SESSION_COMPARISON_SHA": comparison_sha,
+            "LOGOS_SESSION_PR_BASE_BRANCH": pr_base,
+        }
+        code = await self._run_helper(
+            phase="snapshot",
+            session_id=session_id,
+            env={**env, "LOGOS_SESSION_PHASE": "snapshot"},
+            workspace_volume=workspace["volume_name"],
+            artifact_host_path=artifact_host_path,
+        )
+        if code != 0:
+            raise RuntimeError(
+                f"candidate snapshot failed (exit {code}): {self._last_helper_output.pop(session_id, '')}"
+            )
+        candidate = self._read_result(session_id)
+        tree = candidate.get("candidate_tree")
+        paths = candidate.get("candidate_paths")
+        if not isinstance(tree, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", tree):
+            raise RuntimeError("snapshot did not report a candidate tree")
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            raise RuntimeError("snapshot did not report changed paths")
+        row = await db.get_session(session_id)
+        if not row or row.get("status") in {state.value for state in TERMINAL_STATUSES}:
+            raise RuntimeError("session was cancelled before verification")
+        code = await self._run_helper(
+            phase="verify",
+            session_id=session_id,
+            # An allow-list, never a copy of the credential-bearing environment.
+            env={
+                "LOGOS_SESSION_PHASE": "verify",
+                "LOGOS_VERIFICATION_PATHS": json.dumps(paths),
+                "LOGOS_VERIFICATION_TREE": tree,
+            },
+            workspace_volume=workspace["volume_name"],
+            artifact_host_path=artifact_host_path,
+        )
+        output = self._last_helper_output.pop(session_id, "")
+        status = "passed" if code == 0 else "failed"
+        # Persist diagnostics in runner-owned state. The verifier cannot write this
+        # or the candidate, and a restart repeats the checks instead of trusting artefacts.
+        (state_dir(session_id) / "verification.json").write_text(
+            json.dumps({"tree": tree, "status": status, "exit_code": code, "output": output})
+        )
+        await db.add_event(session_id, EventKind.LOG, {"text": f"Verification {status} (exit {code})\n{output}"})
+        row = await db.get_session(session_id)
+        if not row or row.get("status") in {state.value for state in TERMINAL_STATUSES}:
+            raise RuntimeError("session was cancelled before publishing")
+        return {
+            **env,
+            "LOGOS_SESSION_VERIFIED_TREE": tree,
+            "LOGOS_SESSION_VERIFICATION": status,
+            "LOGOS_SESSION_VERIFICATION_OUTPUT": output[-4000:],
+        }
+
     async def _finalize(self, session_id: int) -> bool:
         """Phase three: commit, push, and open the pull request, if asked.
 
         The agent phase carried no GitHub credential, so the authenticated
         work happens here — in a runner-owned container that gets the scoped
-        token and egress, after the agent has exited. A failure means the
-        work did not reach the repository, and the session is failed rather
-        than settled as a success with a deploy attached.
+        token and egress, after the agent has exited. A failed check publishes
+        only a draft; other failures stop publication. Neither can deploy.
         """
         session = await db.get_session(session_id)
         if not session:
@@ -1793,15 +1927,59 @@ class SessionManager:
         if settings.session_github_token:
             env["GITHUB_TOKEN"] = settings.session_github_token
             env["GH_TOKEN"] = settings.session_github_token
+        artifact_host_path = str(
+            Path(await docker_engine.volume_mountpoint(settings.artifact_volume)) / str(session_id)
+        )
+        try:
+            env = await self._verify_before_push(session_id, workspace, env, artifact_host_path)
+        except RuntimeError as exc:
+            self._last_helper_output[session_id] = str(exc)
+            return False
         code = await self._run_helper(
             phase="finalize",
             session_id=session_id,
             env=env,
             workspace_volume=workspace["volume_name"],
-            artifact_host_path=str(
-                Path(await docker_engine.volume_mountpoint(settings.artifact_volume)) / str(session_id)
-            ),
+            artifact_host_path=artifact_host_path,
         )
+        published = self._read_result(session_id)
+        pushed_sha = published.get("pushed_sha")
+        published_tree = published.get("published_tree")
+        pr_base = published.get("pr_base_branch")
+        if (
+            isinstance(pushed_sha, str)
+            and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", pushed_sha)
+            and isinstance(published_tree, str)
+            and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", published_tree)
+            and published_tree == env.get("LOGOS_SESSION_VERIFIED_TREE")
+            and isinstance(pr_base, str)
+            and pr_base.strip()
+            and pr_base == env.get("LOGOS_SESSION_PR_BASE_BRANCH")
+        ):
+            # Snapshot replaced the agent's result; verification had read-only
+            # mounts. Only the trusted finalizer can have written this receipt,
+            # even when a subsequent PR API operation made it exit nonzero.
+            path = publication_path(int(session["workspace_id"]))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "branch": session["branch_name"],
+                        "pushed_sha": pushed_sha,
+                        "tree": published["published_tree"],
+                        "pr_base_branch": published["pr_base_branch"],
+                    }
+                )
+            )
+            temporary.replace(path)
+            await db.set_workspace_base_branch(int(session["workspace_id"]), str(session["branch_name"]))
+        if code == 0 and env.get("LOGOS_SESSION_VERIFICATION") == "failed":
+            self._last_helper_output[session_id] = (
+                "compile/type checks failed; changes were published only as a draft for repair: "
+                + env.get("LOGOS_SESSION_VERIFICATION_OUTPUT", "")
+            )
+            return False
         return code == 0
 
     # --- supervision ------------------------------------------------------
@@ -2271,14 +2449,13 @@ class SessionManager:
                     await self._cleanup_container(session_id)
                     return
             # The row is already finalizing: a restart interrupted the first
-            # finalizer. The finalizer is idempotent — it re-fetches the
-            # base, re-commits the same tree, and force-pushes — so running
-            # it again either completes the work or reports a real failure.
-            # A finalizer that fails fails the session — nothing landed, and
-            # a deploy must not be dispatched behind it.
+            # finalizer. It repeats verification against the original baseline
+            # and recognizes its exact already-pushed snapshot, so restarting
+            # neither loses base changes nor overwrites another push.
+            # Failed verification may publish a draft but must never deploy.
             if not await self._finalize(session_id):
                 said = self._last_helper_output.pop(session_id, "")
-                error = "finalization failed: the agent's work did not reach the repository"
+                error = "finalization did not pass"
                 if said:
                     # The same reason the preparation failure carries one: a
                     # push that was refused says why, and the sentence above
@@ -3103,9 +3280,12 @@ class SessionManager:
         tells us what happened.
         """
         try:
-            return json.loads(
+            result = json.loads(
                 read_artifact_text(artifact_dir(session_id), "result.json", limit=settings.artifact_max_bytes)
             )
+            if not isinstance(result, dict):
+                raise ValueError("result must be a JSON object")
+            return result
         except FileNotFoundError:
             return {}
         except Exception as exc:
