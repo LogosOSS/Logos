@@ -501,16 +501,19 @@ class ProviderModelBatchEligibility(Base):
     Azure resource answers its Batch API with a Global-Batch deployment for
     each model it offers for that, and a model that only exists as a Standard
     deployment cannot be batched there no matter how capable the resource
-    looks. The Batch API does not publish a model list for its batch endpoint,
-    so the knowledge is learned from the provider's own refusals (a batch
-    creation or a failed batch naming the unsupported model) and tracked here —
-    one row per model, with the detail of what the provider said.
+    looks. Neither the Batch API nor the data-plane deployment listing says
+    which deployment is of a Batch SKU, so the knowledge comes from the
+    provider itself: the Azure deployment sync probes each deployment with a
+    batch creation (``source = 'probe'``), and a refused real batch is recorded
+    as well (``source = 'refusal'``) — one row per model, with the detail of
+    what the provider said. ``batch_deployment`` is the deployment the Batch
+    API accepted, which a forwarded batch file is rewritten to.
 
-    Absence means "unknown", which routes to the provider as before (its error
-    is then passed through and can teach this table); an ``eligible = false``
-    row is what moves the batch to Logos execution. Rows expire after a TTL so
-    a model the provider adds to Batch later is picked up automatically, at the
-    price of one more failed batch.
+    On Azure only an ``eligible = true`` row with a batch deployment lets a
+    batch be forwarded; absence means "unknown" and the batch runs in Logos.
+    On other providers absence routes to the provider as before and an
+    ``eligible = false`` row moves the batch to Logos. Refusal rows expire
+    after a TTL; probe rows are replaced by the next probe.
     """
 
     __tablename__ = "provider_model_batch_eligibility"
@@ -526,6 +529,9 @@ class ProviderModelBatchEligibility(Base):
         nullable=False,
         default=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
+    batch_deployment = Column(Text)
+    batch_deployment_ids = Column(JSON, nullable=False, default=list)
+    source = Column(Text, nullable=False, default="refusal")
 
 
 class BatchLineResult(Base):

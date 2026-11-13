@@ -384,6 +384,46 @@ class ProviderControllerTest {
     }
 
     @Test
+    void getProviderModels_reportsBatchSupportPerDeployment() throws Exception {
+        mvc.perform(post("/logosdb/get_provider_models")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].batch_support").value("unknown"))
+           .andExpect(jsonPath("$[0].batch_deployment").doesNotExist());
+
+        jdbc.update("""
+            INSERT INTO provider_model_batch_eligibility
+                (provider_id, model_id, eligible, detail, batch_deployment, source)
+            VALUES (6001, 5001, true, 'accepted', 'gpt-41-batch', 'probe')
+            """);
+        mvc.perform(post("/logosdb/get_provider_models")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].batch_support").value("supported"))
+           .andExpect(jsonPath("$[0].batch_deployment").value("gpt-41-batch"))
+           .andExpect(jsonPath("$[0].batch_source").value("probe"))
+           .andExpect(jsonPath("$[0].batch_checked_at").isString());
+
+        jdbc.update("""
+            UPDATE provider_model_batch_eligibility
+            SET eligible = false, source = 'refusal', detail = 'SKU GlobalStandard'
+            WHERE provider_id = 6001 AND model_id = 5001
+            """);
+        mvc.perform(post("/logosdb/get_provider_models")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].batch_support").value("unsupported"))
+           .andExpect(jsonPath("$[0].batch_deployment").doesNotExist())
+           .andExpect(jsonPath("$[0].batch_detail").value("SKU GlobalStandard"));
+    }
+
+    @Test
     void getProviderModels_requiresAuthentication() throws Exception {
         mvc.perform(post("/logosdb/get_provider_models")
                 .contentType("application/json")

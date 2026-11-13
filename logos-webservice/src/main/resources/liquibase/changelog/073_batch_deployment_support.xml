@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Per-deployment Batch support, known before a batch is submitted.
+
+         Azure only batches on deployments of a Batch SKU (GlobalBatch,
+         DataZoneBatch), which are separate deployments next to the Standard
+         one that serves interactive traffic. The data-plane deployment listing
+         does not report the SKU, so the orchestrator probes each deployment
+         and records the outcome here:
+
+         * batch_deployment: the deployment id the provider's Batch API accepts
+           for this model, which a forwarded batch file is rewritten to. NULL
+           when no deployment of the model accepted a batch.
+         * batch_deployment_ids: every deployment of the model the Batch API
+           accepted. None of them may serve interactive requests.
+         * source: how the row was learned — 'probe' (the deployment sync
+           tried a batch creation) or 'refusal' (a real batch was refused). -->
+    <changeSet id="073-batch-deployment-support" author="wasnertobias">
+        <preConditions onFail="MARK_RAN">
+            <not><columnExists tableName="provider_model_batch_eligibility" columnName="batch_deployment"/></not>
+        </preConditions>
+        <addColumn tableName="provider_model_batch_eligibility">
+            <column name="batch_deployment" type="TEXT"/>
+            <column name="batch_deployment_ids" type="JSONB" defaultValueComputed="'[]'::jsonb">
+                <constraints nullable="false"/>
+            </column>
+            <column name="source" type="TEXT" defaultValue="refusal">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+        <sql>
+            ALTER TABLE provider_model_batch_eligibility
+                ADD CONSTRAINT ck_pmb_eligibility_source CHECK (source IN ('probe', 'refusal'));
+        </sql>
+        <rollback>
+            <sql>ALTER TABLE provider_model_batch_eligibility DROP CONSTRAINT IF EXISTS ck_pmb_eligibility_source;</sql>
+            <dropColumn tableName="provider_model_batch_eligibility" columnName="source"/>
+            <dropColumn tableName="provider_model_batch_eligibility" columnName="batch_deployment_ids"/>
+            <dropColumn tableName="provider_model_batch_eligibility" columnName="batch_deployment"/>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

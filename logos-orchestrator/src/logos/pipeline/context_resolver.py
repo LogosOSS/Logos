@@ -29,6 +29,7 @@ from logos.benchmarks.guidellm_runner import credential_transport_is_secure
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.types import cloud_auth_header, cloud_protocol_headers
 from logos.decision import lane_model_override
+from logos.image_generation_tool import azure_image_deployment_headers
 from logos.inference_paths import require_inference_path
 from logos.logosnode_registry import LogosNodeRuntimeRegistry
 from logos.pipeline.effort_normalization import normalize_reasoning_effort
@@ -81,6 +82,10 @@ class ExecutionContext:
     # and content type — Anthropic's mandatory ``anthropic-version``. Empty for
     # every other provider.
     protocol_headers: Dict[str, str] = field(default_factory=dict)
+    # The provider's cloud flavour ("azure", "openai", ...) for cloud
+    # providers; None for worker nodes. Azure needs extra request headers for
+    # some built-in tools (see ``image_generation_tool``).
+    cloud_provider_type: Optional[str] = None
 
 
 class ContextResolver:
@@ -394,6 +399,7 @@ class ContextResolver:
                 if provider_type == "cloud"
                 else {}
             ),
+            cloud_provider_type=cloud_type if provider_type == "cloud" else None,
         )
 
     @staticmethod
@@ -416,6 +422,11 @@ class ContextResolver:
         headers.update(getattr(context, "protocol_headers", None) or {})
         if context.auth_header and context.auth_value:
             headers[context.auth_header] = context.auth_value
+        # Azure runs the Responses image tool only when the image model's
+        # deployment is named in a header; the tool entry in the body is not
+        # enough.
+        if context.provider_type == "cloud" and context.cloud_provider_type == "azure":
+            headers.update(azure_image_deployment_headers(context.provider_id, payload))
 
         # Claude Code's billing/telemetry marker on the system prompt varies
         # by CLI version, subagent and cron run, fragmenting an upstream's

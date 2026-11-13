@@ -384,6 +384,14 @@ worker control actions (calibrate, sleep, wake, lane management).
 
 ![Providers page](/img/roles/logos-admin-providers.png)
 
+Expand a provider to see its connected models. Next to the endpoint, each model
+shows whether its batches can use the provider's Batch API: **Batch**, **No
+batch**, **Batch unchecked**, or **Batch in Logos** for worker nodes. The tooltip
+names the batch deployment or the reason for a refusal. See
+[Batch status of a model](../batch-processing.md#batch-status-of-a-model).
+
+![Providers page — connected models with their batch status](/img/roles/logos-admin-provider-connections.png)
+
 ## Policies
 
 Policies are the rules that decide which models a team or an API key can use.

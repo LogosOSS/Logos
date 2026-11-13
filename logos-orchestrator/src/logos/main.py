@@ -67,6 +67,7 @@ from logos.dbutils.types import (
     normalize_provider_type,
 )
 from logos.errors import UpstreamStreamError, coerce_upstream_error, openai_error_response, upstream_error_message
+from logos.image_generation_tool import image_tool_access_error
 from logos.inference_paths import require_inference_path
 from logos.jobs.job_service import JobService, JobSubmission
 from logos.live_stream import _LiveStreamRegistry, _StreamingLogAccumulator, _usage_tokens_from_payload
@@ -3665,6 +3666,15 @@ async def route_and_execute(
             }
         else:
             raise HTTPException(status_code=404, detail="No models available for this API key.")
+
+    # The Responses image tool runs a second model; the key needs access to it
+    # as well, checked before the request is scheduled anywhere.
+    image_tool_error = image_tool_access_error(body, deployments)
+    if image_tool_error:
+        _record_log_failure(log_id, request_id, image_tool_error, result_status="error")
+        if is_async_job:
+            return {"status_code": 403, "data": {"error": image_tool_error}}
+        raise HTTPException(status_code=403, detail=image_tool_error)
 
     # Jobs reach this point without going through handle_sync_request, so they
     # publish their live view here. start() is non-destructive, so a request
