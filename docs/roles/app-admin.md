@@ -14,6 +14,11 @@ becomes an App Admin if the account has the OIDC role that is configured in
 
 The UI shows the role badge "App Admin" in the header menu.
 
+## Account settings
+
+Open the user menu and select **Account settings** to manage your personal passkeys.
+Follow the shared [account settings procedure](app-developer.md#account-settings).
+
 ## Models
 
 This page shows the model catalogue of the deployment: the name, the
@@ -68,6 +73,26 @@ rotate and revoke keys. You can also set limits and model permissions for each
 key.
 
 ![Team detail — Application Keys](/img/roles/team-detail-application-keys.png)
+
+#### API Key Model Permissions
+
+The model and provider permissions of the team are the default for the API
+keys of the team. They are not a maximum.
+
+| **Override Team Permissions** | Models and providers that the key can use |
+|-------------------------------|-------------------------------------------|
+| Off | The key uses the team permissions. If the team permissions change, then the key permissions also change. |
+| On | The key uses its own providers and models. You can select providers and models that the team permissions do not include. |
+
+Use custom permissions for a key that needs more models than the team
+default, for example a production key. A team owner can set custom
+permissions on each key of the team. If you remove models or providers from
+the team permissions, then the custom permissions of the keys do not change.
+If you remove a provider from a key, then the key also loses the models of
+that provider.
+
+In the key settings, the model list shows all models that the selected
+providers serve. The **Models** page shows the models that you can use now.
 
 ### Repositories
 

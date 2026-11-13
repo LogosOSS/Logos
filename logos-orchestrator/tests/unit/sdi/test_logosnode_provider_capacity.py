@@ -13,6 +13,8 @@ ceiling it throttles by 5-8x. So the ledger keeps a loose ceiling and lets
 admission do the real gating.
 """
 
+import pytest
+
 from logos.queue import PriorityQueueManager
 from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
 
@@ -118,33 +120,74 @@ def test_runtime_capacity_skips_stopped_and_error_lanes(monkeypatch):
         monkeypatch,
         [_lane("m", 10, runtime_state="stopped"), _lane("m", 10, runtime_state="error")],
     )
-    assert provider._get_runtime_parallel_capacity(1) == (None, "config")
+    assert provider._get_runtime_parallel_capacity(1) == (None, "default")
+    assert provider.get_parallel_capacity(1) == (200, "default")
+    assert provider.try_reserve_capacity(1, "r1") is False
+
+
+@pytest.mark.parametrize("configured", [None, 1, 20, 200, 500])
+def test_parallel_capacity_without_runtime_registry_ignores_stored_quota(monkeypatch, configured):
+    provider = _provider(monkeypatch, [], with_registry=False, config={"parallel_capacity": configured})
+    assert provider.get_parallel_capacity(1) == (200, "default")
+    assert [provider.try_reserve_capacity(1, f"r{i}") for i in range(201)] == [True] * 200 + [False]
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [None, {}, {"runtime": None}, {"runtime": {"lanes": {"unexpected": "mapping"}}}, {"runtime": {"lanes": []}}],
+)
+def test_missing_or_unusable_runtime_uses_a_bounded_fallback_not_the_stored_quota(monkeypatch, snapshot):
+    provider = _provider(monkeypatch, [], config={"parallel_capacity": 1})
+    monkeypatch.setattr(provider._runtime_registry, "peek_runtime_snapshot", lambda provider_id: snapshot)
     assert provider.get_parallel_capacity(1) == (200, "default")
 
 
-def test_parallel_capacity_without_runtime_registry_defaults(monkeypatch):
-    provider = _provider(monkeypatch, [], with_registry=False)
-    assert provider.get_parallel_capacity(1) == (200, "default")
+def test_unknown_model_has_no_runtime_capacity_or_ready_lane(monkeypatch):
+    provider = _provider(monkeypatch, [_lane("m", 4)], config={"parallel_capacity": 1})
+    assert provider.get_parallel_capacity(999) == (200, "default")
+    assert provider.try_reserve_capacity(999, "unknown-model") is False
 
 
-def test_explicit_provider_config_parallel_capacity_still_wins(monkeypatch):
-    provider = _provider(monkeypatch, [_lane("m", 10)], config={"parallel_capacity": 16})
-    assert provider.get_parallel_capacity(1) == (16, "config")
+@pytest.mark.parametrize("configured", [None, 1, 20, 200, 500])
+def test_stored_provider_quota_does_not_override_live_lane_capacity(monkeypatch, configured):
+    provider = _provider(monkeypatch, [_lane("m", 10), _lane("m", 4)], config={"parallel_capacity": configured})
+    assert provider.get_parallel_capacity(1) == (400, "runtime")
+    debug = provider.get_debug_state()[1]
+    assert debug["max_capacity"] == 400
+    assert debug["capacity_source"] == "runtime"
+    assert debug["lane_parallel"] == 14
 
 
-def test_reserve_capacity_enforces_the_configured_ledger_limit(monkeypatch):
-    """The ledger still bounds what one worker may hold — it is what caps a
-    burst, since the engine signals are sampled and cannot. It is just no
-    longer sourced from num_parallel for vLLM."""
+def test_runtime_ledger_ignores_other_models_and_failed_lanes(monkeypatch):
+    provider = _provider(
+        monkeypatch,
+        [
+            _lane("m", 10),
+            _lane("other", 10),
+            _lane("m", 10, runtime_state="stopped"),
+            _lane("m", 10, runtime_state="error"),
+        ],
+        config={"parallel_capacity": 20},
+    )
+    assert provider.get_parallel_capacity(1) == (200, "runtime")
+
+
+@pytest.mark.parametrize("runtime_state", ["stopped", "error", "sleeping", "loading"])
+def test_ignoring_the_stored_quota_does_not_admit_an_unready_model(monkeypatch, runtime_state):
+    provider = _provider(monkeypatch, [_lane("m", 10, runtime_state=runtime_state)], config={"parallel_capacity": 1})
+    assert provider.try_reserve_capacity(1, "r1") is False
+    assert provider.get_active_count(1) == 0
+
+
+def test_reserve_capacity_enforces_the_runtime_ledger_limit(monkeypatch):
+    """The ledger remains finite even when the sampled engine budget is larger."""
     provider = _provider(monkeypatch, [_lane("m", 500)], config={"parallel_capacity": 2})
-    assert provider.try_reserve_capacity(1, "r1") is True
-    assert provider.try_reserve_capacity(1, "r2") is True
-    assert provider.try_reserve_capacity(1, "r3") is False
-    assert provider.get_active_count(1) == 2
+    assert [provider.try_reserve_capacity(1, f"r{i}") for i in range(201)] == [True] * 200 + [False]
+    assert provider.get_active_count(1) == 200
 
     provider.decrement_active(1, request_id="r1")
-    assert provider.try_reserve_capacity(1, "r3") is True
-    assert provider.get_active_count(1) == 2
+    assert provider.try_reserve_capacity(1, "r200") is True
+    assert provider.get_active_count(1) == 200
 
 
 def test_the_ledger_ceiling_does_not_follow_a_low_reported_concurrency(monkeypatch):

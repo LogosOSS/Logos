@@ -34,6 +34,8 @@ import de.tum.cit.aet.logos.logoswebservice.identity.entity.ApiKeyType;
 @Testcontainers
 class GatewayCloudRateLimiterTest {
 
+    private static final String REDIS_PASSWORD = "test-only-redis-password";
+
     @Autowired
     JdbcTemplate jdbc;
 
@@ -56,7 +58,8 @@ class GatewayCloudRateLimiterTest {
     @Container
     @SuppressWarnings("resource")
     static GenericContainer<?> redisContainer = new GenericContainer<>(DockerImageName.parse("redis:7-alpine"))
-            .withExposedPorts(6379);
+            .withExposedPorts(6379)
+            .withCommand("redis-server", "--requirepass", REDIS_PASSWORD);
 
     @DynamicPropertySource
     @SuppressWarnings("unused")
@@ -68,6 +71,7 @@ class GatewayCloudRateLimiterTest {
         registry.add("spring.liquibase.enabled", () -> "true");
         registry.add("spring.liquibase.change-log", () -> "classpath:liquibase/changelog/master.xml");
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
+        registry.add("spring.data.redis.password", () -> REDIS_PASSWORD);
         registry.add("spring.data.redis.host", redisContainer::getHost);
         registry.add("spring.data.redis.port", () -> redisContainer.getMappedPort(6379));
         registry.add("logos.gateway.budget-reservation-reconcile-seconds", () -> "3600");

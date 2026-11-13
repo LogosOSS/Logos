@@ -17,6 +17,9 @@ on:
       - "**"
       - ".github/workflows/logos_test.yml"
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -56,8 +59,8 @@ jobs:
       - name: Run Tests
         run: |
           source .venv/bin/activate
-          coverage run -m pytest
-          coverage run --append -m pytest --noconftest tests/integration/benchmarks/test_guidellm_requests.py -q
+          coverage run --source=src,../scripts -m pytest
+          coverage run --append --source=src,../scripts -m pytest --noconftest tests/integration/benchmarks/test_guidellm_requests.py -q
         working-directory: logos-orchestrator
 
       - name: Run worker-node Tests

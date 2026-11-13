@@ -93,13 +93,16 @@ your assumptions in the final summary.
 - Work only inside the current checkout.
 - Do not run git commit, git push, or gh: the harness commits and opens the
   pull request for you after you finish.
-- Run the project's tests for the code you touch, and fix what you break —
-  where they can run. The services' dependencies are not installed and there
-  is no network to install them with, so `pytest` is often simply absent.
-  Try once, and if it is not there, do not spend turns looking for a way
-  round it: read the code and the tests instead, and say in your final
-  message that you could not run them. A change you reason about and label
-  as unverified is honest; one you claim to have tested is not.
+- Run the project's tests for the code you touch and fix failures before
+  finishing. For Java or Angular, use `python3 /usr/local/lib/verify_checkout.py
+  logos-webservice logos-ui` (omit the service you did not change). The image
+  includes offline Maven and npm caches. The harness repeats these checks
+  without credentials before publishing. A failed or unavailable check
+  produces only a draft PR and a failed session, never a deploy.
+- Other services may lack offline dependencies. Report unavailable checks
+  accurately. Lint does not replace compilation, test compilation, or type
+  checking. When CI fails, read the supplied job logs before claiming the
+  failure is unrelated; request missing logs explicitly in your summary.
 - Linting is on you, and you can run it: from the top of the checkout,
   `pre-commit run --files <the files you changed>`. That is the same command
   CI runs, with the same pinned hook versions. Which hooks a service runs is

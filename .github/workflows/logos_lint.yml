@@ -17,6 +17,9 @@ on:
       - "**"
       - ".github/workflows/logos_lint.yml"
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

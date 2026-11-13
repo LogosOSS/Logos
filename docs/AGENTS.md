@@ -291,6 +291,10 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 
 | File | Login as | Route / state | Documented in |
 |---|---|---|---|
+| `account-settings-menu.png` | any authenticated user | `/settings` — user menu with **Account settings** | `roles/app-developer.md#account-settings` |
+| `account-settings-passkeys.png` | same | `/settings` — 2 local test passkeys | same |
+| `account-settings-add-passkey.png` | same | `/settings` — **Add passkey** dialog | same |
+| `account-settings-remove-passkey.png` | same | `/settings` — **Remove passkey?** confirmation | same |
 | `logos-admin-node-maintenance.png` | `tobias.wasner` | `/statistics` — active node deployment lease | `roles/logos-admin.md#release-a-node-deployment-lease` |
 | `logos-admin-node-maintenance-release.png` | `tobias.wasner` | `/statistics` — **Release node lease** confirmation | `roles/logos-admin.md#release-a-node-deployment-lease` |
 | `logos-admin-statistics.png` | `tobias.wasner` | `/statistics?tab=requests` (the plain route opens **Local Providers**) | `roles/logos-admin.md` |
@@ -318,10 +322,12 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-deployed-configuration.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Currently deployed → Configuration & selection details** | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-model-request-measurements.png` | `tobias.wasner` | `/models/<id>/details` — **Performance → Request measurements** of a model with requests at more than one reasoning effort (local or cloud provider) | `roles/logos-admin.md#models` |
 | `logos-admin-providers.png` | `tobias.wasner` | `/providers` | `roles/logos-admin.md` |
+| `logos-admin-provider-connections.png` | `tobias.wasner` | `/providers` — a cloud provider expanded, connected models with their **Batch** labels | `roles/logos-admin.md` |
 | `logos-admin-policies.png` | `tobias.wasner` | `/policies` | `roles/logos-admin.md` |
 | `logos-admin-billing.png` | `tobias.wasner` | `/billing` | `roles/logos-admin.md` |
 | `logos-admin-user-management.png` | `tobias.wasner` | `/user-management` | `roles/logos-admin.md` |
 | `logos-admin-team-management.png` | `tobias.wasner` | `/team-management` | `roles/logos-admin.md` |
+| `logos-admin-permission-audit.png` | `tobias.wasner` | `/permission-audit-log` | `roles/logos-admin.md#permission-audit` |
 | `logos-admin-new-team.png` | `tobias.wasner` | `/team-management` — **New Team** dialog, Keycloak group filled | `roles/logos-admin.md#keycloak-group-links` |
 | `logos-admin-agents.png` | `tobias.wasner` | `/agents` | `roles/logos-admin.md` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |
@@ -351,6 +357,10 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 
 Shared flows (document once, link from other roles):
 
+- **Account settings** — passkey list, add dialog, and remove confirmation under
+  `roles/app-developer.md#account-settings`; App Admin / Logos Admin link there.
+  These shots need a local passkey provider and virtual WebAuthn authenticators.
+  Use only a throwaway Keycloak account, never a production passkey.
 - **Team detail** — tab walkthrough under `roles/app-admin.md#teams`; Logos
   Admin links there and only adds **Providers**.
 - **AI Tools** — step walkthrough under `roles/app-developer.md#ai-tools`;
