@@ -30,7 +30,7 @@ The Postgres schema is owned by `logos-webservice` and migrated via Liquibase ch
 
 ### Cloud requests stay in the gateway
 
-A named-model inference request whose permitted deployments are all cloud deployments is answered by the inference gateway in `logos-webservice` (`gateway/`). It does **not** pass through `logos-orchestrator`. This is a deliberate architecture decision, not a missing feature. When a cloud provider needs something extra for a request (a header, a permission check on a second model, a body rewrite), implement it in the gateway. Never route cloud traffic to the orchestrator to reuse code that only exists there, and never add a new `GatewayRouteDecision.orchestrator(...)` reason for cloud requests. The orchestrator keeps its own copy of such logic only for the paths that already run there (resource mode, policies, keys with local deployments, batches that Logos runs itself).
+Cloud named-model requests are served by the `logos-webservice` gateway, never via the orchestrator (deliberate architecture decision). Implement cloud-specific needs in the gateway; do not add orchestrator routes for cloud traffic.
 
 ### Entity hierarchy
 
