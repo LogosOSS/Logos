@@ -72,7 +72,8 @@ class GatewayImageGenerationToolTest {
         when(authService.requireActiveKey(any())).thenReturn(key);
         when(cloudAccounting.admitAndReserve(any(), any(), any(), any(), any(), any())).thenReturn(1);
         controller = new InferenceGatewayController(true, authService, cloudAccounting,
-            new GatewayCloudForwarder(new ObjectMapper()), cloudRateLimiter, orchestratorProxy, new ObjectMapper());
+            new GatewayCloudForwarder(new ObjectMapper(), cloudAccounting), cloudRateLimiter,
+            orchestratorProxy, new ObjectMapper());
     }
 
     @AfterEach

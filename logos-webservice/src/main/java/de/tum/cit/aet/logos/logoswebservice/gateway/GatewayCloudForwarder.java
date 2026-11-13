@@ -58,9 +58,11 @@ public class GatewayCloudForwarder {
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private final GatewayCloudAccounting cloudAccounting;
 
-    public GatewayCloudForwarder(ObjectMapper objectMapper) {
+    public GatewayCloudForwarder(ObjectMapper objectMapper, GatewayCloudAccounting cloudAccounting) {
         this.objectMapper = objectMapper;
+        this.cloudAccounting = cloudAccounting;
         // HTTP/1.1 only: default h2c Upgrade breaks body delivery to some
         // upstreams (same failure mode as GatewayOrchestratorProxy).
         this.httpClient = HttpClient.newBuilder()
@@ -223,10 +225,12 @@ public class GatewayCloudForwarder {
             pump.attachRelay();
             IOException streamError = null;
             // The capture sits between the upstream and the client so the
-            // reported token counts can be billed; it never delays or alters
-            // the bytes the client receives.
+            // reported token counts can be billed, and settled usage can carry
+            // a live cost line. Without a pricer the bytes stay verbatim.
+            GatewayCostPricer pricer = cloudAccounting == null ? null : cloudAccounting.costPricer(deployment);
             GatewayUsageCapture capture = new GatewayUsageCapture(
-                outputStream, objectMapper, upstreamContentType, retainResponseBody, pump::currentChunkAt);
+                outputStream, objectMapper, upstreamContentType, retainResponseBody, pump::currentChunkAt,
+                pricer);
             boolean draining = false;
             try {
                 pump.transferAttachedTo(capture);
