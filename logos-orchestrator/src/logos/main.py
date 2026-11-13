@@ -4533,6 +4533,7 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
         HTTPException(400): Invalid JSON body
         HTTPException(401): Missing or invalid authentication
     """
+    arrived_at = datetime.datetime.now(datetime.timezone.utc)
     # Authenticate before parsing multipart bodies. This prevents unauthenticated
     # callers from consuming the audio upload/base64 memory budget.
     headers = dict(request.headers)
@@ -4570,6 +4571,7 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
         deployment_cache = refcache.get_ref_cache()
         cached_deployments = deployment_cache.get(("deployments", auth.api_key_id))
         log_fields = {
+            "timestamp_request": arrived_at,
             "api_key_id": auth.api_key_id,
             "team_id": auth.team_id,
             "user_id": auth.user_id,

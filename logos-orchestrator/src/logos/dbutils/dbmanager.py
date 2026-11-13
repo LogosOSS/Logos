@@ -4772,8 +4772,10 @@ class DBManager:
         headers=None,
         request_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
+        timestamp_request: Optional[datetime.datetime] = None,
     ) -> tuple[dict, int]:
-        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        # Deferred inserts retain arrival time, before scheduling/provider events.
+        timestamp = (timestamp_request or datetime.datetime.now(datetime.timezone.utc)).isoformat()
         payload_str = _json_for_jsonb(input_payload) if log_level == "FULL" and input_payload else None
         headers_str = _json_for_jsonb(dict(headers)) if log_level == "FULL" and headers else None
 
@@ -4815,6 +4817,7 @@ class DBManager:
         headers=None,
         request_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
+        timestamp_request: Optional[datetime.datetime] = None,
     ) -> Optional[int]:
         """Insert a log row, or return the id of an existing one for ``request_id``.
 
@@ -4839,6 +4842,7 @@ class DBManager:
                 headers=headers,
                 request_id=request_id,
                 timeout_s=timeout_s,
+                timestamp_request=timestamp_request,
             )
             return int(result["log-id"]) if status == 200 else None
         except sqlalchemy.exc.IntegrityError as exc:
