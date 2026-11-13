@@ -12,6 +12,11 @@ that is configured in `KEYCLOAK_ROLES_LOGOS_ADMIN` (see the
 
 The UI shows the role badge "Logos Admin" in the header menu.
 
+## Account settings
+
+Open the user menu and select **Account settings** to manage your personal passkeys.
+Follow the shared [account settings procedure](app-developer.md#account-settings).
+
 ## Statistics
 
 This page shows the usage of the complete platform: the request volume, the

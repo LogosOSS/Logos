@@ -291,6 +291,10 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 
 | File | Login as | Route / state | Documented in |
 |---|---|---|---|
+| `account-settings-menu.png` | any authenticated user | `/settings` — user menu with **Account settings** | `roles/app-developer.md#account-settings` |
+| `account-settings-passkeys.png` | same | `/settings` — 2 local test passkeys | same |
+| `account-settings-add-passkey.png` | same | `/settings` — **Add passkey** dialog | same |
+| `account-settings-remove-passkey.png` | same | `/settings` — **Remove passkey?** confirmation | same |
 | `logos-admin-node-maintenance.png` | `tobias.wasner` | `/statistics` — active node deployment lease | `roles/logos-admin.md#release-a-node-deployment-lease` |
 | `logos-admin-node-maintenance-release.png` | `tobias.wasner` | `/statistics` — **Release node lease** confirmation | `roles/logos-admin.md#release-a-node-deployment-lease` |
 | `logos-admin-statistics.png` | `tobias.wasner` | `/statistics?tab=requests` (the plain route opens **Local Providers**) | `roles/logos-admin.md` |
@@ -351,6 +355,10 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 
 Shared flows (document once, link from other roles):
 
+- **Account settings** — passkey list, add dialog, and remove confirmation under
+  `roles/app-developer.md#account-settings`; App Admin / Logos Admin link there.
+  These shots need a local passkey provider and virtual WebAuthn authenticators.
+  Use only a throwaway Keycloak account, never a production passkey.
 - **Team detail** — tab walkthrough under `roles/app-admin.md#teams`; Logos
   Admin links there and only adds **Providers**.
 - **AI Tools** — step walkthrough under `roles/app-developer.md#ai-tools`;
