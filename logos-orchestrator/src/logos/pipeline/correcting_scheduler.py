@@ -824,12 +824,20 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             with perf_trace.phase(request_id, "schedule.infra"):
                 # Gather infrastructure data for VRAM-aware estimation
                 with perf_trace.phase(request_id, "schedule.capacity"):
-                    effective_parallel = 1
-                    try:
-                        with perf_trace.phase(request_id, "schedule.capacity.par"):
-                            effective_parallel, _ = self._logosnode.get_parallel_capacity(model_id, provider_id)
-                    except (KeyError, Exception):
-                        pass
+                    with perf_trace.phase(request_id, "schedule.capacity.par"):
+                        # Queue wait needs service concurrency, not the loose
+                        # in-flight ledger ceiling. Full-context guarantees
+                        # give a conservative estimate; short requests may run
+                        # above it, and admission remains governed separately
+                        # by live KV/queue signals and the per-report budget.
+                        effective_parallel = max(
+                            1,
+                            sum(
+                                max(1, lane.num_parallel)
+                                for lane in view.lanes
+                                if lane.runtime_state in ("loaded", "running")
+                            ),
+                        )
 
                     available_vram_mb = float("inf")
                     try:

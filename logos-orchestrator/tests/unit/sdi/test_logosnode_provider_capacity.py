@@ -132,6 +132,22 @@ def test_parallel_capacity_without_runtime_registry_ignores_stored_quota(monkeyp
     assert [provider.try_reserve_capacity(1, f"r{i}") for i in range(201)] == [True] * 200 + [False]
 
 
+@pytest.mark.parametrize(
+    "snapshot",
+    [None, {}, {"runtime": None}, {"runtime": {"lanes": {"unexpected": "mapping"}}}, {"runtime": {"lanes": []}}],
+)
+def test_missing_or_unusable_runtime_uses_a_bounded_fallback_not_the_stored_quota(monkeypatch, snapshot):
+    provider = _provider(monkeypatch, [], config={"parallel_capacity": 1})
+    monkeypatch.setattr(provider._runtime_registry, "peek_runtime_snapshot", lambda provider_id: snapshot)
+    assert provider.get_parallel_capacity(1) == (200, "default")
+
+
+def test_unknown_model_has_no_runtime_capacity_or_ready_lane(monkeypatch):
+    provider = _provider(monkeypatch, [_lane("m", 4)], config={"parallel_capacity": 1})
+    assert provider.get_parallel_capacity(999) == (200, "default")
+    assert provider.try_reserve_capacity(999, "unknown-model") is False
+
+
 @pytest.mark.parametrize("configured", [None, 1, 20, 200, 500])
 def test_stored_provider_quota_does_not_override_live_lane_capacity(monkeypatch, configured):
     provider = _provider(monkeypatch, [_lane("m", 10), _lane("m", 4)], config={"parallel_capacity": configured})

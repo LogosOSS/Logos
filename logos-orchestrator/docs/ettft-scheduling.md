@@ -56,7 +56,7 @@ E[wait] = state_overhead + queue_wait
 queue_wait = (queue_depth / effective_parallel) × generation_time
 ```
 
-Where `effective_parallel` includes vLLM's 3× concurrency oversubscription.
+For queue-wait estimation, `effective_parallel` sums the reported full-context concurrency (`num_parallel`) of loaded/running lanes. Each ready lane that has not reported a value contributes one; without a ready lane the estimate uses one. This is a conservative service estimate, not a measured throughput guarantee for short requests or an admission limit. Sleeping and starting lanes do not add service concurrency before they are ready; the existing state overhead still accounts for waking or loading. The loose in-flight ledger ceiling and stored `providers.parallel_capacity` never enter this queue-wait divisor.
 
 ## 4. Infrastructure Tiers
 
