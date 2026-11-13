@@ -26,6 +26,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Sequence, TextIO
 
 from logos.answer_reuse.context import CONTEXT_HEADER, cache_scope, context_id_from_headers
@@ -157,6 +158,23 @@ def owner_problem(db: Any, team_id: Optional[int], key_id: Optional[int]) -> Opt
     return None
 
 
+def seed_file_path(name: str, base: Optional[Path] = None) -> Path:
+    """The seed file a command-line argument names, confined to the working directory.
+
+    The command runs inside the orchestrator container, whose filesystem holds
+    secrets and configuration. Reading only regular files below the working
+    directory keeps the argument from reaching any of them; a file from
+    elsewhere is piped in on stdin instead.
+    """
+    root = (base or Path.cwd()).resolve()
+    path = (root / name).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError(f"{name}: the seed file must be inside {root}; pipe other files in on stdin")
+    if not path.is_file():
+        raise ValueError(f"{name}: no such seed file")
+    return path
+
+
 def main(
     argv: Optional[Sequence[str]] = None,
     stdin: TextIO = sys.stdin,
@@ -172,7 +190,7 @@ def main(
         if arguments.file == "-":
             entries = parse_entries(stdin)
         else:
-            with open(arguments.file, encoding="utf-8") as handle:
+            with open(seed_file_path(arguments.file), encoding="utf-8") as handle:
                 entries = parse_entries(handle)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

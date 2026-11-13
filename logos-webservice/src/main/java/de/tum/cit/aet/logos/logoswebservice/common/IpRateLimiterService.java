@@ -44,7 +44,7 @@ public class IpRateLimiterService {
      * container of the stack whose address Docker takes from its pool (172.17
      * to 172.31 while free, then 192.168.x); the service publishes no host port.
      */
-    static final String DEFAULT_TRUSTED_PROXY_CIDRS = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
+    static final String DEFAULT_TRUSTED_PROXY_CIDRS = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"; // NOSONAR - private ranges, not hosts
 
     /**
      * How often {@link #evictStaleWindows} runs, in milliseconds ({@code @Scheduled} needs a compile-time

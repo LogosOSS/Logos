@@ -10,7 +10,7 @@ from starlette.requests import HTTPConnection
 # of the stack, and Docker takes its address from the daemon's pool — 172.17
 # to 172.31 while those are free, then 192.168.x. The service publishes no
 # host port, so no other peer can reach it.
-DEFAULT_TRUSTED_PROXY_CIDRS = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+DEFAULT_TRUSTED_PROXY_CIDRS = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"  # NOSONAR - private ranges, not hosts
 
 
 @lru_cache(maxsize=16)

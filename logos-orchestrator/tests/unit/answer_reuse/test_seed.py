@@ -171,11 +171,12 @@ def test_the_command_loads_stdin_for_a_team_context(capsys):
     assert capsys.readouterr().out.strip() == "team:3:shop-a: stored 2, already present 0"
 
 
-def test_the_command_reads_a_file_for_a_key_context(tmp_path, capsys):
+def test_the_command_reads_a_file_for_a_key_context(tmp_path, capsys, monkeypatch):
     path = tmp_path / "answers.jsonl"
     path.write_text(_line() + "\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
 
-    code, db = _run(["--key-id", "10", "--context", " shop-a ", str(path)])
+    code, db = _run(["--key-id", "10", "--context", " shop-a ", "answers.jsonl"])
 
     assert code == 0
     assert db.inserts.rows[0]["context_id"] == "key:10:shop-a"
@@ -188,7 +189,7 @@ def test_the_command_reads_a_file_for_a_key_context(tmp_path, capsys):
         (["--team-id", "3", "--context", "   "], "", "--context must not be blank"),
         (["--team-id", "3", "--context", "shop\na"], "", "control character"),
         (["--team-id", "3", "--context", "shop-a"], "{not json", "line 1: not valid JSON"),
-        (["--team-id", "3", "--context", "shop-a", "/no/such/file.jsonl"], "", "No such file"),
+        (["--team-id", "3", "--context", "shop-a", "/no/such/file.jsonl"], "", "seed file must be inside"),
         (["--team-id", "4", "--context", "shop-a"], _line(), "there is no team 4"),
         (["--key-id", "11", "--context", "shop-a"], _line(), "use --team-id 3"),
     ],
@@ -237,3 +238,18 @@ def test_the_database_is_the_orchestrator_database(monkeypatch):
     monkeypatch.setattr(dbmanager, "DBManager", lambda: "the database")
 
     assert seed_module._open_database() == "the database"
+
+
+def test_a_seed_file_is_read_only_from_below_the_working_directory(tmp_path):
+    from logos.answer_reuse.seed import seed_file_path
+
+    inside = tmp_path / "answers.jsonl"
+    inside.write_text("{}\n", encoding="utf-8")
+    assert seed_file_path("answers.jsonl", base=tmp_path) == inside.resolve()
+
+    for name in ("../answers.jsonl", "/etc/passwd", "missing.jsonl"):
+        try:
+            seed_file_path(name, base=tmp_path)
+        except ValueError:
+            continue
+        raise AssertionError(f"{name} must be refused")
