@@ -1562,11 +1562,29 @@ async def _handle_batch_creation(
     return JSONResponse(content=local_batch_object(created)), None
 
 
+def _deployment_name_map(provider: Dict[str, Any]) -> Dict[str, str]:
+    """Every deployment spelling of a model on this provider, mapped to the Logos model name.
+
+    Covers both the batch deployment a forwarded file names and the Standard
+    deployment of the endpoint, so a file the provider holds translates back
+    whichever of them it was rewritten to.
+    """
+    with DBManager() as db:
+        deployments = db.get_provider_model_deployments(int(provider["id"]))
+    mapping = {str(_deployment_for(provider, row)).lower(): str(row["model_name"]) for row in deployments}
+    for row in deployments:
+        standard = extract_azure_deployment_name(row.get("endpoint") or "")
+        if standard:
+            mapping.setdefault(standard.lower(), str(row["model_name"]))
+    return mapping
+
+
 async def _rerun_refused_creation_locally(
     provider: Dict[str, Any],
     json_body: Dict[str, Any],
     auth: AuthContext,
     consent_level: Optional[str] = None,
+    name_by_deployment: Optional[Dict[str, str]] = None,
 ) -> Optional[JSONResponse]:
     """Run a refused batch creation here, from the file the provider holds.
 
@@ -1583,14 +1601,11 @@ async def _rerun_refused_creation_locally(
         return None
     # The provider holds the file as Logos uploaded it, i.e. with the model
     # spellings the provider's deployments use. The local pipeline wants Logos
-    # model names, so those spellings are translated back on the way in.
-    with DBManager() as db:
-        deployments = db.get_provider_model_deployments(int(provider["id"]))
-    name_by_deployment = {str(_deployment_for(provider, row)).lower(): str(row["model_name"]) for row in deployments}
-    for row in deployments:
-        standard = extract_azure_deployment_name(row.get("endpoint") or "")
-        if standard:
-            name_by_deployment.setdefault(standard.lower(), str(row["model_name"]))
+    # model names, so those spellings are translated back on the way in. The
+    # caller passes the mapping read before the refusal was recorded: recording
+    # it drops the batch deployment the file may name.
+    if name_by_deployment is None:
+        name_by_deployment = _deployment_name_map(provider)
     lines: List[bytes] = []
     for raw_line in content.splitlines():
         if not raw_line.strip():
@@ -1787,6 +1802,11 @@ async def handle_batch_api_request(request: Request) -> Response:
             and isinstance(json_body, dict)
             and json_body.get("input_file_id")
         ):
+            try:
+                name_by_deployment = _deployment_name_map(provider)
+            except Exception:  # noqa: BLE001 - the rerun reads it again if this fails
+                logger.exception("Could not read the deployments of provider %s", provider.get("id"))
+                name_by_deployment = None
             _learn_batch_ineligibility(provider, json_body.get("input_file_id"), error_text)
             # In auto mode only the model-availability refusal is not the
             # answer: the provider just said it cannot batch this file's
@@ -1802,7 +1822,9 @@ async def handle_batch_api_request(request: Request) -> Response:
                 and execution not in {"provider", "logos"}
                 and not _header(headers, BATCH_PROVIDER_HEADER)
             ):
-                rerun = await _rerun_refused_creation_locally(provider, json_body, auth, consent_level)
+                rerun = await _rerun_refused_creation_locally(
+                    provider, json_body, auth, consent_level, name_by_deployment=name_by_deployment
+                )
                 if rerun is not None:
                     return rerun
     return response

@@ -648,7 +648,13 @@ class _FakeDB:
         return support
 
     def get_provider_model_deployments(self, provider_id):
-        return [row for row in self.deployments if int(row["provider_id"]) == int(provider_id)]
+        # Like the database: a model refused for batch loses its batch deployment.
+        refused = self.ineligible.get(int(provider_id), set())
+        return [
+            {**row, "batch_deployment": None} if int(row["model_id"]) in refused else row
+            for row in self.deployments
+            if int(row["provider_id"]) == int(provider_id)
+        ]
 
     def claim_batch_for_settlement(self, batch_object_id, lease_seconds=1800):
         return False  # the settlement tests drive the latch themselves
@@ -4142,3 +4148,33 @@ def test_an_azure_sku_refusal_is_learned_and_rerun_locally(monkeypatch):
     assert resp.json()["logos_execution"] == "logos"
     assert [record[:2] for record in db.eligibility_records] == [(8, 25)]
     assert started == [resp.json()["id"]]
+
+
+def test_a_refused_file_naming_the_batch_deployment_is_rerun_under_the_logos_model_name(monkeypatch):
+    # Recording the refusal drops the batch deployment from the provider's
+    # deployments; the rerun must still translate the file's batch deployment
+    # back to the Logos model, or the local line names an unknown model.
+    batch_capable = [{**AZURE_DEPLOYMENTS[0], "batch_deployment": "gpt-41-batch"}]
+    db = _FakeDB(
+        [AZURE_PROVIDER],
+        batch_capable,
+        owned={("file", "file-own"): _remote(5, OWN_TEAM, provider_id=8, models=["gpt-4.1"])},
+    )
+    monkeypatch.setattr(batch_api, "_start_local_batch", lambda row: None)
+
+    def upstream(request):
+        if request.url.path.endswith("/files/file-own/content"):
+            return httpx.Response(200, content=_jsonl(_line("one", model="gpt-41-batch")))
+        return httpx.Response(400, json=AZURE_SKU_REFUSAL)
+
+    _patch_env(monkeypatch, db, upstream)
+
+    resp = client.post(
+        "/v1/batches",
+        json={"input_file_id": "file-own", "endpoint": "/v1/chat/completions", "completion_window": "24h"},
+    )
+
+    assert resp.status_code == 200
+    stored_content = db.stored_files[resp.json()["input_file_id"]][1]
+    assert b'"model": "gpt-4.1"' in stored_content
+    assert b"gpt-41-batch" not in stored_content

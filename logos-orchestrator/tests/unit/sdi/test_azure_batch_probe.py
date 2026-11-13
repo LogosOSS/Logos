@@ -124,6 +124,7 @@ def test_a_batch_deployment_is_not_chosen_for_interactive_traffic():
 class _ProbeDB:
     def __init__(self):
         self.records = []
+        self.ids = []
 
     def __enter__(self):
         return self
@@ -137,8 +138,11 @@ class _ProbeDB:
     def get_batch_model_support(self, provider_id):
         return {}
 
-    def record_model_batch_probe(self, provider_id, model_id, eligible, batch_deployment=None, detail=""):
+    def record_model_batch_probe(
+        self, provider_id, model_id, eligible, batch_deployment=None, detail="", batch_deployment_ids=None
+    ):
         self.records.append((provider_id, model_id, eligible, batch_deployment))
+        self.ids.append(list(batch_deployment_ids or []))
 
 
 async def test_a_model_is_batchable_through_whichever_deployment_accepted(monkeypatch):
@@ -173,3 +177,108 @@ async def test_a_model_is_batchable_through_whichever_deployment_accepted(monkey
     assert probed == 2
     assert sorted(db.records) == [(8, 25, True, "gpt-41-batch"), (8, 92, False, None)]
     assert azure_batch_probe.PROBE_CUSTOM_ID in _uploaded["content"]
+
+
+def test_a_positive_answer_expires_when_its_batch_deployment_is_gone():
+    now = datetime.datetime(2026, 11, 13, tzinfo=datetime.timezone.utc)
+    known = {
+        "source": "probe",
+        "eligible": True,
+        "batch_deployment": "gpt-41-batch",
+        "batch_deployment_ids": ["gpt-41-batch"],
+        "checked_at": now - datetime.timedelta(hours=1),
+    }
+    old = (now - datetime.timedelta(days=2)).timestamp()
+
+    assert not needs_probe(known, [{"id": "gpt-41", "updated_at": old}, {"id": "gpt-41-batch", "updated_at": old}], now)
+    assert needs_probe(known, [{"id": "gpt-41", "updated_at": old}], now)
+
+
+async def test_every_batch_deployment_of_a_model_is_recorded(monkeypatch):
+    db = _ProbeDB()
+    db.get_provider_model_deployments = lambda provider_id: [{"model_id": 25, "model_name": "gpt-4.1"}]
+    monkeypatch.setitem(probe_provider.__globals__, "DBManager", lambda: db)
+    calls = []
+    original = probe_provider.__globals__["probe_deployment"]
+
+    async def fake_probe(provider, deployment_id, operation, client):
+        calls.append(deployment_id)
+        return (deployment_id != "gpt-41-std"), "probe"
+
+    monkeypatch.setitem(probe_provider.__globals__, "probe_deployment", fake_probe)
+    raw = [
+        {"id": "a-batch", "model": "gpt-4.1", "status": "succeeded"},
+        {"id": "gpt-4.1", "model": "gpt-4.1", "status": "succeeded"},
+        {"id": "gpt-41-std", "model": "gpt-4.1", "status": "succeeded"},
+    ]
+    async with httpx.AsyncClient() as client:
+        await probe_provider(PROVIDER, raw, client)
+
+    assert sorted(calls) == ["a-batch", "gpt-4.1", "gpt-41-std"]
+    assert db.records == [(8, 25, True, "a-batch")]
+    assert db.ids == [["a-batch", "gpt-4.1"]]
+    # Both batch deployments stay out of interactive routing.
+    planned = plan_sync("https://res.openai.azure.com", raw, set(db.ids[0]))
+    assert "/deployments/gpt-41-std/" in planned[0]["endpoint"]
+    assert original is not fake_probe
+
+
+class _SyncDB:
+    def __init__(self):
+        self.support = {}
+        self.upserts = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_batch_model_support(self, provider_id):
+        return self.support
+
+    def sync_azure_deployments(self, provider_id, planned):
+        self.upserts.append(planned)
+        return {"changed": True, "new_models": []}
+
+
+async def test_a_batch_deployment_found_by_the_probe_leaves_interactive_routing_in_the_same_pass():
+    from logos.sdi.azure_deployment_sync import AzureDeploymentSyncService
+
+    db = _SyncDB()
+    raw = [
+        {"id": "gpt-4.1", "model": "gpt-4.1", "status": "succeeded"},
+        {"id": "gpt-41-std", "model": "gpt-4.1", "status": "succeeded"},
+    ]
+
+    async def fetch(host, api_key, client):
+        return raw
+
+    async def probe(provider, deployments, client):
+        db.support = {25: {"eligible": True, "batch_deployment": "gpt-4.1", "batch_deployment_ids": ["gpt-4.1"]}}
+        return 1
+
+    async def no_notifications(db):
+        return None
+
+    sync = AzureDeploymentSyncService(enabled=False)
+    namespace = AzureDeploymentSyncService._sync_provider.__globals__
+    patches = {
+        "fetch_azure_deployments": fetch,
+        "probe_provider": probe,
+        "deliver_discovery_notifications": no_notifications,
+        "DBManager": lambda: db,
+        "BATCH_PROBE_ENABLED": True,
+    }
+    saved = {name: namespace[name] for name in patches}
+    namespace.update(patches)
+    try:
+        async with httpx.AsyncClient() as client:
+            changed, _ = await sync._sync_provider({**PROVIDER, "id": 8}, client)
+    finally:
+        namespace.update(saved)
+
+    assert changed
+    assert len(db.upserts) == 2
+    assert "/deployments/gpt-4.1/" in db.upserts[0][0]["endpoint"]
+    assert "/deployments/gpt-41-std/" in db.upserts[1][0]["endpoint"]

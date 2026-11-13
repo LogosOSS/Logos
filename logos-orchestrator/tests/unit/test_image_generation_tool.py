@@ -42,6 +42,7 @@ def azure_rows(monkeypatch):
             "model_id": 2,
             "model_name": "gpt-image-1.5",
             "endpoint": "https://res.openai.azure.com/openai/deployments/img-15/images/generations?api-version=x",
+            "aliases": "image-hq",
         }
     ]
     # Patched through the functions' own globals: the test session may hold
@@ -87,6 +88,11 @@ def test_two_different_image_models_in_one_request_are_refused():
 
 def test_the_header_names_the_image_deployment_on_the_provider(azure_rows):
     headers = azure_image_deployment_headers(8, _payload({"type": "image_generation", "model": "gpt-image-1.5"}))
+    assert headers == {AZURE_IMAGE_DEPLOYMENT_HEADER: "img-15"}
+
+
+def test_an_image_model_alias_resolves_to_the_canonical_deployment(azure_rows):
+    headers = azure_image_deployment_headers(8, _payload({"type": "image_generation", "model": "IMAGE-HQ"}))
     assert headers == {AZURE_IMAGE_DEPLOYMENT_HEADER: "img-15"}
 
 

@@ -157,9 +157,21 @@ def _deployment_changed_at(deployment: Dict[str, Any]) -> Optional[datetime.date
 
 
 def needs_probe(known: Optional[Dict[str, Any]], deployments: List[Dict[str, Any]], now: datetime.datetime) -> bool:
-    """Whether a model's stored Batch answer is missing, stale, or older than its deployments."""
+    """Whether a model's stored Batch answer is missing, stale, or no longer matches its deployments.
+
+    A positive answer also expires when one of the batch deployments it names
+    is gone from the provider: forwarded batches would otherwise keep naming a
+    deleted deployment until the TTL runs out.
+    """
     if not known or known.get("source") != "probe":
         return True
+    current = {str(dep.get("id")) for dep in deployments}
+    if known.get("eligible"):
+        recorded = set(known.get("batch_deployment_ids") or [])
+        if known.get("batch_deployment"):
+            recorded.add(str(known["batch_deployment"]))
+        if not recorded or not recorded <= current:
+            return True
     checked_at = known.get("checked_at")
     if not isinstance(checked_at, datetime.datetime):
         return True
@@ -206,24 +218,31 @@ async def probe_provider(
         if model_id is None or not needs_probe(support.get(model_id), deps, now):
             continue
         operation = classify_azure_operation(model_name).suffix
-        eligible: Optional[bool] = False
-        batch_deployment: Optional[str] = None
+        # Every deployment is probed, not just until the first acceptance: each
+        # confirmed batch deployment has to be kept out of interactive routing.
+        accepted: List[str] = []
+        inconclusive = False
         details: List[str] = []
         for dep in sorted(deps, key=lambda d: str(d["id"])):
             answer, detail = await probe_deployment(provider, str(dep["id"]), operation, client)
             details.append(f"{dep['id']}: {detail}")
             if answer:
-                eligible, batch_deployment = True, str(dep["id"])
-                break
-            if answer is None:
-                eligible = None
+                accepted.append(str(dep["id"]))
+            elif answer is None:
+                inconclusive = True
         probed += 1
+        eligible: Optional[bool] = True if accepted else (None if inconclusive else False)
         if eligible is None:
             # Nothing conclusive: keep what was known and try again next pass.
             logger.info("Batch probe of %s on %s was inconclusive: %s", model_name, provider.get("name"), details)
             continue
         with DBManager() as db:
             db.record_model_batch_probe(
-                int(provider["id"]), model_id, bool(eligible), batch_deployment, " | ".join(details)
+                int(provider["id"]),
+                model_id,
+                bool(eligible),
+                accepted[0] if accepted else None,
+                " | ".join(details),
+                batch_deployment_ids=accepted,
             )
     return probed

@@ -3103,6 +3103,7 @@ class DBManager:
                               detail = EXCLUDED.detail,
                               checked_at = EXCLUDED.checked_at,
                               batch_deployment = NULL,
+                              batch_deployment_ids = '[]'::jsonb,
                               source = 'refusal'
                 """),
             {
@@ -3121,23 +3122,28 @@ class DBManager:
         eligible: bool,
         batch_deployment: Optional[str] = None,
         detail: str = "",
+        batch_deployment_ids: Optional[List[str]] = None,
     ) -> None:
         """Store what probing the model's deployments for Batch found.
 
         ``batch_deployment`` is the deployment the provider's Batch API
         accepted, which forwarded batch files are rewritten to; it is only kept
-        for an eligible model.
+        for an eligible model. ``batch_deployment_ids`` are all deployments the
+        Batch API accepted; none of them may serve interactive requests.
         """
+        ids = sorted(set(batch_deployment_ids or ([batch_deployment] if batch_deployment else [])))
         self.session.execute(
             text("""
                 INSERT INTO provider_model_batch_eligibility
-                    (provider_id, model_id, eligible, detail, checked_at, batch_deployment, source)
-                VALUES (:pid, :mid, :eligible, :detail, :now, :deployment, 'probe')
+                    (provider_id, model_id, eligible, detail, checked_at, batch_deployment,
+                     batch_deployment_ids, source)
+                VALUES (:pid, :mid, :eligible, :detail, :now, :deployment, CAST(:ids AS jsonb), 'probe')
                 ON CONFLICT (provider_id, model_id)
                 DO UPDATE SET eligible = EXCLUDED.eligible,
                               detail = EXCLUDED.detail,
                               checked_at = EXCLUDED.checked_at,
                               batch_deployment = EXCLUDED.batch_deployment,
+                              batch_deployment_ids = EXCLUDED.batch_deployment_ids,
                               source = 'probe'
                 """),
             {
@@ -3145,6 +3151,7 @@ class DBManager:
                 "mid": int(model_id),
                 "eligible": bool(eligible),
                 "deployment": (batch_deployment or None) if eligible else None,
+                "ids": json.dumps(ids if eligible else []),
                 "detail": (detail or "")[:500],
                 "now": datetime.datetime.now(datetime.timezone.utc),
             },
@@ -3160,7 +3167,7 @@ class DBManager:
         """
         rows = self.session.execute(
             text("""
-                SELECT model_id, eligible, batch_deployment, source, detail, checked_at
+                SELECT model_id, eligible, batch_deployment, batch_deployment_ids, source, detail, checked_at
                 FROM provider_model_batch_eligibility
                 WHERE provider_id = :pid
                   AND (source = 'probe' OR checked_at > :now - make_interval(days => :ttl))
@@ -3245,7 +3252,12 @@ class DBManager:
         rows = self.session.execute(
             text("""
                 SELECT m.id AS model_id, m.name AS model_name, mp.endpoint AS endpoint,
-                       CASE WHEN be.eligible THEN be.batch_deployment END AS batch_deployment
+                       CASE WHEN be.eligible THEN be.batch_deployment END AS batch_deployment,
+                       (
+                           SELECT string_agg(a.alias, ', ' ORDER BY a.alias)
+                           FROM model_aliases a
+                           WHERE a.model_id = m.id
+                       ) AS aliases
                 FROM model_provider mp
                      JOIN models m ON m.id = mp.model_id
                      LEFT JOIN provider_model_batch_eligibility be

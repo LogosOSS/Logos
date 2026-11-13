@@ -95,7 +95,9 @@ def azure_image_deployment_headers(provider_id: int, payload: Any) -> Dict[str, 
         logger.exception("Could not look up the image deployment on provider %s", provider_id)
         return {}
     for row in rows:
-        if str(row.get("model_name") or "").lower() != model_name:
+        # The tool may name the image model by an alias the key is allowed to
+        # use; the deployment belongs to the canonical model.
+        if model_name not in _deployment_names(row):
             continue
         deployment = extract_azure_deployment_name(str(row.get("endpoint") or ""))
         if deployment:

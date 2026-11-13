@@ -16,6 +16,8 @@
          * batch_deployment: the deployment id the provider's Batch API accepts
            for this model, which a forwarded batch file is rewritten to. NULL
            when no deployment of the model accepted a batch.
+         * batch_deployment_ids: every deployment of the model the Batch API
+           accepted. None of them may serve interactive requests.
          * source: how the row was learned — 'probe' (the deployment sync
            tried a batch creation) or 'refusal' (a real batch was refused). -->
     <changeSet id="072-batch-deployment-support" author="wasnertobias">
@@ -24,6 +26,9 @@
         </preConditions>
         <addColumn tableName="provider_model_batch_eligibility">
             <column name="batch_deployment" type="TEXT"/>
+            <column name="batch_deployment_ids" type="JSONB" defaultValueComputed="'[]'::jsonb">
+                <constraints nullable="false"/>
+            </column>
             <column name="source" type="TEXT" defaultValue="refusal">
                 <constraints nullable="false"/>
             </column>
@@ -35,6 +40,7 @@
         <rollback>
             <sql>ALTER TABLE provider_model_batch_eligibility DROP CONSTRAINT IF EXISTS ck_pmb_eligibility_source;</sql>
             <dropColumn tableName="provider_model_batch_eligibility" columnName="source"/>
+            <dropColumn tableName="provider_model_batch_eligibility" columnName="batch_deployment_ids"/>
             <dropColumn tableName="provider_model_batch_eligibility" columnName="batch_deployment"/>
         </rollback>
     </changeSet>

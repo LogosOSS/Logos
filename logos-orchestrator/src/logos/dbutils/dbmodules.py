@@ -529,6 +529,7 @@ class ProviderModelBatchEligibility(Base):
         default=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
     batch_deployment = Column(Text)
+    batch_deployment_ids = Column(JSON, nullable=False, default=list)
     source = Column(Text, nullable=False, default="refusal")
 
 

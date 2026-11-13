@@ -177,6 +177,24 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
+def _known_batch_deployments(provider_id: int) -> set:
+    """Every deployment id of the provider that its Batch API accepted."""
+    try:
+        with DBManager() as db:
+            support = db.get_batch_model_support(int(provider_id))
+    except Exception:  # noqa: BLE001 - without it every deployment counts as interactive
+        logger.exception("Azure deployment sync: could not read batch deployments of provider %s", provider_id)
+        return set()
+    known: set = set()
+    for row in support.values():
+        if not row.get("eligible"):
+            continue
+        known.update(str(item) for item in (row.get("batch_deployment_ids") or []))
+        if row.get("batch_deployment"):
+            known.add(str(row["batch_deployment"]))
+    return known
+
+
 def plan_sync(
     host: str, deployments: List[Dict[str, Any]], batch_deployments: Optional[set] = None
 ) -> List[Dict[str, str]]:
@@ -340,16 +358,7 @@ class AzureDeploymentSyncService:
             logger.exception("Azure deployment sync: fetch failed for provider %s (%s)", pid, name)
             return False, False
 
-        try:
-            with DBManager() as db:
-                known_batch = {
-                    str(row["batch_deployment"])
-                    for row in db.get_batch_model_support(int(pid)).values()
-                    if row.get("eligible") and row.get("batch_deployment")
-                }
-        except Exception:  # noqa: BLE001 - without it every deployment counts as interactive
-            logger.exception("Azure deployment sync: could not read batch deployments of provider %s", pid)
-            known_batch = set()
+        known_batch = _known_batch_deployments(pid)
         planned = plan_sync(host, raw, known_batch)
         try:
             with DBManager() as db:
@@ -371,6 +380,18 @@ class AzureDeploymentSyncService:
                 await probe_provider(provider, raw, client)
             except Exception:  # noqa: BLE001 - probing must never fail the sync
                 logger.exception("Azure deployment sync: batch probe failed for provider %s (%s)", pid, name)
+            # The probe may have found batch deployments the plan above still
+            # routed interactive traffic to. Re-plan in the same pass so that
+            # does not wait for the next sync.
+            replanned = plan_sync(host, raw, _known_batch_deployments(pid))
+            if replanned != planned:
+                try:
+                    with DBManager() as db:
+                        second = db.sync_azure_deployments(pid, replanned)
+                    planned = replanned
+                    result = {**result, "changed": bool(result["changed"] or second["changed"])}
+                except Exception:  # noqa: BLE001
+                    logger.exception("Azure deployment sync: re-plan upsert failed for provider %s (%s)", pid, name)
 
         newly = result["new_models"]
         logger.info(
