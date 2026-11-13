@@ -15,3 +15,11 @@ export function notificationTarget(item: AppNotification) {
   if (model === null || benchmark === null) return null;
   return { commands: ['/models', model, 'details'], queryParams: { tab: 'performance', benchmark } };
 }
+
+
+/** Older inbox records retain their original body; translate the technical recovery code when rendering. */
+export function notificationBody(item: AppNotification): string | null {
+  if (item.type !== 'benchmark_result_ready') return item.body;
+  return item.body?.replace('Status: interrupted_recovered.', 'Benchmark interrupted; worker configuration recovered.')
+    .replace('Status: interrupted_recovery.', 'Benchmark interrupted; worker recovery in progress.') ?? null;
+}

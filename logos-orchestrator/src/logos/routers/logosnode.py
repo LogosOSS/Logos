@@ -12,13 +12,19 @@ from fastapi.responses import JSONResponse
 
 import logos.main as _main
 from logos.capacity.capacity_planner import RestoreRecordError
+from logos.client_address import is_trusted_proxy
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import (
+    AdminReleaseNodeMaintenanceRequest,
     LogosKeyModel,
     LogosNodeApplyLanesRequest,
     LogosNodeAuthRequest,
     LogosNodeCalibrationReservationRequest,
     LogosNodeClearUnsupportedRequest,
+    LogosNodeConfigGetRequest,
+    LogosNodeConfigImportRequest,
+    LogosNodeConfigReplaceRequest,
+    LogosNodeConfigRequest,
     LogosNodeDeleteLaneRequest,
     LogosNodeDeploymentReport,
     LogosNodeInvalidateCalibrationRequest,
@@ -44,6 +50,7 @@ from logos.main import (
 )
 from logos.model_profile_store import shared_profiles_enabled
 from logos.model_profile_sync import profile_sync
+from logos.node_config import SYNC_NODE_CONFIG_ACTION, conflict_warnings, entry_errors, name_errors
 from logos.notifications import emit_notification
 from logos.notifications.deployment import deployment_notification
 from logos.role_auth import require_logos_admin_key
@@ -192,8 +199,7 @@ def _is_tls_request(request: Request) -> bool:
     if request.url.scheme == "https":
         return True
     forwarded = request.headers.get("x-forwarded-proto", "")
-    forwarded_values = [item.strip().lower() for item in forwarded.split(",") if item.strip()]
-    return "https" in forwarded_values
+    return bool(request.client and is_trusted_proxy(request.client.host) and forwarded.strip().lower() == "https")
 
 
 def _require_tls_request(request: Request) -> None:
@@ -230,8 +236,9 @@ def _is_tls_websocket(websocket: WebSocket) -> bool:
     if websocket.url.scheme in {"wss", "https"}:
         return True
     forwarded = websocket.headers.get("x-forwarded-proto", "")
-    forwarded_values = [item.strip().lower() for item in forwarded.split(",") if item.strip()]
-    return "https" in forwarded_values or "wss" in forwarded_values
+    return bool(
+        websocket.client and is_trusted_proxy(websocket.client.host) and forwarded.strip().lower() in {"https", "wss"}
+    )
 
 
 @router.post("/logosdb/providers/logosnode/register", tags=["logosnode"])
@@ -390,6 +397,24 @@ async def _maintenance_provider_id(data: LogosNodeMaintenanceRequest, request: R
     return int(provider["id"])
 
 
+@router.post("/logosdb/providers/logosnode/node-maintenance/admin/status", tags=["admin"])
+async def logosnode_maintenance_admin_status(data: LogosKeyModel):
+    """List node leases for an operator authenticated with a Logos admin key."""
+    _require_root_access(data.logos_key)
+    if _main._node_maintenance is None:
+        raise HTTPException(status_code=503, detail="Node maintenance is unavailable")
+    return {"node_maintenance": _main._node_maintenance.admin_status()}
+
+
+@router.post("/logosdb/providers/logosnode/node-maintenance/admin/release", tags=["admin"])
+async def logosnode_maintenance_admin_release(data: AdminReleaseNodeMaintenanceRequest):
+    """Revoke the selected node lease using a Logos admin key."""
+    _require_root_access(data.logos_key)
+    from logos.routers.internal import release_node_maintenance
+
+    return release_node_maintenance(data)
+
+
 @router.post("/logosdb/providers/logosnode/node-maintenance/cordon", tags=["logosnode"])
 async def logosnode_maintenance_cordon(data: LogosNodeMaintenanceRequest, request: Request):
     """Cordon the caller's node for the replacement of its container, or renew the cordon.
@@ -427,9 +452,12 @@ async def logosnode_maintenance_report(data: LogosNodeDeploymentReport, request:
     Answers ``accepted`` once the notification is stored at the application server. The notification is named by the
     node and the deployment, and the application server stores one notification per name, so a repeated report is
     harmless: it is answered ``accepted`` as well and adds no second inbox item. If the notification could not be
-    delivered the answer is a 503, so the caller reports again.
+    delivered the answer is a 503, so the caller reports again within its hourly budget. Reports without a granted
+    lease on this node, or beyond that budget, are dropped without a notification.
     """
     provider_id = await _maintenance_provider_id(data, request)
+    if not _main._node_maintenance.accept_report(provider_id, data.deployment_id):
+        return {"status": "dropped"}
     notification = deployment_notification(_main._node_maintenance.node_name(provider_id), data)
     event_key = f"deployment:{provider_id}:{data.deployment_id}"
     if not await emit_notification(**notification, event_key=event_key):
@@ -841,3 +869,113 @@ async def logosnode_reset_profiles(data: LogosNodeResetProfilesRequest):
     if reset:
         await profile_sync.push_profiles(data.provider_id, reset)
     return {"provider_id": data.provider_id, "reset": reset, "shared_profiles": shared_profiles_enabled()}
+
+
+def _load_node_config(provider_id: int) -> Dict[str, Any] | None:
+    """The stored configuration of a node, or None when the node is unknown."""
+    with DBManager() as db:
+        if db.get_provider(provider_id) is None:
+            return None
+        return db.get_node_config(provider_id)
+
+
+def _require_admin_user(logos_key: str) -> int:
+    """The id of the Logos admin the key belongs to."""
+    with DBManager() as db:
+        require_logos_admin_key(logos_key, db)
+        return int(db.get_user_by_api_key(logos_key)["id"])
+
+
+async def _push_node_config(provider_id: int) -> None:
+    """Send a node's stored configuration to a worker that applies it."""
+    if not _main._logosnode_registry.supports_action(provider_id, SYNC_NODE_CONFIG_ACTION):
+        return
+    try:
+        config = await asyncio.to_thread(_load_node_config, provider_id)
+        await _main._logosnode_registry.send_command(
+            provider_id, SYNC_NODE_CONFIG_ACTION, params=config, timeout_seconds=30
+        )
+    except Exception:
+        # The worker keeps its current configuration until the next push.
+        logger.warning("Failed to push node config to provider %s", _resolve_provider_name(provider_id), exc_info=True)
+
+
+@router.post("/logosdb/providers/logosnode/node-config", tags=["logosnode"])
+async def logosnode_node_config(data: LogosNodeConfigRequest, request: Request):
+    """The configuration a worker starts with, before it starts any lane."""
+    _require_tls_request(request)
+    provider_id = int((await asyncio.to_thread(_logosnode_provider_for_key, data.shared_key))["id"])
+    return await asyncio.to_thread(_load_node_config, provider_id)
+
+
+@router.post("/logosdb/providers/logosnode/node-config/import", tags=["logosnode"])
+async def logosnode_node_config_import(data: LogosNodeConfigImportRequest, request: Request):
+    """Store a worker's YAML models once; later calls change nothing.
+
+    Stored as given, so calibration keys stay valid. Differences between a
+    model's capability and overrides are only reported.
+    """
+    _require_tls_request(request)
+    provider_id = int((await asyncio.to_thread(_logosnode_provider_for_key, data.shared_key))["id"])
+    errors = name_errors(data.entries)
+    if errors:
+        return admin_error_response(400, "; ".join(errors))
+    rows = [{**entry.model_dump(), "model_name": entry.model_name.strip()} for entry in data.entries]
+
+    def _import() -> bool:
+        with DBManager() as db:
+            if not db.claim_yaml_import(provider_id):
+                db.session.rollback()
+                return False
+            db.replace_node_config(provider_id, rows, 0, None, "yaml_import")
+            db.session.commit()
+            return True
+
+    imported = await asyncio.to_thread(_import)
+    warnings = conflict_warnings(data.entries) if imported else []
+    for warning in warnings:
+        logger.warning("Node config import for provider %s: %s", provider_id, warning)
+    return {"imported": imported, "warnings": warnings}
+
+
+@router.post("/logosdb/providers/logosnode/node-config/get", tags=["logosnode"])
+async def logosnode_node_config_get(data: LogosNodeConfigGetRequest):
+    """A node's configured models and revision."""
+    await asyncio.to_thread(_require_root_access, data.logos_key)
+    config = await asyncio.to_thread(_load_node_config, data.provider_id)
+    if config is None:
+        return admin_error_response(404, f"Provider {data.provider_id} not found")
+    return {"provider_id": data.provider_id, **config}
+
+
+@router.post("/logosdb/providers/logosnode/node-config/replace", tags=["logosnode"])
+async def logosnode_node_config_replace(data: LogosNodeConfigReplaceRequest):
+    """Replace a node's configured models.
+
+    expected_revision is the revision the admin edited; another save in the
+    meantime answers 409 with the current one.
+    """
+    admin_id = await asyncio.to_thread(_require_admin_user, data.logos_key)
+    errors = entry_errors(data.entries)
+    if errors:
+        return admin_error_response(400, "; ".join(errors))
+    rows = [{**entry.model_dump(), "model_name": entry.model_name.strip()} for entry in data.entries]
+
+    def _replace() -> tuple[str, int]:
+        with DBManager() as db:
+            if db.get_provider(data.provider_id) is None:
+                return "missing", 0
+            revision = db.replace_node_config(data.provider_id, rows, data.expected_revision, admin_id, "ui")
+            if revision is None:
+                db.session.rollback()
+                return "stale", db.get_node_config(data.provider_id)["revision"]
+            db.session.commit()
+            return "saved", revision
+
+    outcome, revision = await asyncio.to_thread(_replace)
+    if outcome == "missing":
+        return admin_error_response(404, f"Provider {data.provider_id} not found")
+    if outcome == "stale":
+        return admin_error_response(409, f"Configuration changed meanwhile (revision {revision}); reload it")
+    await _push_node_config(data.provider_id)
+    return {"provider_id": data.provider_id, "config_revision": revision}

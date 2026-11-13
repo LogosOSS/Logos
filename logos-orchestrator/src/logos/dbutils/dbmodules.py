@@ -162,7 +162,8 @@ class Provider(Base):
     api_key = Column(Text, nullable=True)
     ollama_admin_url = Column(Text, default="")
     total_vram_mb = Column(Integer, nullable=True)
-    parallel_capacity = Column(Integer, default=20)
+    # Optional configured capacity; logosnode admission uses live lane signals.
+    parallel_capacity = Column(Integer, nullable=True)
     keep_alive_seconds = Column(Integer, default=300)
     max_loaded_models = Column(Integer, default=3)
     updated_at = Column(
@@ -251,6 +252,11 @@ class LogEntry(Base):
     # rows; FALSE for a request the limiter rejected after scheduling. The
     # usage window counts everything except explicit FALSE.
     rate_limit_admitted = Column(Boolean, nullable=True)
+    # Answer reuse: TRUE when the answer came from answer_cache (no model
+    # call; cache_entry_id names the entry), FALSE when a lookup ran and found
+    # nothing reusable, NULL when no lookup ran or for pre-migration rows.
+    cache_hit = Column(Boolean, nullable=True)
+    cache_entry_id = Column(Integer, nullable=True)
     was_cold_start = Column(Boolean, default=False)
     load_duration_ms = Column(Numeric)
     available_vram_mb = Column(Integer)
@@ -502,16 +508,19 @@ class ProviderModelBatchEligibility(Base):
     Azure resource answers its Batch API with a Global-Batch deployment for
     each model it offers for that, and a model that only exists as a Standard
     deployment cannot be batched there no matter how capable the resource
-    looks. The Batch API does not publish a model list for its batch endpoint,
-    so the knowledge is learned from the provider's own refusals (a batch
-    creation or a failed batch naming the unsupported model) and tracked here —
-    one row per model, with the detail of what the provider said.
+    looks. Neither the Batch API nor the data-plane deployment listing says
+    which deployment is of a Batch SKU, so the knowledge comes from the
+    provider itself: the Azure deployment sync probes each deployment with a
+    batch creation (``source = 'probe'``), and a refused real batch is recorded
+    as well (``source = 'refusal'``) — one row per model, with the detail of
+    what the provider said. ``batch_deployment`` is the deployment the Batch
+    API accepted, which a forwarded batch file is rewritten to.
 
-    Absence means "unknown", which routes to the provider as before (its error
-    is then passed through and can teach this table); an ``eligible = false``
-    row is what moves the batch to Logos execution. Rows expire after a TTL so
-    a model the provider adds to Batch later is picked up automatically, at the
-    price of one more failed batch.
+    On Azure only an ``eligible = true`` row with a batch deployment lets a
+    batch be forwarded; absence means "unknown" and the batch runs in Logos.
+    On other providers absence routes to the provider as before and an
+    ``eligible = false`` row moves the batch to Logos. Refusal rows expire
+    after a TTL; probe rows are replaced by the next probe.
     """
 
     __tablename__ = "provider_model_batch_eligibility"
@@ -527,6 +536,9 @@ class ProviderModelBatchEligibility(Base):
         nullable=False,
         default=lambda: datetime.datetime.now(datetime.timezone.utc),
     )
+    batch_deployment = Column(Text)
+    batch_deployment_ids = Column(JSON, nullable=False, default=list)
+    source = Column(Text, nullable=False, default="refusal")
 
 
 class BatchLineResult(Base):
@@ -563,3 +575,24 @@ class NightlyBenchmark(Base):
     report = Column(JSON, nullable=False, default=list)
     recovery = Column(JSON)
     updated_at = Column(TIMESTAMP(timezone=True))
+
+
+class PermissionAuditLog(Base):
+    """Read-only permission history written by Postgres triggers, without foreign keys."""
+
+    __tablename__ = "permission_audit_log"
+    id = Column(BigInteger, primary_key=True)
+    occurred_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    actor_user_id = Column(Integer)
+    actor_role = Column(Text, nullable=False)
+    team_id = Column(Integer)
+    team_name = Column(Text)
+    api_key_id = Column(Integer)
+    scope_type = Column(Text, nullable=False)
+    scope_id = Column(Integer, nullable=False)
+    scope_name = Column(Text)
+    target_type = Column(Text, nullable=False)
+    target_id = Column(Integer, nullable=False)
+    target_name = Column(Text)
+    action = Column(Text, nullable=False)
+    cause = Column(Text, nullable=False)

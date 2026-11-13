@@ -29,6 +29,7 @@ from logos_worker_node.calibration import (
 )
 from logos_worker_node.metal import probe_device_info, read_wired_memory_mb, resolve_metal_vllm_binary
 from logos_worker_node.models import MetalConfig
+from logos_worker_node.vllm_compat import strip_host_args
 from logos_worker_node.vllm_process import resolve_generic_vllm_binary
 
 logger = logging.getLogger(__name__)
@@ -139,6 +140,8 @@ def _build_metal_calibration_cmd(
     ``vllm_prefix`` is one or more tokens (e.g. ``[sys.executable, "-m",
     "vllm"]`` for the module-fallback form), not a single executable path.
     """
+    if host != "127.0.0.1":
+        raise ValueError("Model servers must bind to 127.0.0.1")
     model = plan["model"]
     cmd = [
         *vllm_prefix,
@@ -191,11 +194,8 @@ def _build_metal_calibration_cmd(
         mm_processor_cache_gb = _DEFAULT_MM_PROCESSOR_CACHE_GB
     cmd.extend(["--mm-processor-cache-gb", str(mm_processor_cache_gb)])
     extra_args = plan.get("extra_args") or []
-    cmd.extend(str(a) for a in extra_args)
-    # Repeat the bind settings AFTER the extras, mirroring
-    # MetalVllmProcessHandle._build_cmd: argparse keeps the last occurrence,
-    # so a --host/--port smuggled in through extra_args would otherwise
-    # override the loopback bind and expose the unauthenticated API.
+    cmd.extend(strip_host_args(extra_args))
+    # Keep the bind settings last, matching MetalVllmProcessHandle._build_cmd.
     cmd.extend(["--host", host, "--port", str(port)])
     return cmd
 
@@ -330,7 +330,7 @@ def calibrate_model_metal(
     model = plan["model"]
     _reset_calibration_log(log_dir, model)
     host = "127.0.0.1"
-    base_url = f"http://{host}:{port}"
+    base_url = f"http://{host}:{port}"  # NOSONAR - the probe talks to its own vLLM process on loopback
     log_path = log_dir / f"{model.replace('/', '__')}.log"
     # "model_kind" is an operator override (engines.vllm.model_overrides);
     # "_detected_model_kind" is the HF-precheck's auto-classification

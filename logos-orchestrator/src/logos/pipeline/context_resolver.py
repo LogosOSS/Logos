@@ -29,6 +29,8 @@ from logos.benchmarks.guidellm_runner import credential_transport_is_secure
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.types import cloud_auth_header, cloud_protocol_headers
 from logos.decision import lane_model_override
+from logos.image_generation_tool import azure_image_deployment_headers
+from logos.inference_paths import require_inference_path
 from logos.logosnode_registry import LogosNodeRuntimeRegistry
 from logos.pipeline.effort_normalization import normalize_reasoning_effort
 from logos.request_content import is_multipart_payload, set_payload_field
@@ -80,6 +82,10 @@ class ExecutionContext:
     # and content type — Anthropic's mandatory ``anthropic-version``. Empty for
     # every other provider.
     protocol_headers: Dict[str, str] = field(default_factory=dict)
+    # The provider's cloud flavour ("azure", "openai", ...) for cloud
+    # providers; None for worker nodes. Azure needs extra request headers for
+    # some built-in tools (see ``image_generation_tool``).
+    cloud_provider_type: Optional[str] = None
 
 
 class ContextResolver:
@@ -393,6 +399,7 @@ class ContextResolver:
                 if provider_type == "cloud"
                 else {}
             ),
+            cloud_provider_type=cloud_type if provider_type == "cloud" else None,
         )
 
     @staticmethod
@@ -415,6 +422,11 @@ class ContextResolver:
         headers.update(getattr(context, "protocol_headers", None) or {})
         if context.auth_header and context.auth_value:
             headers[context.auth_header] = context.auth_value
+        # Azure runs the Responses image tool only when the image model's
+        # deployment is named in a header; the tool entry in the body is not
+        # enough.
+        if context.provider_type == "cloud" and context.cloud_provider_type == "azure":
+            headers.update(azure_image_deployment_headers(context.provider_id, payload))
 
         # Claude Code's billing/telemetry marker on the system prompt varies
         # by CLI version, subagent and cron run, fragmenting an upstream's
@@ -423,6 +435,13 @@ class ContextResolver:
         # vLLM lane, another Logos instance), which never runs the
         # translation below. See strip_billing_header_from_payload.
         payload = strip_billing_header_from_payload(payload)
+
+        # A forwarded form carries its fields twice: in the JSON view the
+        # pipeline authorizes and rewrites, and in the form the provider
+        # receives. Keep the form's model the one the JSON view names, so the
+        # model sent is always the model that was authorized.
+        if is_multipart_payload(payload):
+            payload = set_payload_field(payload, "model", payload.get("model") or context.model_name)
 
         # An inbound Anthropic Messages request bound for an upstream without a
         # Messages route becomes a chat/completions or Responses request here.
@@ -664,6 +683,8 @@ class ContextResolver:
         an Azure deployment keeps the operation its stored endpoint names, and
         the dialect follows from that instead.
         """
+        if request_path:
+            require_inference_path(request_path)
         if endpoint_fallback and endpoint_fallback.startswith("http"):
             return ContextResolver._align_azure_operation(endpoint_fallback, request_path)
         base = (base_url or "").rstrip("/")

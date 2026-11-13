@@ -14,6 +14,8 @@ import org.springframework.transaction.annotation.Transactional;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import de.tum.cit.aet.logos.logoswebservice.audit.PermissionAuditContext;
+import de.tum.cit.aet.logos.logoswebservice.configuration.ModelNames;
 import de.tum.cit.aet.logos.logoswebservice.identity.ObjectivePriority;
 
 @Service
@@ -40,12 +42,29 @@ public class ExportImportService {
         "log_entry", "token_types", "usage_tokens", "token_prices", "jobs"
     );
 
+    /**
+     * The PostgreSQL driver's {@code PGobject}, looked up at runtime: the
+     * driver is a runtime-only dependency, so the type is not on the compile
+     * classpath. Null when the driver is absent, in which case no value is one.
+     */
+    private static final Class<?> PG_OBJECT = loadOptionalClass("org.postgresql.util.PGobject");
+
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
+    private final PermissionAuditContext permissionAudit;
 
-    public ExportImportService(JdbcTemplate jdbc, ObjectMapper objectMapper) {
+    public ExportImportService(JdbcTemplate jdbc, ObjectMapper objectMapper, PermissionAuditContext permissionAudit) {
+        this.permissionAudit = permissionAudit;
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
+    }
+
+    static Class<?> loadOptionalClass(String name) {
+        try {
+            return Class.forName(name, false, ExportImportService.class.getClassLoader());
+        } catch (ClassNotFoundException e) {
+            return null;
+        }
     }
 
     private static String safeTable(String table) {
@@ -58,7 +77,7 @@ public class ExportImportService {
     public Map<String, Object> export() {
         Map<String, Object> data = new LinkedHashMap<>();
         for (String table : TABLES) {
-            List<Map<String, Object>> rows = jdbc.queryForList("SELECT * FROM " + safeTable(table));
+            List<Map<String, Object>> rows = jdbc.queryForList("SELECT * FROM " + safeTable(table)); // NOSONAR table name from the TABLES allow-list (safeTable); not bindable
             data.put(table, decodeJsonbColumns(rows));
         }
         return Map.of("result", data);
@@ -89,7 +108,7 @@ public class ExportImportService {
      * JDBC jar being on the compile classpath.
      */
     private Object decodeJsonbValue(Object value) {
-        if (value == null || !"org.postgresql.util.PGobject".equals(value.getClass().getName())) {
+        if (PG_OBJECT == null || !PG_OBJECT.isInstance(value)) {
             return value;
         }
         try {
@@ -109,7 +128,18 @@ public class ExportImportService {
 
     @Transactional
     public Map<String, Object> importData(Map<String, Object> jsonData) {
+        permissionAudit.withCause("direct", () -> replaceData(jsonData));
+        return Map.of("result", "Import successful");
+    }
+
+    private void replaceData(Map<String, Object> jsonData) {
         requireTables(jsonData);
+        // Validate before detaching links or replacing any existing rows.
+        List<Map<String, Object>> models = normalizeImportRows("models", (List<?>) jsonData.get("models"));
+        for (Map<String, Object> model : models) {
+            Object name = model.get("name");
+            ModelNames.rejectControlCharacters(name == null ? null : String.valueOf(name));
+        }
         // Snapshot (session_id → team_id + repo_slug) so linked analysis
         // sessions can be reattached after truncate replaces repository rows.
         List<Map<String, Object>> sessionLinks = jdbc.queryForList("""
@@ -121,13 +151,13 @@ public class ExportImportService {
         try {
             for (String table : TABLES) {
                 List<?> rows = (List<?>) jsonData.getOrDefault(table, List.of());
-                jdbc.execute("TRUNCATE TABLE " + safeTable(table) + " CASCADE");
+                jdbc.execute("TRUNCATE TABLE " + safeTable(table) + " CASCADE"); // NOSONAR table name from the TABLES allow-list (safeTable); not bindable
                 List<Map<String, Object>> normalized = normalizeImportRows(table, rows);
                 if (!normalized.isEmpty()) {
                     try {
                         String rowsJson = objectMapper.writeValueAsString(normalized);
                         jdbc.update(
-                            "INSERT INTO " + safeTable(table)
+                            "INSERT INTO " + safeTable(table) // NOSONAR table name from the TABLES allow-list (safeTable); not bindable
                             + " SELECT * FROM jsonb_populate_recordset(null::" + safeTable(table) + ", ?::jsonb)",
                             rowsJson
                         );
@@ -143,7 +173,6 @@ public class ExportImportService {
         restoreAgentSessionRepositoryLinks(sessionLinks);
         sanitizeImportedAnalysisSessionLinks();
         resetSequences();
-        return Map.of("result", "Import successful");
     }
 
     static void requireTables(Map<String, Object> jsonData) {
@@ -325,7 +354,7 @@ public class ExportImportService {
                 "SELECT pg_get_serial_sequence(?, 'id')", String.class, table);
             if (seqName == null) continue;
             Long maxId = jdbc.queryForObject(
-                "SELECT COALESCE(MAX(id), 0) FROM " + safeTable(table), Long.class);
+                "SELECT COALESCE(MAX(id), 0) FROM " + safeTable(table), Long.class); // NOSONAR table name from the TABLES allow-list (safeTable); not bindable
             jdbc.queryForObject("SELECT setval(?, ?, false)", Long.class, seqName, maxId == null ? 1L : maxId + 1);
         }
     }

@@ -1,0 +1,40 @@
+<section class="deployed" aria-label="Currently deployed configuration">
+  <header><h4>{{ providerName() }}</h4><span class="worker-state">{{ !state() && !error() ? 'Checking…' : deployment()?.available ? (deployment()?.maintenance ? 'Benchmark in progress' : 'Active') : 'Unavailable' }}</span></header>
+  @if (error()) { <p role="alert">Could not verify the worker configuration.</p> }
+  @else if (!state()) { <p role="status">Reading worker configuration…</p> }
+  @else if (!deployment()?.available) { <span class="sr-only" role="status">Worker telemetry unavailable · configuration unverified</span> }
+  @else if (deployment()?.maintenance) { <p role="status">Temporary benchmark settings · production confirmation pending</p> }
+  @else {
+    @if (result(); as row) {
+      <div class="deployment-metrics">
+        <div><span>Measured throughput{{ measurement() ? '' : (result()?.run?.configuration?.['nightly'] ? ' · historical' : ' · saved') }}</span><strong>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }} <small>tok/s</small></strong></div>
+        <div><span>{{ row.startingBaseline ? 'Starting baseline' : 'Baseline' }} #{{ row.baselineId ?? 'unavailable' }}</span><strong>{{ row.before === null ? '—' : (row.before | number:'1.1-1') }} <small>tok/s</small></strong></div>
+        <div><span>Change</span><strong>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</strong></div>
+      </div>
+      <p class="deployment-caption"><a [routerLink]="['/models', row.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: row.run.id }">Benchmark #{{ row.run.id }} ↗</a> · {{ row.run.recorded_at | date:'dd MMM yyyy, HH:mm' }}</p>
+    } @else { <p>No complete benchmark matches the active settings.</p> }
+    <p class="key-parameters">@for (parameter of keyParameters(); track parameter.key) { <span>{{ parameter.label }} <strong>{{ parameter.value }}</strong></span> }</p>
+  }
+  @if (state() && deployment()?.available) {
+    <details><summary>Configuration &amp; selection details</summary>
+      @if (result(); as row) {
+        <p>{{ datasetLabel(row.run) }} · {{ row.run.sample_size }} requests. {{ row.comparisonNote }}.</p>
+        <p>{{ measurement() ? 'Saved benchmark measurement, not live throughput.' : 'These settings match a saved run. Its environment could not be verified against current telemetry; a fresh comparison is required.' }}</p>
+      }
+      <p>Worker {{ deployment()?.lane_state ?? 'Unknown' }} · checked {{ deployment()?.observed_at | date:'dd MMM yyyy, HH:mm:ss Z' }}</p>
+      <dl class="parameters">@for (parameter of parameters(); track parameter.key) { <div><dt>{{ parameter.label }}</dt><dd>{{ parameter.value }}</dd></div> }</dl>
+      @if (selection()?.best_observed; as best) {
+        <h5>Highest recorded result · #{{ best.benchmark_id }} · {{ best.throughput | number:'1.1-1' }} tok/s</h5>
+        @for (issue of best.issues; track issue) { <p>{{ issue }}</p> }
+      }
+      @if (selection()?.best_eligible; as best) { <p>Highest result passing comparison checks: #{{ best.benchmark_id }} · {{ best.throughput | number:'1.1-1' }} tok/s. Adoption also requires a fresh improvement over the active baseline.</p> }
+      <details><summary>Why other runs were excluded</summary>
+        @for (comparison of selection()?.comparisons ?? []; track comparison.benchmark_id) {
+          @if (comparison.issues.length) { <p><strong>#{{ comparison.benchmark_id }} · {{ comparison.throughput === null ? 'No complete result' : (comparison.throughput | number:'1.1-1') + ' tok/s' }}</strong><br>{{ comparison.issues.join(' · ') }}</p> }
+        }
+      </details>
+      @if (adoption(); as adopted) { <p>Last confirmed adoption: #{{ adopted.benchmark_id }} · {{ adopted.baseline_throughput | number:'1.1-1' }} → {{ adopted.throughput | number:'1.1-1' }} tok/s.</p> }
+      @else { <p>No automatic adoption has been confirmed for this series.</p> }
+    </details>
+  }
+</section>

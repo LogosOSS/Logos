@@ -2924,6 +2924,35 @@ async def test_stream_logs_stores_concurrency_factor_not_token_count(monkeypatch
     assert handle.max_concurrency == 8
 
 
+async def test_stream_logs_ends_as_cancelled_when_the_lane_stops(monkeypatch) -> None:
+    """Stopping the lane cancels the log task; it must end as cancelled, not as finished."""
+    handle = _handle_with_stub_binary(monkeypatch)
+    silent = asyncio.Event()
+
+    class _FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = self._stdout()
+
+        async def _stdout(self):
+            await silent.wait()
+            yield b""
+
+    handle._process = _FakeProcess()
+    task = asyncio.create_task(handle._stream_logs())
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+
+
+async def test_streaming_pull_yields_nothing() -> None:
+    handle = VllmProcessHandle("lane-test", 19000, WorkerConfig())
+
+    assert [progress async for progress in handle.pull_model_streaming("some/model")] == []
+
+
 def test_startup_failure_keeps_root_exception_before_shutdown_tail():
     handle = VllmProcessHandle("lane-test", 19000, WorkerConfig())
     handle._recent_logs.extend(
@@ -3171,3 +3200,111 @@ def test_resolve_model_snapshot_skips_redundant_original_weights(monkeypatch, tm
     vllm_process.resolve_model_snapshot("meta-llama/Llama-3.1-8B-Instruct", str(tmp_path))
 
     assert calls[0]["ignore_patterns"] == ["original/*"]
+
+
+def test_failure_logs_go_to_a_private_directory(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from logos_worker_node import vllm_process
+
+    log_dir = tmp_path / "logos-vllm-logs"
+    monkeypatch.setattr(vllm_process, "FAILURE_LOG_DIR", log_dir)
+    handle = SimpleNamespace(_recent_logs=["boom"], lane_id="lane-a")
+
+    VllmProcessHandle._persist_failure_logs(handle, "crash")
+
+    assert log_dir.stat().st_mode & 0o777 == 0o700
+    (written,) = log_dir.glob("lane-a_*_crash.log")
+    assert written.read_text(encoding="utf-8") == "boom"
+
+
+def test_failure_logs_refuse_a_planted_symlink(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from logos_worker_node import vllm_process
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    planted = tmp_path / "logos-vllm-logs"
+    planted.symlink_to(elsewhere, target_is_directory=True)
+    monkeypatch.setattr(vllm_process, "FAILURE_LOG_DIR", planted)
+    handle = SimpleNamespace(_recent_logs=["boom"], lane_id="lane-a")
+
+    VllmProcessHandle._persist_failure_logs(handle, "crash")  # logged, not raised
+
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_private_dir_refuses_a_plain_file(tmp_path: Path) -> None:
+    from logos_worker_node import vllm_process
+
+    target = tmp_path / "not-a-dir"
+    target.write_text("x", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        vllm_process._private_dir(target)
+
+
+def test_private_dir_narrows_an_existing_readable_directory(tmp_path: Path) -> None:
+    from logos_worker_node import vllm_process
+
+    target = tmp_path / "logs"
+    target.mkdir(mode=0o755)
+    target.chmod(0o755)
+
+    assert vllm_process._private_dir(target) == target
+    assert target.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o757, 0o777])
+def test_private_dir_refuses_a_directory_others_can_write(tmp_path: Path, mode: int) -> None:
+    from logos_worker_node import vllm_process
+
+    target = tmp_path / "logs"
+    target.mkdir()
+    target.chmod(mode)
+
+    with pytest.raises(OSError):
+        vllm_process._private_dir(target)
+    assert target.stat().st_mode & 0o777 == mode
+
+
+@pytest.mark.parametrize(
+    "domains,expected",
+    [
+        ([], ["logos-media-disabled.invalid"]),
+        (["media.example", "assets.example"], ["media.example", "assets.example"]),
+    ],
+)
+def test_media_domain_flag_is_always_restricted(monkeypatch, domains, expected):
+    handle = VllmProcessHandle(
+        "lane-test", 19000, WorkerConfig(), vllm_engine_config=VllmEngineConfig(allowed_media_domains=domains)
+    )
+    monkeypatch.setattr(handle, "_resolve_vllm_binary", lambda _: ["/tmp/vllm"])
+    lane = LaneConfig(model="test/model", vllm=True, vllm_config=VllmConfig())
+    cmd = handle._build_cmd(lane)
+    assert cmd.count("--allowed-media-domains") == 1
+    assert cmd[cmd.index("--allowed-media-domains") + 1 :] == expected
+    assert not any(arg.startswith("--allowed-local-media-path") for arg in cmd)
+    monkeypatch.setenv("VLLM_MEDIA_URL_ALLOW_REDIRECTS", "1")
+    lane.vllm_config.env_overrides["VLLM_MEDIA_URL_ALLOW_REDIRECTS"] = "1"
+    assert handle._build_env(lane)["VLLM_MEDIA_URL_ALLOW_REDIRECTS"] == "0"
+
+
+@pytest.mark.parametrize("global_args", [False, True])
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--allowed-local-media-path", "/"],
+        ["--allowed-local-media-path=/"],
+        ["--allowed-media-domains", "other.example"],
+        ["--allowed-media-domains=[]"],
+    ],
+)
+def test_extra_args_cannot_override_media_policy(monkeypatch, global_args, args):
+    engine = VllmEngineConfig(global_extra_args=args if global_args else [])
+    handle = VllmProcessHandle("lane-test", 19000, WorkerConfig(), vllm_engine_config=engine)
+    monkeypatch.setattr(handle, "_resolve_vllm_binary", lambda _: ["/tmp/vllm"])
+    lane = LaneConfig(model="test/model", vllm=True, vllm_config=VllmConfig(extra_args=[] if global_args else args))
+    with pytest.raises(ValueError, match="Media access flags are managed"):
+        handle._build_cmd(lane)

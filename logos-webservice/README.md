@@ -41,6 +41,10 @@ docker compose -f docker-compose.dev.yaml up --build
 
 The service starts on port `18082` (direct) and is reachable through Traefik on port `18081` at `/api/*`.
 
+The amd64 runtime image installs Git and SSH through the kernel.org mirror of
+Ubuntu's signed release and security archives. Ubuntu signature verification
+remains enabled. ARM64 retains the Ubuntu ports repositories.
+
 ## Running locally (outside Docker)
 
 Start the database first:
@@ -200,3 +204,57 @@ on `timestamp_request`, so they all count the same requests:
 3. **Add a Traefik route** in `docker-compose.dev.yaml` if the path prefix isn't already covered (check the `logos-webservice` labels block).
 4. **Add a test** — `@SpringBootTest @Import(TestContainersConfig.class)` for integration tests with a real DB; `@WebMvcTest` for controller-layer tests with a mocked service.
 5. **Add SQL seed/cleanup** in `src/test/resources/sql/` if the test needs data.
+
+## Permission audit history
+
+Logos admins can open **Permission Audit** in the navigation or use a team’s
+**View permission history** action on the Teams page. Both open the same history
+page; the team action selects its team filter.
+
+`GET /api/admin/permission-audit-log` returns model/provider grant and revoke
+history, newest ID first. Only Logos admins can query this history, including
+deleted teams and keys. This is a read-only API; no endpoint can edit or delete entries. The audit
+table is also excluded from configuration import/export replacement.
+
+| Query parameter | Meaning |
+| --- | --- |
+| `team_id` | Team whose grants and key grants to include |
+| `api_key_id` | Only this key's explicit grants |
+| `model_id` / `provider_id` | Only changes to that target type and ID |
+| `from` / `to` | ISO-8601 timestamps with offsets; inclusive start, exclusive end |
+| `before_id` | Exclusive cursor: use the last ID from the previous page |
+| `limit` | Page size, 1–200; default 50 |
+
+For example, query
+`/api/admin/permission-audit-log?team_id=42&api_key_id=123&model_id=7&from=2026-11-01T00:00:00Z`.
+Authenticate with the same Keycloak bearer token as other management APIs.
+Each entry includes `occurred_at`, actor user ID and role, team ID/name, scope
+(`team` or `api_key`) ID/name, target (`model` or `provider`) ID/name, `action`
+(`grant` or `revoke`), and `cause` (`direct`, `cascade`, `migration`, or `repair`).
+IDs and names are snapshots without foreign keys, so deleting a resource does
+not erase its history. API-key secrets are never recorded. Team inheritance is
+represented by changes to team grants, rather than fabricated per-key changes.
+
+The history begins when changelog 074 is installed. It cannot reconstruct rows
+removed by older migrations. To restore access, use the recorded IDs with the
+existing permission endpoints; current authorization rules still apply.
+Custom key grants stay independent of team defaults. Changing team defaults
+does not remove or record revocations for those key grants.
+
+### Permission changes in data migrations
+
+Postgres triggers record `INSERT`, `DELETE`, `UPDATE` (revoke old, grant new),
+and `TRUNCATE` on all four permission tables in the same transaction as the
+change. No-op updates and unchanged permission saves produce no entries.
+Application mutations set trusted transaction-local actor/cause metadata and
+flush Hibernate before changing it. Cascades record `system` with cause
+`cascade`; the initiating direct edit retains its user ID and role. The atomic
+provider-add endpoint records `repair`.
+
+Future migrations using ordinary permission-table DML need no extra audit
+inserts: absent application context, triggers record `system` / `migration`.
+Do not disable these triggers or replace/drop the permission tables to rewrite
+permissions. Use DML so the old and new grants are recorded. Database cascades
+from deleting teams, keys, models or providers preserve their names before the
+parent row disappears. Configuration imports also preserve the audit history
+and attribute their replacement grants to the importing admin.

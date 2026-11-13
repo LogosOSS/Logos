@@ -14,6 +14,55 @@ The UI shows the role badge "App Developer" in the header menu. A user can
 use the developer-only pages only if the user belongs to a team that has an
 API key. Until then, the UI shows a **No Access** page.
 
+## Account settings
+
+Every authenticated user can manage personal passkeys, including users without a team or API key.
+The procedure is the same for App Developers, App Admins, and Logos Admins.
+
+1. Open the user menu at the bottom of the navigation.
+2. Select **Account settings**.
+
+On a mobile device, open the navigation first.
+The user menu contains **Account settings** and **Log out**.
+
+![User menu with Account settings](/img/roles/account-settings-menu.png)
+
+The **Passkeys** list shows each passkey name and the date it was added.
+The list belongs to your central account. It can include passkeys added through another application.
+If you have no passkeys, the page shows **No passkeys yet**.
+
+![Account settings — Passkeys](/img/roles/account-settings-passkeys.png)
+
+### Add a passkey
+
+1. Select **Add passkey**.
+2. Enter a distinct **Passkey name**, such as `Personal laptop` or `Backup security key`.
+3. Select **Add passkey** in the dialog.
+4. Follow the browser or device instructions.
+
+The browser can ask for a fingerprint, face check, device PIN, or security key.
+The new passkey appears in the list after the account service saves it.
+If you cancel the browser prompt, you can try again from the dialog.
+
+![Account settings — Add passkey dialog](/img/roles/account-settings-add-passkey.png)
+
+### Remove a passkey
+
+**CAUTION:** Removal affects your central account and all applications that use this passkey.
+Make sure another passkey or your usual TUM sign-in method is available.
+
+1. Select **Remove** next to the passkey.
+2. Check the passkey name and the account warning.
+3. Select **Remove passkey** to confirm, or **Cancel** to keep it.
+
+The removed passkey disappears from the list. Other passkeys remain available.
+An account policy can disable removal. If an error occurs, the page keeps the passkey visible and shows an explanation.
+
+![Account settings — Remove passkey confirmation](/img/roles/account-settings-remove-passkey.png)
+
+If the list cannot load, select **Try again**.
+If the error remains, contact your Logos administrator. See [Passkey Login](../passkey-login.md#account-api-access) for the required settings.
+
 ## Models
 
 This page shows the model catalogue of the deployment. For each model, it
@@ -29,6 +78,13 @@ This page is the own view of the developer. It shows the teams of the user and
 the API keys in these teams. On this page, you can create, rotate and revoke
 keys. You can also set model permissions for each key. Use this page to get the
 secret that you need to call the [Logos API](../user/api-usage.md).
+
+A key without custom permissions uses the model permissions of its team. A key
+with **Override Team Permissions** uses its own providers and models. These can
+include models that the team permissions do not include. The key settings show
+all models of the selected providers. The **Models** page shows the models that
+you can use now. For more information, see
+[API Key Model Permissions](app-admin.md#api-key-model-permissions).
 
 ![My Workspace page](/img/roles/app-developer-my-workspace.png)
 

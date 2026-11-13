@@ -114,14 +114,46 @@ route. Logos caches the result for `LOGOS_BATCH_CAPABILITY_TTL_HOURS` (default
 A provider that serves a Batch API does not necessarily batch a *given model*.
 On Azure, each model needs its own Global-Batch deployment. A model that exists
 only as a Standard deployment cannot be batched there, although the resource
-serves the Batch API. The provider does not publish its list of batch models.
-Logos learns the list from its own refusals. A refusal happens when Logos
-refuses a batch creation, or when a batch finishes as failed, with a
+serves the Batch API.
+
+**Azure: Logos checks each deployment before any batch.** The deployment list
+that Logos can read with the resource key does not show the deployment type. The
+Azure deployment sync therefore probes every deployment once: it creates a
+one-line batch for the deployment and cancels it right away if Azure accepts it.
+Azure refuses a Standard deployment at once, before anything runs. Logos stores
+the answer per model, together with the deployment that accepted the batch. A
+model is probed again when one of its deployments changes, or after
+`LOGOS_AZURE_BATCH_PROBE_TTL_DAYS` (default 7). Set
+`LOGOS_AZURE_BATCH_PROBE_ENABLED=false` to turn the probe off.
+
+On Azure, a batch goes to the provider **only** for a model with a confirmed
+batch deployment. Logos never sends any other model to the Azure Batch API: in
+`auto` mode it runs the batch itself, and with `X-Logos-Batch-Execution:
+provider` it refuses the upload with `model_not_available_for_batch` before
+anything reaches Azure. Azure also runs one model per batch, so a file that names
+several models runs in Logos as well. The **Providers** page shows the result for
+each connected model (see [Batch status of a model](#batch-status-of-a-model)).
+
+On other providers, Logos learns from refusals. A refusal happens when the
+provider refuses a batch creation, or when a batch finishes as failed, with a
 model-availability error. Then Logos records the models of that input file as
-not batch-eligible on that provider. Logos runs these models itself from the next
+not batch-eligible on that provider, and runs these models itself from the next
 file on. The record expires after `LOGOS_BATCH_MODEL_ELIGIBILITY_TTL_DAYS`
 (default 90). Logos therefore finds a model that the provider adds to Batch
-later. The cost of an old record is one more refused batch.
+later. The cost of an old record is one more refused batch. Azure refusals are
+recorded in the same way.
+
+### Batch Status of a Model
+
+On the **Providers** page, expand a provider. Each connected model shows one of
+these labels:
+
+| Label | Meaning |
+| --- | --- |
+| **Batch** | The provider's Batch API accepted a deployment of the model. The tooltip names the deployment that forwarded batches use. |
+| **No batch** | The provider refused to batch the model. The tooltip shows the reason, for example the SKU of the deployment. Logos runs the model's batches itself. |
+| **Batch unchecked** | No answer yet. On Azure, Logos runs the model's batches itself until a probe confirms a batch deployment. |
+| **Batch in Logos** | A worker node. It has no Batch API, so Logos always runs these batches. |
 
 The header `X-Logos-Batch-Execution` overrides the choice:
 
@@ -175,8 +207,13 @@ provider can do. Logos therefore does not pass requests through without checks:
   cursors of the provider describe its own unfiltered list. They would mislead a
   client that walks the list of Logos.
 - **Budget.** If the key or its team is already over its monthly budget, then
-  Logos refuses the creation of a batch with `402`. Logos settles the cost of
-  the batch when the batch finishes (see below). The cost is not known before.
+  Logos refuses the creation of a batch with `402`. This check uses only costs that Logos already settled.
+
+  Provider batches do not reserve budget. A provider batch does not count against the budget until it finishes and Logos settles its costs.
+  Thus, a key with little budget left can start many batches, each with up to 50,000 request lines.
+  These batches can exceed the key or team budget. This is a known limit of the budget check.
+
+  Logos-run batches count request by request, as described above.
 
 Logos limits an upload to `LOGOS_MAX_BATCH_FILE_BYTES` (default 50 MiB) and to
 `LOGOS_MAX_BATCH_REQUESTS` lines (default 50 000, the limit of the provider).
@@ -221,9 +258,12 @@ Note: the version `2024-02-01`, which some documents still name, does **not**
 serve these routes.
 
 Azure identifies models by *deployment*. On upload, Logos changes the `model`
-field of each request line from the Logos model name to the deployment id. When
-Logos meters the results, it changes the id back. Clients continue to use Logos
-model names.
+field of each request line from the Logos model name to the id of the **batch
+deployment** that the probe confirmed. This deployment is usually not the
+Standard deployment that serves interactive requests. When Logos meters the
+results, it changes the id back. Clients continue to use Logos model names.
+Logos does not use a confirmed batch deployment for interactive requests when the
+model has another deployment.
 
 **Two operational prerequisites exist. Both are outside Logos:**
 
@@ -261,6 +301,19 @@ one of your API keys, upload a `.jsonl` file, and look at the list. A running
 batch shows its progress. A finished batch offers its results as a download. You
 can cancel a batch that is not finished. The page refreshes every 30 seconds
 while a batch is in progress.
+
+The **New batch** form reads the model names from the request bodies in the input file.
+It shows the request count, an input token estimate and an **Estimated cost** in USD.
+The input estimate uses the number of characters in each body divided by 4, rounded up.
+Set **Average response length (tokens per request)** to the expected response length.
+The initial value uses the mean output token limit from the lines, with 500 tokens for each line without a limit.
+Embedding requests have no output tokens.
+
+The estimate multiplies input and output tokens by the highest current standard prices across permitted providers and context tiers.
+It adds these costs for all models in the file.
+It excludes batch discounts, cache discounts and charges that do not use tokens.
+If a required price is missing, then the form shows that the estimate is unavailable.
+The estimate does not reserve budget or change the request bodies. Actual costs can differ.
 
 The page is an admin function. Only app admins and logos admins see the menu
 item, and the endpoints behind it refuse all other users. Script use does not

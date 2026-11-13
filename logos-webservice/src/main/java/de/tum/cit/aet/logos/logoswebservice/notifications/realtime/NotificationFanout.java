@@ -7,5 +7,12 @@ package de.tum.cit.aet.logos.logoswebservice.notifications.realtime;
  */
 public interface NotificationFanout {
 
+    /**
+     * The one bean name both implementations register under. Their
+     * {@code logos.notifications.fanout} conditions are mutually exclusive,
+     * so exactly one bean carries it in any configuration.
+     */
+    String BEAN_NAME = "notificationFanout";
+
     void publish(NotificationEvent event);
 }

@@ -9,9 +9,10 @@ import os
 import socket
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import combinations
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any, Awaitable, Callable, Iterable, Literal
 
 from logos_worker_node import prometheus_metrics as prom
 from logos_worker_node.calibration import select_calibration_gpus
@@ -26,6 +27,7 @@ from logos_worker_node.models import (
     LaneConfig,
     LaneEvent,
     LaneStatus,
+    LaneTransferStatus,
     LoadedModel,
     MetalConfig,
     ProcessState,
@@ -40,6 +42,13 @@ logger = logging.getLogger("logos_worker_node.lane_manager")
 
 # Type for the application server process handle (vLLM is the only engine)
 ProcessHandle = VllmProcessHandle
+
+
+@dataclass
+class LaneTransfer:
+    status: LaneTransferStatus
+    handle: ProcessHandle | None = None
+
 
 _DEFAULT_PORT_START = 11436
 _DEFAULT_PORT_END = 11499
@@ -507,6 +516,7 @@ class LaneManager:
         # spawn succeeds, so the RAM-cache re-plan reads them here to reserve
         # their sleeping footprint BEFORE their cache copy is admitted.
         self._pending_lane_configs: dict[str, LaneConfig] = {}
+        self._lane_transfers: dict[str, LaneTransfer] = {}
 
     @property
     def pending_lanes(self) -> list[tuple[str, LaneConfig]]:
@@ -1009,11 +1019,18 @@ class LaneManager:
         """
         if lane_id in self._static_lane_ids:
             raise ValueError(f"Cannot remove static lane '{lane_id}'")
+        handle = self._handles.get(lane_id)
+        transfer = None
+        if handle is not None:
+            config = handle.lane_config
+            transfer = self._begin_lane_transfer(lane_id, config.model if config else "", "unloading", handle)
         self._set_transition(lane_id, "stopping")
         try:
             await self._remove_lane_drained(lane_id)
         finally:
             self._clear_transition(lane_id)
+            if transfer is not None:
+                self._end_lane_transfer(lane_id, transfer)
 
     async def _remove_lane_drained(self, lane_id: str) -> None:
         loop = asyncio.get_running_loop()
@@ -1541,6 +1558,37 @@ class LaneManager:
         await self._check_stuck_lanes(statuses)
         await self._recover_dead_lanes(statuses)
         return statuses
+
+    def _begin_lane_transfer(
+        self, lane_id: str, model: str, operation: Literal["loading", "unloading"], handle: ProcessHandle | None = None
+    ) -> LaneTransfer:
+        transfer = LaneTransfer(LaneTransferStatus(lane_id=lane_id, model=model, operation=operation), handle)
+        self._lane_transfers[lane_id] = transfer
+        self.mark_status_dirty()
+        return transfer
+
+    def _end_lane_transfer(self, lane_id: str, transfer: LaneTransfer) -> None:
+        if self._lane_transfers.get(lane_id) is transfer:
+            del self._lane_transfers[lane_id]
+            self.mark_status_dirty()
+
+    async def lane_transfer_statuses(self) -> list[LaneTransferStatus]:
+        """Sample only the process trees involved in a load or unload."""
+        transfers = list(self._lane_transfers.items())
+        if not transfers:
+            return []
+        pids = {lid: transfer.handle.status().pid for lid, transfer in transfers if transfer.handle is not None}
+        memory = await self._query_process_vram_map([pid for pid in pids.values() if pid is not None])
+        result = []
+        for lane_id, transfer in transfers:
+            if self._lane_transfers.get(lane_id) is not transfer:
+                continue
+            status = transfer.status
+            resident = memory.get(pids.get(lane_id))
+            if status.operation == "unloading" and resident is not None:
+                status.reference_vram_mb = max(status.reference_vram_mb or 0, resident)
+            result.append(status.model_copy(update={"resident_vram_mb": resident}))
+        return result
 
     async def _query_process_host_ram_map(
         self,
@@ -3039,6 +3087,7 @@ class LaneManager:
         # post-registration live-handle protection makes the allocation
         # unreclaimable and the lane's first sleep lacks host RAM.
         self._pending_lane_configs[lane_id] = lane_config
+        transfer = self._begin_lane_transfer(lane_id, lane_config.model, "loading")
         try:
             # A process of the same lane id still exiting holds the port and
             # the memory placement and the headroom check would count.
@@ -3100,6 +3149,7 @@ class LaneManager:
                     "Placement is refused until the session ends; leftover GPU(s) remain available."
                 )
             await self._wait_for_vram_headroom(lane_id, lane_config)
+            transfer.status.reference_vram_mb = self._estimate_lane_vram_mb(lane_config) or None
             port = self._port_alloc.allocate(lane_id)
             self._note_lane_spawn(lane_id, lane_config.model)
             handle = _create_handle(
@@ -3117,6 +3167,7 @@ class LaneManager:
                 handle.launched_from_ram_cache = launched_from_ram_cache
             try:
                 await handle.init()
+                transfer.handle = handle
                 status = await handle.spawn(lane_config)
                 if status.state != ProcessState.RUNNING:
                     raise RuntimeError(
@@ -3159,6 +3210,7 @@ class LaneManager:
             # failed startup must not leave the reservation or the pending
             # entry behind.
             self._pending_lane_configs.pop(lane_id, None)
+            self._end_lane_transfer(lane_id, transfer)
             self.release_model_startup(starting_model, lane_id)
             self._finish_loading(lane_id)
 
@@ -3251,11 +3303,15 @@ class LaneManager:
         # lock-free re-plan cannot evict it in between.
         starting_model = new_config.model
         self.reserve_model_startup(starting_model, lane_id)
+        transfer = None
         try:
             new_config = self._auto_tensor_parallel(new_config)
             old_handle = self._handles[lane_id]
             port = self._port_alloc.get_port(lane_id)
             old_config = old_handle.lane_config
+            transfer = self._begin_lane_transfer(
+                lane_id, old_config.model if old_config else new_config.model, "unloading", old_handle
+            )
 
             self._record_event(
                 lane_id,
@@ -3276,6 +3332,7 @@ class LaneManager:
                 logger.warning("Restart '%s': failed to destroy old handle", lane_id, exc_info=True)
             await old_handle.close()
 
+            transfer = self._begin_lane_transfer(lane_id, new_config.model, "loading")
             new_handle = None
             try:
                 # The collector still contains the old process's allocation after
@@ -3284,6 +3341,7 @@ class LaneManager:
                     await self._gpu_force_poll()
                 await self._wait_for_vram_headroom(lane_id, new_config)
                 new_config = await self._auto_place_gpu_devices(lane_id, new_config)
+                transfer.status.reference_vram_mb = self._estimate_lane_vram_mb(new_config) or None
                 # A calibration slice is picked without the lock: it must see
                 # where the replacement starts, not where the old process ran.
                 self._loading_gpus[lane_id] = self._launch_gpu_set(new_config)
@@ -3301,6 +3359,7 @@ class LaneManager:
                     metal_config=self._metal_config,
                 )
                 await new_handle.init()
+                transfer.handle = new_handle
 
                 self._record_event(
                     lane_id,
@@ -3386,6 +3445,8 @@ class LaneManager:
             # The success path above already released the reservation before
             # its re-plan; this keeps the release for the spawn-failure
             # branch (idempotent — see _add_lane_unlocked).
+            if transfer is not None:
+                self._end_lane_transfer(lane_id, transfer)
             self.release_model_startup(starting_model, lane_id)
             self._finish_loading(lane_id)
 
@@ -3562,7 +3623,10 @@ class LaneManager:
             try:
                 await asyncio.shield(teardown)
             except asyncio.CancelledError:
+                # Cancelled again while tearing down: finish the teardown,
+                # then let this newer cancellation propagate.
                 await teardown
+                raise
             raise
         finally:
             self._finish_loading(lane_id)

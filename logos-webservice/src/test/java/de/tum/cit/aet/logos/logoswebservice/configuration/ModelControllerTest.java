@@ -558,4 +558,29 @@ class ModelControllerTest {
                 .content("{\"id\":9999}"))
            .andExpect(status().isNotFound());
     }
+    @Test
+    void modelNamesAndAliasesRejectControlCharacters() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        for (char control : new char[] {0, '\r', '\n', '\t', 27, 31, 127, 133, 159}) {
+            String name = "model" + control + "LOGOS";
+            for (String endpoint : java.util.List.of("add_model", "update_model_info")) {
+                mvc.perform(post("/logosdb/" + endpoint)
+                        .with(TestJwt.logosAdmin())
+                        .contentType("application/json")
+                        .content(mapper.writeValueAsString(java.util.Map.of("model_id", 5001, "name", name))))
+                   .andExpect(status().isBadRequest())
+                   .andExpect(jsonPath("$.error").value("Model names must not contain control characters"));
+            }
+            mvc.perform(post("/logosdb/update_model_info")
+                    .with(TestJwt.logosAdmin())
+                    .contentType("application/json")
+                    .content(mapper.writeValueAsString(java.util.Map.of(
+                        "model_id", 5001, "aliases", java.util.List.of(name)))))
+               .andExpect(status().isBadRequest());
+        }
+        mvc.perform(post("/logosdb/get_model").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"id\":5001}"))
+           .andExpect(jsonPath("$.name").value("gpt-4"));
+    }
+
 }

@@ -34,11 +34,24 @@ export interface Provider {
   privacy_level: PrivacyLevel;
 }
 
+/**
+ * Whether batches for this model can go to the provider's Batch API:
+ * 'supported' (a Batch deployment accepted a probe), 'unsupported' (the
+ * provider refused it), 'unknown' (not probed yet; Logos runs such batches
+ * itself), or 'logos' (a worker node — Logos always runs its batches).
+ */
+export type BatchSupport = 'supported' | 'unsupported' | 'unknown' | 'logos';
+
 export interface ModelConnection {
   model_id: number;
   model_name: string;
   endpoint: string | null;
   api_key: string | null;
+  batch_support?: BatchSupport;
+  batch_deployment?: string | null;
+  batch_detail?: string | null;
+  batch_source?: 'probe' | 'refusal' | null;
+  batch_checked_at?: string | null;
 }
 
 export interface PerformancePercentiles {
@@ -152,6 +165,7 @@ export interface ModelBenchmarkRun {
     stage?: string;
     benchmark_id?: number;
     started_samples?: number;
+    completed_samples?: number;
     total_samples?: number;
   };
   error_message: string | null;

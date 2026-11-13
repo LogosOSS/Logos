@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Operator-set model configuration per node. capability and overrides
+         hold only what the admin set, so the plan hash stays unchanged. -->
+    <changeSet id="071-node-model-config" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="node_model_config"/></not>
+        </preConditions>
+        <sql><![CDATA[
+            CREATE TABLE node_model_config (
+                id BIGSERIAL PRIMARY KEY,
+                provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+                model_name TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                capability JSONB NOT NULL DEFAULT '{}'::jsonb,
+                overrides JSONB NOT NULL DEFAULT '{}'::jsonb,
+                source TEXT NOT NULL DEFAULT 'ui' CHECK (source IN ('ui', 'yaml_import')),
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_node_model_config_provider_model UNIQUE (provider_id, model_name)
+            );
+        ]]></sql>
+        <rollback>
+            <sql>DROP TABLE IF EXISTS node_model_config;</sql>
+        </rollback>
+    </changeSet>
+
+    <!-- config_revision is bumped on every change, so a worker ignores older
+         pushes. yaml_imported_at is set once, after the one-time YAML import. -->
+    <changeSet id="071-node-config-state" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="node_config_state"/></not>
+        </preConditions>
+        <sql><![CDATA[
+            CREATE TABLE node_config_state (
+                provider_id INTEGER PRIMARY KEY REFERENCES providers(id) ON DELETE CASCADE,
+                config_revision BIGINT NOT NULL DEFAULT 0,
+                yaml_imported_at TIMESTAMPTZ
+            );
+        ]]></sql>
+        <rollback>
+            <sql>DROP TABLE IF EXISTS node_config_state;</sql>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

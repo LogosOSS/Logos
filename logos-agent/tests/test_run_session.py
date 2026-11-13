@@ -100,8 +100,15 @@ def _patch_workspace(monkeypatch, workspace: Path) -> None:
     monkeypatch.setenv("HOME", str(workspace / ".home"))
     # These tests push to a bare repository on disk, so there is no GitHub
     # account behind the token to resolve. The check itself is covered by
-    # TestPushIdentity below, against a stubbed `gh`.
+    # TestPushIdentity below, against a stubbed HTTPS endpoint.
     monkeypatch.setattr(run_session, "verify_token_identity", lambda _token: None)
+    checkout = workspace / "repo"
+    if (checkout / ".git").is_dir() and not checkout.is_symlink():
+        # Emulate the runner retaining the baseline before the agent works.
+        baseline = _git("rev-parse", "HEAD", cwd=checkout).stdout.strip()
+        monkeypatch.setenv("LOGOS_SESSION_CHECKOUT_SHA", baseline)
+        monkeypatch.setenv("LOGOS_SESSION_COMPARISON_SHA", baseline)
+        monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", "")
 
 
 def test_planted_git_metadata_does_not_survive_the_rebuild(tmp_path, monkeypatch):
@@ -128,12 +135,12 @@ def test_planted_git_metadata_does_not_survive_the_rebuild(tmp_path, monkeypatch
     )
     assert config.returncode != 0, "core.hooksPath survived the rebuild"
 
-    # The object store is the one part that is kept: the previous commit's
-    # objects are still there, nothing was re-cloned.
+    # Object contents and alternates are agent-owned too. A later fetch
+    # must fill a fresh store before the pinned baseline is trusted.
     objects_after = sorted(
         p.relative_to(checkout / ".git" / "objects") for p in (checkout / ".git" / "objects").rglob("*") if p.is_file()
     )
-    assert objects_before and objects_before == objects_after
+    assert objects_before and not objects_after
 
     # A commit in the rebuilt repository runs no planted hook.
     _git("config", "user.name", "Logos Agent", cwd=checkout)
@@ -525,11 +532,42 @@ class TestFinalizer:
         assert parent == base
         assert not marker.exists(), "a planted hook or credential helper ran in the finalizer"
 
-    def test_a_retried_session_pushes_against_the_base_not_the_previous_tip(self, tmp_path, monkeypatch):
-        # The remote branch exists from an earlier run of the same session.
-        # Re-finalizing must not build on that tip: the diff belongs to the
-        # base, and the force-with-lease push must verify against the tip it
-        # just fetched, not blind over it.
+    @pytest.mark.parametrize("workflow", [".github/workflows/\u00e4.yml", ".github/workflows/plain.yml"])
+    def test_a_workflow_file_with_any_name_is_refused_before_the_commit(self, tmp_path, monkeypatch, workflow):
+        # git status quotes a name like ".github/workflows/\u00e4.yml"; the check
+        # must see the path git actually stages, whatever its characters.
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        origin = _make_origin(workspace)
+        checkout, home, marker = _plant_agent_phase(workspace, origin, self.BRANCH)
+        _patch_workspace(monkeypatch, workspace)
+        monkeypatch.setenv("LOGOS_AGENT_WORKFLOW_CHANGES", "deny")
+        assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
+        (checkout / workflow).parent.mkdir(parents=True, exist_ok=True)
+        (checkout / workflow).write_text("on: push\n")
+
+        with pytest.raises(RuntimeError, match="CI workflow files"):
+            commit_and_push(self.BRANCH, "a long enough task description")
+        listed = _git("--git-dir", str(origin), "branch", "--list", self.BRANCH, cwd=workspace).stdout
+        assert listed.strip() == ""
+
+    def test_moving_a_file_into_the_workflows_directory_is_refused(self, tmp_path, monkeypatch):
+        # git status shows a move as "old -> new", which hides the new path.
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        origin = _make_origin(workspace)
+        checkout, home, marker = _plant_agent_phase(workspace, origin, self.BRANCH)
+        _patch_workspace(monkeypatch, workspace)
+        monkeypatch.setenv("LOGOS_AGENT_WORKFLOW_CHANGES", "deny")
+        assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
+        tracked = _git("ls-files", cwd=checkout).stdout.split()[0]
+        (checkout / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+        _git("mv", tracked, ".github/workflows/moved.yml", cwd=checkout)
+
+        with pytest.raises(RuntimeError, match="CI workflow files"):
+            commit_and_push(self.BRANCH, "a long enough task description")
+
+    def test_a_continued_session_builds_on_the_prepared_branch_tip(self, tmp_path, monkeypatch):
         workspace = tmp_path / "ws"
         workspace.mkdir()
         origin = _make_origin(workspace)
@@ -538,16 +576,19 @@ class TestFinalizer:
 
         assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
         commit_and_push(self.BRANCH, "a long enough task description")
+        first = _git("rev-parse", "HEAD", cwd=checkout).stdout.strip()
 
-        # A second run of the session: new work in the same working copy.
+        # A later session prepares the PR branch and the runner retains its
+        # tip as both the new baseline and the expected remote branch lease.
+        prepare_checkout(f"file://{origin}", self.BRANCH, self.BRANCH, "ghp-test-token")
+        monkeypatch.setenv("LOGOS_SESSION_CHECKOUT_SHA", first)
+        monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", first)
         (checkout / "app.py").write_text("print('second run')\n")
-        assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
+        assert finalize_checkout(f"file://{origin}", self.BRANCH, self.BRANCH, "ghp-test-token") is True
         assert commit_and_push(self.BRANCH, "a long enough task description") == 1
 
-        # Two commits on the remote branch, and the second one sits on the
-        # base — the first run's tip is gone, not a parent.
-        log = _git("--git-dir", str(origin), "log", "--format=%s", self.BRANCH, cwd=workspace).stdout.splitlines()
-        assert len(log) == 2 and log[1] == "base"
+        parent = _git("--git-dir", str(origin), "rev-parse", f"{self.BRANCH}^", cwd=workspace).stdout.strip()
+        assert parent == first
         remote_file = _git("--git-dir", str(origin), "show", f"{self.BRANCH}:app.py", cwd=workspace).stdout
         assert remote_file == "print('second run')\n"
         assert not marker.exists()
@@ -560,6 +601,11 @@ class TestFinalizer:
         monkeypatch.setenv("GITHUB_TOKEN", "ghp-test-token")
         monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
         monkeypatch.setenv("LOGOS_SESSION_OPEN_PR", "0")
+        monkeypatch.setenv("LOGOS_SESSION_PR_BASE_BRANCH", "main")
+        monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
+        snapshot = Result()
+        run_session.run_snapshot(snapshot)
+        monkeypatch.setenv("LOGOS_SESSION_VERIFIED_TREE", snapshot.data["candidate_tree"])
 
     def test_the_finalizer_records_the_commit_it_pushed(self, tmp_path, monkeypatch):
         # The runner pins its build poll to this sha: it is the exact commit
@@ -597,12 +643,8 @@ class TestFinalizer:
         run_finalize(first)
         assert first.data["committed"] is True
 
-        # Second run: the working copy goes back to the base content, so
-        # there is nothing to commit — the remote branch keeps the first
-        # run's commit. (The rebuild wiped the local main ref, so the base
-        # is fetched fresh into FETCH_HEAD.)
-        _git("fetch", "--quiet", "origin", "main", cwd=checkout)
-        _git("checkout", "FETCH_HEAD", "--", ".", cwd=checkout)
+        # Retrying finalization of the same verified tree is idempotent.
+        # It retains the published branch tip without creating another commit.
         second = Result()
         run_finalize(second)
 
@@ -693,38 +735,44 @@ class TestPushIdentity:
     """
 
     @staticmethod
-    def _stub_gh(monkeypatch, *, login: str = "LogosOSSAgent", returncode: int = 0, stderr: str = ""):
-        import run_session
+    def _stub_identity(monkeypatch, *, login="LogosOSSAgent", fail=False):
+        import io
+        from urllib.error import URLError
 
-        calls: list = []
+        calls = []
 
-        def fake_run(cmd, **kwargs):
-            calls.append((cmd, kwargs))
-            return subprocess.CompletedProcess(cmd, returncode, stdout=login + "\n", stderr=stderr)
+        class Opener:
+            def open(self, request, **kwargs):
+                calls.append((request, kwargs))
+                if fail:
+                    raise URLError("Bad credentials")
+                return io.BytesIO(json.dumps({"login": login}).encode())
 
-        monkeypatch.setattr(run_session.subprocess, "run", fake_run)
+        monkeypatch.setattr(run_session, "build_opener", lambda *handlers: Opener())
         return calls
 
-    def test_the_agent_account_is_accepted(self, monkeypatch):
-        import run_session
-
+    def test_the_agent_account_is_accepted(self, monkeypatch, tmp_path):
         monkeypatch.delenv("LOGOS_AGENT_GITHUB_LOGIN", raising=False)
-        calls = self._stub_gh(monkeypatch)
+        home = tmp_path / "home"
+        config = home / ".config" / "gh"
+        config.mkdir(parents=True)
+        (config / "hosts.yml").write_text("github.com:\n    api_host: attacker.invalid\n")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("GH_CONFIG_DIR", str(config))
+        calls = self._stub_identity(monkeypatch)
 
         run_session.verify_token_identity("ghp-token")
 
-        # The token is passed to gh through the environment, never on the
-        # command line where it would land in a process listing.
-        cmd, kwargs = calls[0]
-        assert cmd[:3] == ["gh", "api", "user"]
-        assert kwargs["env"]["GH_TOKEN"] == "ghp-token"
-        assert "ghp-token" not in " ".join(cmd)
+        request, kwargs = calls[0]
+        assert request.full_url == "https://api.github.com/user"
+        assert request.get_header("Authorization") == "Bearer ghp-token"
+        assert kwargs["timeout"] == 60
 
     def test_a_configured_account_is_honoured(self, monkeypatch):
         import run_session
 
         monkeypatch.setenv("LOGOS_AGENT_GITHUB_LOGIN", "SomeOtherBot")
-        self._stub_gh(monkeypatch, login="SomeOtherBot")
+        self._stub_identity(monkeypatch, login="SomeOtherBot")
 
         run_session.verify_token_identity("ghp-token")
 
@@ -732,7 +780,7 @@ class TestPushIdentity:
         import run_session
 
         monkeypatch.delenv("LOGOS_AGENT_GITHUB_LOGIN", raising=False)
-        self._stub_gh(monkeypatch, login="wasnertobias")
+        self._stub_identity(monkeypatch, login="wasnertobias")
 
         with pytest.raises(RuntimeError, match="not as the agent account"):
             run_session.verify_token_identity("ghp-token")
@@ -741,7 +789,7 @@ class TestPushIdentity:
         import run_session
 
         monkeypatch.delenv("LOGOS_AGENT_GITHUB_LOGIN", raising=False)
-        self._stub_gh(monkeypatch, returncode=1, stderr="gh: Bad credentials (HTTP 401)")
+        self._stub_identity(monkeypatch, fail=True)
 
         with pytest.raises(RuntimeError, match="could not establish the identity"):
             run_session.verify_token_identity("ghp-token")
@@ -750,7 +798,7 @@ class TestPushIdentity:
         import run_session
 
         monkeypatch.setenv("LOGOS_AGENT_GITHUB_LOGIN", "logosossagent")
-        self._stub_gh(monkeypatch, login="LogosOSSAgent")
+        self._stub_identity(monkeypatch, login="LogosOSSAgent")
 
         run_session.verify_token_identity("ghp-token")
 
@@ -1122,8 +1170,9 @@ class TestHowAPullRequestIsOpened:
         monkeypatch.setattr(run_session, "run", fake_run)
         return calls
 
-    def test_it_is_not_a_draft(self, monkeypatch, tmp_path):
+    def test_a_verified_pull_request_is_not_a_draft(self, monkeypatch, tmp_path):
         calls = self.capture(monkeypatch, tmp_path)
+        monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
 
         run_session.open_pull_request("logos/agent/x", "main", "do the thing")
 
@@ -1677,3 +1726,211 @@ class TestWhatCommitThisSessionIsAnswerableFor:
         _git("update-ref", "refs/remotes/origin/logos/agent/x/session-9", "HEAD", cwd=checkout)
 
         assert run_session._ref_sha("refs/remotes/origin/logos/agent/x/session-9") == run_session._ref_sha("HEAD")
+
+
+class TestGitStartsNoBackgroundMaintenance:
+    """A fetch detaches `git maintenance run --auto`, which can rewrite the
+    shallow file under the next fetch of the preparation."""
+
+    def test_git_commands_run_with_auto_maintenance_off(self, monkeypatch):
+        calls: list = []
+
+        def fake_subprocess_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(run_session.subprocess, "run", fake_subprocess_run)
+        run_session.run(["git", "fetch", "--depth", "50", "origin", "main"], quiet=True)
+        run_session.run(["ls", "-la"], quiet=True)
+        assert calls == [
+            ["git", "-c", "maintenance.auto=false", "fetch", "--depth", "50", "origin", "main"],
+            ["ls", "-la"],
+        ]
+
+
+@pytest.mark.parametrize("command", [["gh", "api", "user"], ["git", "fetch", "origin"]])
+def test_token_commands_get_fresh_configuration_directories(tmp_path, monkeypatch, command):
+    home = tmp_path / "agent-home"
+    config = home / ".config" / "gh"
+    config.mkdir(parents=True)
+    (config / "hosts.yml").write_text("github.com:\n    api_host: attacker.invalid\n")
+    (home / ".gitconfig").write_text("[credential]\n    helper = !echo stolen\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GH_CONFIG_DIR", str(config))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(home / ".gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "0")
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    homes = []
+
+    def inspect_command(cmd, **kwargs):
+        env = kwargs["env"]
+        clean_home = Path(env["HOME"])
+        homes.append(clean_home)
+        assert clean_home != home
+        assert not (clean_home / ".gitconfig").exists()
+        assert set(clean_home.iterdir()) == {Path(env["GH_CONFIG_DIR"]), Path(env["XDG_CONFIG_HOME"])}
+        for name in ["GH_CONFIG_DIR", "XDG_CONFIG_HOME"]:
+            assert Path(env[name]).is_relative_to(clean_home)
+            assert list(Path(env[name]).iterdir()) == []
+        assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert env["GH_TOKEN"] == env["GITHUB_TOKEN"] == "test-token"
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(run_session.subprocess, "run", inspect_command)
+    run_session.run(command)
+    run_session.run(command)
+    assert homes[0] != homes[1]
+    assert all(not path.exists() for path in homes)
+    assert (config / "hosts.yml").exists()
+
+
+def test_git_ignores_the_agent_global_configuration(tmp_path, monkeypatch):
+    home = tmp_path / "agent-home"
+    home.mkdir()
+    planted = home / ".gitconfig"
+    planted.write_text("[credential]\n    helper = !echo stolen\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(planted))
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    result = run_session.run(["git", "config", "--global", "--get", "credential.helper"], check=False, quiet=True)
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
+def test_finalize_resets_home_before_verifying_identity(tmp_path, monkeypatch):
+    _patch_workspace(monkeypatch, tmp_path)
+    home = tmp_path / ".home"
+    config = home / ".config" / "gh"
+    config.mkdir(parents=True)
+    (config / "hosts.yml").write_text("github.com:\n    api_host: attacker.invalid\n")
+    (home / ".gitconfig").write_text("[credential]\n    helper = !echo stolen\n")
+    monkeypatch.setenv("LOGOS_SESSION_BRANCH", "logos/agent/test")
+    monkeypatch.setenv("LOGOS_SESSION_TASK", "task")
+    monkeypatch.setenv("LOGOS_REPO_URL", REPO_URL)
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    calls = []
+
+    def verify(token):
+        assert not (config / "hosts.yml").exists()
+        assert not (home / ".gitconfig").exists()
+        calls.append(token)
+
+    monkeypatch.setattr(run_session, "verify_token_identity", verify)
+    (tmp_path / "repo").mkdir()
+    monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
+    monkeypatch.setenv("LOGOS_SESSION_VERIFIED_TREE", "a" * 40)
+    monkeypatch.setenv("LOGOS_SESSION_PR_BASE_BRANCH", "main")
+    with pytest.raises(RuntimeError, match="no verified checkout"):
+        run_finalize(Result())
+    assert calls == ["test-token"]
+
+
+def test_identity_opener_disables_proxies_and_redirects(monkeypatch):
+    from urllib.error import HTTPError
+    from urllib.request import Request
+
+    real_build_opener = run_session.build_opener
+
+    def inspect_opener(*handlers):
+        proxy = next(h for h in handlers if isinstance(h, run_session.ProxyHandler))
+        assert proxy.proxies == {}
+        opener = real_build_opener(*handlers)
+        request = Request("https://api.github.com/user", headers={"Authorization": "Bearer test-token"})
+        redirects = [h for h in opener.handlers if isinstance(h, run_session.HTTPRedirectHandler)]
+        assert len(redirects) == 1
+        for code in [301, 302, 303, 307, 308]:
+            with pytest.raises(HTTPError):
+                opener.error("http", request, None, code, "redirect", {"location": "https://attacker.invalid/"})
+        raise RuntimeError("checked before network")
+
+    monkeypatch.setattr(run_session, "build_opener", inspect_opener)
+    with pytest.raises(RuntimeError, match="checked before network"):
+        run_session.verify_token_identity("test-token")
+
+
+@pytest.mark.parametrize("plant", ["readonly", "symlink", "hardlink"])
+def test_result_replaces_agent_owned_file_without_modifying_link_targets(tmp_path, monkeypatch, plant):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result_path = artifacts / "result.json"
+    target = tmp_path / "agent-target.json"
+    forged = '{"candidate_tree":"forged","candidate_paths":[]}'
+    target.write_text(forged)
+    if plant == "readonly":
+        result_path.write_text(forged)
+        result_path.chmod(0o444)
+    elif plant == "symlink":
+        result_path.symlink_to(target)
+    else:
+        os.link(target, result_path)
+    old_inode = result_path.lstat().st_ino
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(artifacts))
+    result = Result()
+    result.data.update(candidate_tree="trusted", candidate_paths=["logos-ui/src/app.ts"])
+
+    result.write()
+
+    assert not result_path.is_symlink()
+    assert stat.S_ISREG(result_path.stat().st_mode)
+    assert result_path.stat().st_ino != old_inode
+    assert stat.S_IMODE(result_path.stat().st_mode) == 0o600
+    assert json.loads(result_path.read_text()) == result.data
+    assert target.read_text() == forged
+    assert list(artifacts.iterdir()) == [result_path]
+
+
+@pytest.mark.parametrize("failure", ["write", "replace"])
+def test_result_persistence_failure_is_fatal_and_removes_temporary_file(tmp_path, monkeypatch, failure):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result_path = artifacts / "result.json"
+    result_path.write_text('{"candidate_tree":"forged","candidate_paths":[]}')
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(artifacts))
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("result storage unavailable")
+
+    if failure == "write":
+        monkeypatch.setattr(run_session.json, "dump", fail_write)
+    else:
+        monkeypatch.setattr(run_session.os, "replace", fail_write)
+
+    with pytest.raises(RuntimeError, match="could not write result file: result storage unavailable"):
+        Result().write()
+    assert list(artifacts.iterdir()) == [result_path]
+
+
+@pytest.mark.parametrize("phase_fails", [False, True])
+def test_main_returns_failure_when_result_cannot_be_persisted(tmp_path, monkeypatch, capsys, phase_fails):
+    monkeypatch.setenv("LOGOS_SESSION_PHASE", "snapshot")
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+
+    def snapshot(result):
+        result.data["candidate_tree"] = "trusted"
+        if phase_fails:
+            raise RuntimeError("snapshot failed")
+
+    def fail_replace(*_args, **_kwargs):
+        raise PermissionError("artifact directory is read-only")
+
+    monkeypatch.setattr(run_session, "run_snapshot", snapshot)
+    monkeypatch.setattr(run_session.os, "replace", fail_replace)
+
+    assert run_session.main() == 1
+    captured = capsys.readouterr()
+    assert "could not persist the phase result" in captured.err
+    assert "phase complete" not in captured.out
+
+
+def test_main_reports_success_only_after_result_is_persisted(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LOGOS_SESSION_PHASE", "snapshot")
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setattr(run_session, "run_snapshot", lambda result: result.data.update(candidate_tree="trusted"))
+
+    assert run_session.main() == 0
+    assert json.loads((tmp_path / "artifacts" / "result.json").read_text())["candidate_tree"] == "trusted"
+    assert "phase complete" in capsys.readouterr().out

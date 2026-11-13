@@ -32,19 +32,33 @@ providers** serve the cloud models.
 
 <img
   src={useBaseUrl('/img/system-design/top-level.svg')}
-  alt="UML component diagram of Logos — every client request enters through the gateway (logos-rate-gateway, traefik) to the logos-webservice replicas, which call the cloud provider or logos-orchestrator and its GPU worker nodes"
+  alt="UML component diagram of Logos — every client request enters through the Gateway (nginx, Traefik) to the Webservice replicas, which call the cloud AI provider or the Orchestrator and its GPU nodes"
   style={{width: '100%', height: 'auto', marginTop: '1rem', marginBottom: '0.5rem'}}
 />
 
 The diagram is a UML component diagram. A circle is an interface that a
-component provides. An arc is an interface that a component requires. The
-component names are the container names in `docker-compose.yaml`.
+component provides. An arc is an interface that a component requires. A
+stack of boxes with the ×N label is a component that runs as more than one
+instance. The second line of a component names its technology. The table below gives the container name of each component in
+`docker-compose.yaml`.
+
+| Component | Container |
+|---|---|
+| Identity Provider | `keycloak` (development only) |
+| Gateway | `logos-rate-gateway` (nginx), `traefik` |
+| Webservice | `logos-webservice` |
+| Orchestrator | `logos-orchestrator` |
+| Shared State | `logos-redis` |
+| Database | `logos-db` |
+| Worker Node | `logos-workernode` (on each GPU node) |
+| Inference Process | one vLLM process of the worker node for one model, also called a lane |
 
 Each request from a client goes through the gateway: first
 `logos-rate-gateway`, then `traefik`. Traefik sends the request to one of the
-`logos-webservice` replicas. Only `logos-webservice` runs as more than one
-replica (×N). The replicas share their cloud rate-limit window in
-`logos-redis`. The web service sends cloud requests directly to the cloud
+`logos-webservice` replicas. On the core node, only `logos-webservice` runs
+as more than one replica (×N). One orchestrator can control many GPU worker
+nodes. The replicas share two things in `logos-redis`: the sliding window
+of the cloud rate limits, and a pub/sub channel for notifications. The web service sends cloud requests directly to the cloud
 provider. It sends local and mixed requests to `logos-orchestrator`.
 
 The optional agent runner (`logos-agent`) is not in the diagram. Its
@@ -106,7 +120,9 @@ Read the diagram from left to right:
 3. Logos offers **Models** to clients. A **Provider** is the place where a model
    runs (`cloud` or `logosnode`).
 4. The team-level and key-level **permissions** decide which models a caller
-   can use. **Policies** also limit privacy, priority, and topic.
+   can use. The team permissions are the default for keys without custom
+   permissions. Custom key permissions replace them and can include more
+   models. **Policies** also limit privacy, priority, and topic.
 5. Each inference attempt creates a **LogEntry** (usage tokens and settled
    cost). **BatchObject** rows track OpenAI-compatible batch jobs.
 

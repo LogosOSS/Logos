@@ -9,7 +9,7 @@ import {
   ElementRef,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { BillingService, KeyBudgetBucket } from '../../../../core/services/billing.service';
+import { BillingService, compareTimestamps, KeyBudgetBucket } from '../../../../core/services/billing.service';
 import { ErrorMessageComponent } from '../../../../shared/components/error-message/error-message';
 import { DataTableComponent } from '../../../../shared/components/data-table/data-table';
 import {
@@ -210,7 +210,7 @@ export class BillingTabComponent {
       return { rects: [], gridLines: [], xLabels: [], buckets: [], plotTop: 0, plotBottom: 0, barW: 0 };
     }
 
-    const times = [...new Set(buckets.map((b) => b.bucket_ts))].sort();
+    const times = [...new Set(buckets.map((b) => b.bucket_ts))].sort(compareTimestamps);
     const n = times.length;
 
     const bars = times.map((ts) => {
@@ -290,7 +290,7 @@ export class BillingTabComponent {
       const offset = this.offset();
       this.hoverBucket.set(null);
       this.tooltipPos.set(null);
-      if (this.teamId) this.loadData(preset, offset);
+      if (this.teamId) void this.loadData(preset, offset);
     });
   }
 

@@ -3,6 +3,7 @@ package de.tum.cit.aet.logos.logoswebservice.configuration;
 import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.ResponseEntity;
@@ -91,5 +92,24 @@ class ProviderMaintenanceRoutesTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.forced").value(true));
         verify(workerAdminClient).releaseRecovery(31, true);
+    }
+    @Test
+    void nodeReleaseForwardsTheSelectedDeployment() throws Exception {
+        when(workerAdminClient.releaseNodeMaintenance(12, "deploy-1"))
+            .thenReturn(ResponseEntity.ok(Map.of("released", true)));
+        mvc.perform(post("/logosdb/maintenance/release_node")
+                .contentType("application/json")
+                .content("{\"provider_id\":12,\"deployment_id\":\"deploy-1\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.released").value(true));
+        verify(workerAdminClient).releaseNodeMaintenance(12, "deploy-1");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{}", "{\"provider_id\":12}", "{\"provider_id\":12,\"deployment_id\":\"bad tag\"}"})
+    void nodeReleaseRequiresAValidIdentity(String body) throws Exception {
+        mvc.perform(post("/logosdb/maintenance/release_node").contentType("application/json").content(body))
+            .andExpect(status().isBadRequest());
+        org.mockito.Mockito.verifyNoInteractions(workerAdminClient);
     }
 }

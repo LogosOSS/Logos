@@ -1,6 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.operations.controller;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,11 +17,14 @@ import org.springframework.test.web.servlet.MockMvc;
 import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
 import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchService;
+import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchPriceService;
 
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
 /**
  * The batch page is an admin facility: app developers are refused before the
@@ -45,6 +49,35 @@ class BatchControllerAccessTest {
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder jwtDecoder;
     @MockitoBean BatchService batchService;
+    @MockitoBean BatchPriceService batchPriceService;
+
+    @Test
+    void appDeveloperCannotReadPrices() throws Exception {
+        mvc.perform(get("/logosdb/batches/prices").param("apiKeyId", "3004").with(TestJwt.testUser()))
+            .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void bothAdminRolesCanReadSelectedKeyPrices() throws Exception {
+        when(batchPriceService.pricesForKey(anyInt(), anyInt())).thenReturn(List.of(
+            new BatchPriceService.ModelPrice("model", 100L, 200L)));
+        for (var user : List.of(TestJwt.adminUser(), TestJwt.logosAdmin())) {
+            mvc.perform(get("/logosdb/batches/prices").param("apiKeyId", "3004").with(user))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].model_name").value("model"))
+                .andExpect(jsonPath("$[0].input_price_per_k_tokens").value(100))
+                .andExpect(jsonPath("$[0].output_price_per_k_tokens").value(200));
+        }
+    }
+
+    @Test
+    void pricesForAnUnownedKeyAreForbidden() throws Exception {
+        when(batchPriceService.pricesForKey(anyInt(), anyInt()))
+            .thenThrow(new BatchService.KeyNotOwnedException("This API key does not belong to you."));
+        mvc.perform(get("/logosdb/batches/prices").param("apiKeyId", "3004").with(TestJwt.adminUser()))
+            .andExpect(status().isForbidden());
+    }
+
 
     @Test
     void appDeveloperIsRefused() throws Exception {
@@ -76,5 +109,16 @@ class BatchControllerAccessTest {
                 .param("apiKeyId", "3004")
                 .with(TestJwt.logosAdmin()))
            .andExpect(status().isOk());
+    }
+
+    @Test
+    void anInvalidBatchIdIsABadRequest() throws Exception {
+        when(batchService.getBatch(anyInt(), anyInt(), anyString()))
+            .thenThrow(new BatchService.InvalidIdException("Not a valid batch or file id."));
+
+        mvc.perform(get("/logosdb/batches/{batchId}", "bad id")
+                .param("apiKeyId", "3004")
+                .with(TestJwt.logosAdmin()))
+           .andExpect(status().isBadRequest());
     }
 }

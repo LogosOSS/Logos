@@ -31,14 +31,15 @@ last works either way.
 import asyncio
 import json
 import logging
+import math
 import os
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from logos.auth import AuthContext
 from logos.dbutils.dbmanager import DBManager
-from logos.request_content import sanitized_payload_for_logging
+from logos.request_content import MULTIPART_PAYLOAD_KEY, sanitized_payload_for_logging
 
 logger = logging.getLogger(__name__)
 
@@ -198,12 +199,23 @@ def _open_line_log(auth: AuthContext, body: Dict[str, Any]) -> Optional[int]:
         return None
 
 
-async def _run_line(line: Dict[str, Any], auth: AuthContext, headers: Dict[str, str]) -> Tuple[Dict[str, Any], bool]:
+class _BatchStopped(Exception):
+    """A rate-limited line stopped waiting because its batch was cancelled or expired."""
+
+
+async def _run_line(
+    line: Dict[str, Any],
+    auth: AuthContext,
+    headers: Dict[str, str],
+    stop: Optional[asyncio.Event] = None,
+) -> Tuple[Dict[str, Any], bool]:
     """Run one request line through the ordinary pipeline.
 
     How many lines run at once is the caller's limit — the runner gives each
     worker of its worker pool exactly one line — not a semaphore inside here,
     so a cancelled worker holds no slot the next line could have taken.
+    Rate-limited attempts wait before retrying; ``stop`` interrupts that wait
+    when the batch is cancelled or its completion window expires.
     """
     # Imported here rather than at module scope: main imports the batch modules,
     # so the reverse edge can only be taken once the app is up.
@@ -213,18 +225,58 @@ async def _run_line(line: Dict[str, Any], auth: AuthContext, headers: Dict[str, 
     if not endpoint.startswith("v1/"):
         endpoint = f"v1/{endpoint}"
     body = line.get("body") if isinstance(line.get("body"), dict) else {}
-
-    log_id = _open_line_log(auth, body)
-    if log_id is None:
-        # Fail closed: without the log row the pipeline would run the
-        # request and bill nothing, so the line is refused instead of run
-        # unbilled. The batch reports it as a failed line like any other.
-        logger.error("No usage log for batch line %s; refusing to run it unbilled", line.get("custom_id"))
+    if MULTIPART_PAYLOAD_KEY in body:
+        # Internal to the audio upload path; a batch line has no form behind it.
         return _result_row(
-            line, {"status_code": 500, "data": {"error": {"message": "the request could not be started"}}}
+            line,
+            {
+                "status_code": 400,
+                "data": {"error": {"message": f"Unsupported request field '{MULTIPART_PAYLOAD_KEY}'"}},
+            },
         )
+
     try:
-        result = await execute_proxy_job(endpoint, dict(headers), dict(body), None, auth, log_id)
+        backoff = 1.0
+        while True:
+            if stop is not None and stop.is_set():
+                raise _BatchStopped
+            # Every attempt has its own log row: a rate-limited attempt is
+            # closed as rejected before the wait, so a batch stopped while a
+            # line waits leaves no request looking as if it still ran.
+            log_id = _open_line_log(auth, body)
+            if log_id is None:
+                # Fail closed: without the log row the pipeline would run the
+                # request and bill nothing, so the line is refused instead of
+                # run unbilled. The batch reports it as a failed line like any other.
+                logger.error("No usage log for batch line %s; refusing to run it unbilled", line.get("custom_id"))
+                return _result_row(
+                    line, {"status_code": 500, "data": {"error": {"message": "the request could not be started"}}}
+                )
+            result = await execute_proxy_job(endpoint, dict(headers), dict(body), None, auth, log_id)
+            if not isinstance(result, dict) or result.get("status_code") != 429:
+                break
+            retry_after = next(
+                (value for key, value in (result.get("headers") or {}).items() if key.lower() == "retry-after"),
+                None,
+            )
+            try:
+                delay = float(retry_after)
+            except (TypeError, ValueError):
+                delay = backoff
+            if not math.isfinite(delay) or delay <= 0:
+                delay = backoff
+            if stop is None:
+                await asyncio.sleep(delay)
+            else:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=delay)
+                except TimeoutError:
+                    pass
+                else:
+                    raise _BatchStopped
+            backoff = min(backoff * 2, 60.0)
+    except _BatchStopped:
+        raise
     except Exception:  # noqa: BLE001 - one bad line must not stop the batch
         # The exception itself stays in the server log; the result file is
         # downloadable by the caller, so it carries a generic message
@@ -313,15 +365,23 @@ async def _execute_lines(
     failed = len(finished) - completed
     pending = [line for line in lines if line.get("custom_id") not in finished]
     cancelled = False
+    expired = False
+    # Local batches accept only the 24h completion window. Use the creation
+    # time so resuming a batch cannot extend the time available for retries.
+    created_at = batch.get("created_at")
+    deadline = (
+        (created_at.replace(tzinfo=timezone.utc) if created_at.tzinfo is None else created_at) + timedelta(hours=24)
+        if isinstance(created_at, datetime)
+        else None
+    )
 
     if pending:
         queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
         for line in pending:
             queue.put_nowait(line)
 
-        # The two ways a run stops short of the last line:
         lost = asyncio.Event()  # lease gone: no checkpoint, no finalization
-        no_more = asyncio.Event()  # cancel requested: in-flight lines finish, nothing new starts
+        no_more = asyncio.Event()  # cancelled/expired: admitted lines finish, nothing new starts
 
         # A single line can legitimately run longer than the whole lease, and
         # a worker sitting in one cannot keep the batch alive on its own, so
@@ -335,7 +395,7 @@ async def _execute_lines(
             # A line cancelled before it finished raises here and never
             # reaches the checkpoint below — that is what keeps a deposed
             # runner's unfinished lines out of the new holder's skip list.
-            row, line_failed = await _run_line(line, auth, headers)
+            row, line_failed = await _run_line(line, auth, headers, stop=no_more)
             finished[line.get("custom_id")] = row
             if line_failed:
                 failed += 1
@@ -383,21 +443,32 @@ async def _execute_lines(
                     return
                 try:
                     await _run_and_checkpoint(line)
+                except _BatchStopped:
+                    # A rate-limited line has no result to checkpoint when
+                    # the batch is cancelled or its window ends. Task
+                    # cancellation (lease loss, shutdown) propagates as is.
+                    return
                 finally:
                     queue.task_done()
 
         async def _heartbeat() -> None:
-            """Keep the lease alive while lines run, and report a cancel."""
-            nonlocal cancelled
+            """Keep the lease alive while lines run, and report cancellation or expiry."""
+            nonlocal cancelled, expired
             # A None answer — or a check that failed, which fails closed the
             # same way, because a heartbeat that cannot confirm the lease
             # cannot keep it — is the lease being gone: stop the workers
             # before they checkpoint or finalize, and cancel the in-flight
             # lines so the new holder's run of them is not billed twice.
             while not lost.is_set():
-                await asyncio.sleep(heartbeat_interval)
+                delay = heartbeat_interval
+                if deadline is not None and not expired:
+                    delay = min(delay, max(0.0, (deadline - datetime.now(timezone.utc)).total_seconds()))
+                await asyncio.sleep(delay)
                 if lost.is_set():
                     return
+                if deadline is not None and datetime.now(timezone.utc) >= deadline:
+                    expired = True
+                    no_more.set()
                 try:
                     with DBManager() as db:
                         still = db.update_local_batch_progress(
@@ -428,14 +499,20 @@ async def _execute_lines(
         if still_running:
             cancelled = True
             no_more.set()
+        if deadline is not None and datetime.now(timezone.utc) >= deadline:
+            expired = True
+            no_more.set()
 
         if not no_more.is_set():
             worker_tasks = [asyncio.ensure_future(_worker()) for _ in range(max(1, LOCAL_BATCH_CONCURRENCY))]
             heartbeat_task = asyncio.ensure_future(_heartbeat())
             try:
                 await asyncio.gather(*worker_tasks)
-            except asyncio.CancelledError:
-                if lost.is_set():
+            except asyncio.CancelledError:  # NOSONAR - re-raised unless only the workers were cancelled
+                # A lost lease cancels the workers, which surfaces here; a
+                # cancellation of this run itself always propagates.
+                current = asyncio.current_task()
+                if lost.is_set() and not (current is not None and current.cancelling()):
                     logger.warning(
                         "Lost the lease on batch %s mid-run; another runner takes over", batch.get("upstream_id")
                     )
@@ -482,7 +559,7 @@ async def _execute_lines(
         finished = db.finish_local_batch(
             batch_object_id,
             RUNNER_ID,
-            status="cancelled" if cancelled else "completed",
+            status="expired" if expired else "cancelled" if cancelled else "completed",
             output_file_id=output_file_id,
             completed=completed,
             failed=failed,
@@ -500,7 +577,7 @@ async def _execute_lines(
         batch.get("upstream_id"),
         completed,
         failed,
-        " (cancelled)" if cancelled else "",
+        " (expired)" if expired else " (cancelled)" if cancelled else "",
     )
     return output_file_id
 

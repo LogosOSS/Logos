@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from itertools import combinations
 from typing import Any, Callable, Dict, List, Optional
 
+from logos.asyncio_tasks import cancel_and_wait
 from logos.background_refresh import BackgroundRefreshedValue
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeRuntimeRegistry
@@ -1431,11 +1432,7 @@ class CapacityPlanner:
     async def stop(self) -> None:
         """Stop the planner."""
         if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_wait(self._task)
             logger.info("Capacity planner stopped")
         drains = list(getattr(self, "_demand_drain_tasks", {}).values())
         for task in drains:
@@ -3599,7 +3596,12 @@ class CapacityPlanner:
                 m,
                 self._facade.get_provider_name(provider_id) or provider_id,
             )
-            asyncio.create_task(self.prepare_lane_for_request(provider_id, m, timeout_seconds=30.0))
+            # Hold the task until it finishes: the event loop keeps only a weak
+            # reference, so an untracked retry could be collected mid-run.
+            task = asyncio.create_task(self.prepare_lane_for_request(provider_id, m, timeout_seconds=30.0))
+            retries = self.__dict__.setdefault("_pending_capacity_retries", set())
+            retries.add(task)
+            task.add_done_callback(retries.discard)
 
     def _find_eviction_set(
         self,

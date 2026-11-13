@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 import org.springframework.stereotype.Service;
@@ -45,12 +46,23 @@ public class ApiKeyAdminService {
         this.auditLog = auditLog;
     }
 
-    public List<Map<String, Object>> getKeysForTeam(int teamId) {
+    /**
+     * A developer key is its holder's personal credential: whoever manages the
+     * team may see that it exists and may deactivate or rotate it, but only the
+     * holder gets to see its value. Application and service keys belong to the
+     * team and stay readable for the team's managers.
+     */
+    static boolean isForeignPersonalKey(String keyType, Integer keyUserId, Integer callerId) {
+        return ApiKeyType.developer.name().equals(keyType) && !Objects.equals(keyUserId, callerId);
+    }
+
+    public List<Map<String, Object>> getKeysForTeam(int teamId, int callerId) {
         return apiKeyRepository.findKeysForTeam(teamId).stream()
             .map(p -> {
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("id", p.getId());
-                m.put("key_value", p.getKeyValue());
+                m.put("key_value", isForeignPersonalKey(p.getKeyType(), p.getUserId(), callerId)
+                    ? null : p.getKeyValue());
                 m.put("name", p.getName());
                 m.put("key_type", p.getKeyType());
                 m.put("user_id", p.getUserId());
@@ -184,7 +196,7 @@ public class ApiKeyAdminService {
     private static final int API_KEY_TOKEN_LENGTH = 128;
 
     @Transactional
-    public Optional<Map<String, Object>> rotateKey(int keyId) {
+    public Optional<Map<String, Object>> rotateKey(int keyId, int callerId) {
         Optional<ApiKey> keyOpt = apiKeyRepository.findById(keyId);
         if (keyOpt.isEmpty()) {
             return Optional.empty();
@@ -192,6 +204,12 @@ public class ApiKeyAdminService {
         ApiKey key = keyOpt.get();
         key.setKeyValue(rotateKeyValue(key.getKeyValue()));
         apiKeyRepository.save(key);
+        String keyType = key.getKeyType() == null ? null : key.getKeyType().name();
+        if (isForeignPersonalKey(keyType, key.getUserId(), callerId)) {
+            // Rotating someone else's personal key revokes the old value; the
+            // holder reads the new one from their own workspace.
+            return Optional.of(Map.of("result", "API key rotated successfully"));
+        }
         return Optional.of(Map.of(
             "result", "API key rotated successfully",
             "api_key", key.getKeyValue()));
@@ -226,7 +244,7 @@ public class ApiKeyAdminService {
         String label = String.join("-", parts)
             .replaceAll("[^a-z0-9\\-]", "-")
             .replaceAll("\\-+", "-")
-            .replaceAll("^\\-|\\-$", "");
+            .replaceAll("(?:^-)|(?:-$)", "");
         if (label.length() > 35) label = label.substring(0, 35);
         return "lg-" + label + "-" + ApiKeyFactory.generateToken();
     }

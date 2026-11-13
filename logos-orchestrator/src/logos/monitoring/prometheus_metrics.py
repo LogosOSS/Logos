@@ -109,7 +109,7 @@ SCHEDULING_DECISIONS_TOTAL = Counter(
 ADMISSION_HOLDS_TOTAL = Counter(
     "logos_admission_holds_total",
     "Requests held at orchestrator level instead of being forwarded to a worker",
-    # worker_capacity, backend_queue, kv_cache_pressure, engine_at_capacity
+    # worker_capacity, backend_queue, awaiting_signal
     ["reason"],
     registry=registry,
 )

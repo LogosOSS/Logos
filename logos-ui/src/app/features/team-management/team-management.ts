@@ -107,13 +107,13 @@ export class TeamManagement implements OnInit {
   constructor() {
     effect(() => {
       if (this.canCreateTeam() && this.adminUsers().length === 0) {
-        this.fetchAdminUsers();
+        void this.fetchAdminUsers();
       }
     });
   }
 
   ngOnInit(): void {
-    this.fetchTeams();
+    void this.fetchTeams();
   }
 
   // ── Data fetching ─────────────────────────────────────────────────────────
@@ -194,6 +194,10 @@ export class TeamManagement implements OnInit {
 
   isOwnerSelected(id: number): boolean {
     return this.createOwnerIds().includes(id);
+  }
+
+  viewPermissionHistory(id: number): void {
+    this.router.navigate(['/permission-audit-log'], { queryParams: { team_id: id } });
   }
 
   navigateToTeam(id: number): void {

@@ -12,7 +12,7 @@ import base64
 import binascii
 import json
 import os
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from fastapi import HTTPException, Request
 from starlette.datastructures import FormData, UploadFile
@@ -39,6 +39,54 @@ _PROXY_PREFIXES = ("jobs/", "openai/", "v1/", "v2/")
 
 class _MultipartRequestTooLarge(MultiPartException):
     """Signal an over-limit stream through Starlette's multipart cleanup path."""
+
+
+def reject_client_multipart_marker(body: Any) -> None:
+    """Refuse a client body that carries the internal multipart marker.
+
+    The marker is set only by ``parse_audio_upload`` after it parsed a real
+    form; the executor turns it back into the form it forwards. Accepted from
+    a client, it would forward fields - the model among them - that the
+    authorization never saw.
+    """
+    if isinstance(body, dict) and MULTIPART_PAYLOAD_KEY in body:
+        raise HTTPException(status_code=400, detail=f"Unsupported request field '{MULTIPART_PAYLOAD_KEY}'")
+
+
+# Responses API fields that point at state the provider keeps. Providers are
+# reached with one shared account, so the provider cannot tell teams apart: a
+# reference would load whatever response or conversation it names, also
+# another team's. Requests carry their full history instead.
+STATEFUL_REFERENCE_FIELDS = ("previous_response_id", "conversation")
+
+
+# An input item of this type loads a stored item by its ID instead of carrying
+# the content, so it reaches provider state in the same way.
+STATEFUL_INPUT_ITEM_TYPE = "item_reference"
+
+
+def stateful_reference_field(body: Any) -> Optional[str]:
+    """The first provider-state reference a request body sets, if any."""
+    if not isinstance(body, dict):
+        return None
+    field = next((name for name in STATEFUL_REFERENCE_FIELDS if body.get(name) is not None), None)
+    if field is None and isinstance(body.get("input"), list):
+        if any(isinstance(item, dict) and item.get("type") == STATEFUL_INPUT_ITEM_TYPE for item in body["input"]):
+            field = f"input item of type {STATEFUL_INPUT_ITEM_TYPE}"
+    return field
+
+
+def stateful_reference_detail(field: str) -> str:
+    return (
+        f"'{field}' is not supported: Logos does not keep conversation state at the provider. "
+        "Send the full conversation in 'input' instead."
+    )
+
+
+def reject_stateful_references(body: Any) -> None:
+    field = stateful_reference_field(body)
+    if field is not None:
+        raise HTTPException(status_code=400, detail=stateful_reference_detail(field))
 
 
 def _audio_request_limit_detail() -> str:
@@ -122,7 +170,7 @@ async def parse_audio_upload(request: Request) -> Dict[str, Any]:
         form = await limited_request.form(
             max_files=1,
             max_fields=64,
-            max_part_size=MAX_AUDIO_FORM_FIELD_BYTES,
+            max_part_size=MAX_AUDIO_FORM_FIELD_BYTES,  # NOSONAR - a Request.form() parameter of the pinned Starlette
         )
         return await _encode_form_data(form)
     except _MultipartRequestTooLarge as exc:

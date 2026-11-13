@@ -45,30 +45,31 @@ key **LOW** priority so agent work can never outrank a user at the scheduler.
 
 ## Capacity, concretely
 
-The runner reads `/logosdb/scheduler_state` every 15 seconds and computes one
-number: the busy share of the serving slots **its own sessions would use**.
+The runner checks `/logosdb/scheduler_state` every **2 seconds**. Capacity
+monitoring has its own task, so a slow checkout, launch or maintenance request
+cannot delay returning capacity to users. Reply delivery, workspace cleanup,
+check watches and retry maintenance keep their separate 15-second cadence.
 
-A slot is one request a lane can serve at once — the concurrency its lanes
-guarantee (`lane_parallel`, the slot count the lane pages show), not the
-scheduler's loose ledger ceiling (`max_capacity`), which stands in only until
-a lane reports. A worker that is offline holds no slots.
+Fresh `engine_lanes` observations determine capacity. A ready vLLM lane is
+saturated when it has at least one request waiting in its engine queue. The
+full-context concurrency guarantee (`lane_parallel`) is not a hard request
+limit: shorter requests can run beyond it. The scheduler ledger ceiling and KV
+utilization alone do not stop or pause agent work. A compatible ready lane with
+an empty engine queue can still serve requests when a sibling is saturated.
+The orchestrator's dispatch budget remains a burst safeguard; `awaiting_signal`
+means wait before adding work and does not pause running sessions.
 
-That filter matters. A fleet holds embedding models, rerankers and chat models
-that share nothing but a building, and summing them answers a question nobody
-asked — "6 of 120 slots busy" reads as an idle platform when all six of those
-requests are on the one model the agent is served by, which is half its lane.
-So the ratio counts the deployments the runner's key can reach — by provider
-and model id, not by name, because the same model is served by providers this
-key has no permission for and their idle slots would make a busy lane look
-free. It falls back to the fleet-wide figure only when none of those
-deployments is resident: there is nothing of ours to measure then, and the
-older signal is the better of the two answers available. A key that reaches
-*nothing* is a different question and is refused outright, so a paused
-session is never resumed into a permission it no longer has. The **queue** is
-filtered the same way: a backlog on another local model, or on a cloud
-provider, is not a person waiting for the lane this runner uses. The Agents
-page shows how many of that model's dynamic slots this runner holds versus
-other production traffic.
+The reading covers only provider/model deployments the runner's key can reach.
+Idle capacity on an inaccessible provider, an unrelated model or a cloud service
+does not count. The orchestrator's model-wide user backlog retains priority,
+including a backlog for a currently unloaded or unavailable deployment. Missing,
+stale, offline or cordoned observations cannot contribute available slots.
+
+The Agents capacity display shows a **dynamic observation window**, not a
+physical maximum: observed running or accepted requests plus the dispatch steps
+currently available. Accepted requests remain visible while the engine sample
+catches up. The count may grow or shrink as context lengths and traffic change.
+No fixed maximum can be inferred from an empty engine queue.
 
 **Minus its own share, where that is the right question.** The orchestrator
 reports how busy a model is, and *who* is keeping it busy: how many of the
@@ -95,10 +96,29 @@ bounds the runner's own concurrency is the parallel ceiling, not the load.
 
 | Condition | What happens |
 |---|---|
-| load < `START_BELOW_LOAD` (default 60 %) and no queue | queued sessions may start |
-| load ≥ `PAUSE_ABOVE_LOAD` (default 85 %), **or** any user queueing | running sessions are paused |
-| load falls back below `START_BELOW_LOAD` | paused sessions resume mid-task |
-| orchestrator unreachable | nothing starts; anything running pauses |
+| Fresh, ready lane with dispatch headroom and no relevant queue | One queued session may start per new engine observation |
+| All compatible ready lanes have engine waiters, or user requests wait in the orchestrator | Running sessions yield after subtracting the runner's attributable queue |
+| At least 10 seconds continuously without user backlog, plus a newer relevant engine observation | At most one paused session resumes per new observation |
+| Dispatch budget temporarily exhausted (`awaiting_signal`) | No additional session starts; running sessions continue |
+| Orchestrator unreachable or required engine observations stale/unknown | Nothing starts or resumes; running sessions pause |
+
+Concurrent creation-triggered passes share the same observation budget. Worker
+heartbeats and counter-only runtime revisions do not replenish it: the identity
+is the worker session and the timestamp of its actual engine observation. A
+paused session must have a new observation for its own model; another model's
+update cannot resume it. Manual pause takes effect without a stability delay.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LOGOS_AGENT_SCHEDULER_INTERVAL_S` | `2` | Delay between capacity checks |
+| `LOGOS_AGENT_CAPACITY_TIMEOUT_S` | `1` | Timeout for the scheduler-state HTTP request |
+| `LOGOS_AGENT_CAPACITY_STALE_AFTER_S` | `30` | Maximum age of an engine observation; increase when workers deliberately report less frequently |
+| `LOGOS_AGENT_CAPACITY_RESUME_QUIET_S` | `10` | Continuous quiet period required before resuming paused work |
+
+During a rolling upgrade, payloads without `engine_lanes` retain the legacy
+ratio thresholds: start/resume below `LOGOS_AGENT_START_BELOW_LOAD` (60%), pause
+at `LOGOS_AGENT_PAUSE_ABOVE_LOAD` (85%) or user backlog. Fresh engine payloads use
+the dynamic rules above.
 
 Pausing freezes the process tree through the cgroup freezer, so a resumed
 session picks up where it was rather than starting over. Yielding always takes
@@ -149,7 +169,7 @@ and a partial unique index in the schema rejects a second active session for a
 workspace outright. The second exists because a scheduler bug should raise
 rather than corrupt a checkout.
 
-Ten sessions is the default ceiling. The capacity thresholds decide how many
+Ten sessions is the default ceiling. The current dispatch headroom decides how many
 of them actually run at any moment.
 
 ## What is in the session image
@@ -161,12 +181,51 @@ Enough to work on any part of this repository, and nothing else:
 | Claude Code | 2.1.245 | The agent. Driven headless: `claude -p … --output-format stream-json` |
 | Node | 22 | logos-ui |
 | Python | 3.11 (system) + **3.13 via uv** | Logos targets 3.13; bookworm ships 3.11, and a read-only rootfs cannot download an interpreter at runtime, so it is preinstalled into `/opt/uv-python` |
-| Temurin JDK | 25 | logos-webservice targets Java 25. From Adoptium — Debian bookworm packages no JDK that new. `./mvnw` fetches Maven itself |
+| Temurin JDK / Maven | 25 / 3.10 | logos-webservice compilation, with Maven and a warm repository available offline |
 | gh | 2.98 | Opening the pull request |
 | Chromium (Playwright) | 151 | Screenshots of the dev environment |
 
 Versions are pinned as build args; bump them deliberately rather than letting a
 session's behaviour drift between builds.
+
+Java and Angular dependencies are resolved when this image is built. Sessions
+can run `python3 /usr/local/lib/verify_checkout.py logos-webservice logos-ui`
+(omit unchanged services) without network access. The command compiles Java
+production and test sources with Maven `test-compile`, and runs the Angular
+production build and tests. A changed lockfile or Maven dependency absent from
+the image cache fails visibly; rebuild the workspace image to refresh its cache.
+
+Before publishing, the runner records a candidate Git tree using trusted
+metadata, then runs the checks in a separate container with no credentials or
+network and read-only mounts of the workspace and artifacts. Builds use a
+clean export of that exact Git tree. Ignored and unstaged working-directory
+configuration cannot alter the authoritative build. The finalizer checks the
+same tree ID before pushing. Neither
+the checkout baseline nor the authoritative check outcome comes from an
+agent-written result file. Failed or unavailable checks produce a draft PR with
+diagnostics and a failed session; deployment is not dispatched. Existing PRs
+are made drafts before such a push. Successful checks do not automatically
+mark an existing draft ready for review. Python and other services still need
+their normal tests; this automatic gate covers Java and Angular.
+
+For a continued PR, service selection includes the complete candidate diff
+against its target-branch merge base, recorded before the agent starts. A retry
+that only edits documentation therefore still checks previously changed Java
+or Angular code. Branch leases are checked before changing PR metadata as well
+as at push time, so an already-diverged branch cannot receive stale diagnostics.
+
+The runner records the checkout commit and target branch tip before the agent
+starts. Finalization commits on that original parent, even if the base branch
+has advanced. Independent upstream changes survive the eventual merge, and
+overlapping edits remain visible merge conflicts. Existing PR branches must
+start from their own current tip; an intervening push is refused by an explicit
+lease. An interrupted finalization can reuse its exact already-pushed snapshot.
+The finalizer records a successful push before calling PR APIs. If PR creation
+fails, the runner retains that publication receipt so the next attempt prepares
+the published branch while keeping the original PR target, including non-default
+targets such as a release branch.
+Sessions prepared by older runners lack trusted baseline evidence and must be
+started again before publishing; they are never reattached to a fresh base.
 
 > **Adding a Dockerfile here?** The repository-root `.dockerignore` is a
 > *whitelist*. Anything a Dockerfile copies must be listed there, or the build
@@ -258,7 +317,7 @@ and the rules do not. A move past a session of equal priority goes one above
 it: ties are broken by age, and nothing can make a session older.
 
 
-A session is admitted per capacity reading, so the order of the queue is what
+A session is admitted per fresh engine observation, so the order of the queue is what
 the platform actually works on while it is busy. That order is urgency, not
 arrival: a review (which holds a pull request shut) outranks a question,
 which outranks new work, and the repository's own labels move it — a

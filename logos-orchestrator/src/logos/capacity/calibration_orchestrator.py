@@ -33,6 +33,8 @@ from datetime import datetime, time
 from typing import TYPE_CHECKING, Callable
 from zoneinfo import ZoneInfo
 
+from logos.asyncio_tasks import cancel_and_wait
+
 # Terminal session events that free the active-provider slot. Shared with the
 # registry, which uses the same names to track ProviderSession.calibrating —
 # one definition keeps the two from drifting apart.
@@ -172,11 +174,7 @@ class CalibrationOrchestrator:
             unsubscribe(self._on_provider_event)
         if self._task is None or self._task.done():
             return
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
+        await cancel_and_wait(self._task)
         self._task = None
         logger.info("CalibrationOrchestrator: stopped")
 

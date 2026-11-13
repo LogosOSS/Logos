@@ -31,6 +31,7 @@ except Exception:  # noqa: BLE001
 
 from logos_worker_node import perf_trace as worker_perf
 from logos_worker_node import prometheus_metrics as prom
+from logos_worker_node.asyncio_tasks import cancel_and_wait, finish_shielded
 from logos_worker_node.gpu_slice import calibration_gpu_slice, parse_gpu_indices
 from logos_worker_node.lane_manager import _lane_id_from_config, _normalize_lane_id
 from logos_worker_node.metal import is_metal_backend
@@ -43,7 +44,12 @@ from logos_worker_node.models import (
     model_can_sleep,
     model_uses_sharded_checkpoint,
 )
-from logos_worker_node.request_content import MULTIPART_PAYLOAD_KEY, httpx_request_parts
+from logos_worker_node.request_content import (
+    MULTIPART_PAYLOAD_KEY,
+    MediaReferenceError,
+    httpx_request_parts,
+    validate_media_references,
+)
 from logos_worker_node.runtime import build_runtime_status
 from logos_worker_node.vllm_compat import DEFAULT_VLLM
 from logos_worker_node.vllm_metrics_export import collect_vllm_metrics_text
@@ -240,12 +246,7 @@ class LogosBridgeClient:
         self._stopping.set()
         task = self._task
         self._task = None
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        await cancel_and_wait(task)
         # No command is read any more. Shutdown, unlike a disconnect, ends the
         # lane commands still running before the lane manager cleans up. An
         # unload runs to its end: cancelled mid-exit, it would leave a process
@@ -315,15 +316,7 @@ class LogosBridgeClient:
                                 raw = raw.decode("utf-8", errors="replace")
                             await self._handle_message(ws, raw)
                     finally:
-                        heartbeat_task.cancel()
-                        status_task.cancel()
-                        vllm_metrics_task.cancel()
-                        event_task.cancel()
-                        for task in (heartbeat_task, status_task, vllm_metrics_task, event_task):
-                            try:
-                                await task
-                            except asyncio.CancelledError:
-                                pass
+                        await cancel_and_wait(heartbeat_task, status_task, vllm_metrics_task, event_task)
                         await self._cancel_command_tasks()
             except asyncio.CancelledError:
                 raise
@@ -658,6 +651,8 @@ class LogosBridgeClient:
         )
 
     def _runtime_has_transient_lanes(self) -> bool:
+        if self._last_runtime_payload.get("lane_transfers"):
+            return True
         lanes = self._last_runtime_payload.get("lanes") or []
         if not isinstance(lanes, list):
             return False
@@ -789,17 +784,16 @@ class LogosBridgeClient:
 
         for task in tasks:
             task.cancel()
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._command_tasks.clear()
         for task in tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # noqa: BLE001
+            if not task.cancelled() and task.exception() is not None:
                 logger.debug(
                     "Bridge background command task failed during shutdown",
-                    exc_info=True,
+                    exc_info=task.exception(),
                 )
-        self._command_tasks.clear()
 
     def cancel_command(self, target_cmd_id: str) -> bool:
         """Cancel one in-flight command by its cmd_id.
@@ -2466,26 +2460,31 @@ class LogosBridgeClient:
         except Exception:  # noqa: BLE001
             logger.exception("[Calibration] Sharded conversion errored for %s", model_name)
 
-    # vLLM endpoints that must never be reachable through proxied inference
-    # requests.  These are internal management endpoints (sleep/wake, cache
-    # reset, weight updates, etc.) that should only be triggered by the
-    # lane manager or capacity planner, not by external API clients.
-    _BLOCKED_REQUEST_PATHS: ClassVar[frozenset[str]] = frozenset(
+    # Only inference operations may be relayed to a lane. Management endpoints
+    # remain accessible exclusively through the worker's control plane.
+    _ALLOWED_REQUEST_PATHS: ClassVar[frozenset[str]] = frozenset(
         {
-            "sleep",
-            "wake_up",
-            "is_sleeping",
-            "pause",
-            "resume",
-            "is_paused",
-            "reset_prefix_cache",
-            "reset_mm_cache",
-            "reset_encoder_cache",
-            "update_weights",
-            "init_weight_transfer_engine",
-            "scale_elastic_ep",
-            "is_scaling_elastic_ep",
-            "collective_rpc",
+            "v1/chat/completions",
+            "v1/completions",
+            "v1/embeddings",
+            "v1/responses",
+            "v1/messages",
+            "v1/audio/transcriptions",
+            "v1/audio/translations",
+            "v1/audio/speech",
+            "v1/models",
+            # Decision readouts for models without a decision profile (orchestrator system_one route).
+            "v1/systemone",
+            "v1/rerank",
+            "v1/score",
+            "v2/embed",
+            "v2/rerank",
+            "pooling",
+            "score",
+            "rerank",
+            "classify",
+            "tokenize",
+            "detokenize",
         }
     )
 
@@ -2495,17 +2494,23 @@ class LogosBridgeClient:
         payload: dict[str, Any] | None = None,
         request_path: str | None = None,
     ) -> str:
-        # If the caller forwarded the original API path (e.g. "v1/embeddings",
-        # "v2/embed", "tokenize"), use it directly so vLLM decides what it supports.
-        if request_path:
-            endpoint = request_path.strip("/")
-            # Block internal vLLM management endpoints from being reached
-            # through proxied inference requests.
-            if endpoint in LogosBridgeClient._BLOCKED_REQUEST_PATHS:
-                raise ValueError(f"Request path '/{endpoint}' is not allowed through the inference proxy")
-        else:
-            endpoint = str(lane_status.get("inference_endpoint") or "/v1/chat/completions").lstrip("/")
+        if not request_path:
+            request_path = str(lane_status.get("inference_endpoint") or "/v1/chat/completions")
+        # Accept one leading path separator, but reject ambiguous paths before
+        # httpx or the lane server can normalize or decode them.
+        endpoint = request_path.removeprefix("/")
+        if (
+            any(segment in {"", ".", ".."} for segment in endpoint.split("/"))
+            or any(char in "\\%" or ord(char) < 32 or 127 <= ord(char) <= 159 for char in endpoint)
+            or endpoint not in LogosBridgeClient._ALLOWED_REQUEST_PATHS
+        ):
+            raise ValueError(f"Request path '/{endpoint}' is not allowed through the inference proxy")
         return f"http://127.0.0.1:{lane_status['port']}/{endpoint}"
+
+    def _validate_media(self, payload: dict[str, Any]) -> None:
+        config = getattr(self._app.state, "config", None)
+        domains = config.engines.vllm.allowed_media_domains if config is not None else ()
+        validate_media_references(payload, domains)
 
     async def _execute_infer_command(self, params: dict[str, Any]) -> dict[str, Any]:
         lane_manager = self._app.state.lane_manager
@@ -2513,6 +2518,11 @@ class LogosBridgeClient:
         payload = params.get("payload") or {}
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
+
+        try:
+            self._validate_media(payload)
+        except MediaReferenceError as exc:
+            return {"status_code": 400, "body": exc.error_body(), "headers": {"content-type": "application/json"}}
 
         tracer = worker_perf.begin()
 
@@ -2593,6 +2603,22 @@ class LogosBridgeClient:
                     "cmd_id": cmd_id,
                     "success": False,
                     "error": "payload must be an object",
+                },
+            )
+            return
+
+        try:
+            self._validate_media(payload)
+        except MediaReferenceError as exc:
+            await self._send_json(
+                ws,
+                {
+                    "type": "stream_end",
+                    "cmd_id": cmd_id,
+                    "success": False,
+                    "status_code": 400,
+                    "body": exc.error_body(),
+                    "error": str(exc),
                 },
             )
             return
@@ -2726,15 +2752,7 @@ class LogosBridgeClient:
             # while it waits for the lane lock. Own and await the shielded task
             # so command completion never leaves detached cleanup behind.
             cleanup = asyncio.create_task(self._cleanup_stream(lane_manager, lane_id, cmd_id, upstream))
-            cancelled = False
-            while not cleanup.done():
-                try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    cancelled = True
-            cleanup.result()
-            if cancelled:
-                raise asyncio.CancelledError
+            await finish_shielded(cleanup)
             if terminal_frame is not None:
                 await self._send_json(ws, terminal_frame)
 

@@ -265,3 +265,115 @@ describe('the tool comparison', () => {
     expect(openCode.slice(0, shared.length)).toEqual(shared);
   });
 });
+
+describe('AiTools key and clipboard actions', () => {
+  let service: FakeMyKeysService;
+  let component: AiTools;
+
+  beforeEach(async () => {
+    service = new FakeMyKeysService();
+    await TestBed.configureTestingModule({
+      imports: [AiTools],
+      providers: [{ provide: MyKeysService, useValue: service }],
+    }).compileComponents();
+    component = TestBed.createComponent(AiTools).componentInstance;
+    await component.ngOnInit();
+  });
+
+  afterEach(() => {
+    TestBed.resetTestingModule();
+    vi.unstubAllGlobals();
+  });
+
+  it('loads the models of a key picked by its id', async () => {
+    const getKeyModels = vi.spyOn(service, 'getKeyModels');
+    component.selectKeyById(String(KEY.id));
+    await vi.waitFor(() => expect(getKeyModels).toHaveBeenCalledWith(KEY.id));
+    expect(component.selectedKey()).toEqual(KEY);
+  });
+
+  it('leaves the copy button unchanged when the clipboard refuses the write', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    component.copyCmd('npm install');
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('npm install'));
+    await Promise.resolve();
+    expect(component.copiedCmd()).toBeNull();
+  });
+});
+
+describe('AiTools shell commands', () => {
+  let component: AiTools;
+  const hostileName = "模型-💡\nLOGOS\nprintf INJECTED\n'@\n$(whoami); `id` ' \" ‘ ’";
+  const hostileKey = "key'\nLOGOS\n'@\n$(whoami)`id`";
+  const decode = (encoded: string): string =>
+    new TextDecoder().decode(Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0)));
+  const payloads = (command: string): string[] =>
+    [...command.matchAll(/'([A-Za-z0-9+/]+={0,2})'/g)].map((match) => decode(match[1]));
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [{ provide: MyKeysService, useValue: new FakeMyKeysService() }],
+    });
+    component = TestBed.runInInjectionContext(() => new AiTools());
+    component.selectedKey.set({ ...KEY, key_value: hostileKey });
+    const selected = model({ model_name: hostileName });
+    component.selected.set(selected);
+    component.models.set([selected, model({ model_name: '__proto__' })]);
+  });
+
+  for (const os of ['mac', 'linux', 'windows'] as const) {
+    it(`encodes the complete Claude Code configuration for ${os}`, () => {
+      component.installTab.set(os);
+      const command = component.claudeCodeInstallCommand();
+      expect(command).not.toContain(hostileName);
+      expect(command).not.toContain(hostileKey);
+      expect(command).not.toContain('INJECTED');
+      expect(command).not.toContain("<<'LOGOS'");
+      expect(command).not.toContain("@'");
+      expect(payloads(command)).toContain(
+        `LOGOS_URL=${component.baseUrl()}\nLOGOS_MODEL=${hostileName}\nLOGOS_KEY=${hostileKey}\n`,
+      );
+      if (os === 'windows') {
+        expect(command).toContain('[System.Text.Encoding]::UTF8.GetString');
+        expect(command).toContain('& $p -Install -LogosConfig $config');
+        expect(payloads(command)).toContain(component.wrapperUrl());
+      } else {
+        expect(command).toContain('| base64 -d');
+        expect(command).toContain('| bash ~/.claude-logos-install.sh --install');
+      }
+    });
+
+    it(`leaves the optional Claude Code model unset for ${os}`, () => {
+      component.installTab.set(os);
+      component.selected.set(null);
+      expect(payloads(component.claudeCodeInstallCommand())).toContain(
+        `LOGOS_URL=${component.baseUrl()}\nLOGOS_KEY=${hostileKey}\n`,
+      );
+    });
+
+    it(`encodes OpenCode model names and credentials for ${os}`, () => {
+      component.installTab.set(os);
+      const command = component.openCodeMergeCommand();
+      expect(command).not.toContain(hostileName);
+      expect(command).not.toContain(hostileKey);
+      expect(command).not.toContain('INJECTED');
+      const config = JSON.parse(payloads(command)[0]);
+      const { $schema, ...download } = JSON.parse(component.openCodeConfigJson());
+      expect(config).toEqual(download);
+      expect(config.model).toBe(`logos/${hostileName}`);
+      expect(config.provider.logos.models[hostileName].name).toBe(hostileName);
+      expect(config.provider.logos.models['__proto__'].name).toBe('__proto__');
+      expect(config.provider.logos.options.apiKey).toBe(hostileKey);
+    });
+  }
+
+  it('quotes the POSIX download URL as one literal argument', () => {
+    const url = "https://example.test/' ; $(whoami) `id`/claude-logos.sh";
+    component.wrapperUrl = (() => url) as typeof component.wrapperUrl;
+    component.installTab.set('linux');
+    expect(component.claudeCodeInstallCommand().split('\n')[0]).toBe(
+      "curl -fsSL 'https://example.test/'\\'' ; $(whoami) `id`/claude-logos.sh' -o ~/.claude-logos-install.sh \\",
+    );
+  });
+});

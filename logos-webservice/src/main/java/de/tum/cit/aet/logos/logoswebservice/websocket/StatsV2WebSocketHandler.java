@@ -160,16 +160,20 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         }
 
         boolean setTimeline(String start, String end, int buckets) {
+            return setTimeline(start, end, buckets, null);
+        }
+
+        boolean setTimeline(String start, String end, int buckets, Boolean live) {
             try {
                 ZonedDateTime s = ZonedDateTime.parse(start.endsWith("Z") ? start : start + "Z");
                 ZonedDateTime e = ZonedDateTime.parse(end.endsWith("Z") ? end : end + "Z");
                 if (s.isAfter(e)) return false;
                 ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC);
-                if (e.isAfter(now)) e = now;
+                if (Boolean.TRUE.equals(live) || e.isAfter(now)) e = now;
                 timelineStart = s.toInstant().toString();
                 timelineEnd = e.toInstant().toString();
                 targetBuckets = Math.max(1, buckets);
-                timelineLive = now.toEpochSecond() - e.toEpochSecond() <= 120;
+                timelineLive = live != null ? live : now.toEpochSecond() - e.toEpochSecond() <= 120;
                 return true;
             } catch (Exception ex) { return false; }
         }
@@ -180,21 +184,26 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
     private final RequestLogStatsService statsService;
     private final OrchestratorLiveStreamClient liveStreamClient;
     private final ObjectMapper objectMapper;
+    private final WebSocketSessionAuth sessionAuth;
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, SessionState> states = new ConcurrentHashMap<>();
+    // One monitor per open session: a WebSocketSession does not allow
+    // concurrent sends, and the scheduler and the message handler both send.
+    private final Map<String, Object> sendLocks = new ConcurrentHashMap<>();
     private final ScheduledExecutorService scheduler;
 
     public StatsV2WebSocketHandler(VramService vramService,
                                    RequestLogService requestLogService,
                                    RequestLogStatsService statsService,
                                    OrchestratorLiveStreamClient liveStreamClient,
-                                   ObjectMapper objectMapper) {
+                                   ObjectMapper objectMapper, WebSocketSessionAuth sessionAuth) {
         this.vramService = vramService;
         this.requestLogService = requestLogService;
         this.statsService = statsService;
         this.liveStreamClient = liveStreamClient;
         this.objectMapper = objectMapper;
+        this.sessionAuth = sessionAuth;
         this.scheduler = Executors.newSingleThreadScheduledExecutor();
         this.scheduler.scheduleAtFixedRate(this::tick, 1, 1, TimeUnit.SECONDS);
         // The orchestrator pushes a fresh live snapshot as it happens; forward
@@ -205,6 +214,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
+        if (!sessionAuth.register(session, true)) return;
         sessions.put(session.getId(), session);
         SessionState state = new SessionState();
         Object key = session.getAttributes().get("logosKey");
@@ -215,14 +225,17 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        sessionAuth.unregister(session);
         sessions.remove(session.getId());
         states.remove(session.getId());
+        sendLocks.remove(session.getId());
         log.debug("[ws/stats/v2] disconnected ({} remaining)", sessions.size());
     }
 
     @Override
     @SuppressWarnings("unchecked")
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        if (!sessionAuth.isAuthorized(session, true)) return;
         SessionState state = states.get(session.getId());
         if (state == null) return;
 
@@ -268,7 +281,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         int buckets = tl.get("target_buckets") instanceof Number n ? n.intValue() : DEFAULT_TARGET_BUCKETS;
 
         if (start == null || end == null) { state.initDefaultTimeline(); }
-        else if (!state.setTimeline(start, end, buckets)) {
+        else if (!state.setTimeline(start, end, buckets, tl.get("live") instanceof Boolean b ? b : null)) {
             send(session, Map.of("type", "timeline_init",
                                  "payload", Map.of("error", "Invalid timeline range")));
             state.initDefaultTimeline();
@@ -435,7 +448,8 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         String start = msg.get("start") instanceof String s ? s : null;
         String end = msg.get("end") instanceof String s ? s : null;
         int    buckets = msg.get("target_buckets") instanceof Number n ? n.intValue() : DEFAULT_TARGET_BUCKETS;
-        if (start == null || end == null || !state.setTimeline(start, end, buckets)) {
+        if (start == null || end == null || !state.setTimeline(start, end, buckets,
+                msg.get("live") instanceof Boolean b ? b : null)) {
             send(session, Map.of("type", "timeline_init",
                                  "payload", Map.of("error", "Invalid timeline range")));
         } else {
@@ -456,6 +470,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         for (Map.Entry<String, WebSocketSession> entry : sessions.entrySet()) {
             WebSocketSession session = entry.getValue();
             SessionState state = states.get(entry.getKey());
+            if (!sessionAuth.isAuthorized(session, false)) continue;
             if (state == null || !state.initialized || !session.isOpen()) continue;
 
             try {
@@ -787,6 +802,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         for (Map.Entry<String, WebSocketSession> entry : sessions.entrySet()) {
             WebSocketSession session = entry.getValue();
             SessionState state = states.get(entry.getKey());
+            if (!sessionAuth.isAuthorized(session, false)) continue;
             if (state == null || !state.initialized || !session.isOpen()) continue;
             if (!state.wantsRequests()) continue;
             try {
@@ -897,15 +913,21 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         return sb.toString();
     }
 
-    private void send(WebSocketSession session, Object payload) {
+    private void send(WebSocketSession session, Map<String, Object> payload) {
         try {
-            String json = objectMapper.writeValueAsString(payload);
-            synchronized (session) {
-                if (session.isOpen()) session.sendMessage(new TextMessage(json));
+            if (!session.isOpen()) return;
+            synchronized (sendLocks.computeIfAbsent(session.getId(), id -> new Object())) {
+                if (sessionAuth.isAuthorized(session, false) && session.isOpen()) {
+                    Map<String, Object> timedPayload = new LinkedHashMap<>(payload);
+                    timedPayload.put("server_now", Instant.now().toString());
+                    String json = objectMapper.writeValueAsString(timedPayload);
+                    session.sendMessage(new TextMessage(json));
+                }
             }
         } catch (IOException e) {
             sessions.remove(session.getId());
             states.remove(session.getId());
+            sendLocks.remove(session.getId());
         } catch (Exception e) {
             log.warn("[ws/stats/v2] send error: {}", e.getMessage());
         }

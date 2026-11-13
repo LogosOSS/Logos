@@ -43,8 +43,6 @@ public interface UserRepository extends JpaRepository<User, Integer> {
 
     List<User> findByKeycloakIdIsNotNull();
 
-    List<User> findByPrenameIgnoreCaseAndNameIgnoreCaseAndKeycloakIdIsNull(String prename, String name);
-
     @Query("""
         SELECT u FROM User u
         WHERE u.id = (

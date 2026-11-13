@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.time.Instant;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -82,9 +83,12 @@ class StatsV2WebSocketHandlerInterestTest {
         when(restTemplate.exchange(anyString(), any(HttpMethod.class), any(HttpEntity.class), any(Class.class)))
             .thenReturn(ResponseEntity.ok(Map.of("streams", List.of())));
 
+        WebSocketSessionAuth sessionAuth = mock(WebSocketSessionAuth.class);
+        when(sessionAuth.register(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
+        when(sessionAuth.isAuthorized(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
         handler = new StatsV2WebSocketHandler(
             vramService, requestLogService, statsService,
-            liveStreamClient, objectMapper);
+            liveStreamClient, objectMapper, sessionAuth);
         handler.shutdown();
 
         session = mock(WebSocketSession.class);
@@ -121,6 +125,79 @@ class StatsV2WebSocketHandlerInterestTest {
         handler.handleMessage(session, new TextMessage("{\"action\":\"init\"}"));
 
         assertThat(pushedTypes()).contains("timeline_init", "vram_init", "requests");
+    }
+
+    @Test
+    void reconnectRestoresAnOpenEndEvenWhenTheSavedEndIsOld() throws Exception {
+        Instant before = Instant.now();
+        String start = before.minusSeconds(86_400).toString();
+        String oldEnd = before.minusSeconds(3600).toString();
+        handler.afterConnectionEstablished(session);
+        handler.handleMessage(session, new TextMessage(objectMapper.writeValueAsString(Map.of(
+            "action", "init", "interest", "requests",
+            "timeline", Map.of("start", start, "end", oldEnd, "live", true)))));
+
+        var endCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(requestLogService).getLatestRequests(
+            org.mockito.ArgumentMatchers.eq(start), endCaptor.capture(), any(), any(), any(), any(), anyBoolean(),
+            any(), any(), any(), anyInt(), anyBoolean(), any(), any());
+        assertThat(Instant.parse(endCaptor.getValue())).isAfterOrEqualTo(before);
+        assertThat(pushedTypes()).contains("timeline_init", "requests");
+        for (TextMessage message : sent) {
+            String serverNow = objectMapper.readTree(message.getPayload()).path("server_now").asText();
+            assertThat(Instant.parse(serverNow)).isBetween(before, Instant.now());
+        }
+
+        clearInvocations(requestLogService);
+        invokeTick();
+        verify(requestLogService, atLeastOnce()).getLatestRequests(
+            org.mockito.ArgumentMatchers.eq(start), endCaptor.capture(), any(), any(), any(), any(), anyBoolean(),
+            any(), any(), any(), anyInt(), anyBoolean(), any(), any());
+        assertThat(Instant.parse(endCaptor.getValue())).isAfterOrEqualTo(before);
+    }
+
+    @Test
+    void explicitHistoricalRangeStaysFixedEvenIfItsEndIsRecent() throws Exception {
+        String start = Instant.now().minusSeconds(3600).toString();
+        String end = Instant.now().minusSeconds(10).toString();
+        handler.afterConnectionEstablished(session);
+        handler.handleMessage(session, new TextMessage(objectMapper.writeValueAsString(Map.of(
+            "action", "init", "interest", "requests",
+            "timeline", Map.of("start", start, "end", end, "live", false)))));
+        clearInvocations(requestLogService);
+        invokeTick();
+        verify(requestLogService, atLeastOnce()).getLatestRequests(
+            org.mockito.ArgumentMatchers.eq(start), org.mockito.ArgumentMatchers.eq(end), any(), any(), any(), any(),
+            anyBoolean(), any(), any(), any(), anyInt(), anyBoolean(), any(), any());
+    }
+
+    @Test
+    void rangeChangeCanSwitchBetweenHistoricalAndLive() throws Exception {
+        handler.afterConnectionEstablished(session);
+        handler.handleMessage(session, new TextMessage("{\"action\":\"init\",\"interest\":\"requests\"}"));
+        String start = Instant.now().minusSeconds(86_400).toString();
+        String end = Instant.now().minusSeconds(3600).toString();
+        for (boolean live : List.of(false, true)) {
+            clearInvocations(requestLogService);
+            handler.handleMessage(session, new TextMessage(objectMapper.writeValueAsString(Map.of(
+                "action", "set_timeline_range", "start", start, "end", end, "live", live))));
+            var endCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+            verify(requestLogService).getLatestRequests(
+                org.mockito.ArgumentMatchers.eq(start), endCaptor.capture(), any(), any(), any(), any(), anyBoolean(),
+                any(), any(), any(), anyInt(), anyBoolean(), any(), any());
+            if (live) assertThat(Instant.parse(endCaptor.getValue())).isAfter(Instant.parse(end));
+            else assertThat(endCaptor.getValue()).isEqualTo(end);
+        }
+    }
+
+    @Test
+    void pingCarriesServerTimeForClockSynchronization() throws Exception {
+        Instant before = Instant.now();
+        handler.afterConnectionEstablished(session);
+        handler.handleMessage(session, new TextMessage("{\"action\":\"ping\"}"));
+        assertThat(pushedTypes()).containsExactly("pong");
+        assertThat(Instant.parse(objectMapper.readTree(sent.getFirst().getPayload()).path("server_now").asText()))
+            .isBetween(before, Instant.now());
     }
 
     @Test

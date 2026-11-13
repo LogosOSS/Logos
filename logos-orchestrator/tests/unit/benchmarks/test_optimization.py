@@ -66,6 +66,14 @@ def test_faster_runs_fail_selection_when_controls_do_not_match(failure):
     assert not optimizer.eligible(candidate, baseline)
 
 
+@pytest.mark.parametrize("candidate_budget", [None, 90, 100])
+def test_only_matching_fixed_output_budgets_are_eligible(candidate_budget):
+    baseline, candidate = measured(1, 40), measured(2, 80)
+    baseline["metrics"]["replay_samples"][0].update(finish_reason="length", fixed_output_budget=100)
+    candidate["metrics"]["replay_samples"][0].update(finish_reason="length", fixed_output_budget=candidate_budget)
+    assert optimizer.eligible(candidate, baseline) is (candidate_budget == 100)
+
+
 def test_selection_retains_fixed_reference_and_measured_incumbent():
     search = {"state": {"iterations": 2}, "reference_id": 7}
     baseline, incumbent, slower = measured(10, 40), measured(11, 60, sequences=32), measured(12, 45, sequences=64)
@@ -167,3 +175,14 @@ def test_adoption_rejects_unverified_or_unrelated_measurements(failure):
     if failure == "unrelated_parameter":
         candidate["configuration"]["nightly"]["parameters"]["dtype"] = "auto"
     assert optimizer.adoption_candidate(search, [baseline, candidate], report) is None
+
+
+def test_selection_explains_multiple_failures_without_disclosing_request_content():
+    baseline, candidate = measured(1, 40), measured(2, 80)
+    candidate["metrics"]["replay_samples"][0]["output_tokens"] = 30
+    candidate["metrics"]["request_latency_ms"]["successful"]["percentiles"]["p95"] = 1200
+    assert optimizer.eligibility_issues(candidate, baseline) == [
+        "1 answer lengths differ by more than 20% from baseline",
+        "p95 latency increased by 20.0% (maximum 10%)",
+    ]
+    assert not optimizer.eligible(candidate, baseline)

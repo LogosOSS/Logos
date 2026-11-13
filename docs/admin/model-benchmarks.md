@@ -61,16 +61,16 @@ Create a saved dataset through **Nightly benchmarks → Request workload** befor
 
 ### Desktop Example
 
-**Run benchmark** contains the configuration. **Results** contains the charts and run history.
-Your draft settings remain unchanged when you switch views.
-Active jobs remain visible in both views.
+**Performance** shows the current configuration and the record timeline.
+Select **Run benchmark** to open **Benchmark setup & nightly automation**.
+Expand **Benchmark runs** for the history. Active jobs remain visible above these sections.
 
 The screenshots show the local application with example data, navigation and complete page content.
 They demonstrate the interface, not a live benchmark measurement.
 Provider names and measured values depend on your deployment.
 Select an image to view it at full size.
 
-[![Desktop benchmark setup](/img/benchmarks/performance-desktop.png)](/img/benchmarks/performance-desktop.png)
+[![Desktop benchmark setup](/img/roles/logos-admin-nightly-results.png)](/img/roles/logos-admin-nightly-results.png)
 
 ## Confirm the Start
 
@@ -80,10 +80,10 @@ Select an image to view it at full size.
 
 Closing the dialog does not start a job.
 Closing the browser after confirmation does not stop a submitted job.
-After a successful start, **Results** opens and shows the job status.
+After a successful start, the setup closes and **Performance** shows the job status.
 If the start fails, **Run benchmark** keeps your settings and shows the error.
 
-[![Desktop benchmark confirmation dialog](/img/benchmarks/confirmation-desktop.png)](/img/benchmarks/confirmation-desktop.png)
+[![Desktop benchmark confirmation dialog](/img/roles/logos-admin-benchmark-confirmation.png)](/img/roles/logos-admin-benchmark-confirmation.png)
 
 ## Production Traffic During a Benchmark
 
@@ -130,8 +130,8 @@ Worker disconnects and orchestrator restarts stop the job. Batches do not resume
 
 ## Read the Comparison Charts
 
-Open **Results** to see runs, changed parameters, measurement times and throughput.
-Expand **Charts and comparison**.
+Expand **Performance → Benchmark runs** to see runs, changed parameters, measurement times and throughput.
+Expand **More analysis & details → Charts and comparison**.
 Select a **Reference run**, **Parameter** and **Metric** in **Parameter comparison**.
 The chart shows one parameter at a time: sequence limit, batch token limit, tensor parallelism or concurrent requests.
 Other captured settings must match the reference.
@@ -190,11 +190,9 @@ The button stays available after a failed request or an unknown GPU count.
 Reload preserves your draft settings. Parameter warnings appear below the relevant fields.
 Use **Reset vLLM changes** to discard draft overrides and keep the current worker configuration.
 
-[![Desktop view of the GPU limits reload button](/img/benchmarks/gpu-limits-desktop.png)](/img/benchmarks/gpu-limits-desktop.png)
+[![Desktop view of the GPU limits reload button](/img/roles/logos-admin-benchmark-worker-settings.png)](/img/roles/logos-admin-benchmark-worker-settings.png)
 
 ### Dark Mode
 
 Use the theme button at the top right to change between light and dark mode.
 The controls, charts and parameter hints use the selected theme.
-
-[![Dark mode with vLLM controls and parameter hints](/img/benchmarks/gpu-limits-dark-desktop.png)](/img/benchmarks/gpu-limits-dark-desktop.png)

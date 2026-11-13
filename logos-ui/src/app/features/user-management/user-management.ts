@@ -76,7 +76,7 @@ export class UserManagement {
   teamsLoading = signal(false);
 
   constructor() {
-    this.fetchUsers();
+    void this.fetchUsers();
   }
 
   async fetchUsers(): Promise<void> {
@@ -158,7 +158,7 @@ export class UserManagement {
     this.copiedKeys.set(false);
     this.teamSearch.set('');
     this.createOpen.set(true);
-    this.loadTeams();
+    void this.loadTeams();
   }
 
   closeCreateDialog(): void {
@@ -205,10 +205,11 @@ export class UserManagement {
 
   copyApiKeys(): void {
     const keys = this.createResult()?.logos_keys ?? [];
+    // A refused clipboard write (no permission, insecure context) leaves the button unchanged.
     navigator.clipboard.writeText(keys.join('\n')).then(() => {
       this.copiedKeys.set(true);
       setTimeout(() => this.copiedKeys.set(false), 2000);
-    });
+    }, () => undefined);
   }
 
   // ── Edit user ────────────────────────────────────────────────────────────
@@ -231,7 +232,7 @@ export class UserManagement {
     this.editOrigTeamIds.set([...currentIds]);
     this.editError.set('');
     this.teamSearch.set('');
-    this.loadTeams();
+    void this.loadTeams();
   }
 
   closeEditDialog(): void {

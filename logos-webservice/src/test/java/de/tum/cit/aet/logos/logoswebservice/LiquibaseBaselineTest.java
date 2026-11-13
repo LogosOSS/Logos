@@ -185,6 +185,16 @@ class LiquibaseBaselineTest {
     }
 
     @Test
+    void migration071_nodeModelConfigTablesAndUniqueIndexExist() {
+        assertThat(tableExists("node_model_config")).isTrue();
+        assertThat(tableExists("node_config_state")).isTrue();
+        Integer uniqueIndex = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM pg_indexes WHERE schemaname='public' AND indexname=?",
+            Integer.class, "uq_node_model_config_provider_model");
+        assertThat(uniqueIndex).isEqualTo(1);
+    }
+
+    @Test
     void migration001_keycloakColumnsExist() {
         assertThat(columnExists("users", "keycloak_id")).isTrue();
         assertThat(columnExists("users", "last_synced_at")).isTrue();

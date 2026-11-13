@@ -274,7 +274,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         # matches the pre-existing equal-score queue pick.
         top_score = logosnode_candidates[0][3]
         tied = [s for s in logosnode_candidates if self._ranking_scores_tie(s[3], top_score)]
-        logosnode_candidate = random.choice(tied)
+        logosnode_candidate = random.choice(tied)  # NOSONAR - load-spreading tie-break, not a security decision
         if len(tied) > 1:
             tied_desc = ", ".join(
                 f"model={m} worker={self._logosnode.get_provider_name(p) or p} "
@@ -824,12 +824,26 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             with perf_trace.phase(request_id, "schedule.infra"):
                 # Gather infrastructure data for VRAM-aware estimation
                 with perf_trace.phase(request_id, "schedule.capacity"):
-                    effective_parallel = 1
-                    try:
-                        with perf_trace.phase(request_id, "schedule.capacity.par"):
-                            effective_parallel, _ = self._logosnode.get_parallel_capacity(model_id, provider_id)
-                    except (KeyError, Exception):
-                        pass
+                    with perf_trace.phase(request_id, "schedule.capacity.par"):
+                        # Queue wait needs service concurrency, not the loose
+                        # in-flight ledger ceiling. Honor observed running
+                        # concurrency when short requests exceed the full-
+                        # context guarantee. Active requests include work the
+                        # engine has not started, so cannot raise this divisor.
+                        # Admission still uses live KV/queue signals and the
+                        # per-report budget independently.
+                        effective_parallel = max(
+                            1,
+                            sum(
+                                max(
+                                    1,
+                                    lane.num_parallel,
+                                    int(lane.requests_running) if math.isfinite(lane.requests_running) else 0,
+                                )
+                                for lane in view.lanes
+                                if lane.runtime_state in ("loaded", "running")
+                            ),
+                        )
 
                     available_vram_mb = float("inf")
                     try:
@@ -1068,7 +1082,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 # Pathological (all zero/negative); fall through to original order.
                 order.extend(remaining)
                 break
-            r = random.random() * total
+            r = random.random() * total  # NOSONAR - weighted scheduling order, not a security decision
             cum = 0.0
             picked = len(remaining) - 1  # default to last (covers float-edge cases)
             for idx, w in enumerate(weights):
@@ -1198,6 +1212,20 @@ class ClassificationCorrectingScheduler(BaseScheduler):
 
         return None
 
+    def _request_capacity(self, model_name: str, provider_id: int) -> None:
+        """Ask the capacity planner to wake or load a model, without waiting for it.
+
+        The task is held until it finishes: the event loop keeps only a weak
+        reference, so an untracked request could be collected mid-run.
+        """
+        task = asyncio.create_task(
+            self._on_capacity_needed(model_name, provider_id),
+            name=f"capacity-needed-{model_name}",
+        )
+        pending = self.__dict__.setdefault("_capacity_needed_tasks", set())
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
     async def _queue_and_wait(self, best_scored: tuple, request: SchedulingRequest) -> Optional[SchedulingResult]:
         """Queue on the best-scored candidate and wait for release."""
         model_id, provider_id, provider_type, score, priority_int, ettft = best_scored
@@ -1247,10 +1275,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         if self._on_capacity_needed and provider_type == "logosnode":
             model_name = self._logosnode.get_model_name(model_id, provider_id)
             if model_name:
-                asyncio.create_task(
-                    self._on_capacity_needed(model_name, provider_id),
-                    name=f"capacity-needed-{model_name}",
-                )
+                self._request_capacity(model_name, provider_id)
 
         try:
             timeout = (

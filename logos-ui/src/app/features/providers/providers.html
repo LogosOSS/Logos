@@ -138,6 +138,14 @@
                   <div class="connection-row">
                     <span class="conn-model-name">{{ conn.model_name }}</span>
                     <span class="conn-endpoint">{{ conn.endpoint || '-' }}</span>
+                    <span
+                      class="batch-badge"
+                      [class.batch-badge--supported]="conn.batch_support === 'supported'"
+                      [class.batch-badge--unsupported]="conn.batch_support === 'unsupported'"
+                      [attr.title]="batchTooltip(conn)"
+                      [attr.aria-label]="'Batch: ' + batchLabel(conn) + '. ' + batchTooltip(conn)"
+                      data-testid="batch-support"
+                    >{{ batchLabel(conn) }}</span>
                     <span class="conn-key">{{
                       conn.api_key ? conn.api_key.slice(0, 6) + '…' : '-'
                     }}</span>

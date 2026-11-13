@@ -54,7 +54,7 @@ jobs:
       LOGOS_BENCH_GW_BUDGET_FAIL_ON_THRESHOLD: "1"
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Disable the fixed webservice host port (conflicts with --scale)
         # docker-compose.dev.yaml publishes 127.0.0.1:18082:8081 for direct
@@ -164,12 +164,12 @@ jobs:
           docker exec logos-db psql -U postgres -d logosdb -v ON_ERROR_STOP=1 -c "SELECT pg_size_pretty(pg_database_size('logosdb'));"
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Install dependencies
         run: |
@@ -192,7 +192,7 @@ jobs:
 
       - name: Upload benchmark report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: logos-gateway-concurrency-benchmark
           path: benchmarks/gateway_concurrency/reports/ci

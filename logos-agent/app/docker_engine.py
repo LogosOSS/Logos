@@ -21,7 +21,7 @@ from .config import settings
 # The Engine API is versioned; pin low enough to work with older daemons but
 # high enough for the fields used here (PidsLimit, NanoCPUs, ReadonlyRootfs).
 _API_VERSION = "v1.43"
-_BASE = f"http://docker/{_API_VERSION}"
+_BASE = f"http://docker/{_API_VERSION}"  # NOSONAR - sent over the local Docker Unix socket, never a network
 
 
 class DockerError(RuntimeError):
@@ -165,6 +165,8 @@ async def create_session_container(
     workspace_volume: str,
     artifact_host_path: str,
     state_host_path: str | None = None,
+    ssh_known_hosts_host_path: str | None = None,
+    ssh_key_host_path: str | None = None,
     session_id: int,
     labels: dict[str, str] | None = None,
     network: str | None = None,
@@ -193,22 +195,47 @@ async def create_session_container(
     next door is the agent's to write. The helper phases pass nothing, so a
     container that never reads the mark also never mounts it.
 
+    The SSH trust helper mounts only the persistent host-key file writable
+    and an optional deploy key read-only. Other helpers only read those
+    files; the agent phase receives neither.
+
     The default network is the internal session network (the agent phase);
     the trusted helper containers pass the egress network explicitly.
     """
+    verifying = env.get("LOGOS_SESSION_PHASE") == "verify"
+    if verifying and (ssh_key_host_path or ssh_known_hosts_host_path or state_host_path):
+        raise ValueError("verification cannot mount credentials or runner state")
+    if verifying and any(key in env for key in ("GITHUB_TOKEN", "GH_TOKEN", "GIT_SSH_COMMAND", "ANTHROPIC_AUTH_TOKEN")):
+        raise ValueError("verification cannot receive credentials")
+    mount_mode = ":ro" if verifying else ""
     binds = [
-        f"{workspace_volume}:/workspace",
-        f"{artifact_host_path}:/artifacts",
+        f"{workspace_volume}:/workspace{mount_mode}",
+        f"{artifact_host_path}:/artifacts{mount_mode}",
     ]
     if state_host_path:
         binds.append(f"{state_host_path}:/logos/state:ro")
+    trust_only = env.get("LOGOS_SESSION_PHASE") == "ssh-trust"
+    if trust_only:
+        # Host-key learning cannot see any session-writable files, including
+        # repository metadata, home configuration, and artefacts.
+        binds = []
+        if not ssh_known_hosts_host_path:
+            raise ValueError("SSH trust helper requires persistent known_hosts")
+    if ssh_known_hosts_host_path:
+        mode = "rw" if trust_only else "ro"
+        binds.append(f"{ssh_known_hosts_host_path}:/logos/ssh_known_hosts:{mode}")
+    if ssh_key_host_path:
+        binds.append(f"{ssh_key_host_path}:/logos/deploy_key:ro")
     host_config: dict[str, Any] = {
         "Binds": binds,
-        "NetworkMode": network or settings.session_network,
+        "NetworkMode": "none" if verifying else network or settings.session_network,
         "ReadonlyRootfs": True,
         # The agent needs scratch space; give it tmpfs rather than a writable
         # root so nothing it writes outside /workspace survives the session.
-        "Tmpfs": {"/tmp": "rw,exec,nosuid,size=2g", "/home/agent/.cache": "rw,nosuid,size=2g"},
+        "Tmpfs": {
+            "/tmp": "rw,exec,nosuid,size=2g",  # NOSONAR - a private tmpfs inside the container, not a host directory
+            "/home/agent/.cache": "rw,nosuid,size=2g",
+        },
         "CapDrop": ["ALL"],
         "SecurityOpt": ["no-new-privileges:true"],
         "Memory": settings.session_memory_mb * 1024 * 1024,
@@ -227,13 +254,15 @@ async def create_session_container(
             "logos.agent.managed": "true",
             **(labels or {}),
         },
-        "WorkingDir": "/workspace",
+        "WorkingDir": "/tmp" if trust_only else "/workspace",  # NOSONAR - the container's own private tmpfs
         "HostConfig": host_config,
         "Tty": False,
         "OpenStdin": False,
         # Never run as root inside the container; the image creates this user.
         "User": "agent",
     }
+    if verifying:
+        payload["Entrypoint"] = ["python3", "/usr/local/lib/verify_checkout.py"]
 
     response = await _request("POST", "/containers/create", params={"name": name}, json=payload)
     return response.json()["Id"]
@@ -263,7 +292,7 @@ async def create_screenshot_container(
         # session network.
         "NetworkMode": settings.session_egress_network,
         "ReadonlyRootfs": True,
-        "Tmpfs": {"/tmp": "rw,nosuid,size=2g"},
+        "Tmpfs": {"/tmp": "rw,nosuid,size=2g"},  # NOSONAR - a private tmpfs inside the container
         "CapDrop": ["ALL"],
         "SecurityOpt": ["no-new-privileges:true"],
         "Memory": settings.session_memory_mb * 1024 * 1024,
@@ -291,7 +320,7 @@ async def create_screenshot_container(
             "logos.agent.screenshot": "true",
             "logos.agent.managed": "true",
         },
-        "WorkingDir": "/tmp",
+        "WorkingDir": "/tmp",  # NOSONAR - the container's own private tmpfs
         "HostConfig": host_config,
         "User": "agent",
         "Tty": False,

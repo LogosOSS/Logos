@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
@@ -75,7 +76,10 @@ public class InferenceGatewayController {
         this.objectMapper = objectMapper;
     }
 
-    @RequestMapping({"/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**"})
+    @RequestMapping(
+        value = {"/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**"},
+        method = {RequestMethod.GET, RequestMethod.HEAD, RequestMethod.POST, RequestMethod.PUT,
+            RequestMethod.PATCH, RequestMethod.DELETE, RequestMethod.OPTIONS})
     public ResponseEntity<StreamingResponseBody> handle(HttpServletRequest request, HttpServletResponse response)
             throws IOException {
         return GatewayClientFlush.flushingTo(response, route(request));
@@ -116,6 +120,7 @@ public class InferenceGatewayController {
         GatewayKey key = authService.requireActiveKey(apiKeyValue);
         byte[] body = GatewayBodyReader.read(request.getInputStream());
         JsonNode root = parseJsonBody(body, contentType);
+        rejectStatefulReferences(root);
         String modelName = extractModelName(root);
 
         if (modelName != null
@@ -133,7 +138,9 @@ public class InferenceGatewayController {
                 // recorded, whatever the reason — a request that fails must
                 // never be missing from the request log.
                 final Integer logId;
+                final Map<String, String> upstreamHeaders;
                 try {
+                    upstreamHeaders = imageToolHeaders(ctx.key(), decision.deployment(), root);
                     cloudRateLimiter.enforce(ctx.key(), body);
                     logId = cloudAccounting.admitAndReserve(
                         ctx.key(), decision.deployment(), body, logLevel, arrivedAt,
@@ -158,10 +165,11 @@ public class InferenceGatewayController {
                     request.getMethod(),
                     body,
                     copyHeaders(request),
+                    upstreamHeaders,
                     GatewayLoggingLevel.storesPayloads(logLevel),
                     result -> cloudAccounting.settleSuccess(
                         logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings()),
-                    (err, timings) -> cloudAccounting.settleFailure(logId, err, timings));
+                    (err, result) -> cloudAccounting.settleFailure(logId, err, result));
             }
             log.debug("Orchestrator proxy {} {} reason={}",
                 request.getMethod(), path, decision.reason());
@@ -174,11 +182,43 @@ public class InferenceGatewayController {
     }
 
     /**
+     * Headers the upstream needs for the Responses {@code image_generation} tool.
+     *
+     * <p>Empty, and without any lookup, when the body asks for no image tool. The
+     * image model is a second model the request runs, so the key must be allowed
+     * to use it; otherwise the request is refused before admission. The Azure
+     * header is only added for an Azure deployment that has the image model on
+     * the same resource ({@link GatewayImageGenerationTool#azureHeaders}).
+     */
+    private Map<String, String> imageToolHeaders(GatewayKey key, GatewayDeployment chat, JsonNode root) {
+        List<String> imageModels = GatewayImageGenerationTool.requestedImageModels(root);
+        if (imageModels.isEmpty()) {
+            return Map.of();
+        }
+        if (imageModels.size() > 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "A request may use one image model in its image_generation tools; this one names "
+                    + String.join(", ", imageModels) + ".");
+        }
+        List<GatewayDeployment> imageDeployments = authService.deploymentsForModel(key, imageModels.get(0));
+        if (imageDeployments.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                "The image_generation tool uses '" + imageModels.get(0) + "', which this key may not use.");
+        }
+        return GatewayImageGenerationTool.azureHeaders(chat, imageDeployments);
+    }
+
+    /**
      * Policy-bearing requests stay on the orchestrator so threshold_privacy and
      * stored policies apply. Direct cloud uses the default cloud threshold only.
+     * Requests naming a reuse context (logos-context) stay there too: the
+     * orchestrator holds the answer cache, and a direct cloud call would
+     * bypass it.
      */
-    private static boolean requiresOrchestratorPolicy(HttpServletRequest request, String modelName) {
-        if (headerPresent(request, "policy")) {
+    static boolean requiresOrchestratorPolicy(HttpServletRequest request, String modelName) {
+        if (headerPresent(request, "policy")
+                || headerPresent(request, "logos-context")
+                || headerPresent(request, "logos_context")) {
             return true;
         }
         return modelName != null && modelName.regionMatches(true, 0, "logos-v", 0, 7);
@@ -227,6 +267,43 @@ public class InferenceGatewayController {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * Responses API fields that point at state the provider keeps. Providers
+     * are reached with one shared account, so the provider cannot tell teams
+     * apart: a reference would load whatever response or conversation it
+     * names, also another team's. Requests carry their full history instead.
+     * The orchestrator applies the same rule to the requests proxied to it.
+     */
+    static final List<String> STATEFUL_REFERENCE_FIELDS = List.of("previous_response_id", "conversation");
+
+    static void rejectStatefulReferences(JsonNode root) {
+        if (root == null || !root.isObject()) {
+            return;
+        }
+        for (String field : STATEFUL_REFERENCE_FIELDS) {
+            JsonNode value = root.get(field);
+            if (value != null && !value.isNull()) {
+                throw statefulReferenceRejected("'" + field + "'");
+            }
+        }
+        // An input item of this type loads a stored item by its ID instead of
+        // carrying the content, so it reaches provider state in the same way.
+        JsonNode input = root.get("input");
+        if (input != null && input.isArray()) {
+            for (JsonNode item : input) {
+                if (item.isObject() && "item_reference".equals(item.path("type").asText(null))) {
+                    throw statefulReferenceRejected("An input item of type 'item_reference'");
+                }
+            }
+        }
+    }
+
+    private static ResponseStatusException statefulReferenceRejected(String what) {
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST, what
+            + " is not supported: Logos does not keep conversation state at the provider. "
+            + "Send the full conversation in 'input' instead.");
     }
 
     private static String extractModelName(JsonNode root) {

@@ -6,8 +6,7 @@ A pinned tag selects one specific build. Logos also mirrors builds of `main` to
 public GHCR. A self-hosted installation can therefore pull images without
 credentials (see the [installation guide](admin/installation.md)). Deployments
 use Harbor. A deployment is the compose file plus a `.env` file on each node. To
-update, run `docker compose pull` and `docker compose up -d`. CI sends nothing to
-a node. A worker node needs no inbound port (see the
+update, run `docker compose pull` and `docker compose up -d`. The deploy workflows copy the compose file and `.env` to each selected node. A worker node needs no inbound port (see the
 [architecture overview](developer/architecture) for the subsystem breakdown).
 
 A deployment consists of:
@@ -21,6 +20,60 @@ A deployment consists of:
   spare serving capacity (see the
   [agent runner reference](https://github.com/LogosOSS/Logos/blob/main/logos-agent/README.md)).
   It is opt-in. To enable it, set `COMPOSE_PROFILES=agent`.
+
+If a change requires no worker update, then set **deploy-workers** to `false` in **Logos - Deploy to Dev**.
+This option updates the central Dev server and leaves the GPU worker unchanged. The default updates both.
+
+## Deployment credentials
+
+Store each host's credentials in its `.env` file.
+Core hosts need the database, Redis, internal-service, repository, optional agent, Keycloak sync, metrics, and Hugging Face credentials.
+Worker hosts need only `LOGOS_API_KEY` in `.env`.
+The worker obtains its Hugging Face token from the orchestrator when it starts.
+Restrict access to the file with `chmod 600 .env`.
+
+### Data service passwords
+
+Set `LOGOS_DB_PASSWORD` and `LOGOS_REDIS_PASSWORD` in the core host's `.env` before you start production compose.
+For a new installation, use separate random values, for example the output of `openssl rand -hex 32`.
+Compose stops if either value is empty.
+Local development and e2e stacks keep their seed credentials.
+
+PostgreSQL stores the database password in its data volume.
+The value of `LOGOS_DB_PASSWORD` in `.env` must match that password.
+A change to `.env` does not change the database role.
+
+If you choose to change the database password, schedule a maintenance period and follow these steps:
+
+1. Back up the database.
+2. Stop the application services with `docker compose stop logos-orchestrator logos-webservice`.
+3. If the agent profile is active, stop `logos-agent` too.
+4. Open a database shell with `docker exec -it logos-db psql -U postgres -d logosdb`.
+5. Run `\password postgres` and enter the new database password twice.
+6. Set the same value for `LOGOS_DB_PASSWORD` in `.env`.
+7. Run `docker compose --env-file .env up -d` with your usual profiles and web service replica count.
+8. Check the service health and complete a test inference request.
+
+The SQL equivalent is `ALTER USER postgres WITH PASSWORD '<new-password>';`.
+Prefer `\password`: it keeps the cleartext value out of command history and SQL logs.
+See the [PostgreSQL password instructions](https://www.postgresql.org/docs/17/sql-alterrole.html).
+Do not delete the volume to change its password.
+
+Redis uses `requirepass`. The web service and Redis health check use the same `LOGOS_REDIS_PASSWORD`.
+To change the Redis password, update `.env`, then recreate Redis and the web service together.
+
+## Container privileges
+
+The orchestrator and web service images run as UID `10001`.
+Their production containers drop all Linux capabilities and enable `no-new-privileges`.
+Traefik uses the same capability restrictions.
+The agent runner retains only `CHOWN`, `DAC_OVERRIDE`, and `FOWNER` for session files.
+It also enables `no-new-privileges`.
+
+Traefik and the agent runner still mount the host's Docker socket.
+These restrictions do not limit Docker API access through that socket.
+A socket proxy needs a separate design and deployment change.
+PostgreSQL, Redis, nginx, and GPU worker images retain their existing startup users and capabilities.
 
 ## Images and Registry
 
@@ -48,6 +101,15 @@ publishes its version tag to Harbor. Nothing prunes a public package, so PR
 builds and release builds do not go to the mirror. When a package appears for the
 first time, check that it is public. A private package gives a 403 to a
 self-hosted installation. To fix this, use Package settings → Change visibility.
+
+## Local development ports
+
+The development compose file publishes all ports on `127.0.0.1`.
+Use the existing `localhost` URLs for the web application, Keycloak, and the database.
+For an application outside Compose, set `DB_PASSWORD=root` to use the development database.
+Also set `DB_HOST=localhost` for the orchestrator or agent.
+The e2e stack uses its own compose file and ports.
+For access from another computer, use an SSH tunnel to the development host.
 
 ## Updating
 
@@ -338,6 +400,11 @@ Tune the limits for each deployment in the `.env` of the node (all optional):
   The gateway skips malformed entries and writes a line to `docker logs
   logos-rate-gateway`. A typo in the `.env` gives "no whitelist". It cannot
   crash-loop the gateway (and with it the whole stack).
+- `LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS` — the proxy ranges trusted by the orchestrator and web service.
+  Both services select the rightmost untrusted address in `X-Forwarded-For`.
+  The default is `172.16.0.0/12`. Set the actual application-facing proxy subnets if Docker uses another range.
+  Untrusted peers cannot supply a client address or the orchestrator's TLS signal.
+  The rate-limit gateway forwards its resolved address. The agent gateway replaces the header with the session address.
 - `LOGOS_GATEWAY_TRUSTED_PROXY_CIDRS` — the source ranges that can carry
   `X-Forwarded-For`. The default is `172.16.0.0/12` (the Docker bridge ranges).
   This range matches no public client. A header that someone forges from the
@@ -599,6 +666,8 @@ variables:
 |---|---|---|
 | `LOGOS_DOMAIN` | the core node's fully qualified domain | — |
 | `ACME_EMAIL` | the Let's Encrypt contact address | — |
+| `LOGOS_DB_PASSWORD` | required — PostgreSQL password; see Data service passwords above | — |
+| `LOGOS_REDIS_PASSWORD` | required — Redis password | — |
 | `LOGOS_INTERNAL_SECRET` | a strong random string — the shared secret between web service and orchestrator | — |
 | `KEYCLOAK_ISSUER_URI` | your identity provider's issuer (`https://<idp>/realms/<realm>`) | — |
 | `KEYCLOAK_ROLES_LOGOS_ADMIN` / `KEYCLOAK_ROLES_APP_ADMIN` | the OIDC role names that map to the Logos roles (see [roles](developer/architecture#roles)) | — |

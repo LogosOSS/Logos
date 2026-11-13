@@ -10,6 +10,7 @@ import re
 import secrets
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from urllib.parse import quote
 
 import sqlalchemy.exc
 import yaml
@@ -24,6 +25,7 @@ from logos.dbutils.types import (
     infer_cloud_provider_type,
     normalize_provider_type,
 )
+from logos.model_names import is_safe_model_name
 from logos.model_profile_store import CALIBRATION_FIELDS, base_residency_agrees
 
 # Backwards-compatible re-export (temporary; remove once all imports are migrated)
@@ -35,7 +37,12 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_DB_URL = os.getenv("LOGOS_DB_URL", "postgresql://postgres:root@logos-db:5432/logosdb")
+_DB_URL = os.getenv("LOGOS_DB_URL") or (
+    f"postgresql://{quote(os.getenv('DB_USER', 'postgres'), safe='')}:"
+    f"{quote(os.getenv('DB_PASSWORD', ''), safe='')}@"
+    f"{os.getenv('DB_HOST', 'logos-db')}:{os.getenv('DB_PORT', '5432')}/"
+    f"{quote(os.getenv('DB_NAME', 'logosdb'), safe='')}"
+)
 _POOL_SIZE = int(os.getenv("LOGOS_DB_POOL_SIZE", "10"))
 _MAX_OVERFLOW = int(os.getenv("LOGOS_DB_MAX_OVERFLOW", "20"))
 _POOL_RECYCLE = int(os.getenv("LOGOS_DB_POOL_RECYCLE", "1800"))
@@ -526,6 +533,8 @@ class DBManager:
             "timestamp_provider_response",
             "request_complete_ts",
             "rate_limit_admitted",
+            "cache_hit",
+            "cache_entry_id",
             "available_vram_mb",
             "azure_rate_remaining_requests",
             "azure_rate_remaining_tokens",
@@ -1081,7 +1090,7 @@ class DBManager:
         ).fetchall()
         existing_by_name: dict[str, int] = {row.name: row.model_id for row in existing_rows}
 
-        announced = set(model_names)
+        announced = {name for name in model_names if is_safe_model_name(name)}
         current = set(existing_by_name.keys())
         newly_inserted: list[str] = []
 
@@ -1138,11 +1147,20 @@ class DBManager:
         poll. ``api_key`` is the provider-level resource key.
         """
         rows = self.session.execute(text("""
-                SELECT id, name, base_url, api_key
+                SELECT id, name, base_url, api_key, cloud_provider_type
                 FROM providers
                 WHERE provider_type = 'cloud' AND cloud_provider_type = 'azure'
                 """)).fetchall()
-        return [{"id": r.id, "name": r.name, "base_url": r.base_url, "api_key": r.api_key} for r in rows]
+        return [
+            {
+                "id": r.id,
+                "name": r.name,
+                "base_url": r.base_url,
+                "api_key": r.api_key,
+                "cloud_provider_type": str(r.cloud_provider_type),
+            }
+            for r in rows
+        ]
 
     def sync_azure_deployments(self, provider_id: int, deployments: list[Dict[str, str]]) -> Dict[str, Any]:
         """Auto-sync the live Azure deployment list into the DB.
@@ -1173,7 +1191,7 @@ class DBManager:
         per-provider price rows are created only on first link.
         """
         pid = int(provider_id)
-        desired = {d["model_name"]: d["endpoint"] for d in deployments}
+        desired = {d["model_name"]: d["endpoint"] for d in deployments if is_safe_model_name(d["model_name"])}
 
         existing_rows = self.session.execute(
             text("""
@@ -1323,7 +1341,7 @@ class DBManager:
         meaning as :meth:`sync_azure_deployments`.
         """
         pid = int(provider_id)
-        desired = {name for name in model_names if name}
+        desired = {name for name in model_names if name and is_safe_model_name(name)}
 
         existing_rows = self.session.execute(
             text("""
@@ -1573,7 +1591,9 @@ class DBManager:
             provider_id: Provider ID to query
 
         Returns:
-            Dictionary with configuration fields if found, None otherwise
+            Dictionary with configuration fields if found, None otherwise.
+            parallel_capacity is optional stored configuration, not the effective
+            logosnode capacity; local admission derives capacity from live lanes.
         """
         sql = text("""
             SELECT id, ollama_admin_url, total_vram_mb, parallel_capacity,
@@ -1642,7 +1662,7 @@ class DBManager:
             ollama_admin_url: Internal admin endpoint of the worker (e.g., http://gpu-vm-1:5000).
                 Legacy column name — the value is the worker's base URL.
             total_vram_mb: Total VRAM capacity in MB (e.g., 49152 for 48GB)
-            parallel_capacity: Max concurrent requests per model
+            parallel_capacity: Optional configured capacity, ignored by logosnode admission
             keep_alive_seconds: How long models stay loaded when idle
             max_loaded_models: Max models that can be loaded simultaneously
 
@@ -2216,6 +2236,101 @@ class DBManager:
             params["model_names"] = list(model_names)
         rows = self.session.execute(text(sql + " RETURNING model_name"), params).fetchall()
         return [str(r.model_name) for r in rows]
+
+    def get_node_config(self, provider_id: int) -> Dict[str, Any]:
+        """A node's configured models in list order, with its revision.
+
+        A node nobody configured yet has revision 0 and no entries.
+        """
+        state = self.session.execute(
+            text("SELECT config_revision, yaml_imported_at FROM node_config_state WHERE provider_id = :pid"),
+            {"pid": provider_id},
+        ).fetchone()
+        rows = self.session.execute(
+            text("""
+                SELECT model_name, capability, overrides FROM node_model_config
+                WHERE provider_id = :pid ORDER BY position, id
+            """),
+            {"pid": provider_id},
+        ).fetchall()
+        return {
+            "revision": int(state.config_revision) if state is not None else 0,
+            "yaml_imported": state is not None and state.yaml_imported_at is not None,
+            "entries": [
+                {"model_name": r.model_name, "capability": r.capability, "overrides": r.overrides} for r in rows
+            ],
+        }
+
+    def replace_node_config(
+        self,
+        provider_id: int,
+        entries: List[Dict[str, Any]],
+        expected_revision: int,
+        updated_by: Optional[int],
+        source: str,
+    ) -> Optional[int]:
+        """Replace a node's configured models; returns the new revision.
+
+        Returns None, and writes nothing, when expected_revision is not the
+        stored one. The first save also ends the YAML import for the node.
+        The caller commits.
+        """
+        self.session.execute(
+            text("INSERT INTO node_config_state (provider_id) VALUES (:pid) ON CONFLICT (provider_id) DO NOTHING"),
+            {"pid": provider_id},
+        )
+        row = self.session.execute(
+            text("""
+                UPDATE node_config_state
+                SET config_revision = config_revision + 1,
+                    yaml_imported_at = COALESCE(yaml_imported_at, CURRENT_TIMESTAMP)
+                WHERE provider_id = :pid AND config_revision = :expected
+                RETURNING config_revision
+            """),
+            {"pid": provider_id, "expected": expected_revision},
+        ).fetchone()
+        if row is None:
+            return None
+        self.session.execute(text("DELETE FROM node_model_config WHERE provider_id = :pid"), {"pid": provider_id})
+        for position, entry in enumerate(entries):
+            self.session.execute(
+                text("""
+                    INSERT INTO node_model_config
+                        (provider_id, model_name, position, capability, overrides, source, updated_by)
+                    VALUES (:pid, :model_name, :position, CAST(:capability AS jsonb), CAST(:overrides AS jsonb),
+                            :source, :updated_by)
+                """),
+                {
+                    "pid": provider_id,
+                    "model_name": entry["model_name"],
+                    "position": position,
+                    "capability": json.dumps(entry["capability"]),
+                    "overrides": json.dumps(entry["overrides"]),
+                    "source": source,
+                    "updated_by": updated_by,
+                },
+            )
+        return int(row.config_revision)
+
+    def claim_yaml_import(self, provider_id: int) -> bool:
+        """Let one caller import a worker's YAML; True when this call got it.
+
+        Refused once the node has been imported or configured. The caller
+        commits.
+        """
+        self.session.execute(
+            text("INSERT INTO node_config_state (provider_id) VALUES (:pid) ON CONFLICT (provider_id) DO NOTHING"),
+            {"pid": provider_id},
+        )
+        result = self.session.execute(
+            text("""
+                UPDATE node_config_state SET yaml_imported_at = CURRENT_TIMESTAMP
+                WHERE provider_id = :pid AND yaml_imported_at IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM node_model_config WHERE provider_id = :pid)
+            """),
+            {"pid": provider_id},
+        )
+        return result.rowcount == 1
 
     def invalidate_model_calibration(self, calibration_id: int, reason: str) -> List[Tuple[int, str]]:
         """Stop trusting a calibration and strip it from every node using it.
@@ -2999,12 +3114,16 @@ class DBManager:
         """
         self.session.execute(
             text("""
-                INSERT INTO provider_model_batch_eligibility (provider_id, model_id, eligible, detail, checked_at)
-                VALUES (:pid, :mid, false, :detail, :now)
+                INSERT INTO provider_model_batch_eligibility
+                    (provider_id, model_id, eligible, detail, checked_at, batch_deployment, source)
+                VALUES (:pid, :mid, false, :detail, :now, NULL, 'refusal')
                 ON CONFLICT (provider_id, model_id)
                 DO UPDATE SET eligible = false,
                               detail = EXCLUDED.detail,
-                              checked_at = EXCLUDED.checked_at
+                              checked_at = EXCLUDED.checked_at,
+                              batch_deployment = NULL,
+                              batch_deployment_ids = '[]'::jsonb,
+                              source = 'refusal'
                 """),
             {
                 "pid": int(provider_id),
@@ -3014,6 +3133,74 @@ class DBManager:
             },
         )
         self.session.commit()
+
+    def record_model_batch_probe(
+        self,
+        provider_id: int,
+        model_id: int,
+        eligible: bool,
+        batch_deployment: Optional[str] = None,
+        detail: str = "",
+        batch_deployment_ids: Optional[List[str]] = None,
+        checked_at: Optional[datetime.datetime] = None,
+    ) -> None:
+        """Store what probing the model's deployments for Batch found.
+
+        ``batch_deployment`` is the deployment the provider's Batch API
+        accepted, which forwarded batch files are rewritten to; it is only kept
+        for an eligible model. ``batch_deployment_ids`` are all deployments the
+        Batch API accepted; none of them may serve interactive requests.
+        ``checked_at`` defaults to now; the probe passes an earlier time to have
+        the next sync probe the model again.
+        """
+        ids = sorted(set(batch_deployment_ids or ([batch_deployment] if batch_deployment else [])))
+        self.session.execute(
+            text("""
+                INSERT INTO provider_model_batch_eligibility
+                    (provider_id, model_id, eligible, detail, checked_at, batch_deployment,
+                     batch_deployment_ids, source)
+                VALUES (:pid, :mid, :eligible, :detail, :now, :deployment, CAST(:ids AS jsonb), 'probe')
+                ON CONFLICT (provider_id, model_id)
+                DO UPDATE SET eligible = EXCLUDED.eligible,
+                              detail = EXCLUDED.detail,
+                              checked_at = EXCLUDED.checked_at,
+                              batch_deployment = EXCLUDED.batch_deployment,
+                              batch_deployment_ids = EXCLUDED.batch_deployment_ids,
+                              source = 'probe'
+                """),
+            {
+                "pid": int(provider_id),
+                "mid": int(model_id),
+                "eligible": bool(eligible),
+                "deployment": (batch_deployment or None) if eligible else None,
+                "ids": json.dumps(ids if eligible else []),
+                "detail": (detail or "")[:500],
+                "now": checked_at or datetime.datetime.now(datetime.timezone.utc),
+            },
+        )
+        self.session.commit()
+
+    def get_batch_model_support(self, provider_id: int) -> Dict[int, Dict[str, Any]]:
+        """What is known about Batch support per model on one provider.
+
+        Probe results stay until the next probe replaces them; a refusal
+        expires after the eligibility TTL like the ineligibility list does.
+        Models without a row are unknown.
+        """
+        rows = self.session.execute(
+            text("""
+                SELECT model_id, eligible, batch_deployment, batch_deployment_ids, source, detail, checked_at
+                FROM provider_model_batch_eligibility
+                WHERE provider_id = :pid
+                  AND (source = 'probe' OR checked_at > :now - make_interval(days => :ttl))
+                """),
+            {
+                "pid": int(provider_id),
+                "now": datetime.datetime.now(datetime.timezone.utc),
+                "ttl": int(BATCH_MODEL_ELIGIBILITY_TTL_DAYS),
+            },
+        ).mappings()
+        return {int(row["model_id"]): dict(row) for row in rows.all()}
 
     def get_batch_model_deployments(self, api_key_id: int, provider_id: Optional[int] = None) -> list[Dict[str, Any]]:
         """The models this key may run, with the provider that serves each.
@@ -3059,12 +3246,15 @@ class DBManager:
                           mp.endpoint AS endpoint,
                           p.id AS provider_id,
                           p.provider_type AS provider_type,
-                          p.cloud_provider_type AS cloud_provider_type
+                          p.cloud_provider_type AS cloud_provider_type,
+                          CASE WHEN be.eligible THEN be.batch_deployment END AS batch_deployment
                    FROM models m
                         JOIN model_provider mp ON mp.model_id = m.id
                         JOIN providers p ON p.id = mp.provider_id
                         JOIN effective_models em ON em.model_id = m.id
                         JOIN effective_providers ep ON ep.provider_id = p.id
+                        LEFT JOIN provider_model_batch_eligibility be
+                               ON be.provider_id = p.id AND be.model_id = m.id
                    {scope}
                    ORDER BY m.name, p.id
                    """)
@@ -3083,9 +3273,17 @@ class DBManager:
         """
         rows = self.session.execute(
             text("""
-                SELECT m.id AS model_id, m.name AS model_name, mp.endpoint AS endpoint
+                SELECT m.id AS model_id, m.name AS model_name, mp.endpoint AS endpoint,
+                       CASE WHEN be.eligible THEN be.batch_deployment END AS batch_deployment,
+                       (
+                           SELECT string_agg(a.alias, ', ' ORDER BY a.alias)
+                           FROM model_aliases a
+                           WHERE a.model_id = m.id
+                       ) AS aliases
                 FROM model_provider mp
                      JOIN models m ON m.id = mp.model_id
+                     LEFT JOIN provider_model_batch_eligibility be
+                            ON be.provider_id = mp.provider_id AND be.model_id = mp.model_id
                 WHERE mp.provider_id = :provider_id
                 ORDER BY m.name
                 """),
@@ -4593,7 +4791,11 @@ class DBManager:
 
     def list_local_providers(self) -> list[dict]:
         """Unauthenticated variant of get_local_provider_inventory for internal
-        (secret-gated) endpoints that have no user logos_key."""
+        (secret-gated) endpoints that have no user logos_key.
+
+        parallel_capacity is retained as nullable legacy configuration metadata;
+        it does not describe the live capacity of these local providers.
+        """
         sql = text("""
             SELECT
                 id,
@@ -4676,8 +4878,10 @@ class DBManager:
         headers=None,
         request_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
+        timestamp_request: Optional[datetime.datetime] = None,
     ) -> tuple[dict, int]:
-        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        # Deferred inserts retain arrival time, before scheduling/provider events.
+        timestamp = (timestamp_request or datetime.datetime.now(datetime.timezone.utc)).isoformat()
         payload_str = _json_for_jsonb(input_payload) if log_level == "FULL" and input_payload else None
         headers_str = _json_for_jsonb(dict(headers)) if log_level == "FULL" and headers else None
 
@@ -4719,6 +4923,7 @@ class DBManager:
         headers=None,
         request_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
+        timestamp_request: Optional[datetime.datetime] = None,
     ) -> Optional[int]:
         """Insert a log row, or return the id of an existing one for ``request_id``.
 
@@ -4743,6 +4948,7 @@ class DBManager:
                 headers=headers,
                 request_id=request_id,
                 timeout_s=timeout_s,
+                timestamp_request=timestamp_request,
             )
             return int(result["log-id"]) if status == 200 else None
         except sqlalchemy.exc.IntegrityError as exc:
@@ -5122,6 +5328,154 @@ class DBManager:
                                   AND is_active = true
                             """)
         return self.session.execute(sql, {"logos_key": logos_key}).fetchone() is not None
+
+    # Answer reuse (table answer_cache, changelog 075)
+
+    def get_answer_cache_entries(self, context_id: str) -> List[Dict[str, Any]]:
+        """Return every stored answer of one context, oldest first.
+
+        Only the given context is read: answers are never shared across
+        contexts.
+
+        Params:
+            context_id: The scope, as built by
+                :func:`logos.answer_reuse.context.cache_scope`.
+
+        Returns:
+            One dict per entry with ``id``, ``intent``, ``answer_template``,
+            ``source``, ``source_model_id`` and ``embedding`` (384 floats).
+        """
+        rows = self.session.execute(
+            text("""
+                 SELECT id, intent, answer_template, source, source_model_id, embedding
+                 FROM answer_cache
+                 WHERE context_id = :context_id
+                 ORDER BY id
+                 """),
+            {"context_id": context_id},
+        ).fetchall()
+        return [dict(row._mapping) for row in rows]
+
+    def insert_answer_cache_entry(
+        self,
+        *,
+        context_id: str,
+        question_raw: str,
+        question_normalized: str,
+        embedding: List[float],
+        intent: str,
+        answer_template: str,
+        source: str,
+        source_model_id: Optional[int] = None,
+        source_log_id: Optional[int] = None,
+    ) -> Optional[int]:
+        """Store one answer for later reuse.
+
+        A question that is already stored for the context (same normalized
+        text) is left as it is, so loading the same data twice is harmless.
+
+        Params:
+            context_id: The scope, as built by
+                :func:`logos.answer_reuse.context.cache_scope`.
+            question_raw: The question as the client sent it.
+            question_normalized: The question after placeholder removal; the
+                text the embedding was computed from.
+            embedding: The 384 floats of ``question_normalized``.
+            intent: The intent assigned to the question.
+            answer_template: The answer, placeholders included.
+            source: ``"model"`` or ``"seed"``.
+            source_model_id: The model that wrote the answer; required for
+                ``"model"``, None for ``"seed"``.
+            source_log_id: The log_entry row of the original request, if any.
+
+        Returns:
+            The new entry's id, or None when the question was already stored.
+        """
+        row = self.session.execute(
+            text("""
+                 INSERT INTO answer_cache (context_id, question_raw, question_normalized, embedding,
+                                           intent, answer_template, source, source_model_id, source_log_id)
+                 VALUES (:context_id, :question_raw, :question_normalized, CAST(:embedding AS REAL[]),
+                         :intent, :answer_template, :source, :source_model_id, :source_log_id)
+                 ON CONFLICT (context_id, question_normalized) DO NOTHING
+                 RETURNING id
+                 """),
+            {
+                "context_id": context_id,
+                "question_raw": question_raw,
+                "question_normalized": question_normalized,
+                "embedding": [float(x) for x in embedding],
+                "intent": intent,
+                "answer_template": answer_template,
+                "source": source,
+                "source_model_id": source_model_id,
+                "source_log_id": source_log_id,
+            },
+        ).fetchone()
+        self.session.commit()
+        return int(row._mapping["id"]) if row else None
+
+    def record_answer_cache_hit(self, entry_id: int) -> None:
+        """Count one reuse of a stored answer.
+
+        Params:
+            entry_id: The answer_cache row that answered a request.
+        """
+        self.session.execute(
+            text("""
+                 UPDATE answer_cache
+                 SET hit_count = hit_count + 1, last_hit_at = now()
+                 WHERE id = :entry_id
+                 """),
+            {"entry_id": int(entry_id)},
+        )
+        self.session.commit()
+
+    def finalize_cache_hit_row(self, log_id: int, entry_id: int, *, request_id: Optional[str] = None) -> None:
+        """Settle the log row of a request answered from the answer cache.
+
+        A cache hit ran no model, so the row gets no model, provider or usage
+        rows. Its cost is known to be zero, so it is settled as zero and
+        finalised here; budget reads then take it as settled instead of
+        pricing it again. The row is marked successful, stamped with its
+        response time and linked to the answer_cache entry that answered it.
+        The entry's hit count rises in the same commit.
+
+        Params:
+            log_id: The request's log_entry row.
+            entry_id: The answer_cache row whose answer was returned.
+            request_id: The request id, written when the row does not have one yet.
+        """
+        if not isinstance(log_id, int):
+            return
+        self.session.execute(
+            text("""
+                 UPDATE log_entry
+                 SET result_status      = 'success',
+                     timestamp_response = :timestamp,
+                     request_id         = COALESCE(:request_id, request_id),
+                     cache_hit          = TRUE,
+                     cache_entry_id     = :entry_id,
+                     settled_cost_micro_cents = 0,
+                     cost_finalized     = TRUE
+                 WHERE id = :log_id
+                 """),
+            {
+                "timestamp": datetime.datetime.now(datetime.timezone.utc),
+                "request_id": request_id,
+                "entry_id": int(entry_id),
+                "log_id": log_id,
+            },
+        )
+        self.session.execute(
+            text("""
+                 UPDATE answer_cache
+                 SET hit_count = hit_count + 1, last_hit_at = now()
+                 WHERE id = :entry_id
+                 """),
+            {"entry_id": int(entry_id)},
+        )
+        self.session.commit()
 
     def get_team(self, team_id: int) -> dict | None:
         row = self.session.execute(

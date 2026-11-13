@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 
 def _int(name: str, default: int) -> int:
@@ -89,7 +90,7 @@ class Settings:
     db_port: int = _int("DB_PORT", 5432)
     db_name: str = os.getenv("DB_NAME", "logosdb")
     db_user: str = os.getenv("DB_USER", "postgres")
-    db_password: str = os.getenv("DB_PASSWORD", "root")
+    db_password: str = os.getenv("DB_PASSWORD", "")
 
     # --- identity ---------------------------------------------------------
     keycloak_jwks_uri: str = os.getenv("KEYCLOAK_JWKS_URI", "")
@@ -234,7 +235,7 @@ class Settings:
     # --- concurrency and capacity ----------------------------------------
     # Hard ceiling regardless of how idle the platform looks. Ten is what the
     # platform is expected to carry when it is otherwise idle; the capacity
-    # thresholds below decide how many of them actually run at any moment,
+    # observations below decide how many of them actually run at any moment,
     # and each still needs a free workspace of its own.
     max_parallel_sessions: int = _int("LOGOS_AGENT_MAX_PARALLEL_SESSIONS", 10)
     # How many live workspaces the trigger poller may leave so assigned work
@@ -243,13 +244,14 @@ class Settings:
     # lose comments to the lookback window. Zero means five times the parallel
     # ceiling. Never below max_parallel_sessions.
     max_queue_workspaces: int = _int("LOGOS_AGENT_MAX_QUEUE_WORKSPACES", 0)
-    # A session may start only while the platform's busy share is below this.
-    # Expressed as a fraction of reserved-to-total serving capacity.
+    # Legacy payloads without engine observations use these ratio thresholds.
     start_below_load: float = _float("LOGOS_AGENT_START_BELOW_LOAD", 0.60)
-    # Above this, running sessions are paused so user traffic gets the GPUs
-    # back. Must exceed start_below_load or sessions would flap.
+    # Must exceed start_below_load to keep the legacy fallback stable.
     pause_above_load: float = _float("LOGOS_AGENT_PAUSE_ABOVE_LOAD", 0.85)
-    scheduler_interval_s: float = _float("LOGOS_AGENT_SCHEDULER_INTERVAL_S", 15.0)
+    scheduler_interval_s: float = _float("LOGOS_AGENT_SCHEDULER_INTERVAL_S", 2.0)
+    capacity_timeout_s: float = _float("LOGOS_AGENT_CAPACITY_TIMEOUT_S", 1.0)
+    capacity_stale_after_s: float = _float("LOGOS_AGENT_CAPACITY_STALE_AFTER_S", 30.0)
+    capacity_resume_quiet_s: float = _float("LOGOS_AGENT_CAPACITY_RESUME_QUIET_S", 10.0)
 
     # --- what a session may do -------------------------------------------
     repo_url: str = os.getenv("LOGOS_AGENT_REPO_URL", "https://github.com/LogosOSS/Logos.git")
@@ -323,10 +325,13 @@ class Settings:
     # Where session artefacts (logs, screenshots) are kept, on a volume shared
     # with the session containers.
     artifact_root: str = os.getenv("LOGOS_AGENT_ARTIFACT_ROOT", "/var/lib/logos-agent/artifacts")
+    artifact_max_bytes: int = _int("LOGOS_AGENT_ARTIFACT_MAX_BYTES", 1024 * 1024)
+    # Full-page screenshots are far larger than the text artifacts above.
+    screenshot_max_bytes: int = _int("LOGOS_AGENT_SCREENSHOT_MAX_BYTES", 25 * 1024 * 1024)
     artifact_volume: str = os.getenv("LOGOS_AGENT_ARTIFACT_VOLUME", "logos_agent_artifacts")
-    # Where the runner keeps its own per-session state. Deliberately not on
-    # the artefact volume: the session container mounts this directory
-    # read-only, so a mark the runner writes into it cannot be written back
+    # Where the runner keeps per-session state and persistent SSH host keys.
+    # Deliberately not on the artefact volume: session containers mount their
+    # state read-only, so a mark the runner writes cannot be written back
     # by the agent that reads it.
     state_root: str = os.getenv("LOGOS_AGENT_STATE_ROOT", "/var/lib/logos-agent/state")
     # The volume backing `state_root`. Named like the artefact volume and kept
@@ -351,7 +356,8 @@ class Settings:
     @property
     def database_url(self) -> str:
         return (
-            f"postgresql+asyncpg://{self.db_user}:{self.db_password}" f"@{self.db_host}:{self.db_port}/{self.db_name}"
+            f"postgresql+asyncpg://{quote(self.db_user, safe='')}:{quote(self.db_password, safe='')}"
+            f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
 

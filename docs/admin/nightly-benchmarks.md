@@ -45,7 +45,7 @@ review individual outcomes before comparing throughput.
 
 ## Results
 
-**Results** shows the run, model, changed parameters, measurement times and output throughput.
+**Benchmark runs** shows the run, model, changed parameters, measurement times and output throughput.
 New nightly variants link to the production baseline from the same round.
 **Before** shows this baseline. **After** shows the measured result. **Change** shows the percentage difference.
 The **Benchmark runs** table groups measurements by dataset identity and shows each saved dataset name.
@@ -243,25 +243,37 @@ If it exceeds the current production baseline, then Logos applies its sequence a
 Logos compares measurements from the same frozen dataset and environment.
 An older throughput record alone cannot trigger adoption.
 If no eligible configuration improves throughput, then the original production settings return.
-The fixed reference remains unchanged after adoption. The next round measures the adopted settings first.
+The optimizer keeps its historical reference after adoption. The next round measures the adopted settings as a fresh baseline.
 
-The recovery journal records adoption intent before the worker configuration changes.
-The worker must confirm the configuration, restart and model readiness before production traffic resumes.
-If adoption fails, then Logos restores the original configuration.
+The PostgreSQL recovery journal records adoption intent before Logos changes the live lane.
+After the worker confirms the lane is ready, Logos stores the adopted benchmark and its parameters in `nightly_benchmarks.optimizer.production_adoption`.
+Automatic adoption applies to the running lane. Central node model configuration is managed separately.
+Logos allows up to 15 minutes for fresh readiness telemetry after a restart command succeeds.
+If adoption fails, then Logos records a separate notification for Logos Admins and tries to restore the original configuration.
+The notification links to the eligible benchmark and shows the parameter values, throughput gain, and failure reason.
 If rollback fails, then the worker remains reserved until recovery succeeds.
 After an application restart, recovery completes the recorded adoption or restores the original settings.
 A disabled schedule cancels pending adoption.
 The round report identifies an adopted benchmark or an adoption failure.
 
-For request workloads, **Nightly progress** shows the best eligible throughput so far against the fixed reference.
-The initial point is 0%. Each subsequent point represents a nightly plan with completed measurements.
-The line increases only when a round records a better eligible result. Otherwise, the line stays flat.
-Each tooltip shows total improvement from the starting baseline and relative improvement from the previous point.
-For example, 40 → 42 → 44 tok/s gives 10% total improvement and 4.8% improvement from the previous point.
-Historical Hugging Face charts use their first comparable baseline, with the same captured test settings.
-Different workloads and captured environments have separate charts.
+The **Performance** tab contains the **Timeline** section.
+The vertical axis shows throughput in output tokens per second (tok/s).
+The solid line shows complete measurements, including slower runs and repeated baselines.
+The dashed line shows the measured production baseline of each round.
+Each new round measures the current production settings first, including previously adopted improvements.
+Each point keeps its measurement date and configuration. Its percentage change uses the captured baseline from the same round.
+Outlined points fail automatic selection checks. They remain visible so that the chart shows measurement variation.
+Select a point to open its benchmark. Expand **Measured configurations** to read dates and parameters.
+The chart separates captured workloads and test settings. Measurements can span worker releases.
+A historical record does not replace the fresh comparison required for production adoption.
+Expand **Currently deployed → Configuration & selection details** to inspect current settings and selection failures.
+A completed eligible winner is saved before the next trial starts.
+Recovery can apply this saved winner if a later trial is interrupted. Disabling the schedule cancels pending adoption.
 These measurements do not establish statistical significance.
-Ten synthetic requests provide an integration pilot, not a representative thesis evaluation dataset.
+The Dev coding pilot uses 50 stored synthetic prompts with natural output lengths.
+Each replay uses the same prompts, seeds, temperature and concurrent request count.
+The model can end each answer naturally. Logos does not force a fixed output length.
+This pilot does not reproduce the full production request distribution or guarantee a standard deviation below 2%.
 Use repeated measurements and a separate evaluation dataset before drawing performance conclusions.
 
 ## Completion Notifications
@@ -272,15 +284,20 @@ After the final configuration check, Logos stores the final state and completion
 The event includes the outcome, completed round count, total successful configuration count, reference and winner IDs.
 Logos retries failed notification delivery, including outside the maintenance window.
 A stable event key prevents duplicate notifications after a retry or application restart.
-Logos Admins receive **Benchmark ready** in their notification inbox.
-The notification retains the concrete benchmark identifier and its parameter changes.
-Select the notification to open that benchmark in **Model Details → Performance → Results**.
+Logos Admins receive a notification with the nightly outcome.
+The notification shows the last interruption reason and the number of retry rounds.
+Select **View benchmark** with its number to open the measurement in **Model Details → Performance**.
 The page selects its dataset and shows the result, baseline, percentage change and changed parameters.
 This link remains available after the notification is read.
 If the measurement is deleted, then the page identifies the unavailable benchmark.
 A recovery that still needs attention does not emit a completed event.
 
 ## Worker Ownership and Recovery
+
+After automatic recovery, Logos can start a new round during the same maintenance window.
+Each model and worker pair can restart up to 2 times after recovery per night.
+After the limit, Logos ends testing for that pair when the worker returns to service.
+If the window ends or the schedule is disabled, then Logos completes recovery and stops testing.
 
 One PostgreSQL advisory lock gives 1 scheduler control of each nightly batch.
 Each batch uses at most `LOGOS_MAINTENANCE_MAX_NODES` distinct workers.
@@ -531,7 +548,7 @@ last successful measurement. The current pair limit is the code constant
 | `continuing` | The production configuration is confirmed. Another round waits for its turn within this window. |
 | `completed` | The night finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
 | `window_closed` | No further configuration can start after 08:00. |
-| `window_closed_below_half` | The 08:00 check found fewer than 25 of 50 successful completions. |
+| `window_closed_below_half` | The window ended before half of the current test requests completed. The UI shows **Stopped · nightly window ended**. |
 | `preparation_timeout` / `stalled` | Preparation exceeded its budget, or measurement stopped making progress. Inspect the attempt report. |
 | `recovery_required` | The original configuration is not ready. Resolve the worker error; keep the reservation and journal intact. |
 | `interrupted_recovered` | The scheduler restored a worker from its persisted recovery journal. |

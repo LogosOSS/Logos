@@ -28,7 +28,7 @@ jobs:
       name: ${{ matrix.environment }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Extract compose file basename
         id: extract-basename
@@ -40,7 +40,7 @@ jobs:
           [ "${{ matrix.compose-file }}" -ef "$BASENAME" ] || cp "${{ matrix.compose-file }}" "$BASENAME"
 
       - name: Copy docker compose file to VM
-        uses: appleboy/scp-action@v1.0.0
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -70,22 +70,10 @@ jobs:
             echo "image-tag is too long for a Docker tag" >&2
             exit 1
           fi
+          umask 077
           echo "ENVIRONMENT=${{ matrix.environment }}" > .env
           echo "IMAGE_TAG=$WORKSPACE_IMAGE_TAG" >> .env
           echo "REGISTRY=${{ vars.LOGOS_HARBOR_REGISTRY }}/logos" >> .env
-
-          echo "$SECRETS_CONTEXT" | jq -r '
-            del(
-              .github_token,
-              .DOCKER_USERNAME,
-              .DOCKER_PASSWORD,
-              .DEPLOYMENT_GATEWAY_SSH_KEY,
-              .VM_SSH_PRIVATE_KEY,
-              .LOGOS_HARBOR_PASSWORD
-            )
-            | to_entries[]
-            | "\(.key)=\(.value | @json)"
-          ' >> .env
 
           echo "$VARS_CONTEXT" | jq -r '
             del(
@@ -100,13 +88,26 @@ jobs:
             | to_entries[]
             | "\(.key)=\(.value | @json)"
           ' >> .env
+
+          python3 scripts/write-deployment-secrets.py "$DEPLOY_TARGET" >> .env
         env:
           VARS_CONTEXT: ${{ toJson(vars) }}
-          SECRETS_CONTEXT: ${{ toJson(secrets) }}
+          DEPLOY_TARGET: ${{ matrix.compose-file == './docker-compose.yaml' && 'core' || 'worker' }}
+          DEPLOY_SECRET_HF_TOKEN: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.HF_TOKEN || '' }}
+          DEPLOY_SECRET_KEYCLOAK_SYNC_CLIENT_SECRET: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.KEYCLOAK_SYNC_CLIENT_SECRET || '' }}
+          DEPLOY_SECRET_LOGOS_AGENT_API_KEY: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_AGENT_API_KEY || '' }}
+          DEPLOY_SECRET_LOGOS_AGENT_GITHUB_TOKEN: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_AGENT_GITHUB_TOKEN || '' }}
+          DEPLOY_SECRET_LOGOS_AGENT_SESSION_GITHUB_TOKEN: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_AGENT_SESSION_GITHUB_TOKEN || '' }}
+          DEPLOY_SECRET_LOGOS_API_KEY: ${{ matrix.compose-file != './docker-compose.yaml' && secrets.LOGOS_API_KEY || '' }}
+          DEPLOY_SECRET_LOGOS_DB_PASSWORD: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_DB_PASSWORD || '' }}
+          DEPLOY_SECRET_LOGOS_INTERNAL_SECRET: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_INTERNAL_SECRET || '' }}
+          DEPLOY_SECRET_LOGOS_REDIS_PASSWORD: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_REDIS_PASSWORD || '' }}
+          DEPLOY_SECRET_LOGOS_REPO_CREDENTIALS_KEY: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_REPO_CREDENTIALS_KEY || '' }}
+          DEPLOY_SECRET_PROMETHEUS_API_KEY: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.PROMETHEUS_API_KEY || '' }}
           WORKSPACE_IMAGE_TAG: ${{ inputs.image-tag || 'latest' }}
 
       - name: Copy .env file to VM
-        uses: appleboy/scp-action@v1.0.0
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -119,7 +120,7 @@ jobs:
           target: ${{ matrix.base-path }}
 
       - name: Pull new images
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
           LOGOS_HARBOR_REGISTRY: ${{ vars.LOGOS_HARBOR_REGISTRY }}
@@ -143,7 +144,7 @@ jobs:
             docker compose -f ${{ matrix.base-path }}/${{ steps.extract-basename.outputs.basename }} --env-file=${{ matrix.base-path }}/.env pull
 
       - name: Deploy with docker compose
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USERNAME }}
@@ -188,7 +189,7 @@ jobs:
             fi
 
       - name: Clean up old images
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           LOGOS_HARBOR_PASSWORD: ${{ secrets.LOGOS_HARBOR_PASSWORD }}
           LOGOS_HARBOR_REGISTRY: ${{ vars.LOGOS_HARBOR_REGISTRY }}

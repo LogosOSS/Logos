@@ -413,7 +413,7 @@ public class PriceUpdaterService {
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> fetchModelData(HttpClient client, String modelName) {
+    Map<String, Object> fetchModelData(HttpClient client, String modelName) {
         for (String candidate : List.of(modelName, modelName.toLowerCase())) {
             try {
                 HttpRequest req = HttpRequest.newBuilder()
@@ -425,6 +425,10 @@ public class PriceUpdaterService {
                 if (resp.statusCode() == 200) {
                     return objectMapper.readValue(resp.body(), Map.class);
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("price_updater: interrupted while fetching '{}'", candidate);
+                return null;
             } catch (Exception e) {
                 log.warn("price_updater: HTTP error for '{}': {}", candidate, e.getMessage());
                 return null;

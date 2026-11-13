@@ -244,6 +244,48 @@ curl -X POST https://logos.aet.cit.tum.de/logosdb/providers/logosnode/model-prof
   -d '{"logos_key":"<root_key>","provider_id":<provider_id>,"model_names":["<model>"]}'
 ```
 
+### Node model configuration
+
+Logos can store which models a node serves and their per-model settings, the
+same data as the `capabilities_models` entries and `engines.vllm.model_overrides`
+in `config.yml`. Workers do not read it yet: `config.yml` stays the source
+until they do, and the requests below only store and return the data.
+
+Each model has `capability` (`tensor_parallel_size`, `kv_cache_memory_bytes`,
+`gpu_devices`, `base_residency_mb`, `min_context_fraction`) and `overrides`
+(vLLM engine settings such as `quantization`). `tensor_parallel_size` and
+`kv_cache_memory_bytes` may appear in both, but only with the same value;
+`gpu_devices`, `base_residency_mb` and `min_context_fraction` belong in
+`capability` only. Logos checks these rules and the capability values. The
+engine settings in `overrides` are validated by the worker.
+
+Two admin requests (root key, like step 7):
+
+```bash
+# A node's configured models and its revision.
+curl -X POST https://logos.aet.cit.tum.de/logosdb/providers/logosnode/node-config/get \
+  -H 'Content-Type: application/json' \
+  -d '{"logos_key":"<root_key>","provider_id":<provider_id>}'
+
+# Replace the whole list. expected_revision is the revision from the read above;
+# if someone saved in the meantime the answer is 409 with the current revision.
+curl -X POST https://logos.aet.cit.tum.de/logosdb/providers/logosnode/node-config/replace \
+  -H 'Content-Type: application/json' \
+  -d '{"logos_key":"<root_key>","provider_id":<provider_id>,"expected_revision":0,
+       "entries":[{"model_name":"<model>",
+                   "capability":{"tensor_parallel_size":2,"kv_cache_memory_bytes":"8G"},
+                   "overrides":{"quantization":"awq"}}]}'
+```
+
+`replace` answers 400 with the problems found, 404 for an unknown provider and
+409 for an outdated revision. A connected worker that supports it is sent the
+new configuration right away.
+
+The worker itself uses two requests with its `shared_key`, over TLS:
+`node-config` returns the stored configuration, and `node-config/import` stores
+the models of its `config.yml` once per node. The import keeps them as given and
+lists models whose `capability` and `overrides` disagree in `warnings`.
+
 ## 10. Troubleshooting
 
 - **`403` on startup / "Invalid provider shared key"**

@@ -27,6 +27,32 @@ from app.schemas import (
 from app.sessions import branch_for, container_name
 
 
+@pytest.fixture(autouse=True)
+def prepared_checkout_and_verification(monkeypatch):
+    """These lifecycle fakes do not execute checkout or compiler containers.
+
+    The real proof capture and verification sequence are exercised in
+    test_verification_pipeline; keep lifecycle tests focused on transitions,
+    cancellation, mounts, and publication.
+    """
+    from app import sessions
+
+    def capture(_self, session_id):
+        path = sessions.state_dir(session_id) / sessions._CHECKOUT_BASELINE_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"checkout_sha": "a" * 40, "branch_sha": "", "comparison_sha": "a" * 40, "pr_base_branch": "main"}
+            )
+        )
+
+    async def verified(_self, session_id, workspace, env, artifact_host_path):
+        return {**env, "LOGOS_SESSION_VERIFICATION": "passed", "LOGOS_SESSION_VERIFIED_TREE": "b" * 40}
+
+    monkeypatch.setattr(sessions.SessionManager, "_capture_checkout_baseline", capture)
+    monkeypatch.setattr(sessions.SessionManager, "_verify_before_push", verified)
+
+
 class TestStateMachine:
     def test_normal_path(self):
         assert can_transition(SessionStatus.QUEUED, SessionStatus.STARTING)
@@ -1086,7 +1112,7 @@ class TestAnAnswerThatWasNeverWritten:
         monkeypatch.setattr(sessions.db, "get_session", get_session)
         monkeypatch.setattr(sessions.db, "record_reply_attempt", record_reply_attempt)
         monkeypatch.setattr(sessions.db, "abandon_reply", refuse)
-        monkeypatch.setattr(sessions.Path, "read_text", unreadable)
+        monkeypatch.setattr(sessions, "read_artifact_text", unreadable)
 
         await sessions.manager._post_reply(7)
 
@@ -1518,7 +1544,7 @@ class TestAgentPhaseIsolation:
         assert transitions[0][0] is SessionStatus.FINALIZING
         target, fields = transitions[1]
         assert target is SessionStatus.FAILED
-        assert "finalization failed" in fields["error"]
+        assert "finalization did not pass" in fields["error"]
         assert events[0]["status"] == "failed"
 
     async def test_a_finalizing_row_still_reaches_the_finalizer(self, monkeypatch, tmp_path):
@@ -4240,6 +4266,40 @@ class TestReviewReplyDelivery:
         monkeypatch.setattr(sessions.github, "issue_comment_contains", fake_issue_contains)
         monkeypatch.setattr(sessions.github, "request_pull_review", fake_request)
         return recorded
+
+    @pytest.mark.parametrize("kind", ["file_symlink", "parent_symlink", "oversize", "fifo"])
+    async def test_unsafe_comment_answers_are_not_posted(self, monkeypatch, tmp_path, kind):
+        from app import sessions
+
+        recorded = self.install(monkeypatch, tmp_path, self.REVIEW_ROW)
+        monkeypatch.setattr(sessions, "settings", replace(sessions.settings, artifact_max_bytes=32))
+        directory = tmp_path / "31"
+        replies = directory / "replies"
+        replies.mkdir(parents=True)
+        victim = tmp_path / "32"
+        victim.mkdir()
+        (victim / "101.md").write_text("private analysis")
+        if kind == "file_symlink":
+            (replies / "101.md").symlink_to(victim / "101.md")
+        elif kind == "parent_symlink":
+            replies.rmdir()
+            replies.symlink_to(victim)
+        elif kind == "oversize":
+            (replies / "101.md").write_text("x" * 33)
+        else:
+            import os
+
+            os.mkfifo(replies / "101.md")
+        (directory / "reply.md").write_text("summary")
+
+        manager = sessions.SessionManager()
+        await manager._post_reply(31)
+
+        assert recorded["threads"] == []
+        assert recorded["summaries"] == []
+        assert recorded["attempts"] == [(31, False)]
+        if kind == "parent_symlink":
+            assert await manager._combined_review_answers(31) is None
 
     async def test_each_comment_gets_its_answer_in_its_own_thread(self, monkeypatch, tmp_path):
         from app import sessions

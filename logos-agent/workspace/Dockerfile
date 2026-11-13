@@ -4,6 +4,35 @@
 # browser for screenshots. It deliberately holds no credentials and no Docker
 # client: everything privileged is done by the runner service outside this
 # container (see app/docker_engine.py for the sandbox this image runs under).
+# Resolve the same Maven toolchain and project dependencies as the application
+# image while build-time network access is available. Running test-compile
+# warms compiler/plugin dependencies that dependency:go-offline can miss.
+FROM maven:3.10-eclipse-temurin-25 AS java-verification
+WORKDIR /build/logos-webservice
+COPY logos-webservice/pom.xml ./pom.xml
+COPY logos-webservice/src ./src
+RUN mvn --batch-mode --no-transfer-progress \
+      -Dmaven.repo.local=/opt/logos-verification/maven-repository test-compile
+RUN --network=none rm -rf target \
+  && mvn --offline --batch-mode --no-transfer-progress \
+       -Dmaven.repo.local=/opt/logos-verification/maven-repository test-compile
+
+# Keep the content-addressed npm cache so npm ci can validate each session's
+# actual lockfile offline; changed dependency versions fail instead of using
+# node_modules from a different revision.
+FROM node:22-bookworm-slim AS ui-verification
+WORKDIR /build/logos-ui
+COPY logos-ui/package.json logos-ui/package-lock.json ./
+RUN npm ci --cache /opt/logos-verification/npm-cache --no-audit --no-fund
+COPY logos-ui/src ./src
+COPY logos-ui/public ./public
+COPY logos-ui/angular.json logos-ui/tsconfig.json logos-ui/tsconfig.app.json logos-ui/tsconfig.spec.json ./
+COPY logos-ui/postcss.config.mjs logos-ui/vitest-base.config.mts ./
+ENV CI=true NG_CLI_ANALYTICS=false LANG=C.UTF-8
+RUN --network=none npm ci --offline --cache /opt/logos-verification/npm-cache --no-audit --no-fund \
+  && node node_modules/@angular/cli/bin/ng.js build --configuration production \
+  && node node_modules/@angular/cli/bin/ng.js test --watch=false
+
 FROM node:22-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -34,9 +63,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # A JDK, so a session can build and test logos-webservice. It targets Java 25
 # (see logos-webservice/pom.xml), which Debian bookworm does not package at all,
 # so it comes from Adoptium rather than from the distribution. The service's
-# Maven wrapper (`./mvnw`) fetches Maven itself, so no separate Maven here.
+# Maven distribution and offline repository come from the build stage below.
 ARG JDK_VERSION=25
-RUN curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
+RUN curl --proto =https -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
       | gpg --dearmor -o /usr/share/keyrings/adoptium.gpg \
   && echo "deb [signed-by=/usr/share/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
       > /etc/apt/sources.list.d/adoptium.list \
@@ -45,7 +74,7 @@ RUN curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
   && rm -rf /var/lib/apt/lists/*
 
 # GitHub CLI, from the official apt repository.
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+RUN curl --proto =https -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
   && chmod a+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
   && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -110,6 +139,12 @@ RUN uv venv --python 3.13 /opt/venv \
   && chmod -R a+rX /opt/pre-commit /opt/venv \
   && rm -rf /tmp/hooks
 
+COPY --from=java-verification /usr/share/maven /usr/share/maven
+COPY --from=java-verification /opt/logos-verification/maven-repository /opt/logos-verification/maven-repository
+COPY --from=ui-verification /opt/logos-verification/npm-cache /opt/logos-verification/npm-cache
+ENV PATH=/usr/share/maven/bin:$PATH
+RUN chmod -R a+rX /usr/share/maven /opt/logos-verification
+
 # Unprivileged user. The runner starts the container as `agent`; nothing in a
 # session ever runs as root.
 RUN useradd --create-home --shell /bin/bash --uid 10001 agent \
@@ -117,6 +152,7 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 agent \
   && chown -R agent:agent /workspace /artifacts /home/agent
 
 COPY --chown=agent:agent logos-agent/workspace/run_session.py /usr/local/lib/run_session.py
+COPY --chown=agent:agent logos-agent/workspace/verify_checkout.py /usr/local/lib/verify_checkout.py
 COPY --chown=agent:agent logos-agent/workspace/screenshot.js /usr/local/lib/screenshot.js
 
 USER agent

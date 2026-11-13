@@ -85,3 +85,17 @@ def test_unsupported_compute_cap_query_preserves_memory_telemetry(monkeypatch):
     assert GpuMetricsCollector._run_nvidia_smi() == "legacy telemetry"
     assert "compute_cap" in run.call_args_list[0].args[0][1]
     assert "compute_cap" not in run.call_args_list[1].args[0][1]
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_the_poll_loop() -> None:
+    import asyncio
+
+    collector = GpuMetricsCollector()
+    poll = asyncio.create_task(asyncio.Event().wait())
+    collector._task = poll
+
+    await collector.stop()
+
+    assert poll.cancelled()
+    assert collector._task is None

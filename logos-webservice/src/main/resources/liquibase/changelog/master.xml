@@ -75,6 +75,11 @@
     <include file="liquibase/changelog/068_benchmark_request_workloads.xml"/>
     <include file="liquibase/changelog/069_nightly_request_sources.xml"/>
     <include file="liquibase/changelog/070_custom_permissions_team_boundary.xml"/>
-    <include file="liquibase/changelog/071_team_show_on_public_stats.xml"/>
-    <include file="liquibase/changelog/072_team_public_category.xml"/>
+    <include file="liquibase/changelog/071_node_model_config.xml"/>
+    <include file="liquibase/changelog/072_optional_provider_capacity.xml"/>
+    <include file="liquibase/changelog/073_batch_deployment_support.xml"/>
+    <include file="liquibase/changelog/074_permission_audit_log.xml"/>
+    <include file="liquibase/changelog/075_answer_cache.xml"/>
+    <include file="liquibase/changelog/076_team_show_on_public_stats.xml"/>
+    <include file="liquibase/changelog/077_team_public_category.xml"/>
 </databaseChangeLog>

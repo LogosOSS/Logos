@@ -1,5 +1,6 @@
 """Run against an explicitly supplied disposable PostgreSQL database."""
 
+import copy
 import os
 import uuid
 from datetime import date, datetime
@@ -7,7 +8,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.orm import Session
 
 from logos.benchmarks import nightly_store as store
@@ -125,9 +126,10 @@ def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(dat
 
 
 async def test_completion_event_survives_failed_delivery_and_deduplicates_finish(database, monkeypatch):
+    from importlib import import_module
     from unittest.mock import AsyncMock
 
-    import logos.notifications as notifications
+    notifications = import_module("logos.notifications")
 
     engine, _ = database
     store.set_enabled(31, True, False)
@@ -543,6 +545,7 @@ def test_continuous_rounds_keep_daily_claims_and_notify_only_after_the_final_res
         assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 0
     assert store.claim(31, day)
     assert not store.claim(31, day)
+
     assert store.claimed_today(day) == 1
     store.finish(31, "continuing", report)
     store.finalize_continuations(datetime.fromisoformat("2026-10-29T07:59:59+01:00"))
@@ -562,3 +565,112 @@ def test_continuous_rounds_keep_daily_claims_and_notify_only_after_the_final_res
         assert payload["successful_configurations"] == 4
         assert payload["rounds"] == 2
     assert not store.claim(31, day)
+
+
+def test_recovery_resumes_the_same_claim_and_records_one_final_event(database):
+    engine, _ = database
+    day = date(2026, 10, 29)
+    store.set_enabled(31, True, False)
+    report = [{"status": "success"}, {"status": "recovery_required", "reason": "GPU capacity unavailable"}]
+
+    for attempt in range(store.MAX_RECOVERY_RESUMES + 1):
+        assert store.claim(31, day)
+        assert store.claimed_today(day) == 1
+        store.save(31, "recovery_required", report, {"provider_id": 1})
+        store.finish(31, "interrupted_recovered", report, resume_after_recovery=True)
+        state = store.status(31)
+        assert not state["recovery_required"]
+        if attempt < store.MAX_RECOVERY_RESUMES:
+            assert state["status"] == "continuing"
+            with engine.connect() as connection:
+                assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 0
+
+    assert state["status"] == "interrupted_recovered"
+    assert not store.claim(31, day)
+    with engine.connect() as connection:
+        payload = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
+    assert payload["recovery_retry_limit_reached"]
+    assert payload["interruption_reason"] == "GPU capacity unavailable"
+    assert payload["rounds"] == 3
+
+
+def test_selection_diagnostics_keep_workloads_separate_and_explain_rejected_faster_runs(database):
+    from sqlalchemy import text
+    from sqlalchemy.types import JSON
+
+    from logos.benchmarks.optimization import eligible
+
+    engine, _ = database
+    baseline = {
+        "id": 1,
+        "sample_size": 1,
+        "configuration": {"workload": {"id": "a"}, "nightly": {"baseline_id": 1, "series_key": "series"}},
+        "metrics": {
+            "aggregate_output_tokens_per_second": 40,
+            "request_totals": {"total": 1, "successful": 1, "errored": 0, "incomplete": 0},
+            "replay_samples": [{"source_log_id": 8, "output_tokens": 100, "finish_reason": "stop"}],
+            "request_latency_ms": {"successful": {"percentiles": {"p95": 1000}}},
+        },
+    }
+
+    faster = copy.deepcopy(baseline)
+    faster["id"] = 2
+    faster["metrics"]["aggregate_output_tokens_per_second"] = 50
+    faster["metrics"]["replay_samples"][0]["output_tokens"] = 20
+    other = copy.deepcopy(baseline)
+    other["id"] = 3
+    other["configuration"]["workload"]["id"] = "b"
+    with engine.begin() as connection:
+        statement = text(
+            "INSERT INTO model_provider_benchmarks(id, configuration, metrics, sample_size) "
+            "VALUES (:id, :configuration, :metrics, :sample_size)"
+        ).bindparams(
+            bindparam("configuration", type_=JSON),
+            bindparam("metrics", type_=JSON),
+        )
+        connection.execute(statement, [baseline, faster, other])
+    summary = store.selection_summary(31, "a")
+    assert eligible(baseline, baseline)
+    assert summary["best_observed"]["benchmark_id"] == 2
+    assert summary["best_eligible"]["benchmark_id"] == 1
+    assert summary["best_observed"]["issues"] == ["1 answer lengths differ by more than 20% from baseline"]
+    assert {item["benchmark_id"] for item in summary["comparisons"]} == {1, 2}
+    assert "source_log_id" not in str(summary)
+
+
+async def test_failed_adoption_alert_is_delivered_even_with_pending_worker_recovery(database, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from logos import notifications
+
+    failure = {
+        "status": "adoption_failed",
+        "benchmark_id": 164,
+        "baseline_id": 160,
+        "parameters": {"max_num_batched_tokens": 2304},
+        "throughput": 32.8,
+        "baseline_throughput": 22.9,
+        "reason": "Could not make enough GPU capacity available to load the model.",
+    }
+    store.set_enabled(31, True, expected=False)
+    journal = {"provider_id": 1}
+    for _ in range(2):
+        store.save(31, "recovery_required", [failure], journal, adoption_failure=failure)
+
+    emit = AsyncMock(return_value=True)
+    monkeypatch.setattr(notifications, "emit_notification", emit)
+    await store.deliver_completion_events()
+    await store.deliver_completion_events()
+
+    assert store.status(31)["recovery_required"]
+    emit.assert_awaited_once()
+    notification_type, title, body, payload, recipients = emit.await_args.args
+    assert notification_type == "benchmark_result_ready"
+    assert title == "Nightly configuration adoption failed"
+    assert "Benchmark #164" in body
+    assert "Max batched tokens 2304" in body
+    assert "32.8 tok/s (+43.2% vs. baseline #160)" in body
+    assert failure["reason"] in body
+    assert payload["model_id"] == 11 and payload["benchmark_id"] == 164
+    assert recipients == [{"kind": "role", "role": "logos_admin"}]
+    assert emit.await_args.kwargs["event_key"] == "nightly-adoption-failed:31:164"

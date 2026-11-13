@@ -61,7 +61,7 @@
                 <span class="managed-badge" title="Managed by Keycloak; identity, role and account are synced and cannot be changed here.">
                   <i class="pi pi-lock" aria-hidden="true"></i> Keycloak
                 </span>
-              } @else if (user.username !== 'root') {
+              } @else if (isLogosAdmin() && user.username !== 'root') {
                 <button
                   class="btn-icon"
                   type="button"
@@ -70,16 +70,14 @@
                 >
                   <i class="pi pi-pencil" aria-hidden="true"></i>
                 </button>
-                @if (isLogosAdmin()) {
-                  <button
-                    class="btn-icon btn-icon--danger"
-                    type="button"
-                    [attr.aria-label]="'Delete ' + user.username"
-                    (click)="openDeleteDialog(user)"
-                  >
-                    <i class="pi pi-trash" aria-hidden="true"></i>
-                  </button>
-                }
+                <button
+                  class="btn-icon btn-icon--danger"
+                  type="button"
+                  [attr.aria-label]="'Delete ' + user.username"
+                  (click)="openDeleteDialog(user)"
+                >
+                  <i class="pi pi-trash" aria-hidden="true"></i>
+                </button>
               }
             </div>
           }
@@ -117,7 +115,7 @@
               <span class="managed-badge" title="Managed by Keycloak; identity, role and account are synced and cannot be changed here.">
                 <i class="pi pi-lock" aria-hidden="true"></i> Keycloak
               </span>
-            } @else if (user.username !== 'root') {
+            } @else if (isLogosAdmin() && user.username !== 'root') {
               <button
                 class="btn-icon"
                 type="button"
@@ -126,16 +124,14 @@
               >
                 <i class="pi pi-pencil" aria-hidden="true"></i>
               </button>
-              @if (isLogosAdmin()) {
-                <button
-                  class="btn-icon btn-icon--danger"
-                  type="button"
-                  [attr.aria-label]="'Delete ' + user.username"
-                  (click)="openDeleteDialog(user)"
-                >
-                  <i class="pi pi-trash" aria-hidden="true"></i>
-                </button>
-              }
+              <button
+                class="btn-icon btn-icon--danger"
+                type="button"
+                [attr.aria-label]="'Delete ' + user.username"
+                (click)="openDeleteDialog(user)"
+              >
+                <i class="pi pi-trash" aria-hidden="true"></i>
+              </button>
             }
           </div>
         }
@@ -218,9 +214,10 @@
       }
 
       <div class="form-field">
-        <label class="field-label">Teams <span class="field-hint">(optional)</span></label>
+        <label class="field-label" for="create-user-team-search">Teams <span class="field-hint">(optional)</span></label>
         <div class="team-picker">
           <input
+            id="create-user-team-search"
             class="field-input team-picker__search"
             type="text"
             placeholder="Search teams…"
@@ -353,9 +350,10 @@
     </div>
 
     <div class="form-field">
-      <label class="field-label">Teams <span class="field-hint">(optional)</span></label>
+      <label class="field-label" for="edit-user-team-search">Teams <span class="field-hint">(optional)</span></label>
       <div class="team-picker">
         <input
+          id="edit-user-team-search"
           class="field-input team-picker__search"
           type="text"
           placeholder="Search teams…"

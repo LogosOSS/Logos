@@ -10,6 +10,9 @@ import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
@@ -32,6 +35,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -147,6 +151,8 @@ class ProviderControllerTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.result").value("Created Provider."))
            .andExpect(jsonPath("$['provider-id']").isNumber());
+        assertNull(jdbc.queryForObject(
+            "SELECT parallel_capacity FROM providers WHERE name = 'new-provider'", Integer.class));
     }
 
     @Test
@@ -161,6 +167,8 @@ class ProviderControllerTest {
            .andExpect(jsonPath("$.result").value("Created Provider."))
            .andExpect(jsonPath("$.api_key")
                .value(org.hamcrest.Matchers.matchesPattern("[A-Za-z0-9_-]{64}")));
+        assertNull(jdbc.queryForObject(
+            "SELECT parallel_capacity FROM providers WHERE name = 'local-node'", Integer.class));
     }
 
     @Test
@@ -207,6 +215,20 @@ class ProviderControllerTest {
                 .content("{\"provider_id\":6001,\"provider_name\":\"renamed-provider\"}"))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.result").value("Updated Provider."));
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(ints = {20, 200, 900})
+    void updateProvider_preservesOptionalCloudCapacity(Integer capacity) throws Exception {
+        jdbc.update("UPDATE providers SET parallel_capacity = ? WHERE id = 6001", capacity);
+        mvc.perform(post("/logosdb/update_provider")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"provider_name\":\"renamed-provider\"}"))
+           .andExpect(status().isOk());
+        assertEquals(capacity, jdbc.queryForObject(
+            "SELECT parallel_capacity FROM providers WHERE id = 6001", Integer.class));
     }
 
     @Test
@@ -359,6 +381,46 @@ class ProviderControllerTest {
            .andExpect(jsonPath("$[0].model_id").value(5001))
            .andExpect(jsonPath("$[0].authentication_configured").doesNotExist())
            .andExpect(jsonPath("$[0].api_key").value("stored-model-secret"));
+    }
+
+    @Test
+    void getProviderModels_reportsBatchSupportPerDeployment() throws Exception {
+        mvc.perform(post("/logosdb/get_provider_models")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].batch_support").value("unknown"))
+           .andExpect(jsonPath("$[0].batch_deployment").doesNotExist());
+
+        jdbc.update("""
+            INSERT INTO provider_model_batch_eligibility
+                (provider_id, model_id, eligible, detail, batch_deployment, source)
+            VALUES (6001, 5001, true, 'accepted', 'gpt-41-batch', 'probe')
+            """);
+        mvc.perform(post("/logosdb/get_provider_models")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].batch_support").value("supported"))
+           .andExpect(jsonPath("$[0].batch_deployment").value("gpt-41-batch"))
+           .andExpect(jsonPath("$[0].batch_source").value("probe"))
+           .andExpect(jsonPath("$[0].batch_checked_at").isString());
+
+        jdbc.update("""
+            UPDATE provider_model_batch_eligibility
+            SET eligible = false, source = 'refusal', detail = 'SKU GlobalStandard'
+            WHERE provider_id = 6001 AND model_id = 5001
+            """);
+        mvc.perform(post("/logosdb/get_provider_models")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].batch_support").value("unsupported"))
+           .andExpect(jsonPath("$[0].batch_deployment").doesNotExist())
+           .andExpect(jsonPath("$[0].batch_detail").value("SKU GlobalStandard"));
     }
 
     @Test
@@ -655,6 +717,34 @@ class ProviderControllerTest {
            .andExpect(status().isForbidden());
         verify(workerAdminClient, never()).maintenanceStatus();
         verify(workerAdminClient, never()).releaseCalibrationClaim(anyInt(), anyString());
+    }
+
+    @Test
+    void nodeReleaseRequiresLogosAdmin() throws Exception {
+        mvc.perform(post("/logosdb/maintenance/release_node")
+                .with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"provider_id\":6001,\"deployment_id\":\"deploy-1\"}"))
+            .andExpect(status().isForbidden());
+        mvc.perform(post("/logosdb/maintenance/release_node")
+                .with(TestJwt.testUser()).contentType("application/json")
+                .content("{\"provider_id\":6001,\"deployment_id\":\"deploy-1\"}"))
+            .andExpect(status().isForbidden());
+        verify(workerAdminClient, never()).releaseNodeMaintenance(anyInt(), anyString());
+    }
+
+    @Test
+    void nodeReleaseRecordsTheSelectedDeployment() throws Exception {
+        jdbc.update("DELETE FROM audit_log WHERE action = 'provider.node_maintenance_released'");
+        when(workerAdminClient.releaseNodeMaintenance(6001, "deploy-1"))
+            .thenReturn(ResponseEntity.ok(Map.of("released", true)));
+        mvc.perform(post("/logosdb/maintenance/release_node")
+                .with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"provider_id\":6001,\"deployment_id\":\"deploy-1\"}"))
+            .andExpect(status().isOk());
+        verify(workerAdminClient).releaseNodeMaintenance(6001, "deploy-1");
+        assertEquals(1, jdbc.queryForObject(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'provider.node_maintenance_released' "
+                + "AND target_id = '6001'", Integer.class));
     }
 
     @Test

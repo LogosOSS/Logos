@@ -36,12 +36,22 @@ import jakarta.servlet.http.HttpServletResponse;
 @EnableMethodSecurity
 public class SecurityConfig {
 
+    // Answer reuse marks a reply from the answer cache with these response
+    // headers (logos.answer_reuse.service.CACHE_RESPONSE_HEADERS). A browser
+    // client can read a response header only if CORS exposes it.
+    static final List<String> ANSWER_CACHE_RESPONSE_HEADERS = List.of(
+        "X-Logos-Cache",
+        "X-Logos-Cache-Entry",
+        "X-Logos-Cache-Similarity",
+        "X-Logos-Cache-Source-Model"
+    );
+
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http,
             @Qualifier("logosCorsConfigurationSource") CorsConfigurationSource corsSource) throws Exception {
         http
             .cors(cors -> cors.configurationSource(corsSource))
-            .csrf(csrf -> csrf.disable())
+            .csrf(csrf -> csrf.disable()) // NOSONAR stateless API: no session or auth cookie a browser would attach; credentials travel in headers
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
@@ -134,10 +144,13 @@ public class SecurityConfig {
             "logos-key",
             "logos-logging",
             "logos_logging",
+            "logos-context",
+            "logos_context",
             "policy",
             "X-Request-ID",
             "X-Logos-Batch-Execution"
         ));
+        inference.setExposedHeaders(ANSWER_CACHE_RESPONSE_HEADERS);
         inference.setAllowCredentials(credentialsSafe);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

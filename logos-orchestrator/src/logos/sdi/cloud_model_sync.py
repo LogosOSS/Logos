@@ -33,9 +33,11 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from logos.asyncio_tasks import cancel_and_wait
 from logos.benchmarks.guidellm_runner import credential_transport_is_secure
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.types import cloud_auth_header, cloud_protocol_headers
+from logos.model_names import is_safe_model_name
 from logos.sdi.model_discovery_notifier import deliver_discovery_notifications
 
 logger = logging.getLogger(__name__)
@@ -134,7 +136,10 @@ def parse_model_list(body: Any) -> Tuple[List[str], Dict[str, Dict[str, int]], b
     for entry in data:
         if not isinstance(entry, dict):
             continue
-        name = str(entry.get("id") or "").strip()
+        name = str(entry.get("id") or "")
+        if not is_safe_model_name(name):
+            continue
+        name = name.strip()
         if not name:
             continue
         names.append(name)
@@ -254,14 +259,7 @@ class CloudModelSyncService:
 
     async def stop(self) -> None:
         for attr in ("_task", "_refresh_task"):
-            task = getattr(self, attr)
-            if task is None:
-                continue
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_wait(getattr(self, attr))
             setattr(self, attr, None)
 
     async def _loop(self) -> None:

@@ -17,6 +17,7 @@ import org.springframework.web.multipart.MultipartFile;
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchService;
+import de.tum.cit.aet.logos.logoswebservice.operations.service.BatchPriceService;
 
 /**
  * The batch page: upload a file, watch it run, download the results.
@@ -36,8 +37,22 @@ public class BatchController {
 
     private final BatchService batchService;
 
-    public BatchController(BatchService batchService) {
+    private final BatchPriceService batchPriceService;
+
+    public BatchController(BatchService batchService, BatchPriceService batchPriceService) {
         this.batchService = batchService;
+        this.batchPriceService = batchPriceService;
+    }
+
+    @GetMapping("/logosdb/batches/prices")
+    @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
+    public ResponseEntity<?> prices(@RequestParam("apiKeyId") int apiKeyId,
+                                    @RequestAttribute("authContext") AuthContext auth) {
+        try {
+            return ResponseEntity.ok(batchPriceService.pricesForKey(requireUser(auth), apiKeyId));
+        } catch (BatchService.KeyNotOwnedException exc) {
+            return ResponseEntity.status(403).body(Map.of("detail", exc.getMessage()));
+        }
     }
 
     /** The user's keys, for the picker: a batch runs as exactly one of them. */
@@ -134,6 +149,8 @@ public class BatchController {
                 builder = builder.header("Content-Disposition", contentDisposition);
             }
             return builder.body(response.body());
+        } catch (BatchService.InvalidIdException exc) {
+            return ResponseEntity.status(400).body(Map.of("detail", exc.getMessage()));
         } catch (BatchService.KeyNotOwnedException exc) {
             return ResponseEntity.status(403).body(Map.of("detail", exc.getMessage()));
         } catch (BatchService.CredentialExchangeException exc) {

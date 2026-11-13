@@ -9,7 +9,7 @@ export interface NightlyStatus {
   workload_policy?: { kind: 'selected' | 'recent_user'; username?: string; request_count?: number; ready?: boolean; error?: string | null };
   workload_id?: string | null;
   workloads?: { id: string; name: string; request_count: number; provenance: string; created_at?: string }[];
-  optimizer?: { reference_id?: number; best_benchmark_id?: number; iterations?: number; nightly_session?: { date: string; rounds: number; successful_configurations: number } };
+  optimizer?: { production_adoption?: { benchmark_id: number; baseline_id: number; baseline_throughput: number; throughput: number }; reference_id?: number; best_benchmark_id?: number; iterations?: number; nightly_session?: { date: string; rounds: number; successful_configurations: number } };
   max_maintenance_nodes?: number;
   window?: { start: string; end: string; benchmark_start_cutoff: string; timezone: string };
   enabled: boolean;

@@ -11,6 +11,13 @@ import {
   StoreDeployKeyPayload, AiLlmCallRecommendation, AiWorkflow, KeycloakGroupDirectory,
 } from '../../shared/models/team.model';
 
+/** One provider of the catalog that the custom permissions of an API key can include. */
+export interface PermissionCatalogProvider {
+  id: number;
+  name: string;
+  models: { model_id: number; model_name: string }[];
+}
+
 export interface TeamMembersResponse {
   team: TeamDetail;
   members: TeamMember[];
@@ -289,6 +296,13 @@ export class TeamManagementService {
     return firstValueFrom(this.http.get<number[]>(`/api/admin/api-keys/${keyId}/model-permissions`));
   }
 
+  /** Every provider with its models, for choosing the custom permissions of the key. */
+  getApiKeyPermissionCatalog(keyId: number): Promise<PermissionCatalogProvider[]> {
+    return firstValueFrom(
+      this.http.get<PermissionCatalogProvider[]>(`/api/admin/api-keys/${keyId}/permission-catalog`),
+    );
+  }
+
   getApiKeyProviderPermissions(keyId: number): Promise<number[]> {
     return firstValueFrom(this.http.get<number[]>(`/api/admin/api-keys/${keyId}/provider-permissions`));
   }
@@ -308,9 +322,10 @@ export class TeamManagementService {
     return { id: res.id, key_value: res.api_key };
   }
 
-  rotateApiKey(keyId: number): Promise<{ result: string; api_key: string }> {
+  /** Rotating another member's personal key returns no value: only its holder sees it. */
+  rotateApiKey(keyId: number): Promise<{ result: string; api_key?: string }> {
     return firstValueFrom(
-      this.http.post<{ result: string; api_key: string }>(`/api/admin/api-keys/${keyId}/rotate`, {}),
+      this.http.post<{ result: string; api_key?: string }>(`/api/admin/api-keys/${keyId}/rotate`, {}),
     );
   }
 

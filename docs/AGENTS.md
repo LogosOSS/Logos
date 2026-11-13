@@ -103,7 +103,9 @@ README), `deployment.svg`, `data-model.svg`, `request-flow.svg` and
 `../architecture.svg` (request routing and replication, on
 `developer/architecture.mdx`). Edit the script, not the SVG. Name components
 after the containers in `docker-compose.yaml` and
-`logos-workernode/docker-compose.yml`. Use UML notation (component, deployment,
+`logos-workernode/docker-compose.yml`. Exception: `top-level.svg` uses title-case
+names without the `logos-` prefix (Webservice, Orchestrator, Worker Node), and
+`developer/system-design.mdx` maps them to the containers in a table. Use UML notation (component, deployment,
 class and activity diagrams), white background, one accent colour, and short
 labels — not dense boxes. Keep the prose of `developer/system-design.mdx` and
 `developer/architecture.mdx` aligned with the diagrams.
@@ -264,17 +266,20 @@ docker exec -i doks-orchestrator python - < docs/seed/request-workload-example.p
 The example replaces documentation measurements with a saved request workload.
 The throughput values remain illustrative. They are not GPU results.
 This example worker supplies telemetry for **Docs Local Worker** and
-the 3 example models. It uses sequence limit 16 and batch-token limit 4096.
+the 3 example models. It uses sequence limit 20 and batch-token limit 4096.
 The seed adds illustrative baseline and variant measurements for 3 nights.
 These are not GPU measurements.
 It rejects inference and control commands. Authentication, schedule changes,
 parameter plans and dataset previews use the local application services.
 
 Open **llama-3.1-8b-instruct → Performance** as `tobias.wasner`.
-Capture **Results**, which shows the seeded baseline and variant measurements.
+Capture the **Performance** overview with the deployed result and record timeline.
 Select **Run benchmark** before capture. Capture the activation dialog,
 confirm activation, then capture the active card and deactivation dialog.
 The example results are illustrative measurements, not a live GPU benchmark.
+For the running status card, run the seed with `LOGOS_DOCS_ACTIVE_BENCHMARK=true` inside the documentation container.
+This flag adds a status row only. It does not execute inference.
+After capture, delete jobs whose `request_payload->>'purpose'` equals `docs-performance-status`.
 Disable the schedule after capture and stop the example worker with Ctrl+C.
 Then stop the screenshots stack.
 
@@ -286,6 +291,12 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 
 | File | Login as | Route / state | Documented in |
 |---|---|---|---|
+| `account-settings-menu.png` | any authenticated user | `/settings` — user menu with **Account settings** | `roles/app-developer.md#account-settings` |
+| `account-settings-passkeys.png` | same | `/settings` — 2 local test passkeys | same |
+| `account-settings-add-passkey.png` | same | `/settings` — **Add passkey** dialog | same |
+| `account-settings-remove-passkey.png` | same | `/settings` — **Remove passkey?** confirmation | same |
+| `logos-admin-node-maintenance.png` | `tobias.wasner` | `/statistics` — active node deployment lease | `roles/logos-admin.md#release-a-node-deployment-lease` |
+| `logos-admin-node-maintenance-release.png` | `tobias.wasner` | `/statistics` — **Release node lease** confirmation | `roles/logos-admin.md#release-a-node-deployment-lease` |
 | `logos-admin-statistics.png` | `tobias.wasner` | `/statistics?tab=requests` (the plain route opens **Local Providers**) | `roles/logos-admin.md` |
 | `logos-admin-statistics-lanes.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a lane locked (needs a connected worker: the e2e stack, `../e2e`, with a lane loaded) | `roles/logos-admin.md#idle-lanes-and-lane-locks` |
 | `logos-admin-statistics-worker-lock.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a worker locked with two lanes (e2e stack; capture the lane panel) | `roles/logos-admin.md#worker-locks` |
@@ -295,21 +306,28 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-nightly-benchmarks.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark controls and active nightly plan | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-automatic-source.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — automatic recent-user source policy | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-workload.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — request dataset form | `roles/logos-admin.md#nightly-benchmarks` |
-| `logos-admin-nightly-results.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — fixed reference chart | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-nightly-results.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Currently deployed** summary and **Timeline** record chart | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-notification.png` | `tobias.wasner` | Notification inbox — benchmark with captured result link | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-benchmark-linked-result.png` | `tobias.wasner` | `/models/<id>/details?tab=performance&benchmark=<id>` — selected result and parameter changes | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-benchmark-saved-requests.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark with a saved request dataset | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-frozen-batch.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — frozen request batch plan and fixed settings | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-benchmark-status.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — illustrative running batch status with progress and stop action | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-benchmark-window-ended.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — seed `LOGOS_DOCS_WINDOW_ENDED=true` | `roles/logos-admin.md` |
+| `logos-admin-benchmark-confirmation.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark confirmation dialog | `admin/model-benchmarks.md#confirm-the-start` |
+| `logos-admin-benchmark-worker-settings.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — expanded vLLM controls and worker limits | `admin/model-benchmarks.md` |
 | `logos-admin-benchmark-comparison.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — selected parameter comparison with reference | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-configuration.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — run details and expanded configuration | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-glossary.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — glossary groups | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-nightly-disable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — deactivation dialog | `roles/logos-admin.md#nightly-benchmarks` |
-| `logos-admin-model-details-delays.png` | `tobias.wasner` | `/models/<id>/details` — **Delays** tab of a model with requests at more than one reasoning effort (local or cloud provider) | `roles/logos-admin.md#models` |
+| `logos-admin-deployed-configuration.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Currently deployed → Configuration & selection details** | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-model-request-measurements.png` | `tobias.wasner` | `/models/<id>/details` — **Performance → Request measurements** of a model with requests at more than one reasoning effort (local or cloud provider) | `roles/logos-admin.md#models` |
 | `logos-admin-providers.png` | `tobias.wasner` | `/providers` | `roles/logos-admin.md` |
+| `logos-admin-provider-connections.png` | `tobias.wasner` | `/providers` — a cloud provider expanded, connected models with their **Batch** labels | `roles/logos-admin.md` |
 | `logos-admin-policies.png` | `tobias.wasner` | `/policies` | `roles/logos-admin.md` |
 | `logos-admin-billing.png` | `tobias.wasner` | `/billing` | `roles/logos-admin.md` |
 | `logos-admin-user-management.png` | `tobias.wasner` | `/user-management` | `roles/logos-admin.md` |
 | `logos-admin-team-management.png` | `tobias.wasner` | `/team-management` | `roles/logos-admin.md` |
+| `logos-admin-permission-audit.png` | `tobias.wasner` | `/permission-audit-log` | `roles/logos-admin.md#permission-audit` |
 | `logos-admin-new-team.png` | `tobias.wasner` | `/team-management` — **New Team** dialog, Keycloak group filled | `roles/logos-admin.md#keycloak-group-links` |
 | `logos-admin-agents.png` | `tobias.wasner` | `/agents` | `roles/logos-admin.md` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |
@@ -339,6 +357,10 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 
 Shared flows (document once, link from other roles):
 
+- **Account settings** — passkey list, add dialog, and remove confirmation under
+  `roles/app-developer.md#account-settings`; App Admin / Logos Admin link there.
+  These shots need a local passkey provider and virtual WebAuthn authenticators.
+  Use only a throwaway Keycloak account, never a production passkey.
 - **Team detail** — tab walkthrough under `roles/app-admin.md#teams`; Logos
   Admin links there and only adds **Providers**.
 - **AI Tools** — step walkthrough under `roles/app-developer.md#ai-tools`;

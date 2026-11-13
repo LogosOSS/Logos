@@ -38,6 +38,13 @@ rebuilds images on every run and tears down the evidence at the moment a failure
 needs inspecting. With the stack down, the Tier 2/3 tests skip with the command
 to start it.
 
+The browser CI job uses Ubuntu 24.04 and the Node.js version from
+`logos-ui/.nvmrc`. This keeps its system packages on one runner release and
+matches the Node.js version used by the UI unit tests. The job downloads the
+Playwright-pinned Chromium and verifies its system libraries with a browser
+launch before starting the stack. It uses the runner's existing browser
+libraries instead of reinstalling them from Ubuntu package mirrors.
+
 The `--ui` profile roughly triples startup time (a Keycloak boot and an Angular
 production build), which is why the inter-node and SDK tiers run without it.
 Playwright goes through Traefik rather than straight at the UI container: in

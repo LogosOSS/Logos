@@ -108,7 +108,7 @@ class LogosNodeDeploymentReport(LogosNodeMaintenanceRequest):
     limited, because they end up in an inbox item.
     """
 
-    tag: str = Field(max_length=128)
+    tag: str = Field(pattern=r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
     outcome: Literal["succeeded", "unchanged", "rolled_back", "failed"]
     # The kind of failure of the node manager (for example ``drain_timeout``); empty after a success.
     failure: Optional[str] = Field(default=None, max_length=40)
@@ -178,6 +178,33 @@ class LogosNodeResetProfilesRequest(LogosKeyModel):
     provider_id: int
     # None resets every profile of the node
     model_names: list[str] | None = None
+
+
+class NodeConfigEntry(BaseModel):
+    """One model of a node's configuration, as the admin set it."""
+
+    model_config = ConfigDict(extra="forbid")
+    model_name: str = Field(max_length=256)
+    capability: dict[str, Any] = Field(default_factory=dict)
+    overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class LogosNodeConfigRequest(BaseModel):
+    shared_key: str
+
+
+class LogosNodeConfigImportRequest(LogosNodeConfigRequest):
+    entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
+
+
+class LogosNodeConfigGetRequest(LogosKeyModel):
+    provider_id: int
+
+
+class LogosNodeConfigReplaceRequest(LogosNodeConfigGetRequest):
+    # Revision the admin edited; a newer one means someone saved first
+    expected_revision: int = Field(ge=0)
+    entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
 
 
 class LogosNodeInvalidateCalibrationRequest(LogosKeyModel):
@@ -252,6 +279,15 @@ class InternalStopCalibrationRequest(BaseModel):
 class InternalReleaseCalibrationClaimRequest(BaseModel):
     provider_id: int
     claim_token: str
+
+
+class ReleaseNodeMaintenanceRequest(BaseModel):
+    provider_id: int = Field(gt=0)
+    deployment_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+class AdminReleaseNodeMaintenanceRequest(ReleaseNodeMaintenanceRequest, LogosKeyModel):
+    pass
 
 
 class InternalReleaseRecoveryRequest(BaseModel):

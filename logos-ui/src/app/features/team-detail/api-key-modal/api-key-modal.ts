@@ -133,7 +133,7 @@ export class ApiKeyModalComponent implements OnChanges {
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['visible']?.currentValue && this.key) {
       this.initForm(this.key);
-      this.loadPermissions(this.key.id);
+      void this.loadPermissions(this.key.id);
     }
   }
 
@@ -172,36 +172,31 @@ export class ApiKeyModalComponent implements OnChanges {
     this.teamModelIds.set(new Set());
 
     try {
-      const [providers, keyProviderIds, keyModelIds, teamProviderIds, teamModelIds] = await Promise.all([
-        this.svc.getAllProviders(),
+      const [catalog, keyProviderIds, keyModelIds, teamProviderIds, teamModelIds] = await Promise.all([
+        this.svc.getApiKeyPermissionCatalog(keyId),
         this.svc.getApiKeyProviderPermissions(keyId),
         this.svc.getApiKeyModelPermissions(keyId),
         this.svc.getTeamProviderPermissions(this.teamId),
         this.svc.getTeamModelPermissions(this.teamId),
       ]);
 
-      this.allProviders.set(providers.map((p) => ({ id: p.id, name: p.name })));
+      this.allProviders.set(catalog.map((p) => ({ id: p.id, name: p.name })));
       this.selectedProviderIds.set(new Set(keyProviderIds));
       this.selectedModelIds.set(new Set(keyModelIds));
       this.teamProviderIds.set(new Set(teamProviderIds));
       this.teamModelIds.set(new Set(teamModelIds));
 
-      // Fetch provider→model data once, build both the map and the model list
+      // The catalog lists every provider with its models, not only the ones
+      // the team or the signed-in user can use: custom permissions may go
+      // beyond the team permissions.
       const map: Record<string, number[]> = {};
       const modelById = new Map<number, string>();
-      await Promise.all(
-        providers.map(async (p) => {
-          try {
-            const models = await this.svc.getProviderModels(p.id);
-            map[p.id] = (models ?? []).map((m) => m.model_id);
-            for (const m of models ?? []) {
-              if (!modelById.has(m.model_id)) modelById.set(m.model_id, m.model_name);
-            }
-          } catch {
-            map[p.id] = [];
-          }
-        }),
-      );
+      for (const p of catalog) {
+        map[p.id] = p.models.map((m) => m.model_id);
+        for (const m of p.models) {
+          if (!modelById.has(m.model_id)) modelById.set(m.model_id, m.model_name);
+        }
+      }
       this.providerModelMap.set(map);
       this.allModels.set([...modelById.entries()].map(([id, name]) => ({ id, name })));
     } catch {
@@ -266,7 +261,7 @@ export class ApiKeyModalComponent implements OnChanges {
       // cached list. The object is the same reference held by the team-detail
       // apiKeys signal and the tab that opened this modal (no refetch happens
       // in between), so both keep displaying the new key.
-      key.key_value = res.api_key;
+      if (res.api_key) key.key_value = res.api_key;
       this.rotateConfirm.set(false);
     } catch {
       this.rotateError.set('Failed to rotate key, please try again.');

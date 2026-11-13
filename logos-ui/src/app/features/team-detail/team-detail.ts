@@ -123,7 +123,7 @@ export class TeamDetail implements OnInit {
   ngOnInit(): void {
     const id = Number(this.route.snapshot.paramMap.get('id'));
     this.teamId.set(id);
-    this.loadAll(id);
+    void this.loadAll(id);
   }
 
   setTab(tab: Tab, event?: Event): void {
@@ -161,7 +161,7 @@ export class TeamDetail implements OnInit {
   }
 
   refresh(): void {
-    this.loadAll(this.teamId());
+    void this.loadAll(this.teamId());
   }
 
   /**

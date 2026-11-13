@@ -37,25 +37,31 @@ public class StatsWebSocketHandler extends TextWebSocketHandler {
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, SessionState> states = new ConcurrentHashMap<>();
+    // One monitor per open session: a WebSocketSession does not allow
+    // concurrent sends, and the scheduler and the message handler both send.
+    private final Map<String, Object> sendLocks = new ConcurrentHashMap<>();
 
     private final VramService vramService;
     private final RequestLogService requestLogService;
     private final ObjectMapper objectMapper;
+    private final WebSocketSessionAuth sessionAuth;
     private final ScheduledExecutorService scheduler;
     private final AtomicInteger tick = new AtomicInteger(0);
 
     public StatsWebSocketHandler(VramService vramService,
                                  RequestLogService requestLogService,
-                                 ObjectMapper objectMapper) {
+                                 ObjectMapper objectMapper, WebSocketSessionAuth sessionAuth) {
         this.vramService = vramService;
         this.requestLogService = requestLogService;
         this.objectMapper = objectMapper;
+        this.sessionAuth = sessionAuth;
         this.scheduler = Executors.newSingleThreadScheduledExecutor();
         this.scheduler.scheduleAtFixedRate(this::broadcast, 0, 1, TimeUnit.SECONDS);
     }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+        if (!sessionAuth.register(session, true)) return;
         sessions.put(session.getId(), session);
         SessionState state = new SessionState();
         states.put(session.getId(), state);
@@ -72,14 +78,17 @@ public class StatsWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        sessionAuth.unregister(session);
         sessions.remove(session.getId());
         states.remove(session.getId());
+        sendLocks.remove(session.getId());
         log.debug("[ws/stats] Client disconnected ({} remaining)", sessions.size());
     }
 
     @Override
     @SuppressWarnings("unchecked")
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        if (!sessionAuth.isAuthorized(session, true)) return;
         SessionState state = states.get(session.getId());
         if (state == null) return;
 
@@ -128,8 +137,11 @@ public class StatsWebSocketHandler extends TextWebSocketHandler {
             if (!session.isOpen()) {
                 sessions.remove(entry.getKey());
                 states.remove(entry.getKey());
+                sendLocks.remove(entry.getKey());
                 continue;
             }
+
+            if (!sessionAuth.isAuthorized(session, false)) continue;
 
             if (reqPayload != null && reqSig != null && !reqSig.equals(state.prevReqSig)) {
                 state.prevReqSig = reqSig;
@@ -188,12 +200,16 @@ public class StatsWebSocketHandler extends TextWebSocketHandler {
     private void send(WebSocketSession session, Object payload) {
         try {
             String json = objectMapper.writeValueAsString(payload);
-            synchronized (session) {
-                if (session.isOpen()) session.sendMessage(new TextMessage(json));
+            if (!session.isOpen()) return;
+            synchronized (sendLocks.computeIfAbsent(session.getId(), id -> new Object())) {
+                if (sessionAuth.isAuthorized(session, false) && session.isOpen()) {
+                    session.sendMessage(new TextMessage(json));
+                }
             }
         } catch (IOException e) {
             sessions.remove(session.getId());
             states.remove(session.getId());
+            sendLocks.remove(session.getId());
         }
     }
 

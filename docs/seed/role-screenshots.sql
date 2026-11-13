@@ -255,7 +255,7 @@ WHERE t.name = 'Logos'
 UPDATE api_keys
 SET environment = 'production'
 WHERE name = 'docs-role-logos-app-key'
-  AND (environment IS NULL OR environment = '-' OR environment = '');
+  AND (environment IS NULL OR environment = '-' OR char_length(environment) = 0);
 
 -- Providers + models (names match the committed shots' catalogue style).
 INSERT INTO providers (name, base_url, provider_type, cloud_provider_type, privacy_level, auth_name, auth_format)
@@ -355,6 +355,23 @@ WHERE m.name = 'llama-3.1-8b-instruct'
       WHERE mp.model_id = m.id AND mp.provider_id = p.id
   );
 
+-- Batch status on the Providers page: the cloud deployment of the model was
+-- probed and its batch deployment accepted a batch.
+INSERT INTO provider_model_batch_eligibility
+    (provider_id, model_id, eligible, detail, checked_at, batch_deployment, source)
+SELECT p.id, m.id, true, 'llama-31-8b-batch: The Batch API accepted this deployment.',
+       now() - interval '2 hours', 'llama-31-8b-batch', 'probe'
+FROM models m
+CROSS JOIN providers p
+WHERE m.name = 'llama-3.1-8b-instruct'
+  AND p.name = 'Docs Cloud (EU)'
+ON CONFLICT (provider_id, model_id) DO UPDATE
+    SET eligible = EXCLUDED.eligible,
+        detail = EXCLUDED.detail,
+        checked_at = EXCLUDED.checked_at,
+        batch_deployment = EXCLUDED.batch_deployment,
+        source = EXCLUDED.source;
+
 INSERT INTO team_model_permissions (team_id, model_id)
 SELECT t.id, m.id
 FROM teams t
@@ -392,7 +409,7 @@ INSERT INTO log_entry (
     request_id, api_key_id, model_id, provider_id, result_status,
     timestamp_request, timestamp_forwarding, time_at_first_token, timestamp_response,
     was_cold_start, queue_depth_at_enqueue, user_id, team_id, environment,
-    rate_limit_admitted, cost_finalized, settled_cost_micro_cents
+    rate_limit_admitted, cost_finalized, settled_cost_micro_cents, reasoning_effort
 )
 SELECT
     'docs-role-req-' || g.n,
@@ -411,7 +428,8 @@ SELECT
     'docs-role-screenshots',
     true,
     true,
-    100000 + (g.n * 7000)   -- ~$0.10–$0.20-ish micro-cents spread across the month
+    100000 + (g.n * 7000),   -- ~$0.10–$0.20-ish micro-cents spread across the month
+    CASE WHEN g.n % 2 = 0 THEN 'medium' END
 FROM generate_series(1, 48) AS g(n)
 JOIN api_keys k ON k.name = 'docs-role-tobias.wasner-key'
 JOIN models m ON m.name = 'llama-3.1-8b-instruct'
