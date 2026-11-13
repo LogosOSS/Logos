@@ -160,16 +160,20 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         }
 
         boolean setTimeline(String start, String end, int buckets) {
+            return setTimeline(start, end, buckets, null);
+        }
+
+        boolean setTimeline(String start, String end, int buckets, Boolean live) {
             try {
                 ZonedDateTime s = ZonedDateTime.parse(start.endsWith("Z") ? start : start + "Z");
                 ZonedDateTime e = ZonedDateTime.parse(end.endsWith("Z") ? end : end + "Z");
                 if (s.isAfter(e)) return false;
                 ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC);
-                if (e.isAfter(now)) e = now;
+                if (Boolean.TRUE.equals(live) || e.isAfter(now)) e = now;
                 timelineStart = s.toInstant().toString();
                 timelineEnd = e.toInstant().toString();
                 targetBuckets = Math.max(1, buckets);
-                timelineLive = now.toEpochSecond() - e.toEpochSecond() <= 120;
+                timelineLive = live != null ? live : now.toEpochSecond() - e.toEpochSecond() <= 120;
                 return true;
             } catch (Exception ex) { return false; }
         }
@@ -277,7 +281,7 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         int buckets = tl.get("target_buckets") instanceof Number n ? n.intValue() : DEFAULT_TARGET_BUCKETS;
 
         if (start == null || end == null) { state.initDefaultTimeline(); }
-        else if (!state.setTimeline(start, end, buckets)) {
+        else if (!state.setTimeline(start, end, buckets, tl.get("live") instanceof Boolean b ? b : null)) {
             send(session, Map.of("type", "timeline_init",
                                  "payload", Map.of("error", "Invalid timeline range")));
             state.initDefaultTimeline();
@@ -444,7 +448,8 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         String start = msg.get("start") instanceof String s ? s : null;
         String end = msg.get("end") instanceof String s ? s : null;
         int    buckets = msg.get("target_buckets") instanceof Number n ? n.intValue() : DEFAULT_TARGET_BUCKETS;
-        if (start == null || end == null || !state.setTimeline(start, end, buckets)) {
+        if (start == null || end == null || !state.setTimeline(start, end, buckets,
+                msg.get("live") instanceof Boolean b ? b : null)) {
             send(session, Map.of("type", "timeline_init",
                                  "payload", Map.of("error", "Invalid timeline range")));
         } else {
@@ -908,12 +913,14 @@ public class StatsV2WebSocketHandler extends TextWebSocketHandler {
         return sb.toString();
     }
 
-    private void send(WebSocketSession session, Object payload) {
+    private void send(WebSocketSession session, Map<String, Object> payload) {
         try {
-            String json = objectMapper.writeValueAsString(payload);
             if (!session.isOpen()) return;
             synchronized (sendLocks.computeIfAbsent(session.getId(), id -> new Object())) {
                 if (sessionAuth.isAuthorized(session, false) && session.isOpen()) {
+                    Map<String, Object> timedPayload = new LinkedHashMap<>(payload);
+                    timedPayload.put("server_now", Instant.now().toString());
+                    String json = objectMapper.writeValueAsString(timedPayload);
                     session.sendMessage(new TextMessage(json));
                 }
             }
