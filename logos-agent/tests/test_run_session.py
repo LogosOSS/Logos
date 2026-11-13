@@ -102,6 +102,12 @@ def _patch_workspace(monkeypatch, workspace: Path) -> None:
     # account behind the token to resolve. The check itself is covered by
     # TestPushIdentity below, against a stubbed HTTPS endpoint.
     monkeypatch.setattr(run_session, "verify_token_identity", lambda _token: None)
+    checkout = workspace / "repo"
+    if (checkout / ".git").is_dir() and not checkout.is_symlink():
+        # Emulate the runner retaining the baseline before the agent works.
+        baseline = _git("rev-parse", "HEAD", cwd=checkout).stdout.strip()
+        monkeypatch.setenv("LOGOS_SESSION_CHECKOUT_SHA", baseline)
+        monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", "")
 
 
 def test_planted_git_metadata_does_not_survive_the_rebuild(tmp_path, monkeypatch):
@@ -128,12 +134,12 @@ def test_planted_git_metadata_does_not_survive_the_rebuild(tmp_path, monkeypatch
     )
     assert config.returncode != 0, "core.hooksPath survived the rebuild"
 
-    # The object store is the one part that is kept: the previous commit's
-    # objects are still there, nothing was re-cloned.
+    # Object contents and alternates are agent-owned too. A later fetch
+    # must fill a fresh store before the pinned baseline is trusted.
     objects_after = sorted(
         p.relative_to(checkout / ".git" / "objects") for p in (checkout / ".git" / "objects").rglob("*") if p.is_file()
     )
-    assert objects_before and objects_before == objects_after
+    assert objects_before and not objects_after
 
     # A commit in the rebuilt repository runs no planted hook.
     _git("config", "user.name", "Logos Agent", cwd=checkout)
@@ -560,11 +566,7 @@ class TestFinalizer:
         with pytest.raises(RuntimeError, match="CI workflow files"):
             commit_and_push(self.BRANCH, "a long enough task description")
 
-    def test_a_retried_session_pushes_against_the_base_not_the_previous_tip(self, tmp_path, monkeypatch):
-        # The remote branch exists from an earlier run of the same session.
-        # Re-finalizing must not build on that tip: the diff belongs to the
-        # base, and the force-with-lease push must verify against the tip it
-        # just fetched, not blind over it.
+    def test_a_continued_session_builds_on_the_prepared_branch_tip(self, tmp_path, monkeypatch):
         workspace = tmp_path / "ws"
         workspace.mkdir()
         origin = _make_origin(workspace)
@@ -573,16 +575,19 @@ class TestFinalizer:
 
         assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
         commit_and_push(self.BRANCH, "a long enough task description")
+        first = _git("rev-parse", "HEAD", cwd=checkout).stdout.strip()
 
-        # A second run of the session: new work in the same working copy.
+        # A later session prepares the PR branch and the runner retains its
+        # tip as both the new baseline and the expected remote branch lease.
+        prepare_checkout(f"file://{origin}", self.BRANCH, self.BRANCH, "ghp-test-token")
+        monkeypatch.setenv("LOGOS_SESSION_CHECKOUT_SHA", first)
+        monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", first)
         (checkout / "app.py").write_text("print('second run')\n")
-        assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
+        assert finalize_checkout(f"file://{origin}", self.BRANCH, self.BRANCH, "ghp-test-token") is True
         assert commit_and_push(self.BRANCH, "a long enough task description") == 1
 
-        # Two commits on the remote branch, and the second one sits on the
-        # base — the first run's tip is gone, not a parent.
-        log = _git("--git-dir", str(origin), "log", "--format=%s", self.BRANCH, cwd=workspace).stdout.splitlines()
-        assert len(log) == 2 and log[1] == "base"
+        parent = _git("--git-dir", str(origin), "rev-parse", f"{self.BRANCH}^", cwd=workspace).stdout.strip()
+        assert parent == first
         remote_file = _git("--git-dir", str(origin), "show", f"{self.BRANCH}:app.py", cwd=workspace).stdout
         assert remote_file == "print('second run')\n"
         assert not marker.exists()
@@ -595,6 +600,10 @@ class TestFinalizer:
         monkeypatch.setenv("GITHUB_TOKEN", "ghp-test-token")
         monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
         monkeypatch.setenv("LOGOS_SESSION_OPEN_PR", "0")
+        monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
+        snapshot = Result()
+        run_session.run_snapshot(snapshot)
+        monkeypatch.setenv("LOGOS_SESSION_VERIFIED_TREE", snapshot.data["candidate_tree"])
 
     def test_the_finalizer_records_the_commit_it_pushed(self, tmp_path, monkeypatch):
         # The runner pins its build poll to this sha: it is the exact commit
@@ -632,12 +641,8 @@ class TestFinalizer:
         run_finalize(first)
         assert first.data["committed"] is True
 
-        # Second run: the working copy goes back to the base content, so
-        # there is nothing to commit — the remote branch keeps the first
-        # run's commit. (The rebuild wiped the local main ref, so the base
-        # is fetched fresh into FETCH_HEAD.)
-        _git("fetch", "--quiet", "origin", "main", cwd=checkout)
-        _git("checkout", "FETCH_HEAD", "--", ".", cwd=checkout)
+        # Retrying finalization of the same verified tree is idempotent.
+        # It retains the published branch tip without creating another commit.
         second = Result()
         run_finalize(second)
 
@@ -1163,8 +1168,9 @@ class TestHowAPullRequestIsOpened:
         monkeypatch.setattr(run_session, "run", fake_run)
         return calls
 
-    def test_it_is_not_a_draft(self, monkeypatch, tmp_path):
+    def test_a_verified_pull_request_is_not_a_draft(self, monkeypatch, tmp_path):
         calls = self.capture(monkeypatch, tmp_path)
+        monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
 
         run_session.open_pull_request("logos/agent/x", "main", "do the thing")
 
@@ -1813,7 +1819,10 @@ def test_finalize_resets_home_before_verifying_identity(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_session, "verify_token_identity", verify)
     (tmp_path / "repo").mkdir()
-    run_finalize(Result())
+    monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
+    monkeypatch.setenv("LOGOS_SESSION_VERIFIED_TREE", "a" * 40)
+    with pytest.raises(RuntimeError, match="no verified checkout"):
+        run_finalize(Result())
     assert calls == ["test-token"]
 
 

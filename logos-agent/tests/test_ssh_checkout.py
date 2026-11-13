@@ -28,6 +28,7 @@ import run_session  # noqa: E402
 async def test_deploy_key_checkout_keeps_the_repository_host(monkeypatch, tmp_path, url, expected):
     manager = sessions.SessionManager()
     helper = AsyncMock(return_value=0)
+    monkeypatch.setattr(manager, "_read_result", lambda sid: {"checkout_sha": "a" * 40, "checkout_branch_sha": ""})
     monkeypatch.setattr(manager, "_run_helper", helper)
     monkeypatch.setattr(repo_credentials, "load_deploy_key_pem", AsyncMock(return_value="private key"))
     monkeypatch.setattr(sessions, "_give_to_session_user", lambda path: None)
@@ -55,6 +56,7 @@ async def test_deploy_key_checkout_keeps_the_repository_host(monkeypatch, tmp_pa
 async def test_ssh_helpers_share_persistent_trust_and_only_checkout_reads_it(monkeypatch, tmp_path, phase):
     manager = sessions.SessionManager()
     containers = []
+    monkeypatch.setattr(sessions.db, "get_session", AsyncMock(return_value={"status": "finalizing"}))
     monkeypatch.setattr(sessions, "_give_to_session_user", lambda path: None)
     monkeypatch.setattr(docker_engine, "volume_mountpoint", AsyncMock(return_value="/daemon/state"))
 

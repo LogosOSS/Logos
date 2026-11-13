@@ -161,12 +161,39 @@ Enough to work on any part of this repository, and nothing else:
 | Claude Code | 2.1.245 | The agent. Driven headless: `claude -p … --output-format stream-json` |
 | Node | 22 | logos-ui |
 | Python | 3.11 (system) + **3.13 via uv** | Logos targets 3.13; bookworm ships 3.11, and a read-only rootfs cannot download an interpreter at runtime, so it is preinstalled into `/opt/uv-python` |
-| Temurin JDK | 25 | logos-webservice targets Java 25. From Adoptium — Debian bookworm packages no JDK that new. `./mvnw` fetches Maven itself |
+| Temurin JDK / Maven | 25 / 3.10 | logos-webservice compilation, with Maven and a warm repository available offline |
 | gh | 2.98 | Opening the pull request |
 | Chromium (Playwright) | 151 | Screenshots of the dev environment |
 
 Versions are pinned as build args; bump them deliberately rather than letting a
 session's behaviour drift between builds.
+
+Java and Angular dependencies are resolved when this image is built. Sessions
+can run `python3 /usr/local/lib/verify_checkout.py logos-webservice logos-ui`
+(omit unchanged services) without network access. The command compiles Java
+production and test sources with Maven `test-compile`, and runs the Angular
+production build and tests. A changed lockfile or Maven dependency absent from
+the image cache fails visibly; rebuild the workspace image to refresh its cache.
+
+Before publishing, the runner records a candidate Git tree using trusted
+metadata, then runs the checks in a separate container with no credentials or
+network and read-only mounts of the workspace and artifacts. Builds use a
+disposable copy. The finalizer checks the same tree ID before pushing. Neither
+the checkout baseline nor the authoritative check outcome comes from an
+agent-written result file. Failed or unavailable checks produce a draft PR with
+diagnostics and a failed session; deployment is not dispatched. Existing PRs
+are made drafts before such a push. Successful checks do not automatically
+mark an existing draft ready for review. Python and other services still need
+their normal tests; this automatic gate covers Java and Angular.
+
+The runner records the checkout commit and target branch tip before the agent
+starts. Finalization commits on that original parent, even if the base branch
+has advanced. Independent upstream changes survive the eventual merge, and
+overlapping edits remain visible merge conflicts. Existing PR branches must
+start from their own current tip; an intervening push is refused by an explicit
+lease. An interrupted finalization can reuse its exact already-pushed snapshot.
+Sessions prepared by older runners lack trusted baseline evidence and must be
+started again before publishing; they are never reattached to a fresh base.
 
 > **Adding a Dockerfile here?** The repository-root `.dockerignore` is a
 > *whitelist*. Anything a Dockerfile copies must be listed there, or the build

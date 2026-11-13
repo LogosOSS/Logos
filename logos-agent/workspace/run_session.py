@@ -11,6 +11,10 @@ Sessions run in separate phases of this image, selected by
   home.
 * ``agent`` — untrusted, no reusable credentials, and its only network peer
   is the credential-injecting model gateway: the coding agent does the work.
+* ``snapshot`` — trusted Git commands capture the candidate tree on its
+  original prepared parent; no repository build code executes here.
+* ``verify`` — a separate entrypoint, no credentials or network, read-only
+  workspace: compile changed Java/Angular services in disposable scratch space.
 * ``finalize`` — trusted, with the push token: bring the agent-owned
   checkout and home under trusted metadata again, install the transient
   askpass helper, then commit, push, and open the pull request before
@@ -348,45 +352,19 @@ def _clear_checkout() -> None:
 
 
 def _rebuild_git_metadata(repo_url: str) -> None:
-    """Recreate the checkout's ``.git`` from scratch, keeping only objects.
+    """Replace all agent-owned Git metadata before authenticated operations.
 
-    Everything except ``objects/`` is agent-writable, and parts of it are
-    agent-executable: git runs hook scripts from ``.git/hooks`` — or
-    wherever ``core.hooksPath`` in the repository (or global) config points
-    — on fetch, commit, and push. A bypass-permissions session can install
-    such a hook in minutes, and ``reset``/``clean`` never remove it, so it
-    would run from this harness with the *next* session's credentials.
-    Deleting the metadata and re-initialising leaves the standard config,
-    sample hooks only, and the object store — content-addressed data git
-    reads, never executes, and the one part worth keeping. The agent's home
-    is reset before this is called, because git reads the global
-    configuration (including the initialisation template) from there.
-
-    Symlinks count as agent-writable too: a ``.git`` — or an ``objects`` —
-    that is a link into another tree would be followed by anything that
-    reads it, so links are unlinked, never traversed.
+    Hooks, config and object alternates can redirect Git or execute code.
+    Even content-addressed object files can have been replaced, so fetch the
+    pinned baseline into a new store instead of trusting their local names.
+    The working files remain untouched; symlinked metadata is unlinked and
+    never traversed. The caller resets the agent's home before this runs.
     """
     git_dir = CHECKOUT / ".git"
     if git_dir.is_symlink() or (git_dir.exists() and not git_dir.is_dir()):
-        # The metadata itself replaced by a link to another repository (or a
-        # plain file): following it would wipe and reinitialise the target's
-        # .git, so the path is unlinked and re-initialised from nothing.
         git_dir.unlink()
     elif git_dir.is_dir():
-        objects = git_dir / "objects"
-        # The object store is kept only when it is a real directory: a link
-        # named ``objects`` would make git read and write its store through
-        # the target, and the target belongs to no repository we own.
-        keep_objects = objects.is_dir() and not objects.is_symlink()
-        for entry in git_dir.iterdir():
-            if entry.is_symlink():
-                entry.unlink()
-            elif keep_objects and entry.name == "objects":
-                continue
-            elif entry.is_dir():
-                shutil.rmtree(entry)
-            else:
-                entry.unlink()
+        shutil.rmtree(git_dir)
     run(["git", "init", "--quiet"], cwd=CHECKOUT, quiet=True)
     run(["git", "remote", "add", "origin", repo_url], cwd=CHECKOUT, quiet=True)
 
@@ -614,31 +592,47 @@ def verify_token_identity(token: str) -> None:
     log(f"push token verified as {login}")
 
 
+def _prepared_checkout_sha() -> str:
+    """The immutable baseline supplied by the runner, never the agent's files."""
+    sha = os.environ.get("LOGOS_SESSION_CHECKOUT_SHA", "")
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+        raise RuntimeError("no trusted prepared checkout SHA; refusing to finalize an unanchored working tree")
+    return sha
+
+
+def _prepared_branch_sha() -> str:
+    """The branch lease observed before the untrusted phase started."""
+    sha = os.environ.get("LOGOS_SESSION_BRANCH_SHA")
+    if sha is None or (sha and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha)):
+        raise RuntimeError("no trusted prepared branch lease; refusing to replace an unknown remote branch")
+    return sha
+
+
+def _remote_branch_sha(branch: str) -> str:
+    """Read an exact branch tip, distinguishing absence from a fetch failure."""
+    ref = f"refs/heads/{branch}"
+    process = run(["git", "ls-remote", "--exit-code", "origin", ref], cwd=CHECKOUT, check=False, quiet=True)
+    if process.returncode == 2:
+        return ""
+    if process.returncode != 0:
+        raise RuntimeError("could not establish the remote session branch tip")
+    for line in process.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[1] == ref and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", fields[0]):
+            return fields[0]
+    raise RuntimeError("the remote session branch did not return a valid commit")
+
+
 def finalize_checkout(repo_url: str, base_branch: str, branch: str, token: str) -> bool:
-    """Bring the agent's working tree under trusted metadata, then hand git the token.
+    """Restore trusted metadata on the original, runner-recorded checkout SHA.
 
-    The agent phase owned this checkout and its home without a credential,
-    but it could still plant hooks in ``.git``, a ``core.hooksPath``, a
-    credential helper in the repository config, and a global configuration
-    in its home — all of which git would run or read on the next fetch,
-    commit, and push. This container is the first process in the session to
-    hold the push token, so the home is replaced and the repository
-    metadata rebuilt *before* the token is introduced, and the askpass
-    helper is installed only after that rebuild: a fresh, standard
-    configuration is what the token meets, and nothing the agent planted
-    can intercept it.
-
-    Unlike preparation, the working tree itself is kept — it is the
-    session's work. The branch is re-anchored on a fresh fetch of the base
-    branch: the rebuild removed its ref, and a retried session must push a
-    diff against the base, not build on a previous run's tip. The index is
-    aligned with the branch without touching a single file.
-
-    Returns False when there is no working copy to finalize: the agent left
-    nothing, or a link in place of the checkout.
+    The working files belong to the agent. Its home, hooks, configuration,
+    refs and object store do not establish either the baseline or the branch
+    lease: both come from state the runner captured before the agent started.
+    Fetch the exact baseline into fresh metadata, then reset only the index.
+    An advancing base branch therefore remains outside this commit's diff,
+    and Git can merge independent upstream changes without reverting them.
     """
-    # Saved before the wipe, so the next review on this pull request finds
-    # the conversation that produced it rather than starting over.
     _save_conversation()
     _reset_agent_home()
     verify_token_identity(token)
@@ -648,37 +642,26 @@ def finalize_checkout(repo_url: str, base_branch: str, branch: str, token: str) 
             CHECKOUT.unlink()
         return False
     if not (CHECKOUT / ".git").is_dir():
-        # No repository at the checkout path: nothing to commit, and an
-        # init here would only create an empty one the push would fill
-        # with a history-less tree.
         log("no repository at the checkout; there is no work to finalize")
         return False
+    baseline = _prepared_checkout_sha()
+    _prepared_branch_sha()
+    # Even object files are discarded: the agent can replace their contents
+    # or install object alternates. Fetching into a new store establishes the
+    # trusted baseline from the remote instead of trusting its local name.
     _rebuild_git_metadata(repo_url)
-    # Only now that the metadata is fresh and standard does the token enter
-    # the process: askpass is the only credential git will see, and
-    # nothing the agent planted can run before it is installed.
     _install_git_askpass(token)
-    run(["git", "fetch", "--depth", "50", "origin", base_branch], cwd=CHECKOUT)
-    # Re-anchor the session's branch on the base it was given (the rebuild
-    # removed its ref, see above).
-    run(["git", "update-ref", f"refs/heads/{branch}", "FETCH_HEAD"], cwd=CHECKOUT, quiet=True)
-    # Bring the remote branch back as a ref of this checkout when a previous
-    # run left one: the rebuild removed its tracking ref, and without an
-    # explicit destination the fetch would leave the tip in FETCH_HEAD alone,
-    # while the run that changes nothing reads the tip from
-    # refs/remotes/origin/<branch> and the force-with-lease push below
-    # verifies against it. A first run has no remote branch: the fetch fails
-    # quietly, the tracking ref stays absent, and the lease then requires the
-    # remote branch to be absent, which it is.
-    run(
-        ["git", "fetch", "--depth", "50", "origin", f"{branch}:refs/remotes/origin/{branch}"],
-        cwd=CHECKOUT,
-        check=False,
-        quiet=True,
-    )
+    run(["git", "fetch", "--depth", "50", "origin", baseline], cwd=CHECKOUT)
+    if _ref_sha("FETCH_HEAD") != baseline:
+        raise RuntimeError("the fetched commit does not match the prepared checkout SHA")
+    run(["git", "update-ref", f"refs/heads/{branch}", baseline], cwd=CHECKOUT, quiet=True)
+    if _remote_branch_sha(branch):
+        run(
+            ["git", "fetch", "--depth", "50", "origin", f"{branch}:refs/remotes/origin/{branch}"],
+            cwd=CHECKOUT,
+            quiet=True,
+        )
     run(["git", "symbolic-ref", "HEAD", f"refs/heads/{branch}"], cwd=CHECKOUT, quiet=True)
-    # Mixed reset: the index follows the branch, the working tree — the
-    # agent's work — is left exactly as it stands.
     run(["git", "reset"], cwd=CHECKOUT, quiet=True)
     _configure_git_identity()
     return True
@@ -723,12 +706,14 @@ def build_prompt(task: str) -> str:
         "does — 'Cancel the queued request when the client goes away', not "
         "'Fixed stuff' and not a description of the task you were given. No "
         "body, no bullet points, no issue numbers.\n"
-        "- Run the project's tests for the code you touch, and fix what you "
-        "break, where they can run. The services' dependencies are not "
-        "installed and there is no network to install them with, so pytest "
-        "is often absent: try once, and if it is not there say so in your "
-        "final message rather than spending turns looking for a way round "
-        "it.\n"
+        "- Run the project's tests for the code you touch and fix failures "
+        "before finishing. For Java/Angular run `python3 /usr/local/lib/verify_checkout.py "
+        "logos-webservice logos-ui` (omit unchanged services). Offline dependency "
+        "caches are installed. The harness repeats these checks before push; "
+        "a failed or unavailable check produces only a draft PR and a failed session. "
+        "Lint does not replace compilation or type checks. Other services may lack "
+        "offline dependencies: report unavailable checks accurately. Read supplied CI "
+        "job logs before calling a failure unrelated; request missing logs in your summary.\n"
         "- Lint what you changed: from the top of the checkout, `pre-commit "
         "run --files <the files you changed>`. Same command and same pinned "
         "hooks as CI, installed in this image, no network needed. Which hooks "
@@ -1219,19 +1204,35 @@ def _refuse_workflow_changes(files: list[str]) -> None:
 
 def commit_and_push(branch: str, task: str) -> int:
     if not changed_files():
+        current = _ref_sha(f"refs/remotes/origin/{branch}") or ""
+        if current != _prepared_branch_sha():
+            raise RuntimeError("the session branch changed during verification; refusing an unverified branch tip")
         log("agent produced no changes; nothing to commit")
         return 0
     run(["git", "add", "-A"], cwd=CHECKOUT)
-    # Checked on what is actually staged, not on the human-readable status:
-    # that output quotes unusual names and shows a move as "old -> new".
     files = staged_files()
     _refuse_workflow_changes(files)
+    expected = _prepared_branch_sha()
+    current = _ref_sha(f"refs/remotes/origin/{branch}") or ""
+    tree = run(["git", "write-tree"], cwd=CHECKOUT, quiet=True).stdout.strip()
+    if current != expected:
+        # A finalizer may have pushed successfully before the runner crashed.
+        # Retry only the exact same snapshot on the same original parent;
+        # unrelated branch changes must never become a freshly accepted lease.
+        remote_tree = _ref_sha(f"{current}^{{tree}}") if current else None
+        parents = (
+            run(["git", "rev-list", "--parents", "-n", "1", current], cwd=CHECKOUT, quiet=True).stdout.split()
+            if current
+            else []
+        )
+        if remote_tree == tree and parents == [current, _prepared_checkout_sha()]:
+            log("the exact session snapshot is already pushed; keeping the remote commit")
+            return 0
+        raise RuntimeError("the remote session branch changed after preparation; refusing to overwrite concurrent work")
 
     log(f"committing {len(files)} changed file(s)")
-    # One line, and nothing else. What the change is belongs in the subject;
-    # why it was made belongs in the pull request, where people read it.
     run(["git", "commit", "-m", _commit_subject(task)], cwd=CHECKOUT)
-    run(["git", "push", "--force-with-lease", "origin", branch], cwd=CHECKOUT)
+    run(["git", "push", f"--force-with-lease=refs/heads/{branch}:{expected}", "origin", branch], cwd=CHECKOUT)
     return len(files)
 
 
@@ -1303,20 +1304,28 @@ def _closed_issues(closes: str) -> str:
     return f"closes #{number}"
 
 
+def _pull_request_body() -> str:
+    """The assigned issue and the runner's verification result."""
+    body = _closed_issues(os.environ.get("LOGOS_SESSION_CLOSES", ""))
+    verification = os.environ.get("LOGOS_SESSION_VERIFICATION", "")
+    if verification:
+        output = os.environ.get("LOGOS_SESSION_VERIFICATION_OUTPUT", "").replace("```", "'''")
+        body += f"\n\n## Verification\n\nOffline compile/type checks: **{verification}**."
+        if output:
+            body += f"\n\n```text\n{output}\n```"
+        if verification != "passed":
+            body += "\n\nDraft: fix the reported failure or unavailable dependencies before requesting review."
+    return body
+
+
 def open_pull_request(branch: str, base_branch: str, task: str) -> str | None:
     slug = os.environ.get("LOGOS_REPO_SLUG", "").strip()
     if not slug:
         log("no repository slug configured; skipping pull request")
         return None
-
-    # The title says what the change does; the body says what it closes —
-    # and a pull request opened with more words than that buries the diff
-    # under boilerplate and gives the reviewer a page of things they
-    # already know. The closing issue comes from the runner, not the task:
-    # the task renders the issue's body and conversation, which name other
-    # issues that are pointers, not authorizations to close.
     title = _commit_subject(task)
-    body = _closed_issues(os.environ.get("LOGOS_SESSION_CLOSES", ""))
+    body = _pull_request_body()
+    verification = os.environ.get("LOGOS_SESSION_VERIFICATION", "")
     reviewers = _pr_reviewers()
     create_cmd = [
         "gh",
@@ -1336,6 +1345,8 @@ def open_pull_request(branch: str, base_branch: str, task: str) -> str | None:
         "--body",
         body,
     ]
+    if verification != "passed":
+        create_cmd.append("--draft")
     for login in reviewers:
         # One flag per login: `gh` accepts repeated `--reviewer`, and a
         # comma-joined value is easy to misread as a single login.
@@ -1396,6 +1407,8 @@ def open_pull_request(branch: str, base_branch: str, task: str) -> str | None:
             # could not be brought in line. Say so rather than claim a refresh
             # that did not happen, but still hand over the link.
             log(f"reused existing pull request {url}; could not refresh its title")
+            if verification:
+                raise RuntimeError("could not update the pull request verification report")
         return url or None
 
     for line in process.stdout.splitlines():
@@ -1463,6 +1476,9 @@ def run_prepare(result: Result) -> None:
     token = os.environ.get("GITHUB_TOKEN", "")
     prepare_checkout(repo_url, base_branch, branch, token)
     result.data["checkout_sha"] = _ref_sha("HEAD")
+    result.data["checkout_branch_sha"] = _remote_branch_sha(branch)
+    if result.data["checkout_branch_sha"] and result.data["checkout_branch_sha"] != result.data["checkout_sha"]:
+        raise RuntimeError("the existing session branch differs from the prepared checkout; prepare its current tip")
 
 
 def run_agent_phase(result: Result) -> None:
@@ -1490,6 +1506,55 @@ def run_agent_phase(result: Result) -> None:
     log("agent finished; handing the checkout to the finalizer")
 
 
+def _restore_agent_result(result: Result) -> None:
+    path = Path(os.environ.get("LOGOS_ARTIFACT_DIR", "/artifacts")) / "result.json"
+    try:
+        data = json.loads(_read_agent_file(path, RESULT_FILE_MAX_BYTES))
+        # Only usage is agent-authored. Publishing outcomes and verification
+        # must come from this trusted run, never a planted result.json.
+        for key in ("tokens_in", "tokens_out", "cost_usd"):
+            if isinstance(data.get(key), (int, float)):
+                result.data[key] = data[key]
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log(f"ignoring unreadable result file from the agent phase: {exc}")
+
+
+def run_snapshot(result: Result) -> None:
+    """Rebuild trusted Git and describe the exact candidate without executing repository code."""
+    _restore_agent_result(result)
+    if not finalize_checkout(
+        require_env("LOGOS_REPO_URL"),
+        os.environ.get("LOGOS_SESSION_BASE_BRANCH", "main"),
+        require_env("LOGOS_SESSION_BRANCH"),
+        os.environ.get("GITHUB_TOKEN", ""),
+    ):
+        raise RuntimeError("no checkout available to verify")
+    run(["git", "add", "-A"], cwd=CHECKOUT)
+    result.data["candidate_paths"] = staged_files()
+    result.data["candidate_tree"] = run(["git", "write-tree"], cwd=CHECKOUT, quiet=True).stdout.strip()
+
+
+def _draft_existing_pull_request(branch: str) -> None:
+    """Make an existing PR a draft before an unverified commit can reach it."""
+    slug = os.environ.get("LOGOS_REPO_SLUG", "").strip()
+    if not slug:
+        raise RuntimeError("cannot publish failed verification without a repository for a draft PR")
+    response = run(
+        ["gh", "pr", "list", "--repo", slug, "--head", branch, "--state", "open", "--json", "number,isDraft"],
+        cwd=CHECKOUT,
+        quiet=True,
+    )
+    for pr in json.loads(response.stdout):
+        if not pr.get("isDraft"):
+            run(["gh", "pr", "ready", str(pr["number"]), "--repo", slug, "--undo"], cwd=CHECKOUT)
+        run(
+            ["gh", "pr", "edit", str(pr["number"]), "--repo", slug, "--body", _pull_request_body()],
+            cwd=CHECKOUT,
+        )
+
+
 def run_finalize(result: Result) -> None:
     """Trusted phase three: the authenticated GitHub operations.
 
@@ -1510,19 +1575,29 @@ def run_finalize(result: Result) -> None:
     if not token:
         log("no GitHub token provided; leaving changes uncommitted in the workspace")
         return
-    path = Path(os.environ.get("LOGOS_ARTIFACT_DIR", "/artifacts")) / "result.json"
-    try:
-        result.data.update(json.loads(_read_agent_file(path, RESULT_FILE_MAX_BYTES)))
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        log(f"ignoring unreadable result file from the agent phase: {exc}")
-
-    count = commit_and_push(branch, task) if finalize_checkout(repo_url, base_branch, branch, token) else 0
+    _restore_agent_result(result)
+    verification = require_env("LOGOS_SESSION_VERIFICATION")
+    if verification not in {"passed", "failed"}:
+        raise RuntimeError("invalid verification outcome")
+    expected_tree = require_env("LOGOS_SESSION_VERIFIED_TREE")
+    if not finalize_checkout(repo_url, base_branch, branch, token):
+        raise RuntimeError("no verified checkout available to publish")
+    run(["git", "add", "-A"], cwd=CHECKOUT)
+    actual_tree = run(["git", "write-tree"], cwd=CHECKOUT, quiet=True).stdout.strip()
+    if actual_tree != expected_tree:
+        raise RuntimeError("checkout changed after verification; refusing to push")
+    if verification == "failed":
+        _draft_existing_pull_request(branch)
+    count = commit_and_push(branch, task)
     result.data["files_changed"] = count
     result.data["committed"] = count > 0
-    if count and os.environ.get("LOGOS_SESSION_OPEN_PR") == "1":
+    if (count or _ref_sha(f"refs/remotes/origin/{branch}")) and (
+        os.environ.get("LOGOS_SESSION_OPEN_PR") == "1" or verification == "failed"
+    ):
         result.data["pr_url"] = open_pull_request(branch, base_branch, task)
+        if not result.data["pr_url"]:
+            raise RuntimeError("could not publish the pull request and its verification report")
+    result.data["verification"] = verification
     # The exact commit the runner must build: this run's own commit, or —
     # when the agent changed nothing this time — the tip the branch already
     # carries. The runner pins its build poll to it. The branch is not a
@@ -1554,6 +1629,8 @@ def main() -> int:
             run_ssh_trust()
         elif phase == "prepare":
             run_prepare(result)
+        elif phase == "snapshot":
+            run_snapshot(result)
         elif phase == "finalize":
             run_finalize(result)
         else:

@@ -27,6 +27,28 @@ from app.schemas import (
 from app.sessions import branch_for, container_name
 
 
+@pytest.fixture(autouse=True)
+def prepared_checkout_and_verification(monkeypatch):
+    """These lifecycle fakes do not execute checkout or compiler containers.
+
+    The real proof capture and verification sequence are exercised in
+    test_verification_pipeline; keep lifecycle tests focused on transitions,
+    cancellation, mounts, and publication.
+    """
+    from app import sessions
+
+    def capture(_self, session_id):
+        path = sessions.state_dir(session_id) / sessions._CHECKOUT_BASELINE_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"checkout_sha": "a" * 40, "branch_sha": ""}))
+
+    async def verified(_self, session_id, workspace, env, artifact_host_path):
+        return {**env, "LOGOS_SESSION_VERIFICATION": "passed", "LOGOS_SESSION_VERIFIED_TREE": "b" * 40}
+
+    monkeypatch.setattr(sessions.SessionManager, "_capture_checkout_baseline", capture)
+    monkeypatch.setattr(sessions.SessionManager, "_verify_before_push", verified)
+
+
 class TestStateMachine:
     def test_normal_path(self):
         assert can_transition(SessionStatus.QUEUED, SessionStatus.STARTING)
@@ -1518,7 +1540,7 @@ class TestAgentPhaseIsolation:
         assert transitions[0][0] is SessionStatus.FINALIZING
         target, fields = transitions[1]
         assert target is SessionStatus.FAILED
-        assert "finalization failed" in fields["error"]
+        assert "finalization did not pass" in fields["error"]
         assert events[0]["status"] == "failed"
 
     async def test_a_finalizing_row_still_reaches_the_finalizer(self, monkeypatch, tmp_path):
