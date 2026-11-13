@@ -192,11 +192,10 @@ final class GatewayUsageCapture extends OutputStream {
     @Override
     public void close() throws IOException {
         try {
-            if (!sse) {
-                finishJson();
-            } else {
-                finishSseLine();
-            }
+            // Emit any held enrichable body while the client stream may still
+            // be attached. detachClient() does the same first so a forwarder
+            // that detaches before close does not drop the response.
+            flushHeldToClient();
         } finally {
             delegate.close();
         }
@@ -209,8 +208,36 @@ final class GatewayUsageCapture extends OutputStream {
         }
     }
 
+    /**
+     * Stop writing to the servlet output. Flushes a held JSON/SSE remainder
+     * first when a pricer is active — otherwise {@link #close()} would write
+     * the body into {@link OutputStream#nullOutputStream()} and the client
+     * would see an empty response.
+     */
     void detachClient() {
+        try {
+            flushHeldToClient();
+        } catch (IOException ignored) {
+            // Client may already be gone; close() still parses for billing.
+        }
         delegate = OutputStream.nullOutputStream();
+    }
+
+    private void flushHeldToClient() throws IOException {
+        if (pricer == null) {
+            // Verbatim path already wrote through; only finish parsing.
+            if (!sse) {
+                finishJson();
+            } else {
+                finishSseLine(false);
+            }
+            return;
+        }
+        if (sse) {
+            finishSseLine(false);
+        } else {
+            finishJson();
+        }
     }
 
     boolean drainComplete() {
@@ -363,7 +390,7 @@ final class GatewayUsageCapture extends OutputStream {
         for (int i = off; i < off + len; i++) {
             byte current = b[i];
             if (current == '\n') {
-                finishSseLine();
+                finishSseLine(true);
                 continue;
             }
             if (bufferOverflowed) {
@@ -393,7 +420,7 @@ final class GatewayUsageCapture extends OutputStream {
                 continue;
             }
             if (current == '\n') {
-                finishSseLine();
+                finishSseLine(true);
                 continue;
             }
             if (buffer.size() >= SSE_LINE_LIMIT_BYTES) {
@@ -407,11 +434,16 @@ final class GatewayUsageCapture extends OutputStream {
         }
     }
 
-    private void finishSseLine() throws IOException {
+    /**
+     * @param emitEmptyLine when true, an empty buffer means a blank SSE line
+     *                      from the upstream and must be forwarded; when false
+     *                      (end of stream) an empty buffer is a no-op
+     */
+    private void finishSseLine(boolean emitEmptyLine) throws IOException {
         if (bufferOverflowed) {
             bufferOverflowed = false;
             buffer.reset();
-            if (pricer != null) {
+            if (pricer != null && emitEmptyLine) {
                 writeToClient(new byte[] {'\n'});
             }
             return;
@@ -420,7 +452,7 @@ final class GatewayUsageCapture extends OutputStream {
         buffer.reset();
         if (lineBytes.length == 0) {
             sseEventType = "";
-            if (pricer != null) {
+            if (pricer != null && emitEmptyLine) {
                 writeToClient(new byte[] {'\n'});
             }
             return;

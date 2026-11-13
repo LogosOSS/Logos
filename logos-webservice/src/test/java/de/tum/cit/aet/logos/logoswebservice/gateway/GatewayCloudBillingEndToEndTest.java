@@ -350,7 +350,11 @@ class GatewayCloudBillingEndToEndTest {
 
         String delivered = runForward(f, requestBody(false));
 
-        assertThat(delivered).isEqualTo(responseBody);
+        var usage = MAPPER.readTree(delivered).path("usage");
+        assertThat(usage.path("prompt_tokens").asInt()).isEqualTo(1000);
+        assertThat(usage.path("completion_tokens").asInt()).isEqualTo(300);
+        assertThat(usage.path("cost").asDouble()).isEqualTo(0.00056);
+        assertThat(usage.path("cost_currency").asText()).isEqualTo("USD");
         assertThat(cost(logId)).isEqualTo(20_000L + 36_000L);
         assertThat(usageTokens(logId)).containsExactlyInAnyOrderEntriesOf(Map.of(
             "prompt_tokens", 1000, "completion_tokens", 300, "total_tokens", 1300));
@@ -431,7 +435,16 @@ class GatewayCloudBillingEndToEndTest {
 
         String delivered = runForward(f, requestBody(true));
 
-        assertThat(delivered).isEqualTo(responseBody);
+        String usageLine = delivered.lines()
+            .filter(l -> l.startsWith("data:") && l.contains("\"usage\""))
+            .findFirst()
+            .orElseThrow();
+        var usage = MAPPER.readTree(usageLine.substring(5).strip()).path("usage");
+        assertThat(usage.path("prompt_tokens").asInt()).isEqualTo(800);
+        assertThat(usage.path("cost").asDouble()).isEqualTo(0.0004);
+        assertThat(usage.path("cost_currency").asText()).isEqualTo("USD");
+        assertThat(delivered).contains("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}");
+        assertThat(delivered).contains("data: [DONE]");
         assertThat(cost(logId)).isEqualTo(16_000L + 24_000L);
         assertThat(usageTokens(logId)).containsExactlyInAnyOrderEntriesOf(Map.of(
             "prompt_tokens", 800, "completion_tokens", 200));
