@@ -210,7 +210,8 @@ class IpRateLimiterServiceTest {
 
     @Test
     void clientIp_stopsAtRightmostUntrustedHop() {
-        IpRateLimiterService limiter = new IpRateLimiterService(new RateLimitingProperties(true, 60, 20));
+        // Only the Docker bridge range is trusted here, so 10.0.0.1 is an untrusted hop.
+        IpRateLimiterService limiter = new IpRateLimiterService(new RateLimitingProperties(true, 60, 20), "172.16.0.0/12");
         var request = new org.springframework.mock.web.MockHttpServletRequest();
         request.addHeader("X-Forwarded-For", "203.0.113.5, 10.0.0.1");
         request.setRemoteAddr("172.16.0.2");

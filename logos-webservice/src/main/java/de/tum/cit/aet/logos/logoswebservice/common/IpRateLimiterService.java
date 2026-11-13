@@ -39,6 +39,12 @@ import jakarta.servlet.http.HttpServletRequest;
 public class IpRateLimiterService {
 
     private static final Duration DEFAULT_WINDOW = Duration.ofMinutes(1);
+    /**
+     * The private address space: the proxy hop in front of this service is a
+     * container of the stack whose address Docker takes from its pool (172.17
+     * to 172.31 while free, then 192.168.x); the service publishes no host port.
+     */
+    static final String DEFAULT_TRUSTED_PROXY_CIDRS = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"; // NOSONAR - private ranges, not hosts
 
     /**
      * How often {@link #evictStaleWindows} runs, in milliseconds ({@code @Scheduled} needs a compile-time
@@ -57,19 +63,19 @@ public class IpRateLimiterService {
     private final ConcurrentHashMap<String, Integer> pendingAuthRequests = new ConcurrentHashMap<>();
 
     public IpRateLimiterService(RateLimitingProperties properties) {
-        this(properties, DEFAULT_WINDOW, "172.16.0.0/12");
+        this(properties, DEFAULT_WINDOW, DEFAULT_TRUSTED_PROXY_CIDRS);
     }
 
     @Autowired
     public IpRateLimiterService(
             RateLimitingProperties properties,
-            @Value("${logos.rate-limiting.trusted-proxy-cidrs:172.16.0.0/12}") String trustedProxyCidrs) {
+            @Value("${logos.rate-limiting.trusted-proxy-cidrs:10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}") String trustedProxyCidrs) {
         this(properties, DEFAULT_WINDOW, trustedProxyCidrs);
     }
 
     /** Package-private: lets tests use a short window so real-time expiry can be observed without sleeping a minute. */
     IpRateLimiterService(RateLimitingProperties properties, Duration window) {
-        this(properties, window, "172.16.0.0/12");
+        this(properties, window, DEFAULT_TRUSTED_PROXY_CIDRS);
     }
 
     private IpRateLimiterService(RateLimitingProperties properties, Duration window, String trustedProxyCidrs) {

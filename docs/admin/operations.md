@@ -65,6 +65,10 @@ with the seed command:
 docker exec -i logos-orchestrator python -m logos.answer_reuse.seed --team-id 3 --context shop-a < answers.jsonl
 ```
 
+The command can also read a file that you name as the last argument. This file
+must be in the working directory of the container. Send all other files on
+stdin, as in the example.
+
 For an API key without a team, use `--key-id` and the API key ID. If the API
 key is in a team, the command stops with an error. The requests of that API
 key use the answers of the team.

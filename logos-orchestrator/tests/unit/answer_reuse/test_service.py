@@ -533,7 +533,9 @@ def test_the_cached_response_says_which_answer_and_which_model_wrote_it():
 
 
 def test_two_cached_responses_get_different_ids():
-    assert chat_completion_payload(ANSWER)["id"] != chat_completion_payload(ANSWER)["id"]
+    first = chat_completion_payload(ANSWER)
+    second = chat_completion_payload(ANSWER)
+    assert first["id"] != second["id"]
 
 
 def test_hit_headers_name_the_entry_and_the_source_model():
