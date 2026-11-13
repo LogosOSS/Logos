@@ -186,6 +186,12 @@ are made drafts before such a push. Successful checks do not automatically
 mark an existing draft ready for review. Python and other services still need
 their normal tests; this automatic gate covers Java and Angular.
 
+For a continued PR, service selection includes the complete candidate diff
+against its target-branch merge base, recorded before the agent starts. A retry
+that only edits documentation therefore still checks previously changed Java
+or Angular code. Branch leases are checked before changing PR metadata as well
+as at push time, so an already-diverged branch cannot receive stale diagnostics.
+
 The runner records the checkout commit and target branch tip before the agent
 starts. Finalization commits on that original parent, even if the base branch
 has advanced. Independent upstream changes survive the eventual merge, and

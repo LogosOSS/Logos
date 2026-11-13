@@ -1202,19 +1202,14 @@ def _refuse_workflow_changes(files: list[str]) -> None:
     )
 
 
-def commit_and_push(branch: str, task: str) -> int:
-    if not changed_files():
-        current = _ref_sha(f"refs/remotes/origin/{branch}") or ""
-        if current != _prepared_branch_sha():
-            raise RuntimeError("the session branch changed during verification; refusing an unverified branch tip")
-        log("agent produced no changes; nothing to commit")
-        return 0
-    run(["git", "add", "-A"], cwd=CHECKOUT)
-    files = staged_files()
-    _refuse_workflow_changes(files)
+def _validate_branch_lease(branch: str, tree: str) -> bool:
+    """Reject concurrent work before changing either the branch or its PR.
+
+    Return True only when the exact snapshot was already published by this
+    session, so restart recovery can keep that commit without replacing it.
+    """
     expected = _prepared_branch_sha()
     current = _ref_sha(f"refs/remotes/origin/{branch}") or ""
-    tree = run(["git", "write-tree"], cwd=CHECKOUT, quiet=True).stdout.strip()
     if current != expected:
         # A finalizer may have pushed successfully before the runner crashed.
         # Retry only the exact same snapshot on the same original parent;
@@ -1227,11 +1222,28 @@ def commit_and_push(branch: str, task: str) -> int:
         )
         if remote_tree == tree and parents == [current, _prepared_checkout_sha()]:
             log("the exact session snapshot is already pushed; keeping the remote commit")
-            return 0
-        raise RuntimeError("the remote session branch changed after preparation; refusing to overwrite concurrent work")
+            return True
+        raise RuntimeError(
+            "the remote session branch changed after preparation; "
+            "refusing an unverified branch tip or overwriting concurrent work"
+        )
+    return False
+
+
+def commit_and_push(branch: str, task: str) -> int:
+    run(["git", "add", "-A"], cwd=CHECKOUT)
+    files = staged_files()
+    _refuse_workflow_changes(files)
+    tree = run(["git", "write-tree"], cwd=CHECKOUT, quiet=True).stdout.strip()
+    if _validate_branch_lease(branch, tree):
+        return 0
+    if not files:
+        log("agent produced no changes; nothing to commit")
+        return 0
 
     log(f"committing {len(files)} changed file(s)")
     run(["git", "commit", "-m", _commit_subject(task)], cwd=CHECKOUT)
+    expected = _prepared_branch_sha()
     run(["git", "push", f"--force-with-lease=refs/heads/{branch}:{expected}", "origin", branch], cwd=CHECKOUT)
     return len(files)
 
@@ -1461,6 +1473,51 @@ def run_ssh_trust() -> None:
         run(["git", "ls-remote", "--", require_env("LOGOS_REPO_URL"), "HEAD"], cwd=scratch, quiet=True)
 
 
+def _checkout_comparison_sha(base_branch: str, branch: str, branch_sha: str) -> str:
+    """Pin the complete proposed change's merge base before the agent starts.
+
+    A continued session begins at the existing PR tip. Comparing only with
+    that tip would skip services changed by earlier sessions. The PR target
+    is authoritative when one exists; an unpublished existing branch uses
+    the repository's default branch instead.
+    """
+    if not branch_sha:
+        return require_checkout_ref("HEAD")
+    target = ""
+    slug = os.environ.get("LOGOS_REPO_SLUG", "").strip()
+    if slug:
+        response = run(
+            ["gh", "pr", "list", "--repo", slug, "--head", branch, "--state", "open", "--json", "baseRefName"],
+            cwd=CHECKOUT,
+            quiet=True,
+        )
+        pulls = json.loads(response.stdout)
+        if not isinstance(pulls, list) or any(
+            not isinstance(pr, dict) or not isinstance(pr.get("baseRefName"), str) or not pr["baseRefName"]
+            for pr in pulls
+        ):
+            raise RuntimeError("could not establish the existing pull request's target branch")
+        targets = {pr["baseRefName"] for pr in pulls}
+        if len(targets) > 1:
+            raise RuntimeError("the session branch has pull requests with different target branches")
+        target = next(iter(targets), "")
+    target = target or _remote_default_branch()
+    if not target:
+        raise RuntimeError("could not establish the comparison branch for the existing session branch")
+    run(["git", "check-ref-format", f"refs/heads/{target}"], cwd=CHECKOUT, quiet=True)
+    run(["git", "fetch", "--depth", "50", "origin", f"{target}:refs/remotes/origin/{target}"], cwd=CHECKOUT)
+    _deepen_until_merge_base(target, base_branch)
+    return run(["git", "merge-base", f"origin/{target}", "HEAD"], cwd=CHECKOUT, quiet=True).stdout.strip()
+
+
+def require_checkout_ref(ref: str) -> str:
+    """Resolve a commit after trusted preparation, or reject incomplete proof."""
+    sha = _ref_sha(ref)
+    if not sha or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+        raise RuntimeError("the prepared checkout did not provide a valid comparison commit")
+    return sha
+
+
 def run_prepare(result: Result) -> None:
     """Trusted phase one: bring the working copy to a trusted state.
 
@@ -1479,6 +1536,9 @@ def run_prepare(result: Result) -> None:
     result.data["checkout_branch_sha"] = _remote_branch_sha(branch)
     if result.data["checkout_branch_sha"] and result.data["checkout_branch_sha"] != result.data["checkout_sha"]:
         raise RuntimeError("the existing session branch differs from the prepared checkout; prepare its current tip")
+    result.data["checkout_comparison_sha"] = _checkout_comparison_sha(
+        base_branch, branch, result.data["checkout_branch_sha"]
+    )
 
 
 def run_agent_phase(result: Result) -> None:
@@ -1531,8 +1591,19 @@ def run_snapshot(result: Result) -> None:
         os.environ.get("GITHUB_TOKEN", ""),
     ):
         raise RuntimeError("no checkout available to verify")
+    comparison = require_env("LOGOS_SESSION_COMPARISON_SHA")
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", comparison):
+        raise RuntimeError("invalid trusted comparison commit")
+    run(["git", "fetch", "--depth", "1", "origin", comparison], cwd=CHECKOUT)
+    if _ref_sha("FETCH_HEAD") != comparison:
+        raise RuntimeError("the fetched comparison does not match the prepared comparison SHA")
     run(["git", "add", "-A"], cwd=CHECKOUT)
-    result.data["candidate_paths"] = staged_files()
+    process = run(
+        ["git", "diff", "--cached", "--name-only", "-z", "--no-renames", comparison, "--"],
+        cwd=CHECKOUT,
+        quiet=True,
+    )
+    result.data["candidate_paths"] = [path for path in process.stdout.split("\0") if path]
     result.data["candidate_tree"] = run(["git", "write-tree"], cwd=CHECKOUT, quiet=True).stdout.strip()
 
 
@@ -1586,6 +1657,7 @@ def run_finalize(result: Result) -> None:
     actual_tree = run(["git", "write-tree"], cwd=CHECKOUT, quiet=True).stdout.strip()
     if actual_tree != expected_tree:
         raise RuntimeError("checkout changed after verification; refusing to push")
+    _validate_branch_lease(branch, actual_tree)
     if verification == "failed":
         _draft_existing_pull_request(branch)
     count = commit_and_push(branch, task)

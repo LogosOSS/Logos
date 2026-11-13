@@ -23,6 +23,7 @@ def _prepare(tmp_path, monkeypatch, *, base="main", origin=None):
     run_session.run_prepare(result)
     monkeypatch.setenv("LOGOS_SESSION_CHECKOUT_SHA", result.data["checkout_sha"])
     monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", result.data["checkout_branch_sha"])
+    monkeypatch.setenv("LOGOS_SESSION_COMPARISON_SHA", result.data["checkout_comparison_sha"])
     return workspace, origin, result.data["checkout_sha"]
 
 
@@ -194,3 +195,65 @@ def test_pinned_baseline_remains_fetchable_beyond_the_shallow_window(tmp_path, m
     assert run_session.commit_and_push(BRANCH, "Change application") == 1
     assert _git("rev-parse", "HEAD^", cwd=checkout).stdout.strip() == baseline
     assert _git("--git-dir", str(origin), "diff", "--name-only", f"main...{BRANCH}", cwd=workspace).stdout == "app.py\n"
+
+
+@pytest.mark.parametrize("service", ["logos-webservice", "logos-ui"])
+def test_docs_only_continuation_rechecks_services_changed_in_prior_session(tmp_path, monkeypatch, service):
+    workspace, origin, original = _prepare(tmp_path, monkeypatch)
+    checkout = workspace / "repo"
+    source = checkout / service / "broken-source.txt"
+    source.parent.mkdir()
+    source.write_text("an unresolved compile error from the previous session\n")
+    assert _finalize(origin)
+    assert run_session.commit_and_push(BRANCH, "Change service") == 1
+    _advance(origin, "independent.txt", "another contributor\n")
+
+    _prepare(tmp_path, monkeypatch, base=BRANCH, origin=origin)
+    (checkout / "README.md").write_text("Documentation update only\n")
+    snapshot = run_session.Result()
+    run_session.run_snapshot(snapshot)
+
+    assert run_session.os.environ["LOGOS_SESSION_COMPARISON_SHA"] == original
+    assert sorted(snapshot.data["candidate_paths"]) == ["README.md", f"{service}/broken-source.txt"]
+    import verify_checkout
+
+    assert verify_checkout.selected_services(snapshot.data["candidate_paths"]) == [service]
+
+
+def test_existing_pr_uses_its_nondefault_target_for_service_selection(tmp_path, monkeypatch):
+    workspace, origin, original = _prepare(tmp_path, monkeypatch)
+    checkout = workspace / "repo"
+    _git("push", str(origin), "main:refs/heads/release", cwd=workspace / "seed")
+    source = checkout / "logos-webservice" / "broken-source.txt"
+    source.parent.mkdir()
+    source.write_text("candidate change absent from release\n")
+    assert _finalize(origin)
+    assert run_session.commit_and_push(BRANCH, "Change service") == 1
+    # main already contains this branch's service change. Comparing against
+    # main would select no service, although the PR into release still does.
+    _git("push", "origin", f"{BRANCH}:refs/heads/main", cwd=checkout)
+    real_run = run_session.run
+
+    def with_pr_target(command, **kwargs):
+        if command[:3] == ["gh", "pr", "list"]:
+            assert command[command.index("--head") + 1] == BRANCH
+            return subprocess.CompletedProcess(command, 0, '[{"baseRefName":"release"}]', "")
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(run_session, "run", with_pr_target)
+    monkeypatch.setenv("LOGOS_REPO_SLUG", "example/repository")
+    _prepare(tmp_path, monkeypatch, base=BRANCH, origin=origin)
+    (checkout / "README.md").write_text("Documentation update only\n")
+    snapshot = run_session.Result()
+    run_session.run_snapshot(snapshot)
+
+    assert run_session.os.environ["LOGOS_SESSION_COMPARISON_SHA"] == original
+    assert snapshot.data["candidate_paths"] == ["README.md", "logos-webservice/broken-source.txt"]
+
+
+def test_snapshot_requires_runner_owned_comparison_proof(tmp_path, monkeypatch):
+    workspace, origin, _ = _prepare(tmp_path, monkeypatch)
+    (workspace / "repo" / "app.py").write_text("print('change')\n")
+    monkeypatch.delenv("LOGOS_SESSION_COMPARISON_SHA")
+    with pytest.raises(RuntimeError, match="LOGOS_SESSION_COMPARISON_SHA is not set"):
+        run_session.run_snapshot(run_session.Result())

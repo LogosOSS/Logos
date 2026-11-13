@@ -17,7 +17,7 @@ TREE = "b" * 40
 def baseline(session_id=7):
     path = sessions.state_dir(session_id) / "checkout_baseline.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"checkout_sha": SHA, "branch_sha": ""}))
+    path.write_text(json.dumps({"checkout_sha": SHA, "branch_sha": "", "comparison_sha": SHA}))
     return path
 
 
@@ -31,12 +31,12 @@ async def no_event(*_args, **_kwargs):
 
 def test_baseline_is_captured_before_the_agent_can_replace_the_result(monkeypatch):
     manager = sessions.SessionManager()
-    result = {"checkout_sha": SHA, "checkout_branch_sha": ""}
+    result = {"checkout_sha": SHA, "checkout_branch_sha": "", "checkout_comparison_sha": "c" * 40}
     monkeypatch.setattr(manager, "_read_result", lambda _sid: result)
     manager._capture_checkout_baseline(7)
     result["checkout_sha"] = "f" * 40
     proof = json.loads((sessions.state_dir(7) / "checkout_baseline.json").read_text())
-    assert proof == {"checkout_sha": SHA, "branch_sha": ""}
+    assert proof == {"checkout_sha": SHA, "branch_sha": "", "comparison_sha": "c" * 40}
 
 
 @pytest.mark.parametrize("result", [{}, {"checkout_sha": "HEAD", "checkout_branch_sha": ""}])
@@ -44,6 +44,13 @@ def test_prepare_fails_without_a_valid_baseline(monkeypatch, result):
     manager = sessions.SessionManager()
     monkeypatch.setattr(manager, "_read_result", lambda _sid: result)
     with pytest.raises(RuntimeError, match="original commit"):
+        manager._capture_checkout_baseline(7)
+
+
+def test_prepare_fails_without_the_full_pr_comparison_boundary(monkeypatch):
+    manager = sessions.SessionManager()
+    monkeypatch.setattr(manager, "_read_result", lambda _sid: {"checkout_sha": SHA, "checkout_branch_sha": ""})
+    with pytest.raises(RuntimeError, match="PR comparison commit"):
         manager._capture_checkout_baseline(7)
 
 
@@ -71,6 +78,7 @@ async def test_checks_receive_no_credentials_and_runner_binds_outcome_to_tree(mo
     )
     assert [call["phase"] for call in calls] == ["snapshot", "verify"]
     assert calls[0]["env"]["LOGOS_SESSION_CHECKOUT_SHA"] == SHA
+    assert calls[0]["env"]["LOGOS_SESSION_COMPARISON_SHA"] == SHA
     assert calls[1]["env"] == {"LOGOS_SESSION_PHASE": "verify", "LOGOS_VERIFICATION_PATHS": '["logos-ui/a.ts"]'}
     assert env["LOGOS_SESSION_VERIFIED_TREE"] == TREE
     assert env["LOGOS_SESSION_VERIFICATION"] == status
@@ -222,6 +230,8 @@ def finalizer(monkeypatch, tmp_path):
     monkeypatch.setenv("GITHUB_TOKEN", "secret")
     monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
     monkeypatch.setenv("LOGOS_SESSION_VERIFIED_TREE", TREE)
+    monkeypatch.setenv("LOGOS_SESSION_CHECKOUT_SHA", SHA)
+    monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", SHA)
     monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
     monkeypatch.setattr(module, "finalize_checkout", lambda *_args: True)
     monkeypatch.setattr(module, "_ref_sha", lambda *_args: SHA)
@@ -246,6 +256,46 @@ def test_failed_check_marks_existing_pr_draft_before_push_and_reports_it(finaliz
     finalizer.run_finalize(result)
     assert order == ["draft", "push", "report"]
     assert result.data["verification"] == "failed"
+
+
+def test_changed_branch_lease_prevents_all_pr_metadata_changes(finalizer, monkeypatch):
+    monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "failed")
+    monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", "c" * 40)
+    calls = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        if command[:2] == ["git", "write-tree"]:
+            return SimpleNamespace(stdout=TREE, returncode=0)
+        return SimpleNamespace(stdout="", returncode=0)
+
+    monkeypatch.setattr(finalizer, "run", run)
+    with pytest.raises(RuntimeError, match="remote session branch changed"):
+        finalizer.run_finalize(finalizer.Result())
+    assert all(command[0] == "git" for command in calls)
+    assert not any(command[:2] == ["git", "push"] for command in calls)
+
+
+def test_exact_published_snapshot_allows_draft_metadata_recovery(finalizer, monkeypatch):
+    monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "failed")
+    monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", "")
+    calls = []
+    published = "d" * 40
+
+    def ref_sha(ref):
+        return TREE if ref.endswith("^{tree}") else published
+
+    def run(command, **_kwargs):
+        stdout = f"{published} {SHA}" if command[:2] == ["git", "rev-list"] else TREE
+        return SimpleNamespace(stdout=stdout, returncode=0)
+
+    monkeypatch.setattr(finalizer, "_ref_sha", ref_sha)
+    monkeypatch.setattr(finalizer, "run", run)
+    monkeypatch.setattr(finalizer, "_draft_existing_pull_request", lambda *_args: calls.append("draft"))
+    monkeypatch.setattr(finalizer, "commit_and_push", lambda *_args: 0)
+    monkeypatch.setattr(finalizer, "open_pull_request", lambda *_args: "https://example/pr/1")
+    finalizer.run_finalize(finalizer.Result())
+    assert calls == ["draft"]
 
 
 def test_forged_result_does_not_become_a_publication_or_verification_proof(finalizer, tmp_path):

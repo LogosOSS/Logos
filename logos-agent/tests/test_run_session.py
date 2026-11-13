@@ -107,6 +107,7 @@ def _patch_workspace(monkeypatch, workspace: Path) -> None:
         # Emulate the runner retaining the baseline before the agent works.
         baseline = _git("rev-parse", "HEAD", cwd=checkout).stdout.strip()
         monkeypatch.setenv("LOGOS_SESSION_CHECKOUT_SHA", baseline)
+        monkeypatch.setenv("LOGOS_SESSION_COMPARISON_SHA", baseline)
         monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", "")
 
 

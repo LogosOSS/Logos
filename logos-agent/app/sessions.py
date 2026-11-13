@@ -1725,15 +1725,18 @@ class SessionManager:
         prepared = self._read_result(session_id)
         sha = prepared.get("checkout_sha")
         branch_sha = prepared.get("checkout_branch_sha")
+        comparison_sha = prepared.get("checkout_comparison_sha")
         if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
             raise RuntimeError("checkout preparation did not report its original commit")
         if not isinstance(branch_sha, str) or (
             branch_sha and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", branch_sha)
         ):
             raise RuntimeError("checkout preparation did not report the original branch tip")
+        if not isinstance(comparison_sha, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", comparison_sha):
+            raise RuntimeError("checkout preparation did not report the PR comparison commit")
         path = state_dir(session_id) / _CHECKOUT_BASELINE_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"checkout_sha": sha, "branch_sha": branch_sha}))
+        path.write_text(json.dumps({"checkout_sha": sha, "branch_sha": branch_sha, "comparison_sha": comparison_sha}))
 
     async def _verify_before_push(
         self, session_id: int, workspace: dict[str, Any], env: dict[str, str], artifact_host_path: str
@@ -1742,15 +1745,22 @@ class SessionManager:
         try:
             baseline = json.loads((state_dir(session_id) / _CHECKOUT_BASELINE_FILE).read_text())
             sha, branch_sha = baseline["checkout_sha"], baseline["branch_sha"]
+            comparison_sha = baseline["comparison_sha"]
             if (
                 not isinstance(branch_sha, str)
                 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha)
                 or (branch_sha and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", branch_sha))
+                or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", comparison_sha)
             ):
                 raise ValueError("invalid commit")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise RuntimeError("missing trusted checkout baseline; start a new session before publishing") from exc
-        env = {**env, "LOGOS_SESSION_CHECKOUT_SHA": sha, "LOGOS_SESSION_BRANCH_SHA": branch_sha}
+        env = {
+            **env,
+            "LOGOS_SESSION_CHECKOUT_SHA": sha,
+            "LOGOS_SESSION_BRANCH_SHA": branch_sha,
+            "LOGOS_SESSION_COMPARISON_SHA": comparison_sha,
+        }
         code = await self._run_helper(
             phase="snapshot",
             session_id=session_id,

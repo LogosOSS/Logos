@@ -33,6 +33,8 @@ credentials. The runner stores the original checkout/branch SHAs outside the
 workspace and binds the verification outcome to the exact Git tree. Missing
 baseline proof stops publication. Failed verification publishes only a draft
 with diagnostics and fails the session, preventing deployment.
+Service selection covers the complete PR diff, including prior attempts, so a
+documentation-only retry cannot skip a previously failing compiler check.
 
 Commits retain the actual prepared parent. Later base-branch changes therefore
 remain outside the agent diff; conflicting edits remain merge conflicts for
