@@ -4,46 +4,30 @@ The point of this runner is to spend capacity that would otherwise sit idle.
 That only works if it can tell idle from busy, and if it gives the capacity
 back the moment a user needs it. Both decisions are made here.
 
-The orchestrator already knows the answer: every local provider reports, per
-model, how many requests are in flight (``active``) against how many it can
-serve concurrently (``max_capacity``), plus the depth of the queue waiting for
-it. We read that, and treat a non-empty queue as saturation regardless of the
-ratio — a user waiting is the strongest possible signal that there is nothing
-spare to give away.
+Fresh engine observations decide whether another dispatch step is available.
+A real engine wait list establishes saturation; neither the lane's guaranteed
+full-context concurrency nor the scheduler's ledger ceiling is a maximum for
+shorter requests. The displayed slot window includes observed running or
+accepted work and the dispatch steps available now; it is not a physical
+maximum. Older orchestrators retain the ratio-based fallback during rollout.
 
-**Measured on the agent's own lane.** Summing every resident model in the
-fleet answers a question nobody asked: an embedding model, a reranker and a
-120B chat model share nothing but a building, and "1 of 60 slots busy" says
-only that most of the fleet is asleep. What decides whether another agent
-session is safe to start is the deployment that session will actually be
-served by — so the reading counts exactly the deployments the runner's key
-can reach, by provider and model id rather than by name. A name is not
-enough: the same model is served by providers this key has no permission
-for, and their idle slots would make a busy lane look free.
-
-The queue is narrowed the same way: a backlog on another local model, or on
-a cloud provider, is not a person waiting for the lane this runner uses.
-Pausing for those used to hand a GPU back to nobody who was asking for it.
-
-**Measured in real slots.** A deployment holds as many slots as its lanes
-guarantee to serve at once, not the scheduler's ledger ceiling, and a worker
-that is offline holds none — the orchestrator reports its models unloaded.
-
-It falls back to the fleet-wide figure only when none of those deployments
-is resident — there is nothing of ours to measure then, and the older signal
-is the better of the two available answers. A key that reaches *nothing*
-is a different thing entirely, and fails closed.
+The reading includes only deployments the runner's key can reach. Compatible
+ready peers with an empty engine queue remain usable, while the orchestrator's
+model-wide backlog still gives waiting user requests priority. Ownership is
+accounted separately for running requests, engine waiters and scheduler queues,
+so the runner does not pause itself for its own work.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 import httpx
 
 from .config import settings
+from .live_capacity import prepare as prepare_live_capacity
 
 logger = logging.getLogger(__name__)
 
@@ -52,17 +36,15 @@ logger = logging.getLogger(__name__)
 class Reading:
     """One observation of the platform's serving load."""
 
-    load: float  # 0..1; 1.0 means saturated or unknown
+    load: float  # 0..1; fraction of the observed window, a gating signal only for legacy payloads
     busy_slots: int
     total_slots: int
     queue_total: int
     ok: bool  # False when the orchestrator could not be read
     detail: str = ""
-    # How full the engine's KV cache is on the model this reading is about.
-    # Kept apart from `load` because it cannot be attributed: the cache does
-    # not say whose tokens are in it. Starting more work on a model whose
-    # cache is nearly full is a bad idea whoever filled it — pausing what is
-    # already running because *we* filled it is how a runner starves itself.
+    # KV utilization is descriptive for live engine observations. Legacy
+    # payloads retain their cache-based admission safeguard; it never
+    # establishes which caller is responsible for pressure.
     cache_pressure: float = 0.0
     # False when no model is loaded anywhere: an empty fleet has no idle
     # capacity to spend, so there is nothing for the runner to reclaim.
@@ -74,15 +56,22 @@ class Reading:
     # number of sessions. Zero when the payload does not say, or when the
     # runner's key was not given.
     own_slots: int = 0
+    # Fresh engine observations expose a dispatch window, not a fixed
+    # maximum concurrency. Legacy payloads retain their ratio fallback.
+    dynamic: bool = False
+    available_slots: int = 0
+    sample_id: tuple[tuple[str, str, str], ...] = ()
+    observation_id: tuple[tuple[str, str, str], ...] = ()
+    # The same observation can answer admission and ownership-adjusted
+    # yielding without another HTTP request between those decisions.
+    snapshot: dict | None = field(default=None, repr=False, compare=False)
 
     @property
     def saturated(self) -> bool:
-        return self.queue_total > 0 or self.load >= 1.0
+        return self.queue_total > 0 or (not self.dynamic and self.load >= 1.0)
 
 
-# How full a model's KV cache may be before the runner stops adding to it.
-# Not a pause threshold: the cache does not say whose tokens are in it, and
-# a runner that pauses for its own context never finishes anything.
+# Legacy-only admission safeguard. Live engine queues decide saturation.
 CACHE_FULL = 0.9
 
 # When the orchestrator cannot be reached we must not assume the platform is
@@ -91,7 +80,7 @@ UNKNOWN = Reading(load=1.0, busy_slots=0, total_slots=0, queue_total=0, ok=False
 
 
 async def read_load(
-    timeout_s: float = 5.0,
+    timeout_s: float | None = None,
     lane: frozenset[tuple[str, str]] | None = None,
     ours: Mapping[str, int] | None = None,
     own_api_key_id: int | None = None,
@@ -128,7 +117,9 @@ async def read_load(
 
     url = f"{settings.orchestrator_url.rstrip('/')}/logosdb/scheduler_state"
     try:
-        async with httpx.AsyncClient(timeout=timeout_s) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout_s if timeout_s is not None else settings.capacity_timeout_s
+        ) as client:
             response = await client.get(url, headers={"Authorization": f"Bearer {settings.internal_secret}"})
         if response.status_code != 200:
             return Reading(
@@ -148,13 +139,35 @@ async def read_load(
         logger.warning("capacity read failed: %s", _describe(exc))
         return UNKNOWN
 
-    return parse_scheduler_state(
-        payload,
-        lane=lane,
-        ours=ours,
-        own_api_key_id=own_api_key_id,
-        discount_own=discount_own,
+    return replace(
+        parse_scheduler_state(
+            payload,
+            lane=lane,
+            ours=ours,
+            own_api_key_id=own_api_key_id,
+            discount_own=discount_own,
+        ),
+        snapshot=payload,
     )
+
+
+async def read_load_pair(*, lane=None, ours=None, own_api_key_id=None) -> tuple[Reading, Reading]:
+    """Read once, then attribute the same observation to this runner."""
+    measured = await read_load(lane=lane)
+    if not measured.ok:
+        return measured, measured
+    if measured.snapshot is None:
+        # A substituted reader may supply only a computed reading. Keep its
+        # ownership-aware interface available without inventing attribution.
+        adjusted = await read_load(lane=lane, ours=ours, own_api_key_id=own_api_key_id)
+    else:
+        payload = measured.snapshot
+        measured = replace(
+            parse_scheduler_state(payload, lane=lane, own_api_key_id=own_api_key_id, discount_own=False),
+            snapshot=payload,
+        )
+        adjusted = parse_scheduler_state(payload, lane=lane, ours=ours, own_api_key_id=own_api_key_id)
+    return measured, adjusted
 
 
 def _describe(exc: BaseException) -> str:
@@ -185,14 +198,11 @@ def _queue_parts(model: dict) -> tuple[int, int]:
 
 
 def _slots(model: dict) -> int:
-    """How many requests one deployment can really serve at once.
+    """Read the normalized dispatch window or legacy concurrency fallback.
 
-    The lanes' guaranteed concurrency (``lane_parallel``) — the slot count
-    the lane pages show. ``max_capacity`` is the scheduler's ledger
-    ceiling, deliberately loose so it never binds before the engine does;
-    measured against it, a lane with two slots read as having twenty, and
-    two busy requests with users queueing behind them looked like 10% load.
-    The ceiling stands in only until a lane reports its concurrency.
+    Live payloads have already replaced these fields with their observed
+    window. Older payloads use lane_parallel, falling back to max_capacity
+    until a lane reports its full-context concurrency guarantee.
     """
     reported = model.get("lane_parallel")
     if isinstance(reported, (int, float)) and reported > 0:
@@ -211,11 +221,8 @@ def _live(model: dict) -> tuple[int, int, float]:
     ``queue_depth`` is a separate stage of the queue, not a second reading
     of the engine's list (see :func:`_queue_parts`).
 
-    The third figure is the one that matters most and has no slot count in
-    it at all: the KV cache. A model can be three requests into a
-    twenty-request allowance and still have no room for a fourth, because
-    concurrency there is bounded by cache, not by a number in a
-    configuration file.
+    The cache figure is descriptive with live engine telemetry. Only the
+    legacy admission path uses it as an additional safeguard.
 
     The in-flight figure is not clipped to the deployment's slots: a lane
     may run more than its guaranteed concurrency, and the ownership
@@ -254,6 +261,41 @@ def parse_scheduler_state(
     own_api_key_id: int | None = None,
     *,
     discount_own: bool = True,
+) -> Reading:
+    """Read live dispatch headroom, retaining older payload compatibility."""
+    live = prepare_live_capacity(payload, lane, max_age_s=settings.capacity_stale_after_s)
+    source = live.payload if live is not None else payload
+    reading = _parse_scheduler_state_legacy(
+        source, lane=lane, ours=ours, own_api_key_id=own_api_key_id, discount_own=discount_own, dynamic=live is not None
+    )
+    if live is None:
+        return reading
+    if not live.known:
+        return replace(
+            reading,
+            ok=False,
+            load=1.0,
+            dynamic=True,
+            detail="no fresh engine-capacity observation for the runner's models",
+        )
+    return replace(
+        reading,
+        dynamic=True,
+        available_slots=live.available_slots,
+        sample_id=live.sample_id,
+        observation_id=live.observation_id,
+        detail=f"{reading.detail}; {live.available_slots} dispatch steps available in the current engine observation",
+    )
+
+
+def _parse_scheduler_state_legacy(
+    payload: dict,
+    lane: frozenset[tuple[str, str]] | None = None,
+    ours: Mapping[str, int] | None = None,
+    own_api_key_id: int | None = None,
+    *,
+    discount_own: bool = True,
+    dynamic: bool = False,
 ) -> Reading:
     """Turn the orchestrator's debug payload into a single load figure.
 
@@ -390,7 +432,7 @@ def parse_scheduler_state(
                     if isinstance(qshare, (int, float)):
                         per_model_own_queued[name] = max(per_model_own_queued.get(name, 0), int(qshare))
             capacity = _slots(model)
-            if not model.get("loaded") or capacity <= 0:
+            if not model.get("loaded") or (capacity <= 0 and not model.get("_dynamic_observed")):
                 # Only loaded models hold capacity. An unloaded one
                 # contributes nothing to either side of the ratio: its slots
                 # do not exist yet, and counting them would make an
@@ -438,6 +480,9 @@ def parse_scheduler_state(
     # Off-lane depth never entered `model_depth` when a lane was set.
     for name, depth in model_depth.items():
         if name not in per_model and name in lane_model_names:
+            if dynamic and discount_own:
+                own_queued = per_model_own_queued.get(name, 0) if name in queue_key_reported else mine.get(name, 0)
+                depth = max(0, depth - own_queued)
             queue_total += depth
 
     # Attribute own slots before any discount so the page can show them
@@ -528,8 +573,8 @@ def parse_scheduler_state(
             total_slots=0,
             queue_total=queue_total,
             ok=True,
-            detail="no loaded models",
-            reclaimable=False,
+            detail="no dispatch step currently available" if per_model else "no loaded models",
+            reclaimable=bool(per_model),
         )
 
     def _clamped_load(model_busy: float, model_total: float) -> float:
@@ -606,6 +651,10 @@ def start_decision(reading: Reading, *, running: int, paused: int, max_parallel:
         return False, (f"at the parallel-session ceiling " f"({running + paused}/{ceiling})")
     if reading.queue_total > 0:
         return False, f"users are queueing ({reading.queue_total} waiting)"
+    if reading.dynamic:
+        if reading.available_slots <= 0:
+            return False, "waiting for a fresh engine observation with dispatch headroom"
+        return True, reading.detail
     if reading.load >= settings.start_below_load:
         return False, (
             f"load {reading.load:.0%} is at or above the start threshold " f"{settings.start_below_load:.0%}"
@@ -629,6 +678,8 @@ def pause_decision(reading: Reading) -> tuple[bool, str]:
         return True, f"capacity unknown ({reading.detail})"
     if reading.queue_total > 0:
         return True, f"users are queueing ({reading.queue_total} waiting)"
+    if reading.dynamic:
+        return False, "no user backlog in the current engine observation"
     if reading.load >= settings.pause_above_load:
         return True, (f"load {reading.load:.0%} is at or above the pause threshold " f"{settings.pause_above_load:.0%}")
     return False, f"load {reading.load:.0%}"
@@ -637,9 +688,9 @@ def pause_decision(reading: Reading) -> tuple[bool, str]:
 def resume_decision(reading: Reading) -> tuple[bool, str]:
     """Whether a paused session may resume.
 
-    Uses the *start* threshold rather than the pause threshold, so a session
-    does not resume into the same load that just paused it and immediately
-    pause again.
+    Fresh observations require dispatch headroom. The session manager also
+    requires stable quiet time and a new engine sample. Legacy payloads
+    use the lower start threshold to avoid resuming into their pause range.
     """
     if not reading.ok:
         return False, f"capacity unknown ({reading.detail})"
@@ -649,6 +700,10 @@ def resume_decision(reading: Reading) -> tuple[bool, str]:
         return False, f"nothing to reclaim ({reading.detail})"
     if reading.queue_total > 0:
         return False, f"users are queueing ({reading.queue_total} waiting)"
+    if reading.dynamic:
+        if reading.available_slots <= 0:
+            return False, "waiting for a fresh engine observation with dispatch headroom"
+        return True, reading.detail
     if reading.load >= settings.start_below_load:
         return False, f"load {reading.load:.0%} still above resume threshold"
     return True, f"load {reading.load:.0%}"

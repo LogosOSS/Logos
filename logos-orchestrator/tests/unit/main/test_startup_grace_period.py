@@ -296,7 +296,7 @@ async def test_sync_request_waits_for_the_worker_to_reconnect(monkeypatch):
 
     monkeypatch.setattr(main, "_execute_cancelling_on_disconnect", fake_guard)
 
-    result = await main.handle_sync_request("chat/completions", _Client())
+    result = await main.handle_sync_request("v1/chat/completions", _Client())
 
     assert result == "ok"
     assert guarded[0]["deployments"] == RAW
@@ -306,7 +306,7 @@ async def test_sync_request_fails_after_the_window_expires(monkeypatch):
     _stub_sync_path(monkeypatch, {"model": MODEL_NAME}, RAW, _always_empty_filter())
 
     with pytest.raises(HTTPException) as excinfo:
-        await main.handle_sync_request("chat/completions", _Client())
+        await main.handle_sync_request("v1/chat/completions", _Client())
 
     assert excinfo.value.status_code == 404
     assert "No available model deployments" in excinfo.value.detail
@@ -318,7 +318,7 @@ async def test_sync_request_fails_immediately_when_the_key_has_no_deployments(mo
     _stub_sync_path(monkeypatch, {"model": MODEL_NAME}, [], empty)
 
     with pytest.raises(HTTPException) as excinfo:
-        await main.handle_sync_request("chat/completions", _Client())
+        await main.handle_sync_request("v1/chat/completions", _Client())
 
     assert excinfo.value.status_code == 404
     # Only the initial filter ran; the grace-period loop was never entered.
@@ -332,7 +332,7 @@ async def test_sync_request_fails_immediately_once_the_window_is_gone(monkeypatc
     _stub_sync_path(monkeypatch, {"model": MODEL_NAME}, RAW, empty)
 
     with pytest.raises(HTTPException) as excinfo:
-        await main.handle_sync_request("chat/completions", _Client())
+        await main.handle_sync_request("v1/chat/completions", _Client())
 
     assert excinfo.value.status_code == 404
     assert len(empty.calls) == 1

@@ -1,5 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { AuthService } from '../../../core/auth/services/auth.service';
+import { StatsClockService } from './stats-clock.service';
 import {
   StatsTab,
   TimelineRequestConfig,
@@ -95,12 +96,16 @@ type ServerMessage =
 @Injectable({ providedIn: 'root' })
 export class StatsWebsocketService {
   private auth = inject(AuthService);
+  private clock = inject(StatsClockService);
 
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   /** Watchdog for the wake-time liveness ping; cleared when a pong arrives. */
   private wakeProbeTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private generation = 0;
+  private opening = false;
   private backoff = 2000;
   private active = false;
   private forceTokenRefresh = false;
@@ -112,6 +117,7 @@ export class StatsWebsocketService {
   // ── Public API ──────────────────────────────────────────────────────────────
 
   connect(opts: StatsWsConnectOptions): void {
+    this.disconnect();
     this.opts = opts;
     this.currentVramDay = vramDayString(opts.vramDayOffset);
     this.active = true;
@@ -135,6 +141,7 @@ export class StatsWebsocketService {
           start: t.start,
           end: t.end,
           target_buckets: t.targetBuckets,
+          live: t.live,
         })
       );
     }
@@ -212,16 +219,21 @@ export class StatsWebsocketService {
   }
 
   reconnect(): void {
+    ++this.generation;
+    this.opening = false;
     this.backoff = 2000;
     this._clearReconnectTimer();
     this._clearWakeProbeTimer();
     this._clearPingTimer();
+    this._clearConnectTimer();
     this._closeSocket();
     void this._openSocket();
   }
 
   disconnect(): void {
     this.active = false;
+    ++this.generation;
+    this.opening = false;
     if (typeof window !== 'undefined') {
       window.removeEventListener('online', this._handleWake);
       window.removeEventListener('pageshow', this._handlePageShow);
@@ -230,6 +242,7 @@ export class StatsWebsocketService {
     this._clearReconnectTimer();
     this._clearWakeProbeTimer();
     this._clearPingTimer();
+    this._clearConnectTimer();
     this._closeSocket();
     this.opts = null;
   }
@@ -313,6 +326,13 @@ export class StatsWebsocketService {
     }
   }
 
+  private _clearConnectTimer(): void {
+    if (this.connectTimer !== null) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
+  }
+
   /** Null out all handlers then close, mirroring the hook's closeSocket. */
   private _closeSocket(): void {
     const current = this.ws;
@@ -330,33 +350,53 @@ export class StatsWebsocketService {
   }
 
   private async _openSocket(): Promise<void> {
-    if (!this.active || !this.opts) return;
+    if (!this.active || !this.opts || this.opening) return;
+    // Detach the old socket before awaiting auth: its delayed close event
+    // must not clear the new attempt's deadline or interrupt its retry chain.
+    this._clearWakeProbeTimer();
+    this._clearPingTimer();
+    this._closeSocket();
+    this.opening = true;
+    const generation = this.generation;
+    this._clearConnectTimer();
+    // Cover token refresh as well as the handshake: either can hang offline.
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = null;
+      ++this.generation;
+      this.opening = false;
+      this._closeSocket();
+      this._scheduleReconnect();
+    }, 10_000);
 
     // A transient token-refresh failure (network blip, wake from sleep) must
     // not end the reconnect chain — retry with backoff like a dropped socket.
-    const token = await this.auth.freshToken(this.forceTokenRefresh);
-    if (!this.active || !this.opts) return;
+    let token = '';
+    try {
+      token = await this.auth.freshToken(this.forceTokenRefresh);
+    } catch {
+      // Offline refresh failures follow the same bounded retry as a closed socket.
+    }
+    if (!this.active || !this.opts || generation !== this.generation) return;
+    this.opening = false;
     if (!token) {
+      this._clearConnectTimer();
       this._scheduleReconnect();
       return;
     }
 
     this._clearReconnectTimer();
-    this._clearWakeProbeTimer();
-    this._clearPingTimer();
-    this._closeSocket();
-
     const opts = this.opts;
     this.forceTokenRefresh = false;
     const ws = new WebSocket(buildStatsWsUrl(token));
     this.ws = ws;
 
     ws.onopen = () => {
-      if (!this.active) {
+      if (!this.active || this.ws !== ws) {
         ws.close();
         return;
       }
 
+      this._clearConnectTimer();
       this.backoff = 2000;
 
       // Read from this.opts, not the `opts` captured when the socket was
@@ -372,6 +412,7 @@ export class StatsWebsocketService {
             start: current.timeline.start,
             end: current.timeline.end,
             target_buckets: current.timeline.targetBuckets,
+            live: current.timeline.live,
           },
           user_id: current.scope?.userId ?? null,
           team_id: current.scope?.teamId ?? null,
@@ -386,15 +427,17 @@ export class StatsWebsocketService {
       );
 
       this.pingTimer = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ action: 'ping' }));
-        }
+        // Sleep does not always emit visibilitychange/online. Every keepalive
+        // therefore needs a deadline, not just the event-triggered wake probe.
+        if (this.ws === ws) this._probeSocketLiveness();
       }, 25_000);
     };
 
     ws.onmessage = (event: MessageEvent) => {
+      if (this.ws !== ws || !this.active) return;
       try {
-        const msg: ServerMessage = JSON.parse(event.data);
+        const msg: ServerMessage & { server_now?: string } = JSON.parse(event.data);
+        this.clock.synchronize(msg.server_now);
         if (msg.type === 'pong') {
           // A wake probe (or the keepalive interval) got an answer — the
           // socket is alive, so cancel any pending force-reconnect.
@@ -423,6 +466,8 @@ export class StatsWebsocketService {
       // 4001 means the server rejected the token expiry; force a refresh before retrying.
       if (event.code === 4001) this.forceTokenRefresh = true;
       this._clearPingTimer();
+      this._clearConnectTimer();
+      this._clearWakeProbeTimer();
       this.ws = null;
 
       this._scheduleReconnect();

@@ -30,6 +30,7 @@ from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.types import cloud_auth_header, cloud_protocol_headers
 from logos.decision import lane_model_override
 from logos.image_generation_tool import azure_image_deployment_headers
+from logos.inference_paths import require_inference_path
 from logos.logosnode_registry import LogosNodeRuntimeRegistry
 from logos.pipeline.effort_normalization import normalize_reasoning_effort
 from logos.request_content import is_multipart_payload, set_payload_field
@@ -682,6 +683,8 @@ class ContextResolver:
         an Azure deployment keeps the operation its stored endpoint names, and
         the dialect follows from that instead.
         """
+        if request_path:
+            require_inference_path(request_path)
         if endpoint_fallback and endpoint_fallback.startswith("http"):
             return ContextResolver._align_azure_operation(endpoint_fallback, request_path)
         base = (base_url or "").rstrip("/")

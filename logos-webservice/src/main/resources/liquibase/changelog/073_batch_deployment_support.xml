@@ -20,7 +20,7 @@
            accepted. None of them may serve interactive requests.
          * source: how the row was learned — 'probe' (the deployment sync
            tried a batch creation) or 'refusal' (a real batch was refused). -->
-    <changeSet id="072-batch-deployment-support" author="wasnertobias">
+    <changeSet id="073-batch-deployment-support" author="wasnertobias">
         <preConditions onFail="MARK_RAN">
             <not><columnExists tableName="provider_model_batch_eligibility" columnName="batch_deployment"/></not>
         </preConditions>

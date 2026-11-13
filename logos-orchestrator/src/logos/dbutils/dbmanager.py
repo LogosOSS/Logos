@@ -10,6 +10,7 @@ import re
 import secrets
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from urllib.parse import quote
 
 import sqlalchemy.exc
 import yaml
@@ -36,7 +37,12 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_DB_URL = os.getenv("LOGOS_DB_URL", "postgresql://postgres:root@logos-db:5432/logosdb")
+_DB_URL = os.getenv("LOGOS_DB_URL") or (
+    f"postgresql://{quote(os.getenv('DB_USER', 'postgres'), safe='')}:"
+    f"{quote(os.getenv('DB_PASSWORD', ''), safe='')}@"
+    f"{os.getenv('DB_HOST', 'logos-db')}:{os.getenv('DB_PORT', '5432')}/"
+    f"{quote(os.getenv('DB_NAME', 'logosdb'), safe='')}"
+)
 _POOL_SIZE = int(os.getenv("LOGOS_DB_POOL_SIZE", "10"))
 _MAX_OVERFLOW = int(os.getenv("LOGOS_DB_MAX_OVERFLOW", "20"))
 _POOL_RECYCLE = int(os.getenv("LOGOS_DB_POOL_RECYCLE", "1800"))
@@ -1583,7 +1589,9 @@ class DBManager:
             provider_id: Provider ID to query
 
         Returns:
-            Dictionary with configuration fields if found, None otherwise
+            Dictionary with configuration fields if found, None otherwise.
+            parallel_capacity is optional stored configuration, not the effective
+            logosnode capacity; local admission derives capacity from live lanes.
         """
         sql = text("""
             SELECT id, ollama_admin_url, total_vram_mb, parallel_capacity,
@@ -1652,7 +1660,7 @@ class DBManager:
             ollama_admin_url: Internal admin endpoint of the worker (e.g., http://gpu-vm-1:5000).
                 Legacy column name — the value is the worker's base URL.
             total_vram_mb: Total VRAM capacity in MB (e.g., 49152 for 48GB)
-            parallel_capacity: Max concurrent requests per model
+            parallel_capacity: Optional configured capacity, ignored by logosnode admission
             keep_alive_seconds: How long models stay loaded when idle
             max_loaded_models: Max models that can be loaded simultaneously
 
@@ -4781,7 +4789,11 @@ class DBManager:
 
     def list_local_providers(self) -> list[dict]:
         """Unauthenticated variant of get_local_provider_inventory for internal
-        (secret-gated) endpoints that have no user logos_key."""
+        (secret-gated) endpoints that have no user logos_key.
+
+        parallel_capacity is retained as nullable legacy configuration metadata;
+        it does not describe the live capacity of these local providers.
+        """
         sql = text("""
             SELECT
                 id,
@@ -4864,8 +4876,10 @@ class DBManager:
         headers=None,
         request_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
+        timestamp_request: Optional[datetime.datetime] = None,
     ) -> tuple[dict, int]:
-        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        # Deferred inserts retain arrival time, before scheduling/provider events.
+        timestamp = (timestamp_request or datetime.datetime.now(datetime.timezone.utc)).isoformat()
         payload_str = _json_for_jsonb(input_payload) if log_level == "FULL" and input_payload else None
         headers_str = _json_for_jsonb(dict(headers)) if log_level == "FULL" and headers else None
 
@@ -4907,6 +4921,7 @@ class DBManager:
         headers=None,
         request_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
+        timestamp_request: Optional[datetime.datetime] = None,
     ) -> Optional[int]:
         """Insert a log row, or return the id of an existing one for ``request_id``.
 
@@ -4931,6 +4946,7 @@ class DBManager:
                 headers=headers,
                 request_id=request_id,
                 timeout_s=timeout_s,
+                timestamp_request=timestamp_request,
             )
             return int(result["log-id"]) if status == 200 else None
         except sqlalchemy.exc.IntegrityError as exc:

@@ -1,0 +1,101 @@
+<div class="account-settings">
+  <h1 class="page-title">Account settings</h1>
+  <p class="page-subtitle">Manage how you sign in to your account.</p>
+
+  <section class="passkeys-card" aria-labelledby="passkeys-title" [attr.aria-busy]="busy()">
+    <div class="section-heading">
+      <div>
+        <h2 id="passkeys-title" tabindex="-1"><i class="pi pi-key" aria-hidden="true"></i> Passkeys</h2>
+        <p>Sign in with your fingerprint, face, device PIN, or a security key.</p>
+      </div>
+      <button id="add-passkey" type="button" class="btn-primary" (click)="openAdd()"
+        [disabled]="busy() || !!loadError() || !supported">
+        <i class="pi pi-plus" aria-hidden="true"></i> Add passkey
+      </button>
+    </div>
+
+    <p class="account-note">
+      Passkeys belong to your central account and may also be used by other applications.
+      Removing one here removes it for all of those applications.
+    </p>
+
+    @if (!supported) {
+      <p class="account-note" role="status">
+        This browser cannot create passkeys. Use a supported browser over a secure connection to add one.
+        You can still view and remove your existing passkeys here.
+      </p>
+    }
+
+    @if (loading()) {
+      <p class="state-message" role="status"><i class="pi pi-spin pi-spinner" aria-hidden="true"></i> Loading passkeys…</p>
+    } @else if (loadError()) {
+      <div class="load-error">
+        <app-error-message [message]="loadError()" variant="banner" />
+        <button type="button" class="btn-secondary" (click)="load()">Try again</button>
+      </div>
+    } @else if (passkeys().length === 0) {
+      <div class="empty-state">
+        <i class="pi pi-key" aria-hidden="true"></i>
+        <h3>No passkeys yet</h3>
+        <p>Add a passkey to sign in without entering your password.</p>
+      </div>
+    } @else {
+      <ul class="passkey-list" aria-label="Your passkeys">
+        @for (passkey of passkeys(); track passkey.id) {
+          <li class="passkey-row">
+            <div class="passkey-details">
+              <h3>{{ passkey.label }}</h3>
+              <p>
+                @if (passkey.createdAt !== null) {
+                  Added {{ passkey.createdAt | date: 'mediumDate' }}
+                } @else {
+                  Added date unavailable
+                }
+              </p>
+              @if (!passkey.removable) {
+                <p>Your account policy does not allow removing this passkey.</p>
+              }
+            </div>
+            <button type="button" class="btn-danger" (click)="openRemove(passkey)"
+              [disabled]="busy() || !passkey.removable" [attr.aria-label]="'Remove ' + passkey.label">
+              <i class="pi pi-trash" aria-hidden="true"></i> Remove
+            </button>
+          </li>
+        }
+      </ul>
+    }
+  </section>
+  <p class="success-message" role="status">{{ notice() }}</p>
+</div>
+
+<app-modal-form [visible]="addOpen()" (visibleChange)="closeAdd($event)" title="Add passkey" size="sm" [dismissible]="!adding()">
+  <form id="add-passkey-form" class="add-form" (submit)="add($event)">
+    <p>Choose a name you will recognize, then follow your browser’s instructions.</p>
+    <label for="passkey-name">Passkey name</label>
+    <input id="passkey-name" type="text" class="field-input" autocomplete="off" required maxlength="64"
+      [value]="name()" (input)="name.set($any($event.target).value)" [disabled]="adding()"
+      aria-describedby="passkey-name-hint" />
+    <p id="passkey-name-hint">For example, “Personal laptop” or “Backup security key”.</p>
+    @if (adding()) {
+      <p role="status">Follow the prompt from your browser or device…</p>
+    }
+    @if (addError()) {
+      <app-error-message [message]="addError()" />
+    }
+  </form>
+  <div modal-footer class="dialog-actions">
+    <button type="button" class="btn-secondary" (click)="closeAdd(false)" [disabled]="adding()">Cancel</button>
+    <button type="submit" form="add-passkey-form" class="btn-primary" [disabled]="adding() || !name().trim()">
+      @if (adding()) { <i class="pi pi-spin pi-spinner" aria-hidden="true"></i> }
+      Add passkey
+    </button>
+  </div>
+</app-modal-form>
+
+<app-modal-confirm [visible]="!!selected()" (visibleChange)="closeRemove($event)" title="Remove passkey?"
+  [message]="removalMessage()" confirmLabel="Remove passkey" [loading]="removing()" [dismissible]="!removing()" (confirmed)="remove()">
+  <p modal-details>Make sure you can still sign in with another passkey or your usual TUM sign-in method.</p>
+  @if (removeError()) {
+    <app-error-message modal-error [message]="removeError()" />
+  }
+</app-modal-confirm>

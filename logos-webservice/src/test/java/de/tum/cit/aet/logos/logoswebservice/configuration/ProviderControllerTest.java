@@ -10,6 +10,9 @@ import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
@@ -32,6 +35,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -147,6 +151,8 @@ class ProviderControllerTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.result").value("Created Provider."))
            .andExpect(jsonPath("$['provider-id']").isNumber());
+        assertNull(jdbc.queryForObject(
+            "SELECT parallel_capacity FROM providers WHERE name = 'new-provider'", Integer.class));
     }
 
     @Test
@@ -161,6 +167,8 @@ class ProviderControllerTest {
            .andExpect(jsonPath("$.result").value("Created Provider."))
            .andExpect(jsonPath("$.api_key")
                .value(org.hamcrest.Matchers.matchesPattern("[A-Za-z0-9_-]{64}")));
+        assertNull(jdbc.queryForObject(
+            "SELECT parallel_capacity FROM providers WHERE name = 'local-node'", Integer.class));
     }
 
     @Test
@@ -207,6 +215,20 @@ class ProviderControllerTest {
                 .content("{\"provider_id\":6001,\"provider_name\":\"renamed-provider\"}"))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.result").value("Updated Provider."));
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(ints = {20, 200, 900})
+    void updateProvider_preservesOptionalCloudCapacity(Integer capacity) throws Exception {
+        jdbc.update("UPDATE providers SET parallel_capacity = ? WHERE id = 6001", capacity);
+        mvc.perform(post("/logosdb/update_provider")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"provider_name\":\"renamed-provider\"}"))
+           .andExpect(status().isOk());
+        assertEquals(capacity, jdbc.queryForObject(
+            "SELECT parallel_capacity FROM providers WHERE id = 6001", Integer.class));
     }
 
     @Test
