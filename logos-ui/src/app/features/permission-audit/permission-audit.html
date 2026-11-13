@@ -87,8 +87,8 @@
   <nav class="pagination" aria-label="Audit history pages">
     <span aria-live="polite">{{ entries().length }} changes · Page {{ pageIndex() + 1 }}</span>
     <div>
-      <button type="button" class="btn-secondary" (click)="previous()" [disabled]="loading() || pageIndex() === 0">Newer</button>
-      <button type="button" class="btn-secondary" (click)="next()" [disabled]="loading() || !hasMore()">Older</button>
+      <button type="button" class="btn-secondary" (click)="previous()" [disabled]="loading() || !!error() || pageIndex() === 0">Newer</button>
+      <button type="button" class="btn-secondary" (click)="next()" [disabled]="loading() || !!error() || !hasMore()">Older</button>
     </div>
   </nav>
   <p class="history-note">Names are recorded at the time of each change. History begins when permission auditing is enabled.</p>

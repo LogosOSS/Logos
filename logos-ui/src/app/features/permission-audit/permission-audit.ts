@@ -113,14 +113,19 @@ export class PermissionAudit {
     void this.applyFilters();
   }
 
+  /**
+   * Paging is blocked while an error is shown: after a failed filter change the
+   * page state still belongs to the previous filters, and paging would show
+   * their history under the new filter. Retry loads the filters that failed.
+   */
   next(): void {
-    if (this.loading() || !this.hasMore()) return;
+    if (this.loading() || this.error() || !this.hasMore()) return;
     this.cursors[this.pageIndex() + 1] = this.entries().at(-1)?.id;
     void this.load(this.applied, this.pageIndex() + 1);
   }
 
   previous(): void {
-    if (!this.loading() && this.pageIndex() > 0) void this.load(this.applied, this.pageIndex() - 1);
+    if (!this.loading() && !this.error() && this.pageIndex() > 0) void this.load(this.applied, this.pageIndex() - 1);
   }
 
   retry(): void { void this.load(this.retryFilters, this.retryPage); }

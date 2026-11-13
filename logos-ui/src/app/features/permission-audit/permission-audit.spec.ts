@@ -121,6 +121,41 @@ describe('PermissionAudit', () => {
     expect(fixture.componentInstance.entries()).toHaveLength(1);
   });
 
+  it('does not page through the previous team after a failed filter change', async () => {
+    params.next(convertToParamMap({ team_id: '1' }));
+    list.mockResolvedValueOnce(Array.from({ length: 26 }, (_, i) => entry(100 - i)));
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    list.mockResolvedValueOnce(Array.from({ length: 26 }, (_, i) => entry(74 - i)));
+    page.next();
+    await fixture.whenStable();
+    expect(page.pageIndex()).toBe(1);
+
+    list.mockRejectedValueOnce(new Error('offline'));
+    page.draft.team_id = '2';
+    await page.applyFilters();
+    fixture.detectChanges();
+    expect(page.error()).not.toBe('');
+
+    const buttons = Array.from(fixture.nativeElement.querySelectorAll('button')) as HTMLButtonElement[];
+    const newer = buttons.find(b => b.textContent?.trim() === 'Newer')!;
+    const older = buttons.find(b => b.textContent?.trim() === 'Older')!;
+    expect(newer.disabled).toBe(true);
+    expect(older.disabled).toBe(true);
+
+    list.mockClear();
+    page.previous();
+    page.next();
+    await fixture.whenStable();
+    expect(list).not.toHaveBeenCalled();
+
+    list.mockResolvedValueOnce([entry(5)]);
+    page.retry();
+    await fixture.whenStable();
+    expect(list).toHaveBeenLastCalledWith({ team_id: 2 }, undefined, 26);
+    expect(page.error()).toBe('');
+  });
+
   it('clears target filters when following a different kind of target', async () => {
     const fixture = await create();
     const page = fixture.componentInstance;
