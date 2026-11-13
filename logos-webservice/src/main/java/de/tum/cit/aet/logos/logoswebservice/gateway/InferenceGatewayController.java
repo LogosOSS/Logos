@@ -126,7 +126,6 @@ public class InferenceGatewayController {
         if (modelName != null
                 && GatewayRouteResolver.isDirectCloudEligible(path, request.getMethod())
                 && !GatewayRouteResolver.isMessagesPath(path)
-                && !GatewayRouteResolver.requestsImageGenerationTool(root)
                 && !requiresOrchestratorPolicy(request, modelName)) {
             GatewayAuthContext ctx = new GatewayAuthContext(
                 key, authService.deploymentsForModel(key, modelName));
@@ -139,7 +138,9 @@ public class InferenceGatewayController {
                 // recorded, whatever the reason — a request that fails must
                 // never be missing from the request log.
                 final Integer logId;
+                final Map<String, String> upstreamHeaders;
                 try {
+                    upstreamHeaders = imageToolHeaders(ctx.key(), decision.deployment(), root);
                     cloudRateLimiter.enforce(ctx.key(), body);
                     logId = cloudAccounting.admitAndReserve(
                         ctx.key(), decision.deployment(), body, logLevel, arrivedAt,
@@ -164,6 +165,7 @@ public class InferenceGatewayController {
                     request.getMethod(),
                     body,
                     copyHeaders(request),
+                    upstreamHeaders,
                     GatewayLoggingLevel.storesPayloads(logLevel),
                     result -> cloudAccounting.settleSuccess(
                         logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings()),
@@ -177,6 +179,33 @@ public class InferenceGatewayController {
         log.debug("Orchestrator proxy {} {} keyId={} (non-cloud-eligible path)",
             request.getMethod(), path, key.id());
         return orchestratorProxy.proxy(request, path, body);
+    }
+
+    /**
+     * Headers the upstream needs for the Responses {@code image_generation} tool.
+     *
+     * <p>Empty, and without any lookup, when the body asks for no image tool. The
+     * image model is a second model the request runs, so the key must be allowed
+     * to use it; otherwise the request is refused before admission. The Azure
+     * header is only added for an Azure deployment that has the image model on
+     * the same resource ({@link GatewayImageGenerationTool#azureHeaders}).
+     */
+    private Map<String, String> imageToolHeaders(GatewayKey key, GatewayDeployment chat, JsonNode root) {
+        List<String> imageModels = GatewayImageGenerationTool.requestedImageModels(root);
+        if (imageModels.isEmpty()) {
+            return Map.of();
+        }
+        if (imageModels.size() > 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "A request may use one image model in its image_generation tools; this one names "
+                    + String.join(", ", imageModels) + ".");
+        }
+        List<GatewayDeployment> imageDeployments = authService.deploymentsForModel(key, imageModels.get(0));
+        if (imageDeployments.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                "The image_generation tool uses '" + imageModels.get(0) + "', which this key may not use.");
+        }
+        return GatewayImageGenerationTool.azureHeaders(chat, imageDeployments);
     }
 
     /**

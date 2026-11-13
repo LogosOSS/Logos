@@ -3,8 +3,6 @@ package de.tum.cit.aet.logos.logoswebservice.gateway;
 import java.util.List;
 import java.util.Locale;
 
-import com.fasterxml.jackson.databind.JsonNode;
-
 import org.springframework.stereotype.Service;
 
 /**
@@ -98,31 +96,6 @@ public class GatewayRouteResolver {
         }
         if ("POST".equals(method) && path.matches("/openai/models/.+/warmup")) {
             return true;
-        }
-        return false;
-    }
-
-    /**
-     * Whether the body asks for the Responses API {@code image_generation} tool.
-     *
-     * <p>Such a request stays on the orchestrator: Azure only runs the tool when
-     * the image model's deployment is named in a request header, and the
-     * orchestrator resolves that deployment and checks the key's access to the
-     * image model. The direct cloud forward sends the body unchanged and would
-     * have the provider reject the request.
-     */
-    public static boolean requestsImageGenerationTool(JsonNode root) {
-        if (root == null || !root.isObject()) {
-            return false;
-        }
-        JsonNode tools = root.get("tools");
-        if (tools == null || !tools.isArray()) {
-            return false;
-        }
-        for (JsonNode tool : tools) {
-            if (tool != null && tool.isObject() && "image_generation".equals(tool.path("type").asText(""))) {
-                return true;
-            }
         }
         return false;
     }
