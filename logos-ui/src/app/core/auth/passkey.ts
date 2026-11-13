@@ -84,8 +84,16 @@ function jwtSubject(accessToken: string): string | undefined {
   }
 }
 
+async function requestPasskey(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch {
+    throw new Error('The passkey service could not be reached. Try again or contact your Logos administrator.');
+  }
+}
+
 async function requestChallenge(issuer: string, clientId: string): Promise<string> {
-  const res = await fetch(passkeyEndpoint(issuer, clientId, 'challenge'), {
+  const res = await requestPasskey(passkeyEndpoint(issuer, clientId, 'challenge'), {
     method: 'GET', credentials: 'include', cache: 'no-store',
   });
   if (!res.ok) throw new Error(`Passkey challenge failed (${res.status})`);
@@ -126,7 +134,7 @@ export async function loginWithPasskey(
   if (!(response instanceof AuthenticatorAssertionResponse) || !response.userHandle) {
     throw new Error('Unexpected passkey authentication response.');
   }
-  const authRes = await fetch(passkeyEndpoint(issuer, clientId, 'authenticate'), {
+  const authRes = await requestPasskey(passkeyEndpoint(issuer, clientId, 'authenticate'), {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -242,10 +250,19 @@ function codeFromSilentIframe(authUrl: string, redirectUri: string, state: strin
   });
 }
 
+export interface PasskeyRegistrationOptions {
+  label?: string;
+  /** WebAuthn credential IDs, not Keycloak's internal credential record IDs. */
+  excludeCredentialIds?: string[];
+  /** The browser ceremony can outlast the access token's remaining lifetime. */
+  freshToken?: () => Promise<string>;
+}
+
 /** Registers a new passkey for the currently logged-in user. */
 export async function registerPasskey(
   issuer: string, clientId: string, accessToken: string,
   rpId: string = defaultRpId(), rpName = 'Logos',
+  options: PasskeyRegistrationOptions = {},
 ): Promise<void> {
   if (!isPasskeySupported()) throw new Error('This browser does not support passkeys.');
   const sub = jwtSubject(accessToken);
@@ -261,6 +278,9 @@ export async function registerPasskey(
         displayName: getDeviceName(),
       },
       pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      excludeCredentials: (options.excludeCredentialIds ?? []).map(id => ({
+        type: 'public-key', id: fromBase64Url(id) as BufferSource,
+      })),
       authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
       timeout: CEREMONY_TIMEOUT_MS,
     },
@@ -270,15 +290,18 @@ export async function registerPasskey(
   if (!(response instanceof AuthenticatorAttestationResponse)) {
     throw new Error('Unexpected passkey registration response.');
   }
-  const saveRes = await fetch(passkeyEndpoint(issuer, clientId, 'save'), {
+  const saveToken = options.freshToken ? await options.freshToken() : accessToken;
+  if (!saveToken) throw new Error('Your session has expired. Sign in again before adding a passkey.');
+  if (jwtSubject(saveToken) !== sub) throw new Error('Your account changed. Sign in again before adding a passkey.');
+  const saveRes = await requestPasskey(passkeyEndpoint(issuer, clientId, 'save'), {
     method: 'POST', credentials: 'include',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${saveToken}` },
     body: JSON.stringify({
       credentialId: toBase64Url(credential.rawId),
       clientDataJSON: toBase64Url(response.clientDataJSON),
       attestationObject: toBase64Url(response.attestationObject),
       challenge,
-      label: getDeviceName(),
+      deviceName: options.label?.trim() || getDeviceName(),
     }),
   });
   if (!saveRes.ok) throw new Error(`Passkey registration rejected (${saveRes.status})`);
