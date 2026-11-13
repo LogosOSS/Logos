@@ -178,7 +178,9 @@ the image cache fails visibly; rebuild the workspace image to refresh its cache.
 Before publishing, the runner records a candidate Git tree using trusted
 metadata, then runs the checks in a separate container with no credentials or
 network and read-only mounts of the workspace and artifacts. Builds use a
-disposable copy. The finalizer checks the same tree ID before pushing. Neither
+clean export of that exact Git tree. Ignored and unstaged working-directory
+configuration cannot alter the authoritative build. The finalizer checks the
+same tree ID before pushing. Neither
 the checkout baseline nor the authoritative check outcome comes from an
 agent-written result file. Failed or unavailable checks produce a draft PR with
 diagnostics and a failed session; deployment is not dispatched. Existing PRs

@@ -79,7 +79,11 @@ async def test_checks_receive_no_credentials_and_runner_binds_outcome_to_tree(mo
     assert [call["phase"] for call in calls] == ["snapshot", "verify"]
     assert calls[0]["env"]["LOGOS_SESSION_CHECKOUT_SHA"] == SHA
     assert calls[0]["env"]["LOGOS_SESSION_COMPARISON_SHA"] == SHA
-    assert calls[1]["env"] == {"LOGOS_SESSION_PHASE": "verify", "LOGOS_VERIFICATION_PATHS": '["logos-ui/a.ts"]'}
+    assert calls[1]["env"] == {
+        "LOGOS_SESSION_PHASE": "verify",
+        "LOGOS_VERIFICATION_PATHS": '["logos-ui/a.ts"]',
+        "LOGOS_VERIFICATION_TREE": TREE,
+    }
     assert env["LOGOS_SESSION_VERIFIED_TREE"] == TREE
     assert env["LOGOS_SESSION_VERIFICATION"] == status
     proof = json.loads((sessions.state_dir(7) / "verification.json").read_text())

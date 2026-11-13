@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -78,28 +79,86 @@ def _run(command: list[str], directory: Path, environment: dict[str, str]) -> No
     subprocess.run(command, cwd=directory, env=environment, check=True, timeout=COMMAND_TIMEOUT)
 
 
-def verify_service(service: str, checkout: Path, cache: Path) -> None:
-    source = checkout / service
-    if service not in SERVICES or source.is_symlink() or not source.is_dir():
-        raise RuntimeError(f"cannot verify missing or linked service directory: {service}")
+def _git(checkout: Path, environment: dict[str, str], *arguments: str) -> str:
+    if checkout.is_symlink() or not checkout.is_dir():
+        raise RuntimeError("verification checkout must be a directory, not a symlink")
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.splitIndex=false",
+            *arguments,
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=COMMAND_TIMEOUT,
+    )
+    return result.stdout.strip()
+
+
+def _validate_tree(tree: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", tree):
+        raise ValueError("LOGOS_VERIFICATION_TREE must be a full Git tree object ID")
+
+
+def candidate_tree(checkout: Path) -> str:
+    """Read the runner's tree, or stage a manual check in a private index."""
+    with tempfile.TemporaryDirectory(prefix="logos-verify-index-") as directory:
+        scratch = Path(directory)
+        environment = _environment(scratch)
+        environment["GIT_INDEX_FILE"] = str(scratch / "index")
+        if os.environ.get("LOGOS_SESSION_PHASE") == "verify":
+            tree = os.environ.get("LOGOS_VERIFICATION_TREE", "")
+            _validate_tree(tree)
+        else:
+            # The agent's manual check includes unstaged edits and new files,
+            # but never changes the real index or an authoritative proof.
+            _git(checkout, environment, "read-tree", "HEAD")
+            _git(checkout, environment, "add", "--all", "--", ".")
+            tree = _git(checkout, environment, "write-tree")
+        if _git(checkout, environment, "cat-file", "-t", tree) != "tree":
+            raise ValueError("verification requires a Git tree object")
+        return tree
+
+
+def export_candidate(checkout: Path, destination: Path, tree: str, scratch: Path) -> None:
+    """Export only candidate blobs, without archive attributes or working files."""
+    _validate_tree(tree)
+    destination.mkdir()
+    environment = _environment(scratch)
+    environment["GIT_INDEX_FILE"] = str(scratch / "index")
+    _git(checkout, environment, "read-tree", tree)
+    _git(checkout, environment, f"--work-tree={destination}", "checkout-index", "--all", f"--prefix={destination}/")
+    root = destination.resolve()
+    for path in destination.rglob("*"):
+        if path.is_symlink() and not path.resolve().is_relative_to(root):
+            raise RuntimeError(f"candidate symlink leaves the exported tree: {path.relative_to(destination)}")
+
+
+def verify_service(service: str, checkout: Path, cache: Path, tree: str) -> None:
+    if service not in SERVICES:
+        raise ValueError(f"unsupported service: {service}")
     with tempfile.TemporaryDirectory(prefix="logos-verify-") as directory:
         scratch = Path(directory)
         home = scratch / "home"
         home.mkdir()
-        working = scratch / service
-
-        def generated_outputs(directory: str, entries: list[str]) -> set[str]:
-            outputs = {".git"}
-            if Path(directory) == source:
-                outputs.update(("node_modules", "target", "dist", ".angular", "coverage"))
-            return outputs.intersection(entries)
-
-        shutil.copytree(
-            source,
-            working,
-            symlinks=True,
-            ignore=generated_outputs,
-        )
+        exported = scratch / "repo"
+        export_candidate(checkout, exported, tree, scratch)
+        working = exported / service
+        if working.is_symlink() or not working.is_dir():
+            raise RuntimeError(f"cannot verify missing or linked service directory: {service}")
         environment = _environment(home)
         if service == "logos-webservice":
             repository = scratch / "maven-repository"
@@ -142,19 +201,20 @@ def main(arguments: list[str] | None = None) -> int:
             if not isinstance(paths, list):
                 raise ValueError("LOGOS_VERIFICATION_PATHS must be a JSON array from the runner")
         services = selected_services(paths)
+        tree = candidate_tree(CHECKOUT)
         if not services:
             print("[verify] No changed Java or Angular service; no compile check selected.", flush=True)
         failed = False
         for service in services:
             try:
-                verify_service(service, CHECKOUT, CACHE)
+                verify_service(service, CHECKOUT, CACHE, tree)
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 print(f"[verify] FAILED {service}: {exc}", file=sys.stderr, flush=True)
                 failed = True
             else:
                 print(f"[verify] PASSED {service}", flush=True)
         return 1 if failed else 0
-    except (OSError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         print(f"[verify] FAILED: {exc}", file=sys.stderr, flush=True)
         return 1
 

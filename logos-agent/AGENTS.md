@@ -33,6 +33,8 @@ credentials. The runner stores the original checkout/branch SHAs outside the
 workspace and binds the verification outcome to the exact Git tree. Missing
 baseline proof stops publication. Failed verification publishes only a draft
 with diagnostics and fails the session, preventing deployment.
+Verification exports that Git tree through a separate index; ignored files in
+the working directory cannot disable or change the build.
 Service selection covers the complete PR diff, including prior attempts, so a
 documentation-only retry cannot skip a previously failing compiler check.
 

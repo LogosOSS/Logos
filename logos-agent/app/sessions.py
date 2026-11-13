@@ -1786,7 +1786,11 @@ class SessionManager:
             phase="verify",
             session_id=session_id,
             # An allow-list, never a copy of the credential-bearing environment.
-            env={"LOGOS_SESSION_PHASE": "verify", "LOGOS_VERIFICATION_PATHS": json.dumps(paths)},
+            env={
+                "LOGOS_SESSION_PHASE": "verify",
+                "LOGOS_VERIFICATION_PATHS": json.dumps(paths),
+                "LOGOS_VERIFICATION_TREE": tree,
+            },
             workspace_volume=workspace["volume_name"],
             artifact_host_path=artifact_host_path,
         )
