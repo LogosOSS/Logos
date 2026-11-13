@@ -550,8 +550,8 @@ class TestConversation:
         # A rate limit or a dead credential is not the 404 of a plain issue.
         # Reading it that way would queue a reply from the default branch and
         # record a ref that never retries — the failure would become a
-        # decision. It propagates instead: the pass fails, the next pass asks
-        # again.
+        # decision. This repository's pass fails without advancing its
+        # comment cursor, and the next pass asks again.
         repo = FakeRepo(issue_comments=[comment(9002, 864, f"@{AGENT} pls fix linting")])
         repo.writers = {"wasnertobias"}
         repo.install(monkeypatch)
@@ -566,9 +566,10 @@ class TestConversation:
         fake_db.install(monkeypatch)
         allow_models(monkeypatch)
 
-        with pytest.raises(GitHubError):
-            await triggers.TriggerPoller().poll_once()
-
+        poller = triggers.TriggerPoller()
+        assert await poller.poll_once() == []
+        assert "429" in poller.status()["last_error"]
+        assert fake_db.comment_mark is None
         assert fake_db.created == []
 
     async def test_a_question_on_a_plain_issue_is_answered_in_words(self, monkeypatch):
@@ -2615,7 +2616,14 @@ async def test_linked_repositories_queue_the_same_issue_number_independently(mon
     monkeypatch.setattr(triggers.db, "mark_repository_comments_scanned", mark)
 
     poller = triggers.TriggerPoller()
+    admission_targets = []
+
+    async def admit():
+        admission_targets.append(repository_context.current())
+
+    poller.on_queued = admit
     assert len(await poller.poll_once()) == 3
+    assert admission_targets == [None, None, None]
     assert [row["trigger_ref"] for row in fake_db.created] == [
         "issue-1",
         "repo:team/project-11:issue-1",

@@ -646,7 +646,10 @@ class TriggerPoller:
         if not deferred:
             await self._mark_comments_scanned(now)
         if queued and self.on_queued is not None:
-            await self.on_queued()
+            # Admission can launch sessions from any repository. Its tasks
+            # must not inherit the identity of the poll that woke it up.
+            with repository_context.scope(None):
+                await self.on_queued()
         return queued
 
     async def _comment_window(self, now: datetime) -> datetime:
