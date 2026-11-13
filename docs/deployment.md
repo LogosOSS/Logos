@@ -402,7 +402,11 @@ Tune the limits for each deployment in the `.env` of the node (all optional):
   crash-loop the gateway (and with it the whole stack).
 - `LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS` — the proxy ranges trusted by the orchestrator and web service.
   Both services select the rightmost untrusted address in `X-Forwarded-For`.
-  The default is `172.16.0.0/12`. Set the actual application-facing proxy subnets if Docker uses another range.
+  The default is the private address space (`10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`).
+  The proxy in front of the services is a container of the stack. Docker takes its address from the network pool,
+  and that address is not necessarily in `172.16.0.0/12`. Neither service publishes a host port.
+  If the default does not match the proxy, then the orchestrator refuses every worker node with
+  "TLS is required for logosnode auth/session endpoints".
   Untrusted peers cannot supply a client address or the orchestrator's TLS signal.
   The rate-limit gateway forwards its resolved address. The agent gateway replaces the header with the session address.
 - `LOGOS_GATEWAY_TRUSTED_PROXY_CIDRS` — the source ranges that can carry
