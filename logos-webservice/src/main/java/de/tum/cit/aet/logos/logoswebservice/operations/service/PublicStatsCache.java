@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 
 import org.slf4j.Logger;
@@ -31,7 +32,7 @@ public class PublicStatsCache {
     private final long ttlNanos;
     private final LongSupplier nanoClock;
     private final Object refreshLock = new Object();
-    private volatile Entry entry;
+    private final AtomicReference<Entry> entry = new AtomicReference<>();
 
     @Autowired
     public PublicStatsCache(StatsService statsService,
@@ -51,11 +52,11 @@ public class PublicStatsCache {
         if (ttlNanos <= 0) {
             return statsService.publicStats(window);
         }
-        Entry current = entry;
+        Entry current = entry.get();
         if (current == null) {
             synchronized (refreshLock) {
-                if (entry == null) computeAllWindows();
-                current = entry;
+                current = entry.get();
+                if (current == null) current = computeAllWindows();
             }
         }
         return current.windows().get(window);
@@ -66,7 +67,8 @@ public class PublicStatsCache {
     public void refreshExpired() {
         if (ttlNanos <= 0) return;
         synchronized (refreshLock) {
-            if (entry != null && nanoClock.getAsLong() - entry.computedAtNanos() < ttlNanos) return;
+            Entry current = entry.get();
+            if (current != null && nanoClock.getAsLong() - current.computedAtNanos() < ttlNanos) return;
             try {
                 computeAllWindows();
             } catch (RuntimeException ex) {
@@ -75,11 +77,13 @@ public class PublicStatsCache {
         }
     }
 
-    private void computeAllWindows() {
+    private Entry computeAllWindows() {
         Map<String, Map<String, Object>> windows = new LinkedHashMap<>();
         for (String window : StatsService.PUBLIC_STATS_DAY_OPTIONS) {
             windows.put(window, Collections.unmodifiableMap(new LinkedHashMap<>(statsService.publicStats(window))));
         }
-        entry = new Entry(nanoClock.getAsLong(), Collections.unmodifiableMap(windows));
+        Entry computed = new Entry(nanoClock.getAsLong(), Collections.unmodifiableMap(windows));
+        entry.set(computed);
+        return computed;
     }
 }
