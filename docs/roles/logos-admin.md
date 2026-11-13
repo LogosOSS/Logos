@@ -247,6 +247,8 @@ A missing stream terminator or an earlier context limit makes the run fail.
 The **Timeline** shows absolute throughput in output tokens per second (tok/s).
 The solid line includes complete slower runs and repeated baselines.
 The dashed line shows the freshly measured production baseline of each round.
+The visible legend identifies square baselines, circular trials and outlined points that fail automatic selection checks.
+Each point is one complete benchmark run. A filled point does not confirm production deployment.
 Each point keeps its actual measurement date and configuration.
 The percentage change compares each measurement with its captured baseline from the same round.
 The chart separates datasets, providers and captured test settings. Worker releases can share a measurement history.

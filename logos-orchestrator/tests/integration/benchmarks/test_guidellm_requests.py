@@ -46,6 +46,11 @@ def server():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             received.append((self.path, body, dict(self.headers)))
+            if self.path.startswith("/provider-error/"):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"Private prompt and secret-key echoed by provider")
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
@@ -140,6 +145,31 @@ async def test_guidellm_measures_complete_frozen_requests_and_all_latency_metric
 
 
 @pytest.mark.asyncio
+async def test_guidellm_measures_all_fifty_contextual_coding_requests(server):
+    target, received = server
+    corpus = json.loads(Path(engine.__file__).with_name("dev_coding_workload.json").read_text(encoding="utf-8"))
+    snapshot = {
+        "id": "a" * 64,
+        "request_count": 50,
+        "requests": [{"source_log_id": row["id"], "body": row["body"]} for row in corpus],
+    }
+    report = await engine.measure_frozen_requests(
+        snapshot=snapshot, target=target, model="test-model", api_key=None, request_headers={}, concurrency=4
+    )
+    assert len(received) == 50
+    by_seed = {body["seed"]: body for _, body, _ in received}
+    for row in corpus:
+        assert by_seed[row["id"]] == {
+            **row["body"],
+            "model": "test-model",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+    samples = report["benchmarks"][0]["metrics"]["replay_samples"]
+    assert [sample["source_log_id"] for sample in samples] == list(range(1, 51))
+
+
+@pytest.mark.asyncio
 async def test_guidellm_rejects_a_cohort_with_a_truncated_response(server):
     target, received = server
     snapshot = {
@@ -152,7 +182,7 @@ async def test_guidellm_rejects_a_cohort_with_a_truncated_response(server):
             }
         ],
     }
-    with pytest.raises(RuntimeError, match="did not complete every frozen input"):
+    with pytest.raises(RuntimeError, match="did not complete every frozen input") as failure:
         await engine.measure_frozen_requests(
             snapshot=snapshot,
             target=target + "/reject",
@@ -162,6 +192,57 @@ async def test_guidellm_rejects_a_cohort_with_a_truncated_response(server):
             concurrency=1,
         )
     assert len(received) == 1
+    assert "successful=0/1, errored=1" in str(failure.value)
+    assert "source_log_id=7" in str(failure.value)
+    assert "output/context limit" in str(failure.value)
+
+
+@pytest.mark.asyncio
+async def test_provider_failures_expose_counts_without_provider_text_or_credentials(server):
+    target, received = server
+    snapshot = {
+        "id": "a" * 64,
+        "request_count": 1,
+        "requests": [{"source_log_id": 7, "body": {"messages": [{"role": "user", "content": "Private prompt"}]}}],
+    }
+    with pytest.raises(RuntimeError) as failure:
+        await engine.measure_frozen_requests(
+            snapshot=snapshot,
+            target=target + "/provider-error",
+            model="test-model",
+            api_key="secret-key",
+            request_headers={},
+            concurrency=1,
+        )
+    assert len(received) == 1
+    message = str(failure.value)
+    assert "successful=0/1, errored=1" in message
+    assert "inference endpoint returned HTTP 400" in message
+    assert "Private prompt" not in message and "secret-key" not in message and target not in message
+
+
+def test_unrecognized_failure_details_are_not_copied_into_the_summary():
+    from types import SimpleNamespace
+
+    benchmark = SimpleNamespace(
+        requests=SimpleNamespace(
+            errored=[SimpleNamespace(info=SimpleNamespace(error="Private prompt secret-key"))], incomplete=[]
+        )
+    )
+    message = engine.incomplete_measurement(benchmark, 50, 3)
+    assert "successful=3/50, errored=1, incomplete=0" in message
+    assert "details withheld" in message
+    assert "Private prompt" not in message and "secret-key" not in message
+
+
+def test_unknown_finish_reasons_do_not_enter_safe_diagnostics():
+    handler = engine.FrozenRequestHandler({"source_log_id": 7, "body": {}})
+    for event in chat_events(reason="Private prompt secret-key"):
+        handler.add_streaming_line("data: " + json.dumps(event))
+    handler.add_streaming_line("data: [DONE]")
+    response = handler.compile_streaming(engine.GenerationRequest(), engine.GenerationRequestArguments())
+    with pytest.raises(engine.FrozenResponseError, match="source_log_id=7; reason=finish_reason"):
+        handler.post_validation(response)
 
 
 @pytest.mark.parametrize("operation,reason", [("chat/completions", "length"), ("messages", "max_tokens")])

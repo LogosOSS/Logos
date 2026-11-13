@@ -79,6 +79,8 @@ It then gives the other admitted pair its turn.
 Further rounds use the same saved inputs and refine the candidate until 08:00.
 The daily quota limits distinct pairs, not rounds.
 A failed baseline or a round without successful variants does not schedule another round.
+If the baseline fails, the scheduler stops the remaining variants and restores the worker.
+The round has status `failed` because the variants have no valid comparison baseline.
 Disabling a schedule stops further rounds. Pending recovery always takes priority.
 
 ## Time and Failure Policy
@@ -171,6 +173,9 @@ GuideLLM measures every configuration on the complete snapshot with 4 concurrent
 Each request retains its temperature, tools and output limits.
 If the source omits an output limit, then Logos adds no output limit.
 Worker context limits still apply. A truncated or incomplete response fails the configuration.
+Failure details show successful, errored and incomplete request counts.
+Known response failures also show the source request ID and a fixed error description.
+HTTP failures show the status code. Provider error text, request content and credentials remain excluded.
 GuideLLM measures throughput, request latency, TTFT and TPOT.
 The result distributions include the maximum observation, shown as p100.
 The saved results also contain token counts and completion reasons.
@@ -260,6 +265,8 @@ The **Performance** tab contains the **Timeline** section.
 The vertical axis shows throughput in output tokens per second (tok/s).
 The solid line shows complete measurements, including slower runs and repeated baselines.
 The dashed line shows the measured production baseline of each round.
+The visible legend identifies square baselines, circular trials and outlined points that fail selection checks.
+Each point represents a complete benchmark run. It does not represent one request or confirm production deployment.
 Each new round measures the current production settings first, including previously adopted improvements.
 Each point keeps its measurement date and configuration. Its percentage change uses the captured baseline from the same round.
 Outlined points fail automatic selection checks. They remain visible so that the chart shows measurement variation.
@@ -270,9 +277,17 @@ Expand **Currently deployed → Configuration & selection details** to inspect c
 A completed eligible winner is saved before the next trial starts.
 Recovery can apply this saved winner if a later trial is interrupted. Disabling the schedule cancels pending adoption.
 These measurements do not establish statistical significance.
-The Dev coding pilot uses 50 stored synthetic prompts with natural output lengths.
-Each replay uses the same prompts, seeds, temperature and concurrent request count.
+The Dev coding pilot uses 50 stored synthetic coding conversations with natural output lengths.
+Ten scenarios contain code, schemas, incident logs and specific change requests.
+They cover leases, permissions, caching, pagination, streaming, billing, webhooks, uploads, recovery and dependency scheduling.
+Forty requests contain an earlier analysis and a follow-up question. Ten requests start a conversation.
+The inputs contain approximately 1,070–1,296 Qwen tokens per request, including the chat template.
+These counts use the model tokenizer. Deployed counts can differ with another template.
+The corpus is `logos-orchestrator/src/logos/benchmarks/dev_coding_workload.json`.
+Each replay uses the same inputs, seeds and concurrent request count.
+Requests use temperature `0.2` and repetition penalty `1.05`. They contain no `ignore_eos` or explicit output limit.
 The model can end each answer naturally. Logos does not force a fixed output length.
+The corpus contains no copied production requests.
 This pilot does not reproduce the full production request distribution or guarantee a standard deviation below 2%.
 Use repeated measurements and a separate evaluation dataset before drawing performance conclusions.
 

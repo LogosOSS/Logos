@@ -16,6 +16,7 @@
  * Without arguments, shots marked `needs` are left out: the seed does not
  * create their example state, and the committed PNG stays in place.
  * OUT_DIR writes the PNGs to another folder instead of overwriting static/img/.
+ * LOGOS_SCREENSHOT_WIDTH overrides the viewport width for mobile PR screenshots.
  * The nightly shots change the schedule of llama-3.1-8b-instruct on Docs Local
  * Worker. Use only the isolated documentation stack.
  */
@@ -29,6 +30,7 @@ const DB_CONTAINER = process.env.LOGOS_DB_CONTAINER || "doks-db";
 const IMG = path.join(__dirname, "..", "static", "img");
 const OUT = process.env.OUT_DIR || IMG;
 const ONLY = process.argv.slice(2);
+const WIDTH = Number(process.env.LOGOS_SCREENSHOT_WIDTH || 1440);
 
 const ADMIN = "tobias.wasner";
 const APP_ADMIN = "alexandra.szuminska";
@@ -60,7 +62,7 @@ function lookupIds() {
 
 async function login(browser, user, dark = false) {
   const ctx = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
+    viewport: { width: WIDTH, height: 900 },
     deviceScaleFactor: 2,
     colorScheme: dark ? "dark" : "light",
     reducedMotion: "reduce",
