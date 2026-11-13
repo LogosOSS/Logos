@@ -56,7 +56,7 @@ E[wait] = state_overhead + queue_wait
 queue_wait = (queue_depth / effective_parallel) × generation_time
 ```
 
-For queue-wait estimation, `effective_parallel` sums the reported full-context concurrency (`num_parallel`) of loaded/running lanes. Each ready lane that has not reported a value contributes one; without a ready lane the estimate uses one. This is a conservative service estimate, not a measured throughput guarantee for short requests or an admission limit. Sleeping and starting lanes do not add service concurrency before they are ready; the existing state overhead still accounts for waking or loading. The loose in-flight ledger ceiling and stored `providers.parallel_capacity` never enter this queue-wait divisor.
+For queue-wait estimation, each loaded/running lane contributes `max(1, num_parallel, requests_running)` to `effective_parallel`. The full-context guarantee supplies a baseline; a higher observed running count shows that short requests already execute concurrently and must not be counted as backlog. `active_requests` includes accepted work that the engine has not started and never raises this divisor. Missing signals fall back to one per ready lane; without a ready lane the estimate uses one. This is a conservative service estimate, not a guaranteed maximum throughput or an admission limit. Sleeping and starting lanes do not add service concurrency before they are ready; the existing state overhead still accounts for waking or loading. The loose in-flight ledger ceiling and stored `providers.parallel_capacity` never enter this queue-wait divisor.
 
 ## 4. Infrastructure Tiers
 

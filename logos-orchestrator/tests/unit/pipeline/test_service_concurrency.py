@@ -11,7 +11,7 @@ from logos.queue.priority_queue import Priority
 from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
 
 
-def _lane(lane_id, parallel, *, active=0, state="loaded", model_name="model-a"):
+def _lane(lane_id, parallel, *, active=0, running=0, state="loaded", model_name="model-a"):
     return {
         "lane_id": lane_id,
         "model": model_name,
@@ -20,7 +20,7 @@ def _lane(lane_id, parallel, *, active=0, state="loaded", model_name="model-a"):
         "num_parallel": parallel,
         "active_requests": active,
         "loaded_models": [{"name": model_name}] if state in ("loaded", "running") else [],
-        "backend_metrics": {"queue_waiting": 0, "requests_running": active, "gpu_cache_usage_percent": 50},
+        "backend_metrics": {"queue_waiting": 0, "requests_running": running, "gpu_cache_usage_percent": 50},
     }
 
 
@@ -57,12 +57,14 @@ def _scheduler(monkeypatch, lanes_by_provider, configured=20, model_ids=None):
 async def test_congested_worker_does_not_win_on_its_loose_ledger_ceiling(monkeypatch, configured):
     scheduler, facade, queue = _scheduler(
         monkeypatch,
-        {10: [_lane("busy", 1, active=8)], 20: [_lane("faster", 4, model_name="model-b")]},
+        {10: [_lane("busy", 1, active=1, running=1)], 20: [_lane("faster", 4, model_name="model-b")]},
         configured,
         model_ids={20: 2},
     )
     for index in range(2):
-        queue.enqueue(f"queued-{index}", 2, priority=Priority.NORMAL)
+        queue.enqueue(f"queued-a-{index}", 1, priority=Priority.NORMAL)
+    for index in range(3):
+        queue.enqueue(f"queued-b-{index}", 2, priority=Priority.NORMAL)
 
     deployments = [
         {"model_id": model_id, "provider_id": provider_id, "type": "logosnode"}
@@ -73,13 +75,13 @@ async def test_congested_worker_does_not_win_on_its_loose_ledger_ceiling(monkeyp
     )
 
     # Both workers can admit: ranking, rather than a capacity refusal, must
-    # pick the faster peer. A 200-slot divisor would erase all seven rounds
-    # of active overflow on worker 10 and rank it ahead of worker 20's queue.
+    # pick the faster peer. A 200-slot divisor would turn the real queue waits
+    # into 0.03s and 0.045s, incorrectly preferring the slower worker 10.
     assert facade.get_parallel_capacity(1, 10) == (200, "runtime")
     assert facade.evaluate_admission(1, 10).can_admit is True
     assert facade.evaluate_admission(2, 20).can_admit is True
-    assert scheduler._estimate_ettft(1, 10, "logosnode").queue_wait_s == pytest.approx(21.0)
-    assert scheduler._estimate_ettft(2, 20, "logosnode").queue_wait_s == pytest.approx(1.5)
+    assert scheduler._estimate_ettft(1, 10, "logosnode").queue_wait_s == pytest.approx(6.0)
+    assert scheduler._estimate_ettft(2, 20, "logosnode").queue_wait_s == pytest.approx(2.25)
 
     result = await scheduler.schedule(request)
 
@@ -88,13 +90,36 @@ async def test_congested_worker_does_not_win_on_its_loose_ledger_ceiling(monkeyp
     assert result.was_queued is False
 
 
+def test_observed_short_request_concurrency_is_not_backlog(monkeypatch):
+    scheduler, facade, _queue = _scheduler(monkeypatch, {10: [_lane("busy", 1, active=8, running=8)]})
+
+    assert scheduler._estimate_ettft(1, 10, "logosnode").queue_wait_s == 0.0
+    assert facade.evaluate_admission(1, 10).can_admit is True
+
+
+def test_unabsorbed_active_requests_still_contribute_to_estimated_wait(monkeypatch):
+    scheduler, _facade, _queue = _scheduler(monkeypatch, {10: [_lane("busy", 1, active=8, running=1)]})
+
+    assert scheduler._estimate_ettft(1, 10, "logosnode").queue_wait_s == pytest.approx(21.0)
+
+
+@pytest.mark.parametrize("running", [None, 0, float("nan"), float("inf"), float("-inf"), -1, "invalid"])
+def test_unusable_running_metric_falls_back_to_reported_guarantee(monkeypatch, running):
+    scheduler, _facade, queue = _scheduler(monkeypatch, {10: [_lane("lane", 4, running=running)]})
+    queue.enqueue("queued", 1, priority=Priority.NORMAL)
+
+    assert scheduler._estimate_ettft(1, 10, "logosnode").queue_wait_s == pytest.approx(0.75)
+
+
 @pytest.mark.parametrize(
     ("lanes", "expected_parallel"),
     [
         ([_lane("a", 2), _lane("b", 4, state="running")], 6),
+        ([_lane("a", 2, active=5, running=5), _lane("b", 4, active=6, running=6)], 11),
         ([_lane("a", 2), _lane("sleeping", 100, state="sleeping"), _lane("starting", 100, state="starting")], 2),
         ([_lane("a", 2), _lane("stopped", 100, state="stopped"), _lane("failed", 100, state="error")], 2),
         ([_lane("unreported", None)], 1),
+        ([_lane("unreported-guarantee", None, active=3, running=3)], 3),
         ([_lane("unreported-a", 0), _lane("unreported-b", 0)], 2),
         ([_lane("sleeping", 100, state="sleeping")], 1),
     ],

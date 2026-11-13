@@ -826,14 +826,20 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 with perf_trace.phase(request_id, "schedule.capacity"):
                     with perf_trace.phase(request_id, "schedule.capacity.par"):
                         # Queue wait needs service concurrency, not the loose
-                        # in-flight ledger ceiling. Full-context guarantees
-                        # give a conservative estimate; short requests may run
-                        # above it, and admission remains governed separately
-                        # by live KV/queue signals and the per-report budget.
+                        # in-flight ledger ceiling. Honor observed running
+                        # concurrency when short requests exceed the full-
+                        # context guarantee. Active requests include work the
+                        # engine has not started, so cannot raise this divisor.
+                        # Admission still uses live KV/queue signals and the
+                        # per-report budget independently.
                         effective_parallel = max(
                             1,
                             sum(
-                                max(1, lane.num_parallel)
+                                max(
+                                    1,
+                                    lane.num_parallel,
+                                    int(lane.requests_running) if math.isfinite(lane.requests_running) else 0,
+                                )
                                 for lane in view.lanes
                                 if lane.runtime_state in ("loaded", "running")
                             ),
