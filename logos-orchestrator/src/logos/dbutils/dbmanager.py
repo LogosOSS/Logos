@@ -1139,11 +1139,20 @@ class DBManager:
         poll. ``api_key`` is the provider-level resource key.
         """
         rows = self.session.execute(text("""
-                SELECT id, name, base_url, api_key
+                SELECT id, name, base_url, api_key, cloud_provider_type
                 FROM providers
                 WHERE provider_type = 'cloud' AND cloud_provider_type = 'azure'
                 """)).fetchall()
-        return [{"id": r.id, "name": r.name, "base_url": r.base_url, "api_key": r.api_key} for r in rows]
+        return [
+            {
+                "id": r.id,
+                "name": r.name,
+                "base_url": r.base_url,
+                "api_key": r.api_key,
+                "cloud_provider_type": str(r.cloud_provider_type),
+            }
+            for r in rows
+        ]
 
     def sync_azure_deployments(self, provider_id: int, deployments: list[Dict[str, str]]) -> Dict[str, Any]:
         """Auto-sync the live Azure deployment list into the DB.
@@ -3123,6 +3132,7 @@ class DBManager:
         batch_deployment: Optional[str] = None,
         detail: str = "",
         batch_deployment_ids: Optional[List[str]] = None,
+        checked_at: Optional[datetime.datetime] = None,
     ) -> None:
         """Store what probing the model's deployments for Batch found.
 
@@ -3130,6 +3140,8 @@ class DBManager:
         accepted, which forwarded batch files are rewritten to; it is only kept
         for an eligible model. ``batch_deployment_ids`` are all deployments the
         Batch API accepted; none of them may serve interactive requests.
+        ``checked_at`` defaults to now; the probe passes an earlier time to have
+        the next sync probe the model again.
         """
         ids = sorted(set(batch_deployment_ids or ([batch_deployment] if batch_deployment else [])))
         self.session.execute(
@@ -3153,7 +3165,7 @@ class DBManager:
                 "deployment": (batch_deployment or None) if eligible else None,
                 "ids": json.dumps(ids if eligible else []),
                 "detail": (detail or "")[:500],
-                "now": datetime.datetime.now(datetime.timezone.utc),
+                "now": checked_at or datetime.datetime.now(datetime.timezone.utc),
             },
         )
         self.session.commit()

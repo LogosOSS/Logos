@@ -139,7 +139,14 @@ class _ProbeDB:
         return {}
 
     def record_model_batch_probe(
-        self, provider_id, model_id, eligible, batch_deployment=None, detail="", batch_deployment_ids=None
+        self,
+        provider_id,
+        model_id,
+        eligible,
+        batch_deployment=None,
+        detail="",
+        batch_deployment_ids=None,
+        checked_at=None,
     ):
         self.records.append((provider_id, model_id, eligible, batch_deployment))
         self.ids.append(list(batch_deployment_ids or []))
@@ -282,3 +289,76 @@ async def test_a_batch_deployment_found_by_the_probe_leaves_interactive_routing_
     assert len(db.upserts) == 2
     assert "/deployments/gpt-4.1/" in db.upserts[0][0]["endpoint"]
     assert "/deployments/gpt-41-std/" in db.upserts[1][0]["endpoint"]
+
+
+async def test_a_provider_row_as_the_sync_reads_it_is_probed_on_the_azure_batch_surface(monkeypatch):
+    # get_azure_providers rows: the probe must address the resource-level
+    # Azure Batch API with the api-key header, whatever else the row carries.
+    db = _ProbeDB()
+    db.get_provider_model_deployments = lambda provider_id: [{"model_id": 25, "model_name": "gpt-4.1"}]
+    monkeypatch.setitem(probe_provider.__globals__, "DBManager", lambda: db)
+    seen = []
+
+    def handler(request):
+        seen.append((str(request.url), request.headers.get("api-key"), request.headers.get("authorization")))
+        if request.url.path.endswith("/files"):
+            return httpx.Response(200, json={"id": "file-probe"})
+        if request.url.path.endswith("/batches"):
+            return httpx.Response(400, json=SKU_REFUSAL)
+        return httpx.Response(200, json={})
+
+    row = {"id": 8, "name": "azure", "base_url": PROVIDER["base_url"], "api_key": "az-key"}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await probe_provider(row, [{"id": "gpt-41", "model": "gpt-4.1", "status": "succeeded"}], client)
+
+    assert seen[0] == ("https://res.openai.azure.com/openai/v1/files", "az-key", None)
+    assert db.records == [(8, 25, False, None)]
+
+
+async def test_a_timed_out_reprobe_keeps_a_confirmed_batch_deployment(monkeypatch):
+    db = _ProbeDB()
+    db.get_provider_model_deployments = lambda provider_id: [{"model_id": 25, "model_name": "gpt-4.1"}]
+    db.get_batch_model_support = lambda provider_id: {
+        25: {
+            "eligible": True,
+            "batch_deployment": "a-batch",
+            "batch_deployment_ids": ["a-batch", "gpt-4.1"],
+            "source": "probe",
+            "checked_at": datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+        }
+    }
+    checked = []
+    original_record = db.record_model_batch_probe
+
+    def record(*args, checked_at=None, **kwargs):
+        checked.append(checked_at)
+        return original_record(*args, **kwargs)
+
+    db.record_model_batch_probe = record
+    monkeypatch.setitem(probe_provider.__globals__, "DBManager", lambda: db)
+
+    async def fake_probe(provider, deployment_id, operation, client):
+        return {"a-batch": (True, "accepted"), "gpt-4.1": (None, "timeout"), "gpt-41-std": (False, "sku")}[
+            deployment_id
+        ]
+
+    monkeypatch.setitem(probe_provider.__globals__, "probe_deployment", fake_probe)
+    raw = [
+        {"id": "a-batch", "model": "gpt-4.1", "status": "succeeded"},
+        {"id": "gpt-4.1", "model": "gpt-4.1", "status": "succeeded"},
+        {"id": "gpt-41-std", "model": "gpt-4.1", "status": "succeeded"},
+    ]
+    async with httpx.AsyncClient() as client:
+        await probe_provider(PROVIDER, raw, client)
+
+    assert db.records == [(8, 25, True, "a-batch")]
+    assert db.ids == [["a-batch", "gpt-4.1"]]
+    # Still due for the next sync because one deployment gave no answer.
+    assert checked[0] is not None
+    assert needs_probe(
+        {"source": "probe", "eligible": True, "batch_deployment_ids": db.ids[0], "checked_at": checked[0]},
+        raw,
+        datetime.datetime.now(datetime.timezone.utc),
+    )
+    planned = plan_sync("https://res.openai.azure.com", raw, set(db.ids[0]))
+    assert "/deployments/gpt-41-std/" in planned[0]["endpoint"]

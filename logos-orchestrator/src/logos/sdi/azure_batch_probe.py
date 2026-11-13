@@ -203,6 +203,9 @@ async def probe_provider(
             by_model.setdefault(str(dep["model"]), []).append(dep)
     if not by_model:
         return 0
+    # Only Azure deployments are probed; the Batch URL and the api-key header
+    # depend on the provider being addressed as Azure.
+    provider = {**provider, "cloud_provider_type": "azure"}
 
     with DBManager() as db:
         model_ids = {
@@ -221,7 +224,7 @@ async def probe_provider(
         # Every deployment is probed, not just until the first acceptance: each
         # confirmed batch deployment has to be kept out of interactive routing.
         accepted: List[str] = []
-        inconclusive = False
+        inconclusive: List[str] = []
         details: List[str] = []
         for dep in sorted(deps, key=lambda d: str(d["id"])):
             answer, detail = await probe_deployment(provider, str(dep["id"]), operation, client)
@@ -229,20 +232,32 @@ async def probe_provider(
             if answer:
                 accepted.append(str(dep["id"]))
             elif answer is None:
-                inconclusive = True
+                inconclusive.append(str(dep["id"]))
         probed += 1
+        # A deployment confirmed before whose probe gave no clear answer now
+        # stays a batch deployment; dropping it would hand it back to
+        # interactive routing on a timeout.
+        prior = support.get(model_id) or {}
+        prior_ids = set(prior.get("batch_deployment_ids") or []) if prior.get("eligible") else set()
+        if prior.get("eligible") and prior.get("batch_deployment"):
+            prior_ids.add(str(prior["batch_deployment"]))
+        accepted += [dep_id for dep_id in inconclusive if dep_id in prior_ids]
         eligible: Optional[bool] = True if accepted else (None if inconclusive else False)
         if eligible is None:
             # Nothing conclusive: keep what was known and try again next pass.
             logger.info("Batch probe of %s on %s was inconclusive: %s", model_name, provider.get("name"), details)
             continue
         with DBManager() as db:
+            preferred = prior.get("batch_deployment") if prior.get("batch_deployment") in accepted else None
             db.record_model_batch_probe(
                 int(provider["id"]),
                 model_id,
                 bool(eligible),
-                accepted[0] if accepted else None,
+                preferred or (sorted(accepted)[0] if accepted else None),
                 " | ".join(details),
                 batch_deployment_ids=accepted,
+                # Some deployments gave no clear answer: keep the model due
+                # for the next sync instead of trusting this pass for the TTL.
+                checked_at=now - PROBE_TTL if inconclusive else None,
             )
     return probed
