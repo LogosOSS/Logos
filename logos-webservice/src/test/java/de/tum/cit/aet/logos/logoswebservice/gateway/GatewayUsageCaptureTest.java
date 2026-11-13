@@ -14,8 +14,8 @@ import org.junit.jupiter.api.Test;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
- * The capture sits in the client's response path, so the bytes it forwards
- * must stay byte-identical no matter what it manages to parse out of them.
+ * Without a pricer the capture must forward bytes verbatim. With a pricer,
+ * settled usage frames gain {@code cost} / {@code cost_currency}.
  */
 class GatewayUsageCaptureTest {
 
@@ -25,9 +25,15 @@ class GatewayUsageCaptureTest {
 
     /** Feed the payload through in fixed-size pieces, as a network read would. */
     private Result stream(String contentType, String payload, int chunkSize) throws IOException {
+        return stream(contentType, payload, chunkSize, null);
+    }
+
+    private Result stream(String contentType, String payload, int chunkSize, GatewayCostPricer pricer)
+            throws IOException {
         ByteArrayOutputStream sink = new ByteArrayOutputStream();
         byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
-        GatewayUsageCapture capture = new GatewayUsageCapture(sink, mapper, contentType);
+        GatewayUsageCapture capture = new GatewayUsageCapture(
+            sink, mapper, contentType, false, Instant::now, pricer);
         for (int i = 0; i < bytes.length; i += chunkSize) {
             capture.write(bytes, i, Math.min(chunkSize, bytes.length - i));
         }
@@ -310,5 +316,109 @@ class GatewayUsageCaptureTest {
 
     private boolean carries(String event) throws IOException {
         return GatewayUsageCapture.carriesContent(mapper.readTree(event));
+    }
+
+    @Test
+    void jsonResponse_withPricer_injectsCostAndCurrency() throws IOException {
+        String body = """
+            {"id":"chatcmpl-1","choices":[{"message":{"content":"hello"}}],\
+            "usage":{"prompt_tokens":120,"completion_tokens":30}}""";
+
+        Result result = stream("application/json", body, 8,
+            (usage, tier) -> java.util.OptionalDouble.of(0.00012345));
+
+        assertThat(result.usage()).containsEntry("prompt_tokens", 120L);
+        var root = mapper.readTree(result.forwarded());
+        assertThat(root.path("usage").path("cost").asDouble()).isEqualTo(0.00012345);
+        assertThat(root.path("usage").path("cost_currency").asText()).isEqualTo("USD");
+        assertThat(root.path("choices").path(0).path("message").path("content").asText()).isEqualTo("hello");
+    }
+
+    @Test
+    void jsonResponse_whenPricerReturnsEmpty_forwardsWithoutCost() throws IOException {
+        String body = "{\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}";
+
+        Result result = stream("application/json", body, 4,
+            (usage, tier) -> java.util.OptionalDouble.empty());
+
+        assertThat(result.forwarded()).isEqualTo(body);
+        assertThat(mapper.readTree(result.forwarded()).path("usage").has("cost")).isFalse();
+    }
+
+    @Test
+    void sseStream_withPricer_enrichesOnlySettledUsageChunk() throws IOException {
+        String body = """
+            data: {"choices":[{"delta":{"content":"hi"}}]}
+
+            data: {"choices":[],"usage":{"prompt_tokens":42,"completion_tokens":8}}
+
+            data: [DONE]
+
+            """;
+
+        Result result = stream(SSE, body, 7,
+            (usage, tier) -> java.util.OptionalDouble.of(0.0042));
+
+        assertThat(result.forwarded()).contains("\"cost\":0.0042");
+        assertThat(result.forwarded()).contains("\"cost_currency\":\"USD\"");
+        assertThat(result.forwarded()).contains("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}");
+        assertThat(result.forwarded()).contains("data: [DONE]");
+        // Content deltas must not pick up a cost line.
+        assertThat(result.forwarded()).doesNotContain("\"content\":\"hi\",\"cost\"");
+    }
+
+    @Test
+    void sseStream_outputOnlyUsage_isNotPriced() throws IOException {
+        String body = "data: {\"usage\":{\"completion_tokens\":9}}\n\n";
+
+        Result result = stream(SSE, body, 3,
+            (usage, tier) -> java.util.OptionalDouble.of(1.0));
+
+        assertThat(GatewayUsageCapture.usageIsSettled(mapper.readTree("{\"completion_tokens\":9}"))).isFalse();
+        assertThat(result.forwarded()).doesNotContain("\"cost\"");
+    }
+
+    @Test
+    void responsesApiStream_withPricer_enrichesNestedResponseUsage() throws IOException {
+        String body = """
+            event: response.completed
+            data: {"type":"response.completed","response":{"usage":{"input_tokens":64,"output_tokens":12}}}
+
+            """;
+
+        Result result = stream(SSE, body, 13,
+            (usage, tier) -> java.util.OptionalDouble.of(0.00083));
+
+        var event = mapper.readTree(result.forwarded().lines()
+            .filter(l -> l.startsWith("data:"))
+            .map(l -> l.substring(5).strip())
+            .findFirst()
+            .orElseThrow());
+        assertThat(event.path("response").path("usage").path("cost").asDouble()).isEqualTo(0.00083);
+        assertThat(event.path("response").path("usage").path("cost_currency").asText()).isEqualTo("USD");
+    }
+
+    @Test
+    void jsonBodyPastTheCaptureCap_withPricer_stillForwardsWholeBody() throws IOException {
+        String filler = "x".repeat(GatewayUsageCapture.JSON_CAPTURE_LIMIT_BYTES + 1024);
+        String body = "{\"pad\":\"" + filler + "\",\"usage\":{\"prompt_tokens\":10}}";
+
+        Result result = stream("application/json", body, 64 * 1024,
+            (usage, tier) -> java.util.OptionalDouble.of(9.0));
+
+        assertThat(result.forwarded()).isEqualTo(body);
+        assertThat(result.usage()).isEmpty();
+        assertThat(result.forwarded()).doesNotContain("\"cost\"");
+    }
+
+    @Test
+    void usageIsSettled_requiresAnInputSideSignal() {
+        assertThat(GatewayUsageCapture.usageIsSettled(mapper.createObjectNode().put("prompt_tokens", 1)))
+            .isTrue();
+        assertThat(GatewayUsageCapture.usageIsSettled(mapper.createObjectNode().put("total_tokens", 1)))
+            .isTrue();
+        assertThat(GatewayUsageCapture.usageIsSettled(mapper.createObjectNode().put("completion_tokens", 1)))
+            .isFalse();
+        assertThat(GatewayUsageCapture.usageIsSettled(null)).isFalse();
     }
 }

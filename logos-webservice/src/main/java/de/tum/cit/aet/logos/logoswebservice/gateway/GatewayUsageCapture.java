@@ -6,19 +6,24 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Map;
+import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.function.Supplier;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
  * Sniffs the token usage and the service tier out of a cloud response while it
  * streams to the client.
  *
- * <p>The client's bytes are never delayed or altered: every write passes
- * straight through to the delegate and the copy is what gets inspected. Two
- * shapes matter, and each is bounded so a large response cannot grow the heap
- * with the body it is forwarding:
+ * <p>Without a {@link GatewayCostPricer} the client's bytes are never delayed
+ * or altered: every write passes straight through to the delegate and the copy
+ * is what gets inspected. With a pricer, settled usage frames get
+ * {@code cost} / {@code cost_currency} injected (JSON held until close; SSE
+ * rewritten per completed line). Two shapes matter, and each is bounded so a
+ * large response cannot grow the heap with the body it is forwarding:
  *
  * <ul>
  *   <li><b>SSE</b> — only the current line is buffered. Each {@code data:} line
@@ -33,6 +38,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * <p>With {@code retainBody} the JSON buffer is kept after parsing so a key
  * configured for full request logging can store the response. It stays off
  * otherwise, so a body no one will read is dropped as soon as its usage is out.
+ * When a pricer rewrites the body, the retained copy is the enriched one the
+ * client received.
  */
 final class GatewayUsageCapture extends OutputStream {
 
@@ -46,6 +53,9 @@ final class GatewayUsageCapture extends OutputStream {
     /** One SSE event that exceeds this is skipped rather than buffered. */
     static final int SSE_LINE_LIMIT_BYTES = 256 * 1024;
 
+    private static final Set<String> SETTLED_USAGE_KEYS = Set.of(
+        "prompt_tokens", "input_tokens", "inputTokens", "promptTokens", "total_tokens");
+
     private OutputStream delegate;
     private boolean finalUsage;
     private boolean terminalEvent;
@@ -56,9 +66,12 @@ final class GatewayUsageCapture extends OutputStream {
     private final boolean sse;
     private final boolean retainBody;
     private final Supplier<Instant> clock;
+    private final GatewayCostPricer pricer;
 
     private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
     private boolean bufferOverflowed;
+    /** After a JSON capture overflow with a pricer, remaining bytes pass through. */
+    private boolean jsonPassthrough;
     private Map<String, Long> usage = Map.of();
     private String serviceTier;
     private byte[] capturedBody;
@@ -68,7 +81,7 @@ final class GatewayUsageCapture extends OutputStream {
     private Instant chunkArrivedAt;
 
     GatewayUsageCapture(OutputStream delegate, ObjectMapper objectMapper, String upstreamContentType) {
-        this(delegate, objectMapper, upstreamContentType, false, Instant::now);
+        this(delegate, objectMapper, upstreamContentType, false, Instant::now, null);
     }
 
     /**
@@ -78,11 +91,22 @@ final class GatewayUsageCapture extends OutputStream {
      */
     GatewayUsageCapture(OutputStream delegate, ObjectMapper objectMapper,
                         String upstreamContentType, boolean retainBody, Supplier<Instant> clock) {
+        this(delegate, objectMapper, upstreamContentType, retainBody, clock, null);
+    }
+
+    /**
+     * @param pricer when non-null, injects {@code usage.cost} / {@code cost_currency}
+     *               onto settled usage before the client sees the bytes
+     */
+    GatewayUsageCapture(OutputStream delegate, ObjectMapper objectMapper,
+                        String upstreamContentType, boolean retainBody, Supplier<Instant> clock,
+                        GatewayCostPricer pricer) {
         this.delegate = delegate;
         this.clock = clock;
         this.objectMapper = objectMapper;
         this.sse = isEventStream(upstreamContentType);
         this.retainBody = retainBody;
+        this.pricer = pricer;
     }
 
     static boolean isEventStream(String contentType) {
@@ -133,14 +157,7 @@ final class GatewayUsageCapture extends OutputStream {
 
     @Override
     public void write(int b) throws IOException {
-        chunkArrivedAt = clock.get();
-        markFirstByte(1);
-        capture(new byte[] {(byte) b}, 0, 1);
-        try {
-            delegate.write(b);
-        } catch (IOException e) {
-            throw new ClientDisconnectedException(e);
-        }
+        write(new byte[] {(byte) b}, 0, 1);
     }
 
     @Override
@@ -151,12 +168,16 @@ final class GatewayUsageCapture extends OutputStream {
         // this chunk is recorded as having arrived from the upstream.
         chunkArrivedAt = clock.get();
         markFirstByte(len);
-        capture(b, off, len);
-        try {
-            delegate.write(b, off, len);
-        } catch (IOException e) {
-            throw new ClientDisconnectedException(e);
+        if (pricer != null && !sse) {
+            writeJsonEnriching(b, off, len);
+            return;
         }
+        if (pricer != null && sse) {
+            captureSseEnriching(b, off, len);
+            return;
+        }
+        capture(b, off, len);
+        writeToClient(b, off, len);
     }
 
     @Override
@@ -215,6 +236,41 @@ final class GatewayUsageCapture extends OutputStream {
         long completion = (completionCharacters + 3) / 4;
         return Map.of("prompt_tokens", prompt, "completion_tokens", completion,
             "total_tokens", prompt + completion, "usage_estimated", 1L);
+    }
+
+    private void writeToClient(byte[] b) throws IOException {
+        writeToClient(b, 0, b.length);
+    }
+
+    private void writeToClient(byte[] b, int off, int len) throws IOException {
+        if (len <= 0) {
+            return;
+        }
+        try {
+            delegate.write(b, off, len);
+        } catch (IOException e) {
+            throw new ClientDisconnectedException(e);
+        }
+    }
+
+    private void writeJsonEnriching(byte[] b, int off, int len) throws IOException {
+        if (jsonPassthrough) {
+            writeToClient(b, off, len);
+            return;
+        }
+        if (bufferOverflowed) {
+            return;
+        }
+        if (buffer.size() + len > JSON_CAPTURE_LIMIT_BYTES) {
+            bufferOverflowed = true;
+            jsonPassthrough = true;
+            byte[] held = buffer.toByteArray();
+            buffer.reset();
+            writeToClient(held);
+            writeToClient(b, off, len);
+            return;
+        }
+        buffer.write(b, off, len);
     }
 
     private static long textLength(JsonNode node) {
@@ -280,7 +336,7 @@ final class GatewayUsageCapture extends OutputStream {
         }
     }
 
-    private void capture(byte[] b, int off, int len) {
+    private void capture(byte[] b, int off, int len) throws IOException {
         if (len <= 0) {
             return;
         }
@@ -303,7 +359,7 @@ final class GatewayUsageCapture extends OutputStream {
         buffer.write(b, off, len);
     }
 
-    private void captureSse(byte[] b, int off, int len) {
+    private void captureSse(byte[] b, int off, int len) throws IOException {
         for (int i = off; i < off + len; i++) {
             byte current = b[i];
             if (current == '\n') {
@@ -322,50 +378,94 @@ final class GatewayUsageCapture extends OutputStream {
         }
     }
 
-    private void finishSseLine() {
+    /**
+     * SSE with a pricer: emit each completed line (enriched when settled usage
+     * is present). Oversized lines pass through until the next newline.
+     */
+    private void captureSseEnriching(byte[] b, int off, int len) throws IOException {
+        for (int i = off; i < off + len; i++) {
+            byte current = b[i];
+            if (bufferOverflowed) {
+                writeToClient(new byte[] {current});
+                if (current == '\n') {
+                    bufferOverflowed = false;
+                }
+                continue;
+            }
+            if (current == '\n') {
+                finishSseLine();
+                continue;
+            }
+            if (buffer.size() >= SSE_LINE_LIMIT_BYTES) {
+                writeToClient(buffer.toByteArray());
+                buffer.reset();
+                bufferOverflowed = true;
+                writeToClient(new byte[] {current});
+                continue;
+            }
+            buffer.write(current);
+        }
+    }
+
+    private void finishSseLine() throws IOException {
         if (bufferOverflowed) {
             bufferOverflowed = false;
             buffer.reset();
+            if (pricer != null) {
+                writeToClient(new byte[] {'\n'});
+            }
             return;
         }
-        if (buffer.size() == 0) {
-            sseEventType = "";
-            return;
-        }
-        String line = buffer.toString(StandardCharsets.UTF_8);
+        byte[] lineBytes = buffer.toByteArray();
         buffer.reset();
+        if (lineBytes.length == 0) {
+            sseEventType = "";
+            if (pricer != null) {
+                writeToClient(new byte[] {'\n'});
+            }
+            return;
+        }
+        String line = new String(lineBytes, StandardCharsets.UTF_8);
+        byte[] toEmit = lineBytes;
         if (line.isBlank()) {
             sseEventType = "";
-            return;
-        }
-        if (line.startsWith("event:")) {
+        } else if (line.startsWith("event:")) {
             sseEventType = line.substring(6).strip();
             if (java.util.Set.of("response.failed", "response.error", "error").contains(sseEventType)) {
                 upstreamError = "Provider stream reported " + sseEventType;
                 // Wait for the data line before stopping the drain: it can carry usage.
             }
-            return;
+        } else {
+            if ("data: [DONE]".equals(line.strip())) {
+                terminalEvent = true;
+            }
+            JsonNode event = GatewayUsageExtractor.parseSseDataLine(objectMapper, line);
+            if (event != null) {
+                observeEvent(event);
+                if (firstTokenAt == null && carriesContent(event)) {
+                    firstTokenAt = chunkArrivedAt;
+                }
+                Map<String, Long> found = GatewayUsageExtractor.fromEnvelope(event);
+                if (!found.isEmpty()) {
+                    // Later events refine earlier ones (Responses API reports usage on
+                    // response.completed after incremental events).
+                    usage = found;
+                }
+                String tier = GatewayUsageExtractor.serviceTier(event);
+                if (tier != null) {
+                    serviceTier = tier;
+                }
+                if (pricer != null) {
+                    byte[] enriched = enrichSseDataLine(line, event);
+                    if (enriched != null) {
+                        toEmit = enriched;
+                    }
+                }
+            }
         }
-        if ("data: [DONE]".equals(line.strip())) {
-            terminalEvent = true;
-        }
-        JsonNode event = GatewayUsageExtractor.parseSseDataLine(objectMapper, line);
-        if (event == null) {
-            return;
-        }
-        observeEvent(event);
-        if (firstTokenAt == null && carriesContent(event)) {
-            firstTokenAt = chunkArrivedAt;
-        }
-        Map<String, Long> found = GatewayUsageExtractor.fromEnvelope(event);
-        if (!found.isEmpty()) {
-            // Later events refine earlier ones (Responses API reports usage on
-            // response.completed after incremental events).
-            usage = found;
-        }
-        String tier = GatewayUsageExtractor.serviceTier(event);
-        if (tier != null) {
-            serviceTier = tier;
+        if (pricer != null) {
+            writeToClient(toEmit);
+            writeToClient(new byte[] {'\n'});
         }
     }
 
@@ -408,8 +508,8 @@ final class GatewayUsageCapture extends OutputStream {
         return node.isArray() && !node.isEmpty();
     }
 
-    private void finishJson() {
-        if (bufferOverflowed || buffer.size() == 0) {
+    private void finishJson() throws IOException {
+        if (jsonPassthrough || bufferOverflowed || buffer.size() == 0) {
             return;
         }
         byte[] body = buffer.toByteArray();
@@ -423,8 +523,107 @@ final class GatewayUsageCapture extends OutputStream {
             }
             serviceTier = GatewayUsageExtractor.serviceTier(root);
         }
-        if (retainBody) {
-            capturedBody = body;
+        byte[] toWrite = body;
+        if (pricer != null && root instanceof ObjectNode objectRoot) {
+            byte[] enriched = enrichJsonObject(objectRoot);
+            if (enriched != null) {
+                toWrite = enriched;
+            }
         }
+        if (retainBody) {
+            capturedBody = toWrite;
+        }
+        if (pricer != null) {
+            writeToClient(toWrite);
+        }
+    }
+
+    /**
+     * Inject cost onto a settled usage object. Returns null when nothing changes.
+     */
+    private byte[] enrichJsonObject(ObjectNode root) {
+        ObjectNode target = root;
+        JsonNode nested = root.get("response");
+        if (nested instanceof ObjectNode nestedObject && nestedObject.has("usage")) {
+            target = nestedObject;
+        }
+        if (!usageIsSettled(target.get("usage"))) {
+            return null;
+        }
+        Map<String, Long> counts = GatewayUsageExtractor.fromEnvelope(root);
+        if (counts.isEmpty()) {
+            return null;
+        }
+        OptionalDouble priced = pricer.priceUsd(counts, serviceTier);
+        if (priced.isEmpty()) {
+            return null;
+        }
+        JsonNode usageNode = target.get("usage");
+        if (!(usageNode instanceof ObjectNode usageObject)) {
+            return null;
+        }
+        usageObject.put("cost", priced.getAsDouble());
+        usageObject.put("cost_currency", "USD");
+        try {
+            return objectMapper.writeValueAsBytes(root);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private byte[] enrichSseDataLine(String line, JsonNode event) {
+        if (!(event instanceof ObjectNode blob)) {
+            return null;
+        }
+        ObjectNode target = blob;
+        JsonNode nested = blob.get("response");
+        if (nested instanceof ObjectNode nestedObject) {
+            target = nestedObject;
+        }
+        if (!usageIsSettled(target.get("usage"))) {
+            return null;
+        }
+        Map<String, Long> counts = GatewayUsageExtractor.fromEnvelope(event);
+        if (counts.isEmpty()) {
+            return null;
+        }
+        String tier = GatewayUsageExtractor.serviceTier(event);
+        OptionalDouble priced = pricer.priceUsd(counts, tier != null ? tier : serviceTier);
+        if (priced.isEmpty()) {
+            return null;
+        }
+        JsonNode usageNode = target.get("usage");
+        if (!(usageNode instanceof ObjectNode usageObject)) {
+            return null;
+        }
+        usageObject.put("cost", priced.getAsDouble());
+        usageObject.put("cost_currency", "USD");
+        try {
+            String prefix = line.startsWith("data:") ? line.substring(0, 5) : "data:";
+            String spacing = line.length() > 5 && line.charAt(5) == ' ' ? " " : "";
+            // Preserve a trailing CR when the upstream used CRLF line endings.
+            String suffix = line.endsWith("\r") ? "\r" : "";
+            return (prefix + spacing + objectMapper.writeValueAsString(blob) + suffix)
+                .getBytes(StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /**
+     * True when this usage object settles the input side too — same gate as the
+     * orchestrator's streaming enricher, so a mid-stream output-only delta is
+     * not priced alone.
+     */
+    static boolean usageIsSettled(JsonNode usage) {
+        if (usage == null || !usage.isObject() || usage.isEmpty()) {
+            return false;
+        }
+        for (String key : SETTLED_USAGE_KEYS) {
+            if (usage.has(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

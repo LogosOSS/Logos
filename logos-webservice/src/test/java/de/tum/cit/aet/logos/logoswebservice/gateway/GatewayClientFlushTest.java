@@ -78,7 +78,7 @@ class GatewayClientFlushTest {
         GatewayDeployment deployment = new GatewayDeployment(
             1, "m", 10, "Cloud", "cloud", "openai", "http://127.0.0.1:" + upstream.getAddress().getPort(), null,
             "Authorization", "Bearer {}", "sk", "CLOUD_NOT_IN_EU_BY_US_PROVIDER", null);
-        GatewayCloudForwarder forwarder = new GatewayCloudForwarder(new ObjectMapper());
+        GatewayCloudForwarder forwarder = new GatewayCloudForwarder(new ObjectMapper(), null);
         forwarder.setStreamDrainTimeout(timeout);
         return forwarder.forward(deployment, "/v1/chat/completions", null, "POST", REQUEST,
             Map.of("content-type", List.of("application/json")), false,

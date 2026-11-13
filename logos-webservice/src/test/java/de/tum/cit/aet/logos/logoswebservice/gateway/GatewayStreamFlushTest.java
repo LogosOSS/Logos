@@ -93,7 +93,7 @@ class GatewayStreamFlushTest {
         when(authService.requireActiveKey(any())).thenReturn(key);
         when(cloudAccounting.admitAndReserve(any(), any(), any(), any(), any(), any())).thenReturn(1);
         controller = new InferenceGatewayController(true, authService, cloudAccounting,
-            new GatewayCloudForwarder(new ObjectMapper()), cloudRateLimiter,
+            new GatewayCloudForwarder(new ObjectMapper(), cloudAccounting), cloudRateLimiter,
             new GatewayOrchestratorProxy(upstreamBaseUrl()), new ObjectMapper());
 
         mvc = new AnnotationConfigWebApplicationContext();

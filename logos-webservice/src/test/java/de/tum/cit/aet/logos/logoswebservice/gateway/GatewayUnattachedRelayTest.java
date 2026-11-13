@@ -173,7 +173,7 @@ class GatewayUnattachedRelayTest {
     }
 
     private ResponseEntity<StreamingResponseBody> forward(ClientEnd clientEnd) throws IOException {
-        GatewayCloudForwarder forwarder = new GatewayCloudForwarder(new ObjectMapper());
+        GatewayCloudForwarder forwarder = new GatewayCloudForwarder(new ObjectMapper(), null);
         forwarder.setStreamDrainTimeout(Duration.ofMillis(250));
         if (clientEnd == ClientEnd.ATTACH_TIMEOUT) {
             forwarder.setRelayAttachTimeout(Duration.ofMillis(50));
