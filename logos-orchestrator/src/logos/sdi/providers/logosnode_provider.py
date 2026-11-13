@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import fields
@@ -307,12 +308,8 @@ class LogosNodeDataProvider:
         return result
 
     def get_runtime_debug_state(self) -> Dict[str, Any]:
-        if self._runtime_registry is None:
-            return {}
-
-        snapshot = self._runtime_registry.peek_runtime_snapshot(self.provider_id)
-        if not snapshot:
-            return {}
+        snapshot = self._peek_snapshot() or {}
+        runtime = snapshot.get("runtime") or {}
 
         provider_signals: Dict[str, Any] = {}
         sample_count = 0
@@ -329,6 +326,18 @@ class LogosNodeDataProvider:
                 provider_signals = scheduler_signals.get("provider") or {}
 
         return {
+            "session_id": snapshot.get("session_id"),
+            "runtime_revision": snapshot.get("runtime_revision"),
+            # Count-only pushes retain the timestamp of the last full engine
+            # observation; heartbeat and runtime_revision can advance without
+            # a new measurement and must not drive repeated agent ramp-ups.
+            "observed_at": runtime.get("timestamp"),
+            "online": self.is_online() if hasattr(self._runtime_registry, "is_provider_online") else False,
+            "cordoned": (
+                self._runtime_registry.is_cordoned(self.provider_id)
+                if hasattr(self._runtime_registry, "is_cordoned")
+                else False
+            ),
             "last_heartbeat": snapshot.get("last_heartbeat"),
             "capabilities_models": snapshot.get("capabilities_models") or [],
             "recent_sample_count": sample_count,
@@ -430,8 +439,9 @@ class LogosNodeDataProvider:
         context, and the slot count the lane pages show. Deliberately not
         what the scheduler dispatches against (see
         :meth:`_get_runtime_parallel_capacity`); it is the figure for a
-        consumer that must yield before the engine starts queueing, such as
-        the agent runner. Zero when no lane reports it yet.
+        diagnostic consumer comparing the full-context guarantee to observed
+        running work. It does not bound spare agent capacity. Zero when no
+        lane reports it yet.
         """
         total = 0
         for lane in self._routable_lanes(model_id) or []:
@@ -899,20 +909,13 @@ class LogosNodeDataProvider:
     # is no deployment for which a different number is right.
     BACKEND_QUEUE_PRESSURE_THRESHOLD = 0.0
 
-    # KV-cache utilisation (percent) at which a vLLM lane stops being a good
-    # forwarding target. Past this point vLLM preempts and recomputes running
-    # sequences, which both stalls them and evicts the prefix-cache blocks
-    # that make sticky routing worthwhile. A property of how vLLM behaves,
-    # not of any one deployment.
-    KV_CACHE_PRESSURE_PERCENT = 90.0
-
     def evaluate_admission(self, model_id: int) -> AdmissionDecision:
         """Should this worker be given another request for ``model_id`` now?
 
         Walks the model's routable lanes in the latest runtime snapshot and
-        applies the live vLLM signals: ``queue_waiting`` (the engine is
-        already parking work) and ``gpu_cache_usage_percent`` (it is about
-        to start preempting).
+        holds when ``queue_waiting`` shows that the engine is already
+        parking work. KV usage scales the dispatch step but does not prove
+        saturation: occupied cache alone never rejects a request.
 
         Deliberately *not* gated on ``requests_running`` against the lane's
         ``num_parallel``: that number is the concurrency vLLM guarantees at
@@ -920,21 +923,24 @@ class LogosNodeDataProvider:
         production lane runs 8 concurrent requests with ``num_parallel=1``.
         Read as a ceiling it would throttle such a lane eightfold.
 
-        A model is admissible as soon as *one* lane can take the request —
-        a busy lane must not mask an idle sibling.  When the worker reports
-        no usable lane signals the decision is ``can_admit=True`` with
-        ``batch_limit=None`` so the caller falls back to the capacity gate.
+        A model is admissible as soon as *one* ready lane can take the request;
+        a busy lane must not mask an idle ready sibling. Sleeping or starting
+        lanes contribute no dispatch budget. Without a runtime snapshot the
+        decision has no opinion, so the caller falls back to the capacity gate.
         """
         snapshot = self._peek_snapshot()
         lanes = self._routable_lanes(model_id, snapshot)
-        if lanes is None:
+        if snapshot is None:
             return AdmissionDecision(can_admit=True, batch_limit=None, reason=None)
+        ready_lanes = [lane for lane in lanes or [] if lane.get("runtime_state") in ("loaded", "running")]
+        if not ready_lanes:
+            return AdmissionDecision(can_admit=False, batch_limit=0, reason="no_ready_lane")
 
         self._reset_forward_budget_on_new_snapshot(snapshot)
 
         batch_limit = 0
         reasons: List[str] = []
-        for lane in lanes:
+        for lane in ready_lanes:
             lane_batch, reason = self._lane_admission(lane)
             if reason is not None:
                 reasons.append(reason)
@@ -1018,8 +1024,6 @@ class LogosNodeDataProvider:
         cache_usage = backend.get("gpu_cache_usage_percent")
         if cache_usage is None:
             cache_usage = backend.get("gpu_cache_usage_perc")
-        if cache_usage is not None and _lane_metric_float(cache_usage) >= self.KV_CACHE_PRESSURE_PERCENT:
-            return 0, "kv_cache_pressure"
 
         try:
             guaranteed = int(lane.get("num_parallel") or 0)
@@ -1141,8 +1145,41 @@ class LogosNodeDataProvider:
         with self._lock:
             return self._model_active.get(model_id, 0)
 
+    @staticmethod
+    def _engine_metric(value: Any) -> float | None:
+        """Preserve unknown engine gauges instead of inventing an idle zero."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return numeric if math.isfinite(numeric) and numeric >= 0 else None
+
+    def _get_model_engine_lanes(self, model_id: int, snapshot: Optional[Dict[str, Any]]) -> list[dict[str, Any]]:
+        """Expose current lane observations without historical aggregation."""
+        model_name = self._model_id_to_name.get(model_id)
+        raw_lanes = ((snapshot or {}).get("runtime") or {}).get("lanes") or []
+        if not model_name or not isinstance(raw_lanes, list):
+            return []
+        result = []
+        for lane in raw_lanes:
+            if not isinstance(lane, dict) or lane.get("model") != model_name:
+                continue
+            backend = lane.get("backend_metrics") if isinstance(lane.get("backend_metrics"), dict) else {}
+            result.append(
+                {
+                    "lane_id": str(lane.get("lane_id") or ""),
+                    "runtime_state": str(lane.get("runtime_state") or "unknown"),
+                    "requests_running": self._engine_metric(backend.get("requests_running")),
+                    "queue_waiting": self._engine_metric(backend.get("queue_waiting")),
+                }
+            )
+        return result
+
     def get_debug_state(self) -> Dict[int, Dict[str, Any]]:
-        online = self._runtime_registry is None or self._peek_snapshot() is not None
+        snapshot = self._peek_snapshot()
+        online = self._runtime_registry is None or snapshot is not None
         with self._lock:
             models = {}
             for model_id, model_name in self._model_id_to_name.items():
@@ -1177,6 +1214,7 @@ class LogosNodeDataProvider:
                     # the last refresh left in `_loaded_models`.
                     "loaded": online and model_name in self._loaded_models,
                     "scheduler_signals": recent_signals,
+                    "engine_lanes": self._get_model_engine_lanes(model_id, snapshot),
                     "admission": self.evaluate_admission(model_id).to_dict(),
                 }
             return models

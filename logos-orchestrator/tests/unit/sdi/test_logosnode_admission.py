@@ -9,8 +9,8 @@ possible.
 
 Nothing outside the engine can predict whether vLLM will start a given
 request or park it, so the gate is retrospective by necessity: it reads
-``queue_waiting`` (the engine is already parking work) and
-``gpu_cache_usage_percent`` (it is about to preempt). It deliberately does
+``queue_waiting`` (the engine is already parking work). KV usage scales the
+next step but does not independently reject work. It deliberately does
 *not* compare ``requests_running`` against ``num_parallel`` — see
 ``test_a_lane_running_far_past_num_parallel_is_still_admissible``.
 """
@@ -125,18 +125,37 @@ def test_the_batch_sums_across_lanes_of_the_same_model(monkeypatch):
     assert provider.evaluate_admission(1).batch_limit == 14
 
 
-def test_a_backlogged_lane_does_not_mask_an_idle_sibling(monkeypatch):
+@pytest.mark.parametrize("ready_state", ["loaded", "running"])
+def test_a_backlogged_lane_does_not_mask_an_idle_sibling(monkeypatch, ready_state):
     """One saturated lane must not block a model that has a free lane."""
     provider = _provider(
         monkeypatch,
         [
             _lane(num_parallel=4, queue_waiting=3, lane_id="backlogged"),
-            _lane(num_parallel=4, lane_id="free"),
+            _lane(num_parallel=4, lane_id="free", runtime_state=ready_state),
         ],
     )
     decision = provider.evaluate_admission(1)
     assert decision.can_admit is True
     assert decision.batch_limit == 4
+    assert provider.try_reserve_capacity(1, "r1") is True
+
+
+@pytest.mark.parametrize("unready_state", ["sleeping", "starting"])
+def test_an_unready_sibling_cannot_bypass_the_ready_lanes_backlog(monkeypatch, unready_state):
+    provider = _provider(
+        monkeypatch,
+        [
+            _lane(num_parallel=4, queue_waiting=1, lane_id="backlogged"),
+            _lane(num_parallel=8, lane_id="unready", runtime_state=unready_state),
+        ],
+    )
+    decision = provider.evaluate_admission(1)
+    assert decision.can_admit is False
+    assert decision.reason == "backend_queue"
+    assert decision.batch_limit == 0
+    assert provider.try_reserve_capacity(1, "r1") is False
+    assert provider.get_active_count(1) == 0
 
 
 def test_stopped_and_error_lanes_are_not_counted(monkeypatch):
@@ -148,9 +167,23 @@ def test_stopped_and_error_lanes_are_not_counted(monkeypatch):
         ],
     )
     decision = provider.evaluate_admission(1)
-    # No routable lane at all → no opinion, capacity gate decides.
-    assert decision.can_admit is True
-    assert decision.batch_limit is None
+    assert decision.can_admit is False
+    assert decision.batch_limit == 0
+    assert decision.reason == "no_ready_lane"
+
+
+@pytest.mark.parametrize("runtime_state", ["sleeping", "starting", "cold"])
+def test_an_observed_model_without_ready_lanes_has_no_dispatch_budget(monkeypatch, runtime_state):
+    provider = _provider(monkeypatch, [_lane(runtime_state=runtime_state)])
+    decision = provider.evaluate_admission(1)
+    assert decision.can_admit is False
+    assert decision.batch_limit == 0
+    assert decision.reason == "no_ready_lane"
+
+
+def test_an_empty_runtime_lane_set_has_no_dispatch_budget(monkeypatch):
+    provider = _provider(monkeypatch, [])
+    assert provider.evaluate_admission(1).reason == "no_ready_lane"
 
 
 # ---------------------------------------------------------------------------
@@ -167,16 +200,17 @@ def test_engine_backlog_holds_the_request_at_orchestrator_level(monkeypatch):
     assert decision.reason == "backend_queue"
 
 
-def test_kv_cache_pressure_holds_the_request(monkeypatch):
-    """Past the KV threshold vLLM preempts and recomputes, which also evicts
-    the prefix-cache blocks sticky routing depends on."""
-    provider = _provider(monkeypatch, [_lane(num_parallel=10, requests_running=2, gpu_cache_usage_percent=95.0)])
+@pytest.mark.parametrize("cache_usage", [90.0, 95.0, 100.0])
+def test_high_kv_usage_without_engine_backlog_still_admits_a_paced_step(monkeypatch, cache_usage):
+    """Occupied cache alone does not show that the engine cannot start work."""
+    provider = _provider(monkeypatch, [_lane(num_parallel=10, requests_running=2, gpu_cache_usage_percent=cache_usage)])
     decision = provider.evaluate_admission(1)
-    assert decision.can_admit is False
-    assert decision.reason == "kv_cache_pressure"
+    assert decision.can_admit is True
+    assert decision.batch_limit == 1
+    assert decision.reason is None
 
 
-def test_kv_cache_below_threshold_still_admits(monkeypatch):
+def test_moderate_kv_cache_usage_still_admits(monkeypatch):
     provider = _provider(monkeypatch, [_lane(num_parallel=10, requests_running=2, gpu_cache_usage_percent=60.0)])
     assert provider.evaluate_admission(1).can_admit is True
 
@@ -197,8 +231,7 @@ def test_a_lane_running_far_past_num_parallel_is_still_admissible(monkeypatch):
 
 
 def test_a_lane_without_a_reported_limit_still_takes_one_at_a_time(monkeypatch):
-    """num_parallel=0 means the worker has not reported yet (older worker or
-    a lane still starting). Admit, but step conservatively."""
+    """A ready lane without a reported guarantee admits a conservative step."""
     provider = _provider(monkeypatch, [_lane(num_parallel=0)])
     decision = provider.evaluate_admission(1)
     assert decision.can_admit is True
@@ -223,11 +256,15 @@ def test_reserve_is_refused_while_the_engine_has_a_backlog(monkeypatch):
     assert provider.get_active_count(1) == 0
 
 
-def test_reserve_is_refused_under_kv_pressure(monkeypatch):
+def test_high_kv_usage_keeps_the_between_report_burst_budget(monkeypatch):
     provider = _provider(
         monkeypatch, [_lane(num_parallel=10, gpu_cache_usage_percent=92.0)], config={"parallel_capacity": 20}
     )
-    assert provider.try_reserve_capacity(1, "r1") is False
+    assert provider.try_reserve_capacity(1, "r1") is True
+    assert provider.try_reserve_capacity(1, "r2") is False
+    assert provider.evaluate_admission(1).reason == "awaiting_signal"
+    _registry_of(provider).new_report()
+    assert provider.try_reserve_capacity(1, "r2") is True
 
 
 def test_reserve_succeeds_while_the_engine_has_headroom(monkeypatch):
@@ -351,8 +388,26 @@ def test_short_requests_can_grow_past_the_stored_quota_across_worker_reports(mon
     assert provider.get_active_count(1) == 24
     _registry_of(provider).lanes[0]["backend_metrics"]["gpu_cache_usage_percent"] = 95.0
     _registry_of(provider).new_report()
-    assert provider.try_reserve_capacity(1, "under-pressure") is False
-    assert provider.evaluate_admission(1).reason == "kv_cache_pressure"
+    assert provider.try_reserve_capacity(1, "high-cache") is True
+    assert provider.try_reserve_capacity(1, "same-report") is False
+    assert provider.evaluate_admission(1).reason == "awaiting_signal"
+    _registry_of(provider).lanes[0]["backend_metrics"]["queue_waiting"] = 1
+    _registry_of(provider).new_report()
+    assert provider.try_reserve_capacity(1, "backlogged") is False
+    assert provider.evaluate_admission(1).reason == "backend_queue"
+
+
+def test_high_cache_lane_can_admit_when_its_sibling_is_backlogged(monkeypatch):
+    provider = _provider(
+        monkeypatch,
+        [
+            _lane(num_parallel=8, queue_waiting=1, lane_id="backlogged"),
+            _lane(num_parallel=8, gpu_cache_usage_percent=99.0, lane_id="unbacklogged"),
+        ],
+    )
+    assert provider.try_reserve_capacity(1, "r1") is True
+    assert provider.try_reserve_capacity(1, "r2") is False
+    assert provider.evaluate_admission(1).reason == "awaiting_signal"
 
 
 def test_only_the_idle_sibling_contributes_to_the_dispatch_budget(monkeypatch):

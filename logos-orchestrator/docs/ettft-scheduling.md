@@ -218,13 +218,19 @@ What the gate does deliver is bounded exposure and gated decisions: a 60-wide bu
 |--------|--------|------|
 | `queue_waiting` | vLLM `num_requests_waiting` | The engine is already parking work → hold (`BACKEND_QUEUE_PRESSURE_THRESHOLD`, a constant — see §11) |
 | forwarded since the last report | orchestrator-local | Step used up → hold as `awaiting_signal` until the worker reports back |
-| `gpu_cache_usage_percent` | vLLM `gpu_cache_usage_perc` | ≥ 90% → hold: vLLM is about to preempt and recompute, which also evicts the prefix-cache blocks §10 depends on |
+| `gpu_cache_usage_percent` | vLLM `gpu_cache_usage_perc` | Scales the next dispatch step by free KV fraction, with a minimum step of one; high cache use alone does not show saturation |
 
 **`num_parallel` is deliberately not used as a ceiling.** It is the concurrency vLLM guarantees *at full context* — the "Maximum concurrency for N tokens per request" line from its startup log, which the lane-health panel shows as `(min. c)`. Real requests use a fraction of their context, so the engine runs far past it: a production lane serves 8 concurrent requests with `num_parallel = 1` at 78% KV. Read as a ceiling, that lane would be throttled eightfold. It is a *lower bound on capacity*, which makes it sound as a step size and wrong as a limit.
 
 **The signals are sampled, so the gate also counts its own sends.** Every request arriving inside one sampling window reads the same `queue_waiting`, so a simultaneous burst passes untouched — measured on logos-dev, 60 concurrent requests produced zero holds before this, and 56 after. The orchestrator therefore tracks what it has forwarded since the current worker report and spends `batch_limit` down by it, holding with reason `awaiting_signal` once the step is used up. The next report supersedes the estimate with a measurement and restores the budget, which is why a worker status also re-evaluates the queues (`on_worker_report`) — otherwise a held request would wait for the next completion, and on a ramp from idle nothing has completed yet. Measured feedback latency on dev: **0.21–1.11s, median ~0.9s**, because the worker marks its status dirty when a lane's in-flight count changes rather than waiting for its refresh interval.
 
-The unit of the decision is `AdmissionDecision(can_admit, batch_limit, reason)`. `batch_limit` is how many queued requests one dispatch pass may release — `num_parallel` scaled by the free KV fraction (the same floating figure the panel shows), at least 1 — summed over the model's admissible lanes; a backlogged lane never masks an idle sibling. When a worker reports nothing usable (older worker, lane still starting), `batch_limit` is `None` and the decision falls back to the parallel-capacity gate alone — admission is never stricter than the signals justify.
+The unit of the decision is `AdmissionDecision(can_admit, batch_limit, reason)`. `batch_limit` is how many queued requests one dispatch pass may release — `num_parallel` scaled by the free KV fraction (the same floating figure the panel shows), at least 1 — summed over admissible loaded/running lanes; a backlogged lane never masks an idle ready sibling. Sleeping or starting lanes contribute no budget. An observed model without a ready lane is held with `no_ready_lane`. Without a runtime snapshot, `batch_limit` is `None` and the decision falls back to the parallel-capacity gate alone.
+
+Only an observed engine waiter (`queue_waiting >= 1`) shows that a lane is saturated. A lane with 95% or even 100% reported KV use and no waiter may still accept one request in the next step. The between-report budget and bounded in-flight ledger remain in force, so allowing that step does not release an unlimited burst.
+
+The internal `/logosdb/scheduler_state` response exposes current observations for the agent runner under each model's `engine_lanes`: `lane_id`, `runtime_state`, `requests_running`, and `queue_waiting`. Missing or unusable gauges are `null`, not an idle zero. These observations are separate from the historical aggregates and peaks in `scheduler_signals`. A busy lane must not hide an unbacklogged ready sibling; neither `lane_parallel` nor `max_capacity` states the actual number of spare agent slots.
+
+The provider's `runtime` object includes `session_id`, `runtime_revision`, `observed_at`, `online`, and `cordoned`. `observed_at` is the worker's full runtime observation timestamp. Count-only updates can advance `runtime_revision` and heartbeats without advancing this timestamp; agent growth must therefore use `(session_id, observed_at)` as its measurement marker. A repeated poll is not another observation. The worker's default full refresh is 15 seconds, with more frequent refreshes for active or transitioning lanes. The agent's 30-second freshness window accommodates that default; an operator who increases the worker interval must also adjust the agent freshness window. Expired or missing observations provide no evidence for additional admission. `admission.batch_limit` describes the remaining immediate dispatch step, while `awaiting_signal` means pacing rather than saturation.
 
 Two call sites use it:
 
@@ -301,7 +307,6 @@ At the default `0.25` that is worth roughly 15s of expected wait (penalty satura
 | `OVERHEAD_RECLAIM_S` | `8.0` | `ettft_estimator.py` | VRAM eviction overhead |
 | `LOGOS_PREFIX_AFFINITY_ENABLED` | `true` | env | Master switch; off restores random tie-break placement |
 | `BACKEND_QUEUE_PRESSURE_THRESHOLD` | `0` | `logosnode_provider.py` | Engine-side `queue_waiting` tolerated before holding. Derived, not tuned: any value above zero re-introduces the engine-side queueing the gate removes |
-| `KV_CACHE_PRESSURE_PERCENT` | `90` | `logosnode_provider.py` | KV utilisation at which a lane stops being a forwarding target |
 | `PREFIX_AFFINITY_BONUS_FRACTION` | `0.25` | `correcting_scheduler.py` | Affinity bonus as a fraction of the maximum ETTFT penalty (~15s of expected wait) |
 | `AFFINITY_TTL_S` / `AFFINITY_BLOCK_CHARS` / `AFFINITY_MAX_BLOCKS` / `AFFINITY_MAX_ENTRIES` | `900` / `1024` / `32` / `20000` | `prefix_affinity.py` | Stream-identity granularity and table bounds |
 
@@ -309,7 +314,7 @@ At the default `0.25` that is worth roughly 15s of expected wait (penalty satura
 
 | Metric | Labels | Meaning |
 |--------|--------|---------|
-| `logos_admission_holds_total` | `reason` = `worker_capacity` \| `backend_queue` \| `kv_cache_pressure` \| `engine_at_capacity` | Requests kept at orchestrator level instead of forwarded |
+| `logos_admission_holds_total` | `reason` = `worker_capacity` \| `backend_queue` \| `awaiting_signal` | Requests kept at orchestrator level instead of forwarded |
 | `logos_prefix_affinity_total` | `result` = `hit` \| `miss` \| `honored` \| `diverted` | Affinity lookups and whether the scheduler followed them |
 | `logos_worker_cancellations_total` | `result` = `aborted` \| `already_done` \| `unsupported` \| `failed` | Cancellations sent for abandoned requests. `unsupported` counts nodes that still leak ghost generations — the number to watch during a rolling worker upgrade |
 
