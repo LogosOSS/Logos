@@ -185,14 +185,16 @@ INSERT INTO teams (
     name,
     default_cloud_rpm_limit, default_cloud_tpm_limit,
     default_local_rpm_limit, default_local_tpm_limit,
-    default_monthly_budget_micro_cents, team_monthly_budget_micro_cents
+    default_monthly_budget_micro_cents, team_monthly_budget_micro_cents,
+    show_on_public_stats, public_category
 )
 SELECT
     'Logos',
     5, 10000,
     5, 10000,
     100000000,   -- $1.00 key default / month
-    500000000    -- $5.00 team member budget / month
+    500000000,   -- $5.00 team member budget / month
+    TRUE, 'Research'  -- Settings tab shows the public stats opt-in filled
 WHERE NOT EXISTS (SELECT 1 FROM teams WHERE name = 'Logos');
 
 -- Members: Alexandra owns; Tobias + Henriette are members.

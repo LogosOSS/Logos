@@ -173,6 +173,11 @@ If a Keycloak group is linked to the team, then the tab shows the name of the
 group and no delete control. Only a Logos Admin can change or remove the link.
 See [Logos Admin → Keycloak Group Links](logos-admin.md#keycloak-group-links).
 
+Under **Public stats** you decide whether the team appears on the public
+statistics page (`/stats`). There you can also give the team a **Category**,
+for example "Research" or "Teaching". The public page groups teams by this
+label. The field suggests the categories that other teams already use.
+
 Provider batches do not reserve budget. At batch creation, Logos checks only costs that it already settled.
 A provider batch counts against the budget only after it finishes and Logos settles its costs.
 Thus, several batches can start with the same budget left and exceed the key or team budget.

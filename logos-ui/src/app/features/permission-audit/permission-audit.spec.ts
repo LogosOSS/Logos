@@ -170,7 +170,10 @@ describe('PermissionAudit', () => {
 });
 
 describe('Permission audit access', () => {
-  const auditRoute = routes[1]!.children!.find(route => route.path === 'permission-audit-log')!;
+  // Found by path rather than position: public routes may precede the shell.
+  const auditRoute = routes
+    .flatMap(route => route.children ?? [])
+    .find(route => route.path === 'permission-audit-log')!;
   it('exposes navigation and the route only to Logos admins', () => {
     expect(MENU_ITEMS.find(item => item.path === '/permission-audit-log')?.roles).toEqual(['logos_admin']);
     expect(auditRoute.data?.['roles']).toEqual(['logos_admin']);
