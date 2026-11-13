@@ -49,13 +49,14 @@ in priority order, visible on the page as work waiting its turn.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import controls, db, github, model_policy, priority
+from . import controls, db, github, model_policy, priority, repository_context
 from .asyncio_tasks import cancel_and_wait
 from .config import REVIEW_COMMENTS_FILE, settings
 from .conventions import for_task
@@ -321,11 +322,12 @@ async def review_request_task(number: int, title: str, body: str, requester: str
     description = (body or "").strip()
     if len(description) > 4000:
         description = description[:4000] + "\n\n[description truncated]"
+    base_branch = str((repository_context.current() or {}).get("branch") or "main")
     return await for_task(
         f"{requester} asked you to review #{number} ('{title}').\n\n"
         f"{description or '(the pull request has no description)'}\n\n"
         f"You are working in a checkout of that pull request's own code, so read the diff "
-        f"against the default branch — `git diff origin/main...HEAD` — and then read the "
+        f"against the default branch — `git diff origin/{base_branch}...HEAD` — and then read the "
         f"files it touches, in full, before you say anything about them.\n\n"
         f"You are a reviewer here, not an author: do not change, commit or push anything. "
         f"The runner will not push from this session.\n\n"
@@ -504,7 +506,7 @@ class TriggerPoller:
         self._task = asyncio.create_task(self._loop(), name="agent-triggers")
         logger.info(
             "watching %s as %s every %.0fs: assignments, reviews, and comments addressed to it",
-            settings.repo_slug,
+            repository_context.slug(settings.repo_slug),
             settings.github_login,
             POLL_INTERVAL_S,
         )
@@ -536,6 +538,31 @@ class TriggerPoller:
     # --- one pass ---------------------------------------------------------
 
     async def poll_once(self) -> list[int]:
+        queued: list[int] = []
+        with repository_context.scope(None):
+            queued.extend(await self._poll_repository())
+        # One poll per GitHub identity, even when several teams link it.
+        seen = {settings.repo_slug.lower()}
+        try:
+            links = await db.enabled_coding_repositories()
+        except Exception as exc:
+            self._last_error = f"could not list enabled coding repositories: {exc}"
+            logger.warning(self._last_error)
+            return queued
+        for link in links:
+            slug = str(link["repo_slug"]).lower()
+            if slug in seen:
+                continue
+            seen.add(slug)
+            try:
+                with repository_context.scope(link):
+                    queued.extend(await self._poll_repository())
+            except Exception as exc:
+                logger.warning("could not poll coding repository %s: %s", slug, exc)
+                self._last_error = f"{slug}: {exc}"
+        return queued
+
+    async def _poll_repository(self) -> list[int]:
         """One look at the repository. Returns the sessions queued, if any."""
         now = datetime.now(timezone.utc)
         control = await controls.current()
@@ -570,6 +597,10 @@ class TriggerPoller:
         candidates = await self._candidates(now)
         self._last_pass = now
         self._last_error = ""
+        target = repository_context.current()
+        if target:
+            for candidate in candidates:
+                candidate["ref"] = f"repo:{target['repo_slug'].lower()}:{candidate['ref']}"
         if not candidates:
             # Everything up to now has been looked at, so the comment scan
             # may move on.
@@ -623,7 +654,12 @@ class TriggerPoller:
         month of conversations at once.
         """
         try:
-            mark = await db.comments_scanned_at()
+            target = repository_context.current()
+            mark = (
+                await db.repository_comments_scanned_at(int(target["id"]))
+                if target
+                else await db.comments_scanned_at()
+            )
         except Exception as exc:
             logger.warning("could not read the comment mark; using the default window: %s", exc)
             mark = None
@@ -636,7 +672,11 @@ class TriggerPoller:
 
     async def _mark_comments_scanned(self, moment: datetime) -> None:
         try:
-            await db.mark_comments_scanned(moment)
+            target = repository_context.current()
+            if target:
+                await db.mark_repository_comments_scanned(int(target["id"]), moment)
+            else:
+                await db.mark_comments_scanned(moment)
         except Exception as exc:
             logger.warning("could not record how far the comment scan got: %s", exc)
 
@@ -756,7 +796,7 @@ class TriggerPoller:
                         conversation_block(*await self._issue_conversation(number, issue)),
                     ),
                     "workspace": workspace_name("issue", number, title),
-                    "reaction": f"/repos/{settings.repo_slug}/issues/{number}",
+                    "reaction": f"/repos/{repository_context.slug(settings.repo_slug)}/issues/{number}",
                     # Every session says something back on the thread it came
                     # from — including an issue session that concluded there
                     # is nothing to change, which is otherwise a silent
@@ -828,7 +868,7 @@ class TriggerPoller:
                         # A submitted review is not a review *comment*: the
                         # two have independent id sequences, so the
                         # acknowledgement goes on the pull request itself.
-                        "reaction": f"/repos/{settings.repo_slug}/issues/{number}",
+                        "reaction": f"/repos/{repository_context.slug(settings.repo_slug)}/issues/{number}",
                         "reply_target": f"issue:{number}",
                         "urgency": priority.of("review", pull["labels"]),
                     }
@@ -847,7 +887,7 @@ class TriggerPoller:
                         ),
                         "branch": branch,
                         "workspace": workspace_name("pr", number, pull["title"]),
-                        "reaction": f"/repos/{settings.repo_slug}/issues/{number}",
+                        "reaction": f"/repos/{repository_context.slug(settings.repo_slug)}/issues/{number}",
                         "urgency": priority.of("takeover", pull["labels"]),
                     }
                 )
@@ -946,7 +986,7 @@ class TriggerPoller:
                     # so the review is about the right diff.
                     "read_ref": f"refs/pull/{number}/head",
                     "workspace": workspace_name("pr", number, title),
-                    "reaction": f"/repos/{settings.repo_slug}/issues/{number}",
+                    "reaction": f"/repos/{repository_context.slug(settings.repo_slug)}/issues/{number}",
                     "reply_target": f"issue:{number}",
                     "urgency": priority.of("review", pull.get("labels")),
                 }
@@ -1132,7 +1172,7 @@ class TriggerPoller:
         ref, repo = github.head_of(pull)
         if not ref:
             return None
-        if repo != settings.repo_slug:
+        if repo.lower() != repository_context.slug(settings.repo_slug).lower():
             logger.info("pull request %s comes from '%s'; the runner does not push to forks", number, repo or "?")
             return None
         if ref in settings.protected_branches or ref.rsplit("/", 1)[-1] in settings.protected_branches:
@@ -1332,9 +1372,9 @@ class TriggerPoller:
                     "workspace": workspace_name("pr", number, title) if branch or about_pull else None,
                     "urgency": priority.of("comment", pull["labels"] if pull else ()),
                     "reaction": (
-                        f"/repos/{settings.repo_slug}/pulls/comments/{newest}"
+                        f"/repos/{repository_context.slug(settings.repo_slug)}/pulls/comments/{newest}"
                         if inline
-                        else f"/repos/{settings.repo_slug}/issues/comments/{newest}"
+                        else f"/repos/{repository_context.slug(settings.repo_slug)}/issues/comments/{newest}"
                     ),
                     # An inline question is answered in its own thread, where
                     # the person who asked it is looking.
@@ -1366,7 +1406,9 @@ class TriggerPoller:
         # from the default branch — which is what it used to do, and it
         # could only say that it had no diff to look at.
         workspace_id = await self._free_workspace(
-            base_branch=branch or candidate.get("read_ref") or "main",
+            base_branch=(
+                branch or candidate.get("read_ref") or str((repository_context.current() or {}).get("branch") or "main")
+            ),
             preferred_name=candidate.get("workspace"),
         )
         if workspace_id is None:
@@ -1407,6 +1449,7 @@ class TriggerPoller:
                 reaction_target=candidate.get("reaction"),
                 priority=urgency.value,
                 priority_reason=urgency.reason,
+                **self._repository_session_fields(),
             )
         except ValueError as exc:
             logger.warning("could not queue a session for %s: %s", candidate["ref"], exc)
@@ -1414,6 +1457,27 @@ class TriggerPoller:
         self._queued_total += 1
         logger.info("queued session %s for %s", session_id, candidate["ref"])
         return session_id
+
+    @staticmethod
+    def _repository_session_fields() -> dict[str, Any]:
+        target = repository_context.current()
+        if not target:
+            return {}
+        return {
+            "repo_url": target["repo_url"],
+            "repo_slug": target["repo_slug"],
+            "team_repository_id": target["id"],
+            "verification_command": target.get("verification_command"),
+            "repo_base_branch": target.get("branch") or "main",
+        }
+
+    @staticmethod
+    def _repository_workspace_prefix() -> str:
+        target = repository_context.current()
+        if not target:
+            return ""
+        identity = str(target["repo_slug"]).lower().encode()
+        return f"repo-{hashlib.sha256(identity).hexdigest()[:12]}-"
 
     async def _free_workspace(self, *, base_branch: str, preferred_name: str | None = None) -> int | None:
         """A free workspace whose checkout starts from ``base_branch``.
@@ -1434,7 +1498,11 @@ class TriggerPoller:
         active session holds nothing worth keeping.
         """
         workspaces = await db.list_workspaces()
-        free = [w for w in workspaces if int(w.get("active_sessions") or 0) == 0]
+        prefix = self._repository_workspace_prefix()
+        eligible = [w for w in workspaces if (
+            str(w.get("name") or "").startswith(prefix) if prefix else not str(w.get("name") or "").startswith("repo-")
+        )]
+        free = [w for w in eligible if int(w.get("active_sessions") or 0) == 0]
         for workspace in free:
             if str(workspace.get("base_branch") or "") == base_branch:
                 return int(workspace["id"])
@@ -1462,7 +1530,9 @@ class TriggerPoller:
         base_branch: str,
         preferred_name: str | None,
     ) -> int | None:
-        name = preferred_name or _next_auto_name({str(w.get("name") or "") for w in workspaces})
+        prefix = self._repository_workspace_prefix()
+        names = {str(w.get("name") or "").removeprefix(prefix) for w in workspaces}
+        name = prefix + (preferred_name or _next_auto_name(names))
         try:
             created = await db.create_workspace(
                 name=name, base_branch=base_branch, created_by=CREATED_BY, ephemeral=True

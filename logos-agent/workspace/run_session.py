@@ -514,7 +514,7 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     # remote's default branch into its remote-tracking ref so the command
     # works however the checkout was built. A failure here does not fail
     # the preparation: the base is already where the session needs it.
-    default = _remote_default_branch()
+    default = os.environ.get("LOGOS_SESSION_REPOSITORY_BRANCH", "").strip() or _remote_default_branch()
     default_available = False
     if default:
         process = run(
@@ -1335,7 +1335,12 @@ def _pull_request_body() -> str:
     verification = os.environ.get("LOGOS_SESSION_VERIFICATION", "")
     if verification:
         output = os.environ.get("LOGOS_SESSION_VERIFICATION_OUTPUT", "").replace("```", "'''")
-        body += f"\n\n## Verification\n\nOffline compile/type checks: **{verification}**."
+        label = (
+            "Build and test command"
+            if os.environ.get("LOGOS_VERIFICATION_MODE") == "repository"
+            else "Offline compile/type checks"
+        )
+        body += f"\n\n## Verification\n\n{label}: **{verification}**."
         if output:
             body += f"\n\n```text\n{output}\n```"
         if verification != "passed":
@@ -1514,7 +1519,12 @@ def _checkout_comparison(base_branch: str, branch: str, branch_sha: str) -> tupl
         if len(targets) > 1:
             raise RuntimeError("the session branch has pull requests with different target branches")
         target = next(iter(targets), "")
-    target = target or os.environ.get("LOGOS_SESSION_PR_BASE_BRANCH", "").strip() or _remote_default_branch()
+    target = (
+        target
+        or os.environ.get("LOGOS_SESSION_PR_BASE_BRANCH", "").strip()
+        or os.environ.get("LOGOS_SESSION_REPOSITORY_BRANCH", "").strip()
+        or _remote_default_branch()
+    )
     if not target:
         raise RuntimeError("could not establish the comparison branch for the existing session branch")
     run(["git", "check-ref-format", f"refs/heads/{target}"], cwd=CHECKOUT, quiet=True)

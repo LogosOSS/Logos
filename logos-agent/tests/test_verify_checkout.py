@@ -321,3 +321,59 @@ def test_checkout_symlink_is_rejected(tmp_path):
     link.symlink_to(checkout, target_is_directory=True)
     with pytest.raises(RuntimeError, match="checkout must be a directory"):
         verify_checkout.candidate_tree(link)
+
+
+def test_repository_command_uses_exported_candidate_and_scratch_home(monkeypatch, tmp_path):
+    calls = []
+
+    def export(checkout, destination, tree, scratch):
+        assert checkout == tmp_path
+        assert tree == "a" * 40
+        destination.mkdir()
+        (destination / "candidate.txt").write_text("candidate")
+
+    def run(command, directory, environment):
+        calls.append(command)
+        assert directory != tmp_path
+        assert (directory / "candidate.txt").read_text() == "candidate"
+        assert Path(environment["HOME"]).parent == directory.parent
+        assert "GITHUB_TOKEN" not in environment
+        assert "LOGOS_API_KEY" not in environment
+        (directory / "candidate.txt").write_text("build may edit the disposable copy")
+
+    monkeypatch.setattr(verify_checkout, "export_candidate", export)
+    monkeypatch.setattr(verify_checkout, "_run", run)
+    monkeypatch.setattr(verify_checkout, "CACHE", tmp_path / "empty-cache")
+    verify_checkout.verify_repository("make check && make build", tmp_path, "a" * 40)
+    assert calls == [["/bin/sh", "-ec", "make check && make build"]]
+    assert not (tmp_path / "candidate.txt").exists()
+
+
+@pytest.mark.parametrize("command", ["", "   ", "bad\0command", "x" * 4001])
+def test_repository_verification_requires_a_valid_command(command, tmp_path):
+    with pytest.raises(ValueError, match="build and test command"):
+        verify_checkout.verify_repository(command, tmp_path, "a" * 40)
+
+
+def test_repository_mode_does_not_skip_unfamiliar_project_paths(monkeypatch):
+    from unittest.mock import Mock
+
+    monkeypatch.setenv("LOGOS_VERIFICATION_PATHS", '["src/main.rs"]')
+    monkeypatch.setenv("LOGOS_VERIFICATION_MODE", "repository")
+    monkeypatch.setenv("LOGOS_VERIFICATION_COMMAND", "cargo test --offline")
+    monkeypatch.setattr(verify_checkout, "candidate_tree", lambda _: "a" * 40)
+    verify = Mock()
+    monkeypatch.setattr(verify_checkout, "verify_repository", verify)
+    assert verify_checkout.main([]) == 0
+    verify.assert_called_once_with("cargo test --offline", verify_checkout.CHECKOUT, "a" * 40)
+
+
+def test_repository_command_failure_fails_verification(monkeypatch):
+    from unittest.mock import Mock
+
+    monkeypatch.setenv("LOGOS_VERIFICATION_PATHS", '["src/main.rs"]')
+    monkeypatch.setenv("LOGOS_VERIFICATION_MODE", "repository")
+    monkeypatch.setenv("LOGOS_VERIFICATION_COMMAND", "cargo test --offline")
+    monkeypatch.setattr(verify_checkout, "candidate_tree", lambda _: "a" * 40)
+    monkeypatch.setattr(verify_checkout, "verify_repository", Mock(side_effect=RuntimeError("compiler failed")))
+    assert verify_checkout.main([]) == 1

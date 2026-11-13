@@ -64,6 +64,10 @@ export class RepositoriesTabComponent implements OnChanges {
   credLoading = signal(false);
   credError = signal('');
 
+  formAgentEnabled = signal(false);
+  formAgentInstructions = signal('');
+  formVerificationCommand = signal('');
+
   busyLinkId = signal<number | null>(null);
 
   readonly gridCols =
@@ -93,6 +97,9 @@ export class RepositoriesTabComponent implements OnChanges {
     this.formUrl.set('');
     this.formBranch.set('main');
     this.formPaths.set('');
+    this.formAgentEnabled.set(false);
+    this.formAgentInstructions.set('');
+    this.formVerificationCommand.set('');
     this.formError.set('');
     this.formOpen.set(true);
   }
@@ -102,6 +109,9 @@ export class RepositoriesTabComponent implements OnChanges {
     this.formUrl.set(repo.repo_url);
     this.formBranch.set(repo.branch || 'main');
     this.formPaths.set((repo.paths ?? []).join(', '));
+    this.formAgentEnabled.set(repo.agent_enabled ?? false);
+    this.formAgentInstructions.set(repo.agent_instructions ?? '');
+    this.formVerificationCommand.set(repo.verification_command ?? '');
     this.formError.set('');
     this.formOpen.set(true);
   }
@@ -114,6 +124,10 @@ export class RepositoriesTabComponent implements OnChanges {
   async submitForm(): Promise<void> {
     const url = this.formUrl().trim();
     if (!url || this.formLoading()) return;
+    if (this.formAgentEnabled() && !this.formVerificationCommand().trim()) {
+      this.formError.set('Enter a build and test command before enabling the coding agent.');
+      return;
+    }
     this.formLoading.set(true);
     this.formError.set('');
     this.actionError.set('');
@@ -121,16 +135,23 @@ export class RepositoriesTabComponent implements OnChanges {
     const paths = parsePaths(this.formPaths());
     const branch = this.formBranch().trim() || 'main';
     const editing = this.formEditing();
+    const agentSettings = {
+      agent_enabled: this.formAgentEnabled(),
+      agent_instructions: this.formAgentInstructions().trim(),
+      verification_command: this.formVerificationCommand().trim(),
+    };
 
     try {
       if (editing) {
         await this.teamService.updateTeamRepository(this.teamId, editing.id, {
+          ...agentSettings,
           repo_url: url,
           branch,
           paths: paths ?? [],
         });
       } else {
         await this.teamService.createTeamRepository(this.teamId, {
+          ...agentSettings,
           repo_url: url,
           branch,
           paths,

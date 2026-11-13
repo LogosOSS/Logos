@@ -73,6 +73,9 @@ describe('RepositoriesTabComponent', () => {
     component.formPaths.set('src/ai, services/llm');
     await component.submitForm();
     expect(createTeamRepository).toHaveBeenCalledWith(7, {
+      agent_enabled: false,
+      agent_instructions: '',
+      verification_command: '',
       repo_url: 'https://github.com/ls1intum/Artemis',
       branch: 'develop',
       paths: ['src/ai', 'services/llm'],
@@ -87,6 +90,9 @@ describe('RepositoriesTabComponent', () => {
     component.formPaths.set('');
     await component.submitForm();
     expect(updateTeamRepository).toHaveBeenCalledWith(7, 11, {
+      agent_enabled: false,
+      agent_instructions: '',
+      verification_command: '',
       repo_url: sample.repo_url,
       branch: 'release',
       paths: [],
@@ -103,6 +109,39 @@ describe('RepositoriesTabComponent', () => {
       11,
       expect.objectContaining({ paths: [] }),
     );
+  });
+
+  it('requires verification before opting in', async () => {
+    const component = setup();
+    component.openEdit(sample);
+    component.formAgentEnabled.set(true);
+    await component.submitForm();
+    expect(updateTeamRepository).not.toHaveBeenCalled();
+    expect(component.formError()).toContain('build and test command');
+  });
+
+  it('saves repository-specific instructions and verification', async () => {
+    const component = setup();
+    component.openEdit(sample);
+    component.formAgentEnabled.set(true);
+    component.formVerificationCommand.set('npm test && npm run build');
+    component.formAgentInstructions.set('Use the project lint config.');
+    await component.submitForm();
+    expect(updateTeamRepository).toHaveBeenCalledWith(7, 11, expect.objectContaining({
+      agent_enabled: true,
+      verification_command: 'npm test && npm run build',
+      agent_instructions: 'Use the project lint config.',
+    }));
+  });
+
+  it('loads opt-in settings for editing and resets them for a new link', () => {
+    const component = setup();
+    component.openEdit({ ...sample, agent_enabled: true, verification_command: 'make check' });
+    expect(component.formAgentEnabled()).toBe(true);
+    expect(component.formVerificationCommand()).toBe('make check');
+    component.openCreate();
+    expect(component.formAgentEnabled()).toBe(false);
+    expect(component.formVerificationCommand()).toBe('');
   });
 
   it('unlinks a repository after confirm', async () => {

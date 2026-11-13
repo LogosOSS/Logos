@@ -95,6 +95,7 @@ public class TeamRepoLinkService {
         link.setRepoSlug(slug);
         link.setBranch(normalizeBranch(body.branch()));
         link.setPaths(normalizePaths(body.paths()));
+        configureAgent(link, body.agentEnabled(), body.agentInstructions(), body.verificationCommand());
         link.setCreatedAt(now);
         link.setUpdatedAt(now);
         return toMap(saveLink(link, slug));
@@ -137,6 +138,7 @@ public class TeamRepoLinkService {
         if (body.paths() != null) {
             link.setPaths(normalizePaths(body.paths()));
         }
+        configureAgent(link, body.agentEnabled(), body.agentInstructions(), body.verificationCommand());
         link.setUpdatedAt(Instant.now());
         return Optional.of(toMap(saveLink(link, conflictSlug)));
     }
@@ -224,6 +226,23 @@ public class TeamRepoLinkService {
         return repoUrl.trim();
     }
 
+    private static void configureAgent(TeamRepoLink link, Boolean enabled, String instructions, String command) {
+        if (enabled != null) link.setAgentEnabled(enabled);
+        if (instructions != null) link.setAgentInstructions(agentText(instructions, 12000, "agent_instructions"));
+        if (command != null) link.setVerificationCommand(agentText(command, 4000, "verification_command"));
+        if (link.isAgentEnabled() && (link.getVerificationCommand() == null || link.getVerificationCommand().isBlank())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "verification_command is required when the coding agent is enabled");
+        }
+    }
+
+    private static String agentText(String value, int limit, String field) {
+        if (value.length() > limit || value.indexOf('\0') >= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, field + " is too long or contains a NUL byte");
+        }
+        return value.trim();
+    }
+
     private static String normalizeBranch(String branch) {
         if (branch == null || branch.isBlank()) {
             return "main";
@@ -290,6 +309,9 @@ public class TeamRepoLinkService {
         m.put("repo_url", link.getRepoUrl());
         m.put("repo_slug", link.getRepoSlug());
         m.put("branch", link.getBranch());
+        m.put("agent_enabled", link.isAgentEnabled());
+        m.put("agent_instructions", link.getAgentInstructions());
+        m.put("verification_command", link.getVerificationCommand());
         m.put("paths", link.getPaths());
         m.put("created_at", link.getCreatedAt() != null ? link.getCreatedAt().toString() : null);
         m.put("updated_at", link.getUpdatedAt() != null ? link.getUpdatedAt().toString() : null);

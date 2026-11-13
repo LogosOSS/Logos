@@ -414,6 +414,31 @@ async def get_workspace(workspace_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+async def enabled_coding_repositories() -> list[dict[str, Any]]:
+    """Linked repositories whose teams opted into coding work."""
+    async with sessionmaker()() as db:
+        rows = (await db.execute(text("""
+            SELECT id, repo_url, repo_slug, branch, agent_instructions, verification_command
+              FROM team_repositories WHERE agent_enabled = TRUE ORDER BY id
+        """))).mappings()
+        return [dict(row) for row in rows]
+
+
+async def repository_comments_scanned_at(repository_id: int) -> datetime | None:
+    async with sessionmaker()() as db:
+        return (await db.execute(text("""
+            SELECT agent_comments_scanned_at FROM team_repositories WHERE id = :id
+        """), {"id": repository_id})).scalar_one_or_none()
+
+
+async def mark_repository_comments_scanned(repository_id: int, moment: datetime) -> None:
+    async with sessionmaker()() as db:
+        await db.execute(text("""
+            UPDATE team_repositories SET agent_comments_scanned_at = :moment WHERE id = :id
+        """), {"id": repository_id, "moment": moment})
+        await db.commit()
+
+
 async def comments_scanned_at() -> datetime | None:
     """How far the comment scan has got, across restarts."""
     async with sessionmaker()() as db:
@@ -457,7 +482,9 @@ async def disposable_workspaces(idle_before: datetime) -> list[dict[str, Any]]:
             (
                 await db.execute(
                     text("""
-                    SELECT w.id, w.name, w.volume_name
+                    SELECT w.id, w.name, w.volume_name, w.base_branch,
+                           (SELECT s.repo_slug FROM agent_sessions s WHERE s.workspace_id = w.id
+                            ORDER BY s.id DESC LIMIT 1) AS repo_slug
                       FROM agent_workspaces w
                      WHERE w.ephemeral = TRUE
                        AND w.archived_at IS NULL
@@ -584,6 +611,8 @@ async def create_session(
     repo_url: str | None = None,
     repo_slug: str | None = None,
     team_repository_id: int | None = None,
+    verification_command: str | None = None,
+    repo_base_branch: str | None = None,
 ) -> int:
     async with sessionmaker()() as db:
         # Lock the workspace row before inserting. delete_workspace takes
@@ -610,7 +639,7 @@ async def create_session(
                          open_pull_request, deploy_to_dev, screenshot_paths,
                          no_push, trigger_kind, trigger_ref, branch_name,
                          reply_target, reaction_target, priority, priority_reason,
-                         repo_url, repo_slug, team_repository_id)
+                         repo_url, repo_slug, team_repository_id, verification_command, repo_base_branch)
                     VALUES
                         (:workspace_id, :task, :model, 'queued', :created_by,
                          :open_pr, :deploy, CAST(:paths AS jsonb),
@@ -618,7 +647,7 @@ async def create_session(
                          :reply_target,
                          :reaction_target,
                          :priority, :priority_reason,
-                         :repo_url, :repo_slug, :team_repository_id)
+                         :repo_url, :repo_slug, :team_repository_id, :verification_command, :repo_base_branch)
                     RETURNING id
                     """),
                 {
@@ -649,6 +678,8 @@ async def create_session(
                     "repo_url": repo_url,
                     "repo_slug": repo_slug,
                     "team_repository_id": team_repository_id,
+                    "verification_command": verification_command,
+                    "repo_base_branch": repo_base_branch,
                 },
             )
         ).scalar_one()
@@ -853,7 +884,7 @@ _SESSION_SELECT = """
            s.screenshot_paths, s.no_push, s.trigger_kind, s.trigger_ref,
            s.reply_target, s.reaction_target,
            s.priority, s.priority_reason, s.environment_notes,
-           s.repo_url, s.repo_slug, s.team_repository_id,
+           s.repo_url, s.repo_slug, s.team_repository_id, s.verification_command, s.repo_base_branch,
            t.name AS team_name,
            COALESCE(s.tokens_in, 0) AS tokens_in,
            COALESCE(s.tokens_out, 0) AS tokens_out,
@@ -1358,7 +1389,8 @@ async def sessions_awaiting_checks() -> list[dict[str, Any]]:
         rows = (await db.execute(text("""
                     SELECT id, workspace_id, task, model, branch_name, checks_sha,
                            trigger_kind, trigger_ref, reply_target, reaction_target,
-                           priority, priority_reason, open_pull_request, finished_at
+                           priority, priority_reason, open_pull_request, finished_at,
+                           repo_url, repo_slug, team_repository_id, verification_command, repo_base_branch, no_push
                       FROM agent_sessions
                      WHERE checks_watch = 'pending'
                      ORDER BY id
@@ -1390,7 +1422,8 @@ async def sessions_owing_a_replacement(*, max_attempts: int, since: datetime) ->
                     SELECT s.id, s.workspace_id, s.task, s.model, s.branch_name,
                            s.trigger_kind, s.trigger_ref, s.reply_target, s.reaction_target,
                            s.priority, s.priority_reason, s.open_pull_request, s.error,
-                           s.finished_at
+                           s.finished_at, s.repo_url, s.repo_slug, s.team_repository_id,
+                           s.verification_command, s.repo_base_branch, s.no_push
                       FROM agent_sessions s
                      WHERE s.status = 'failed'
                        AND COALESCE(s.trigger_ref, '') <> ''
