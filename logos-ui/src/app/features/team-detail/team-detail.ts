@@ -160,6 +160,10 @@ export class TeamDetail implements OnInit {
     }
   }
 
+  applyPublicStats(settings: Pick<TeamDetailModel, 'show_on_public_stats' | 'public_category'>): void {
+    this.team.update((team) => team ? { ...team, ...settings } : team);
+  }
+
   refresh(): void {
     void this.loadAll(this.teamId());
   }

@@ -4,7 +4,7 @@
   <p class="settings-hint">
     When enabled, this team's name and successful-request counts appear on the public
     <a href="/stats" target="_blank" rel="noopener">stats page</a>. Off by default.
-    Use Save Settings below to apply.
+    Use Save Public Stats in this section to apply. The public page refreshes periodically.
   </p>
 
   <div class="settings-card">
@@ -14,34 +14,68 @@
         type="checkbox"
         [checked]="showOnPublicStats()"
         (change)="showOnPublicStats.set($any($event.target).checked)"
-        [disabled]="!canEdit || saveLoading()"
+        [disabled]="!canEdit || publicStatsLoading()"
       />
       <span>Show this team on the public stats page</span>
     </label>
 
     <div class="settings-field settings-field--spaced">
       <label class="field-label" for="s-public-category">Category</label>
-      <input
+      <select
         id="s-public-category"
         class="field-input"
-        type="text"
-        list="s-public-category-options"
-        maxlength="64"
-        placeholder="e.g. Research, leave blank for uncategorized"
-        [value]="publicCategory()"
-        (input)="publicCategory.set($any($event.target).value)"
-        [disabled]="!canEdit || saveLoading()"
-        autocomplete="off"
-      />
-      <datalist id="s-public-category-options">
-        @for (category of publicCategoryOptions(); track category) {
-          <option [value]="category"></option>
+        [ngModel]="publicCategory()"
+        (ngModelChange)="publicCategory.set($event); publicStatsSuccess.set(false)"
+        [disabled]="!canEdit || publicStatsLoading() || publicCategoriesLoading() || !!publicCategoriesError()"
+      >
+        <option value="">Uncategorized</option>
+        @for (category of selectablePublicCategories(); track category) {
+          <option [value]="category">{{ category }}</option>
         }
-      </datalist>
+      </select>
       <p class="settings-hint settings-hint--field">
-        The public stats page groups teams by this label. Pick one other teams use, or type a new one.
+        Select an existing category or create a new one below. Select Uncategorized to clear it.
       </p>
+      @if (publicCategoriesLoading()) {
+        <p role="status" class="settings-hint settings-hint--field">Loading categories…</p>
+      }
+      @if (publicCategoriesError()) {
+        <p role="alert" class="save-error">{{ publicCategoriesError() }}</p>
+        <button type="button" class="btn-secondary" (click)="fetchPublicCategories()">Retry categories</button>
+      }
     </div>
+
+    @if (canEdit) {
+      <div class="settings-field settings-field--spaced">
+        <label class="field-label" for="s-new-public-category">New category</label>
+        <input
+          id="s-new-public-category"
+          class="field-input"
+          type="text"
+          maxlength="64"
+          placeholder="New category name"
+          [value]="newPublicCategory()"
+          (input)="newPublicCategory.set($any($event.target).value)"
+          [disabled]="publicStatsLoading() || publicCategoriesLoading() || !!publicCategoriesError()"
+        />
+        <button type="button" class="btn-secondary category-create"
+          [disabled]="!canCreatePublicCategory()" (click)="createPublicCategory()">
+          Create @if (newPublicCategory().trim()) { “{{ newPublicCategory().trim() }}” }
+        </button>
+      </div>
+      <div class="settings-actions public-stats-actions">
+        @if (publicStatsSuccess() && !publicStatsChanged()) {
+          <span role="status" class="save-success">Public stats settings saved.</span>
+        }
+        @if (publicStatsError()) {
+          <span role="alert" class="save-error">{{ publicStatsError() }}</span>
+        }
+        <button type="button" class="btn-primary" (click)="savePublicStats()"
+          [disabled]="publicStatsLoading() || !publicStatsChanged()">
+          {{ publicStatsLoading() ? 'Saving…' : 'Save Public Stats' }}
+        </button>
+      </div>
+    }
   </div>
 
   <p class="section-label">OVERALL TEAM LIMITS</p>

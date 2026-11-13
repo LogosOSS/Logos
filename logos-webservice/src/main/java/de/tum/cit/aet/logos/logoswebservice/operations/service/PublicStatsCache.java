@@ -2,40 +2,40 @@ package de.tum.cit.aet.logos.logoswebservice.operations.service;
 
 import java.time.Duration;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 /**
- * Holds the public stats per window for a short while.
- *
- * <p>The page is the one part of the platform anyone can load, and every
- * figure on it comes from a pass over all successful requests — about a second
- * of database time on production. Nobody needs those figures to the second, so
- * each window is computed at most once per {@code logos.public-stats.cache-ttl}
- * (default five minutes) per instance; callers that miss at the same time wait
- * for the one computation instead of starting their own. A TTL of zero turns
- * the cache off.
+ * Warms every public stats window at startup and refreshes expired figures in
+ * the background. Requests keep reading the previous batch during a refresh,
+ * including when a refresh fails. Only requests before the first batch is ready
+ * wait for computation. A zero TTL disables caching for callers needing live data.
  */
 @Service
 public class PublicStatsCache {
 
-    private record Entry(long computedAtNanos, Map<String, Object> stats) {
+    private static final Logger log = LoggerFactory.getLogger(PublicStatsCache.class);
+
+    private record Entry(long computedAtNanos, Map<String, Map<String, Object>> windows) {
     }
 
     private final StatsService statsService;
     private final long ttlNanos;
     private final LongSupplier nanoClock;
-    private final Map<String, Entry> entries = new ConcurrentHashMap<>();
-    private final Map<String, Object> locks = new ConcurrentHashMap<>();
+    private final Object refreshLock = new Object();
+    private volatile Entry entry;
 
     @Autowired
     public PublicStatsCache(StatsService statsService,
-                            @Value("${logos.public-stats.cache-ttl:PT5M}") Duration ttl) {
+                            @Value("${logos.public-stats.cache-ttl:PT30M}") Duration ttl) {
         this(statsService, ttl, System::nanoTime);
     }
 
@@ -45,28 +45,41 @@ public class PublicStatsCache {
         this.nanoClock = nanoClock;
     }
 
-    /** The stats for {@code days}; rejects unknown windows like {@link StatsService#publicStats}. */
+    /** Unknown windows are rejected before accessing the cache. */
     public Map<String, Object> get(String days) {
         String window = StatsService.normalizePublicStatsDays(days);
         if (ttlNanos <= 0) {
             return statsService.publicStats(window);
         }
-        Entry entry = entries.get(window);
-        if (isFresh(entry)) {
-            return entry.stats();
-        }
-        synchronized (locks.computeIfAbsent(window, k -> new Object())) {
-            entry = entries.get(window);
-            if (isFresh(entry)) {
-                return entry.stats();
+        Entry current = entry;
+        if (current == null) {
+            synchronized (refreshLock) {
+                if (entry == null) computeAllWindows();
+                current = entry;
             }
-            Map<String, Object> stats = Collections.unmodifiableMap(statsService.publicStats(window));
-            entries.put(window, new Entry(nanoClock.getAsLong(), stats));
-            return stats;
+        }
+        return current.windows().get(window);
+    }
+
+    // Check expiration independently of requests, including windows without traffic.
+    @Scheduled(initialDelay = 0, fixedDelay = 1000)
+    public void refreshExpired() {
+        if (ttlNanos <= 0) return;
+        synchronized (refreshLock) {
+            if (entry != null && nanoClock.getAsLong() - entry.computedAtNanos() < ttlNanos) return;
+            try {
+                computeAllWindows();
+            } catch (RuntimeException ex) {
+                log.warn("Could not refresh public stats; retaining the previous figures", ex);
+            }
         }
     }
 
-    private boolean isFresh(Entry entry) {
-        return entry != null && nanoClock.getAsLong() - entry.computedAtNanos() < ttlNanos;
+    private void computeAllWindows() {
+        Map<String, Map<String, Object>> windows = new LinkedHashMap<>();
+        for (String window : StatsService.PUBLIC_STATS_DAY_OPTIONS) {
+            windows.put(window, Collections.unmodifiableMap(new LinkedHashMap<>(statsService.publicStats(window))));
+        }
+        entry = new Entry(nanoClock.getAsLong(), Collections.unmodifiableMap(windows));
     }
 }
