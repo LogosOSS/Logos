@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Map;
@@ -450,5 +451,77 @@ class GatewayUsageCaptureTest {
         });
         assertThat(result.forwarded()).isEqualTo(body);
         assertThat(mapper.readTree(result.forwarded()).path("usage").has("cost")).isFalse();
+    }
+
+    @Test
+    void audioMpeg_withPricer_forwardsBytesBeforeClose() throws IOException {
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        byte[] audio = new byte[] {1, 2, 3, 4, 5};
+        GatewayUsageCapture capture = new GatewayUsageCapture(
+            sink, mapper, "audio/mpeg", false, Instant::now,
+            (usage, tier) -> java.util.OptionalDouble.of(9.0));
+        capture.write(audio);
+        assertThat(sink.toByteArray()).isEqualTo(audio);
+        capture.close();
+        assertThat(sink.toByteArray()).isEqualTo(audio);
+        assertThat(capture.usage()).isEmpty();
+    }
+
+    @Test
+    void detachClient_preservesPartialSseLineForDrain() throws IOException {
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        GatewayUsageCapture capture = new GatewayUsageCapture(
+            sink, mapper, SSE, false, Instant::now,
+            (usage, tier) -> java.util.OptionalDouble.of(0.001));
+        capture.write("data: {\"usage\":{\"prompt_tok".getBytes(StandardCharsets.UTF_8));
+        capture.detachClient();
+        capture.write("ens\":42,\"completion_tokens\":8}}\n\n".getBytes(StandardCharsets.UTF_8));
+        capture.close();
+
+        assertThat(capture.usage())
+            .containsEntry("prompt_tokens", 42L)
+            .containsEntry("completion_tokens", 8L);
+    }
+
+    @Test
+    void clientDisconnectMidChunk_stillCapturesTrailingUsage() throws IOException {
+        OutputStream failing = new OutputStream() {
+            @Override
+            public void write(int b) throws IOException {
+                throw new IOException("client went away");
+            }
+
+            @Override
+            public void write(byte[] b, int off, int len) throws IOException {
+                throw new IOException("client went away");
+            }
+        };
+        GatewayUsageCapture capture = new GatewayUsageCapture(
+            failing, mapper, SSE, false, Instant::now,
+            (usage, tier) -> java.util.OptionalDouble.of(0.001));
+        byte[] chunk = """
+            data: {"choices":[{"delta":{"content":"hi"}}]}
+
+            data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}
+
+            """.getBytes(StandardCharsets.UTF_8);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> capture.write(chunk))
+            .isInstanceOf(GatewayUsageCapture.ClientDisconnectedException.class);
+        capture.close();
+
+        assertThat(capture.usage())
+            .containsEntry("prompt_tokens", 7L)
+            .containsEntry("completion_tokens", 3L);
+    }
+
+    @Test
+    void contentTypeDecidesJsonVsBinaryEnrichment() {
+        assertThat(GatewayUsageCapture.isJsonBody("application/json")).isTrue();
+        assertThat(GatewayUsageCapture.isJsonBody("application/json; charset=utf-8")).isTrue();
+        assertThat(GatewayUsageCapture.isJsonBody("application/problem+json")).isTrue();
+        assertThat(GatewayUsageCapture.isJsonBody("audio/mpeg")).isFalse();
+        assertThat(GatewayUsageCapture.isJsonBody("text/event-stream")).isFalse();
+        assertThat(GatewayUsageCapture.isJsonBody(null)).isFalse();
     }
 }

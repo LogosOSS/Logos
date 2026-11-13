@@ -64,6 +64,8 @@ final class GatewayUsageCapture extends OutputStream {
     private long completionCharacters;
     private final ObjectMapper objectMapper;
     private final boolean sse;
+    /** True for JSON responses that may carry a usage object to enrich. */
+    private final boolean jsonBody;
     private final boolean retainBody;
     private final Supplier<Instant> clock;
     private final GatewayCostPricer pricer;
@@ -105,6 +107,7 @@ final class GatewayUsageCapture extends OutputStream {
         this.clock = clock;
         this.objectMapper = objectMapper;
         this.sse = isEventStream(upstreamContentType);
+        this.jsonBody = isJsonBody(upstreamContentType);
         this.retainBody = retainBody;
         this.pricer = pricer;
     }
@@ -112,6 +115,15 @@ final class GatewayUsageCapture extends OutputStream {
     static boolean isEventStream(String contentType) {
         return contentType != null
             && contentType.toLowerCase(java.util.Locale.ROOT).contains("text/event-stream");
+    }
+
+    /** Held-body enrichment applies only to JSON, never to binary audio/speech. */
+    static boolean isJsonBody(String contentType) {
+        if (contentType == null) {
+            return false;
+        }
+        String lower = contentType.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("application/json") || lower.contains("+json");
     }
 
     /**
@@ -168,7 +180,7 @@ final class GatewayUsageCapture extends OutputStream {
         // this chunk is recorded as having arrived from the upstream.
         chunkArrivedAt = clock.get();
         markFirstByte(len);
-        if (pricer != null && !sse) {
+        if (pricer != null && jsonBody) {
             writeJsonEnriching(b, off, len);
             return;
         }
@@ -176,6 +188,8 @@ final class GatewayUsageCapture extends OutputStream {
             captureSseEnriching(b, off, len);
             return;
         }
+        // Binary and other non-JSON bodies (e.g. audio/mpeg) pass through even
+        // when a pricer is configured — there is no usage object to enrich.
         capture(b, off, len);
         writeToClient(b, off, len);
     }
@@ -209,14 +223,15 @@ final class GatewayUsageCapture extends OutputStream {
     }
 
     /**
-     * Stop writing to the servlet output. Flushes a held JSON/SSE remainder
-     * first when a pricer is active — otherwise {@link #close()} would write
-     * the body into {@link OutputStream#nullOutputStream()} and the client
-     * would see an empty response.
+     * Stop writing to the servlet output. Flushes a held JSON body when a
+     * pricer is active so the client still receives it. SSE buffer and parser
+     * state are preserved for a background drain that may continue the stream.
      */
     void detachClient() {
         try {
-            flushHeldToClient();
+            if (pricer != null && jsonBody) {
+                finishJson();
+            }
         } catch (IOException ignored) {
             // Client may already be gone; close() still parses for billing.
         }
@@ -224,20 +239,15 @@ final class GatewayUsageCapture extends OutputStream {
     }
 
     private void flushHeldToClient() throws IOException {
-        if (pricer == null) {
-            // Verbatim path already wrote through; only finish parsing.
-            if (!sse) {
-                finishJson();
-            } else {
-                finishSseLine(false);
-            }
-            return;
-        }
         if (sse) {
             finishSseLine(false);
-        } else {
-            finishJson();
+            return;
         }
+        if (pricer != null && jsonBody) {
+            finishJson();
+            return;
+        }
+        finishJson();
     }
 
     boolean drainComplete() {
@@ -407,31 +417,95 @@ final class GatewayUsageCapture extends OutputStream {
 
     /**
      * SSE with a pricer: emit each completed line (enriched when settled usage
-     * is present). Oversized lines pass through until the next newline.
+     * is present). Oversized lines pass through in bulk until the next newline.
+     * A client disconnect still captures the rest of the current chunk so a
+     * trailing usage frame in the same read is not lost before the drain runs.
      */
     private void captureSseEnriching(byte[] b, int off, int len) throws IOException {
-        for (int i = off; i < off + len; i++) {
-            byte current = b[i];
+        ClientDisconnectedException disconnect = null;
+        int i = off;
+        final int end = off + len;
+        while (i < end) {
             if (bufferOverflowed) {
-                writeToClient(new byte[] {current});
-                if (current == '\n') {
+                int nl = indexOf(b, i, end, (byte) '\n');
+                int sliceEnd = nl < 0 ? end : nl + 1;
+                disconnect = writeOrRemember(disconnect, b, i, sliceEnd - i);
+                if (nl >= 0) {
                     bufferOverflowed = false;
                 }
+                i = sliceEnd;
                 continue;
             }
-            if (current == '\n') {
+            int nl = indexOf(b, i, end, (byte) '\n');
+            if (nl < 0) {
+                disconnect = appendSseLineBytes(disconnect, b, i, end - i);
+                break;
+            }
+            disconnect = appendSseLineBytes(disconnect, b, i, nl - i);
+            try {
                 finishSseLine(true);
-                continue;
+            } catch (ClientDisconnectedException e) {
+                disconnect = e;
+                delegate = OutputStream.nullOutputStream();
             }
+            i = nl + 1;
+        }
+        if (disconnect != null) {
+            throw disconnect;
+        }
+    }
+
+    private ClientDisconnectedException appendSseLineBytes(
+            ClientDisconnectedException disconnect, byte[] b, int off, int len) throws IOException {
+        int i = off;
+        final int end = off + len;
+        while (i < end) {
             if (buffer.size() >= SSE_LINE_LIMIT_BYTES) {
-                writeToClient(buffer.toByteArray());
+                disconnect = writeOrRemember(disconnect, buffer.toByteArray());
                 buffer.reset();
                 bufferOverflowed = true;
-                writeToClient(new byte[] {current});
-                continue;
+                int nl = indexOf(b, i, end, (byte) '\n');
+                int sliceEnd = nl < 0 ? end : nl + 1;
+                disconnect = writeOrRemember(disconnect, b, i, sliceEnd - i);
+                if (nl >= 0) {
+                    bufferOverflowed = false;
+                    i = sliceEnd;
+                    continue;
+                }
+                return disconnect;
             }
-            buffer.write(current);
+            buffer.write(b[i]);
+            i++;
         }
+        return disconnect;
+    }
+
+    private ClientDisconnectedException writeOrRemember(
+            ClientDisconnectedException disconnect, byte[] b) throws IOException {
+        return writeOrRemember(disconnect, b, 0, b.length);
+    }
+
+    private ClientDisconnectedException writeOrRemember(
+            ClientDisconnectedException disconnect, byte[] b, int off, int len) throws IOException {
+        if (disconnect != null || len <= 0) {
+            return disconnect;
+        }
+        try {
+            writeToClient(b, off, len);
+            return null;
+        } catch (ClientDisconnectedException e) {
+            delegate = OutputStream.nullOutputStream();
+            return e;
+        }
+    }
+
+    private static int indexOf(byte[] b, int from, int to, byte value) {
+        for (int i = from; i < to; i++) {
+            if (b[i] == value) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /**
@@ -565,7 +639,8 @@ final class GatewayUsageCapture extends OutputStream {
         if (retainBody) {
             capturedBody = toWrite;
         }
-        if (pricer != null) {
+        // Only the held-JSON enrichment path deferred the client write.
+        if (pricer != null && jsonBody) {
             writeToClient(toWrite);
         }
     }
