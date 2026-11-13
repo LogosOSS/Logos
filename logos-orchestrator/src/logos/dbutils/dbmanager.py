@@ -3095,12 +3095,15 @@ class DBManager:
         """
         self.session.execute(
             text("""
-                INSERT INTO provider_model_batch_eligibility (provider_id, model_id, eligible, detail, checked_at)
-                VALUES (:pid, :mid, false, :detail, :now)
+                INSERT INTO provider_model_batch_eligibility
+                    (provider_id, model_id, eligible, detail, checked_at, batch_deployment, source)
+                VALUES (:pid, :mid, false, :detail, :now, NULL, 'refusal')
                 ON CONFLICT (provider_id, model_id)
                 DO UPDATE SET eligible = false,
                               detail = EXCLUDED.detail,
-                              checked_at = EXCLUDED.checked_at
+                              checked_at = EXCLUDED.checked_at,
+                              batch_deployment = NULL,
+                              source = 'refusal'
                 """),
             {
                 "pid": int(provider_id),
@@ -3110,6 +3113,65 @@ class DBManager:
             },
         )
         self.session.commit()
+
+    def record_model_batch_probe(
+        self,
+        provider_id: int,
+        model_id: int,
+        eligible: bool,
+        batch_deployment: Optional[str] = None,
+        detail: str = "",
+    ) -> None:
+        """Store what probing the model's deployments for Batch found.
+
+        ``batch_deployment`` is the deployment the provider's Batch API
+        accepted, which forwarded batch files are rewritten to; it is only kept
+        for an eligible model.
+        """
+        self.session.execute(
+            text("""
+                INSERT INTO provider_model_batch_eligibility
+                    (provider_id, model_id, eligible, detail, checked_at, batch_deployment, source)
+                VALUES (:pid, :mid, :eligible, :detail, :now, :deployment, 'probe')
+                ON CONFLICT (provider_id, model_id)
+                DO UPDATE SET eligible = EXCLUDED.eligible,
+                              detail = EXCLUDED.detail,
+                              checked_at = EXCLUDED.checked_at,
+                              batch_deployment = EXCLUDED.batch_deployment,
+                              source = 'probe'
+                """),
+            {
+                "pid": int(provider_id),
+                "mid": int(model_id),
+                "eligible": bool(eligible),
+                "deployment": (batch_deployment or None) if eligible else None,
+                "detail": (detail or "")[:500],
+                "now": datetime.datetime.now(datetime.timezone.utc),
+            },
+        )
+        self.session.commit()
+
+    def get_batch_model_support(self, provider_id: int) -> Dict[int, Dict[str, Any]]:
+        """What is known about Batch support per model on one provider.
+
+        Probe results stay until the next probe replaces them; a refusal
+        expires after the eligibility TTL like the ineligibility list does.
+        Models without a row are unknown.
+        """
+        rows = self.session.execute(
+            text("""
+                SELECT model_id, eligible, batch_deployment, source, detail, checked_at
+                FROM provider_model_batch_eligibility
+                WHERE provider_id = :pid
+                  AND (source = 'probe' OR checked_at > :now - make_interval(days => :ttl))
+                """),
+            {
+                "pid": int(provider_id),
+                "now": datetime.datetime.now(datetime.timezone.utc),
+                "ttl": int(BATCH_MODEL_ELIGIBILITY_TTL_DAYS),
+            },
+        ).mappings()
+        return {int(row["model_id"]): dict(row) for row in rows.all()}
 
     def get_batch_model_deployments(self, api_key_id: int, provider_id: Optional[int] = None) -> list[Dict[str, Any]]:
         """The models this key may run, with the provider that serves each.
@@ -3155,12 +3217,15 @@ class DBManager:
                           mp.endpoint AS endpoint,
                           p.id AS provider_id,
                           p.provider_type AS provider_type,
-                          p.cloud_provider_type AS cloud_provider_type
+                          p.cloud_provider_type AS cloud_provider_type,
+                          CASE WHEN be.eligible THEN be.batch_deployment END AS batch_deployment
                    FROM models m
                         JOIN model_provider mp ON mp.model_id = m.id
                         JOIN providers p ON p.id = mp.provider_id
                         JOIN effective_models em ON em.model_id = m.id
                         JOIN effective_providers ep ON ep.provider_id = p.id
+                        LEFT JOIN provider_model_batch_eligibility be
+                               ON be.provider_id = p.id AND be.model_id = m.id
                    {scope}
                    ORDER BY m.name, p.id
                    """)
@@ -3179,9 +3244,12 @@ class DBManager:
         """
         rows = self.session.execute(
             text("""
-                SELECT m.id AS model_id, m.name AS model_name, mp.endpoint AS endpoint
+                SELECT m.id AS model_id, m.name AS model_name, mp.endpoint AS endpoint,
+                       CASE WHEN be.eligible THEN be.batch_deployment END AS batch_deployment
                 FROM model_provider mp
                      JOIN models m ON m.id = mp.model_id
+                     LEFT JOIN provider_model_batch_eligibility be
+                            ON be.provider_id = mp.provider_id AND be.model_id = mp.model_id
                 WHERE mp.provider_id = :provider_id
                 ORDER BY m.name
                 """),

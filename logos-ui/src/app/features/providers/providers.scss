@@ -101,7 +101,7 @@
 
 .connection-row {
   display: grid;
-  grid-template-columns: 1fr 2fr 80px 64px;
+  grid-template-columns: 1fr 2fr auto 80px 64px;
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
@@ -122,6 +122,27 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.batch-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+  background: rgb(var(--color-outline-200) / var(--opacity-soft));
+  color: rgb(var(--color-typography-300));
+}
+
+.batch-badge--supported {
+  background: rgb(var(--color-success-500) / var(--opacity-soft));
+  color: rgb(var(--color-success-500));
+}
+
+.batch-badge--unsupported {
+  background: rgb(var(--color-error-500) / var(--opacity-soft));
+  color: rgb(var(--color-error-500));
 }
 
 .conn-key {
@@ -273,7 +294,7 @@
   }
 
   .connection-row {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 1fr auto auto;
   }
 
   .conn-endpoint,

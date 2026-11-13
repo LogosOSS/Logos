@@ -79,6 +79,8 @@ AZURE_DEPLOYMENTS = [
         "provider_id": 8,
         "provider_type": "cloud",
         "cloud_provider_type": "azure",
+        # The deployment sync probed it and the Batch API accepted it.
+        "batch_deployment": "gpt-41",
     },
 ]
 
@@ -629,6 +631,21 @@ class _FakeDB:
     def record_model_batch_ineligibility(self, provider_id, model_id, detail=""):
         self.eligibility_records.append((int(provider_id), int(model_id), detail))
         self.ineligible.setdefault(int(provider_id), set()).add(int(model_id))
+
+    def get_batch_model_support(self, provider_id):
+        """Probe answers derived from the deployments' batch deployment, refusals overriding them."""
+        support = {}
+        for row in self.deployments:
+            if int(row["provider_id"]) != int(provider_id) or not row.get("batch_deployment"):
+                continue
+            support[int(row["model_id"])] = {
+                "eligible": True,
+                "batch_deployment": row["batch_deployment"],
+                "source": "probe",
+            }
+        for model_id in self.ineligible.get(int(provider_id), set()):
+            support[int(model_id)] = {"eligible": False, "batch_deployment": None, "source": "refusal"}
+        return support
 
     def get_provider_model_deployments(self, provider_id):
         return [row for row in self.deployments if int(row["provider_id"]) == int(provider_id)]
@@ -3989,3 +4006,139 @@ def test_an_unreadable_provider_file_is_not_handed_over(monkeypatch):
     resp, seen = _creation_against(monkeypatch, b"", status=404)
     assert resp.status_code == 502
     assert [request.method for request in seen] == ["GET"]
+
+
+# ---------------------------------------------------------------------------
+# Per-deployment Batch support on Azure
+# ---------------------------------------------------------------------------
+
+AZURE_STANDARD_ONLY = [
+    {
+        "model_id": 92,
+        "model_name": "gpt-5.6-luna",
+        "endpoint": "https://res.openai.azure.com/openai/deployments/gpt-5.6-luna/responses",
+        "provider_id": 8,
+        "provider_type": "cloud",
+        "cloud_provider_type": "azure",
+    }
+]
+
+AZURE_SKU_REFUSAL = {
+    "errors": {
+        "data": [
+            {
+                "code": "invalid_deployment_type",
+                "message": "The current deployment 'gpt-41' is using the SKU 'GlobalStandard', which is not "
+                "supported for batch jobs. Please create a new deployment using one of the supported SKUs: "
+                "[globalbatch, datazonebatch], and then retry the operation.",
+                "line": None,
+                "param": "model",
+            }
+        ],
+        "object": "list",
+    }
+}
+
+
+def test_the_azure_errors_list_is_read_as_the_refusal_text():
+    assert "GlobalStandard" in batch_api._provider_error_text(AZURE_SKU_REFUSAL)
+    assert batch_api._looks_like_batch_model_error(batch_api._provider_error_text(AZURE_SKU_REFUSAL))
+
+
+def test_an_azure_model_without_a_probed_batch_deployment_never_reaches_the_batch_api(monkeypatch):
+    # The deployment is Standard (or not probed yet): sending its file to
+    # Azure's Batch API would only be refused, so the batch runs in Logos.
+    db = _FakeDB([AZURE_PROVIDER], AZURE_DEPLOYMENTS + AZURE_STANDARD_ONLY)
+    seen = _patch_env(monkeypatch, db, lambda request: httpx.Response(200, json={"id": "file-abc"}))
+
+    resp = client.post(
+        "/v1/files",
+        files={"file": ("batch.jsonl", _jsonl(_line(model="gpt-5.6-luna")), "application/jsonl")},
+        data={"purpose": "batch"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["logos_execution"] == "logos"
+    assert seen == []
+
+
+def test_forcing_the_provider_for_a_model_without_a_batch_deployment_is_refused_up_front(monkeypatch):
+    db = _FakeDB([AZURE_PROVIDER], AZURE_DEPLOYMENTS + AZURE_STANDARD_ONLY)
+    seen = _patch_env(monkeypatch, db, lambda request: httpx.Response(200, json={"id": "file-abc"}))
+
+    resp = client.post(
+        "/v1/files",
+        files={"file": ("batch.jsonl", _jsonl(_line(model="gpt-5.6-luna")), "application/jsonl")},
+        data={"purpose": "batch"},
+        headers={"X-Logos-Batch-Execution": "provider"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "model_not_available_for_batch"
+    assert seen == []
+
+
+def test_a_file_naming_two_models_is_not_sent_to_azure(monkeypatch):
+    # Azure runs one model per batch; a mixed file would be refused there.
+    second = [{**AZURE_DEPLOYMENTS[0], "model_id": 26, "model_name": "gpt-4.1-mini", "batch_deployment": "gpt-41m"}]
+    db = _FakeDB([AZURE_PROVIDER], AZURE_DEPLOYMENTS + second)
+    seen = _patch_env(monkeypatch, db, lambda request: httpx.Response(200, json={"id": "file-abc"}))
+    content = _jsonl(_line("one"), _line("two", model="gpt-4.1-mini"))
+
+    auto = client.post(
+        "/v1/files", files={"file": ("batch.jsonl", content, "application/jsonl")}, data={"purpose": "batch"}
+    )
+    forced = client.post(
+        "/v1/files",
+        files={"file": ("batch.jsonl", content, "application/jsonl")},
+        data={"purpose": "batch"},
+        headers={"X-Logos-Batch-Execution": "provider"},
+    )
+
+    assert auto.status_code == 200
+    assert auto.json()["logos_execution"] == "logos"
+    assert forced.status_code == 400
+    assert "one model per batch" in forced.json()["error"]["message"]
+    assert seen == []
+
+
+def test_a_forwarded_file_names_the_batch_deployment_not_the_standard_one(monkeypatch):
+    batch_capable = [{**AZURE_DEPLOYMENTS[0], "batch_deployment": "gpt-41-batch"}]
+    db = _FakeDB([AZURE_PROVIDER], batch_capable)
+    seen = _patch_env(monkeypatch, db, lambda request: httpx.Response(200, json={"id": "file-abc", "object": "file"}))
+
+    resp = client.post(
+        "/v1/files",
+        files={"file": ("batch.jsonl", _jsonl(_line()), "application/jsonl")},
+        data={"purpose": "batch"},
+    )
+
+    assert resp.status_code == 200
+    assert b'"model": "gpt-41-batch"' in seen[0].content
+
+
+def test_an_azure_sku_refusal_is_learned_and_rerun_locally(monkeypatch):
+    db = _FakeDB(
+        [AZURE_PROVIDER],
+        AZURE_DEPLOYMENTS,
+        owned={("file", "file-own"): _remote(5, OWN_TEAM, provider_id=8, models=["gpt-4.1"])},
+    )
+    started = []
+    monkeypatch.setattr(batch_api, "_start_local_batch", lambda row: started.append(row["upstream_id"]))
+
+    def upstream(request):
+        if request.url.path.endswith("/files/file-own/content"):
+            return httpx.Response(200, content=_jsonl(_line("one", model="gpt-41")))
+        return httpx.Response(400, json=AZURE_SKU_REFUSAL)
+
+    _patch_env(monkeypatch, db, upstream)
+
+    resp = client.post(
+        "/v1/batches",
+        json={"input_file_id": "file-own", "endpoint": "/v1/chat/completions", "completion_window": "24h"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["logos_execution"] == "logos"
+    assert [record[:2] for record in db.eligibility_records] == [(8, 25)]
+    assert started == [resp.json()["id"]]

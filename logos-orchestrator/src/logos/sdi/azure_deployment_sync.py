@@ -28,6 +28,8 @@ import httpx
 
 from logos.asyncio_tasks import cancel_and_wait
 from logos.dbutils.dbmanager import DBManager
+from logos.sdi.azure_batch_probe import PROBE_ENABLED as BATCH_PROBE_ENABLED
+from logos.sdi.azure_batch_probe import probe_provider
 from logos.sdi.model_discovery_notifier import deliver_discovery_notifications
 
 logger = logging.getLogger(__name__)
@@ -175,13 +177,17 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
-def plan_sync(host: str, deployments: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+def plan_sync(
+    host: str, deployments: List[Dict[str, Any]], batch_deployments: Optional[set] = None
+) -> List[Dict[str, str]]:
     """Turn the raw Azure deployment list into desired DB rows.
 
     - Keeps only ``status == 'succeeded'`` deployments.
     - Names each model by the served ``model`` field.
-    - When several deployments serve the same model, prefers the one whose
-      deployment id matches the model name; otherwise the first by id.
+    - When several deployments serve the same model, skips the ones known to
+      be of a Batch SKU (``batch_deployments``, ids) — they do not serve
+      interactive requests — then prefers the one whose deployment id matches
+      the model name; otherwise the first by id.
     - Builds the per-model endpoint URL.
 
     Returns a list of ``{"model_name", "endpoint"}`` (one per served model).
@@ -199,6 +205,8 @@ def plan_sync(host: str, deployments: List[Dict[str, Any]]) -> List[Dict[str, st
     planned: List[Dict[str, str]] = []
     for model_name, deps in sorted(by_model.items()):
         deps_sorted = sorted(deps, key=lambda d: d["id"])
+        interactive = [d for d in deps_sorted if str(d["id"]) not in (batch_deployments or set())]
+        deps_sorted = interactive or deps_sorted
         chosen = next(
             (d for d in deps_sorted if _norm(d["id"]) == _norm(model_name)),
             deps_sorted[0],
@@ -332,7 +340,17 @@ class AzureDeploymentSyncService:
             logger.exception("Azure deployment sync: fetch failed for provider %s (%s)", pid, name)
             return False, False
 
-        planned = plan_sync(host, raw)
+        try:
+            with DBManager() as db:
+                known_batch = {
+                    str(row["batch_deployment"])
+                    for row in db.get_batch_model_support(int(pid)).values()
+                    if row.get("eligible") and row.get("batch_deployment")
+                }
+        except Exception:  # noqa: BLE001 - without it every deployment counts as interactive
+            logger.exception("Azure deployment sync: could not read batch deployments of provider %s", pid)
+            known_batch = set()
+        planned = plan_sync(host, raw, known_batch)
         try:
             with DBManager() as db:
                 result = db.sync_azure_deployments(pid, planned)
@@ -347,6 +365,12 @@ class AzureDeploymentSyncService:
         except Exception:  # noqa: BLE001
             logger.exception("Azure deployment sync: DB upsert failed for provider %s (%s)", pid, name)
             return False, False
+
+        if BATCH_PROBE_ENABLED:
+            try:
+                await probe_provider(provider, raw, client)
+            except Exception:  # noqa: BLE001 - probing must never fail the sync
+                logger.exception("Azure deployment sync: batch probe failed for provider %s (%s)", pid, name)
 
         newly = result["new_models"]
         logger.info(

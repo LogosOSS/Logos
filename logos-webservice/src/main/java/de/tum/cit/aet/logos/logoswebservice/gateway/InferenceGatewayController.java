@@ -126,6 +126,7 @@ public class InferenceGatewayController {
         if (modelName != null
                 && GatewayRouteResolver.isDirectCloudEligible(path, request.getMethod())
                 && !GatewayRouteResolver.isMessagesPath(path)
+                && !GatewayRouteResolver.requestsImageGenerationTool(root)
                 && !requiresOrchestratorPolicy(request, modelName)) {
             GatewayAuthContext ctx = new GatewayAuthContext(
                 key, authService.deploymentsForModel(key, modelName));

@@ -475,27 +475,66 @@ async def choose_execution_target(
     # Standard). What the provider has refused before is tracked per model,
     # and those models count as not hosted for the choice made here.
     on_provider = [row for row in permitted if int(row["provider_id"]) == int(provider["id"])]
-    hosted = {str(row["model_name"]).lower() for row in on_provider}
-    model_id_by_name = {str(row["model_name"]).lower(): int(row["model_id"]) for row in on_provider}
-    ineligible = db.get_batch_model_ineligibility(int(provider["id"]))
-    missing = sorted(
-        name for name in model_names if name.lower() not in hosted or model_id_by_name.get(name.lower()) in ineligible
-    )
-    if missing:
-        if requested_execution == "provider" or _header(headers, BATCH_PROVIDER_HEADER):
+    missing, reason = _models_not_batchable(db, provider, on_provider, model_names)
+    if missing or reason:
+        forced = requested_execution == "provider" or _header(headers, BATCH_PROVIDER_HEADER)
+        if forced:
             raise_openai_error(
                 400,
-                f"Provider {provider['name']!r} cannot batch {', '.join(repr(n) for n in missing)}, "
-                "so it cannot run this batch. Omit the provider header to have Logos run it instead.",
+                (reason or f"Provider {provider['name']!r} cannot batch {', '.join(repr(n) for n in missing)}")
+                + ", so it cannot run this batch. Omit the provider header to have Logos run it instead.",
                 code="model_not_available_for_batch",
             )
         logger.info(
-            "Running batch locally: provider %s cannot batch %s",
+            "Running batch locally on provider %s: %s",
             provider.get("name"),
-            ", ".join(missing),
+            reason or "cannot batch " + ", ".join(missing),
         )
         return None, permitted
     return provider, on_provider
+
+
+def _models_not_batchable(
+    db: DBManager,
+    provider: Dict[str, Any],
+    on_provider: List[Dict[str, Any]],
+    model_names: set,
+) -> Tuple[List[str], str]:
+    """The file's models this provider's Batch API would refuse, and why.
+
+    Hosting a model is not enough: an Azure resource batches only on a
+    deployment of a Batch SKU, so there a model qualifies only when its
+    deployments were probed and one of them accepted a batch. Anything else —
+    a Standard deployment, or one not probed yet — is never sent to the
+    provider's Batch API. Other providers batch every model they host unless
+    they refused it before. Azure also runs one model per batch.
+
+    Returns ``(models that cannot be batched, a reason when it is the file
+    rather than a model)``.
+    """
+    hosted = {str(row["model_name"]).lower(): row for row in on_provider}
+    if is_azure_provider(provider):
+        if len(model_names) > 1:
+            return [], (
+                f"Provider {provider['name']!r} runs one model per batch and this file names "
+                f"{', '.join(repr(n) for n in sorted(model_names))}"
+            )
+        support = db.get_batch_model_support(int(provider["id"]))
+        missing = []
+        for name in sorted(model_names):
+            row = hosted.get(name.lower())
+            known = support.get(int(row["model_id"])) if row else None
+            if not row or not known or not known.get("eligible") or not known.get("batch_deployment"):
+                missing.append(name)
+        return missing, ""
+
+    ineligible = db.get_batch_model_ineligibility(int(provider["id"]))
+    missing = sorted(
+        name
+        for name in model_names
+        if name.lower() not in hosted or int(hosted[name.lower()]["model_id"]) in ineligible
+    )
+    return missing, ""
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +552,10 @@ def _deployment_for(provider: Optional[Dict[str, Any]], deployment_row: Dict[str
     """
     if provider is None or not is_azure_provider(provider):
         return str(deployment_row["model_name"])
+    # Azure batches only on a deployment of a Batch SKU, which sits next to
+    # the Standard deployment the endpoint names.
+    if deployment_row.get("batch_deployment"):
+        return str(deployment_row["batch_deployment"])
     return extract_azure_deployment_name(deployment_row.get("endpoint") or "") or str(deployment_row["model_name"])
 
 
@@ -760,6 +803,8 @@ def _model_index(db: DBManager, provider: Dict[str, Any]) -> Dict[str, int]:
         deployment = extract_azure_deployment_name(row.get("endpoint") or "")
         if deployment:
             index[deployment.lower()] = model_id
+        if row.get("batch_deployment"):
+            index[str(row["batch_deployment"]).lower()] = model_id
     return index
 
 
@@ -975,6 +1020,9 @@ def _provider_error_text(body: Dict[str, Any]) -> str:
     if isinstance(error, dict) and error.get("message"):
         return str(error["message"])
     errors = body.get("errors")
+    # Azure wraps the list in a list object: {"errors": {"data": [...]}}.
+    if isinstance(errors, dict) and isinstance(errors.get("data"), list):
+        errors = errors["data"]
     if isinstance(errors, list):
         parts = []
         for item in errors:
@@ -995,6 +1043,8 @@ def _looks_like_batch_model_error(text: str) -> bool:
     deployment name — must not be read as "this model is not for batch".
     """
     lowered = (text or "").lower()
+    if "invalid_deployment_type" in lowered:
+        return True
     return "batch" in lowered and any(marker in lowered for marker in ("not supported", "sku", "globalbatch"))
 
 
@@ -1537,6 +1587,10 @@ async def _rerun_refused_creation_locally(
     with DBManager() as db:
         deployments = db.get_provider_model_deployments(int(provider["id"]))
     name_by_deployment = {str(_deployment_for(provider, row)).lower(): str(row["model_name"]) for row in deployments}
+    for row in deployments:
+        standard = extract_azure_deployment_name(row.get("endpoint") or "")
+        if standard:
+            name_by_deployment.setdefault(standard.lower(), str(row["model_name"]))
     lines: List[bytes] = []
     for raw_line in content.splitlines():
         if not raw_line.strip():
@@ -1717,9 +1771,7 @@ async def handle_batch_api_request(request: Request) -> Response:
         _finalize_batch_log(log_id, provider_id=provider_id, result_status="success")
     else:
         payload = _response_json(response) or {}
-        error_text = ""
-        if isinstance(payload.get("error"), dict):
-            error_text = str(payload["error"].get("message") or "")
+        error_text = _provider_error_text(payload)
         _finalize_batch_log(
             log_id,
             provider_id=provider_id,

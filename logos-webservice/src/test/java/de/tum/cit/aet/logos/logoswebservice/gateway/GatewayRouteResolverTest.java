@@ -8,6 +8,8 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -20,6 +22,20 @@ class GatewayRouteResolverTest {
     void setUp() {
         repository = mock(GatewayDeploymentRepository.class);
         resolver = new GatewayRouteResolver(repository);
+    }
+
+    @Test
+    void imageGenerationToolIsDetectedOnlyAsATool() throws Exception {
+        ObjectMapper json = new ObjectMapper();
+        assertThat(GatewayRouteResolver.requestsImageGenerationTool(json.readTree(
+            "{\"model\":\"gpt-5\",\"tools\":[{\"type\":\"web_search\"},"
+                + "{\"type\":\"image_generation\",\"model\":\"gpt-image-1.5\"}]}"))).isTrue();
+        assertThat(GatewayRouteResolver.requestsImageGenerationTool(json.readTree(
+            "{\"model\":\"gpt-5\",\"tools\":[{\"type\":\"function\",\"name\":\"image_generation\"}]}")))
+            .isFalse();
+        assertThat(GatewayRouteResolver.requestsImageGenerationTool(json.readTree("{\"model\":\"gpt-5\"}")))
+            .isFalse();
+        assertThat(GatewayRouteResolver.requestsImageGenerationTool(null)).isFalse();
     }
 
     @Test
