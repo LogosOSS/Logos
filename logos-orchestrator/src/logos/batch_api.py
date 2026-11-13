@@ -53,6 +53,7 @@ from logos.billing.finalize import finalize_billing_inputs
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.types import cloud_auth_header
 from logos.errors import openai_error_response, raise_openai_error
+from logos.image_generation_tool import requested_image_models
 from logos.request_content import (
     parse_batch_file_upload,
     sanitized_headers_for_persistence,
@@ -582,6 +583,9 @@ def batch_input_models(content: bytes) -> set:
             model = line["body"].get("model")
             if isinstance(model, str) and model:
                 names.add(model)
+            # The Responses image tool runs a second model: it needs the same
+            # authorisation and has to be served where the batch runs.
+            names.update(requested_image_models(line["body"]))
     return names
 
 
@@ -1393,15 +1397,25 @@ async def _handle_file_upload(request: Request, auth: AuthContext, headers: Dict
     """
     upload = await parse_batch_file_upload(request)
     raw = upload["file"]["bytes"]
-    provider, deployments = await choose_execution_target(auth, headers, db, batch_input_models(raw))
+    file_models = batch_input_models(raw)
+    provider, deployments = await choose_execution_target(auth, headers, db, file_models)
     rewritten, model_counts = validate_and_rewrite_batch_input(raw, provider, deployments)
+    # Recorded for the re-check at batch creation: the image models the lines'
+    # tools name count as models the file runs, like each line's own model.
+    wanted = {name.lower() for name in file_models}
     log_payload = {
         "purpose": upload["purpose"],
         "filename": upload["file"]["filename"],
         "size": len(rewritten),
         "requests": sum(model_counts.values()),
         "model_ids": sorted(model_counts),
-        "models": sorted(str(row["model_name"]) for row in deployments if int(row["model_id"]) in model_counts),
+        "models": sorted(
+            {
+                str(row["model_name"])
+                for row in deployments
+                if int(row["model_id"]) in model_counts or str(row["model_name"]).lower() in wanted
+            }
+        ),
         "execution": "provider" if provider else "logos",
     }
 

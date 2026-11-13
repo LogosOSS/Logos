@@ -4178,3 +4178,89 @@ def test_a_refused_file_naming_the_batch_deployment_is_rerun_under_the_logos_mod
     stored_content = db.stored_files[resp.json()["input_file_id"]][1]
     assert b'"model": "gpt-4.1"' in stored_content
     assert b"gpt-41-batch" not in stored_content
+
+
+# ---------------------------------------------------------------------------
+# The Responses image tool in batch files
+# ---------------------------------------------------------------------------
+
+
+def _image_line(custom_id="one", model="gpt-4.1", image_model="gpt-image-1.5"):
+    return _line(
+        custom_id,
+        url="/v1/responses",
+        body={"model": model, "input": "draw", "tools": [{"type": "image_generation", "model": image_model}]},
+    )
+
+
+OPENAI_IMAGE = [
+    {
+        "model_id": 30,
+        "model_name": "gpt-image-1.5",
+        "endpoint": "https://api.openai.com/v1/images/generations",
+        "provider_id": 7,
+        "provider_type": "cloud",
+        "cloud_provider_type": "openai",
+    }
+]
+
+
+def test_an_image_model_the_key_may_not_use_is_refused_at_upload(monkeypatch):
+    db = _FakeDB([OPENAI_PROVIDER], OPENAI_DEPLOYMENTS)
+    seen = _patch_env(monkeypatch, db, lambda request: httpx.Response(200, json={"id": "file-abc"}))
+
+    resp = client.post(
+        "/v1/files",
+        files={"file": ("batch.jsonl", _jsonl(_image_line()), "application/jsonl")},
+        data={"purpose": "batch"},
+    )
+
+    assert resp.status_code == 403
+    assert "gpt-image-1.5" in resp.json()["error"]["message"]
+    assert seen == []
+
+
+def test_an_image_tool_file_does_not_go_to_azure(monkeypatch):
+    # Azure needs the image deployment in a header a batch line cannot carry,
+    # and it runs one model per batch: the file runs in Logos, where each line
+    # gets the header and its own authorisation.
+    image = [{**OPENAI_IMAGE[0], "provider_id": 8, "cloud_provider_type": "azure", "batch_deployment": "img-b"}]
+    db = _FakeDB([AZURE_PROVIDER], AZURE_DEPLOYMENTS + image)
+    seen = _patch_env(monkeypatch, db, lambda request: httpx.Response(200, json={"id": "file-abc"}))
+
+    resp = client.post(
+        "/v1/files",
+        files={"file": ("batch.jsonl", _jsonl(_image_line()), "application/jsonl")},
+        data={"purpose": "batch"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["logos_execution"] == "logos"
+    assert seen == []
+
+
+def test_a_forwarded_image_tool_file_records_the_image_model_for_the_creation_recheck(monkeypatch):
+    db = _FakeDB([OPENAI_PROVIDER], OPENAI_DEPLOYMENTS + OPENAI_IMAGE)
+    _patch_env(monkeypatch, db, lambda request: httpx.Response(200, json={"id": "file-abc", "object": "file"}))
+
+    resp = client.post(
+        "/v1/files",
+        files={"file": ("batch.jsonl", _jsonl(_image_line()), "application/jsonl")},
+        data={"purpose": "batch"},
+    )
+
+    assert resp.status_code == 200
+    assert db.log_usage_kwargs["input_payload"]["models"] == ["gpt-4.1", "gpt-image-1.5"]
+
+    # The creating key lost the image model after the upload.
+    db.key_permissions[11] = {"providers": [OPENAI_PROVIDER], "deployments": OPENAI_DEPLOYMENTS}
+    db.owned[("file", "file-img")] = _remote(5, OWN_TEAM, models=["gpt-4.1", "gpt-image-1.5"])
+    seen = _patch_env(monkeypatch, db, lambda request: httpx.Response(200, json={"id": "batch_1"}))
+    created = client.post(
+        "/v1/batches",
+        json={"input_file_id": "file-img", "endpoint": "/v1/responses", "completion_window": "24h"},
+    )
+
+    assert created.status_code == 403
+    assert created.json()["error"]["code"] == "model_not_permitted"
+    assert seen == []
