@@ -17,6 +17,7 @@ export const routes: Routes = [
     canActivate: [authGuard],
     loadComponent: () => import('./core/layout/shell/shell').then(m => m.Shell),
     children: [
+      { path: 'settings', title: 'Account settings · Logos', loadComponent: () => import('./features/account-settings/account-settings').then(m => m.AccountSettings) },
       { path: 'statistics',      title: 'Statistics · Logos',      data: { roles: ['logos_admin'] },                canActivate: [roleGuard], loadComponent: () => import('./features/statistics/statistics').then(m => m.Statistics) },
       { path: 'models',         title: 'Models · Logos',           data: { roles: ALL_ROLES },                canActivate: [roleGuard, hasTeamGuard], loadComponent: () => import('./features/models/models').then(m => m.Models) },
       { path: 'models/:id/details', title: 'Model Details · Logos', data: { roles: ['logos_admin'] },                canActivate: [roleGuard], loadComponent: () => import('./features/model-error-report/model-error-report').then(m => m.ModelErrorReport) },

@@ -7,7 +7,7 @@
 
     <!-- No foreign keys: names and IDs are snapshots that survive deletion of
          the actor, team, key, model or provider. No API exposes writes here. -->
-    <changeSet id="072-permission-audit-log" author="logos">
+    <changeSet id="074-permission-audit-log" author="logos">
         <sql splitStatements="false"><![CDATA[
             CREATE TABLE permission_audit_log (
                 id BIGSERIAL PRIMARY KEY,

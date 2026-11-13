@@ -202,9 +202,15 @@ async def create_session_container(
     The default network is the internal session network (the agent phase);
     the trusted helper containers pass the egress network explicitly.
     """
+    verifying = env.get("LOGOS_SESSION_PHASE") == "verify"
+    if verifying and (ssh_key_host_path or ssh_known_hosts_host_path or state_host_path):
+        raise ValueError("verification cannot mount credentials or runner state")
+    if verifying and any(key in env for key in ("GITHUB_TOKEN", "GH_TOKEN", "GIT_SSH_COMMAND", "ANTHROPIC_AUTH_TOKEN")):
+        raise ValueError("verification cannot receive credentials")
+    mount_mode = ":ro" if verifying else ""
     binds = [
-        f"{workspace_volume}:/workspace",
-        f"{artifact_host_path}:/artifacts",
+        f"{workspace_volume}:/workspace{mount_mode}",
+        f"{artifact_host_path}:/artifacts{mount_mode}",
     ]
     if state_host_path:
         binds.append(f"{state_host_path}:/logos/state:ro")
@@ -222,7 +228,7 @@ async def create_session_container(
         binds.append(f"{ssh_key_host_path}:/logos/deploy_key:ro")
     host_config: dict[str, Any] = {
         "Binds": binds,
-        "NetworkMode": network or settings.session_network,
+        "NetworkMode": "none" if verifying else network or settings.session_network,
         "ReadonlyRootfs": True,
         # The agent needs scratch space; give it tmpfs rather than a writable
         # root so nothing it writes outside /workspace survives the session.
@@ -255,6 +261,8 @@ async def create_session_container(
         # Never run as root inside the container; the image creates this user.
         "User": "agent",
     }
+    if verifying:
+        payload["Entrypoint"] = ["python3", "/usr/local/lib/verify_checkout.py"]
 
     response = await _request("POST", "/containers/create", params={"name": name}, json=payload)
     return response.json()["Id"]

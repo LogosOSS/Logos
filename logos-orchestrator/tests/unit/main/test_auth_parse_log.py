@@ -16,6 +16,7 @@ the SQL query, whose bypass sees every model, not just the permitted set.
 
 from __future__ import annotations
 
+import datetime
 import json as _json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -142,6 +143,31 @@ async def test_deployments_are_reused_for_warm_requests(_profile_auth):
     )
     assert raw_deployments_again == [_DEPLOYMENT_ROW]
     assert db.deployments_calls == 1
+
+
+async def test_deferred_log_retains_arrival_before_authentication(_profile_auth, monkeypatch):
+    db, auth = _profile_auth(role="app_developer")
+    await main.auth_parse_log(_request({"model": "m"}), use_profile_auth=True, request_id="warm-cache")
+    arrived = datetime.datetime(2026, 11, 13, 12, tzinfo=datetime.timezone.utc)
+
+    class Clock(datetime.datetime):
+        current = arrived
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr(main.datetime, "datetime", Clock)
+
+    def authenticate(*args, **kwargs):
+        Clock.current = arrived + datetime.timedelta(seconds=2)
+        return auth
+
+    monkeypatch.setattr(main, "authenticate_api_key", authenticate)
+    result = await main.auth_parse_log(_request({"model": "m"}), use_profile_auth=True, request_id="deferred")
+    pending = result[4]
+    assert isinstance(pending, main._PendingLog)
+    assert pending.fields["timestamp_request"] == arrived
 
 
 @pytest.mark.asyncio

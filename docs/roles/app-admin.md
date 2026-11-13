@@ -14,6 +14,11 @@ becomes an App Admin if the account has the OIDC role that is configured in
 
 The UI shows the role badge "App Admin" in the header menu.
 
+## Account settings
+
+Open the user menu and select **Account settings** to manage your personal passkeys.
+Follow the shared [account settings procedure](app-developer.md#account-settings).
+
 ## Models
 
 This page shows the model catalogue of the deployment: the name, the

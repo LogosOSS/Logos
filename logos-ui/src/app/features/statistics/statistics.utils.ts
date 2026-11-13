@@ -87,6 +87,8 @@ export function formatTimeAgo(ts: string | null, nowMs: number): string {
 }
 
 export function formatElapsed(seconds: number): string {
+  // A clock correction or a timestamp from another host must not show a negative duration.
+  seconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);

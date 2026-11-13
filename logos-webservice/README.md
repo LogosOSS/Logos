@@ -200,7 +200,7 @@ IDs and names are snapshots without foreign keys, so deleting a resource does
 not erase its history. API-key secrets are never recorded. Team inheritance is
 represented by changes to team grants, rather than fabricated per-key changes.
 
-The history begins when changelog 072 is installed. It cannot reconstruct rows
+The history begins when changelog 074 is installed. It cannot reconstruct rows
 removed by older migrations. To restore access, use the recorded IDs with the
 existing permission endpoints; current authorization rules still apply.
 Custom key grants stay independent of team defaults. Changing team defaults
