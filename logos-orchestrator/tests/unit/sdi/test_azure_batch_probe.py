@@ -362,3 +362,38 @@ async def test_a_timed_out_reprobe_keeps_a_confirmed_batch_deployment(monkeypatc
     )
     planned = plan_sync("https://res.openai.azure.com", raw, set(db.ids[0]))
     assert "/deployments/gpt-41-std/" in planned[0]["endpoint"]
+
+
+async def test_a_deleted_batch_deployment_is_dropped_even_when_the_reprobe_is_inconclusive(monkeypatch):
+    db = _ProbeDB()
+    db.get_provider_model_deployments = lambda provider_id: [{"model_id": 25, "model_name": "gpt-4.1"}]
+    db.get_batch_model_support = lambda provider_id: {
+        25: {
+            "eligible": True,
+            "batch_deployment": "gpt-41-batch",
+            "batch_deployment_ids": ["gpt-41-batch"],
+            "source": "probe",
+            "checked_at": datetime.datetime.now(datetime.timezone.utc),
+        }
+    }
+    checked = []
+    original_record = db.record_model_batch_probe
+
+    def record(*args, checked_at=None, **kwargs):
+        checked.append(checked_at)
+        return original_record(*args, **kwargs)
+
+    db.record_model_batch_probe = record
+    monkeypatch.setitem(probe_provider.__globals__, "DBManager", lambda: db)
+
+    async def rate_limited(provider, deployment_id, operation, client):
+        return None, "HTTP 429"
+
+    monkeypatch.setitem(probe_provider.__globals__, "probe_deployment", rate_limited)
+    raw = [{"id": "gpt-41", "model": "gpt-4.1", "status": "succeeded"}]  # gpt-41-batch was deleted
+    async with httpx.AsyncClient() as client:
+        await probe_provider(PROVIDER, raw, client)
+
+    assert db.records == [(8, 25, False, None)]
+    assert db.ids == [[]]
+    assert checked[0] is not None  # still due for the next sync

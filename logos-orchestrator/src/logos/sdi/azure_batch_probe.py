@@ -243,6 +243,13 @@ async def probe_provider(
             prior_ids.add(str(prior["batch_deployment"]))
         accepted += [dep_id for dep_id in inconclusive if dep_id in prior_ids]
         eligible: Optional[bool] = True if accepted else (None if inconclusive else False)
+        if eligible is None and prior_ids:
+            # The confirmed batch deployments are gone and the rest gave no
+            # clear answer: the stored positive answer would still route
+            # batches to a deleted deployment, so it is dropped now and the
+            # model stays due for the next pass.
+            details.append("previously confirmed batch deployments are gone: " + ", ".join(sorted(prior_ids)))
+            eligible = False
         if eligible is None:
             # Nothing conclusive: keep what was known and try again next pass.
             logger.info("Batch probe of %s on %s was inconclusive: %s", model_name, provider.get("name"), details)

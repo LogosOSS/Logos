@@ -818,7 +818,7 @@ def _patch_env(monkeypatch, db, upstream, auth=None, verify_input=False):
     seen = []
     if not verify_input:
 
-        async def _skip_verification(provider, input_file_id):
+        async def _skip_verification(provider, input_file_id, *args):
             return None
 
         monkeypatch.setattr(batch_api, "_verify_provider_input_file", _skip_verification)
@@ -4264,3 +4264,28 @@ def test_a_forwarded_image_tool_file_records_the_image_model_for_the_creation_re
     assert created.status_code == 403
     assert created.json()["error"]["code"] == "model_not_permitted"
     assert seen == []
+
+
+def test_an_older_provider_file_is_checked_for_image_models_at_creation(monkeypatch):
+    # A file uploaded before image models were recorded: its row names only the
+    # chat model, so the image model is read from the file the provider holds.
+    db = _FakeDB(
+        [OPENAI_PROVIDER],
+        OPENAI_DEPLOYMENTS,
+        owned={("file", "file-old"): _remote(5, OWN_TEAM, models=["gpt-4.1"])},
+    )
+
+    def upstream(request):
+        if request.url.path.endswith("/files/file-old/content"):
+            return httpx.Response(200, content=_jsonl(_image_line()))
+        return httpx.Response(200, json={"id": "batch_1"})
+
+    seen = _patch_env(monkeypatch, db, upstream, verify_input=True)
+    resp = client.post(
+        "/v1/batches",
+        json={"input_file_id": "file-old", "endpoint": "/v1/responses", "completion_window": "24h"},
+    )
+
+    assert resp.status_code == 403
+    assert "gpt-image-1.5" in resp.json()["error"]["message"]
+    assert [request.method for request in seen] == ["GET"]  # read the file, created nothing

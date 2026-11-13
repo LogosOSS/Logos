@@ -1521,11 +1521,15 @@ def _local_batch_contract(content: bytes, json_body: Dict[str, Any]) -> str:
     return f"/v1/{wanted}"
 
 
-async def _verify_provider_input_file(provider: Dict[str, Any], input_file_id: str) -> None:
+async def _verify_provider_input_file(
+    provider: Dict[str, Any], input_file_id: str, db: Optional[DBManager] = None, auth: Optional[AuthContext] = None
+) -> None:
     """Check the provider-held input file again before a batch runs it.
 
-    Lines are checked at upload; a file uploaded before that check existed
-    must not run provider-state references on the shared provider account.
+    Lines are checked at upload; a file uploaded before those checks existed
+    must not run provider-state references, or an image model the creating key
+    may not use, on the shared provider account. The image models are read from
+    the file itself, since the models recorded for an older file omit them.
     """
     content = await _download_file(provider, input_file_id)
     if content is None:
@@ -1533,6 +1537,25 @@ async def _verify_provider_input_file(provider: Dict[str, Any], input_file_id: s
             502, "The input file could not be read from the provider to check it.", code="batch_upstream_unreachable"
         )
     reject_stateful_batch_lines(content)
+    if db is None or auth is None:
+        return
+    image_models = set()
+    for line in parse_request_lines(content):
+        image_models.update(requested_image_models(line.get("body")))
+    if not image_models:
+        return
+    permitted = {
+        str(row["model_name"]).lower()
+        for row in db.get_batch_model_deployments(auth.api_key_id, provider_id=int(provider["id"]))
+    }
+    missing = sorted(name for name in image_models if name.lower() not in permitted)
+    if missing:
+        raise_openai_error(
+            403,
+            f"This key may not use {', '.join(repr(name) for name in missing)}: the file's image_generation "
+            "tools ask for image models the key may not run on this provider.",
+            code="model_not_permitted",
+        )
 
 
 async def _handle_batch_creation(
@@ -1553,7 +1576,7 @@ async def _handle_batch_creation(
         if provider is None:
             raise_openai_error(502, "The provider holding this file is gone.", code="batch_upstream_unreachable")
         _assert_still_permitted(db, auth, provider, input_file)
-        await _verify_provider_input_file(provider, input_file_id)
+        await _verify_provider_input_file(provider, input_file_id, db, auth)
         return None, provider
 
     content = db.get_local_batch_file_content(int(input_file["id"])) or b""
