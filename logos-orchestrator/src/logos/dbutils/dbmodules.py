@@ -250,6 +250,11 @@ class LogEntry(Base):
     # rows; FALSE for a request the limiter rejected after scheduling. The
     # usage window counts everything except explicit FALSE.
     rate_limit_admitted = Column(Boolean, nullable=True)
+    # Answer reuse: TRUE when the answer came from answer_cache (no model
+    # call; cache_entry_id names the entry), FALSE when a lookup ran and found
+    # nothing reusable, NULL when no lookup ran or for pre-migration rows.
+    cache_hit = Column(Boolean, nullable=True)
+    cache_entry_id = Column(Integer, nullable=True)
     was_cold_start = Column(Boolean, default=False)
     load_duration_ms = Column(Numeric)
     available_vram_mb = Column(Integer)

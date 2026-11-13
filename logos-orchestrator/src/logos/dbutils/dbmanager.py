@@ -533,6 +533,8 @@ class DBManager:
             "timestamp_provider_response",
             "request_complete_ts",
             "rate_limit_admitted",
+            "cache_hit",
+            "cache_entry_id",
             "available_vram_mb",
             "azure_rate_remaining_requests",
             "azure_rate_remaining_tokens",
@@ -5326,6 +5328,154 @@ class DBManager:
                                   AND is_active = true
                             """)
         return self.session.execute(sql, {"logos_key": logos_key}).fetchone() is not None
+
+    # Answer reuse (table answer_cache, changelog 075)
+
+    def get_answer_cache_entries(self, context_id: str) -> List[Dict[str, Any]]:
+        """Return every stored answer of one context, oldest first.
+
+        Only the given context is read: answers are never shared across
+        contexts.
+
+        Params:
+            context_id: The scope, as built by
+                :func:`logos.answer_reuse.context.cache_scope`.
+
+        Returns:
+            One dict per entry with ``id``, ``intent``, ``answer_template``,
+            ``source``, ``source_model_id`` and ``embedding`` (384 floats).
+        """
+        rows = self.session.execute(
+            text("""
+                 SELECT id, intent, answer_template, source, source_model_id, embedding
+                 FROM answer_cache
+                 WHERE context_id = :context_id
+                 ORDER BY id
+                 """),
+            {"context_id": context_id},
+        ).fetchall()
+        return [dict(row._mapping) for row in rows]
+
+    def insert_answer_cache_entry(
+        self,
+        *,
+        context_id: str,
+        question_raw: str,
+        question_normalized: str,
+        embedding: List[float],
+        intent: str,
+        answer_template: str,
+        source: str,
+        source_model_id: Optional[int] = None,
+        source_log_id: Optional[int] = None,
+    ) -> Optional[int]:
+        """Store one answer for later reuse.
+
+        A question that is already stored for the context (same normalized
+        text) is left as it is, so loading the same data twice is harmless.
+
+        Params:
+            context_id: The scope, as built by
+                :func:`logos.answer_reuse.context.cache_scope`.
+            question_raw: The question as the client sent it.
+            question_normalized: The question after placeholder removal; the
+                text the embedding was computed from.
+            embedding: The 384 floats of ``question_normalized``.
+            intent: The intent assigned to the question.
+            answer_template: The answer, placeholders included.
+            source: ``"model"`` or ``"seed"``.
+            source_model_id: The model that wrote the answer; required for
+                ``"model"``, None for ``"seed"``.
+            source_log_id: The log_entry row of the original request, if any.
+
+        Returns:
+            The new entry's id, or None when the question was already stored.
+        """
+        row = self.session.execute(
+            text("""
+                 INSERT INTO answer_cache (context_id, question_raw, question_normalized, embedding,
+                                           intent, answer_template, source, source_model_id, source_log_id)
+                 VALUES (:context_id, :question_raw, :question_normalized, CAST(:embedding AS REAL[]),
+                         :intent, :answer_template, :source, :source_model_id, :source_log_id)
+                 ON CONFLICT (context_id, question_normalized) DO NOTHING
+                 RETURNING id
+                 """),
+            {
+                "context_id": context_id,
+                "question_raw": question_raw,
+                "question_normalized": question_normalized,
+                "embedding": [float(x) for x in embedding],
+                "intent": intent,
+                "answer_template": answer_template,
+                "source": source,
+                "source_model_id": source_model_id,
+                "source_log_id": source_log_id,
+            },
+        ).fetchone()
+        self.session.commit()
+        return int(row._mapping["id"]) if row else None
+
+    def record_answer_cache_hit(self, entry_id: int) -> None:
+        """Count one reuse of a stored answer.
+
+        Params:
+            entry_id: The answer_cache row that answered a request.
+        """
+        self.session.execute(
+            text("""
+                 UPDATE answer_cache
+                 SET hit_count = hit_count + 1, last_hit_at = now()
+                 WHERE id = :entry_id
+                 """),
+            {"entry_id": int(entry_id)},
+        )
+        self.session.commit()
+
+    def finalize_cache_hit_row(self, log_id: int, entry_id: int, *, request_id: Optional[str] = None) -> None:
+        """Settle the log row of a request answered from the answer cache.
+
+        A cache hit ran no model, so the row gets no model, provider or usage
+        rows. Its cost is known to be zero, so it is settled as zero and
+        finalised here; budget reads then take it as settled instead of
+        pricing it again. The row is marked successful, stamped with its
+        response time and linked to the answer_cache entry that answered it.
+        The entry's hit count rises in the same commit.
+
+        Params:
+            log_id: The request's log_entry row.
+            entry_id: The answer_cache row whose answer was returned.
+            request_id: The request id, written when the row does not have one yet.
+        """
+        if not isinstance(log_id, int):
+            return
+        self.session.execute(
+            text("""
+                 UPDATE log_entry
+                 SET result_status      = 'success',
+                     timestamp_response = :timestamp,
+                     request_id         = COALESCE(:request_id, request_id),
+                     cache_hit          = TRUE,
+                     cache_entry_id     = :entry_id,
+                     settled_cost_micro_cents = 0,
+                     cost_finalized     = TRUE
+                 WHERE id = :log_id
+                 """),
+            {
+                "timestamp": datetime.datetime.now(datetime.timezone.utc),
+                "request_id": request_id,
+                "entry_id": int(entry_id),
+                "log_id": log_id,
+            },
+        )
+        self.session.execute(
+            text("""
+                 UPDATE answer_cache
+                 SET hit_count = hit_count + 1, last_hit_at = now()
+                 WHERE id = :entry_id
+                 """),
+            {"entry_id": int(entry_id)},
+        )
+        self.session.commit()
 
     def get_team(self, team_id: int) -> dict | None:
         row = self.session.execute(

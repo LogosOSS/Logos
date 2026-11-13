@@ -29,6 +29,7 @@ dependencies = [
     "prometheus-client==0.21.1",
     "python-multipart==0.0.32",
     "guidellm[recommended]==0.8.1",
+    "numpy==2.5.4",
 
     # Security floors for packages that would otherwise only be transitive.
     # The Docker build installs from uv.lock (`uv sync --locked`), but CI test

@@ -25,6 +25,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from grpclocal import model_pb2_grpc
 from grpclocal.grpc_server import LogosServicer
 from logos import perf_trace, refcache, write_queue
+from logos.answer_reuse.context import InvalidContextId
+from logos.answer_reuse.service import (
+    CACHE_RESPONSE_HEADERS,
+    AnswerCache,
+    cache_hit_headers,
+    chat_completion_payload,
+    reuse_request_from,
+)
 from logos.anthropic_compat import (
     MessagesStreamTranslator,
     UpstreamDialect,
@@ -909,6 +917,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],  # logos_key, Authorization, etc.
+    # Browser clients can read only exposed response headers.
+    expose_headers=list(CACHE_RESPONSE_HEADERS),
 )
 
 
@@ -3259,20 +3269,7 @@ async def _execute_proxy_mode(
         model_id = matching_deployments[0]["model_id"] if len(matching_deployments) == 1 else None
         model_name = requested_model_name if model_id is not None else None
     else:
-        # auth_parse_log resolved the model in the same session as the
-        # deployment lookup (same permission data, one checkout — );
-        # reuse it when present. The reuse is not traced again under
-        # "mode.resolve_model": the pre-resolve already recorded the phase,
-        # a second near-zero sample under the same name would skew its p50.
-        resolved = auth.resolved_proxy_model
-        if resolved is None:
-            # Not resolved on the auth path (other callers, or no "model" at
-            # auth time): permission data — read fresh per request, never
-            # from the ref cache (a removed model permission must not wait
-            # for a TTL).
-            with perf_trace.phase(request_id, "mode.resolve_model"):
-                with DBManager() as db:
-                    resolved = db.resolve_proxy_model(auth.api_key_id, requested_model_name)
+        resolved = _resolve_requested_model(auth, requested_model_name, request_id)
         if resolved is None:
             raise HTTPException(
                 status_code=404,
@@ -3593,6 +3590,173 @@ async def _execute_resource_mode(
             raise e
 
 
+_answer_cache: Optional[AnswerCache] = None
+
+
+def _load_answer_cache_entries(scope: str) -> list[dict]:
+    """Read one scope's stored answers for the in-memory answer cache."""
+    with DBManager() as db:
+        return db.get_answer_cache_entries(scope)
+
+
+def _encode_for_answer_reuse(text: str):
+    """Embed ``text`` with the classifier's model, so stored and new questions share one space."""
+    pipeline = globals().get("_pipeline")
+    if pipeline is None:
+        raise RuntimeError("the request pipeline is not started")
+    return pipeline.classifier.laura.model.encode(text, normalize_embeddings=True, show_progress_bar=False)
+
+
+def _get_answer_cache() -> AnswerCache:
+    global _answer_cache
+    if _answer_cache is None:
+        _answer_cache = AnswerCache(_load_answer_cache_entries, _encode_for_answer_reuse)
+    return _answer_cache
+
+
+def _record_answer_reuse_miss(request_id: Optional[str]) -> None:
+    """Mark the request's log row: the cache was checked and had no reusable answer."""
+    if not request_id:
+        return
+    pipeline = globals().get("_pipeline")
+    if pipeline is None:
+        return
+    try:
+        pipeline.record_answer_reuse_miss(request_id)
+    except Exception:  # noqa: BLE001 — monitoring must never break a request
+        logger.debug("Failed to record answer-cache miss for %s", request_id, exc_info=True)
+
+
+def _persist_cache_hit(log_id, request_id: Optional[str], entry_id: int, payload: Dict[str, Any]) -> None:
+    """Settle a request answered from the cache: its log row, the entry's hit count, the payload.
+
+    The same terminal duties as `_record_log_failure`, for a success that
+    never reached the scheduler: drain the buffered lifecycle fields, end
+    the in-flight accounting, then write the row.
+    """
+    buffered_metrics: Dict[str, Any] = {}
+    if request_id:
+        pipeline = globals().get("_pipeline")
+        if pipeline is not None:
+            try:
+                buffered_metrics = pipeline.take_monitoring_buffer(request_id)
+            except Exception:  # noqa: BLE001 — monitoring must never break a request
+                logger.debug("Failed to drain monitoring buffer for %s", request_id, exc_info=True)
+    _discard_in_flight(request_id, "success")
+
+    try:
+        with DBManager() as db:
+            actual_log_id = _materialize_log_id(db, log_id)
+            if actual_log_id is None:
+                db.record_answer_cache_hit(entry_id)
+                return
+            db.finalize_cache_hit_row(actual_log_id, entry_id, request_id=request_id)
+            db.store_response_payload(actual_log_id, payload)
+            metrics_fields = {k: v for k, v in buffered_metrics.items() if v is not None}
+            if metrics_fields:
+                db.update_log_entry_metrics(log_id=actual_log_id, request_id=request_id, **metrics_fields)
+    except Exception:
+        logger.exception("Failed to record answer-cache hit (log_id=%s, request_id=%s)", log_id, request_id)
+
+
+def _resolve_requested_model(
+    auth: "AuthContext", requested_model_name: str, request_id: Optional[str]
+) -> Optional[tuple]:
+    """Return ``(model_id, model_name)`` if the key may use the named model, else None.
+
+    auth_parse_log resolved the model in the same session as the deployment
+    lookup (same permission data, one checkout) and its result is reused when
+    present. The reuse is not traced again under "mode.resolve_model": the
+    pre-resolve already recorded the phase, and a second near-zero sample
+    under the same name would skew its p50. A result looked up here is kept
+    on ``auth`` so that a later caller for the same request reuses it.
+    """
+    resolved = auth.resolved_proxy_model
+    if resolved is None:
+        # Not resolved on the auth path (other callers, or no "model" at
+        # auth time): permission data — read fresh per request, never
+        # from the ref cache (a removed model permission must not wait
+        # for a TTL).
+        with perf_trace.phase(request_id, "mode.resolve_model"):
+            with DBManager() as db:
+                resolved = db.resolve_proxy_model(auth.api_key_id, requested_model_name)
+        auth.resolved_proxy_model = resolved
+    return resolved
+
+
+def _may_answer_from_cache(
+    body: Dict[str, Any],
+    auth: "AuthContext",
+    request_id: Optional[str],
+    required_provider_id: Optional[int],
+) -> bool:
+    """Whether a stored answer may stand in for this request's normal path.
+
+    A request pinned to one provider is an internal benchmark and must reach
+    that provider. A request naming a model may only be answered if the key
+    may use that model: the normal path checks this in proxy mode and rejects
+    it with a 404, and a cached answer must not skip that check. Any failure
+    here counts as "no", so the normal path decides.
+    """
+    if required_provider_id is not None:
+        return False
+    requested_model_name = str(body.get("model") or "").strip()
+    if not requested_model_name:
+        return True
+    try:
+        return _resolve_requested_model(auth, requested_model_name, request_id) is not None
+    except Exception:  # noqa: BLE001 — the normal path repeats the check and reports it
+        logger.exception("Model check before answer reuse failed (request_id=%s)", request_id)
+        return False
+
+
+async def _answer_from_cache(
+    body: Dict[str, Any],
+    headers: Dict[str, str],
+    auth: "AuthContext",
+    path: str,
+    log_id: Optional[int],
+    request_id: Optional[str],
+    is_async_job: bool,
+    required_provider_id: Optional[int] = None,
+):
+    """Answer the request from the answer cache, or return None to take the normal path.
+
+    Runs before classification, scheduling, the rate-limit and budget
+    checks and the model call: a hit uses none of them and books no
+    scheduler slot. A named model is access-checked first, as in proxy
+    mode. A failing lookup never fails the request; it falls through to
+    the normal path.
+
+    Raises:
+        HTTPException: 400 when the ``logos-context`` header is unusable.
+    """
+    try:
+        reuse = reuse_request_from(body, headers, path, auth.team_id, auth.api_key_id)
+    except InvalidContextId as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if reuse is None:
+        return None
+    if not await asyncio.to_thread(_may_answer_from_cache, body, auth, request_id, required_provider_id):
+        return None
+
+    try:
+        answer, _match = await asyncio.to_thread(_get_answer_cache().find, reuse)
+    except Exception:  # noqa: BLE001 — the cache is an optimisation, never a failure
+        logger.exception("Answer cache lookup failed; continuing without it (request_id=%s)", request_id)
+        return None
+    if answer is None:
+        _record_answer_reuse_miss(request_id)
+        return None
+
+    payload = chat_completion_payload(answer)
+    await asyncio.to_thread(_persist_cache_hit, log_id, request_id, answer.entry_id, payload)
+    if is_async_job:
+        return {"status_code": 200, "data": payload}
+    response_headers = {**(_decision_response_headers(request_id, None) or {}), **cache_hit_headers(answer)}
+    return JSONResponse(content=payload, status_code=200, headers=response_headers)
+
+
 async def route_and_execute(
     deployments: list[dict[str, int]],
     body: Dict[str, Any],
@@ -3623,6 +3787,8 @@ async def route_and_execute(
 
     Routing logic:
     - Case 1: No deployments available → 404 error
+    - Then: a ``logos-context`` request the answer cache can answer → the
+      stored answer, before any classification or scheduling
     - Case 2: body["model"] specified → PROXY mode (model pinned, no classification)
     - Case 3: no body["model"] → RESOURCE mode (classification + scheduling)
 
@@ -3683,6 +3849,14 @@ async def route_and_execute(
 
     response = None
     try:
+        # Answer reuse comes first: a hit returns before classification and
+        # scheduling, so it books no scheduler slot and calls no model.
+        response = await _answer_from_cache(
+            body, headers, auth, path, log_id, request_id, is_async_job, required_provider_id
+        )
+        if response is not None:
+            return response
+
         # PROXY mode (body["model"] specified → direct forwarding)
         if body.get("model"):
             response = await _execute_proxy_mode(

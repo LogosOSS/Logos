@@ -211,9 +211,14 @@ public class InferenceGatewayController {
     /**
      * Policy-bearing requests stay on the orchestrator so threshold_privacy and
      * stored policies apply. Direct cloud uses the default cloud threshold only.
+     * Requests naming a reuse context (logos-context) stay there too: the
+     * orchestrator holds the answer cache, and a direct cloud call would
+     * bypass it.
      */
-    private static boolean requiresOrchestratorPolicy(HttpServletRequest request, String modelName) {
-        if (headerPresent(request, "policy")) {
+    static boolean requiresOrchestratorPolicy(HttpServletRequest request, String modelName) {
+        if (headerPresent(request, "policy")
+                || headerPresent(request, "logos-context")
+                || headerPresent(request, "logos_context")) {
             return true;
         }
         return modelName != null && modelName.regionMatches(true, 0, "logos-v", 0, 7);

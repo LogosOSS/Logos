@@ -79,4 +79,5 @@
     <include file="liquibase/changelog/072_optional_provider_capacity.xml"/>
     <include file="liquibase/changelog/073_batch_deployment_support.xml"/>
     <include file="liquibase/changelog/074_permission_audit_log.xml"/>
+    <include file="liquibase/changelog/075_answer_cache.xml"/>
 </databaseChangeLog>
