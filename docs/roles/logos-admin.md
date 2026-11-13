@@ -415,6 +415,9 @@ group.
 
 ![Teams page](/img/roles/logos-admin-team-management.png)
 
+Select the **View permission history** action beside a team to open its permission audit log.
+The log starts with that team's ID as a filter.
+
 ### Keycloak Group Links
 
 A team can get its members from a Keycloak group or a realm role. Then you do
@@ -456,6 +459,31 @@ Logos Admins also get a **Providers** tab. This tab shows which cloud
 providers and worker providers the team can use.
 
 ![Team detail — Providers](/img/roles/team-detail-providers.png)
+
+## Permission Audit
+
+Only Logos Admins can open **Permission Audit** in the sidebar.
+The page shows model and provider permission changes for teams and API keys.
+Each entry shows the action, time, recorded names, IDs, actor and cause.
+
+1. Open **Permission Audit** to see changes across all teams.
+2. Enter a team, API key, model or provider ID to limit the results.
+3. Enter a local time range if necessary.
+4. Select **Apply filters**.
+5. Select **Older** or **Newer** to move through the results.
+
+Select a name in the results to filter by its ID.
+Select **Clear filters** to see all changes again.
+The end of a time range excludes changes at that time.
+The URL keeps the filters when you share or bookmark the page.
+
+![Permission audit log](/img/roles/logos-admin-permission-audit.png)
+
+If you delete a team or API key, its history remains available from **Permission Audit**.
+The entries keep the names and IDs from the time of each change.
+Deletion also records the removal of its permission grants.
+History starts when permission auditing is enabled.
+The page does not change permissions.
 
 ## Agent Sessions
 

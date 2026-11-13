@@ -77,4 +77,5 @@
     <include file="liquibase/changelog/070_custom_permissions_team_boundary.xml"/>
     <include file="liquibase/changelog/071_node_model_config.xml"/>
     <include file="liquibase/changelog/072_optional_provider_capacity.xml"/>
+    <include file="liquibase/changelog/074_permission_audit_log.xml"/>
 </databaseChangeLog>

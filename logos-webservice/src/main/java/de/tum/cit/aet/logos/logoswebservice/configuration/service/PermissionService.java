@@ -4,8 +4,14 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.function.ToIntFunction;
+
+import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import de.tum.cit.aet.logos.logoswebservice.audit.PermissionAuditContext;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ApiKeyModelPermission;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ApiKeyProviderPermission;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.TeamModelPermission;
@@ -47,10 +53,8 @@ public class PermissionService {
 
     /**
      * Advisory-lock key serializing one API key's model and provider
-     * permission mutations. Each replacement deletes and re-inserts the key's
-     * grants, so without the lock two concurrent replacements under READ
-     * COMMITTED can both delete before either inserts and commit the union
-     * of both requested sets.
+     * permission mutations. Each replacement reads the current grants before
+     * applying a delta, so concurrent replacements must share this lock.
      */
     public static long apiKeyPermsLockKey(int keyId) {
         return API_KEY_PERMS_LOCK_BASE + keyId;
@@ -61,12 +65,15 @@ public class PermissionService {
     private final TeamModelPermissionRepository teamModelRepo;
     private final TeamProviderPermissionRepository teamProviderRepo;
     private final ProviderRepository providerRepo;
+    private final PermissionAuditContext audit;
 
     public PermissionService(ApiKeyModelPermissionRepository apiKeyModelRepo,
                              ApiKeyProviderPermissionRepository apiKeyProviderRepo,
                              TeamModelPermissionRepository teamModelRepo,
                              TeamProviderPermissionRepository teamProviderRepo,
-                             ProviderRepository providerRepo) {
+                             ProviderRepository providerRepo,
+                             PermissionAuditContext audit) {
+        this.audit = audit;
         this.apiKeyModelRepo = apiKeyModelRepo;
         this.apiKeyProviderRepo = apiKeyProviderRepo;
         this.teamModelRepo = teamModelRepo;
@@ -114,9 +121,9 @@ public class PermissionService {
     @Transactional
     public void setApiKeyModelPermissions(int keyId, List<Integer> modelIds) {
         apiKeyProviderRepo.lockApiKeyPermissions(apiKeyPermsLockKey(keyId));
-        apiKeyModelRepo.deleteById_ApiKeyId(keyId);
-        apiKeyModelRepo.saveAll(modelIds.stream()
-            .map(mid -> new ApiKeyModelPermission(keyId, mid)).toList());
+        audit.withCause("direct", () -> replaceGrants(
+            apiKeyModelRepo, apiKeyModelRepo.findById_ApiKeyId(keyId), modelIds,
+            p -> p.getId().getModelId(), id -> new ApiKeyModelPermission(keyId, id)));
     }
 
     public List<Integer> getApiKeyProviderPermissions(int keyId) {
@@ -132,10 +139,10 @@ public class PermissionService {
     @Transactional
     public void setApiKeyProviderPermissions(int keyId, List<Integer> providerIds) {
         apiKeyProviderRepo.lockApiKeyPermissions(apiKeyPermsLockKey(keyId));
-        apiKeyProviderRepo.deleteById_ApiKeyId(keyId);
-        apiKeyProviderRepo.saveAll(providerIds.stream()
-            .map(pid -> new ApiKeyProviderPermission(keyId, pid)).toList());
-        apiKeyModelRepo.deleteCascadeForApiKey(keyId);
+        audit.withCause("direct", () -> replaceGrants(
+            apiKeyProviderRepo, apiKeyProviderRepo.findById_ApiKeyId(keyId), providerIds,
+            p -> p.getId().getProviderId(), id -> new ApiKeyProviderPermission(keyId, id)));
+        audit.withCause("cascade", () -> apiKeyModelRepo.deleteCascadeForApiKey(keyId));
     }
 
     public List<Integer> getTeamModelPermissions(int teamId) {
@@ -146,9 +153,9 @@ public class PermissionService {
     @Transactional
     public void setTeamModelPermissions(int teamId, List<Integer> modelIds) {
         teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
-        teamModelRepo.deleteById_TeamId(teamId);
-        teamModelRepo.saveAll(modelIds.stream()
-            .map(mid -> new TeamModelPermission(teamId, mid)).toList());
+        audit.withCause("direct", () -> replaceGrants(
+            teamModelRepo, teamModelRepo.findById_TeamId(teamId), modelIds,
+            p -> p.getId().getModelId(), id -> new TeamModelPermission(teamId, id)));
     }
 
     public List<Integer> getTeamProviderPermissions(int teamId) {
@@ -159,10 +166,10 @@ public class PermissionService {
     @Transactional
     public void setTeamProviderPermissions(int teamId, List<Integer> providerIds) {
         teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
-        teamProviderRepo.deleteById_TeamId(teamId);
-        teamProviderRepo.saveAll(providerIds.stream()
-            .map(pid -> new TeamProviderPermission(teamId, pid)).toList());
-        teamModelRepo.deleteCascadeForTeam(teamId);
+        audit.withCause("direct", () -> replaceGrants(
+            teamProviderRepo, teamProviderRepo.findById_TeamId(teamId), providerIds,
+            p -> p.getId().getProviderId(), id -> new TeamProviderPermission(teamId, id)));
+        audit.withCause("cascade", () -> teamModelRepo.deleteCascadeForTeam(teamId));
     }
 
     /**
@@ -175,7 +182,7 @@ public class PermissionService {
     @Transactional
     public void addTeamProviderPermission(int teamId, Integer providerId) {
         teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
-        teamProviderRepo.grantIfAbsent(teamId, providerId);
+        audit.withCause("repair", () -> teamProviderRepo.grantIfAbsent(teamId, providerId));
     }
 
     /**
@@ -193,7 +200,17 @@ public class PermissionService {
     @Transactional
     public void removeTeamProviderPermission(int teamId, Integer providerId) {
         teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
-        teamProviderRepo.revoke(teamId, providerId);
-        teamModelRepo.deleteCascadeForTeam(teamId);
+        audit.withCause("direct", () -> teamProviderRepo.revoke(teamId, providerId));
+        audit.withCause("cascade", () -> teamModelRepo.deleteCascadeForTeam(teamId));
+    }
+
+    private static <T, ID> void replaceGrants(JpaRepository<T, ID> repository, List<T> current,
+                                              List<Integer> requested, ToIntFunction<T> targetId,
+                                              Function<Integer, T> create) {
+        Set<Integer> desired = Set.copyOf(requested);
+        Set<Integer> existing = current.stream().map(targetId::applyAsInt)
+            .collect(java.util.stream.Collectors.toSet());
+        repository.deleteAll(current.stream().filter(p -> !desired.contains(targetId.applyAsInt(p))).toList());
+        repository.saveAll(desired.stream().filter(id -> !existing.contains(id)).map(create).toList());
     }
 }
