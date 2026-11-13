@@ -136,13 +136,13 @@
 }
 
 .batch-badge--supported {
-  background: rgb(var(--color-success-500) / var(--opacity-soft));
-  color: rgb(var(--color-success-500));
+  background: rgb(var(--color-success) / var(--opacity-soft));
+  color: rgb(var(--color-success));
 }
 
 .batch-badge--unsupported {
-  background: rgb(var(--color-error-500) / var(--opacity-soft));
-  color: rgb(var(--color-error-500));
+  background: rgb(var(--color-error) / var(--opacity-soft));
+  color: rgb(var(--color-error));
 }
 
 .conn-key {
