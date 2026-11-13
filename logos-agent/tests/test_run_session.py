@@ -1850,3 +1850,87 @@ def test_identity_opener_disables_proxies_and_redirects(monkeypatch):
     monkeypatch.setattr(run_session, "build_opener", inspect_opener)
     with pytest.raises(RuntimeError, match="checked before network"):
         run_session.verify_token_identity("test-token")
+
+
+@pytest.mark.parametrize("plant", ["readonly", "symlink", "hardlink"])
+def test_result_replaces_agent_owned_file_without_modifying_link_targets(tmp_path, monkeypatch, plant):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result_path = artifacts / "result.json"
+    target = tmp_path / "agent-target.json"
+    forged = '{"candidate_tree":"forged","candidate_paths":[]}'
+    target.write_text(forged)
+    if plant == "readonly":
+        result_path.write_text(forged)
+        result_path.chmod(0o444)
+    elif plant == "symlink":
+        result_path.symlink_to(target)
+    else:
+        os.link(target, result_path)
+    old_inode = result_path.lstat().st_ino
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(artifacts))
+    result = Result()
+    result.data.update(candidate_tree="trusted", candidate_paths=["logos-ui/src/app.ts"])
+
+    result.write()
+
+    assert not result_path.is_symlink()
+    assert stat.S_ISREG(result_path.stat().st_mode)
+    assert result_path.stat().st_ino != old_inode
+    assert stat.S_IMODE(result_path.stat().st_mode) == 0o600
+    assert json.loads(result_path.read_text()) == result.data
+    assert target.read_text() == forged
+    assert list(artifacts.iterdir()) == [result_path]
+
+
+@pytest.mark.parametrize("failure", ["write", "replace"])
+def test_result_persistence_failure_is_fatal_and_removes_temporary_file(tmp_path, monkeypatch, failure):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result_path = artifacts / "result.json"
+    result_path.write_text('{"candidate_tree":"forged","candidate_paths":[]}')
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(artifacts))
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("result storage unavailable")
+
+    if failure == "write":
+        monkeypatch.setattr(run_session.json, "dump", fail_write)
+    else:
+        monkeypatch.setattr(run_session.os, "replace", fail_write)
+
+    with pytest.raises(RuntimeError, match="could not write result file: result storage unavailable"):
+        Result().write()
+    assert list(artifacts.iterdir()) == [result_path]
+
+
+@pytest.mark.parametrize("phase_fails", [False, True])
+def test_main_returns_failure_when_result_cannot_be_persisted(tmp_path, monkeypatch, capsys, phase_fails):
+    monkeypatch.setenv("LOGOS_SESSION_PHASE", "snapshot")
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+
+    def snapshot(result):
+        result.data["candidate_tree"] = "trusted"
+        if phase_fails:
+            raise RuntimeError("snapshot failed")
+
+    def fail_replace(*_args, **_kwargs):
+        raise PermissionError("artifact directory is read-only")
+
+    monkeypatch.setattr(run_session, "run_snapshot", snapshot)
+    monkeypatch.setattr(run_session.os, "replace", fail_replace)
+
+    assert run_session.main() == 1
+    captured = capsys.readouterr()
+    assert "could not persist the phase result" in captured.err
+    assert "phase complete" not in captured.out
+
+
+def test_main_reports_success_only_after_result_is_persisted(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LOGOS_SESSION_PHASE", "snapshot")
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setattr(run_session, "run_snapshot", lambda result: result.data.update(candidate_tree="trusted"))
+
+    assert run_session.main() == 0
+    assert json.loads((tmp_path / "artifacts" / "result.json").read_text())["candidate_tree"] == "trusted"
+    assert "phase complete" in capsys.readouterr().out

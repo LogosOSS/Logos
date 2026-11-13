@@ -261,6 +261,36 @@ def test_snapshot_requires_runner_owned_comparison_proof(tmp_path, monkeypatch):
         run_session.run_snapshot(run_session.Result())
 
 
+@pytest.mark.parametrize("service", ["logos-webservice", "logos-ui"])
+def test_snapshot_replaces_read_only_forged_result_with_actual_verification_paths(tmp_path, monkeypatch, service):
+    import verify_checkout
+
+    workspace, _origin, _sha = _prepare(tmp_path, monkeypatch)
+    checkout = workspace / "repo"
+    source = checkout / service / "broken-source.txt"
+    source.parent.mkdir()
+    source.write_text("not valid source\n")
+    _git("add", "-A", cwd=checkout)
+    candidate_tree = _git("write-tree", cwd=checkout).stdout.strip()
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result = artifacts / "result.json"
+    result.write_text(json.dumps({"candidate_tree": candidate_tree, "candidate_paths": [], "verification": "passed"}))
+    result.chmod(0o444)
+    original_inode = result.stat().st_ino
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(artifacts))
+    monkeypatch.setenv("LOGOS_SESSION_PHASE", "snapshot")
+
+    assert run_session.main() == 0
+
+    trusted = json.loads(result.read_text())
+    assert result.stat().st_ino != original_inode
+    assert trusted["candidate_tree"] == candidate_tree
+    assert trusted["candidate_paths"] == [f"{service}/broken-source.txt"]
+    assert verify_checkout.selected_services(trusted["candidate_paths"]) == [service]
+    assert "verification" not in trusted
+
+
 @pytest.mark.parametrize("target", ["main", "release"])
 @pytest.mark.parametrize("retry_same_session", [False, True])
 def test_failed_pr_creation_preserves_publication_proof_and_original_target(

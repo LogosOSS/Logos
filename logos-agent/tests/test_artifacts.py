@@ -141,6 +141,15 @@ async def test_runner_missing_files_keep_existing_results(tmp_path, monkeypatch)
     assert await manager._combined_review_answers(1) == ""
 
 
+@pytest.mark.parametrize("payload", ["[]", "null", '"result"', "123", "true"])
+def test_runner_ignores_non_object_results_so_failure_settlement_can_continue(tmp_path, monkeypatch, payload):
+    monkeypatch.setattr(sessions, "settings", replace(sessions.settings, artifact_root=str(tmp_path)))
+    directory = tmp_path / "1"
+    directory.mkdir()
+    (directory / "result.json").write_text(payload)
+    assert sessions.SessionManager()._read_result(1) == {}
+
+
 def test_analysis_uses_the_configured_artifact_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(analysis_ingest, "settings", replace(analysis_ingest.settings, artifact_max_bytes=2))
     target = tmp_path / "analysis.json"

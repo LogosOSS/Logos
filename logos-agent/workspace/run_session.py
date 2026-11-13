@@ -86,12 +86,25 @@ class Result:
         }
 
     def write(self) -> None:
+        """Replace agent-owned results with a fresh regular file, or fail."""
         directory = Path(os.environ.get("LOGOS_ARTIFACT_DIR", "/artifacts"))
+        temporary: str | None = None
         try:
             directory.mkdir(parents=True, exist_ok=True)
-            (directory / "result.json").write_text(json.dumps(self.data, indent=2))
+            descriptor, temporary = tempfile.mkstemp(prefix=".result-", suffix=".json", dir=directory)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(self.data, output, indent=2)
+                output.flush()
+                os.fsync(output.fileno())
+            # The directory is the runner's mount. Replace the entry itself:
+            # never truncate or follow an agent's symlink, hardlink, or
+            # read-only file, and never expose a partially written proof.
+            os.replace(temporary, directory / "result.json")
         except OSError as exc:
-            fail(f"could not write result file: {exc}")
+            raise RuntimeError(f"could not write result file: {exc}") from exc
+        finally:
+            if temporary is not None:
+                Path(temporary).unlink(missing_ok=True)
 
 
 def _redact(cmd: list[str]) -> list[str]:
@@ -1689,6 +1702,7 @@ def main() -> int:
     """
     phase = os.environ.get("LOGOS_SESSION_PHASE", "agent").strip().lower()
     result = Result()
+    exit_code = 0
     try:
         if phase == "ssh-trust":
             run_ssh_trust()
@@ -1700,14 +1714,18 @@ def main() -> int:
             run_finalize(result)
         else:
             run_agent_phase(result)
-        log("phase complete")
-        return 0
     except Exception as exc:
         fail(str(exc))
         result.data["error"] = str(exc)
-        return 1
-    finally:
+        exit_code = 1
+    try:
         result.write()
+    except Exception as exc:
+        fail(f"could not persist the phase result: {exc}")
+        return 1
+    if exit_code == 0:
+        log("phase complete")
+    return exit_code
 
 
 if __name__ == "__main__":

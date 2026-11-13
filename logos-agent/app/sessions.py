@@ -3280,9 +3280,12 @@ class SessionManager:
         tells us what happened.
         """
         try:
-            return json.loads(
+            result = json.loads(
                 read_artifact_text(artifact_dir(session_id), "result.json", limit=settings.artifact_max_bytes)
             )
+            if not isinstance(result, dict):
+                raise ValueError("result must be a JSON object")
+            return result
         except FileNotFoundError:
             return {}
         except Exception as exc:
