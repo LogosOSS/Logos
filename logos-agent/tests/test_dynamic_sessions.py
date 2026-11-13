@@ -29,6 +29,7 @@ def runner(monkeypatch):
         paused=[],
         lanes=[],
     )
+    provider(h.payload)["runtime"]["observed_at"] = h.epoch.isoformat()
     model(h.payload).update(active_by_api_key={}, queued_by_api_key={})
     monkeypatch.setattr(sessions, "time", SimpleNamespace(monotonic=lambda: h.clock))
     monkeypatch.setattr(sessions, "settings", replace(sessions.settings, capacity_resume_quiet_s=10))
