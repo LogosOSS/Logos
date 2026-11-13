@@ -160,7 +160,8 @@ class Provider(Base):
     api_key = Column(Text, nullable=True)
     ollama_admin_url = Column(Text, default="")
     total_vram_mb = Column(Integer, nullable=True)
-    parallel_capacity = Column(Integer, default=20)
+    # Optional configured capacity; logosnode admission uses live lane signals.
+    parallel_capacity = Column(Integer, nullable=True)
     keep_alive_seconds = Column(Integer, default=300)
     max_loaded_models = Column(Integer, default=3)
     updated_at = Column(

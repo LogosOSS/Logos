@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,7 @@ LOG_QUEUE_MAX = 2000
 # grace period the compose file gives this service, so the work finishes
 # before Docker stops waiting.
 STAND_DOWN_S = 20.0
+MAINTENANCE_INTERVAL_S = 15.0
 
 # What the agent phase prints when it wants its spending known — the only
 # channel it has, holding no credential and reaching nothing but the model
@@ -369,6 +371,12 @@ class SessionManager:
         # container is removed in between.
         self._last_helper_output: dict[int, str] = {}
         self._scheduler_task: asyncio.Task | None = None
+        self._capacity_watch_task: asyncio.Task | None = None
+        self._maintenance_task: asyncio.Task | None = None
+        self._yield_lock = asyncio.Lock()
+        self._capacity_quiet_since: float | None = None
+        self._capacity_quiet_sample: tuple = ()
+        self._spent_capacity_samples: dict[str, tuple[str, str]] = {}
         # Passes started out of band (see request_scheduler_pass), held until
         # they finish: the event loop keeps only a weak reference to a task.
         self._requested_passes: set[asyncio.Task] = set()
@@ -411,10 +419,14 @@ class SessionManager:
         await self.resume_check_watches()
         await self.resume_retries()
         self._scheduler_task = asyncio.create_task(self._scheduler_loop(), name="agent-scheduler")
+        self._capacity_watch_task = asyncio.create_task(self._capacity_watch_loop(), name="agent-capacity-watch")
+        self._maintenance_task = asyncio.create_task(self._maintenance_loop(), name="agent-maintenance")
 
     async def stop(self) -> None:
         self._stopping.set()
         await cancel_and_wait(self._scheduler_task)
+        await cancel_and_wait(self._capacity_watch_task)
+        await cancel_and_wait(self._maintenance_task)
         await self._stand_down()
         for task in list(self._supervisors.values()):
             task.cancel()
@@ -690,6 +702,14 @@ class SessionManager:
             except Exception:
                 logger.exception("scheduler pass failed")
             try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=max(0.1, settings.scheduler_interval_s))
+            except asyncio.TimeoutError:
+                pass
+
+    async def _maintenance_loop(self) -> None:
+        """Keep network and workspace upkeep off the capacity polling path."""
+        while not self._stopping.is_set():
+            try:
                 # Answers that did not reach GitHub when their session
                 # settled. Beside the pass rather than inside it: a pass is
                 # about admitting and yielding, and every session creation
@@ -723,7 +743,84 @@ class SessionManager:
             except Exception:
                 logger.exception("taking up failed requests again failed")
             try:
-                await asyncio.wait_for(self._stopping.wait(), timeout=settings.scheduler_interval_s)
+                await asyncio.wait_for(self._stopping.wait(), timeout=MAINTENANCE_INTERVAL_S)
+            except asyncio.TimeoutError:
+                pass
+
+    def _observe_capacity(self, reading: capacity.Reading) -> None:
+        """Track continuous quiet time without treating pacing as saturation."""
+        if not reading.ok or not reading.reclaimable or capacity.pause_decision(reading)[0]:
+            self._capacity_quiet_since = None
+            self._capacity_quiet_sample = ()
+        elif reading.dynamic and self._capacity_quiet_since is None:
+            self._capacity_quiet_since = time.monotonic()
+            self._capacity_quiet_sample = reading.observation_id
+
+    def _resume_is_stable(self, reading: capacity.Reading) -> bool:
+        if not reading.dynamic:
+            return True
+        baseline = {provider: (session, observed) for provider, session, observed in self._capacity_quiet_sample}
+        return (
+            self._capacity_quiet_since is not None
+            and time.monotonic() - self._capacity_quiet_since >= settings.capacity_resume_quiet_s
+            and any(baseline.get(provider) != (session, observed) for provider, session, observed in reading.sample_id)
+        )
+
+    def _capacity_sample_available(self, reading: capacity.Reading) -> bool:
+        if not reading.dynamic:
+            return True
+        return bool(reading.sample_id) and any(
+            self._spent_capacity_samples.get(provider) != (session, observed)
+            for provider, session, observed in reading.sample_id
+        )
+
+    def _spend_capacity_sample(self, reading: capacity.Reading) -> None:
+        """Called under the admission lock for successful starts or resumes."""
+        if reading.dynamic:
+            self._spent_capacity_samples.update(
+                {provider: (session, observed) for provider, session, observed in reading.sample_id}
+            )
+
+    async def _yield_for_capacity(self, reading: capacity.Reading, control) -> bool:
+        """Serialize yielding without holding the lock through any launch."""
+        should_pause, why = capacity.pause_decision(reading)
+        if control.paused:
+            should_pause, why = True, control.admission_block()
+        if not should_pause:
+            return False
+        self._capacity_quiet_since = None
+        self._capacity_quiet_sample = ()
+        async with self._yield_lock:
+            # A watcher and a scheduler pass may read the same pressure.
+            # Re-read rows under the lock so already-paused sessions are not
+            # interrupted or cancelled upstream a second time.
+            running = await db.sessions_in_status(SessionStatus.RUNNING)
+            for session in running:
+                await self._pause(session, why)
+        return True
+
+    async def _capacity_watch_pass(self) -> None:
+        """Return capacity promptly even while checkout or launch is slow."""
+        policy = await model_policy.refresh()
+        control = await controls.current()
+        running = await db.sessions_in_status(SessionStatus.RUNNING)
+        measured, reading = await capacity.read_load_pair(
+            lane=policy.lane(), ours=_ours_by_model(running, policy), own_api_key_id=await self._own_api_key_id()
+        )
+        self._last_reading = measured
+        self._observe_capacity(reading)
+        await self._yield_for_capacity(reading, control)
+
+    async def _capacity_watch_loop(self) -> None:
+        while not self._stopping.is_set():
+            try:
+                await self._capacity_watch_pass()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("capacity watch failed")
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=max(0.1, settings.scheduler_interval_s))
             except asyncio.TimeoutError:
                 pass
 
@@ -784,41 +881,51 @@ class SessionManager:
         # lane that is genuinely busy, so admission uses the figure as
         # measured. Our own concurrency is bounded by the parallel ceiling,
         # not by this.
-        # Two readings: what the platform is doing, and what it is doing
-        # apart from this runner. The discount is applied *while* the
-        # per-model figures still exist — subtracting sessions on one model
-        # from a figure that describes another is how nine user requests
-        # read as four — which is why it is a second reading rather than an
-        # adjustment of the first.
+        # Both answers use one HTTP snapshot. Attribution is applied while
+        # the per-model figures still exist, before aggregation.
         own_key = await self._own_api_key_id()
-        measured = await capacity.read_load(lane=policy.lane())
-        reading = await capacity.read_load(
+        measured, reading = await capacity.read_load_pair(
             lane=policy.lane(),
             ours=_ours_by_model(running, policy),
             own_api_key_id=own_key,
         )
         self._last_reading = measured
-
-        if control.paused:
-            # The hard half of the kill switch: hand the platform back
-            # everything the runner holds. Paused, not cancelled — the work
-            # survives, and releasing the switch resumes it mid-task.
-            # Draining is the other half and deliberately does none of this:
-            # it lets what is running finish and only stops admission.
-            for session in running:
-                await self._pause(session, control.admission_block())
-            return
+        self._observe_capacity(reading)
 
         # 1. Give capacity back first. Yielding always takes precedence over
         #    admitting, so a burst of user traffic is never met by the runner
         #    starting another session in the same pass.
-        should_pause, why = capacity.pause_decision(reading)
-        if should_pause and running:
-            for session in running:
-                await self._pause(session, why)
+        if await self._yield_for_capacity(reading, control):
             return
 
         # 2. Resume what was paused, oldest first.
+        if paused and reading.dynamic:
+            # A fresh engine sample buys at most one transition. Quiet time
+            # and a newer measurement are both required after yielding.
+            async with self._admission_lock:
+                policy = await model_policy.refresh()
+                control = await controls.current()
+                running = await db.sessions_in_status(SessionStatus.RUNNING)
+                paused = await db.sessions_in_status(SessionStatus.PAUSED)
+                if not policy.ok or not control.may_resume() or len(running) >= control.max_parallel:
+                    return
+                for session in paused:
+                    wanted = policy.resolve(session.get("model"))
+                    measured, candidate_reading = await capacity.read_load_pair(
+                        lane=policy.lane(wanted), ours=_ours_by_model(running, policy), own_api_key_id=own_key
+                    )
+                    self._last_reading = measured
+                    may_resume, why = capacity.resume_decision(candidate_reading)
+                    if (
+                        not may_resume
+                        or not self._resume_is_stable(candidate_reading)
+                        or not self._capacity_sample_available(candidate_reading)
+                    ):
+                        continue
+                    if await self._resume(session, why):
+                        self._spend_capacity_sample(candidate_reading)
+                        return
+                return
         if paused:
             may_resume, why = capacity.resume_decision(reading)
             if may_resume and not control.may_resume():
@@ -850,8 +957,7 @@ class SessionManager:
                     # reading that counts it would stop the batch on its own
                     # load — leaving the rest paused for nothing.
                     resumed = await db.sessions_in_status(SessionStatus.RUNNING)
-                    self._last_reading = await capacity.read_load(lane=policy.lane())
-                    reading = await capacity.read_load(
+                    self._last_reading, reading = await capacity.read_load_pair(
                         lane=policy.lane(),
                         ours=_ours_by_model(resumed, policy),
                         own_api_key_id=own_key,
@@ -885,6 +991,7 @@ class SessionManager:
             admission_policy = await model_policy.refresh()
             if not admission_policy.ok:
                 return
+            control = await controls.current()
             # Whose lane to measure: the session that would be claimed next.
             # Admitting it against another model's load is how a queued
             # session enters a full lane on an idle one's figure — the
@@ -917,6 +1024,8 @@ class SessionManager:
             )
             if not may_start:
                 return
+            if not self._capacity_sample_available(reading):
+                return
             # The row that was measured, not "the next one": between the
             # peek and here the candidate can be cancelled, or something
             # more urgent on another model can arrive, and either would be
@@ -926,6 +1035,8 @@ class SessionManager:
             # capacity call above, and another scheduler could have used the
             # room in between.
             taken = await db.claim_session(int(candidate["id"]), trigger_quota=quota)
+            if taken:
+                self._spend_capacity_sample(reading)
             claimed = [taken] if taken else []
             # The claim is what makes these rows this pass's to launch, so
             # the launch record is taken here rather than inside _launch:

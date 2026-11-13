@@ -230,7 +230,7 @@ class AdmissionDecision:
 
     can_admit: bool
     batch_limit: Optional[int] = None
-    reason: Optional[str] = None  # backend_queue | kv_cache_pressure
+    reason: Optional[str] = None  # backend_queue | awaiting_signal | no_ready_lane
 
     def to_dict(self) -> dict:
         return {
