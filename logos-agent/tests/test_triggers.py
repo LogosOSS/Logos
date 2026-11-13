@@ -2617,7 +2617,9 @@ async def test_linked_repositories_queue_the_same_issue_number_independently(mon
     poller = triggers.TriggerPoller()
     assert len(await poller.poll_once()) == 3
     assert [row["trigger_ref"] for row in fake_db.created] == [
-        "issue-1", "repo:team/project-11:issue-1", "repo:team/project-12:issue-1"
+        "issue-1",
+        "repo:team/project-11:issue-1",
+        "repo:team/project-12:issue-1",
     ]
     assert len({row["workspace_id"] for row in fake_db.created}) == 3
     for row, link in zip(fake_db.created[1:], links):
@@ -2651,3 +2653,25 @@ async def test_duplicate_enabled_links_poll_one_github_repository(monkeypatch):
     monkeypatch.setattr(triggers.db, "mark_repository_comments_scanned", AsyncMock())
     assert len(await triggers.TriggerPoller().poll_once()) == 2
     assert fake_db.created[-1]["team_repository_id"] == 11
+
+
+async def test_unavailable_default_repository_does_not_stop_linked_repository_polling(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app import repository_context
+
+    link = {"id": 11, "repo_slug": "team/project"}
+    monkeypatch.setattr(triggers.db, "enabled_coding_repositories", AsyncMock(return_value=[link]))
+    visited = []
+
+    async def poll_repository():
+        target = repository_context.current()
+        if target is None:
+            raise RuntimeError("repository unavailable")
+        visited.append(target["repo_slug"])
+        return [101]
+
+    poller = triggers.TriggerPoller()
+    monkeypatch.setattr(poller, "_poll_repository", poll_repository)
+    assert await poller.poll_once() == [101]
+    assert visited == ["team/project"]

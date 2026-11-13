@@ -539,8 +539,12 @@ class TriggerPoller:
 
     async def poll_once(self) -> list[int]:
         queued: list[int] = []
-        with repository_context.scope(None):
-            queued.extend(await self._poll_repository())
+        try:
+            with repository_context.scope(None):
+                queued.extend(await self._poll_repository())
+        except Exception as exc:
+            self._last_error = f"{settings.repo_slug}: {exc}"
+            logger.warning("could not poll coding repository %s: %s", settings.repo_slug, exc)
         # One poll per GitHub identity, even when several teams link it.
         seen = {settings.repo_slug.lower()}
         try:
@@ -656,9 +660,7 @@ class TriggerPoller:
         try:
             target = repository_context.current()
             mark = (
-                await db.repository_comments_scanned_at(int(target["id"]))
-                if target
-                else await db.comments_scanned_at()
+                await db.repository_comments_scanned_at(int(target["id"])) if target else await db.comments_scanned_at()
             )
         except Exception as exc:
             logger.warning("could not read the comment mark; using the default window: %s", exc)
@@ -1499,9 +1501,15 @@ class TriggerPoller:
         """
         workspaces = await db.list_workspaces()
         prefix = self._repository_workspace_prefix()
-        eligible = [w for w in workspaces if (
-            str(w.get("name") or "").startswith(prefix) if prefix else not str(w.get("name") or "").startswith("repo-")
-        )]
+        eligible = [
+            w
+            for w in workspaces
+            if (
+                str(w.get("name") or "").startswith(prefix)
+                if prefix
+                else not str(w.get("name") or "").startswith("repo-")
+            )
+        ]
         free = [w for w in eligible if int(w.get("active_sessions") or 0) == 0]
         for workspace in free:
             if str(workspace.get("base_branch") or "") == base_branch:

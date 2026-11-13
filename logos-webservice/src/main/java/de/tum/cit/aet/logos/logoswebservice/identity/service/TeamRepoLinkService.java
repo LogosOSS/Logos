@@ -130,6 +130,10 @@ public class TeamRepoLinkService {
             if (!slug.equals(previousSlug)) {
                 analysisRepository.deleteByTeamRepositoryId(linkId);
                 cancelOrphanedAnalysisSessions(linkId);
+                entityManager.createNativeQuery(
+                    "UPDATE team_repositories SET agent_comments_scanned_at = NULL WHERE id = :linkId")
+                    .setParameter("linkId", linkId)
+                    .executeUpdate();
             }
         }
         if (body.branch() != null) {

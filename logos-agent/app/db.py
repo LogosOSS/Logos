@@ -417,25 +417,37 @@ async def get_workspace(workspace_id: int) -> dict[str, Any] | None:
 async def enabled_coding_repositories() -> list[dict[str, Any]]:
     """Linked repositories whose teams opted into coding work."""
     async with sessionmaker()() as db:
-        rows = (await db.execute(text("""
+        rows = (
+            await db.execute(
+                text("""
             SELECT id, repo_url, repo_slug, branch, agent_instructions, verification_command
               FROM team_repositories WHERE agent_enabled = TRUE ORDER BY id
-        """))).mappings()
+        """)
+            )
+        ).mappings()
         return [dict(row) for row in rows]
 
 
 async def repository_comments_scanned_at(repository_id: int) -> datetime | None:
     async with sessionmaker()() as db:
-        return (await db.execute(text("""
+        return (
+            await db.execute(
+                text("""
             SELECT agent_comments_scanned_at FROM team_repositories WHERE id = :id
-        """), {"id": repository_id})).scalar_one_or_none()
+        """),
+                {"id": repository_id},
+            )
+        ).scalar_one_or_none()
 
 
 async def mark_repository_comments_scanned(repository_id: int, moment: datetime) -> None:
     async with sessionmaker()() as db:
-        await db.execute(text("""
+        await db.execute(
+            text("""
             UPDATE team_repositories SET agent_comments_scanned_at = :moment WHERE id = :id
-        """), {"id": repository_id, "moment": moment})
+        """),
+            {"id": repository_id, "moment": moment},
+        )
         await db.commit()
 
 
@@ -1386,7 +1398,9 @@ async def sessions_awaiting_checks() -> list[dict[str, Any]]:
     and almost always empty.
     """
     async with sessionmaker()() as db:
-        rows = (await db.execute(text("""
+        rows = (
+            await db.execute(
+                text("""
                     SELECT id, workspace_id, task, model, branch_name, checks_sha,
                            trigger_kind, trigger_ref, reply_target, reaction_target,
                            priority, priority_reason, open_pull_request, finished_at,
@@ -1394,7 +1408,9 @@ async def sessions_awaiting_checks() -> list[dict[str, Any]]:
                       FROM agent_sessions
                      WHERE checks_watch = 'pending'
                      ORDER BY id
-                    """))).mappings()
+                    """)
+            )
+        ).mappings()
         return [dict(row) for row in rows]
 
 

@@ -1831,7 +1831,7 @@ class SessionManager:
                 )
             else:
                 logger.info(
-                    "session %s linked analysis has no active deploy key; " "anonymous public checkout only",
+                    "session %s linked analysis has no active deploy key; anonymous public checkout only",
                     session["id"],
                 )
         elif is_analysis:
@@ -1953,10 +1953,14 @@ class SessionManager:
                 "LOGOS_SESSION_PHASE": "verify",
                 "LOGOS_VERIFICATION_PATHS": json.dumps(paths),
                 "LOGOS_VERIFICATION_TREE": tree,
-                **({
-                    "LOGOS_VERIFICATION_MODE": "repository",
-                    "LOGOS_VERIFICATION_COMMAND": env.get("LOGOS_VERIFICATION_COMMAND", ""),
-                } if env.get("LOGOS_VERIFICATION_MODE") == "repository" else {}),
+                **(
+                    {
+                        "LOGOS_VERIFICATION_MODE": "repository",
+                        "LOGOS_VERIFICATION_COMMAND": env.get("LOGOS_VERIFICATION_COMMAND", ""),
+                    }
+                    if env.get("LOGOS_VERIFICATION_MODE") == "repository"
+                    else {}
+                ),
             },
             workspace_volume=workspace["volume_name"],
             artifact_host_path=artifact_host_path,

@@ -489,11 +489,16 @@ async def test_repository_verifier_receives_configured_command_without_credentia
     monkeypatch.setattr(manager, "_read_result", lambda _: {"candidate_tree": TREE, "candidate_paths": ["src/lib.rs"]})
     monkeypatch.setattr(sessions.db, "get_session", active)
     monkeypatch.setattr(sessions.db, "add_event", no_event)
-    env = await manager._verify_before_push(7, {"volume_name": "workspace"}, {
-        "GITHUB_TOKEN": "credential-not-for-builds",
-        "LOGOS_VERIFICATION_MODE": "repository",
-        "LOGOS_VERIFICATION_COMMAND": "cargo test --offline",
-    }, "/artifacts/7")
+    env = await manager._verify_before_push(
+        7,
+        {"volume_name": "workspace"},
+        {
+            "GITHUB_TOKEN": "credential-not-for-builds",
+            "LOGOS_VERIFICATION_MODE": "repository",
+            "LOGOS_VERIFICATION_COMMAND": "cargo test --offline",
+        },
+        "/artifacts/7",
+    )
     verify_env = calls[1]["env"]
     assert verify_env["LOGOS_VERIFICATION_MODE"] == "repository"
     assert verify_env["LOGOS_VERIFICATION_COMMAND"] == "cargo test --offline"

@@ -61,9 +61,17 @@ async def test_check_followup_uses_repository_saved_on_session(monkeypatch):
 
 async def test_linked_repository_never_dispatches_logos_deploy(monkeypatch):
     manager = sessions.SessionManager()
-    monkeypatch.setattr(sessions.db, "get_session", AsyncMock(return_value={
-        "id": 7, "repo_slug": "team/project", "deploy_to_dev": True,
-    }))
+    monkeypatch.setattr(
+        sessions.db,
+        "get_session",
+        AsyncMock(
+            return_value={
+                "id": 7,
+                "repo_slug": "team/project",
+                "deploy_to_dev": True,
+            }
+        ),
+    )
     dispatch = AsyncMock()
     monkeypatch.setattr(sessions.github, "dispatch_dev_deploy", dispatch)
     assert await manager._maybe_deploy(7, {}) == (None, None)
