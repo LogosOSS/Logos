@@ -18,6 +18,7 @@ import {
   StatisticsService,
 } from '../../services/statistics.service';
 import { RequestItem } from '../../statistics.models';
+import { StatsClockService } from '../../services/stats-clock.service';
 import { StatsSkeletonComponent } from '../skeletons/skeletons';
 import {
   deriveStage,
@@ -75,6 +76,7 @@ export function tokenLabel(
 })
 export class RecentRequests implements OnChanges, OnDestroy {
   private statisticsService = inject(StatisticsService);
+  private clock = inject(StatsClockService);
 
   readonly expandedRequestId = signal<string | null>(null);
   readonly payloadTab = signal<'request' | 'response'>('request');
@@ -177,7 +179,7 @@ export class RecentRequests implements OnChanges, OnDestroy {
   @Input() filterModelIds: string[] = [];
 
   /** Shared ticker: ms since epoch, updated by setInterval. */
-  now = signal(Date.now());
+  now = signal(this.clock.now());
 
   private intervalId: ReturnType<typeof setInterval> | null = null;
 
@@ -314,10 +316,6 @@ export class RecentRequests implements OnChanges, OnDestroy {
       : this._pageHasMore();
   });
 
-  private hasLive = computed(() =>
-    this.displayItems().some((it) => deriveStage(it) !== 'complete'),
-  );
-
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['liveRequests']) this._liveRequests.set(this.liveRequests ?? []);
     if (changes['totalInRange']) this._totalInRange.set(this.totalInRange);
@@ -342,7 +340,7 @@ export class RecentRequests implements OnChanges, OnDestroy {
     if ((changes['range'] && !changes['range'].firstChange) || scopeChanged) {
       this.resetToFirstPage();
     }
-    // Re-schedule ticker whenever inputs change so cadence stays correct.
+    // Refresh immediately and keep one ticker independent of push frequency.
     this.scheduleTicker();
     // A new push is where the chase gets new ground to cover.
     if (changes['liveRequests']) {
@@ -461,9 +459,10 @@ export class RecentRequests implements OnChanges, OnDestroy {
   // ── Ticker ─────────────────────────────────────────────────────────────────
 
   private scheduleTicker(): void {
-    this.clearTicker();
-    const cadence = this.hasLive() ? 1000 : 10_000;
-    this.intervalId = setInterval(() => this.now.set(Date.now()), cadence);
+    // Refresh before rendering a new timestamp, even between timer ticks.
+    this.now.set(this.clock.now());
+    if (this.intervalId !== null) return;
+    this.intervalId = setInterval(() => this.now.set(this.clock.now()), 1000);
   }
 
   private clearTicker(): void {
@@ -647,7 +646,7 @@ export class RecentRequests implements OnChanges, OnDestroy {
   totalTimeLabelOf(item: RequestItem): string {
     const stage = deriveStage(item);
     if (stage === 'complete' && item.total_seconds != null) {
-      return `${item.total_seconds.toFixed(2)}s`;
+      return this.settledTimeLabel(item.total_seconds);
     }
     if (item.enqueue_ts) {
       return formatElapsed((this.now() - new Date(item.enqueue_ts).getTime()) / 1000);
@@ -658,6 +657,11 @@ export class RecentRequests implements OnChanges, OnDestroy {
   elapsedOf(item: RequestItem): string {
     if (!item.scheduled_ts) return '0.0s';
     return formatElapsed((this.now() - new Date(item.scheduled_ts).getTime()) / 1000);
+  }
+
+  settledTimeLabel(seconds: number): string {
+    // Old rows can predate arrival-time preservation in deferred log inserts.
+    return `${Math.max(0, seconds).toFixed(2)}s`;
   }
 
   formatCount(v: number): string {

@@ -136,7 +136,7 @@ public class GatewayRouteResolver {
         if (!"POST".equals(method)) {
             return false;
         }
-        String p = stripOpenAiPrefix(pathWithinApp).replaceAll("/+$", "");
+        String p = stripOpenAiPrefix(pathWithinApp);
         if (!p.startsWith("/v1/")) {
             return false;
         }

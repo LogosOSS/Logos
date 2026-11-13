@@ -102,6 +102,13 @@ def _patch_workspace(monkeypatch, workspace: Path) -> None:
     # account behind the token to resolve. The check itself is covered by
     # TestPushIdentity below, against a stubbed HTTPS endpoint.
     monkeypatch.setattr(run_session, "verify_token_identity", lambda _token: None)
+    checkout = workspace / "repo"
+    if (checkout / ".git").is_dir() and not checkout.is_symlink():
+        # Emulate the runner retaining the baseline before the agent works.
+        baseline = _git("rev-parse", "HEAD", cwd=checkout).stdout.strip()
+        monkeypatch.setenv("LOGOS_SESSION_CHECKOUT_SHA", baseline)
+        monkeypatch.setenv("LOGOS_SESSION_COMPARISON_SHA", baseline)
+        monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", "")
 
 
 def test_planted_git_metadata_does_not_survive_the_rebuild(tmp_path, monkeypatch):
@@ -128,12 +135,12 @@ def test_planted_git_metadata_does_not_survive_the_rebuild(tmp_path, monkeypatch
     )
     assert config.returncode != 0, "core.hooksPath survived the rebuild"
 
-    # The object store is the one part that is kept: the previous commit's
-    # objects are still there, nothing was re-cloned.
+    # Object contents and alternates are agent-owned too. A later fetch
+    # must fill a fresh store before the pinned baseline is trusted.
     objects_after = sorted(
         p.relative_to(checkout / ".git" / "objects") for p in (checkout / ".git" / "objects").rglob("*") if p.is_file()
     )
-    assert objects_before and objects_before == objects_after
+    assert objects_before and not objects_after
 
     # A commit in the rebuilt repository runs no planted hook.
     _git("config", "user.name", "Logos Agent", cwd=checkout)
@@ -560,11 +567,7 @@ class TestFinalizer:
         with pytest.raises(RuntimeError, match="CI workflow files"):
             commit_and_push(self.BRANCH, "a long enough task description")
 
-    def test_a_retried_session_pushes_against_the_base_not_the_previous_tip(self, tmp_path, monkeypatch):
-        # The remote branch exists from an earlier run of the same session.
-        # Re-finalizing must not build on that tip: the diff belongs to the
-        # base, and the force-with-lease push must verify against the tip it
-        # just fetched, not blind over it.
+    def test_a_continued_session_builds_on_the_prepared_branch_tip(self, tmp_path, monkeypatch):
         workspace = tmp_path / "ws"
         workspace.mkdir()
         origin = _make_origin(workspace)
@@ -573,16 +576,19 @@ class TestFinalizer:
 
         assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
         commit_and_push(self.BRANCH, "a long enough task description")
+        first = _git("rev-parse", "HEAD", cwd=checkout).stdout.strip()
 
-        # A second run of the session: new work in the same working copy.
+        # A later session prepares the PR branch and the runner retains its
+        # tip as both the new baseline and the expected remote branch lease.
+        prepare_checkout(f"file://{origin}", self.BRANCH, self.BRANCH, "ghp-test-token")
+        monkeypatch.setenv("LOGOS_SESSION_CHECKOUT_SHA", first)
+        monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", first)
         (checkout / "app.py").write_text("print('second run')\n")
-        assert finalize_checkout(f"file://{origin}", "main", self.BRANCH, "ghp-test-token") is True
+        assert finalize_checkout(f"file://{origin}", self.BRANCH, self.BRANCH, "ghp-test-token") is True
         assert commit_and_push(self.BRANCH, "a long enough task description") == 1
 
-        # Two commits on the remote branch, and the second one sits on the
-        # base — the first run's tip is gone, not a parent.
-        log = _git("--git-dir", str(origin), "log", "--format=%s", self.BRANCH, cwd=workspace).stdout.splitlines()
-        assert len(log) == 2 and log[1] == "base"
+        parent = _git("--git-dir", str(origin), "rev-parse", f"{self.BRANCH}^", cwd=workspace).stdout.strip()
+        assert parent == first
         remote_file = _git("--git-dir", str(origin), "show", f"{self.BRANCH}:app.py", cwd=workspace).stdout
         assert remote_file == "print('second run')\n"
         assert not marker.exists()
@@ -595,6 +601,11 @@ class TestFinalizer:
         monkeypatch.setenv("GITHUB_TOKEN", "ghp-test-token")
         monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
         monkeypatch.setenv("LOGOS_SESSION_OPEN_PR", "0")
+        monkeypatch.setenv("LOGOS_SESSION_PR_BASE_BRANCH", "main")
+        monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
+        snapshot = Result()
+        run_session.run_snapshot(snapshot)
+        monkeypatch.setenv("LOGOS_SESSION_VERIFIED_TREE", snapshot.data["candidate_tree"])
 
     def test_the_finalizer_records_the_commit_it_pushed(self, tmp_path, monkeypatch):
         # The runner pins its build poll to this sha: it is the exact commit
@@ -632,12 +643,8 @@ class TestFinalizer:
         run_finalize(first)
         assert first.data["committed"] is True
 
-        # Second run: the working copy goes back to the base content, so
-        # there is nothing to commit — the remote branch keeps the first
-        # run's commit. (The rebuild wiped the local main ref, so the base
-        # is fetched fresh into FETCH_HEAD.)
-        _git("fetch", "--quiet", "origin", "main", cwd=checkout)
-        _git("checkout", "FETCH_HEAD", "--", ".", cwd=checkout)
+        # Retrying finalization of the same verified tree is idempotent.
+        # It retains the published branch tip without creating another commit.
         second = Result()
         run_finalize(second)
 
@@ -1163,8 +1170,9 @@ class TestHowAPullRequestIsOpened:
         monkeypatch.setattr(run_session, "run", fake_run)
         return calls
 
-    def test_it_is_not_a_draft(self, monkeypatch, tmp_path):
+    def test_a_verified_pull_request_is_not_a_draft(self, monkeypatch, tmp_path):
         calls = self.capture(monkeypatch, tmp_path)
+        monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
 
         run_session.open_pull_request("logos/agent/x", "main", "do the thing")
 
@@ -1813,7 +1821,11 @@ def test_finalize_resets_home_before_verifying_identity(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_session, "verify_token_identity", verify)
     (tmp_path / "repo").mkdir()
-    run_finalize(Result())
+    monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
+    monkeypatch.setenv("LOGOS_SESSION_VERIFIED_TREE", "a" * 40)
+    monkeypatch.setenv("LOGOS_SESSION_PR_BASE_BRANCH", "main")
+    with pytest.raises(RuntimeError, match="no verified checkout"):
+        run_finalize(Result())
     assert calls == ["test-token"]
 
 
@@ -1838,3 +1850,87 @@ def test_identity_opener_disables_proxies_and_redirects(monkeypatch):
     monkeypatch.setattr(run_session, "build_opener", inspect_opener)
     with pytest.raises(RuntimeError, match="checked before network"):
         run_session.verify_token_identity("test-token")
+
+
+@pytest.mark.parametrize("plant", ["readonly", "symlink", "hardlink"])
+def test_result_replaces_agent_owned_file_without_modifying_link_targets(tmp_path, monkeypatch, plant):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result_path = artifacts / "result.json"
+    target = tmp_path / "agent-target.json"
+    forged = '{"candidate_tree":"forged","candidate_paths":[]}'
+    target.write_text(forged)
+    if plant == "readonly":
+        result_path.write_text(forged)
+        result_path.chmod(0o444)
+    elif plant == "symlink":
+        result_path.symlink_to(target)
+    else:
+        os.link(target, result_path)
+    old_inode = result_path.lstat().st_ino
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(artifacts))
+    result = Result()
+    result.data.update(candidate_tree="trusted", candidate_paths=["logos-ui/src/app.ts"])
+
+    result.write()
+
+    assert not result_path.is_symlink()
+    assert stat.S_ISREG(result_path.stat().st_mode)
+    assert result_path.stat().st_ino != old_inode
+    assert stat.S_IMODE(result_path.stat().st_mode) == 0o600
+    assert json.loads(result_path.read_text()) == result.data
+    assert target.read_text() == forged
+    assert list(artifacts.iterdir()) == [result_path]
+
+
+@pytest.mark.parametrize("failure", ["write", "replace"])
+def test_result_persistence_failure_is_fatal_and_removes_temporary_file(tmp_path, monkeypatch, failure):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result_path = artifacts / "result.json"
+    result_path.write_text('{"candidate_tree":"forged","candidate_paths":[]}')
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(artifacts))
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("result storage unavailable")
+
+    if failure == "write":
+        monkeypatch.setattr(run_session.json, "dump", fail_write)
+    else:
+        monkeypatch.setattr(run_session.os, "replace", fail_write)
+
+    with pytest.raises(RuntimeError, match="could not write result file: result storage unavailable"):
+        Result().write()
+    assert list(artifacts.iterdir()) == [result_path]
+
+
+@pytest.mark.parametrize("phase_fails", [False, True])
+def test_main_returns_failure_when_result_cannot_be_persisted(tmp_path, monkeypatch, capsys, phase_fails):
+    monkeypatch.setenv("LOGOS_SESSION_PHASE", "snapshot")
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+
+    def snapshot(result):
+        result.data["candidate_tree"] = "trusted"
+        if phase_fails:
+            raise RuntimeError("snapshot failed")
+
+    def fail_replace(*_args, **_kwargs):
+        raise PermissionError("artifact directory is read-only")
+
+    monkeypatch.setattr(run_session, "run_snapshot", snapshot)
+    monkeypatch.setattr(run_session.os, "replace", fail_replace)
+
+    assert run_session.main() == 1
+    captured = capsys.readouterr()
+    assert "could not persist the phase result" in captured.err
+    assert "phase complete" not in captured.out
+
+
+def test_main_reports_success_only_after_result_is_persisted(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LOGOS_SESSION_PHASE", "snapshot")
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setattr(run_session, "run_snapshot", lambda result: result.data.update(candidate_tree="trusted"))
+
+    assert run_session.main() == 0
+    assert json.loads((tmp_path / "artifacts" / "result.json").read_text())["candidate_tree"] == "trusted"
+    assert "phase complete" in capsys.readouterr().out

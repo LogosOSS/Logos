@@ -209,13 +209,13 @@ class IpRateLimiterServiceTest {
     }
 
     @Test
-    void clientIp_prefersFirstHopOfForwardedFor() {
+    void clientIp_stopsAtRightmostUntrustedHop() {
         IpRateLimiterService limiter = new IpRateLimiterService(new RateLimitingProperties(true, 60, 20));
         var request = new org.springframework.mock.web.MockHttpServletRequest();
         request.addHeader("X-Forwarded-For", "203.0.113.5, 10.0.0.1");
         request.setRemoteAddr("172.16.0.2");
 
-        assertEquals("203.0.113.5", limiter.clientIp(request));
+        assertEquals("10.0.0.1", limiter.clientIp(request));
     }
 
     @Test
@@ -227,4 +227,29 @@ class IpRateLimiterServiceTest {
 
         assertEquals("192.0.2.9", limiter.clientIp(request));
     }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "'198.51.100.8, 203.0.113.5, 172.16.0.3', 203.0.113.5",
+        "'172.16.0.3, 172.16.0.4', 172.16.0.3",
+        "'203.0.113.5, invalid', 172.16.0.2",
+        "'203.0.113.5, ', 172.16.0.2",
+        "'203.0.113.5, example.com', 172.16.0.2"
+    })
+    void clientIp_walksTrustedHopsWithoutResolvingHostnames(String forwarded, String expected) {
+        var limiter = new IpRateLimiterService(new RateLimitingProperties(true, 60, 20));
+        var request = new org.springframework.mock.web.MockHttpServletRequest();
+        request.setRemoteAddr("172.16.0.2");
+        request.addHeader("X-Forwarded-For", forwarded);
+        assertEquals(expected, limiter.clientIp(request));
+    }
+
+    @Test
+    void clientIp_supportsConfiguredIpv6Proxies() {
+        var limiter = new IpRateLimiterService(new RateLimitingProperties(true, 60, 20), "fd00::/8");
+        var request = new org.springframework.mock.web.MockHttpServletRequest();
+        request.setRemoteAddr("fd00::2");
+        request.addHeader("X-Forwarded-For", "203.0.113.5, fd00::3");
+        assertEquals("203.0.113.5", limiter.clientIp(request));
+    }
+
 }

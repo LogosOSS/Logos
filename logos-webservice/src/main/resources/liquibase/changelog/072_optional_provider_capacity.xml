@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- NULL means unconfigured. Preserve existing values, including cloud
+         quotas of 200; logosnode ignores this column regardless of its value. -->
+    <changeSet id="072-optional-provider-capacity" author="logos">
+        <dropDefaultValue tableName="providers" columnName="parallel_capacity" columnDataType="INTEGER"/>
+        <rollback>
+            <addDefaultValue tableName="providers" columnName="parallel_capacity"
+                columnDataType="INTEGER" defaultValueNumeric="20"/>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

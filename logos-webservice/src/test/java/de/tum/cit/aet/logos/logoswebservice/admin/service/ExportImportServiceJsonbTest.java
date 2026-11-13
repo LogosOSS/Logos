@@ -18,7 +18,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 class ExportImportServiceJsonbTest {
 
     private final ExportImportService service =
-        new ExportImportService(new JdbcTemplate(), new ObjectMapper());
+        new ExportImportService(new JdbcTemplate(), new ObjectMapper(),
+            org.mockito.Mockito.mock(de.tum.cit.aet.logos.logoswebservice.audit.PermissionAuditContext.class));
 
     private static PGobject pg(String type, String value) throws SQLException {
         PGobject object = new PGobject();

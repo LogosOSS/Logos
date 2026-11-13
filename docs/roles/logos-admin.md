@@ -12,6 +12,11 @@ that is configured in `KEYCLOAK_ROLES_LOGOS_ADMIN` (see the
 
 The UI shows the role badge "Logos Admin" in the header menu.
 
+## Account settings
+
+Open the user menu and select **Account settings** to manage your personal passkeys.
+Follow the shared [account settings procedure](app-developer.md#account-settings).
+
 ## Statistics
 
 This page shows the usage of the complete platform: the request volume, the
@@ -379,6 +384,14 @@ worker control actions (calibrate, sleep, wake, lane management).
 
 ![Providers page](/img/roles/logos-admin-providers.png)
 
+Expand a provider to see its connected models. Next to the endpoint, each model
+shows whether its batches can use the provider's Batch API: **Batch**, **No
+batch**, **Batch unchecked**, or **Batch in Logos** for worker nodes. The tooltip
+names the batch deployment or the reason for a refusal. See
+[Batch status of a model](../batch-processing.md#batch-status-of-a-model).
+
+![Providers page — connected models with their batch status](/img/roles/logos-admin-provider-connections.png)
+
 ## Policies
 
 Policies are the rules that decide which models a team or an API key can use.
@@ -409,6 +422,9 @@ members from Keycloak has a lock badge. The badge shows the name of the linked
 group.
 
 ![Teams page](/img/roles/logos-admin-team-management.png)
+
+Select the **View permission history** action beside a team to open its permission audit log.
+The log starts with that team's ID as a filter.
 
 ### Keycloak Group Links
 
@@ -451,6 +467,31 @@ Logos Admins also get a **Providers** tab. This tab shows which cloud
 providers and worker providers the team can use.
 
 ![Team detail — Providers](/img/roles/team-detail-providers.png)
+
+## Permission Audit
+
+Only Logos Admins can open **Permission Audit** in the sidebar.
+The page shows model and provider permission changes for teams and API keys.
+Each entry shows the action, time, recorded names, IDs, actor and cause.
+
+1. Open **Permission Audit** to see changes across all teams.
+2. Enter a team, API key, model or provider ID to limit the results.
+3. Enter a local time range if necessary.
+4. Select **Apply filters**.
+5. Select **Older** or **Newer** to move through the results.
+
+Select a name in the results to filter by its ID.
+Select **Clear filters** to see all changes again.
+The end of a time range excludes changes at that time.
+The URL keeps the filters when you share or bookmark the page.
+
+![Permission audit log](/img/roles/logos-admin-permission-audit.png)
+
+If you delete a team or API key, its history remains available from **Permission Audit**.
+The entries keep the names and IDs from the time of each change.
+Deletion also records the removal of its permission grants.
+History starts when permission auditing is enabled.
+The page does not change permissions.
 
 ## Agent Sessions
 

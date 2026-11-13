@@ -96,6 +96,27 @@ public class GatewayCloudForwarder {
             boolean retainResponseBody,
             java.util.function.Consumer<GatewayForwardResult> onSuccess,
             java.util.function.BiConsumer<String, GatewayForwardResult> onFailure) throws IOException {
+        return forward(deployment, inferencePath, queryString, method, body, inboundHeaders, Map.of(),
+            retainResponseBody, onSuccess, onFailure);
+    }
+
+    /**
+     * {@link #forward(GatewayDeployment, String, String, String, byte[], Map, boolean,
+     * java.util.function.Consumer, java.util.function.BiConsumer)} with headers the
+     * upstream needs for this one request, such as the Azure image deployment of the
+     * Responses {@code image_generation} tool.
+     */
+    public ResponseEntity<StreamingResponseBody> forward(
+            GatewayDeployment deployment,
+            String inferencePath,
+            String queryString,
+            String method,
+            byte[] body,
+            Map<String, List<String>> inboundHeaders,
+            Map<String, String> upstreamHeaders,
+            boolean retainResponseBody,
+            java.util.function.Consumer<GatewayForwardResult> onSuccess,
+            java.util.function.BiConsumer<String, GatewayForwardResult> onFailure) throws IOException {
 
         String forwardUrl = CloudForwardUrlBuilder.build(
             deployment.baseUrl(), inferencePath, deployment.endpoint());
@@ -139,6 +160,10 @@ public class GatewayCloudForwarder {
         String accept = firstHeader(inboundHeaders, "accept");
         if (accept != null) {
             builder.header("Accept", accept);
+        }
+
+        if (upstreamHeaders != null) {
+            upstreamHeaders.forEach(builder::header);
         }
 
         HttpRequest.BodyPublisher publisher = (outboundBody == null || outboundBody.length == 0)

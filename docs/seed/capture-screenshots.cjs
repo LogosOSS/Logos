@@ -286,10 +286,21 @@ const SHOTS = [
   },
   { file: "roles/logos-admin-models.png", user: ADMIN, full: true, go: (p) => p.goto(BASE + "/models") },
   { file: "roles/logos-admin-providers.png", user: ADMIN, go: (p) => p.goto(BASE + "/providers") },
+  {
+    file: "roles/logos-admin-provider-connections.png",
+    user: ADMIN,
+    go: async (p) => {
+      await p.goto(BASE + "/providers");
+      await settle(p);
+      await p.getByRole("button", { name: "Expand Docs Cloud (EU)" }).first().click();
+      await p.locator('[data-testid="batch-support"]').first().waitFor();
+    },
+  },
   { file: "roles/logos-admin-policies.png", user: ADMIN, go: (p) => p.goto(BASE + "/policies") },
   { file: "roles/logos-admin-billing.png", user: ADMIN, go: (p) => p.goto(BASE + "/billing") },
   { file: "roles/logos-admin-user-management.png", user: ADMIN, go: (p) => p.goto(BASE + "/user-management") },
   { file: "roles/logos-admin-team-management.png", user: ADMIN, go: (p) => p.goto(BASE + "/team-management") },
+  { file: "roles/logos-admin-permission-audit.png", user: ADMIN, full: true, go: (p, ids) => p.goto(`${BASE}/permission-audit-log?team_id=${ids.team}`) },
   {
     file: "roles/logos-admin-new-team.png",
     user: ADMIN,

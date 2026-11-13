@@ -75,6 +75,8 @@ from logos.dbutils.types import (
     normalize_provider_type,
 )
 from logos.errors import UpstreamStreamError, coerce_upstream_error, openai_error_response, upstream_error_message
+from logos.image_generation_tool import image_tool_access_error
+from logos.inference_paths import require_inference_path
 from logos.jobs.job_service import JobService, JobSubmission
 from logos.live_stream import _LiveStreamRegistry, _StreamingLogAccumulator, _usage_tokens_from_payload
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeOfflineError, LogosNodeRuntimeRegistry
@@ -3831,6 +3833,15 @@ async def route_and_execute(
         else:
             raise HTTPException(status_code=404, detail="No models available for this API key.")
 
+    # The Responses image tool runs a second model; the key needs access to it
+    # as well, checked before the request is scheduled anywhere.
+    image_tool_error = image_tool_access_error(body, deployments)
+    if image_tool_error:
+        _record_log_failure(log_id, request_id, image_tool_error, result_status="error")
+        if is_async_job:
+            return {"status_code": 403, "data": {"error": image_tool_error}}
+        raise HTTPException(status_code=403, detail=image_tool_error)
+
     # Jobs reach this point without going through handle_sync_request, so they
     # publish their live view here. start() is non-destructive, so a request
     # that already arrived on the sync path keeps the entry it has.
@@ -4556,6 +4567,7 @@ async def handle_sync_request(path: str, request: Request):
     # forwarded to a Batch-capable cloud provider the key may use.
     if is_batch_api_path(path):
         return await handle_batch_api_request(request)
+    require_inference_path(path)
 
     # The request id is minted before authentication so perf tracing can cover
     # the auth phases as well; the log insert inside auth_parse_log stores it
@@ -4707,6 +4719,7 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
         HTTPException(400): Invalid JSON body
         HTTPException(401): Missing or invalid authentication
     """
+    arrived_at = datetime.datetime.now(datetime.timezone.utc)
     # Authenticate before parsing multipart bodies. This prevents unauthenticated
     # callers from consuming the audio upload/base64 memory budget.
     headers = dict(request.headers)
@@ -4744,6 +4757,7 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
         deployment_cache = refcache.get_ref_cache()
         cached_deployments = deployment_cache.get(("deployments", auth.api_key_id))
         log_fields = {
+            "timestamp_request": arrived_at,
             "api_key_id": auth.api_key_id,
             "team_id": auth.team_id,
             "user_id": auth.user_id,
@@ -4832,6 +4846,7 @@ async def submit_job_request(path: str, request: Request) -> Response:
     # jobs, they are forwarded to the provider's Batch API.
     if is_batch_api_path(path):
         return await handle_batch_api_request(request)
+    require_inference_path(path)
 
     # Auth with full context + initial logging
     headers, auth, json_data, client_ip, log_id, _job_deployments = await auth_parse_log(request, use_profile_auth=True)

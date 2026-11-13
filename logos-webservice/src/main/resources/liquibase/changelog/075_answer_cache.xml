@@ -40,7 +40,7 @@
 
          The unique (context_id, question_normalized) pair makes seeding
          idempotent: loading the same dataset twice cannot insert duplicates. -->
-    <changeSet id="072-answer-cache" author="natasya.gunawan">
+    <changeSet id="075-answer-cache" author="natasya.gunawan">
         <preConditions onFail="MARK_RAN">
             <not><tableExists tableName="answer_cache"/></not>
         </preConditions>
@@ -114,7 +114,7 @@
            cache_hit NULL  — no lookup ran (no logos-context header, a streaming
                              or multi-turn request) or a pre-migration row.
          Cost and latency savings are measured from these rows. -->
-    <changeSet id="072-log-entry-cache-hit" author="natasya.gunawan">
+    <changeSet id="075-log-entry-cache-hit" author="natasya.gunawan">
         <addColumn tableName="log_entry">
             <column name="cache_hit" type="BOOLEAN"/>
             <column name="cache_entry_id" type="INTEGER"/>

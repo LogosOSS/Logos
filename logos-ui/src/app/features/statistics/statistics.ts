@@ -15,6 +15,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import type { Subscription } from 'rxjs';
 
 import { StatsWebsocketService } from './services/stats-websocket.service';
+import { StatsClockService } from './services/stats-clock.service';
 
 import { CHART_ROLE, getLaneStateColor, seriesColor, STATUS_COLOR } from './statistics.constants';
 
@@ -151,6 +152,7 @@ type ProviderGlassRow = {
 })
 export class Statistics implements OnInit, OnDestroy {
   private statsWs = inject(StatsWebsocketService);
+  private clock = inject(StatsClockService);
   private statisticsService = inject(StatisticsService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
@@ -433,7 +435,7 @@ export class Statistics implements OnInit, OnDestroy {
   readonly error = signal<string | null>(null);
   readonly vramError = signal<string | null>(null);
   readonly isVramLoading = signal(false);
-  readonly nowMs = signal(Date.now());
+  readonly nowMs = signal(this.clock.now());
   /**
    * Offline workers whose last report the operator chose to look at. Hidden by
    * default: an offline worker's last sample describes a machine that may
@@ -513,6 +515,7 @@ export class Statistics implements OnInit, OnDestroy {
     return {
       start: startDate.toISOString(),
       end: endDate.toISOString(),
+      live: this.isLiveEnd(endDate.getTime(), Date.now()),
       targetBuckets: chooseDynamicTargetBuckets(spanMs),
     };
   });
@@ -1043,10 +1046,9 @@ export class Statistics implements OnInit, OnDestroy {
     });
 
     this.nowInterval = setInterval(() => {
-      const now = Date.now();
-      this.nowMs.set(now);
-      this.handleCalendarRollover(now);
-    }, 30_000);
+      this.nowMs.set(this.clock.now());
+      this.handleCalendarRollover(Date.now());
+    }, 1000);
     void this.loadScopeOptions();
   }
 
@@ -1223,7 +1225,7 @@ export class Statistics implements OnInit, OnDestroy {
   onRefresh(): void {
     this.refreshing.set(true);
     // Also re-reads what moves with the clock, such as the maintenance status.
-    this.nowMs.set(Date.now());
+    this.nowMs.set(this.clock.now());
     this.markRangeChanged();
     this.statsWs.reconnect();
   }
@@ -1254,10 +1256,9 @@ export class Statistics implements OnInit, OnDestroy {
    */
   readonly requestFeedRange = computed(() => {
     const cfg = this.wsTimelineConfig();
-    const endMs = new Date(cfg.end).getTime();
     return {
       startIso: cfg.start,
-      endIso: this.isLiveEnd(endMs, Date.now()) ? '' : cfg.end,
+      endIso: cfg.live ? '' : cfg.end,
     };
   });
 

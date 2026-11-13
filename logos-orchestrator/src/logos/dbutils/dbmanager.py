@@ -10,6 +10,7 @@ import re
 import secrets
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from urllib.parse import quote
 
 import sqlalchemy.exc
 import yaml
@@ -36,7 +37,12 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_DB_URL = os.getenv("LOGOS_DB_URL", "postgresql://postgres:root@logos-db:5432/logosdb")
+_DB_URL = os.getenv("LOGOS_DB_URL") or (
+    f"postgresql://{quote(os.getenv('DB_USER', 'postgres'), safe='')}:"
+    f"{quote(os.getenv('DB_PASSWORD', ''), safe='')}@"
+    f"{os.getenv('DB_HOST', 'logos-db')}:{os.getenv('DB_PORT', '5432')}/"
+    f"{quote(os.getenv('DB_NAME', 'logosdb'), safe='')}"
+)
 _POOL_SIZE = int(os.getenv("LOGOS_DB_POOL_SIZE", "10"))
 _MAX_OVERFLOW = int(os.getenv("LOGOS_DB_MAX_OVERFLOW", "20"))
 _POOL_RECYCLE = int(os.getenv("LOGOS_DB_POOL_RECYCLE", "1800"))
@@ -1141,11 +1147,20 @@ class DBManager:
         poll. ``api_key`` is the provider-level resource key.
         """
         rows = self.session.execute(text("""
-                SELECT id, name, base_url, api_key
+                SELECT id, name, base_url, api_key, cloud_provider_type
                 FROM providers
                 WHERE provider_type = 'cloud' AND cloud_provider_type = 'azure'
                 """)).fetchall()
-        return [{"id": r.id, "name": r.name, "base_url": r.base_url, "api_key": r.api_key} for r in rows]
+        return [
+            {
+                "id": r.id,
+                "name": r.name,
+                "base_url": r.base_url,
+                "api_key": r.api_key,
+                "cloud_provider_type": str(r.cloud_provider_type),
+            }
+            for r in rows
+        ]
 
     def sync_azure_deployments(self, provider_id: int, deployments: list[Dict[str, str]]) -> Dict[str, Any]:
         """Auto-sync the live Azure deployment list into the DB.
@@ -1576,7 +1591,9 @@ class DBManager:
             provider_id: Provider ID to query
 
         Returns:
-            Dictionary with configuration fields if found, None otherwise
+            Dictionary with configuration fields if found, None otherwise.
+            parallel_capacity is optional stored configuration, not the effective
+            logosnode capacity; local admission derives capacity from live lanes.
         """
         sql = text("""
             SELECT id, ollama_admin_url, total_vram_mb, parallel_capacity,
@@ -1645,7 +1662,7 @@ class DBManager:
             ollama_admin_url: Internal admin endpoint of the worker (e.g., http://gpu-vm-1:5000).
                 Legacy column name — the value is the worker's base URL.
             total_vram_mb: Total VRAM capacity in MB (e.g., 49152 for 48GB)
-            parallel_capacity: Max concurrent requests per model
+            parallel_capacity: Optional configured capacity, ignored by logosnode admission
             keep_alive_seconds: How long models stay loaded when idle
             max_loaded_models: Max models that can be loaded simultaneously
 
@@ -3097,12 +3114,16 @@ class DBManager:
         """
         self.session.execute(
             text("""
-                INSERT INTO provider_model_batch_eligibility (provider_id, model_id, eligible, detail, checked_at)
-                VALUES (:pid, :mid, false, :detail, :now)
+                INSERT INTO provider_model_batch_eligibility
+                    (provider_id, model_id, eligible, detail, checked_at, batch_deployment, source)
+                VALUES (:pid, :mid, false, :detail, :now, NULL, 'refusal')
                 ON CONFLICT (provider_id, model_id)
                 DO UPDATE SET eligible = false,
                               detail = EXCLUDED.detail,
-                              checked_at = EXCLUDED.checked_at
+                              checked_at = EXCLUDED.checked_at,
+                              batch_deployment = NULL,
+                              batch_deployment_ids = '[]'::jsonb,
+                              source = 'refusal'
                 """),
             {
                 "pid": int(provider_id),
@@ -3112,6 +3133,74 @@ class DBManager:
             },
         )
         self.session.commit()
+
+    def record_model_batch_probe(
+        self,
+        provider_id: int,
+        model_id: int,
+        eligible: bool,
+        batch_deployment: Optional[str] = None,
+        detail: str = "",
+        batch_deployment_ids: Optional[List[str]] = None,
+        checked_at: Optional[datetime.datetime] = None,
+    ) -> None:
+        """Store what probing the model's deployments for Batch found.
+
+        ``batch_deployment`` is the deployment the provider's Batch API
+        accepted, which forwarded batch files are rewritten to; it is only kept
+        for an eligible model. ``batch_deployment_ids`` are all deployments the
+        Batch API accepted; none of them may serve interactive requests.
+        ``checked_at`` defaults to now; the probe passes an earlier time to have
+        the next sync probe the model again.
+        """
+        ids = sorted(set(batch_deployment_ids or ([batch_deployment] if batch_deployment else [])))
+        self.session.execute(
+            text("""
+                INSERT INTO provider_model_batch_eligibility
+                    (provider_id, model_id, eligible, detail, checked_at, batch_deployment,
+                     batch_deployment_ids, source)
+                VALUES (:pid, :mid, :eligible, :detail, :now, :deployment, CAST(:ids AS jsonb), 'probe')
+                ON CONFLICT (provider_id, model_id)
+                DO UPDATE SET eligible = EXCLUDED.eligible,
+                              detail = EXCLUDED.detail,
+                              checked_at = EXCLUDED.checked_at,
+                              batch_deployment = EXCLUDED.batch_deployment,
+                              batch_deployment_ids = EXCLUDED.batch_deployment_ids,
+                              source = 'probe'
+                """),
+            {
+                "pid": int(provider_id),
+                "mid": int(model_id),
+                "eligible": bool(eligible),
+                "deployment": (batch_deployment or None) if eligible else None,
+                "ids": json.dumps(ids if eligible else []),
+                "detail": (detail or "")[:500],
+                "now": checked_at or datetime.datetime.now(datetime.timezone.utc),
+            },
+        )
+        self.session.commit()
+
+    def get_batch_model_support(self, provider_id: int) -> Dict[int, Dict[str, Any]]:
+        """What is known about Batch support per model on one provider.
+
+        Probe results stay until the next probe replaces them; a refusal
+        expires after the eligibility TTL like the ineligibility list does.
+        Models without a row are unknown.
+        """
+        rows = self.session.execute(
+            text("""
+                SELECT model_id, eligible, batch_deployment, batch_deployment_ids, source, detail, checked_at
+                FROM provider_model_batch_eligibility
+                WHERE provider_id = :pid
+                  AND (source = 'probe' OR checked_at > :now - make_interval(days => :ttl))
+                """),
+            {
+                "pid": int(provider_id),
+                "now": datetime.datetime.now(datetime.timezone.utc),
+                "ttl": int(BATCH_MODEL_ELIGIBILITY_TTL_DAYS),
+            },
+        ).mappings()
+        return {int(row["model_id"]): dict(row) for row in rows.all()}
 
     def get_batch_model_deployments(self, api_key_id: int, provider_id: Optional[int] = None) -> list[Dict[str, Any]]:
         """The models this key may run, with the provider that serves each.
@@ -3157,12 +3246,15 @@ class DBManager:
                           mp.endpoint AS endpoint,
                           p.id AS provider_id,
                           p.provider_type AS provider_type,
-                          p.cloud_provider_type AS cloud_provider_type
+                          p.cloud_provider_type AS cloud_provider_type,
+                          CASE WHEN be.eligible THEN be.batch_deployment END AS batch_deployment
                    FROM models m
                         JOIN model_provider mp ON mp.model_id = m.id
                         JOIN providers p ON p.id = mp.provider_id
                         JOIN effective_models em ON em.model_id = m.id
                         JOIN effective_providers ep ON ep.provider_id = p.id
+                        LEFT JOIN provider_model_batch_eligibility be
+                               ON be.provider_id = p.id AND be.model_id = m.id
                    {scope}
                    ORDER BY m.name, p.id
                    """)
@@ -3181,9 +3273,17 @@ class DBManager:
         """
         rows = self.session.execute(
             text("""
-                SELECT m.id AS model_id, m.name AS model_name, mp.endpoint AS endpoint
+                SELECT m.id AS model_id, m.name AS model_name, mp.endpoint AS endpoint,
+                       CASE WHEN be.eligible THEN be.batch_deployment END AS batch_deployment,
+                       (
+                           SELECT string_agg(a.alias, ', ' ORDER BY a.alias)
+                           FROM model_aliases a
+                           WHERE a.model_id = m.id
+                       ) AS aliases
                 FROM model_provider mp
                      JOIN models m ON m.id = mp.model_id
+                     LEFT JOIN provider_model_batch_eligibility be
+                            ON be.provider_id = mp.provider_id AND be.model_id = mp.model_id
                 WHERE mp.provider_id = :provider_id
                 ORDER BY m.name
                 """),
@@ -4691,7 +4791,11 @@ class DBManager:
 
     def list_local_providers(self) -> list[dict]:
         """Unauthenticated variant of get_local_provider_inventory for internal
-        (secret-gated) endpoints that have no user logos_key."""
+        (secret-gated) endpoints that have no user logos_key.
+
+        parallel_capacity is retained as nullable legacy configuration metadata;
+        it does not describe the live capacity of these local providers.
+        """
         sql = text("""
             SELECT
                 id,
@@ -4774,8 +4878,10 @@ class DBManager:
         headers=None,
         request_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
+        timestamp_request: Optional[datetime.datetime] = None,
     ) -> tuple[dict, int]:
-        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        # Deferred inserts retain arrival time, before scheduling/provider events.
+        timestamp = (timestamp_request or datetime.datetime.now(datetime.timezone.utc)).isoformat()
         payload_str = _json_for_jsonb(input_payload) if log_level == "FULL" and input_payload else None
         headers_str = _json_for_jsonb(dict(headers)) if log_level == "FULL" and headers else None
 
@@ -4817,6 +4923,7 @@ class DBManager:
         headers=None,
         request_id: Optional[str] = None,
         timeout_s: Optional[float] = None,
+        timestamp_request: Optional[datetime.datetime] = None,
     ) -> Optional[int]:
         """Insert a log row, or return the id of an existing one for ``request_id``.
 
@@ -4841,6 +4948,7 @@ class DBManager:
                 headers=headers,
                 request_id=request_id,
                 timeout_s=timeout_s,
+                timestamp_request=timestamp_request,
             )
             return int(result["log-id"]) if status == 200 else None
         except sqlalchemy.exc.IntegrityError as exc:
@@ -5221,7 +5329,7 @@ class DBManager:
                             """)
         return self.session.execute(sql, {"logos_key": logos_key}).fetchone() is not None
 
-    # Answer reuse (table answer_cache, changelog 072)
+    # Answer reuse (table answer_cache, changelog 075)
 
     def get_answer_cache_entries(self, context_id: str) -> List[Dict[str, Any]]:
         """Return every stored answer of one context, oldest first.

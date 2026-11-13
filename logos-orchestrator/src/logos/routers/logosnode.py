@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 import logos.main as _main
 from logos.capacity.capacity_planner import RestoreRecordError
+from logos.client_address import is_trusted_proxy
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import (
     AdminReleaseNodeMaintenanceRequest,
@@ -198,8 +199,7 @@ def _is_tls_request(request: Request) -> bool:
     if request.url.scheme == "https":
         return True
     forwarded = request.headers.get("x-forwarded-proto", "")
-    forwarded_values = [item.strip().lower() for item in forwarded.split(",") if item.strip()]
-    return "https" in forwarded_values
+    return bool(request.client and is_trusted_proxy(request.client.host) and forwarded.strip().lower() == "https")
 
 
 def _require_tls_request(request: Request) -> None:
@@ -236,8 +236,9 @@ def _is_tls_websocket(websocket: WebSocket) -> bool:
     if websocket.url.scheme in {"wss", "https"}:
         return True
     forwarded = websocket.headers.get("x-forwarded-proto", "")
-    forwarded_values = [item.strip().lower() for item in forwarded.split(",") if item.strip()]
-    return "https" in forwarded_values or "wss" in forwarded_values
+    return bool(
+        websocket.client and is_trusted_proxy(websocket.client.host) and forwarded.strip().lower() in {"https", "wss"}
+    )
 
 
 @router.post("/logosdb/providers/logosnode/register", tags=["logosnode"])

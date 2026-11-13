@@ -28,6 +28,10 @@
 
 The Postgres schema is owned by `logos-webservice` and migrated via Liquibase changelogs in `logos-webservice/src/main/resources/liquibase/changelog/`. A changelog is only applied if it is `<include>`-ed in `master.xml` — a file left out is silently never run. The orchestrator and agent only read/write tables (raw SQL, no migrations); `db/` has no `init.sql`.
 
+### Cloud requests stay in the gateway
+
+Cloud named-model requests are served by the `logos-webservice` gateway, never via the orchestrator (deliberate architecture decision). Implement cloud-specific needs in the gateway; do not add orchestrator routes for cloud traffic.
+
 ### Entity hierarchy
 
 ```text

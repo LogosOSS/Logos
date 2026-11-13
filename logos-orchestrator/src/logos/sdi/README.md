@@ -256,7 +256,8 @@ CREATE TABLE providers (
     total_vram_mb INTEGER DEFAULT NULL,
 
     -- SDI: Configuration
-    parallel_capacity INTEGER DEFAULT 1,
+    -- Optional cloud quota; logosnode workers use live admission instead.
+    parallel_capacity INTEGER DEFAULT NULL,
     keep_alive_seconds INTEGER DEFAULT 300,
     max_loaded_models INTEGER DEFAULT 3,
 

@@ -19,6 +19,7 @@ export class ModalConfirmComponent {
   @Input() confirmOnly = false;
   @Input() danger = true;
   @Input() loading = false;
+  @Input() dismissible = true;
   @Output() visibleChange = new EventEmitter<boolean>();
   @Output() confirmed = new EventEmitter<void>();
 }

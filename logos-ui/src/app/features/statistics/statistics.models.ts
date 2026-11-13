@@ -257,6 +257,8 @@ export interface TimelineInitPayload {
 
 // TimelineRequestConfig from logos-ui-old/hooks/use-stats-websocket-v2.ts
 export interface TimelineRequestConfig {
+  /** Preserve the open end across reconnects, even when the saved end is old. */
+  live?: boolean;
   start: string;
   end: string;
   targetBuckets: number;

@@ -5,6 +5,7 @@ import { ModelManagementService } from '../../core/services/model-management.ser
 import { ProviderManagementService } from '../../core/services/provider-management.service';
 import {
   AddProviderPayload,
+  ModelConnection,
   Provider,
   UpdateProviderPayload,
 } from '../../shared/models/provider.model';
@@ -309,6 +310,40 @@ describe('Providers', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+  describe('the batch support of a connected model', () => {
+    const connection = (overrides: Partial<ModelConnection> = {}): ModelConnection => ({
+      model_id: 92,
+      model_name: 'gpt-5.6-luna',
+      endpoint: 'https://res.openai.azure.com/openai/deployments/gpt-5.6-luna/responses',
+      api_key: null,
+      ...overrides,
+    });
+
+    const badges = (): HTMLElement[] =>
+      Array.from(fixture.nativeElement.querySelectorAll('[data-testid="batch-support"]'));
+
+    it('shows for each connection whether its batches reach the provider', async () => {
+      getProviderModels.mockResolvedValue([
+        connection({ batch_support: 'supported', batch_deployment: 'gpt-56-luna-batch', model_id: 1 }),
+        connection({ batch_support: 'unsupported', batch_detail: "SKU 'GlobalStandard'", model_id: 2 }),
+        connection({ batch_support: 'unknown', model_id: 3 }),
+      ]);
+      component.toggleExpand(component.providers()[0]!);
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      expect(badges().map((b) => b.textContent?.trim())).toEqual(['Batch', 'No batch', 'Batch unchecked']);
+      expect(badges()[0].classList).toContain('batch-badge--supported');
+      expect(badges()[0].getAttribute('title')).toContain('gpt-56-luna-batch');
+      expect(badges()[1].classList).toContain('batch-badge--unsupported');
+      expect(badges()[1].getAttribute('title')).toContain('GlobalStandard');
+    });
+
+    it('treats a connection without batch information as unchecked', () => {
+      expect(component.batchLabel(connection())).toBe('Batch unchecked');
+      expect(component.batchLabel(connection({ batch_support: 'logos' }))).toBe('Batch in Logos');
     });
   });
 });

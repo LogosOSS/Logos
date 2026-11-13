@@ -53,6 +53,7 @@ from logos.billing.finalize import finalize_billing_inputs
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.types import cloud_auth_header
 from logos.errors import openai_error_response, raise_openai_error
+from logos.image_generation_tool import requested_image_models
 from logos.request_content import (
     parse_batch_file_upload,
     sanitized_headers_for_persistence,
@@ -475,27 +476,66 @@ async def choose_execution_target(
     # Standard). What the provider has refused before is tracked per model,
     # and those models count as not hosted for the choice made here.
     on_provider = [row for row in permitted if int(row["provider_id"]) == int(provider["id"])]
-    hosted = {str(row["model_name"]).lower() for row in on_provider}
-    model_id_by_name = {str(row["model_name"]).lower(): int(row["model_id"]) for row in on_provider}
-    ineligible = db.get_batch_model_ineligibility(int(provider["id"]))
-    missing = sorted(
-        name for name in model_names if name.lower() not in hosted or model_id_by_name.get(name.lower()) in ineligible
-    )
-    if missing:
-        if requested_execution == "provider" or _header(headers, BATCH_PROVIDER_HEADER):
+    missing, reason = _models_not_batchable(db, provider, on_provider, model_names)
+    if missing or reason:
+        forced = requested_execution == "provider" or _header(headers, BATCH_PROVIDER_HEADER)
+        if forced:
             raise_openai_error(
                 400,
-                f"Provider {provider['name']!r} cannot batch {', '.join(repr(n) for n in missing)}, "
-                "so it cannot run this batch. Omit the provider header to have Logos run it instead.",
+                (reason or f"Provider {provider['name']!r} cannot batch {', '.join(repr(n) for n in missing)}")
+                + ", so it cannot run this batch. Omit the provider header to have Logos run it instead.",
                 code="model_not_available_for_batch",
             )
         logger.info(
-            "Running batch locally: provider %s cannot batch %s",
+            "Running batch locally on provider %s: %s",
             provider.get("name"),
-            ", ".join(missing),
+            reason or "cannot batch " + ", ".join(missing),
         )
         return None, permitted
     return provider, on_provider
+
+
+def _models_not_batchable(
+    db: DBManager,
+    provider: Dict[str, Any],
+    on_provider: List[Dict[str, Any]],
+    model_names: set,
+) -> Tuple[List[str], str]:
+    """The file's models this provider's Batch API would refuse, and why.
+
+    Hosting a model is not enough: an Azure resource batches only on a
+    deployment of a Batch SKU, so there a model qualifies only when its
+    deployments were probed and one of them accepted a batch. Anything else —
+    a Standard deployment, or one not probed yet — is never sent to the
+    provider's Batch API. Other providers batch every model they host unless
+    they refused it before. Azure also runs one model per batch.
+
+    Returns ``(models that cannot be batched, a reason when it is the file
+    rather than a model)``.
+    """
+    hosted = {str(row["model_name"]).lower(): row for row in on_provider}
+    if is_azure_provider(provider):
+        if len(model_names) > 1:
+            return [], (
+                f"Provider {provider['name']!r} runs one model per batch and this file names "
+                f"{', '.join(repr(n) for n in sorted(model_names))}"
+            )
+        support = db.get_batch_model_support(int(provider["id"]))
+        missing = []
+        for name in sorted(model_names):
+            row = hosted.get(name.lower())
+            known = support.get(int(row["model_id"])) if row else None
+            if not row or not known or not known.get("eligible") or not known.get("batch_deployment"):
+                missing.append(name)
+        return missing, ""
+
+    ineligible = db.get_batch_model_ineligibility(int(provider["id"]))
+    missing = sorted(
+        name
+        for name in model_names
+        if name.lower() not in hosted or int(hosted[name.lower()]["model_id"]) in ineligible
+    )
+    return missing, ""
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +553,10 @@ def _deployment_for(provider: Optional[Dict[str, Any]], deployment_row: Dict[str
     """
     if provider is None or not is_azure_provider(provider):
         return str(deployment_row["model_name"])
+    # Azure batches only on a deployment of a Batch SKU, which sits next to
+    # the Standard deployment the endpoint names.
+    if deployment_row.get("batch_deployment"):
+        return str(deployment_row["batch_deployment"])
     return extract_azure_deployment_name(deployment_row.get("endpoint") or "") or str(deployment_row["model_name"])
 
 
@@ -539,6 +583,9 @@ def batch_input_models(content: bytes) -> set:
             model = line["body"].get("model")
             if isinstance(model, str) and model:
                 names.add(model)
+            # The Responses image tool runs a second model: it needs the same
+            # authorisation and has to be served where the batch runs.
+            names.update(requested_image_models(line["body"]))
     return names
 
 
@@ -760,6 +807,8 @@ def _model_index(db: DBManager, provider: Dict[str, Any]) -> Dict[str, int]:
         deployment = extract_azure_deployment_name(row.get("endpoint") or "")
         if deployment:
             index[deployment.lower()] = model_id
+        if row.get("batch_deployment"):
+            index[str(row["batch_deployment"]).lower()] = model_id
     return index
 
 
@@ -975,6 +1024,9 @@ def _provider_error_text(body: Dict[str, Any]) -> str:
     if isinstance(error, dict) and error.get("message"):
         return str(error["message"])
     errors = body.get("errors")
+    # Azure wraps the list in a list object: {"errors": {"data": [...]}}.
+    if isinstance(errors, dict) and isinstance(errors.get("data"), list):
+        errors = errors["data"]
     if isinstance(errors, list):
         parts = []
         for item in errors:
@@ -995,6 +1047,8 @@ def _looks_like_batch_model_error(text: str) -> bool:
     deployment name — must not be read as "this model is not for batch".
     """
     lowered = (text or "").lower()
+    if "invalid_deployment_type" in lowered:
+        return True
     return "batch" in lowered and any(marker in lowered for marker in ("not supported", "sku", "globalbatch"))
 
 
@@ -1343,15 +1397,25 @@ async def _handle_file_upload(request: Request, auth: AuthContext, headers: Dict
     """
     upload = await parse_batch_file_upload(request)
     raw = upload["file"]["bytes"]
-    provider, deployments = await choose_execution_target(auth, headers, db, batch_input_models(raw))
+    file_models = batch_input_models(raw)
+    provider, deployments = await choose_execution_target(auth, headers, db, file_models)
     rewritten, model_counts = validate_and_rewrite_batch_input(raw, provider, deployments)
+    # Recorded for the re-check at batch creation: the image models the lines'
+    # tools name count as models the file runs, like each line's own model.
+    wanted = {name.lower() for name in file_models}
     log_payload = {
         "purpose": upload["purpose"],
         "filename": upload["file"]["filename"],
         "size": len(rewritten),
         "requests": sum(model_counts.values()),
         "model_ids": sorted(model_counts),
-        "models": sorted(str(row["model_name"]) for row in deployments if int(row["model_id"]) in model_counts),
+        "models": sorted(
+            {
+                str(row["model_name"])
+                for row in deployments
+                if int(row["model_id"]) in model_counts or str(row["model_name"]).lower() in wanted
+            }
+        ),
         "execution": "provider" if provider else "logos",
     }
 
@@ -1457,11 +1521,15 @@ def _local_batch_contract(content: bytes, json_body: Dict[str, Any]) -> str:
     return f"/v1/{wanted}"
 
 
-async def _verify_provider_input_file(provider: Dict[str, Any], input_file_id: str) -> None:
+async def _verify_provider_input_file(
+    provider: Dict[str, Any], input_file_id: str, db: Optional[DBManager] = None, auth: Optional[AuthContext] = None
+) -> None:
     """Check the provider-held input file again before a batch runs it.
 
-    Lines are checked at upload; a file uploaded before that check existed
-    must not run provider-state references on the shared provider account.
+    Lines are checked at upload; a file uploaded before those checks existed
+    must not run provider-state references, or an image model the creating key
+    may not use, on the shared provider account. The image models are read from
+    the file itself, since the models recorded for an older file omit them.
     """
     content = await _download_file(provider, input_file_id)
     if content is None:
@@ -1469,6 +1537,25 @@ async def _verify_provider_input_file(provider: Dict[str, Any], input_file_id: s
             502, "The input file could not be read from the provider to check it.", code="batch_upstream_unreachable"
         )
     reject_stateful_batch_lines(content)
+    if db is None or auth is None:
+        return
+    image_models = set()
+    for line in parse_request_lines(content):
+        image_models.update(requested_image_models(line.get("body")))
+    if not image_models:
+        return
+    permitted = {
+        str(row["model_name"]).lower()
+        for row in db.get_batch_model_deployments(auth.api_key_id, provider_id=int(provider["id"]))
+    }
+    missing = sorted(name for name in image_models if name.lower() not in permitted)
+    if missing:
+        raise_openai_error(
+            403,
+            f"This key may not use {', '.join(repr(name) for name in missing)}: the file's image_generation "
+            "tools ask for image models the key may not run on this provider.",
+            code="model_not_permitted",
+        )
 
 
 async def _handle_batch_creation(
@@ -1489,7 +1576,7 @@ async def _handle_batch_creation(
         if provider is None:
             raise_openai_error(502, "The provider holding this file is gone.", code="batch_upstream_unreachable")
         _assert_still_permitted(db, auth, provider, input_file)
-        await _verify_provider_input_file(provider, input_file_id)
+        await _verify_provider_input_file(provider, input_file_id, db, auth)
         return None, provider
 
     content = db.get_local_batch_file_content(int(input_file["id"])) or b""
@@ -1512,11 +1599,29 @@ async def _handle_batch_creation(
     return JSONResponse(content=local_batch_object(created)), None
 
 
+def _deployment_name_map(provider: Dict[str, Any]) -> Dict[str, str]:
+    """Every deployment spelling of a model on this provider, mapped to the Logos model name.
+
+    Covers both the batch deployment a forwarded file names and the Standard
+    deployment of the endpoint, so a file the provider holds translates back
+    whichever of them it was rewritten to.
+    """
+    with DBManager() as db:
+        deployments = db.get_provider_model_deployments(int(provider["id"]))
+    mapping = {str(_deployment_for(provider, row)).lower(): str(row["model_name"]) for row in deployments}
+    for row in deployments:
+        standard = extract_azure_deployment_name(row.get("endpoint") or "")
+        if standard:
+            mapping.setdefault(standard.lower(), str(row["model_name"]))
+    return mapping
+
+
 async def _rerun_refused_creation_locally(
     provider: Dict[str, Any],
     json_body: Dict[str, Any],
     auth: AuthContext,
     consent_level: Optional[str] = None,
+    name_by_deployment: Optional[Dict[str, str]] = None,
 ) -> Optional[JSONResponse]:
     """Run a refused batch creation here, from the file the provider holds.
 
@@ -1533,10 +1638,11 @@ async def _rerun_refused_creation_locally(
         return None
     # The provider holds the file as Logos uploaded it, i.e. with the model
     # spellings the provider's deployments use. The local pipeline wants Logos
-    # model names, so those spellings are translated back on the way in.
-    with DBManager() as db:
-        deployments = db.get_provider_model_deployments(int(provider["id"]))
-    name_by_deployment = {str(_deployment_for(provider, row)).lower(): str(row["model_name"]) for row in deployments}
+    # model names, so those spellings are translated back on the way in. The
+    # caller passes the mapping read before the refusal was recorded: recording
+    # it drops the batch deployment the file may name.
+    if name_by_deployment is None:
+        name_by_deployment = _deployment_name_map(provider)
     lines: List[bytes] = []
     for raw_line in content.splitlines():
         if not raw_line.strip():
@@ -1717,9 +1823,7 @@ async def handle_batch_api_request(request: Request) -> Response:
         _finalize_batch_log(log_id, provider_id=provider_id, result_status="success")
     else:
         payload = _response_json(response) or {}
-        error_text = ""
-        if isinstance(payload.get("error"), dict):
-            error_text = str(payload["error"].get("message") or "")
+        error_text = _provider_error_text(payload)
         _finalize_batch_log(
             log_id,
             provider_id=provider_id,
@@ -1735,6 +1839,11 @@ async def handle_batch_api_request(request: Request) -> Response:
             and isinstance(json_body, dict)
             and json_body.get("input_file_id")
         ):
+            try:
+                name_by_deployment = _deployment_name_map(provider)
+            except Exception:  # noqa: BLE001 - the rerun reads it again if this fails
+                logger.exception("Could not read the deployments of provider %s", provider.get("id"))
+                name_by_deployment = None
             _learn_batch_ineligibility(provider, json_body.get("input_file_id"), error_text)
             # In auto mode only the model-availability refusal is not the
             # answer: the provider just said it cannot batch this file's
@@ -1750,7 +1859,9 @@ async def handle_batch_api_request(request: Request) -> Response:
                 and execution not in {"provider", "logos"}
                 and not _header(headers, BATCH_PROVIDER_HEADER)
             ):
-                rerun = await _rerun_refused_creation_locally(provider, json_body, auth, consent_level)
+                rerun = await _rerun_refused_creation_locally(
+                    provider, json_body, auth, consent_level, name_by_deployment=name_by_deployment
+                )
                 if rerun is not None:
                     return rerun
     return response
