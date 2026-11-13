@@ -15,6 +15,8 @@ request or park it, so the gate is retrospective by necessity: it reads
 ``test_a_lane_running_far_past_num_parallel_is_still_admissible``.
 """
 
+import pytest
+
 from logos.queue import PriorityQueueManager
 from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
 
@@ -216,13 +218,15 @@ def test_no_runtime_registry_gives_no_opinion(monkeypatch):
 
 
 def test_reserve_is_refused_while_the_engine_has_a_backlog(monkeypatch):
-    provider = _provider(monkeypatch, [_lane(num_parallel=10, queue_waiting=1)])
+    provider = _provider(monkeypatch, [_lane(num_parallel=10, queue_waiting=1)], config={"parallel_capacity": 20})
     assert provider.try_reserve_capacity(1, "r1") is False
     assert provider.get_active_count(1) == 0
 
 
 def test_reserve_is_refused_under_kv_pressure(monkeypatch):
-    provider = _provider(monkeypatch, [_lane(num_parallel=10, gpu_cache_usage_percent=92.0)])
+    provider = _provider(
+        monkeypatch, [_lane(num_parallel=10, gpu_cache_usage_percent=92.0)], config={"parallel_capacity": 20}
+    )
     assert provider.try_reserve_capacity(1, "r1") is False
 
 
@@ -297,11 +301,15 @@ def test_the_local_ledger_bounds_what_the_sampled_gate_lets_through(monkeypatch)
     stops that from becoming unbounded: it is exact and updates per
     reservation, so the snapshot never has to be fresh for the ceiling to
     hold."""
-    provider = _provider(monkeypatch, [_lane(num_parallel=8)], config={"parallel_capacity": 3})
+    provider = _provider(
+        monkeypatch,
+        [_lane(num_parallel=500, lane_id="a"), _lane(num_parallel=500, lane_id="b")],
+        config={"parallel_capacity": 3},
+    )
 
     # The snapshot never changes — every call sees an idle-looking engine.
-    assert [provider.try_reserve_capacity(1, f"r{i}") for i in range(5)] == [True, True, True, False, False]
-    assert provider.get_active_count(1) == 3
+    assert [provider.try_reserve_capacity(1, f"r{i}") for i in range(402)] == [True] * 400 + [False, False]
+    assert provider.get_active_count(1) == 400
 
 
 # ---------------------------------------------------------------------------
@@ -322,9 +330,39 @@ def _registry_of(provider):
 
 def test_a_burst_cannot_outrun_the_signal(monkeypatch):
     """Without the budget all of these pass: they all read the same snapshot."""
-    provider = _provider(monkeypatch, [_lane(num_parallel=4)])
+    provider = _provider(monkeypatch, [_lane(num_parallel=4)], config={"parallel_capacity": 1})
     granted = [provider.try_reserve_capacity(1, f"r{i}") for i in range(10)]
     assert granted == [True] * 4 + [False] * 6
+
+
+@pytest.mark.parametrize("configured", [1, 20, 200, None])
+def test_short_requests_can_grow_past_the_stored_quota_across_worker_reports(monkeypatch, configured):
+    """Each report permits another small batch while live KV stays below pressure."""
+    provider = _provider(
+        monkeypatch,
+        [_lane(num_parallel=4, gpu_cache_usage_percent=50.0)],
+        config={"parallel_capacity": configured},
+    )
+    for report in range(12):
+        _registry_of(provider).new_report()
+        assert [provider.try_reserve_capacity(1, f"r{report}-{i}") for i in range(3)] == [True, True, False]
+        assert provider.evaluate_admission(1).reason == "awaiting_signal"
+
+    assert provider.get_active_count(1) == 24
+    _registry_of(provider).lanes[0]["backend_metrics"]["gpu_cache_usage_percent"] = 95.0
+    _registry_of(provider).new_report()
+    assert provider.try_reserve_capacity(1, "under-pressure") is False
+    assert provider.evaluate_admission(1).reason == "kv_cache_pressure"
+
+
+def test_only_the_idle_sibling_contributes_to_the_dispatch_budget(monkeypatch):
+    provider = _provider(
+        monkeypatch,
+        [_lane(num_parallel=8, queue_waiting=2, lane_id="busy"), _lane(num_parallel=4, lane_id="idle")],
+        config={"parallel_capacity": 1},
+    )
+    assert provider.get_parallel_capacity(1) == (400, "runtime")
+    assert [provider.try_reserve_capacity(1, f"r{i}") for i in range(6)] == [True] * 4 + [False] * 2
 
 
 def test_the_hold_says_it_is_waiting_for_the_signal(monkeypatch):

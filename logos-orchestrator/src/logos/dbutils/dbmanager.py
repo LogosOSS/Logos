@@ -1574,7 +1574,9 @@ class DBManager:
             provider_id: Provider ID to query
 
         Returns:
-            Dictionary with configuration fields if found, None otherwise
+            Dictionary with configuration fields if found, None otherwise.
+            parallel_capacity is optional stored configuration, not the effective
+            logosnode capacity; local admission derives capacity from live lanes.
         """
         sql = text("""
             SELECT id, ollama_admin_url, total_vram_mb, parallel_capacity,
@@ -1643,7 +1645,7 @@ class DBManager:
             ollama_admin_url: Internal admin endpoint of the worker (e.g., http://gpu-vm-1:5000).
                 Legacy column name — the value is the worker's base URL.
             total_vram_mb: Total VRAM capacity in MB (e.g., 49152 for 48GB)
-            parallel_capacity: Max concurrent requests per model
+            parallel_capacity: Optional configured capacity, ignored by logosnode admission
             keep_alive_seconds: How long models stay loaded when idle
             max_loaded_models: Max models that can be loaded simultaneously
 
@@ -4689,7 +4691,11 @@ class DBManager:
 
     def list_local_providers(self) -> list[dict]:
         """Unauthenticated variant of get_local_provider_inventory for internal
-        (secret-gated) endpoints that have no user logos_key."""
+        (secret-gated) endpoints that have no user logos_key.
+
+        parallel_capacity is retained as nullable legacy configuration metadata;
+        it does not describe the live capacity of these local providers.
+        """
         sql = text("""
             SELECT
                 id,

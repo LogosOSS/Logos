@@ -374,20 +374,20 @@ class LogosNodeDataProvider:
 
     def _get_runtime_parallel_capacity(self, model_id: int) -> tuple[int | None, str]:
         if self._runtime_registry is None:
-            return None, "config"
+            return None, "default"
 
         snap = self._runtime_registry.peek_runtime_snapshot(self.provider_id)
         if not snap:
-            return None, "config"
+            return None, "default"
 
         runtime = snap.get("runtime") or {}
         lanes = runtime.get("lanes") or []
         if not isinstance(lanes, list):
-            return None, "config"
+            return None, "default"
 
         model_name = self._model_id_to_name.get(model_id)
         if not model_name:
-            return None, "config"
+            return None, "default"
 
         total_capacity = 0
         matched_lanes = 0
@@ -400,35 +400,28 @@ class LogosNodeDataProvider:
                 continue
 
             matched_lanes += 1
-            # vLLM's `num_parallel` is the concurrency the engine
-            # guarantees at *full context*, so it is a lower bound on
-            # capacity, not a ceiling — measured on dev, a lane
-            # reporting 4 served 23 concurrent requests at 47% KV, and a
-            # production lane reporting 1 served 8. Using it here would
-            # have the local ledger throttle by 5-8x exactly where the
-            # admission gate was changed to stop doing so.  What the
-            # engine can really hold is bounded by the KV cache, which
-            # `evaluate_admission` reads live; this ledger only needs a
-            # ceiling loose enough not to bind before that does.
+            # num_parallel guarantees concurrency at full context; short
+            # requests can exceed it. Keep a loose per-lane ledger ceiling
+            # and let evaluate_admission pace dispatch from live KV/queue
+            # signals and the budget since the last worker report.
             total_capacity += self.DEFAULT_PARALLEL_CAPACITY
 
         if matched_lanes == 0:
-            return None, "config"
+            return None, "default"
         return max(1, total_capacity), "runtime"
 
     def get_parallel_capacity(self, model_id: int) -> tuple[int, str]:
-        configured = self.get_config_value(model_id, "parallel_capacity", None)
-        if configured is not None and int(configured) != self.DEFAULT_PARALLEL_CAPACITY:
-            capacity, source = int(configured), "config"
-        else:
-            runtime_capacity, source = self._get_runtime_parallel_capacity(model_id)
-            if runtime_capacity is not None:
-                capacity, source = runtime_capacity, source
-            elif configured is not None:
-                capacity, source = int(configured), "config"
-            else:
-                capacity, source = self.DEFAULT_PARALLEL_CAPACITY, "default"
-        return capacity, source
+        """Return the local in-flight ledger ceiling and its source.
+
+        Stored provider quotas do not describe a worker's live lanes and
+        never limit logosnode dispatch. Without runtime lane information,
+        use a bounded fallback; readiness and live admission remain separate
+        gates on every reservation.
+        """
+        runtime_capacity, source = self._get_runtime_parallel_capacity(model_id)
+        if runtime_capacity is not None:
+            return runtime_capacity, source
+        return self.DEFAULT_PARALLEL_CAPACITY, "default"
 
     def get_lane_parallel(self, model_id: int) -> int:
         """The concurrency the model's live lanes guarantee, summed.
