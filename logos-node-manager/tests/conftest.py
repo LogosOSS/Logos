@@ -8,17 +8,21 @@ checks cost no real time.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from itertools import count
+from pathlib import Path
 
 import pytest
 
+from logos_node_manager.compose_source import BUNDLE_LABEL, BUNDLE_VERSION
 from logos_node_manager.config import Settings
 from logos_node_manager.deployer import Deployer
 from logos_node_manager.docker_ops import ContainerInfo
 from logos_node_manager.errors import DockerError
 from logos_node_manager.orchestrator import CordonReply, NodeStatus
 from logos_node_manager.runner import CommandResult
+from logos_node_manager.self_update import SelfUpdateStore
 from logos_node_manager.state import Deployment, StateStore
 
 REPO = "registry.example/logos/logos-workernode-vllm"
@@ -95,6 +99,10 @@ class FakeDocker:
         self.calls: list[tuple] = []
         # The images that were actually deleted. ``calls`` also holds the attempts that the engine refused.
         self.removed: list[str] = []
+        # The compose file the deployer aimed the commands at (None: the file of the host), and what the check of a
+        # compose file answers: None for a good file, or the error text.
+        self.compose_path: Path | None = None
+        self.validate_error: str | None = None
 
     # ------------------------------------------------------------------ what a test can look at
 
@@ -126,7 +134,10 @@ class FakeDocker:
         return f"{REPO}:{tag}"
 
     def image_id(self, ref: str) -> str | None:
-        return self.images.get(ref)
+        """``docker image inspect <ref>``: a name or an image ID."""
+        if ref in self.images:
+            return self.images[ref]
+        return ref if ref in self.host_images() else None
 
     def tag(self, source: str, target: str) -> None:
         self.calls.append(("tag", source, target))
@@ -136,8 +147,19 @@ class FakeDocker:
         self._name(target, image_id)
 
     def remove_image(self, image_id: str) -> bool:
-        """``docker rmi <id>``: the engine refuses while a container uses the image or while it has several names."""
+        """``docker rmi <id>``: the engine refuses while a container uses the image or while it has several names.
+
+        ``docker rmi <name>`` takes the name away. The image goes with its last name, unless a container uses it.
+        """
         self.calls.append(("remove_image", image_id))
+        if image_id in self.images:
+            target = self.images[image_id]
+            if target not in {known for ref, known in self.images.items() if ref != image_id}:
+                if self.container_info is not None and self.container_info.image_id == target:
+                    return False
+                self.removed.append(target)
+            del self.images[image_id]
+            return True
         if image_id not in self.host_images():
             return False
         if self.container_info is not None and self.container_info.image_id == image_id:
@@ -195,11 +217,68 @@ class FakeDocker:
     def config_hash(self, tag: str) -> str | None:
         return None if self.hash_unknown else self.compose_hash
 
+    def use_compose(self, path: Path | None) -> None:
+        self.calls.append(("use_compose", path))
+        self.compose_path = path
+
+    def validate(self, tag: str) -> CommandResult:
+        self.calls.append(("validate", tag))
+        if self.validate_error:
+            return CommandResult(("config",), 1, stderr=self.validate_error)
+        return CommandResult(("config",), 0)
+
     def container(self) -> ContainerInfo | None:
         if self.container_info is not None and self._timeline:
             override = self._timeline.pop(0) if len(self._timeline) > 1 else self._timeline[0]
             self.container_info = replace(self.container_info, **override)
         return self.container_info
+
+
+class FakeEngine:
+    """The docker commands that take a compose file out of an image, scripted. Nothing here starts an image."""
+
+    def __init__(self) -> None:
+        self.content = "services: {}\n"
+        # The labels of the image of the tag. None: the image has no labels at all.
+        self.labels: dict | None = {BUNDLE_LABEL: BUNDLE_VERSION}
+        self.pull_error: str | None = None
+        self.create_error: str | None = None
+        self.copy_error: str | None = None
+        self.calls: list[tuple[str, ...]] = []
+        # The containers that exist. A real engine refuses a second one with the same name.
+        self.containers: set[str] = set()
+
+    def run(self, argv, *, timeout_s, env=None, stdin=None) -> CommandResult:
+        command = tuple(argv)
+        self.calls.append(command)
+        verb = command[1]
+        if verb == "pull":
+            return self._answer(command, self.pull_error)
+        if verb == "image":
+            return CommandResult(command, 0, stdout=json.dumps(self.labels))
+        if verb == "rm":
+            self.containers.discard(command[-1])
+            return self._answer(command, None)
+        if verb == "create":
+            name = command[command.index("--name") + 1]
+            if name in self.containers:
+                return self._answer(command, "Conflict. The container name is already in use")
+            if self.create_error is None:
+                self.containers.add(name)
+            return self._answer(command, self.create_error)
+        if verb == "cp":
+            if self.copy_error is None:
+                Path(command[3]).write_bytes(self.content.encode("utf-8"))
+            return self._answer(command, self.copy_error)
+        raise AssertionError(f"the manager ran a command that this fake does not know: {command}")
+
+    @staticmethod
+    def _answer(command: tuple[str, ...], error: str | None) -> CommandResult:
+        return CommandResult(command, 1, stderr=error) if error else CommandResult(command, 0)
+
+    def verbs(self) -> list[str]:
+        """What was asked, in order, as ``pull``, ``inspect``, ``create``, ``cp`` and ``rm``."""
+        return [command[2] if command[1] == "image" else command[1] for command in self.calls]
 
 
 class FakeOrchestrator:
@@ -295,6 +374,34 @@ def store(settings) -> StateStore:
 @pytest.fixture
 def docker() -> FakeDocker:
     return FakeDocker()
+
+
+@pytest.fixture
+def own_settings(settings) -> Settings:
+    """A worker host whose manager can replace itself: the compose file of its own service exists."""
+    settings.self_compose_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.self_compose_file.write_text("services: {}\n", encoding="utf-8")
+    return settings
+
+
+@pytest.fixture
+def own_docker(docker, own_settings) -> FakeDocker:
+    """The engine as the manager sees its own container: it was made by Compose as the service of its project.
+
+    The fake engine holds one container. For these tests it is the manager, not a worker.
+    """
+    docker.container_info = replace(
+        docker.container_info,
+        project=own_settings.self_project_name,
+        service=own_settings.self_service,
+        config_files=str(own_settings.self_compose_file),
+    )
+    return docker
+
+
+@pytest.fixture
+def su_store(settings) -> SelfUpdateStore:
+    return SelfUpdateStore(settings.state_dir)
 
 
 @pytest.fixture

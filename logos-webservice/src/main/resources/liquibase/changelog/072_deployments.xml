@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Deployments of Logos from Logos itself. A Logos deploys only itself: its deployers obey it, and it has one
+         environment, so no table names an environment.
+
+         `deployers` are the programs on the hosts (the node manager) that obey this Logos: one row per host.
+         A core deployer has a key of its own. Only the SHA-256 hash of the key is stored (`key_hash`). The key itself is
+         shown once, when the row is made, and never stored.
+         A worker deployer has no key of its own. It is the logosnode provider (`provider_id`) whose worker key the node
+         manager presents (LOGOS_API_KEY of the worker). Logos makes its row at the first contact, and the row goes when
+         the provider goes. The check makes sure that a row is one of the two kinds and not a mix.
+
+         `deployment_plans` are the to-do lists of one deployment: the core first, then all the workers.
+
+         `deployment_steps` are the work of one deployer within a plan. The id of a step is the deployment id that the
+         deployer knows. The status of a step is what Logos knows; `phase` is the phase the deployer reported.
+
+         A plan that is `running` is unique: a second one is refused. The index makes that true across several
+         webservice copies. -->
+    <changeSet id="072-deployers" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="deployers"/></not>
+        </preConditions>
+        <sql><![CDATA[
+            -- The name is not unique: a worker takes the name of its provider, and providers share names.
+            CREATE TABLE deployers (
+                id UUID PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                kind VARCHAR(16) NOT NULL CHECK (kind IN ('core', 'worker')),
+                key_hash VARCHAR(64) NULL UNIQUE,
+                provider_id INTEGER NULL UNIQUE REFERENCES providers(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                last_seen_at TIMESTAMPTZ NULL,
+                version VARCHAR(40) NULL,
+                CONSTRAINT ck_deployers_identity CHECK (
+                    (kind = 'core' AND key_hash IS NOT NULL AND provider_id IS NULL)
+                    OR (kind = 'worker' AND key_hash IS NULL AND provider_id IS NOT NULL)
+                )
+            );
+        ]]></sql>
+        <rollback>
+            <sql>DROP TABLE IF EXISTS deployers;</sql>
+        </rollback>
+    </changeSet>
+
+    <changeSet id="072-deployment-plans" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="deployment_plans"/></not>
+        </preConditions>
+        <sql><![CDATA[
+            -- The number of a deployment on this Logos, as the page shows it (#142).
+            CREATE SEQUENCE deployment_plan_number_seq;
+
+            CREATE TABLE deployment_plans (
+                id UUID PRIMARY KEY,
+                number BIGINT NOT NULL UNIQUE,
+                tag VARCHAR(128) NOT NULL,
+                status VARCHAR(16) NOT NULL
+                    CHECK (status IN ('running', 'succeeded', 'failed', 'rolled_back')),
+                initiator VARCHAR(200) NOT NULL,
+                initiator_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                reason TEXT NULL,
+                abandoned_by VARCHAR(200) NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                finished_at TIMESTAMPTZ NULL,
+                last_activity_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+
+            -- The history lists newest first.
+            CREATE INDEX idx_deployment_plans_created
+                ON deployment_plans (created_at DESC);
+
+            -- At most one running plan. The index is on a constant, so every running plan has the same key.
+            CREATE UNIQUE INDEX uq_deployment_plans_one_running
+                ON deployment_plans ((true))
+                WHERE status = 'running';
+        ]]></sql>
+        <rollback>
+            <sql>DROP TABLE IF EXISTS deployment_plans; DROP SEQUENCE IF EXISTS deployment_plan_number_seq;</sql>
+        </rollback>
+    </changeSet>
+
+    <changeSet id="072-deployment-steps" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="deployment_steps"/></not>
+        </preConditions>
+        <sql><![CDATA[
+            CREATE TABLE deployment_steps (
+                id UUID PRIMARY KEY,
+                plan_id UUID NOT NULL REFERENCES deployment_plans(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL,
+                kind VARCHAR(16) NOT NULL CHECK (kind IN ('core', 'worker')),
+                deployer_id UUID NULL REFERENCES deployers(id) ON DELETE SET NULL,
+                deployer_name VARCHAR(100) NOT NULL,
+                status VARCHAR(16) NOT NULL
+                    CHECK (status IN ('waiting', 'ordered', 'running', 'succeeded', 'unchanged',
+                                      'rolled_back', 'failed', 'cancelled')),
+                phase VARCHAR(16) NULL,
+                failure VARCHAR(40) NULL,
+                message TEXT NULL,
+                requested_by VARCHAR(300) NULL,
+                started_at TIMESTAMPTZ NULL,
+                finished_at TIMESTAMPTZ NULL,
+                last_activity_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                events JSONB NOT NULL DEFAULT '[]'::jsonb,
+                failure_logs TEXT NULL,
+                details JSONB NULL
+            );
+
+            CREATE INDEX idx_deployment_steps_plan
+                ON deployment_steps (plan_id, position);
+
+            -- A deployer asks for the steps that are ordered and not yet taken.
+            CREATE INDEX idx_deployment_steps_open_orders
+                ON deployment_steps (deployer_id)
+                WHERE status = 'ordered';
+
+            -- The sweep for silent deployers looks at the steps that have not ended.
+            CREATE INDEX idx_deployment_steps_active
+                ON deployment_steps (last_activity_at)
+                WHERE status IN ('ordered', 'running');
+        ]]></sql>
+        <rollback>
+            <sql>DROP TABLE IF EXISTS deployment_steps;</sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

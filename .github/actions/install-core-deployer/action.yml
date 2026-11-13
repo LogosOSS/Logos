@@ -1,0 +1,129 @@
+name: Install or update the deployer of a core host
+description: >-
+  Copies the compose file of the deployer to a core host and starts it as the compose project logos-deployer. The .env
+  file of the host has to be there already: the deployer reads its key and its image tag from it.
+
+# The deployer is the node manager in core mode. It is a compose project of its own on purpose. A deployment of Logos runs
+# `docker compose up -d --remove-orphans` for the project `logos`. If the deployer belonged to that project, the same
+# command would restart the deployer in the middle of its own deployment, or remove it as an orphan.
+#
+# The image has the tag NODE_MANAGER_IMAGE_TAG of the .env file. Without it, the tag is IMAGE_TAG (the deploy workflows
+# write the tag that they deploy), and without that, latest.
+#
+# The caller has checked out the repository. The ref that the caller runs from decides which compose file the host gets.
+# A deployer that still runs a deployment is left alone: see the script below.
+
+inputs:
+  host:
+    description: The address of the host
+    required: true
+  username:
+    description: The user that connects to the host
+    required: true
+  key:
+    description: The SSH private key of that user
+    required: true
+  proxy-host:
+    description: The gateway that the connection goes through, if the host has one
+    required: false
+    default: ""
+  proxy-username:
+    description: The user at the gateway
+    required: false
+    default: ""
+  proxy-key:
+    description: The SSH private key for the gateway
+    required: false
+    default: ""
+  proxy-port:
+    description: The SSH port of the gateway
+    required: false
+    default: ""
+  base-path:
+    description: The directory of Logos on the host, for example /opt/logos
+    required: true
+  registry:
+    description: The registry that the images come from
+    required: true
+  registry-user:
+    description: The user of the registry
+    required: true
+  registry-password:
+    description: The password of the registry user
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare the compose file of the deployer
+      shell: bash
+      run: cp logos-node-manager/docker-compose.core.yml docker-compose.deployer.yml
+
+    - name: Copy the compose file of the deployer to the host
+      uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.key }}
+        proxy_host: ${{ inputs.proxy-host }}
+        proxy_username: ${{ inputs.proxy-username }}
+        proxy_key: ${{ inputs.proxy-key }}
+        proxy_port: ${{ inputs.proxy-port }}
+        source: docker-compose.deployer.yml
+        target: ${{ inputs.base-path }}
+
+    - name: Start the deployer
+      uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+      env:
+        LOGOS_HARBOR_PASSWORD: ${{ inputs.registry-password }}
+        REGISTRY_HOST: ${{ inputs.registry }}
+        REGISTRY_USER: ${{ inputs.registry-user }}
+        DEPLOYER_BASE_PATH: ${{ inputs.base-path }}
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.key }}
+        proxy_host: ${{ inputs.proxy-host }}
+        proxy_username: ${{ inputs.proxy-username }}
+        proxy_key: ${{ inputs.proxy-key }}
+        proxy_port: ${{ inputs.proxy-port }}
+        command_timeout: 15m
+        envs: LOGOS_HARBOR_PASSWORD,REGISTRY_HOST,REGISTRY_USER,DEPLOYER_BASE_PATH
+        script: |
+          set -eu
+          BASE="$DEPLOYER_BASE_PATH"
+          # The login of the deploy user serves the pull below. The deployer reads its own login from .docker.
+          printf '%s' "$LOGOS_HARBOR_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+          mkdir -p -m 700 "$BASE/.docker"
+          printf '%s' "$LOGOS_HARBOR_PASSWORD" | DOCKER_CONFIG="$BASE/.docker" docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+          mkdir -p "$BASE/node-manager"
+          compose() {
+            docker compose -p logos-deployer -f "$BASE/docker-compose.deployer.yml" --env-file="$BASE/.env" "$@"
+          }
+          # A deployer that restarts in the middle of a deployment takes its order up again from the phase that it
+          # saved. After a deployment of this workflow, that would put the tag of the old order over the services that
+          # the workflow has just started. So a deployer that still runs a deployment stays as it is. A deployment is
+          # over when the status shows a result line, for example "Deployment <id>: failed (verify_failed)".
+          status="$(docker exec logos-deployer node-manager status 2>/dev/null || true)"
+          if printf '%s\n' "$status" | grep -q '^Deployment .*: tag .*, phase ' \
+              && ! printf '%s\n' "$status" | grep -Eq '^Deployment [^ ]+: [a-z_]+( \([a-z_]+\))?$'; then
+            printf '%s\n' "$status" | head -n 1
+            echo "::warning::The deployer still runs a deployment, so it was not replaced. Wait until the deployment ends, then run this workflow again."
+            exit 0
+          fi
+          # Compose replaces the deployer if its image or its settings (the deployer key) changed.
+          compose pull logos-deployer
+          compose up -d logos-deployer
+          for attempt in $(seq 1 30); do
+            if docker exec logos-deployer node-manager ping; then
+              # Only now, when the new deployer answers: if it did not start, the old image would still be on the host.
+              # This removes every node manager image that no container uses. A problem here does not fail the step.
+              docker image prune -a -f --filter label=io.logos.component=node-manager \
+                || echo "The unused node manager images were not removed." >&2
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "The deployer did not start." >&2
+          docker logs --tail 50 logos-deployer >&2
+          exit 1

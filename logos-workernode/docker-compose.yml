@@ -129,8 +129,16 @@ services:
   # runs `docker compose`, and a new login is visible at once. The deploy
   # workflows write the login there. Without them, run this on the host:
   #   DOCKER_CONFIG=<worker directory>/.docker docker login <registry>
+  # Or let the manager log in itself: with REGISTRY_USER and REGISTRY_PASSWORD in
+  # the .env file it runs `docker login` before each deployment, and the login of
+  # this directory is not used. The manager reads these two lines from the file
+  # itself, so they need no entry in this compose file.
   # A host without a login still starts the service. Only a pull from a registry
   # that needs a login fails.
+  #
+  # The manager can replace this service with the image of another tag (see "Self-update" in
+  # logos-node-manager/README.md). A helper container does the swap. It needs the names in this service: the
+  # service and its container are both called logos-node-manager, and Compose must have made the container.
   #
   # The Docker socket is root on the host, and a read-only mount does not change
   # that. The container therefore gets nothing else: no published port, no new
@@ -170,6 +178,11 @@ services:
       NODE_MANAGER_DRAIN_ENABLED: ${NODE_MANAGER_DRAIN_ENABLED:-false}
       NODE_MANAGER_ORCHESTRATOR_URL: ${LOGOS_URL:-}
       NODE_MANAGER_NODE_KEY: ${LOGOS_API_KEY:-}
+      # The Logos that this host obeys. Orders come from it, and it is told how the deployments go. It is LOGOS_URL. The
+      # worker is known to Logos by its worker key, LOGOS_API_KEY (the node key above), so it needs no deployer key. A
+      # host obeys its own Logos only. Without LOGOS_URL or LOGOS_API_KEY, the host takes no orders from Logos. The
+      # deploy workflows and the command line still work.
+      NODE_MANAGER_LOGOS_URL: ${LOGOS_URL:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${NODE_MANAGER_PROJECT_DIR:-/opt/logos-workernode}:${NODE_MANAGER_PROJECT_DIR:-/opt/logos-workernode}:ro

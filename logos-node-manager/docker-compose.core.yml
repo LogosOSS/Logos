@@ -1,0 +1,67 @@
+# docker-compose.core.yml — the deployer of a core host (the host that runs Logos itself).
+#
+# The action .github/actions/install-core-deployer copies this file next to docker-compose.yaml as
+# docker-compose.deployer.yml and starts it as its own compose project:
+#   docker compose -p logos-deployer -f docker-compose.deployer.yml --env-file .env up -d
+# The workflow "Sync host config" (with install-deployer) runs the action, and so do the deploy workflows of a host that
+# has LOGOS_DEPLOYER_KEY.
+#
+# It is a project of its own on purpose. A deployment of Logos runs `docker compose up -d --remove-orphans` for the
+# project `logos`. If the deployer belonged to that project, the same command would restart the deployer in the middle of
+# its own deployment, or remove it as an orphan.
+#
+# The deployer can replace itself with the image of another tag (see "Self-update" in the node manager README).
+# A helper container does the swap, and it needs the names in this file: the project logos-deployer, and the service
+# and the container logos-deployer. The image of each tag carries this file as /compose/deployer.yml.
+#
+# The deployer asks the Logos of this host for orders (see the node manager README, "Core host"). It replaces the
+# services of docker-compose.yaml, checks them, and tells that Logos how it went. It has no drain and no rollback.
+services:
+  logos-deployer:
+    # The tag is NODE_MANAGER_IMAGE_TAG, else IMAGE_TAG (the tag that a deploy workflow deploys), else latest. Set
+    # NODE_MANAGER_IMAGE_TAG to keep the deployer on one tag, for example while an older release runs.
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-node-manager:${NODE_MANAGER_IMAGE_TAG:-${IMAGE_TAG:-latest}}
+    container_name: logos-deployer
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # The Docker socket is root on the host, and a read-only mount does not change that. The container therefore gets
+    # nothing else: no published port, no new privileges, one Linux capability, a read-only root filesystem. See
+    # "Security model" in logos-node-manager/README.md.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment:
+      NODE_MANAGER_KIND: core
+      # The directory of docker-compose.yaml and .env. It is mounted at the same path as on the host, because Compose
+      # turns the relative bind mounts of Logos into absolute host paths before it sends them to the Docker engine.
+      NODE_MANAGER_PROJECT_DIR: ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}
+      # The registry login. The action that installs the deployer writes it to the directory .docker of the project directory.
+      # Or the manager logs in itself: with REGISTRY_USER and REGISTRY_PASSWORD in the .env file it runs `docker login`
+      # before each deployment, and this directory is not used. It reads those two lines from the file itself.
+      DOCKER_CONFIG: ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}/.docker
+      # The Logos that this host obeys: the Logos that runs on it. LOGOS_DEPLOYER_KEY is the key that this Logos made on
+      # the page Deployments. Without the key, the host takes no orders from Logos.
+      NODE_MANAGER_LOGOS_URL: https://${LOGOS_DOMAIN:-localhost}
+      NODE_MANAGER_DEPLOYER_KEY: ${LOGOS_DEPLOYER_KEY:-}
+      # How long the services get to come up, in seconds. The webservice applies its database migrations first.
+      NODE_MANAGER_CORE_VERIFY_TIMEOUT_S: ${NODE_MANAGER_CORE_VERIFY_TIMEOUT_S:-900}
+      # The address that must answer after a deployment. Empty or not set: <Logos>/api/info. Set it if this host cannot
+      # reach its own public address. The check cannot be switched off.
+      NODE_MANAGER_CORE_HEALTH_URL: ${NODE_MANAGER_CORE_HEALTH_URL:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}:${NODE_MANAGER_PROJECT_DIR:-/opt/logos}:ro
+      - ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}/node-manager:${NODE_MANAGER_PROJECT_DIR:-/opt/logos}/node-manager
+    healthcheck:
+      test: ["CMD", "node-manager", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

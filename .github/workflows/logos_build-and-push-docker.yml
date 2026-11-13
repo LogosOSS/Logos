@@ -693,8 +693,9 @@ jobs:
     with:
       output: image
       push: ${{ github.actor != 'dependabot[bot]' }}
-      context: ./logos-node-manager
-      file: Dockerfile
+      # The repository root, because the image also carries the compose files of the commit.
+      context: .
+      file: logos-node-manager/Dockerfile
       platforms: linux/amd64
       runner: ubuntu-latest
       sign: false

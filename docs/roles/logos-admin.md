@@ -379,6 +379,40 @@ worker control actions (calibrate, sleep, wake, lane management).
 
 ![Providers page](/img/roles/logos-admin-providers.png)
 
+## Deployments
+
+The page **Deployments** deploys Logos from Logos. It is for Logos admins only. A
+deployer on each host takes the orders. A Logos deploys only itself: use the page
+of Prod to deploy Prod, the page of Dev to deploy Dev, and the page of Test to
+deploy Test. See [Deployments from Logos](../deployment.md#deployments-from-logos)
+to install the deployers.
+
+If no deployer is set up, the page says so, and the button **Deploy** is off.
+
+The page has these parts:
+
+* **Current deployment.** The deployment that runs now, with one row for each
+  node. Each row shows how far the node is: Pull, Drain, Swap and Verify. A node
+  is *Waiting for the core*, *Waiting for the deployer*, *Running*,
+  *Succeeded*, *Unchanged*, *Rolled back*, *Failed* or *Not started*. Click
+  **View details** to open the page of the deployment. Click **Abandon deployment**
+  to stop the next steps of a deployment that this Logos started. Without a
+  running deployment, the part shows the last one.
+* **New deployment.** Enter an image tag and click **Deploy**.
+  Prod shows a red banner. When you click **Deploy** on Prod, a dialog asks you
+  to confirm: click **Deploy** in the dialog to start, or **Cancel** to not
+  start. Dev and Test start at once. The button is off, with a reason, when the
+  core deployer is not online or a deployment runs.
+* **History.** The latest 50 deployments, each with its number, the person who
+  started it and the time. Filter them by status. Click a row to open its page.
+* **Page of a deployment.** Click a row of the history, or **View details**, to open
+  it. The page shows the status, the events of each node and, for a
+  failed part, the end of the container log. A running deployment updates itself.
+* **Deployers.** The deployers of this Logos, when each was seen, and its
+  version. A worker appears in this list when its node manager asks Logos for
+  orders for the first time. It uses its worker key. Click **Add a core
+  deployer** to make the core deployer. Logos shows its key once.
+
 ## Policies
 
 Policies are the rules that decide which models a team or an API key can use.

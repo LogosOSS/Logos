@@ -1,0 +1,425 @@
+<div class="deployments">
+  <!-- Page header: title and one-line subtitle -->
+  <header class="head">
+    <div>
+      <h1 class="page-title">Deployments</h1>
+      <p class="page-subtitle">
+        Roll out an image to the core node and the GPU workers of this Logos, one node at a time.
+      </p>
+    </div>
+  </header>
+
+  @if (loading()) {
+    <p class="muted">Loading deployments…</p>
+  } @else if (loadError()) {
+    <div class="lg-alert lg-alert--error" role="alert">
+      <i class="pi pi-exclamation-triangle lg-alert__icon" aria-hidden="true"></i>
+      <div class="lg-alert__body">{{ loadError() }}</div>
+    </div>
+  } @else if (overview(); as ov) {
+    @if (ov.requires_confirmation) {
+      <div class="lg-alert lg-alert--error" role="alert">
+        <i class="pi pi-exclamation-triangle lg-alert__icon" aria-hidden="true"></i>
+        <div class="lg-alert__body">
+          <strong>Deployments on this Logos affect live users</strong>
+          <span class="lg-alert__hint">{{ liveWarning }}</span>
+        </div>
+      </div>
+    }
+
+    <!-- ── Current deployment ───────────────────────────────────────────────── -->
+    <section class="lg-panel" aria-label="Current deployment">
+      <div class="lg-panel__header">
+        <div>
+          <div class="lg-panel__title">Current deployment</div>
+          <div class="lg-panel__sub">
+            @if (currentPlan()) {
+              Rolling out now.
+            } @else {
+              Nothing is rolling out.
+            }
+          </div>
+        </div>
+      </div>
+      <div class="lg-panel__body">
+        @if (currentPlan(); as plan) {
+          <div class="titleline">
+            <span class="titleline__text">Deployment #{{ plan.number }}</span>
+            <span class="lg-tag">{{ plan.tag }}</span>
+            <app-status-pill [tone]="planTone(plan.status)" [label]="planLabel[plan.status]" />
+          </div>
+          <p class="started">
+            Started by <strong>{{ plan.initiator }}</strong> ·
+            <span [title]="fullDate(plan.created_at)">{{ age(plan.created_at) }}</span>
+          </p>
+
+          <div class="nodes">
+            @for (step of runningDetail()?.step_details ?? []; track step.id) {
+              <div class="node" [ngClass]="'node--' + stepTone(step.status)">
+                <div class="node__name">
+                  <div class="node__title">{{ step.deployer_name }}</div>
+                  <div class="node__kind">{{ nodeKindLabel(step.kind) }}</div>
+                </div>
+                <app-phase-bar [states]="phaseStates(step)" />
+                <div class="node__status">{{ stepStatusText(step, plan.tag) }}</div>
+              </div>
+            }
+          </div>
+
+          <p class="lg-hint nodes__hint">
+            <i class="pi pi-info-circle" aria-hidden="true"></i>
+            <span>
+              The core goes first. Then the GPU workers start, and the orchestrator keeps only one
+              node out of service at a time.
+            </span>
+          </p>
+
+          <div class="actions">
+            <a class="btn-secondary" [routerLink]="['/deployments', plan.id]">View details</a>
+            @if (canAbandon(plan)) {
+              <button type="button" class="btn-danger-outline" (click)="askAbandon()">
+                Abandon deployment
+              </button>
+            }
+          </div>
+        } @else {
+          <div class="titleline__text">No deployment running</div>
+          @if (lastPlan(); as last) {
+            <div class="last">
+              <div class="last__what">
+                <div class="lg-label">Last deployment</div>
+                <div class="last__id">
+                  <span class="last__number">#{{ last.number }}</span>
+                  <span class="lg-tag">{{ last.tag }}</span>
+                </div>
+              </div>
+              <app-status-pill [tone]="planTone(last.status)" [label]="planLabel[last.status]" />
+              <p class="started last__who">
+                Started by <strong>{{ last.initiator }}</strong> ·
+                <span [title]="fullDate(last.created_at)">{{ age(last.created_at) }}</span>
+              </p>
+              <a class="btn-secondary" [routerLink]="['/deployments', last.id]">View details</a>
+            </div>
+          }
+        }
+      </div>
+    </section>
+
+    <!-- ── New deployment ───────────────────────────────────────────────────── -->
+    <section class="lg-panel" aria-label="New deployment">
+      <div class="lg-panel__header">
+        <div>
+          <div class="lg-panel__title">New deployment</div>
+          <div class="lg-panel__sub">
+            Enter an image tag. It goes to the core node and every GPU worker.
+          </div>
+        </div>
+      </div>
+      <div class="lg-panel__body">
+        <div class="new">
+          <div class="new__tag">
+            <label class="lg-label" for="deploy-tag">Image tag</label>
+            <input
+              id="deploy-tag"
+              class="lg-input lg-input--mono"
+              type="text"
+              list="tag-suggestions"
+              autocomplete="off"
+              spellcheck="false"
+              [ngModel]="tag()"
+              (ngModelChange)="tag.set($event)"
+              [disabled]="!ov.can_start"
+            />
+            <datalist id="tag-suggestions">
+              @for (suggestion of ov.suggested_tags; track suggestion) {
+                <option [value]="suggestion"></option>
+              }
+            </datalist>
+          </div>
+          <button
+            type="button"
+            class="btn-primary"
+            [disabled]="!ov.can_start || starting()"
+            (click)="deploy()"
+          >
+            @if (starting()) {
+              <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+            }
+            Deploy
+          </button>
+        </div>
+        <div class="hints">
+          @if (!ov.can_start && ov.blocked_reason) {
+            <p class="lg-hint lg-hint--warn">
+              <i class="pi pi-info-circle" aria-hidden="true"></i>
+              <span>{{ ov.blocked_reason }}</span>
+            </p>
+          }
+          @if (startError()) {
+            <p class="lg-hint lg-hint--error" role="alert">
+              <i class="pi pi-exclamation-circle" aria-hidden="true"></i>
+              <span>{{ startError() }}</span>
+            </p>
+          }
+          <p class="lg-hint">
+            <i class="pi pi-clock" aria-hidden="true"></i>
+            <span>
+              Only one deployment runs at a time. Start the next one when this one ends.
+            </span>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── History ──────────────────────────────────────────────────────────── -->
+    <section class="lg-panel" aria-label="History">
+      <div class="lg-panel__header">
+        <div>
+          <div class="lg-panel__title">History</div>
+          <div class="lg-panel__sub">Newest first. Select a row to open its details.</div>
+        </div>
+        <div class="chips" role="group" aria-label="Filter by status">
+          @for (chip of statusChips; track chip.value) {
+            <button
+              type="button"
+              class="lg-chip"
+              [class.lg-chip--active]="statusFilter() === chip.value"
+              [attr.aria-pressed]="statusFilter() === chip.value"
+              (click)="statusFilter.set(chip.value)"
+            >
+              @if (chip.value !== 'all') {
+                <span class="lg-dot lg-dot--small" [ngClass]="'lg-dot--' + planTone($any(chip.value))" aria-hidden="true"></span>
+              }
+              {{ chip.label }}
+            </button>
+          }
+        </div>
+      </div>
+      <div class="history">
+        @if (history().length === 0) {
+          <p class="history__empty muted">No deployments to show.</p>
+        } @else {
+          <div class="lg-hist-grid lg-thead" role="row">
+            <div role="columnheader">#</div>
+            <div role="columnheader">Image tag</div>
+            <div role="columnheader">Started by</div>
+            <div role="columnheader">Started</div>
+            <div role="columnheader">Status</div>
+            <div role="columnheader"></div>
+          </div>
+          @for (plan of history(); track plan.id) {
+            <a
+              class="lg-hist-grid lg-trow"
+              [routerLink]="['/deployments', plan.id]"
+              [attr.aria-label]="'Open deployment #' + plan.number"
+            >
+              <div class="cell cell--id" data-label="Deployment">#{{ plan.number }}</div>
+              <div class="cell cell--tag" data-label="Image tag">{{ plan.tag }}</div>
+              <div class="cell cell--who" data-label="Started by">
+                <span class="who__name">{{ plan.initiator }}</span>
+              </div>
+              <div class="cell cell--when" data-label="Started" [title]="fullDate(plan.created_at)">
+                {{ age(plan.created_at) }}
+              </div>
+              <div class="cell" data-label="Status">
+                <app-status-pill [tone]="planTone(plan.status)" [label]="planLabel[plan.status]" />
+              </div>
+              <div class="cell cell--chevron">
+                <i class="pi pi-chevron-right" aria-hidden="true"></i>
+              </div>
+            </a>
+          }
+        }
+      </div>
+      <p class="history__foot">Showing the latest 50</p>
+    </section>
+
+    <!-- ── Deployers ────────────────────────────────────────────────────────── -->
+    <section class="lg-panel" aria-label="Deployers">
+      <div class="lg-panel__header">
+        <div>
+          <div class="lg-panel__title">Deployers</div>
+          <div class="lg-panel__sub">
+            The programs on the hosts that take the orders of this page. A worker needs no key of its own: it uses its
+            worker key and shows up here when its node manager asks Logos for orders. The key of a core deployer is
+            shown once.
+          </div>
+        </div>
+        <button type="button" class="btn-secondary" (click)="toggleAdd()">
+          <i class="pi pi-plus" aria-hidden="true"></i> Add a core deployer
+        </button>
+      </div>
+      <div class="lg-panel__body">
+        @if (addOpen()) {
+          <form class="add" (ngSubmit)="createDeployer()">
+            <div class="add__name">
+              <label class="lg-label" for="deployer-name">Name</label>
+              <input
+                id="deployer-name"
+                name="name"
+                class="lg-input"
+                type="text"
+                autocomplete="off"
+                placeholder="The name of the host"
+                [ngModel]="newName()"
+                (ngModelChange)="newName.set($event)"
+              />
+            </div>
+            <button type="submit" class="btn-primary" [disabled]="creating()">
+              @if (creating()) {
+                <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+              }
+              Make the deployer
+            </button>
+          </form>
+          @if (createError()) {
+            <p class="lg-hint lg-hint--error" role="alert">
+              <i class="pi pi-exclamation-circle" aria-hidden="true"></i>
+              <span>{{ createError() }}</span>
+            </p>
+          }
+        }
+        @if (ov.deployers.length === 0) {
+          <p class="muted">
+            No deployer is set up yet. A deployer on each host takes the orders of this page. To set
+            them up, follow the section “Deployments from Logos” in the deployment guide.
+          </p>
+        } @else {
+          <table class="deployers" aria-label="Deployers">
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Kind</th>
+                <th scope="col">Last seen</th>
+                <th scope="col">Version</th>
+                <th scope="col"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (d of ov.deployers; track d.id) {
+                <tr>
+                  <td data-label="Name">
+                    <span class="deployers__name">
+                      <span
+                        class="lg-dot"
+                        [class.lg-dot--succeeded]="d.online"
+                        [class.lg-dot--rolled-back]="!d.online"
+                        aria-hidden="true"
+                      ></span>
+                      {{ d.name }}
+                    </span>
+                  </td>
+                  <td data-label="Kind">{{ nodeKindLabel(d.kind) }}</td>
+                  <td data-label="Last seen">
+                    {{ d.last_seen_at ? age(d.last_seen_at) : 'never' }}
+                    <span class="sr-only">{{ d.online ? '(online)' : '(offline)' }}</span>
+                  </td>
+                  <td data-label="Version">{{ d.version ?? '—' }}</td>
+                  <td class="deployers__actions">
+                    @if (d.kind === 'core') {
+                      <button type="button" class="btn-secondary" (click)="replaceTarget.set(d)">New key</button>
+                    }
+                    <button type="button" class="btn-secondary" (click)="removeTarget.set(d)">Remove</button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        }
+        @if (deployerError() && !removeTarget() && !replaceTarget()) {
+          <p class="lg-hint lg-hint--error" role="alert">
+            <i class="pi pi-exclamation-circle" aria-hidden="true"></i>
+            <span>{{ deployerError() }}</span>
+          </p>
+        }
+      </div>
+    </section>
+  }
+</div>
+
+<!-- ── Start: a protected Logos asks first ──────────────────────────────────── -->
+<app-modal-confirm
+  [visible]="confirmOpen()"
+  (visibleChange)="$event || closeConfirm()"
+  [title]="'Deploy ' + tag().trim() + '?'"
+  [message]="liveWarning"
+  confirmLabel="Deploy"
+  icon="pi-exclamation-triangle"
+  [loading]="starting()"
+  (confirmed)="start()"
+/>
+
+<!-- ── Abandon ──────────────────────────────────────────────────────────────── -->
+<app-modal-confirm
+  [visible]="abandonOpen()"
+  (visibleChange)="$event || closeAbandon()"
+  [title]="'Abandon deployment #' + (currentPlan()?.number ?? '') + '?'"
+  message="Steps that did not start never will. A host that already received its order carries it out, and nodes that already run the new image keep it."
+  cancelLabel="Keep running"
+  confirmLabel="Abandon deployment"
+  icon="pi-exclamation-triangle"
+  [loading]="abandoning()"
+  (confirmed)="confirmAbandon()"
+>
+  <div modal-error>
+    @if (abandonError()) {
+      <p class="lg-hint lg-hint--error" role="alert">{{ abandonError() }}</p>
+    }
+  </div>
+</app-modal-confirm>
+
+<!-- ── The key of a deployer: shown once ────────────────────────────────────── -->
+<app-modal-confirm
+  [visible]="createdKey() !== null"
+  (visibleChange)="$event || closeKey()"
+  [title]="'Key of ' + (createdKey()?.deployer?.name ?? 'the deployer')"
+  message="Copy the key now. Logos keeps only a hash of it and cannot show it again."
+  confirmLabel="I have copied the key"
+  icon="pi-key"
+  [danger]="false"
+  [confirmOnly]="true"
+  (confirmed)="closeKey()"
+>
+  <div modal-details class="reveal">
+    <code class="reveal__key" data-testid="deployer-key">{{ createdKey()?.key }}</code>
+    <button type="button" class="btn-secondary" (click)="copyKey()">
+      <i class="pi" [class.pi-copy]="!keyCopied()" [class.pi-check]="keyCopied()" aria-hidden="true"></i>
+      {{ keyCopied() ? 'Copied' : 'Copy the key' }}
+    </button>
+  </div>
+</app-modal-confirm>
+
+<!-- ── New key ──────────────────────────────────────────────────────────────── -->
+<app-modal-confirm
+  [visible]="replaceTarget() !== null"
+  (visibleChange)="$event || replaceTarget.set(null)"
+  [title]="'Give ' + (replaceTarget()?.name ?? '') + ' a new key?'"
+  message="The old key stops working at once. The deployer takes no orders until its host has the new key."
+  confirmLabel="Make a new key"
+  icon="pi-key"
+  [loading]="deployerBusy()"
+  (confirmed)="confirmReplaceKey()"
+>
+  <div modal-error>
+    @if (deployerError()) {
+      <p class="lg-hint lg-hint--error" role="alert">{{ deployerError() }}</p>
+    }
+  </div>
+</app-modal-confirm>
+
+<!-- ── Remove ───────────────────────────────────────────────────────────────── -->
+<app-modal-confirm
+  [visible]="removeTarget() !== null"
+  (visibleChange)="$event || removeTarget.set(null)"
+  [title]="'Remove ' + (removeTarget()?.name ?? '') + '?'"
+  [message]="removeMessage()"
+  confirmLabel="Remove"
+  [loading]="deployerBusy()"
+  (confirmed)="confirmRemove()"
+>
+  <div modal-error>
+    @if (deployerError()) {
+      <p class="lg-hint lg-hint--error" role="alert">{{ deployerError() }}</p>
+    }
+  </div>
+</app-modal-confirm>

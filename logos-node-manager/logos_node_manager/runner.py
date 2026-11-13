@@ -50,7 +50,14 @@ class CommandResult:
 
 
 class Runner(Protocol):
-    def run(self, argv: Sequence[str], *, timeout_s: float, env: Mapping[str, str] | None = None) -> CommandResult: ...
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        timeout_s: float,
+        env: Mapping[str, str] | None = None,
+        stdin: str | None = None,
+    ) -> CommandResult: ...
 
 
 def _as_text(value: str | bytes | None) -> str:
@@ -62,8 +69,10 @@ def _as_text(value: str | bytes | None) -> str:
 class SubprocessRunner:
     """Runs the command on this machine.
 
-    The environment of the process is the base, ``env`` is added on top. Only the command line is logged, and only at
-    debug level: it holds file paths and image tags, and the environment, which can hold secrets, is never written.
+    The environment of the process is the base. ``set_env`` adds variables for every later command, and ``env`` adds
+    some for one command, on top. Only the command line is logged, and only at debug level: it holds file paths and
+    image tags, and the environment, which can hold secrets, is never written. A secret goes to a command through
+    ``stdin``, never through the command line.
 
     Every command runs in a process group of its own. ``docker compose`` hands the work to a helper process, so a
     command that ran out of time is stopped together with everything it started: the group gets SIGTERM, and SIGKILL
@@ -72,11 +81,28 @@ class SubprocessRunner:
 
     def __init__(self, *, grace_s: float = STOP_GRACE_S) -> None:
         self._grace_s = grace_s
+        self._base_env: dict[str, str] = {}
 
-    def run(self, argv: Sequence[str], *, timeout_s: float, env: Mapping[str, str] | None = None) -> CommandResult:
+    def set_env(self, name: str, value: str | None) -> None:
+        """Add a variable to the environment of every later command. ``None`` takes it away again."""
+        if value is None:
+            self._base_env.pop(name, None)
+        else:
+            self._base_env[name] = value
+
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        timeout_s: float,
+        env: Mapping[str, str] | None = None,
+        stdin: str | None = None,
+    ) -> CommandResult:
         command = tuple(argv)
         logger.debug("run: %s", shlex.join(command))
-        full_env = {**os.environ, **env} if env else None
+        extra = {**self._base_env, **(env or {})}
+        full_env = {**os.environ, **extra} if extra else None
+        stdin_option = {"stdin": subprocess.PIPE} if stdin is not None else {}
         try:
             process = subprocess.Popen(
                 command,
@@ -87,12 +113,13 @@ class SubprocessRunner:
                 errors="replace",
                 env=full_env,
                 start_new_session=True,
+                **stdin_option,
             )
         except FileNotFoundError:
             return CommandResult(command, EXIT_NOT_FOUND, stderr=f"{command[0]}: command not found")
         with process:
             try:
-                stdout, stderr = process.communicate(timeout=timeout_s)
+                stdout, stderr = process.communicate(input=stdin, timeout=timeout_s)
             except subprocess.TimeoutExpired:
                 logger.warning(
                     "A %s command ran out of time after %s s and is stopped", shlex.join(command[:2]), timeout_s

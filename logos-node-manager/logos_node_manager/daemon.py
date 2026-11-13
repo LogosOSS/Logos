@@ -1,7 +1,11 @@
 """The long-running part of the manager.
 
-The daemon takes the queued deployments from the state directory, oldest first and one at a time. It has no other
-trigger: whoever wants a deployment writes a record with the command line, and the daemon finds it on its next pass.
+The daemon takes the queued deployments from the state directory, oldest first and one at a time. Whoever wants a
+deployment writes a record: the command line does, and so does the intake of the Logos link, which asks the Logos of the
+host for orders. The daemon finds the record on its next pass.
+
+Between the deployments the daemon lets the self-update do its part (see ``self_update``). While a helper replaces the
+manager, no deployment starts.
 """
 
 from __future__ import annotations
@@ -15,6 +19,8 @@ from logos_node_manager.config import Settings
 from logos_node_manager.deployer import Deployer
 from logos_node_manager.docker_ops import Docker, describe_registry_login
 from logos_node_manager.errors import Interrupted
+from logos_node_manager.logos_link import LogosLink
+from logos_node_manager.self_update import SelfUpdater
 from logos_node_manager.state import Deployment, StateStore
 
 logger = logging.getLogger(__name__)
@@ -38,6 +44,8 @@ class Daemon:
         docker: Docker | None = None,
         registry_login_file: Path | None = None,
         retry_delay_s: float = RETRY_DELAY_S,
+        link: LogosLink | None = None,
+        updater: SelfUpdater | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -46,6 +54,8 @@ class Daemon:
         self._docker = docker
         self._registry_login_file = registry_login_file
         self._retry_delay_s = retry_delay_s
+        self._link = link
+        self._updater = updater
 
     def run(self) -> None:
         """Process deployments until the stop event is set."""
@@ -54,17 +64,21 @@ class Daemon:
         beat = threading.Thread(target=self._heartbeat, name="heartbeat", daemon=True)
         beat.start()
         self._log_start()
+        if self._link is not None:
+            self._link.start()
         try:
             while not self._stop.is_set():
                 self._report_endings()
                 deployment = self._store.next_unfinished()
-                if deployment is None:
+                if self._self_update(pending=deployment is not None) or deployment is None:
                     self._stop.wait(self._settings.loop_interval_s)
                     continue
                 self._process(deployment)
         finally:
             self._stop.set()
             beat.join(timeout=2.0)
+            if self._link is not None:
+                self._link.join()
         logger.info("Node manager stopped")
 
     def _report_endings(self) -> None:
@@ -75,6 +89,17 @@ class Daemon:
             return
         except Exception:  # noqa: BLE001 - a notification must not stop the deployments
             logger.exception("The endings of the deployments could not be reported")
+
+    def _self_update(self, *, pending: bool) -> bool:
+        """Let the self-update do its part. True while a helper has the swap, so that no deployment may start."""
+        updater = self._updater
+        if updater is None:
+            return False
+        try:
+            return updater.step(deployments_pending=pending)
+        except Exception:  # noqa: BLE001 - the update must never stop the deployments
+            logger.exception("The self-update could not be looked at")
+            return False
 
     def _heartbeat(self) -> None:
         while not self._stop.wait(HEARTBEAT_INTERVAL_S):
@@ -88,7 +113,7 @@ class Daemon:
             "Processing deployment %s (tag %s, phase %s)", deployment.id, deployment.tag, deployment.phase.value
         )
         try:
-            self._deployer.process(deployment)
+            finished = self._deployer.process(deployment)
         except Interrupted:
             logger.info("Stopping. Deployment %s continues at the next start.", deployment.id)
             return
@@ -96,6 +121,9 @@ class Daemon:
             self._record_error(deployment, exc)
             return
         self._store.prune()
+        if self._updater is not None:
+            # A deployment that ended well may be followed by an update of the manager, if the host is set to.
+            self._updater.after_deployment(finished or deployment)
 
     def _record_error(self, deployment: Deployment, exc: Exception) -> None:
         """Count an unexpected error. The deployment is tried again, and after the last attempt the deployer ends it."""
@@ -112,20 +140,44 @@ class Daemon:
     def _log_start(self) -> None:
         s = self._settings
         logger.info(
-            "Node manager %s started: project %s in %s, service %s, container %s",
+            "Node manager %s started on a %s host: project %s in %s%s",
             __version__,
+            s.kind,
             s.project_name,
             s.project_dir,
-            s.service,
-            s.container,
+            f", service {s.service}, container {s.container}" if s.kind == "worker" else "",
         )
         if self._docker is not None:
             logger.info("Docker: %s", self._docker.versions())
         if self._registry_login_file is not None:
             logger.info("%s", describe_registry_login(self._registry_login_file))
-        for path in (s.compose_file, s.env_file):
+        registry = getattr(self._deployer, "registry", None)
+        compose = getattr(self._deployer, "compose", None)
+        if registry is not None:
+            logger.info("Registry: %s", registry.describe())
+        if compose is not None:
+            logger.info("Compose file: %s", compose.describe())
+        if self._updater is not None:
+            logger.info("Self-update: %s", self._updater.describe())
+        # With the compose file from the tag, the file of the host is not needed, and a deployment only falls back to it
+        # when the image of a tag carries none.
+        needed = (s.env_file,) if compose is not None and compose.enabled() else (s.compose_file, s.env_file)
+        for path in needed:
             if not path.is_file():
                 logger.warning("%s does not exist; deployments fail until it does", path)
+        if s.logos_enabled:
+            logger.info("Orders come from %s, which gets the reports of the deployments it ordered", s.logos_url)
+        else:
+            logger.info(
+                "NODE_MANAGER_LOGOS_URL or the key for orders is empty (NODE_MANAGER_DEPLOYER_KEY on a core host, "
+                "NODE_MANAGER_NODE_KEY on a worker): only the command line gives orders"
+            )
+        if s.kind == "core":
+            logger.info(
+                "A core host: no drain and no rollback; %s must answer after a deployment",
+                s.core_health_url or "no address",
+            )
+            return
         if s.orchestrator_url and s.node_key:
             logger.info("The end of a deployment is reported to %s", s.orchestrator_url)
         else:

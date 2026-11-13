@@ -10,15 +10,24 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable
+from typing import Callable, Protocol
 
 from logos_node_manager.config import Settings
 from logos_node_manager.docker_ops import Docker, split_image_ref
 from logos_node_manager.errors import DockerError, Interrupted
-from logos_node_manager.state import Deployment
 from logos_node_manager.verify import VerifyResult, verify_container
 
 logger = logging.getLogger(__name__)
+
+
+class Restorable(Protocol):
+    """What a rollback needs to know: the id of the request, and the image that ran before it. A deployment and a
+    self-update of the manager both have it."""
+
+    id: str
+    previous_image_id: str | None
+    previous_image_ref: str | None
+
 
 # A replacement of the container that was cut off, for example by a timeout, can leave containers behind that make the
 # next ``up`` fail with a name conflict. That attempt already clears part of them, so a new attempt after a short pause
@@ -30,7 +39,7 @@ ROLLBACK_PAUSE_S = 5.0
 def restore_previous(
     docker: Docker,
     settings: Settings,
-    deployment: Deployment,
+    deployment: Restorable,
     *,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,

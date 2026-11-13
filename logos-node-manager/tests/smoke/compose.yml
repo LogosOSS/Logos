@@ -17,8 +17,9 @@ services:
 
   node-manager:
     profiles: ["node-manager"]
-    image: nm-smoke-manager:local
-    pull_policy: never
+    # The tag is the one of the deployment, as for the manager in logos-workernode/docker-compose.yml. The self-update
+    # of the manager replaces this service with the image of another tag.
+    image: ${SMOKE_REGISTRY}/logos-node-manager:${NODE_MANAGER_IMAGE_TAG:-${IMAGE_TAG:-v1}}
     container_name: nm-smoke-manager
     init: true
     restart: unless-stopped
@@ -44,6 +45,10 @@ services:
       NODE_MANAGER_SWAP_TIMEOUT_S: "60"
       NODE_MANAGER_VERIFY_TIMEOUT_S: "60"
       NODE_MANAGER_ROLLBACK_VERIFY_TIMEOUT_S: "60"
+      # The manager's own service, for the self-update.
+      NODE_MANAGER_SELF_SERVICE: node-manager
+      NODE_MANAGER_SELF_CONTAINER: nm-smoke-manager
+      NODE_MANAGER_SELF_VERIFY_TIMEOUT_S: "60"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${SMOKE_DIR}:${SMOKE_DIR}:ro

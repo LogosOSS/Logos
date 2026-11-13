@@ -1,7 +1,7 @@
 # The repo-root build context is used by logos-orchestrator/Dockerfile,
 # logos-agent/Dockerfile, logos-agent/workspace/Dockerfile,
-# agent-gateway/Dockerfile, rate-limit-gateway/Dockerfile and
-# e2e/harness/nodesim/Dockerfile.
+# agent-gateway/Dockerfile, rate-limit-gateway/Dockerfile,
+# logos-node-manager/Dockerfile and e2e/harness/nodesim/Dockerfile.
 # Whitelist exactly what those Dockerfiles COPY so the context stays small
 # and untracked local files (benchmarks, calibration data, .git, …) never
 # get uploaded to the builder.
@@ -27,6 +27,14 @@
 !logos-workernode/requirements.txt
 !logos-workernode/logos_worker_node
 !e2e/harness
+# The node manager image: the package, and the compose files that it carries for the hosts to take out of it (the
+# stack of the core and the worker). No tests, no virtual environment.
+!logos-node-manager/pyproject.toml
+!logos-node-manager/README.md
+!logos-node-manager/logos_node_manager
+!docker-compose.yaml
+!logos-workernode/docker-compose.yml
+!logos-node-manager/docker-compose.core.yml
 # The session image installs the repository's own hook environments at build
 # time, because a session has no network to install them with.
 !.pre-commit-config.yaml
