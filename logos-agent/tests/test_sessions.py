@@ -40,7 +40,11 @@ def prepared_checkout_and_verification(monkeypatch):
     def capture(_self, session_id):
         path = sessions.state_dir(session_id) / sessions._CHECKOUT_BASELINE_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"checkout_sha": "a" * 40, "branch_sha": "", "comparison_sha": "a" * 40}))
+        path.write_text(
+            json.dumps(
+                {"checkout_sha": "a" * 40, "branch_sha": "", "comparison_sha": "a" * 40, "pr_base_branch": "main"}
+            )
+        )
 
     async def verified(_self, session_id, workspace, env, artifact_host_path):
         return {**env, "LOGOS_SESSION_VERIFICATION": "passed", "LOGOS_SESSION_VERIFIED_TREE": "b" * 40}

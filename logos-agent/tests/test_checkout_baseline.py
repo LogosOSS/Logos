@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -24,6 +25,7 @@ def _prepare(tmp_path, monkeypatch, *, base="main", origin=None):
     monkeypatch.setenv("LOGOS_SESSION_CHECKOUT_SHA", result.data["checkout_sha"])
     monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", result.data["checkout_branch_sha"])
     monkeypatch.setenv("LOGOS_SESSION_COMPARISON_SHA", result.data["checkout_comparison_sha"])
+    monkeypatch.setenv("LOGOS_SESSION_PR_BASE_BRANCH", result.data["checkout_pr_base_branch"])
     return workspace, origin, result.data["checkout_sha"]
 
 
@@ -257,3 +259,80 @@ def test_snapshot_requires_runner_owned_comparison_proof(tmp_path, monkeypatch):
     monkeypatch.delenv("LOGOS_SESSION_COMPARISON_SHA")
     with pytest.raises(RuntimeError, match="LOGOS_SESSION_COMPARISON_SHA is not set"):
         run_session.run_snapshot(run_session.Result())
+
+
+@pytest.mark.parametrize("target", ["main", "release"])
+@pytest.mark.parametrize("retry_same_session", [False, True])
+def test_failed_pr_creation_preserves_publication_proof_and_original_target(
+    tmp_path, monkeypatch, target, retry_same_session
+):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    origin = _make_origin(workspace)
+    if target != "main":
+        _git("push", str(origin), f"main:refs/heads/{target}", cwd=workspace / "seed")
+    _prepare(tmp_path, monkeypatch, base=target, origin=origin)
+    checkout = workspace / "repo"
+    (checkout / "app.py").write_text("print('published work')\n")
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(artifacts))
+    monkeypatch.setenv("LOGOS_SESSION_TASK", "Update the application")
+    monkeypatch.setenv("LOGOS_SESSION_OPEN_PR", "1")
+    monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("LOGOS_REPO_SLUG", "example/repository")
+    snapshot = run_session.Result()
+    run_session.run_snapshot(snapshot)
+    snapshot.write()
+    monkeypatch.setenv("LOGOS_SESSION_VERIFIED_TREE", snapshot.data["candidate_tree"])
+    real_run = run_session.run
+    creation_fails = True
+    creates = []
+
+    def github_api(command, **kwargs):
+        if command[:3] == ["gh", "pr", "create"]:
+            creates.append(command)
+            recorded = json.loads((artifacts / "result.json").read_text())
+            remote = _git("--git-dir", str(origin), "rev-parse", BRANCH, cwd=workspace).stdout.strip()
+            assert recorded["pushed_sha"] == remote
+            assert recorded["published_tree"] == snapshot.data["candidate_tree"]
+            assert recorded["pr_base_branch"] == target
+            assert command[command.index("--base") + 1] == target
+            return subprocess.CompletedProcess(
+                command, 1 if creation_fails else 0, "" if creation_fails else "https://example/pr/54\n", ""
+            )
+        if command[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(command, 1, "{}", "")
+        if command[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(command, 0, "[]", "")
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(run_session, "run", github_api)
+    first = run_session.Result()
+    with pytest.raises(RuntimeError, match="could not publish the pull request"):
+        run_session.run_finalize(first)
+    proof = json.loads((artifacts / "result.json").read_text())
+    published = proof["pushed_sha"]
+    assert proof["committed"] is True
+    assert proof["pr_url"] is None
+
+    if not retry_same_session:
+        # The runner retains the trusted proof even when the helper exits
+        # nonzero, then prepares the next session from the published branch.
+        monkeypatch.setenv("LOGOS_SESSION_PR_BASE_BRANCH", proof["pr_base_branch"])
+        _prepare(tmp_path, monkeypatch, base=BRANCH, origin=origin)
+        assert _git("rev-parse", "HEAD", cwd=checkout).stdout.strip() == published
+        assert (checkout / "app.py").read_text() == "print('published work')\n"
+    creation_fails = False
+    snapshot = run_session.Result()
+    run_session.run_snapshot(snapshot)
+    snapshot.write()
+    monkeypatch.setenv("LOGOS_SESSION_VERIFIED_TREE", snapshot.data["candidate_tree"])
+    retry = run_session.Result()
+    run_session.run_finalize(retry)
+
+    assert retry.data["pr_url"] == "https://example/pr/54"
+    assert retry.data["pushed_sha"] == published
+    assert retry.data["committed"] is False
+    assert len(creates) == 2
+    assert _git("--git-dir", str(origin), "rev-parse", BRANCH, cwd=workspace).stdout.strip() == published

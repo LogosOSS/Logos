@@ -601,6 +601,7 @@ class TestFinalizer:
         monkeypatch.setenv("GITHUB_TOKEN", "ghp-test-token")
         monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
         monkeypatch.setenv("LOGOS_SESSION_OPEN_PR", "0")
+        monkeypatch.setenv("LOGOS_SESSION_PR_BASE_BRANCH", "main")
         monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
         snapshot = Result()
         run_session.run_snapshot(snapshot)
@@ -1822,6 +1823,7 @@ def test_finalize_resets_home_before_verifying_identity(tmp_path, monkeypatch):
     (tmp_path / "repo").mkdir()
     monkeypatch.setenv("LOGOS_SESSION_VERIFICATION", "passed")
     monkeypatch.setenv("LOGOS_SESSION_VERIFIED_TREE", "a" * 40)
+    monkeypatch.setenv("LOGOS_SESSION_PR_BASE_BRANCH", "main")
     with pytest.raises(RuntimeError, match="no verified checkout"):
         run_finalize(Result())
     assert calls == ["test-token"]

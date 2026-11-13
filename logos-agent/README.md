@@ -200,6 +200,10 @@ has advanced. Independent upstream changes survive the eventual merge, and
 overlapping edits remain visible merge conflicts. Existing PR branches must
 start from their own current tip; an intervening push is refused by an explicit
 lease. An interrupted finalization can reuse its exact already-pushed snapshot.
+The finalizer records a successful push before calling PR APIs. If PR creation
+fails, the runner retains that publication receipt so the next attempt prepares
+the published branch while keeping the original PR target, including non-default
+targets such as a release branch.
 Sessions prepared by older runners lack trusted baseline evidence and must be
 started again before publishing; they are never reattached to a fresh base.
 

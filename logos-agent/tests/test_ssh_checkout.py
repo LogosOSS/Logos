@@ -31,7 +31,12 @@ async def test_deploy_key_checkout_keeps_the_repository_host(monkeypatch, tmp_pa
     monkeypatch.setattr(
         manager,
         "_read_result",
-        lambda sid: {"checkout_sha": "a" * 40, "checkout_branch_sha": "", "checkout_comparison_sha": "a" * 40},
+        lambda sid: {
+            "checkout_sha": "a" * 40,
+            "checkout_branch_sha": "",
+            "checkout_comparison_sha": "a" * 40,
+            "checkout_pr_base_branch": "main",
+        },
     )
     monkeypatch.setattr(manager, "_run_helper", helper)
     monkeypatch.setattr(repo_credentials, "load_deploy_key_pem", AsyncMock(return_value="private key"))

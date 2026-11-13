@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from app import docker_engine, sessions
@@ -17,7 +18,9 @@ TREE = "b" * 40
 def baseline(session_id=7):
     path = sessions.state_dir(session_id) / "checkout_baseline.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"checkout_sha": SHA, "branch_sha": "", "comparison_sha": SHA}))
+    path.write_text(
+        json.dumps({"checkout_sha": SHA, "branch_sha": "", "comparison_sha": SHA, "pr_base_branch": "main"})
+    )
     return path
 
 
@@ -31,12 +34,17 @@ async def no_event(*_args, **_kwargs):
 
 def test_baseline_is_captured_before_the_agent_can_replace_the_result(monkeypatch):
     manager = sessions.SessionManager()
-    result = {"checkout_sha": SHA, "checkout_branch_sha": "", "checkout_comparison_sha": "c" * 40}
+    result = {
+        "checkout_sha": SHA,
+        "checkout_branch_sha": "",
+        "checkout_comparison_sha": "c" * 40,
+        "checkout_pr_base_branch": "main",
+    }
     monkeypatch.setattr(manager, "_read_result", lambda _sid: result)
     manager._capture_checkout_baseline(7)
     result["checkout_sha"] = "f" * 40
     proof = json.loads((sessions.state_dir(7) / "checkout_baseline.json").read_text())
-    assert proof == {"checkout_sha": SHA, "branch_sha": "", "comparison_sha": "c" * 40}
+    assert proof == {"checkout_sha": SHA, "branch_sha": "", "comparison_sha": "c" * 40, "pr_base_branch": "main"}
 
 
 @pytest.mark.parametrize("result", [{}, {"checkout_sha": "HEAD", "checkout_branch_sha": ""}])
@@ -147,7 +155,13 @@ async def test_failed_verification_retries_from_published_draft_and_cannot_deplo
         return {"base_branch": "main", "volume_name": "workspace"}
 
     async def verified(_sid, _workspace, env, _path):
-        return {**env, "LOGOS_SESSION_VERIFICATION": "failed", "LOGOS_SESSION_VERIFICATION_OUTPUT": "compile error"}
+        return {
+            **env,
+            "LOGOS_SESSION_VERIFICATION": "failed",
+            "LOGOS_SESSION_VERIFICATION_OUTPUT": "compile error",
+            "LOGOS_SESSION_VERIFIED_TREE": TREE,
+            "LOGOS_SESSION_PR_BASE_BRANCH": "main",
+        }
 
     async def helper(**_kwargs):
         return 0
@@ -164,9 +178,127 @@ async def test_failed_verification_retries_from_published_draft_and_cannot_deplo
     monkeypatch.setattr(sessions.docker_engine, "volume_mountpoint", mount)
     monkeypatch.setattr(manager, "_verify_before_push", verified)
     monkeypatch.setattr(manager, "_run_helper", helper)
+    monkeypatch.setattr(
+        manager, "_read_result", lambda _sid: {"pushed_sha": SHA, "published_tree": TREE, "pr_base_branch": "main"}
+    )
     assert await manager._finalize(7) is False
     assert updates == [(3, "agent/7")]
     assert "compile error" in manager._last_helper_output[7]
+
+
+@pytest.mark.parametrize("target", ["main", "release"])
+async def test_failed_pr_creation_retains_published_branch_and_original_target_for_next_session(monkeypatch, target):
+    manager = sessions.SessionManager()
+    session = {"id": 7, "workspace_id": 3, "branch_name": "agent/7", "status": "finalizing"}
+    workspace = {"base_branch": target, "volume_name": "workspace"}
+    monkeypatch.setattr(sessions.db, "get_session", AsyncMock(return_value=session))
+    monkeypatch.setattr(sessions.db, "get_workspace", AsyncMock(return_value=workspace))
+    set_base = AsyncMock()
+    monkeypatch.setattr(sessions.db, "set_workspace_base_branch", set_base)
+    monkeypatch.setattr(sessions.docker_engine, "volume_mountpoint", AsyncMock(return_value="/artifacts"))
+    monkeypatch.setattr(
+        manager,
+        "_verify_before_push",
+        AsyncMock(
+            return_value={
+                "LOGOS_SESSION_VERIFICATION": "passed",
+                "LOGOS_SESSION_VERIFIED_TREE": TREE,
+                "LOGOS_SESSION_PR_BASE_BRANCH": target,
+            }
+        ),
+    )
+    monkeypatch.setattr(manager, "_run_helper", AsyncMock(return_value=1))
+    monkeypatch.setattr(
+        manager,
+        "_read_result",
+        lambda _sid: {
+            "pushed_sha": SHA,
+            "published_tree": TREE,
+            "pr_base_branch": target,
+        },
+    )
+    assert await manager._finalize(7) is False
+    set_base.assert_awaited_once_with(3, "agent/7")
+    assert json.loads(sessions.publication_path(3).read_text()) == {
+        "branch": "agent/7",
+        "pushed_sha": SHA,
+        "tree": TREE,
+        "pr_base_branch": target,
+    }
+
+    # A new manager also recovers if the DB update was lost after the receipt.
+    next_manager = sessions.SessionManager()
+    helper = AsyncMock(return_value=0)
+    monkeypatch.setattr(next_manager, "_run_helper", helper)
+    monkeypatch.setattr(
+        next_manager,
+        "_read_result",
+        lambda _sid: {
+            "checkout_sha": SHA,
+            "checkout_branch_sha": SHA,
+            "checkout_comparison_sha": "c" * 40,
+            "checkout_pr_base_branch": target,
+        },
+    )
+    await next_manager._prepare_checkout({**session, "id": 8}, workspace, "agent/7", "/artifacts/8")
+    env = helper.call_args.kwargs["env"]
+    assert env["LOGOS_SESSION_BASE_BRANCH"] == "agent/7"
+    assert env["LOGOS_SESSION_PR_BASE_BRANCH"] == target
+    proof = json.loads((sessions.state_dir(8) / "checkout_baseline.json").read_text())
+    assert proof["pr_base_branch"] == target
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        {},
+        {"pushed_sha": SHA, "published_tree": "c" * 40, "pr_base_branch": "main"},
+        {"pushed_sha": SHA, "published_tree": TREE, "pr_base_branch": "other"},
+    ],
+)
+async def test_failed_finalizer_without_matching_publication_receipt_keeps_workspace_base(monkeypatch, receipt):
+    manager = sessions.SessionManager()
+    monkeypatch.setattr(
+        sessions.db,
+        "get_session",
+        AsyncMock(
+            return_value={
+                "id": 7,
+                "workspace_id": 3,
+                "branch_name": "agent/7",
+                "status": "finalizing",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        sessions.db,
+        "get_workspace",
+        AsyncMock(
+            return_value={
+                "base_branch": "main",
+                "volume_name": "workspace",
+            }
+        ),
+    )
+    set_base = AsyncMock()
+    monkeypatch.setattr(sessions.db, "set_workspace_base_branch", set_base)
+    monkeypatch.setattr(sessions.docker_engine, "volume_mountpoint", AsyncMock(return_value="/artifacts"))
+    monkeypatch.setattr(
+        manager,
+        "_verify_before_push",
+        AsyncMock(
+            return_value={
+                "LOGOS_SESSION_VERIFICATION": "passed",
+                "LOGOS_SESSION_VERIFIED_TREE": TREE,
+                "LOGOS_SESSION_PR_BASE_BRANCH": "main",
+            }
+        ),
+    )
+    monkeypatch.setattr(manager, "_run_helper", AsyncMock(return_value=1))
+    monkeypatch.setattr(manager, "_read_result", lambda _sid: receipt)
+    assert await manager._finalize(7) is False
+    set_base.assert_not_awaited()
+    assert not sessions.publication_path(3).exists()
 
 
 async def test_verify_container_cannot_modify_candidate_or_access_network(monkeypatch):
@@ -228,6 +360,7 @@ def finalizer(monkeypatch, tmp_path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setenv("LOGOS_SESSION_BRANCH", "agent/7")
+    monkeypatch.setenv("LOGOS_SESSION_PR_BASE_BRANCH", "main")
     monkeypatch.setenv("LOGOS_SESSION_TASK", "Fix compilation")
     monkeypatch.setenv("LOGOS_REPO_URL", "https://github.com/example/repo")
     monkeypatch.setenv("LOGOS_REPO_SLUG", "example/repo")

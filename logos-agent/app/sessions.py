@@ -227,6 +227,11 @@ def state_dir(session_id: int) -> Path:
     return Path(settings.state_root) / str(session_id)
 
 
+def publication_path(workspace_id: int) -> Path:
+    """A successful push survives session retries outside agent-writable mounts."""
+    return Path(settings.state_root) / "workspaces" / str(workspace_id) / "publication.json"
+
+
 SSH_KNOWN_HOSTS = "/logos/ssh_known_hosts"
 SSH_COMMAND = (
     "ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes "
@@ -1638,6 +1643,19 @@ class SessionManager:
         continuing: bool = False,
     ) -> None:
         """Phase one: the helper that makes the working copy trustworthy."""
+        pr_base = ""
+        workspace_id = session.get("workspace_id")
+        if workspace_id is not None:
+            try:
+                publication = json.loads(publication_path(int(workspace_id)).read_text())
+            except FileNotFoundError:
+                publication = {}
+            if publication.get("branch") == branch:
+                pr_base = str(publication["pr_base_branch"])
+                # Recover a push whose later PR API call failed, including a
+                # transient failure to update the workspace row after recording it.
+                await db.set_workspace_base_branch(int(workspace_id), branch)
+                workspace = {**workspace, "base_branch": branch}
         env = {
             "LOGOS_SESSION_PHASE": "prepare",
             # Carries the conversation across the home wipe, and nothing
@@ -1647,6 +1665,7 @@ class SessionManager:
             "LOGOS_SESSION_ID": str(session["id"]),
             "LOGOS_SESSION_BRANCH": branch,
             "LOGOS_SESSION_BASE_BRANCH": workspace["base_branch"],
+            "LOGOS_SESSION_PR_BASE_BRANCH": pr_base,
             "LOGOS_REPO_URL": session.get("repo_url") or settings.repo_url,
             "LOGOS_REPO_SLUG": session.get("repo_slug") or settings.repo_slug,
             "LOGOS_ARTIFACT_DIR": "/artifacts",
@@ -1726,6 +1745,7 @@ class SessionManager:
         sha = prepared.get("checkout_sha")
         branch_sha = prepared.get("checkout_branch_sha")
         comparison_sha = prepared.get("checkout_comparison_sha")
+        pr_base = prepared.get("checkout_pr_base_branch")
         if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
             raise RuntimeError("checkout preparation did not report its original commit")
         if not isinstance(branch_sha, str) or (
@@ -1734,9 +1754,20 @@ class SessionManager:
             raise RuntimeError("checkout preparation did not report the original branch tip")
         if not isinstance(comparison_sha, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", comparison_sha):
             raise RuntimeError("checkout preparation did not report the PR comparison commit")
+        if not isinstance(pr_base, str) or not pr_base.strip():
+            raise RuntimeError("checkout preparation did not report the PR target branch")
         path = state_dir(session_id) / _CHECKOUT_BASELINE_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"checkout_sha": sha, "branch_sha": branch_sha, "comparison_sha": comparison_sha}))
+        path.write_text(
+            json.dumps(
+                {
+                    "checkout_sha": sha,
+                    "branch_sha": branch_sha,
+                    "comparison_sha": comparison_sha,
+                    "pr_base_branch": pr_base,
+                }
+            )
+        )
 
     async def _verify_before_push(
         self, session_id: int, workspace: dict[str, Any], env: dict[str, str], artifact_host_path: str
@@ -1746,11 +1777,14 @@ class SessionManager:
             baseline = json.loads((state_dir(session_id) / _CHECKOUT_BASELINE_FILE).read_text())
             sha, branch_sha = baseline["checkout_sha"], baseline["branch_sha"]
             comparison_sha = baseline["comparison_sha"]
+            pr_base = baseline["pr_base_branch"]
             if (
                 not isinstance(branch_sha, str)
                 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha)
                 or (branch_sha and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", branch_sha))
                 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", comparison_sha)
+                or not isinstance(pr_base, str)
+                or not pr_base.strip()
             ):
                 raise ValueError("invalid commit")
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -1760,6 +1794,7 @@ class SessionManager:
             "LOGOS_SESSION_CHECKOUT_SHA": sha,
             "LOGOS_SESSION_BRANCH_SHA": branch_sha,
             "LOGOS_SESSION_COMPARISON_SHA": comparison_sha,
+            "LOGOS_SESSION_PR_BASE_BRANCH": pr_base,
         }
         code = await self._run_helper(
             phase="snapshot",
@@ -1907,10 +1942,39 @@ class SessionManager:
             workspace_volume=workspace["volume_name"],
             artifact_host_path=artifact_host_path,
         )
-        if code == 0 and env.get("LOGOS_SESSION_VERIFICATION") == "failed":
-            # The bounded retry must start from the draft we just published,
-            # preserving both its edits and the correct parent for the next run.
+        published = self._read_result(session_id)
+        pushed_sha = published.get("pushed_sha")
+        published_tree = published.get("published_tree")
+        pr_base = published.get("pr_base_branch")
+        if (
+            isinstance(pushed_sha, str)
+            and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", pushed_sha)
+            and isinstance(published_tree, str)
+            and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", published_tree)
+            and published_tree == env.get("LOGOS_SESSION_VERIFIED_TREE")
+            and isinstance(pr_base, str)
+            and pr_base.strip()
+            and pr_base == env.get("LOGOS_SESSION_PR_BASE_BRANCH")
+        ):
+            # Snapshot replaced the agent's result; verification had read-only
+            # mounts. Only the trusted finalizer can have written this receipt,
+            # even when a subsequent PR API operation made it exit nonzero.
+            path = publication_path(int(session["workspace_id"]))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "branch": session["branch_name"],
+                        "pushed_sha": pushed_sha,
+                        "tree": published["published_tree"],
+                        "pr_base_branch": published["pr_base_branch"],
+                    }
+                )
+            )
+            temporary.replace(path)
             await db.set_workspace_base_branch(int(session["workspace_id"]), str(session["branch_name"]))
+        if code == 0 and env.get("LOGOS_SESSION_VERIFICATION") == "failed":
             self._last_helper_output[session_id] = (
                 "compile/type checks failed; changes were published only as a draft for repair: "
                 + env.get("LOGOS_SESSION_VERIFICATION_OUTPUT", "")

@@ -1473,16 +1473,16 @@ def run_ssh_trust() -> None:
         run(["git", "ls-remote", "--", require_env("LOGOS_REPO_URL"), "HEAD"], cwd=scratch, quiet=True)
 
 
-def _checkout_comparison_sha(base_branch: str, branch: str, branch_sha: str) -> str:
+def _checkout_comparison(base_branch: str, branch: str, branch_sha: str) -> tuple[str, str]:
     """Pin the complete proposed change's merge base before the agent starts.
 
     A continued session begins at the existing PR tip. Comparing only with
     that tip would skip services changed by earlier sessions. The PR target
-    is authoritative when one exists; an unpublished existing branch uses
-    the repository's default branch instead.
+    is authoritative when one exists. Otherwise the runner can retain the
+    original target across a successful push whose PR creation failed.
     """
     if not branch_sha:
-        return require_checkout_ref("HEAD")
+        return require_checkout_ref("HEAD"), base_branch
     target = ""
     slug = os.environ.get("LOGOS_REPO_SLUG", "").strip()
     if slug:
@@ -1501,13 +1501,14 @@ def _checkout_comparison_sha(base_branch: str, branch: str, branch_sha: str) -> 
         if len(targets) > 1:
             raise RuntimeError("the session branch has pull requests with different target branches")
         target = next(iter(targets), "")
-    target = target or _remote_default_branch()
+    target = target or os.environ.get("LOGOS_SESSION_PR_BASE_BRANCH", "").strip() or _remote_default_branch()
     if not target:
         raise RuntimeError("could not establish the comparison branch for the existing session branch")
     run(["git", "check-ref-format", f"refs/heads/{target}"], cwd=CHECKOUT, quiet=True)
     run(["git", "fetch", "--depth", "50", "origin", f"{target}:refs/remotes/origin/{target}"], cwd=CHECKOUT)
     _deepen_until_merge_base(target, base_branch)
-    return run(["git", "merge-base", f"origin/{target}", "HEAD"], cwd=CHECKOUT, quiet=True).stdout.strip()
+    comparison = run(["git", "merge-base", f"origin/{target}", "HEAD"], cwd=CHECKOUT, quiet=True).stdout.strip()
+    return comparison, target
 
 
 def require_checkout_ref(ref: str) -> str:
@@ -1536,9 +1537,9 @@ def run_prepare(result: Result) -> None:
     result.data["checkout_branch_sha"] = _remote_branch_sha(branch)
     if result.data["checkout_branch_sha"] and result.data["checkout_branch_sha"] != result.data["checkout_sha"]:
         raise RuntimeError("the existing session branch differs from the prepared checkout; prepare its current tip")
-    result.data["checkout_comparison_sha"] = _checkout_comparison_sha(
-        base_branch, branch, result.data["checkout_branch_sha"]
-    )
+    comparison, pr_base_branch = _checkout_comparison(base_branch, branch, result.data["checkout_branch_sha"])
+    result.data["checkout_comparison_sha"] = comparison
+    result.data["checkout_pr_base_branch"] = pr_base_branch
 
 
 def run_agent_phase(result: Result) -> None:
@@ -1651,6 +1652,7 @@ def run_finalize(result: Result) -> None:
     if verification not in {"passed", "failed"}:
         raise RuntimeError("invalid verification outcome")
     expected_tree = require_env("LOGOS_SESSION_VERIFIED_TREE")
+    pr_base_branch = require_env("LOGOS_SESSION_PR_BASE_BRANCH")
     if not finalize_checkout(repo_url, base_branch, branch, token):
         raise RuntimeError("no verified checkout available to publish")
     run(["git", "add", "-A"], cwd=CHECKOUT)
@@ -1663,28 +1665,19 @@ def run_finalize(result: Result) -> None:
     count = commit_and_push(branch, task)
     result.data["files_changed"] = count
     result.data["committed"] = count > 0
-    if (count or _ref_sha(f"refs/remotes/origin/{branch}")) and (
-        os.environ.get("LOGOS_SESSION_OPEN_PR") == "1" or verification == "failed"
-    ):
-        result.data["pr_url"] = open_pull_request(branch, base_branch, task)
+    result.data["verification"] = verification
+    result.data["pr_base_branch"] = pr_base_branch
+    result.data["published_tree"] = actual_tree
+    # Preserve the trusted publication outcome before any fallible PR API
+    # operation. A retry must prepare this published branch tip while still
+    # targeting the original PR base, even if opening that PR failed.
+    # A branch that has never been pushed has no publication proof.
+    result.data["pushed_sha"] = _ref_sha("HEAD") if count else _ref_sha(f"refs/remotes/origin/{branch}")
+    result.write()
+    if result.data["pushed_sha"] and (os.environ.get("LOGOS_SESSION_OPEN_PR") == "1" or verification == "failed"):
+        result.data["pr_url"] = open_pull_request(branch, pr_base_branch, task)
         if not result.data["pr_url"]:
             raise RuntimeError("could not publish the pull request and its verification report")
-    result.data["verification"] = verification
-    # The exact commit the runner must build: this run's own commit, or —
-    # when the agent changed nothing this time — the tip the branch already
-    # carries. The runner pins its build poll to it. The branch is not a
-    # fresh ref: a retried session force-pushes a new commit onto it, and a
-    # completed run of the earlier commit would otherwise still be "the
-    # build of this branch".
-    #
-    # And nothing at all when this session's branch has never been pushed.
-    # It used to fall back to HEAD, which on a session that only answered a
-    # question is the tip of the *default branch*: the runner then watched
-    # main's checks, found them red for reasons that had nothing to do with
-    # this session, and took the work up again — twice, until the request
-    # ran out of attempts. A commit this session did not make is not a
-    # commit it can be answerable for.
-    result.data["pushed_sha"] = _ref_sha("HEAD") if count else _ref_sha(f"refs/remotes/origin/{branch}")
 
 
 def main() -> int:
