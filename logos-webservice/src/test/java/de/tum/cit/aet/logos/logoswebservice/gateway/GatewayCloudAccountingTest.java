@@ -552,6 +552,48 @@ class GatewayCloudAccountingTest {
         assertThat(status(logId)).isNull();
     }
 
+    // -------------------------------------------------------- live cost line
+
+    @Test
+    void billableUsage_dropsMarkersNegativesAndBlankNames() {
+        assertThat(GatewayCloudAccounting.billableUsage(null)).isEmpty();
+        assertThat(GatewayCloudAccounting.billableUsage(Map.of())).isEmpty();
+        assertThat(GatewayCloudAccounting.billableUsage(Map.of(
+            "prompt_tokens", 10L,
+            "usage_estimated", 1L,
+            "provider_delivered_nothing", 1L,
+            "", 3L,
+            "completion_tokens", -1L))).containsExactly(Map.entry("prompt_tokens", 10L));
+    }
+
+    @Test
+    void costPricer_pricesSettledUsageInUsd() {
+        Fixture f = seedPricedDeployment();
+        // 1000 uncached input @ 20000/k + 300 output @ 120000/k = 56000 micro-cents
+        assertThat(accounting.costPricer(f.deployment()).priceUsd(USAGE, null))
+            .hasValue(0.00056);
+    }
+
+    @Test
+    void costPricer_isEmptyWithoutAProviderOrBillableUsage() {
+        Fixture f = seedPricedDeployment();
+        GatewayDeployment noProvider = new GatewayDeployment(
+            f.modelId(), "m", null, "p", "cloud", "openai", "http://x",
+            "/v1/chat/completions", "Authorization", "Bearer %s", "sk-x", "BILLING", null);
+
+        assertThat(accounting.costPricer(null).priceUsd(USAGE, null)).isEmpty();
+        assertThat(accounting.costPricer(noProvider).priceUsd(USAGE, null)).isEmpty();
+        assertThat(accounting.costPricer(f.deployment())
+            .priceUsd(Map.of("usage_estimated", 1L), null)).isEmpty();
+        assertThat(accounting.priceUsageUsd(f.modelId(), f.providerId(), Map.of(), null)).isEmpty();
+    }
+
+    @Test
+    void costPricer_isEmptyWhenTheDeploymentHasNoCataloguePrice() {
+        Fixture f = seedUnpricedDeployment();
+        assertThat(accounting.costPricer(f.deployment()).priceUsd(USAGE, null)).isEmpty();
+    }
+
     // --------------------------------------------------------------- helpers
 
     private GatewayCloudAccounting localAccounting(long reservation, int batchSize, int maxBatches) {

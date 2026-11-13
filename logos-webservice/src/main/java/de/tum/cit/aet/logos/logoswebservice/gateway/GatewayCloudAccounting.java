@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalDouble;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -168,7 +169,7 @@ public class GatewayCloudAccounting {
         }
         try {
             String usageJson = objectMapper.writeValueAsString(billable);
-            Long microCents = jdbc.query(
+            OptionalLong microCents = jdbc.query(
                 """
                     SELECT logos_price_usage(
                         :modelId, :providerId, :responseAt, :serviceTier,
@@ -181,11 +182,20 @@ public class GatewayCloudAccounting {
                     .addValue("responseAt", utc(Instant.now()))
                     .addValue("serviceTier", serviceTier)
                     .addValue("usage", usageJson),
-                rs -> rs.next() ? (Long) rs.getObject("cost_micro_cents") : null);
-            if (microCents == null) {
+                rs -> {
+                    if (!rs.next()) {
+                        return OptionalLong.empty();
+                    }
+                    Object raw = rs.getObject("cost_micro_cents");
+                    if (raw == null) {
+                        return OptionalLong.empty();
+                    }
+                    return OptionalLong.of(((Number) raw).longValue());
+                });
+            if (microCents.isEmpty()) {
                 return OptionalDouble.empty();
             }
-            double usd = BigDecimal.valueOf(microCents)
+            double usd = BigDecimal.valueOf(microCents.getAsLong())
                 .divide(BigDecimal.valueOf(MICRO_CENTS_PER_USD), 8, RoundingMode.HALF_UP)
                 .doubleValue();
             return OptionalDouble.of(usd);

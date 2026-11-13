@@ -421,4 +421,34 @@ class GatewayUsageCaptureTest {
             .isFalse();
         assertThat(GatewayUsageCapture.usageIsSettled(null)).isFalse();
     }
+
+    @Test
+    void detachClient_flushesHeldJsonWithCostBeforeDroppingTheDelegate() throws IOException {
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        String body = "{\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}";
+        GatewayUsageCapture capture = new GatewayUsageCapture(
+            sink, mapper, "application/json", false, Instant::now,
+            (usage, tier) -> java.util.OptionalDouble.of(0.001));
+        capture.write(body.getBytes(StandardCharsets.UTF_8));
+        assertThat(sink.size()).isZero();
+
+        capture.detachClient();
+
+        var usage = mapper.readTree(sink.toByteArray()).path("usage");
+        assertThat(usage.path("cost").asDouble()).isEqualTo(0.001);
+        assertThat(usage.path("cost_currency").asText()).isEqualTo("USD");
+        // A second close must not write again onto the null sink.
+        capture.close();
+        assertThat(capture.usage()).containsEntry("prompt_tokens", 5L);
+    }
+
+    @Test
+    void pricerThatThrows_leavesTheBodyWithoutCost() throws IOException {
+        String body = "{\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}";
+        Result result = stream("application/json", body, 8, (usage, tier) -> {
+            throw new IllegalStateException("pricing unavailable");
+        });
+        assertThat(result.forwarded()).isEqualTo(body);
+        assertThat(mapper.readTree(result.forwarded()).path("usage").has("cost")).isFalse();
+    }
 }

@@ -586,7 +586,7 @@ final class GatewayUsageCapture extends OutputStream {
         if (counts.isEmpty()) {
             return null;
         }
-        OptionalDouble priced = pricer.priceUsd(counts, serviceTier);
+        OptionalDouble priced = priceSafely(counts, serviceTier);
         if (priced.isEmpty()) {
             return null;
         }
@@ -620,7 +620,7 @@ final class GatewayUsageCapture extends OutputStream {
             return null;
         }
         String tier = GatewayUsageExtractor.serviceTier(event);
-        OptionalDouble priced = pricer.priceUsd(counts, tier != null ? tier : serviceTier);
+        OptionalDouble priced = priceSafely(counts, tier != null ? tier : serviceTier);
         if (priced.isEmpty()) {
             return null;
         }
@@ -639,6 +639,14 @@ final class GatewayUsageCapture extends OutputStream {
                 .getBytes(StandardCharsets.UTF_8);
         } catch (IOException e) {
             return null;
+        }
+    }
+
+    private OptionalDouble priceSafely(Map<String, Long> counts, String tier) {
+        try {
+            return pricer.priceUsd(counts, tier);
+        } catch (RuntimeException e) {
+            return OptionalDouble.empty();
         }
     }
 
