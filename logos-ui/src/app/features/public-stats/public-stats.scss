@@ -27,7 +27,11 @@
   --duo-3: rgb(var(--color-primary-400));
 
   position: relative;
-  min-height: 100vh;
+  // The page renders outside the shell's scrolling .main-content while the
+  // global reset hides document overflow, so it is its own scroll container.
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
   padding: 1.5rem;
   background: rgb(var(--shell-background));
 
