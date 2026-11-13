@@ -191,6 +191,35 @@ class GatewayUsageCaptureTest {
     }
 
     @Test
+    void oversizedSseEventWithPricer_passesThroughInChunksAndLaterUsageIsStillEnriched() throws IOException {
+        String huge = "data: {\"pad\":\"" + "y".repeat(GatewayUsageCapture.SSE_LINE_LIMIT_BYTES) + "\"}\n";
+        String usageLine = "data: {\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":4}}\n\n";
+
+        Result result = stream(SSE, huge + usageLine, 8 * 1024, (usage, tier) -> java.util.OptionalDouble.of(0.25));
+
+        // The oversized line is forwarded unchanged, in pieces, without being parsed.
+        assertThat(result.forwarded()).startsWith(huge);
+        assertThat(result.usage())
+            .containsExactlyInAnyOrderEntriesOf(Map.of("prompt_tokens", 11L, "completion_tokens", 4L));
+        // The later usage frame is still complete and carries the price.
+        assertThat(result.forwarded().substring(huge.length())).contains("\"prompt_tokens\":11").contains("0.25");
+    }
+
+    @Test
+    void oversizedSseEventWithPricer_inOneWriteEndsAtItsNewline() throws IOException {
+        String huge = "data: {\"pad\":\"" + "z".repeat(GatewayUsageCapture.SSE_LINE_LIMIT_BYTES + 10) + "\"}\n";
+        String usageLine = "data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n";
+        String body = huge + usageLine;
+
+        Result result = stream(SSE, body, body.length(), (usage, tier) -> java.util.OptionalDouble.of(0.5));
+
+        assertThat(result.forwarded()).startsWith(huge);
+        assertThat(result.usage())
+            .containsExactlyInAnyOrderEntriesOf(Map.of("prompt_tokens", 3L, "completion_tokens", 2L));
+        assertThat(result.forwarded().substring(huge.length())).contains("0.5");
+    }
+
+    @Test
     void singleByteWritesAreCapturedToo() throws IOException {
         ByteArrayOutputStream sink = new ByteArrayOutputStream();
         String body = "{\"usage\":{\"prompt_tokens\":3}}";
