@@ -10,6 +10,7 @@ import re
 import secrets
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from urllib.parse import quote
 
 import sqlalchemy.exc
 import yaml
@@ -36,7 +37,12 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_DB_URL = os.getenv("LOGOS_DB_URL", "postgresql://postgres:root@logos-db:5432/logosdb")
+_DB_URL = os.getenv("LOGOS_DB_URL") or (
+    f"postgresql://{quote(os.getenv('DB_USER', 'postgres'), safe='')}:"
+    f"{quote(os.getenv('DB_PASSWORD', ''), safe='')}@"
+    f"{os.getenv('DB_HOST', 'logos-db')}:{os.getenv('DB_PORT', '5432')}/"
+    f"{quote(os.getenv('DB_NAME', 'logosdb'), safe='')}"
+)
 _POOL_SIZE = int(os.getenv("LOGOS_DB_POOL_SIZE", "10"))
 _MAX_OVERFLOW = int(os.getenv("LOGOS_DB_MAX_OVERFLOW", "20"))
 _POOL_RECYCLE = int(os.getenv("LOGOS_DB_POOL_RECYCLE", "1800"))

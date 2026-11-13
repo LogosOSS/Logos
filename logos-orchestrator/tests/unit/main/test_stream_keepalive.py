@@ -480,7 +480,7 @@ async def test_no_deployment_still_404s_for_a_streaming_request(monkeypatch):
     monkeypatch.setattr(main, "_filter_logosnode_deployments", fake_filter)
 
     with pytest.raises(HTTPException) as exc:
-        await main.handle_sync_request("chat/completions", _Client(leaves=False))
+        await main.handle_sync_request("v1/chat/completions", _Client(leaves=False))
 
     assert exc.value.status_code == 404
 
@@ -511,7 +511,7 @@ async def test_non_streaming_requests_stay_on_the_sync_path(monkeypatch):
     monkeypatch.setattr(main, "_execute_cancelling_on_disconnect", fake_guard)
     monkeypatch.setattr(main, "_keepalive_streaming_response", fail_keepalive)
 
-    result = await main.handle_sync_request("chat/completions", _Client(leaves=False))
+    result = await main.handle_sync_request("v1/chat/completions", _Client(leaves=False))
 
     assert result == "guarded"
     assert len(guarded) == 1

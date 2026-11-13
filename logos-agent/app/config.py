@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 
 def _int(name: str, default: int) -> int:
@@ -89,7 +90,7 @@ class Settings:
     db_port: int = _int("DB_PORT", 5432)
     db_name: str = os.getenv("DB_NAME", "logosdb")
     db_user: str = os.getenv("DB_USER", "postgres")
-    db_password: str = os.getenv("DB_PASSWORD", "root")
+    db_password: str = os.getenv("DB_PASSWORD", "")
 
     # --- identity ---------------------------------------------------------
     keycloak_jwks_uri: str = os.getenv("KEYCLOAK_JWKS_URI", "")
@@ -355,7 +356,8 @@ class Settings:
     @property
     def database_url(self) -> str:
         return (
-            f"postgresql+asyncpg://{self.db_user}:{self.db_password}" f"@{self.db_host}:{self.db_port}/{self.db_name}"
+            f"postgresql+asyncpg://{quote(self.db_user, safe='')}:{quote(self.db_password, safe='')}"
+            f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
 
