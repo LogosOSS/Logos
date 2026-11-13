@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from logos_node_manager.docker_ops import Docker, describe_registry_login, split_image_ref
+from logos_node_manager.docker_ops import Docker, describe_registry_login, self_docker, split_image_ref
 from logos_node_manager.errors import DockerError
 from logos_node_manager.runner import CommandResult
 
@@ -292,3 +292,62 @@ def test_a_credential_helper_is_pointed_out(tmp_path):
 
 def test_a_missing_login_file_is_reported(tmp_path):
     assert "no Docker login file" in describe_registry_login(tmp_path / "missing.json")
+
+
+def test_a_container_made_by_compose_says_its_project_its_service_and_its_files(settings):
+    raw = json.loads(inspect_json())
+    raw[0]["Config"]["Labels"].update(
+        {
+            "com.docker.compose.project": "logos-workernode",
+            "com.docker.compose.service": "logos-node-manager",
+            "com.docker.compose.project.config_files": "/opt/logos-workernode/docker-compose.yml",
+        }
+    )
+    docker, _ = docker_with(settings, ok(json.dumps(raw)))
+
+    info = docker.container()
+
+    assert (info.project, info.service) == ("logos-workernode", "logos-node-manager")
+    assert info.config_files == "/opt/logos-workernode/docker-compose.yml"
+
+
+def test_a_container_that_compose_did_not_make_has_no_project_and_no_service(settings):
+    docker, _ = docker_with(settings, ok(inspect_json()))
+
+    info = docker.container()
+
+    assert (info.project, info.service, info.config_files) == (None, None, None)
+
+
+def test_the_docker_of_the_manager_aims_at_its_own_service_and_sees_every_profile(settings):
+    runner = FakeRunner(ok(), ok(), ok(inspect_json()))
+    docker = self_docker(settings, runner)
+
+    docker.pull("v2")
+    docker.up("v2", pull_never=True)
+    docker.container()
+
+    (pull, _, pull_env), (up, _, up_env), (inspect, _, _) = runner.calls
+    own = ["-p", settings.self_project_name, "-f", str(settings.self_compose_file)]
+    for argv in (pull, up):
+        assert argv[:3] == ("docker", "compose", "-p") and all(part in argv for part in own)
+    assert pull[-2:] == ("pull", settings.self_service)
+    assert up[-5:] == ("up", "-d", "--no-deps", "--pull", "never") or up[-6:-1] == (
+        "up",
+        "-d",
+        "--no-deps",
+        "--pull",
+        "never",
+    )
+    assert up[-1] == settings.self_service
+    # The service of the manager has a profile, and the .env file of a host may not name it.
+    assert pull_env == {"IMAGE_TAG": "v2", "COMPOSE_PROFILES": "*"} and up_env == pull_env
+    assert inspect[-1] == settings.self_container
+
+
+def test_the_docker_of_the_worker_does_not_widen_the_profiles(settings):
+    docker, runner = docker_with(settings, ok())
+
+    docker.pull("v2")
+
+    assert runner.calls[0][2] == {"IMAGE_TAG": "v2"}

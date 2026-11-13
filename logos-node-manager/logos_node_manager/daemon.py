@@ -3,6 +3,9 @@
 The daemon takes the queued deployments from the state directory, oldest first and one at a time. Whoever wants a
 deployment writes a record: the command line does, and so does the intake of the Logos link, which asks the Logos of the
 host for orders. The daemon finds the record on its next pass.
+
+Between the deployments the daemon lets the self-update do its part (see ``self_update``). While a helper replaces the
+manager, no deployment starts.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from logos_node_manager.deployer import Deployer
 from logos_node_manager.docker_ops import Docker, describe_registry_login
 from logos_node_manager.errors import Interrupted
 from logos_node_manager.logos_link import LogosLink
+from logos_node_manager.self_update import SelfUpdater
 from logos_node_manager.state import Deployment, StateStore
 
 logger = logging.getLogger(__name__)
@@ -41,6 +45,7 @@ class Daemon:
         registry_login_file: Path | None = None,
         retry_delay_s: float = RETRY_DELAY_S,
         link: LogosLink | None = None,
+        updater: SelfUpdater | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -50,6 +55,7 @@ class Daemon:
         self._registry_login_file = registry_login_file
         self._retry_delay_s = retry_delay_s
         self._link = link
+        self._updater = updater
 
     def run(self) -> None:
         """Process deployments until the stop event is set."""
@@ -64,7 +70,7 @@ class Daemon:
             while not self._stop.is_set():
                 self._report_endings()
                 deployment = self._store.next_unfinished()
-                if deployment is None:
+                if self._self_update(pending=deployment is not None) or deployment is None:
                     self._stop.wait(self._settings.loop_interval_s)
                     continue
                 self._process(deployment)
@@ -84,6 +90,17 @@ class Daemon:
         except Exception:  # noqa: BLE001 - a notification must not stop the deployments
             logger.exception("The endings of the deployments could not be reported")
 
+    def _self_update(self, *, pending: bool) -> bool:
+        """Let the self-update do its part. True while a helper has the swap, so that no deployment may start."""
+        updater = self._updater
+        if updater is None:
+            return False
+        try:
+            return updater.step(deployments_pending=pending)
+        except Exception:  # noqa: BLE001 - the update must never stop the deployments
+            logger.exception("The self-update could not be looked at")
+            return False
+
     def _heartbeat(self) -> None:
         while not self._stop.wait(HEARTBEAT_INTERVAL_S):
             try:
@@ -96,7 +113,7 @@ class Daemon:
             "Processing deployment %s (tag %s, phase %s)", deployment.id, deployment.tag, deployment.phase.value
         )
         try:
-            self._deployer.process(deployment)
+            finished = self._deployer.process(deployment)
         except Interrupted:
             logger.info("Stopping. Deployment %s continues at the next start.", deployment.id)
             return
@@ -104,6 +121,9 @@ class Daemon:
             self._record_error(deployment, exc)
             return
         self._store.prune()
+        if self._updater is not None:
+            # A deployment that ended well may be followed by an update of the manager, if the host is set to.
+            self._updater.after_deployment(finished or deployment)
 
     def _record_error(self, deployment: Deployment, exc: Exception) -> None:
         """Count an unexpected error. The deployment is tried again, and after the last attempt the deployer ends it."""
@@ -137,6 +157,8 @@ class Daemon:
             logger.info("Registry: %s", registry.describe())
         if compose is not None:
             logger.info("Compose file: %s", compose.describe())
+        if self._updater is not None:
+            logger.info("Self-update: %s", self._updater.describe())
         # With the compose file from the tag, the file of the host is not needed, and a deployment only falls back to it
         # when the image of a tag carries none.
         needed = (s.env_file,) if compose is not None and compose.enabled() else (s.compose_file, s.env_file)

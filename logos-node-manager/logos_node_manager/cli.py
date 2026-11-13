@@ -8,6 +8,9 @@ scripts that talk to it, usually through ``docker exec``:
   background of the host, and ``wait`` and ``status`` show how they end.
 * ``wait`` attaches to a deployment that is already queued, for example after a dropped SSH connection.
 * ``status`` shows a deployment. ``ping`` tells whether the daemon is alive.
+* ``self-update`` queues the replacement of the manager itself with the image of a tag. It does not wait: the manager
+  restarts during the update. ``self-update-status`` shows how it went. ``self-update-run`` is the command of the helper
+  that does the swap. The manager starts it, and nobody needs to.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import signal
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, TextIO
 
@@ -28,12 +32,14 @@ from logos_node_manager.config import CORE, Settings
 from logos_node_manager.core_target import CoreTarget
 from logos_node_manager.daemon import Daemon
 from logos_node_manager.deployer import Deployer
-from logos_node_manager.docker_ops import Docker, ProjectDocker
+from logos_node_manager.docker_ops import Docker, ProjectDocker, self_docker
 from logos_node_manager.errors import StateError
 from logos_node_manager.logos_link import LogosLink
 from logos_node_manager.orchestrator import OrchestratorClient
 from logos_node_manager.registry import RegistryLogin
 from logos_node_manager.runner import SubprocessRunner
+from logos_node_manager.self_update import SelfUpdate, SelfUpdater, SelfUpdateStore
+from logos_node_manager.self_update_helper import run_helper
 from logos_node_manager.state import Deployment, Outcome, Phase, StateStore, utc_now, validate_id, validate_tag
 
 EXIT_OK = 0
@@ -255,6 +261,84 @@ def cmd_ping(args: argparse.Namespace, settings: Settings) -> int:
     return EXIT_ERROR
 
 
+def cmd_self_update(args: argparse.Namespace, settings: Settings, *, out: TextIO | None = None) -> int:
+    """Queue the replacement of the manager with the image of a tag. It returns at once, because the update restarts the
+    manager and a command that waits in the container would end with it."""
+    out = out or sys.stdout
+    store = SelfUpdateStore(settings.state_dir)
+    update_id = args.id or "manual-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    try:
+        record = store.submit(
+            SelfUpdate(
+                id=validate_id(update_id),
+                tag=validate_tag(args.tag),
+                requested_at=utc_now(),
+                requested_by=args.requested_by,
+            )
+        )
+    except (ValueError, StateError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    age = StateStore(settings.state_dir).heartbeat_age()
+    if age is None or age > HEARTBEAT_MAX_AGE_S:
+        print("warning: the node manager daemon does not answer. The request waits until it runs.", file=sys.stderr)
+    print(f"Self-update {record.id} is queued for tag {record.tag}", file=out)
+    print(
+        "The update starts when no deployment waits, and the manager restarts during it, so this command does not "
+        f"wait. Look at the result with: node-manager self-update-status {record.id}",
+        file=out,
+    )
+    return EXIT_OK
+
+
+def cmd_self_update_status(args: argparse.Namespace, settings: Settings, *, out: TextIO | None = None) -> int:
+    out = out or sys.stdout
+    store = SelfUpdateStore(settings.state_dir)
+    try:
+        record = store.load(validate_id(args.id)) if args.id else store.latest()
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if record is None:
+        print("there is no such self-update" if args.id else "there are no self-updates yet", file=out)
+        return EXIT_NOT_FOUND if args.id else EXIT_OK
+    if args.json:
+        print(json.dumps(record.to_dict(), indent=2, sort_keys=True), file=out)
+        return EXIT_OK
+    print(f"Self-update {record.id}: tag {record.tag}, phase {record.phase.value}", file=out)
+    if record.compose_file:
+        print(f"compose file: {record.compose_file} (sha256 {record.compose_sha256[:12]})", file=out)
+    for event in record.events:
+        print(format_event(event), file=out)
+    if record.finished:
+        result = record.outcome.value if record.outcome else "unfinished"
+        kind = f" ({record.failure.value})" if record.failure else ""
+        print(f"Self-update {record.id}: {result}{kind}", file=out)
+        if record.message:
+            print(record.message, file=out)
+    return EXIT_OK
+
+
+def cmd_self_update_run(args: argparse.Namespace, settings: Settings, *, out: TextIO | None = None) -> int:
+    """The helper: swap the manager for the image of the record, check it and go back if it does not come up."""
+    out = out or sys.stdout
+    try:
+        validate_id(args.id)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    record = run_helper(settings, args.id)
+    if record is None:
+        print(f"error: there is no self-update {args.id}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    result = record.outcome.value if record.outcome else "unfinished"
+    kind = f" ({record.failure.value})" if record.failure else ""
+    print(f"Self-update {record.id}: {result}{kind}", file=out)
+    if record.message:
+        print(record.message, file=out)
+    return EXIT_CODES[record.outcome] if record.outcome else EXIT_ERROR
+
+
 def cmd_run(args: argparse.Namespace, settings: Settings) -> int:
     stop = threading.Event()
     store = StateStore(settings.state_dir)
@@ -287,7 +371,27 @@ def cmd_run(args: argparse.Namespace, settings: Settings) -> int:
             compose=compose,
         )
     link = LogosLink.from_settings(settings, store, stop)
-    daemon = Daemon(settings, store, deployer, stop, docker=docker, registry_login_file=DOCKER_CONFIG_FILE, link=link)
+    # The manager's own service, which a self-update replaces, has a Docker object of its own: another project, another
+    # compose file, another container. It shares the runner, so it has the registry login too.
+    updater = SelfUpdater(
+        settings,
+        self_docker(settings, runner),
+        SelfUpdateStore(settings.state_dir),
+        runner,
+        registry=registry,
+        compose=compose,
+        should_stop=stop.is_set,
+    )
+    daemon = Daemon(
+        settings,
+        store,
+        deployer,
+        stop,
+        docker=docker,
+        registry_login_file=DOCKER_CONFIG_FILE,
+        link=link,
+        updater=updater,
+    )
     # Stop between steps. A deployment that is cut off continues from its recorded phase at the next start.
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stop.set())
@@ -335,6 +439,25 @@ def build_parser() -> argparse.ArgumentParser:
     ping = commands.add_parser("ping", help="exit 0 if the daemon is alive")
     ping.add_argument("--max-age", type=float, default=HEARTBEAT_MAX_AGE_S, help="seconds (default: %(default)s)")
     ping.set_defaults(handler=cmd_ping)
+
+    self_update = commands.add_parser(
+        "self-update", help="queue the replacement of the manager itself with the image of a tag"
+    )
+    self_update.add_argument("--tag", required=True, help="image tag of the new manager")
+    self_update.add_argument("--id", default="", help="id of the request (default: manual-<date>-<time>)")
+    self_update.add_argument("--requested-by", default="", help="free text for the record")
+    self_update.set_defaults(handler=cmd_self_update)
+
+    update_status = commands.add_parser("self-update-status", help="show a self-update (default: the latest)")
+    update_status.add_argument("id", nargs="?")
+    update_status.add_argument("--json", action="store_true", help="print the whole record")
+    update_status.set_defaults(handler=cmd_self_update_status)
+
+    update_run = commands.add_parser(
+        "self-update-run", help="the helper of a self-update: swap, check, go back (started by the manager)"
+    )
+    update_run.add_argument("id")
+    update_run.set_defaults(handler=cmd_self_update_run)
     return parser
 
 

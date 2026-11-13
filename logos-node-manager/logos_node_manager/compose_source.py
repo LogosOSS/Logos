@@ -18,6 +18,11 @@ the file out of it and removes the container.
 The file is kept in the state directory, one for each deployment, because a restart of the manager must continue with
 the same file, also if the tag has moved on in the meantime. ``.current`` holds the file that ran last, which the
 rollback of a worker needs: it restores the previous image together with the previous settings.
+
+The self-update of the manager takes the file that defines the manager's own service out of the same image. On a
+worker host the manager is a service of the compose file of the worker, so it is the same file. On a core host the
+manager is a project of its own, and the image carries its file as ``deployer.yml``. An image of an older tag may not
+have it. That is no error either: the update then uses the compose file of the host.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from logos_node_manager.config import CORE, WORKER, Settings
 from logos_node_manager.docker_ops import DEFAULT_REGISTRY, QUERY_TIMEOUT_S, read_env_value
@@ -49,6 +55,8 @@ BUNDLE_VERSION = "1"
 # The directory in the image that holds the files, and the name of the file for each kind of host.
 BUNDLE_DIR = "/compose"
 FILE_NAMES = {CORE: "core.yaml", WORKER: "worker.yml"}
+# The file that defines the manager's own service, for the self-update.
+SELF_FILE_NAMES = {CORE: "deployer.yml", WORKER: "worker.yml"}
 # A compose file of Logos is some tens of kilobytes. A file far above that is not one.
 MAX_BYTES = 1024 * 1024
 CURRENT = ".current"
@@ -70,9 +78,22 @@ class FetchedCompose:
     image: str
 
 
+class _Subject(Protocol):
+    """What a fetch needs to know about the request it is for: its id, which names the files, and its tag."""
+
+    id: str
+    tag: str
+
+
 def _missing(result: CommandResult) -> bool:
     """Whether a failed pull says that the tag does not exist, as against a registry or network that did not answer."""
     return bool(_MISSING_TAG.search(f"{result.stderr}\n{result.stdout}".lower()))
+
+
+def _file_missing(result: CommandResult) -> bool:
+    """Whether a failed copy says that the file is not in the image."""
+    text = f"{result.stderr}\n{result.stdout}".lower()
+    return "could not find the file" in text or "no such file or directory" in text
 
 
 class ComposeSource:
@@ -103,14 +124,19 @@ class ComposeSource:
 
     # ------------------------------------------------------------------ Taking the file out of the image
 
-    def fetch(self, deployment: Deployment) -> FetchedCompose | None:
+    def fetch(self, deployment: _Subject, *, own: bool = False) -> FetchedCompose | None:
         """Take the compose file of this kind of host out of the image of the tag of the deployment.
+
+        With ``own`` it is the file that defines the manager's own service, for a self-update. The request may be a
+        deployment or a self-update: both have an id and a tag. A deployment and a self-update with the same id keep
+        their files apart.
 
         Returns None if the image carries none. Raises ``ComposeError`` if the image cannot be had, or if what it
         carries cannot be used. Every step can be repeated: a container that an earlier attempt left behind is removed
         first, and the file is put in place in one step.
         """
-        name = FILE_NAMES[self._settings.kind]
+        name = (SELF_FILE_NAMES if own else FILE_NAMES)[self._settings.kind]
+        key = f"self-{deployment.id}" if own else deployment.id
         reference = self.carrier_reference(deployment.tag)
 
         pulled = self._runner.run(["docker", "pull", reference], timeout_s=self._settings.pull_timeout_s)
@@ -122,10 +148,10 @@ class ComposeSource:
         if not self._carries_compose_files(reference):
             return None
 
-        directory = self._root / deployment.id
+        directory = self._root / key
         directory.mkdir(parents=True, exist_ok=True)
         temporary = directory / f".{name}.{os.getpid()}.tmp"
-        container = f"nm-compose-{deployment.id}"
+        container = f"nm-compose-{key}"
         self._remove_container(container)
         created = self._runner.run(
             ["docker", "create", "--pull", "never", "--name", container, reference], timeout_s=QUERY_TIMEOUT_S
@@ -139,6 +165,10 @@ class ComposeSource:
                 ["docker", "cp", f"{container}:{BUNDLE_DIR}/{name}", str(temporary)], timeout_s=QUERY_TIMEOUT_S
             )
             if not copied.ok:
+                if own and _file_missing(copied):
+                    # An image from before the file was added to it.
+                    logger.info("The image %s carries no %s", reference, name)
+                    return None
                 raise ComposeError(f"{BUNDLE_DIR}/{name} could not be copied out of {reference}: {copied.tail(4)}")
             try:
                 data = temporary.read_bytes()

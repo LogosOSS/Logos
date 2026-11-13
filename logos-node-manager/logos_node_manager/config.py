@@ -130,6 +130,17 @@ class Settings:
     core_verify_timeout_s: float = 900.0
     core_health_url: str = ""
 
+    # The manager's own service, which a self-update replaces. A worker host has the manager next to the worker, in the
+    # compose file of the worker. A core host has it in a compose project of its own, ``logos-deployer``, so that a
+    # deployment of Logos never replaces it. The compose file of that project lies next to the one of Logos.
+    self_project_name: str = ""
+    self_compose_file: Path = Path()
+    self_service: str = ""
+    self_container: str = ""
+    # How long the new manager gets to become healthy after the swap, in seconds. Its health check runs every 30 s, and
+    # the first run comes one interval after the start.
+    self_verify_timeout_s: float = 180.0
+
     @property
     def logos_enabled(self) -> bool:
         """Whether this host takes orders from a Logos: it needs the address and the key."""
@@ -153,6 +164,11 @@ class Settings:
         # worker has no deployer key, so DEPLOYER_KEY means nothing on a worker. A core host has no worker key.
         deployer_key = _text(env, "DEPLOYER_KEY", "") if core else node_key
         health_default = f"{logos_url}/api/info" if core and logos_url and deployer_key else ""
+        project_name = _text(env, "PROJECT_NAME", compose_project_name(project_dir))
+        compose_file = Path(_text(env, "COMPOSE_FILE", str(project_dir / compose_name)))
+        # The names of the manager's own service. They match the compose files of this repository.
+        self_name = "logos-deployer" if core else "logos-node-manager"
+        self_compose_default = project_dir / "docker-compose.deployer.yml" if core else compose_file
         return cls(
             kind=kind,
             logos_url=logos_url,
@@ -164,10 +180,15 @@ class Settings:
             replicas_variable=_text(env, "REPLICAS_VARIABLE", "LOGOS_WEBSERVICE_REPLICAS"),
             core_verify_timeout_s=_seconds(env, "CORE_VERIFY_TIMEOUT_S", 900.0),
             core_health_url=_text(env, "CORE_HEALTH_URL", health_default),
+            self_project_name=_text(env, "SELF_PROJECT_NAME", self_name if core else project_name),
+            self_compose_file=Path(_text(env, "SELF_COMPOSE_FILE", str(self_compose_default))),
+            self_service=_text(env, "SELF_SERVICE", self_name),
+            self_container=_text(env, "SELF_CONTAINER", self_name),
+            self_verify_timeout_s=_seconds(env, "SELF_VERIFY_TIMEOUT_S", 180.0),
             project_dir=project_dir,
-            compose_file=Path(_text(env, "COMPOSE_FILE", str(project_dir / compose_name))),
+            compose_file=compose_file,
             env_file=Path(_text(env, "ENV_FILE", str(project_dir / ".env"))),
-            project_name=_text(env, "PROJECT_NAME", compose_project_name(project_dir)),
+            project_name=project_name,
             service=_text(env, "SERVICE", "logos-workernode"),
             container=_text(env, "CONTAINER", "logos-workernode"),
             state_dir=Path(_text(env, "STATE_DIR", str(project_dir / "node-manager"))),

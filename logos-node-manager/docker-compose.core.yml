@@ -10,6 +10,10 @@
 # project `logos`. If the deployer belonged to that project, the same command would restart the deployer in the middle of
 # its own deployment, or remove it as an orphan.
 #
+# The deployer can replace itself with the image of another tag (see "Self-update" in the node manager README).
+# A helper container does the swap, and it needs the names in this file: the project logos-deployer, and the service
+# and the container logos-deployer. The image of each tag carries this file as /compose/deployer.yml.
+#
 # The deployer asks the Logos of this host for orders (see the node manager README, "Core host"). It replaces the
 # services of docker-compose.yaml, checks them, and tells that Logos how it went. It has no drain and no rollback.
 services:

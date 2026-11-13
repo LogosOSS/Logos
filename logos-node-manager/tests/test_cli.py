@@ -10,6 +10,7 @@ import pytest
 
 from logos_node_manager import cli
 from logos_node_manager.config import Settings
+from logos_node_manager.self_update import SelfUpdate, UpdatePhase
 from logos_node_manager.state import Deployment, FailureKind, Outcome, Phase
 
 
@@ -351,3 +352,99 @@ def test_the_daemon_gets_an_orchestrator_client_when_it_has_an_address_and_a_key
     assert cli.cmd_run(parse("run"), settings) == cli.EXIT_OK
 
     assert (RecordingDaemon.deployer.orchestrator is not None) is expects_client
+
+
+# ---------------------------------------------------------------------- Self-update
+
+
+def self_update(settings, *argv):
+    return cli.cmd_self_update(parse("self-update", *argv), settings)
+
+
+def test_self_update_queues_a_request_and_says_how_to_look_at_it(settings, su_store, capsys):
+    assert self_update(settings, "--tag", "v2", "--id", "u1") == cli.EXIT_OK
+
+    record = su_store.load("u1")
+    assert record.tag == "v2" and record.phase is UpdatePhase.QUEUED
+    out = capsys.readouterr().out
+    assert "Self-update u1 is queued for tag v2" in out
+    # The update restarts the manager, so a command that waited in its container would end with it.
+    assert "does not wait" in out and "node-manager self-update-status u1" in out
+
+
+def test_self_update_without_an_id_makes_one(settings, su_store):
+    assert self_update(settings, "--tag", "v2") == cli.EXIT_OK
+
+    assert [record.id.startswith("manual-") for record in su_store.all()] == [True]
+
+
+def test_the_same_id_attaches_to_the_self_update_that_exists_and_another_tag_is_refused(settings, su_store, capsys):
+    self_update(settings, "--tag", "v2", "--id", "u1")
+
+    assert self_update(settings, "--tag", "v2", "--id", "u1") == cli.EXIT_OK
+    assert self_update(settings, "--tag", "v3", "--id", "u1") == cli.EXIT_USAGE
+    assert "already used for tag v2" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"), [("--tag", "previous"), ("--tag", "no spaces allowed"), ("--id", "../escape")]
+)
+def test_invalid_input_for_a_self_update_is_refused_before_anything_is_written(settings, su_store, flag, value):
+    arguments = {"--id": "u1", "--tag": "v2", flag: value}
+
+    assert self_update(settings, *[part for pair in arguments.items() for part in pair]) == cli.EXIT_USAGE
+
+    assert su_store.all() == []
+
+
+def test_self_update_status_shows_the_events_and_the_ending(settings, su_store, capsys):
+    record = SelfUpdate(
+        id="u1",
+        tag="v2",
+        requested_at="x",
+        phase=UpdatePhase.DONE,
+        outcome=Outcome.ROLLED_BACK,
+        message="the new manager was unhealthy",
+        compose_file="/state/compose/self-u1/worker.yml",
+        compose_sha256="a" * 64,
+        events=[{"at": "2026-01-01T12:00:01.000000+00:00", "phase": "swapping", "note": "the helper has the swap"}],
+    )
+    su_store.save(record)
+
+    assert cli.cmd_self_update_status(parse("self-update-status", "u1"), settings) == cli.EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "Self-update u1: tag v2, phase done" in out
+    assert "compose file: /state/compose/self-u1/worker.yml (sha256 aaaaaaaaaaaa)" in out
+    assert "[12:00:01] swapping: the helper has the swap" in out
+    assert "Self-update u1: rolled_back" in out and "the new manager was unhealthy" in out
+
+
+def test_self_update_status_says_so_when_there_is_nothing_to_show(settings, capsys):
+    assert cli.cmd_self_update_status(parse("self-update-status"), settings) == cli.EXIT_OK
+    assert "there are no self-updates yet" in capsys.readouterr().out
+    assert cli.cmd_self_update_status(parse("self-update-status", "u9"), settings) == cli.EXIT_NOT_FOUND
+
+
+@pytest.mark.parametrize(
+    ("outcome", "exit_code"),
+    [
+        (Outcome.SUCCEEDED, cli.EXIT_OK),
+        (Outcome.UNCHANGED, cli.EXIT_OK),
+        (Outcome.ROLLED_BACK, cli.EXIT_ROLLED_BACK),
+        (Outcome.FAILED, cli.EXIT_FAILED),
+    ],
+)
+def test_the_helper_command_exits_with_the_result_of_the_swap(settings, monkeypatch, capsys, outcome, exit_code):
+    record = SelfUpdate(id="u1", tag="v2", requested_at="x", phase=UpdatePhase.DONE, outcome=outcome, message="m")
+    monkeypatch.setattr(cli, "run_helper", lambda settings, update_id: record)
+
+    assert cli.cmd_self_update_run(parse("self-update-run", "u1"), settings) == exit_code
+    assert f"Self-update u1: {outcome.value}" in capsys.readouterr().out
+
+
+def test_the_helper_command_refuses_an_unknown_record_and_a_bad_id(settings, monkeypatch):
+    monkeypatch.setattr(cli, "run_helper", lambda settings, update_id: None)
+
+    assert cli.cmd_self_update_run(parse("self-update-run", "u9"), settings) == cli.EXIT_NOT_FOUND
+    assert cli.cmd_self_update_run(parse("self-update-run", "../x"), settings) == cli.EXIT_USAGE

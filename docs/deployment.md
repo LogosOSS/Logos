@@ -218,8 +218,69 @@ To see which compose file a deployment used, run
 `docker exec logos-node-manager node-manager status`. To repair the host by hand,
 use that file. The copy on the host can be different.
 
-The node manager does not update itself. After a new version of the node manager,
-a person or a workflow replaces its container.
+A deployment does not replace the node manager. To update the node manager,
+see [Let the Node Manager Update Itself](#let-the-node-manager-update-itself).
+
+### Let the Node Manager Update Itself
+
+The node manager can replace its own container with a newer version. A container
+cannot do this alone. Docker stops the old container before it starts the new
+one, and that stops the process that does the work. A second container, the
+helper, does the swap.
+
+**Update by request.** This always works. Use it first, on the Dev host.
+
+1. Run `docker exec logos-node-manager node-manager self-update --tag <tag>`.
+   On a core host, the container is `logos-deployer`.
+2. Wait about two minutes. The node manager restarts during the update, so the
+   command does not wait.
+3. Run `docker exec logos-node-manager node-manager self-update-status`.
+
+The result is `succeeded`, `unchanged`, `rolled_back` or `failed`. `unchanged`
+means that the tag has the version that already runs.
+
+**Update after each deployment.** Add this line to the `.env` file of the host:
+
+```bash
+NODE_MANAGER_SELF_UPDATE=true
+```
+
+The switch is off by default. The node manager reads it each time, so it needs no
+restart. When a deployment ends as `succeeded` or `unchanged`, the node manager
+updates itself to the tag of that deployment. A deployment that fails or rolls
+back does not start an update.
+
+What happens during an update:
+
+1. The node manager pulls the image of the tag. If this is the image that
+   already runs, nothing changes.
+2. The node manager starts the helper from its own image. The helper has the
+   same volumes and the same limits as the node manager, and no network.
+3. The node manager starts no deployment while the helper works. An order from
+   Logos waits.
+4. The helper replaces the container of the node manager and waits until the
+   new container is healthy.
+5. If the new container does not become healthy, the helper starts the old
+   version again. The result is `rolled_back`.
+6. The new node manager removes the helper and the old image.
+
+If the compose file of the tag is on (see the section before), the service of the
+node manager also gets its compose file from the image of the tag. A core host
+uses `deployer.yml` of the image. An older image does not have it, and the node
+manager then uses the compose file of the host.
+
+NOTE: A node manager without this feature cannot update itself. Update it one
+time by hand with `docker compose up -d`. After that, it can update itself.
+
+If a host loses power during an update, it can stay without a node manager. The
+worker and Logos keep running. Start the node manager by hand:
+
+```bash
+docker compose -p <project> -f <compose file> --env-file .env up -d --no-deps <service>
+```
+
+The README of the node manager gives the names for `<project>`, `<compose file>`
+and `<service>`.
 
 ### Drain a Worker Node During an Update
 

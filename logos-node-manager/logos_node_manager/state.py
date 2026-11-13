@@ -187,7 +187,7 @@ class Deployment:
             raise StateError(f"invalid deployment record: {exc}") from exc
 
 
-def _write_atomically(path: Path, payload: str) -> None:
+def write_atomically(path: Path, payload: str) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -200,7 +200,7 @@ def _write_atomically(path: Path, payload: str) -> None:
             tmp.unlink()
 
 
-def _create_exclusively(path: Path, payload: str) -> bool:
+def create_exclusively(path: Path, payload: str) -> bool:
     """Create ``path`` with ``payload`` unless it exists. True if this call created it.
 
     The content is written to a temporary file first and linked into place, so a reader never sees a partial file. A
@@ -258,7 +258,7 @@ class StateStore:
         """Queue a deployment. A second request with the same id returns the first one, so a retry attaches to it."""
         self.ensure()
         validate_tag(deployment.tag)
-        if _create_exclusively(self._path(deployment.id), self._dump(deployment)):
+        if create_exclusively(self._path(deployment.id), self._dump(deployment)):
             return deployment
         existing = self.load(deployment.id)
         if existing is None:
@@ -284,7 +284,7 @@ class StateStore:
 
     def save(self, deployment: Deployment) -> None:
         self.ensure()
-        _write_atomically(self._path(deployment.id), self._dump(deployment))
+        write_atomically(self._path(deployment.id), self._dump(deployment))
 
     def mark_reported(self, deployment_id: str) -> None:
         """Note that Logos took the report of the end. Reads the record again and changes nothing else.
@@ -333,7 +333,7 @@ class StateStore:
 
     def touch_heartbeat(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        _write_atomically(self.heartbeat_file, utc_now() + "\n")
+        write_atomically(self.heartbeat_file, utc_now() + "\n")
 
     def heartbeat_age(self) -> float | None:
         """Seconds since the daemon last signalled that it is alive, or None if it never did."""

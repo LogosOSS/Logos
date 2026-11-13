@@ -221,9 +221,11 @@ NODE_MANAGER_COMPOSE_FROM_TAG=true
 The switch is off by default. It is read at the start of every deployment, so a change needs no restart.
 
 * The image of the manager, `<REGISTRY>/logos-node-manager:<tag>`, carries the compose files of the commit it was built
-  from: `/compose/core.yaml` for a core host and `/compose/worker.yml` for a worker. The label `io.logos.compose-bundle`
-  says so. Its value is the version of the layout, which is `1`. The build of the image has the root of the repository as
-  its context for this reason.
+  from: `/compose/core.yaml` for a core host and `/compose/worker.yml` for a worker. It also carries
+  `/compose/deployer.yml`, the file of the core deployer, which the self-update reads (see "Self-update"). The label
+  `io.logos.compose-bundle` says so. Its value is the version of the layout, which is `1`: a new file in the layout does
+  not change it, because a manager that does not know the file does not read it. The build of the image has the root of
+  the repository as its context for this reason.
 * At the start of a deployment, the manager pulls that image, makes a container from it that it never starts, copies the
   file of its host kind out of it and removes the container. It keeps the file in `<state dir>/compose/<deployment id>/`.
   Then it checks the file with `docker compose config -q` and the `.env` file of the host. A missing variable that the
@@ -243,6 +245,83 @@ The switch is off by default. It is read at the start of every deployment, so a 
   and not the copy on the host, or Compose recreates the services with the settings of the copy.
 * These files are not part of it, and stay on the host: the `.env`, and what the worker compose file mounts from the
   project directory (`config.yml`, `certs`, `chat-templates`, `data`).
+
+## Self-update
+
+The manager can replace itself with the image of a tag. A container cannot do that alone: Compose stops the old container
+before it starts the new one, and that stops the process that does the work, so the replacement would end half done. A
+second container, the **helper**, does the swap.
+
+```bash
+# in the .env of the host: update the manager after each deployment that went well (off by default)
+NODE_MANAGER_SELF_UPDATE=true
+```
+
+The switch is read from the `.env` file every time, so a change needs no restart. Without it nothing happens on its own.
+A person can always ask for an update:
+
+```bash
+docker exec logos-node-manager node-manager self-update --tag <tag>
+docker exec logos-node-manager node-manager self-update-status
+```
+
+On a core host the container is `logos-deployer`. The first command returns at once: the manager restarts during the
+update, so a command that waited in its container would end with it. Run the second command afterwards. It asks the new
+manager.
+
+How it goes:
+
+1. **The request** is a record in `<state dir>/self-update/`. It comes from the command, or from the end of a deployment
+   that ended as `succeeded` or `unchanged`. A deployment that failed or was rolled back is not followed by one. A
+   request runs when no deployment waits, and its id is the id of the deployment. If a newer request waits, the older
+   one ends as `unchanged` at once: only the tag of the last one matters, and the manager swaps once.
+2. **The checks.** The manager must run in the container named for it (`logos-node-manager`, on a core host
+   `logos-deployer`), and Compose must have made that container as the service of the project. Otherwise `docker compose`
+   would start a second container with the same name. If not, the request ends as `failed` (`not_eligible`) before
+   anything is touched.
+3. **The image.** The manager logs in (see "Registry login"), takes the compose file of its service out of the image of the
+   tag if the host is set to (see "Compose file from the tag"), pulls the image that its service names for the tag, and
+   compares it with the one it runs. The same image ends the request as `unchanged`. A `NODE_MANAGER_IMAGE_TAG` in the
+   `.env` file keeps the service on that tag, as before, so the tag of the update does not change it.
+4. **The hand-over.** For another image, the manager saves the record and starts the helper: a container named
+   `nm-self-update`, made from the image that the manager runs now, the version that is known to work. It has the volumes of
+   the manager (the Docker socket, the project directory and the state directory, with the same modes), the same
+   hardening, and no network. The settings of the manager reach it as variables, without the keys. From now on the manager
+   starts no deployment until the helper is done. An order that arrives meanwhile waits in the queue.
+5. **The swap.** The helper gives the old image the name `<image>:previous`, recreates the service with
+   `docker compose up -d --no-deps` and no pull (the image is on the host already), and waits until the new container is
+   healthy and stays so for `STABILITY_WINDOW_S`. `SELF_VERIFY_TIMEOUT_S` limits the wait for the first healthy state.
+6. **The way back.** If the new manager does not come up, the helper restores the old image the way the rollback of a
+   worker does, with the compose file that made the old manager. The request ends as `rolled_back`, and its `failure`
+   says why (`verify_failed`, `swap_failed` or `internal_error`). If the way back fails too, it ends as `failed`
+   (`rollback_failed`) and every image stays.
+7. **The clean-up.** The new manager removes the stopped helper, and after a success the old image. After a rollback it
+   removes the image that did not run.
+
+Every step can be repeated, and every step is in the record. If the helper ends without a result, for example because the
+host restarts, the manager that runs then (the old one or the new one) finishes the record from what Docker shows, and
+says so in the record. A helper that runs longer than an hour is removed and the request ends as `failed` (`timed_out`), so a stuck helper
+cannot hold the deployments for ever.
+
+The compose file of the manager's own service comes from the image of the tag, if `NODE_MANAGER_COMPOSE_FROM_TAG` is on:
+on a worker host it is `worker.yml`, which holds the service of the manager next to the worker, and on a core host it is
+`deployer.yml`. An image without it, for example an older one, is no error: the update then uses the compose file of the
+host (`SELF_COMPOSE_FILE`). The manager checks the file with `docker compose config -q` first.
+
+**The first update by hand.** A manager without this code cannot update itself. Update it once by hand, with
+`docker compose up -d` for its service. After that it can do it itself.
+
+**If a host is left in between.** The helper keeps the swap short, but a host that restarts at the wrong moment can be left
+with no manager container. The worker, or Logos on a core host, is not touched by this. Look at the record
+(`<state dir>/self-update/<id>.json`) and at the images (`docker images`, the name `<image>:previous` is the old manager),
+then start the service by hand:
+
+```bash
+docker compose -p <project> -f <compose file> --env-file <.env> up -d --no-deps <service>
+```
+
+The project, the compose file and the service are the ones of the manager's own service (see `SELF_*` under
+"Configuration"). Use `IMAGE_TAG=<tag>` in front of the command to choose the tag.
 
 ## Orders from Logos
 
@@ -361,6 +440,9 @@ Commands (run them with `docker exec logos-node-manager node-manager …`):
 | `wait ID [--timeout S]` | Follow a deployment that is already queued. |
 | `status [ID] [--json] [--logs]` | Show a deployment with its events. Without an id, the latest one. `--logs` adds the log of a failed container. |
 | `ping` | Exit 0 if the daemon is alive. The container health check uses it. |
+| `self-update --tag TAG [--id ID] [--requested-by TEXT]` | Queue the replacement of the manager itself with the image of a tag (see "Self-update"). It returns at once. |
+| `self-update-status [ID] [--json]` | Show a self-update with its events. Without an id, the latest one. |
+| `self-update-run ID` | The command of the helper that does the swap. The manager starts it, and nobody needs to. |
 
 The requested tag reaches Compose as the `IMAGE_TAG` process variable. A process variable beats the `.env` file, so a
 later rewrite of that file cannot change what an earlier request deploys.
@@ -370,14 +452,14 @@ before, and it moves that name to the running image before the swap. `deploy` re
 
 ## State
 
-The state directory is `<worker directory>/node-manager`. It holds one JSON file per deployment in `deployments/` and a
-`heartbeat` file. Every write replaces the file atomically. The record is the memory of the manager: if the manager
-stops in the middle of a deployment, for example because its own container is recreated, the next start continues from
-the recorded phase. Every step can be repeated. The record also holds the events of the deployment and, after a
-failure, the end of the log of the failed container. This is where to look when a deployment ended after the job that
-asked for it, and `docker logs logos-node-manager` is gone because a later run recreated the service. The manager keeps
-the 30 newest finished records. A file in
-`deployments/` whose name is not a valid deployment id is ignored and logged once.
+The state directory is `<worker directory>/node-manager`. It holds one JSON file per deployment in `deployments/`, one
+for each self-update in `self-update/`, and a `heartbeat` file. Every write replaces the file atomically. The record is
+the memory of the manager: if the manager stops in the middle of a deployment, for example because its own container is
+recreated, the next start continues from the recorded phase. Every step can be repeated. The record also holds the
+events of the deployment and, after a failure, the end of the log of the failed container. This is where to look when a
+deployment ended after the job that asked for it, and `docker logs logos-node-manager` is gone because a later run
+recreated the service. The manager keeps the 30 newest finished records. A file in `deployments/` whose name is not a
+valid deployment id is ignored and logged once.
 
 ## Configuration
 
@@ -411,12 +493,16 @@ All settings are environment variables with the prefix `NODE_MANAGER_`.
 | `SCALE_SERVICE`, `REPLICAS_VARIABLE` | `logos-webservice`, `LOGOS_WEBSERVICE_REPLICAS` | Core host: the service that runs as several copies, and the variable of the `.env` that says how many. |
 | `CORE_VERIFY_TIMEOUT_S` | 900 | Core host: how long the services get to come up. |
 | `CORE_HEALTH_URL` | `<Logos>/api/info` | Core host: the address that must answer after a deployment. Empty or not set: the default. The check cannot be switched off. |
+| `SELF_PROJECT_NAME`, `SELF_SERVICE`, `SELF_CONTAINER` | worker: the project of the worker, `logos-node-manager`, `logos-node-manager`. Core: `logos-deployer` for all three | The manager's own service, which a self-update replaces (see "Self-update"). |
+| `SELF_COMPOSE_FILE` | worker: `COMPOSE_FILE`. Core: `<PROJECT_DIR>/docker-compose.deployer.yml` | The compose file that defines that service. |
+| `SELF_VERIFY_TIMEOUT_S` | 180 | How long the new manager gets to become healthy after the swap. Its health check runs every 30 s, and the first run comes one interval after the start. |
 
 A missing, malformed or non-positive timeout falls back to its default.
 
 A few settings are not environment variables of the container. The manager reads them from the `.env` file of the host
 at the start of every deployment, so a change needs no restart: `REGISTRY`, `REGISTRY_USER` and `REGISTRY_PASSWORD` (see
-"Registry login") and `NODE_MANAGER_COMPOSE_FROM_TAG` (see "Compose file from the tag").
+"Registry login"), `NODE_MANAGER_COMPOSE_FROM_TAG` (see "Compose file from the tag") and `NODE_MANAGER_SELF_UPDATE` (see
+"Self-update").
 
 ## Rules the code keeps
 
@@ -472,6 +558,12 @@ for the worker. The risk is accepted for these reasons:
   image of the manager itself, which holds the socket, but that image changes only when a person updates it. Keep push
   access to the registry limited, and let Prod take only `latest` and release tags (Logos checks that before it makes the
   order). The manager checks the file with `docker compose config -q` and does not judge what it asks for.
+* A self-update starts a second container, the helper, which also holds the socket. It has no more than the manager has:
+  the volumes of the manager with the same modes (`--volumes-from`), the same hardening and no network. It gets the
+  settings of the manager as variables, and no key: a name that ends in `KEY`, `PASSWORD`, `TOKEN` or `SECRET` stays out,
+  and a variable is named on the command line without its value. The helper runs the image that the manager runs, so
+  no other code gets the socket. It exists for the time of a swap. The compose file that it uses is checked, not judged,
+  as for a deployment.
 
 The container gets nothing more than that. It starts with `no-new-privileges`, drops all Linux capabilities except
 `DAC_OVERRIDE`, and has a read-only root filesystem with a 16 MB `/tmp`. `DAC_OVERRIDE` stays because the manager runs
@@ -497,6 +589,7 @@ For people who change the code:
 * Do not write the key of the node, or a request that carries it, to a log or a record.
 * Do not put the registry password on a command line, in a log or in a record. It goes through stdin.
 * Do not mount more of the host into the container, and do not add capabilities.
+* Do not give the helper of the self-update more than the manager has: no other mount, no network, no secret.
 
 ## Tests
 
@@ -512,11 +605,13 @@ The unit tests need no Docker. `FakeDocker` in `tests/conftest.py` simulates the
 and no GPU. It covers a normal deployment, a broken release that is rolled back, a tag that does not exist, a deployment
 with nothing to change, a manager that restarts in the middle of a deployment, and a later release that removes the
 image from two versions back. After each of them it counts the images on the host, to see that none is left without a
-purpose. Two more checks use real Docker for the parts that the unit tests can only simulate: the compose file taken out
+purpose. Five more checks use real Docker for the parts that the unit tests can only simulate: the compose file taken out
 of the image of a tag (including that a relative path in it still means the project directory of the host, and the
 fallback for a tag without such an image), and the login from the `.env` file against a second registry that wants a
-password (a wrong password, the right one, and that no password reaches the log). The script builds the image of the
-manager from the root of the repository, like the build of the image. It needs a running Docker engine and network
+password (a wrong password, the right one, and that no password reaches the log), the replacement of the manager by the
+image of another tag (the manager that runs afterwards, a worker that stays as it was, a helper that is gone), the way
+back to the old manager when the new image does not come up, and the update that follows a deployment on its own. The
+script builds the image of the manager from the root of the repository, like the build of the image. It needs a running Docker engine and network
 access to pull the base images.
 
 ## Limits of this version
@@ -550,10 +645,17 @@ replaces the container at once, as a manual `docker compose up` does. With the d
   host. A deployment that still waits for its turn uses the files of the newer run when it replaces the container. With
   the compose file from the tag, a deployment keeps the compose file it took at its start, but it still reads the `.env`
   file when it replaces the container.
-* **The manager does not update itself.** A deployment replaces the services of Logos, or the worker. The manager, and
-  on a core host the compose file of the deployer (`docker-compose.deployer.yml`), stay as they are. A person, or the
-  deploy workflows, updates them. The manager cannot safely recreate its own container with `docker compose up`: the
-  command would remove the container it runs in. A short-lived helper container could do it, and this version has none.
+* **A deployment does not replace the manager.** A deployment replaces the services of Logos, or the worker. The manager
+  updates itself only through the self-update (see "Self-update"), which is off until the host sets
+  `NODE_MANAGER_SELF_UPDATE`. A manager without that code is updated once by hand.
+* **A host takes no deployment while the helper has the swap.** That is the swap and the checks, about a minute with the
+  health check of the repository. An order that arrives waits in the queue. A deployment that is already running
+  finishes first: the update begins when none waits.
+* **A swap that is cut off can leave a host without a manager.** The helper and the manager that runs afterwards finish
+  the record from what Docker shows. A host that restarts between the stop of the old container and the start of the new
+  one has no manager until a person starts the service (see "Self-update"). The worker and Logos are not touched.
+* **The new manager is checked from outside.** The checks are those of a deployment: the container runs, is healthy
+  and does not restart. They do not show that the new manager can take orders from Logos or report to the orchestrator.
 * **The compose file from the tag is checked, not judged.** `docker compose config -q` finds a file that does not work
   with the `.env` file of the host. It does not find a file that asks for more than it should.
 * **A failure after the job ended shows up in the next run.** The job is green when the image is pulled. The step "Show

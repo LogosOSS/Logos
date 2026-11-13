@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from logos_node_manager.config import Settings
@@ -29,8 +29,12 @@ logger = logging.getLogger(__name__)
 QUERY_TIMEOUT_S = 30.0
 # Compose has to read and interpolate the whole file before it prints the image names.
 CONFIG_TIMEOUT_S = 60.0
-# The label on which Compose keeps the hash of the configuration a container was made from.
+# The labels on which Compose keeps what a container was made from: the hash of its configuration, the project and the
+# service it belongs to, and the compose files it was made from.
 CONFIG_HASH_LABEL = "com.docker.compose.config-hash"
+PROJECT_LABEL = "com.docker.compose.project"
+SERVICE_LABEL = "com.docker.compose.service"
+CONFIG_FILES_LABEL = "com.docker.compose.project.config_files"
 # The registry and namespace that the images come from when the ``.env`` file names none. It is the public mirror.
 DEFAULT_REGISTRY = "ghcr.io/logososs"
 
@@ -51,6 +55,11 @@ class ContainerInfo:
     health: str | None
     # The configuration hash that Compose put on the container when it made it, or None if there is none.
     config_hash: str | None = None
+    # What Compose says about the container: the project and the service it belongs to, and the compose files (a comma
+    # separated list of paths) that it was made from. None for a container that Compose did not make.
+    project: str | None = None
+    service: str | None = None
+    config_files: str | None = None
 
 
 def split_image_ref(ref: str) -> tuple[str, str | None]:
@@ -69,7 +78,7 @@ def _container_from_inspect(raw: dict) -> ContainerInfo:
     state = raw.get("State") or {}
     health = (state.get("Health") or {}).get("Status")
     config = raw.get("Config") or {}
-    config_hash = (config.get("Labels") or {}).get(CONFIG_HASH_LABEL)
+    labels = config.get("Labels") or {}
     return ContainerInfo(
         id=str(raw.get("Id") or ""),
         image_id=str(raw.get("Image") or ""),
@@ -80,7 +89,10 @@ def _container_from_inspect(raw: dict) -> ContainerInfo:
         exit_code=int(state.get("ExitCode") or 0),
         restart_count=int(raw.get("RestartCount") or 0),
         health=str(health) if health else None,
-        config_hash=str(config_hash) if config_hash else None,
+        config_hash=str(labels[CONFIG_HASH_LABEL]) if labels.get(CONFIG_HASH_LABEL) else None,
+        project=str(labels[PROJECT_LABEL]) if labels.get(PROJECT_LABEL) else None,
+        service=str(labels[SERVICE_LABEL]) if labels.get(SERVICE_LABEL) else None,
+        config_files=str(labels[CONFIG_FILES_LABEL]) if labels.get(CONFIG_FILES_LABEL) else None,
     )
 
 
@@ -104,11 +116,16 @@ def describe_registry_login(config_file: Path) -> str:
 
 
 class Docker:
-    """The docker command line, aimed at the worker service of one compose project."""
+    """The docker command line, aimed at the worker service of one compose project.
 
-    def __init__(self, settings: Settings, runner: Runner) -> None:
+    ``all_profiles`` makes Compose see the services that belong to a profile. The service of the manager itself has one,
+    and the ``.env`` file of a host may not name it.
+    """
+
+    def __init__(self, settings: Settings, runner: Runner, *, all_profiles: bool = False) -> None:
         self._settings = settings
         self._runner = runner
+        self._all_profiles = all_profiles
         # The compose file the commands use. None means the one of the host, ``settings.compose_file``.
         self._compose_file: Path | None = None
 
@@ -128,9 +145,12 @@ class Docker:
             files = ["--project-directory", str(s.project_dir), "-f", str(self._compose_file)]
         return ["docker", "compose", "-p", s.project_name, *files, "--env-file", str(s.env_file), *args]
 
-    @staticmethod
-    def _tag_env(tag: str | None) -> dict[str, str] | None:
-        return {"IMAGE_TAG": tag} if tag else None
+    def _tag_env(self, tag: str | None) -> dict[str, str] | None:
+        env = {"IMAGE_TAG": tag} if tag else {}
+        if self._all_profiles:
+            # A variable of the process beats the one in the .env file, so this holds whatever the file says.
+            env["COMPOSE_PROFILES"] = "*"
+        return env or None
 
     def validate(self, tag: str) -> CommandResult:
         """Check that Compose accepts the compose file together with the ``.env`` file of the host.
@@ -248,10 +268,24 @@ class Docker:
         return f"{engine_text}, {compose_text}"
 
 
+def self_docker(settings: Settings, runner: Runner) -> Docker:
+    """The docker command line, aimed at the service and the container of the manager itself.
+
+    The calls that a deployment makes for the worker service (pull, up, the image name, inspect) then work for the
+    manager as well, with the project and the compose file of the manager.
+    """
+    own = replace(
+        settings,
+        project_name=settings.self_project_name,
+        compose_file=settings.self_compose_file,
+        service=settings.self_service,
+        container=settings.self_container,
+    )
+    return Docker(own, runner, all_profiles=True)
+
+
 # ---------------------------------------------------------------------- A whole compose project (core host)
 
-PROJECT_LABEL = "com.docker.compose.project"
-SERVICE_LABEL = "com.docker.compose.service"
 ONE_OFF_LABEL = "com.docker.compose.oneoff"
 
 

@@ -5,9 +5,12 @@
 # image next to a dummy worker in a throw-away compose project, and asks the manager for deployments. After each one it
 # counts the dummy worker images on the host, to see that none is left that no longer has a purpose. Two more checks
 # use a second registry that wants a password: the manager must log in with the login of the .env file, and must take
-# the compose file out of the image of a tag. Everything it creates is named nm-smoke... and is removed at the end,
-# also the data volumes of the two registries. The base images that it downloads (registry:2, httpd:2) stay in the
-# image cache of Docker. Set KEEP=1 to keep it for a look.
+# the compose file out of the image of a tag. The last three checks are about the manager itself: it replaces itself
+# with the image of another tag, it goes back to its own image if the new one does not come up, and it does the
+# replacement on its own after a deployment that went well. Everything it creates is named nm-smoke... and is removed
+# at the end, also the data volumes of the two registries. The base images that it downloads (registry:2, httpd:2) stay
+# in the image cache of Docker. Set KEEP=1 to keep it for a look. SMOKE_COLLECT=<directory> copies the records of the
+# manager there before everything is deleted.
 #
 # Needs a running Docker engine with the Compose plugin, and network access for the base images.
 #   logos-node-manager/tests/smoke/run-smoke.sh
@@ -25,6 +28,8 @@ AUTH_PORT="${SMOKE_AUTH_REGISTRY_PORT:-5002}"
 AUTH_REGISTRY="localhost:${AUTH_PORT}"
 WORKER=nm-smoke-worker
 MANAGER=nm-smoke-manager
+# The container that does the swap of a self-update. The manager gives it this name.
+HELPER=nm-self-update
 REGISTRY_CONTAINER=nm-smoke-registry
 AUTH_REGISTRY_CONTAINER=nm-smoke-registry-auth
 MANAGER_IMAGE=nm-smoke-manager:local
@@ -82,9 +87,11 @@ wait_for() { # seconds, command...
 
 remove_leftovers() {
   # -v also removes the anonymous volume of a registry container, which holds the images that were pushed to it.
-  docker rm -fv "$WORKER" "$MANAGER" "$REGISTRY_CONTAINER" "$AUTH_REGISTRY_CONTAINER" >/dev/null 2>&1
+  docker rm -fv "$HELPER" "$WORKER" "$MANAGER" "$REGISTRY_CONTAINER" "$AUTH_REGISTRY_CONTAINER" >/dev/null 2>&1
   docker rmi -f "$MANAGER_IMAGE" "$REGISTRY/dummy-worker:v1" "$REGISTRY/dummy-worker:v2" "$REGISTRY/dummy-worker:v3" \
-    "$REGISTRY/dummy-worker:broken" "$REGISTRY/dummy-worker:previous" "$REGISTRY/logos-node-manager:v2" \
+    "$REGISTRY/dummy-worker:broken" "$REGISTRY/dummy-worker:previous" "$REGISTRY/logos-node-manager:v1" \
+    "$REGISTRY/logos-node-manager:v2" "$REGISTRY/logos-node-manager:v3" "$REGISTRY/logos-node-manager:broken" \
+    "$REGISTRY/logos-node-manager:previous" \
     "$AUTH_REGISTRY/dummy-worker:v4" "$AUTH_REGISTRY/dummy-worker:previous" >/dev/null 2>&1
   docker logout "$AUTH_REGISTRY" >/dev/null 2>&1
   # Images that lost their name, which a run that found a leak leaves behind.
@@ -136,9 +143,12 @@ expect_equal "the manager image carries the label of the deploy workflows" "node
   "$(docker image inspect --format '{{ index .Config.Labels "io.logos.component" }}' "$MANAGER_IMAGE")"
 expect_equal "the manager image says that it carries the compose files" "1" \
   "$(docker image inspect --format '{{ index .Config.Labels "io.logos.compose-bundle" }}' "$MANAGER_IMAGE")"
-expect_equal "and it carries the file of the core and the file of the worker" "core.yaml worker.yml" \
+expect_equal "and it carries the files of the core, of the core deployer and of the worker" \
+  "core.yaml deployer.yml worker.yml" \
   "$(docker run --rm --entrypoint ls "$MANAGER_IMAGE" /compose | tr '\n' ' ' | sed 's/ $//')"
 
+# The service of the manager names its image by tag, as the compose file of a host does.
+docker tag "$MANAGER_IMAGE" "$REGISTRY/logos-node-manager:v1"
 cp "$HERE/compose.yml" "$WORK/docker-compose.yml"
 # The login directory that the manager reads, with one made-up registry login. The local registry needs none.
 mkdir -p "$WORK/.docker"
@@ -343,11 +353,160 @@ else
   pass "no password is in the log of the manager"
 fi
 
+log "9. The manager replaces itself with the image of a tag"
+# The .env file names neither the tag nor the profile of the manager. The update has to find its service without them.
+write_plain_env() { # extra lines for the .env file...
+  {
+    echo "SMOKE_DIR=$WORK"
+    echo "SMOKE_REGISTRY=$REGISTRY"
+    echo "IMAGE_TAG=v1"
+    echo "REGISTRY=$REGISTRY"
+    for line in "$@"; do echo "$line"; done
+  } >"$WORK/.env"
+}
+manager_image() { docker inspect --format '{{.Config.Image}}' "$MANAGER" 2>/dev/null; }
+manager_image_id() { docker inspect --format '{{.Image}}' "$MANAGER" 2>/dev/null; }
+manager_healthy() { [ "$(docker inspect --format '{{.State.Health.Status}}' "$MANAGER" 2>/dev/null)" = healthy ]; }
+worker_container_id() { docker inspect --format '{{.Id}}' "$WORKER" 2>/dev/null; }
+# The manager restarts during an update, so a command in its container fails for a moment. wait_for tries again.
+update_done() { nm self-update-status "$1" --json 2>/dev/null | has '"phase": "done"'; }
+deployment_done() { nm status "$1" --json 2>/dev/null | has '"phase": "done"'; }
+helper_gone() { ! docker inspect "$HELPER" >/dev/null 2>&1; }
+previous_gone() { ! image_exists "$REGISTRY/logos-node-manager:previous"; }
+
+write_plain_env
+old_manager_id="$(manager_image_id)"
+worker_before="$(worker_container_id)"
+# The stand-in image of tag v2 (scenario 7) is a different image from the one that runs.
+nm self-update --tag v2 --id s1 >/dev/null
+expect_equal "the request is queued (exit 0)" 0 "$?"
+if wait_for 240 update_done s1; then
+  if nm self-update-status s1 --json | has '"outcome": "succeeded"'; then
+    pass "the update ended as succeeded"
+  else
+    fail "the update did not end as succeeded"
+  fi
+  expect_equal "the manager runs the image of the tag" "$REGISTRY/logos-node-manager:v2" "$(manager_image)"
+  if [ "$(manager_image_id)" != "$old_manager_id" ]; then
+    pass "the manager runs another image than before"
+  else
+    fail "the manager still runs the same image"
+  fi
+  if wait_for 60 manager_healthy; then pass "the new manager is healthy"; else fail "the new manager is not healthy"; fi
+  expect_equal "the worker was not touched" "$worker_before" "$(worker_container_id)"
+  if wait_for 60 helper_gone; then pass "the helper is removed"; else fail "the helper is still there"; fi
+  if wait_for 60 previous_gone; then
+    pass "the name for the old image is removed"
+  else
+    fail "the name for the old image is still on the host"
+  fi
+else
+  fail "the update did not finish"
+fi
+
+log "10. A manager that does not come up is replaced by the one that ran before"
+broken="$WORK/broken-manager"
+mkdir -p "$broken"
+cat >"$broken/Dockerfile" <<EOF
+FROM $MANAGER_IMAGE
+ENTRYPOINT ["sh", "-c", "echo broken manager; exit 1"]
+EOF
+docker build -q -t "$REGISTRY/logos-node-manager:broken" "$broken" >/dev/null ||
+  die "the build of the broken manager failed"
+docker push -q "$REGISTRY/logos-node-manager:broken" >/dev/null || die "the push of the broken manager failed"
+docker rmi "$REGISTRY/logos-node-manager:broken" >/dev/null
+kept_manager_id="$(manager_image_id)"
+worker_before="$(worker_container_id)"
+nm self-update --tag broken --id s2 >/dev/null
+expect_equal "the request is queued (exit 0)" 0 "$?"
+if wait_for 300 update_done s2; then
+  if nm self-update-status s2 --json | has '"outcome": "rolled_back"'; then
+    pass "the update ended as rolled back"
+  else
+    fail "the update did not end as rolled back"
+  fi
+  if nm self-update-status s2 --json | has '"failure": "verify_failed"'; then
+    pass "the failure is reported as verify_failed"
+  else
+    fail "the failure is not reported as verify_failed"
+  fi
+  expect_equal "the manager runs the image of the tag that ran before" "$REGISTRY/logos-node-manager:v2" \
+    "$(manager_image)"
+  expect_equal "and it is the same image as before" "$kept_manager_id" "$(manager_image_id)"
+  if wait_for 60 manager_healthy; then pass "the manager is healthy again"; else fail "the manager is not healthy"; fi
+  expect_equal "the worker was not touched" "$worker_before" "$(worker_container_id)"
+  if wait_for 60 helper_gone; then pass "the helper is removed"; else fail "the helper is still there"; fi
+else
+  fail "the update did not finish"
+fi
+
+log "11. A deployment that went well is followed by an update of the manager"
+# A second stand-in image, so that tag v3 names another manager than the one that runs. It carries the compose file of
+# the dummy worker, which holds the service of the manager too. The compose file comes from the tag, for the deployment
+# and for the update that follows it.
+standin="$WORK/standin-v3"
+mkdir -p "$standin"
+cp "$HERE/compose.yml" "$standin/worker.yml"
+cat >"$standin/Dockerfile" <<EOF
+FROM $MANAGER_IMAGE
+COPY worker.yml /compose/worker.yml
+LABEL io.logos.compose-bundle="1"
+LABEL nm-smoke-stand-in="v3"
+EOF
+docker build -q -t "$REGISTRY/logos-node-manager:v3" "$standin" >/dev/null ||
+  die "the build of the second stand-in image failed"
+docker push -q "$REGISTRY/logos-node-manager:v3" >/dev/null || die "the push of the second stand-in image failed"
+docker rmi "$REGISTRY/logos-node-manager:v3" >/dev/null
+write_plain_env "NODE_MANAGER_COMPOSE_FROM_TAG=true" "NODE_MANAGER_SELF_UPDATE=true"
+# No --wait: the manager restarts soon after the deployment, and a command in its container would end with it.
+nm deploy --id t9 --tag v3 >/dev/null
+expect_equal "the deployment is queued (exit 0)" 0 "$?"
+if wait_for 300 deployment_done t9 && wait_for 300 update_done t9; then
+  if nm status t9 --json | has '"outcome": "succeeded"'; then
+    pass "the deployment ended as succeeded"
+  else
+    fail "the deployment did not end as succeeded"
+  fi
+  expect_equal "the worker runs v3" "$REGISTRY/dummy-worker:v3" "$(worker_image)"
+  if nm self-update-status t9 --json | has '"outcome": "succeeded"'; then
+    pass "the update that followed it ended as succeeded"
+  else
+    fail "the update that followed it did not end as succeeded"
+  fi
+  expect_equal "the manager runs the image of the tag" "$REGISTRY/logos-node-manager:v3" "$(manager_image)"
+  if wait_for 60 manager_healthy; then pass "the new manager is healthy"; else fail "the new manager is not healthy"; fi
+  if nm status t9 | has "^compose file: $WORK/node-manager/compose/t9/worker.yml"; then
+    pass "the deployment used the compose file of the tag"
+  else
+    fail "the deployment did not use the compose file of the tag"
+  fi
+  if nm self-update-status t9 | has "^compose file: $WORK/node-manager/compose/self-t9/worker.yml"; then
+    pass "the update used the compose file of the tag"
+  else
+    fail "the update did not use the compose file of the tag"
+  fi
+  # Compose notes the file that it made a container from. The new manager was made from the file of the tag.
+  expect_equal "the new manager was made from that file" "$WORK/node-manager/compose/self-t9/worker.yml" \
+    "$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' "$MANAGER")"
+else
+  fail "the deployment or the update did not finish"
+fi
+
+# The records of the manager are in the project directory, which is deleted at the end. SMOKE_COLLECT=<directory> keeps
+# a copy of them, for a look at what a deployment or an update wrote.
+if [ -n "${SMOKE_COLLECT:-}" ]; then
+  mkdir -p "$SMOKE_COLLECT"
+  cp -R "$WORK/node-manager/deployments" "$WORK/node-manager/self-update" "$SMOKE_COLLECT/" 2>/dev/null
+  echo "The records are copied to $SMOKE_COLLECT"
+fi
+
 if [ "$failures" -eq 0 ]; then
   log "All checks passed"
 else
   log "$failures check(s) failed"
   echo "--- end of the manager log ---"
   docker logs --tail 80 "$MANAGER" 2>&1
+  echo "--- the latest self-update ---"
+  nm self-update-status 2>&1
 fi
 [ "$failures" -eq 0 ]

@@ -181,3 +181,30 @@ def test_the_file_that_ran_last_is_kept_for_the_rollback_and_the_host_file_clear
     # A deployment that ran with the compose file of the host leaves nothing for a rollback to restore.
     source.remember(deployment("v3", "run-2"))
     assert source.current_path() is None
+
+
+def test_the_file_of_the_manager_itself_is_taken_out_of_a_folder_of_its_own(settings, engine, store):
+    write_env(settings, "REGISTRY=harbor.example/logos")
+    source = ComposeSource(replace(settings, kind="core"), engine, store.compose_dir)
+
+    own = source.fetch(deployment(), own=True)
+    theirs = source.fetch(deployment())
+
+    # A deployment and a self-update with the same id do not share a file or a container.
+    assert own.path == store.compose_dir / "self-run-1" / "deployer.yml"
+    assert theirs.path == store.compose_dir / "run-1" / "core.yaml"
+    copied = [command[-2] for command in engine.calls if command[1] == "cp"]
+    assert copied[0].endswith(":/compose/deployer.yml") and copied[1].endswith(":/compose/core.yaml")
+    created = [command[command.index("--name") + 1] for command in engine.calls if command[1] == "create"]
+    assert created == ["nm-compose-self-run-1", "nm-compose-run-1"]
+
+
+def test_an_image_without_the_file_of_the_manager_carries_none_for_the_update_but_is_an_error_for_a_deployment(
+    source, engine
+):
+    engine.copy_error = "Error response from daemon: Could not find the file /compose/worker.yml in container x"
+
+    assert source.fetch(deployment(), own=True) is None
+    with pytest.raises(ComposeError, match="could not be copied"):
+        source.fetch(deployment())
+    assert engine.containers == set()

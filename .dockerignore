@@ -34,6 +34,7 @@
 !logos-node-manager/logos_node_manager
 !docker-compose.yaml
 !logos-workernode/docker-compose.yml
+!logos-node-manager/docker-compose.core.yml
 # The session image installs the repository's own hook environments at build
 # time, because a session has no network to install them with.
 !.pre-commit-config.yaml

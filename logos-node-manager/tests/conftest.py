@@ -22,6 +22,7 @@ from logos_node_manager.docker_ops import ContainerInfo
 from logos_node_manager.errors import DockerError
 from logos_node_manager.orchestrator import CordonReply, NodeStatus
 from logos_node_manager.runner import CommandResult
+from logos_node_manager.self_update import SelfUpdateStore
 from logos_node_manager.state import Deployment, StateStore
 
 REPO = "registry.example/logos/logos-workernode-vllm"
@@ -133,7 +134,10 @@ class FakeDocker:
         return f"{REPO}:{tag}"
 
     def image_id(self, ref: str) -> str | None:
-        return self.images.get(ref)
+        """``docker image inspect <ref>``: a name or an image ID."""
+        if ref in self.images:
+            return self.images[ref]
+        return ref if ref in self.host_images() else None
 
     def tag(self, source: str, target: str) -> None:
         self.calls.append(("tag", source, target))
@@ -143,8 +147,19 @@ class FakeDocker:
         self._name(target, image_id)
 
     def remove_image(self, image_id: str) -> bool:
-        """``docker rmi <id>``: the engine refuses while a container uses the image or while it has several names."""
+        """``docker rmi <id>``: the engine refuses while a container uses the image or while it has several names.
+
+        ``docker rmi <name>`` takes the name away. The image goes with its last name, unless a container uses it.
+        """
         self.calls.append(("remove_image", image_id))
+        if image_id in self.images:
+            target = self.images[image_id]
+            if target not in {known for ref, known in self.images.items() if ref != image_id}:
+                if self.container_info is not None and self.container_info.image_id == target:
+                    return False
+                self.removed.append(target)
+            del self.images[image_id]
+            return True
         if image_id not in self.host_images():
             return False
         if self.container_info is not None and self.container_info.image_id == image_id:
@@ -359,6 +374,34 @@ def store(settings) -> StateStore:
 @pytest.fixture
 def docker() -> FakeDocker:
     return FakeDocker()
+
+
+@pytest.fixture
+def own_settings(settings) -> Settings:
+    """A worker host whose manager can replace itself: the compose file of its own service exists."""
+    settings.self_compose_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.self_compose_file.write_text("services: {}\n", encoding="utf-8")
+    return settings
+
+
+@pytest.fixture
+def own_docker(docker, own_settings) -> FakeDocker:
+    """The engine as the manager sees its own container: it was made by Compose as the service of its project.
+
+    The fake engine holds one container. For these tests it is the manager, not a worker.
+    """
+    docker.container_info = replace(
+        docker.container_info,
+        project=own_settings.self_project_name,
+        service=own_settings.self_service,
+        config_files=str(own_settings.self_compose_file),
+    )
+    return docker
+
+
+@pytest.fixture
+def su_store(settings) -> SelfUpdateStore:
+    return SelfUpdateStore(settings.state_dir)
 
 
 @pytest.fixture

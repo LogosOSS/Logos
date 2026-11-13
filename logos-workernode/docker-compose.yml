@@ -136,6 +136,10 @@ services:
   # A host without a login still starts the service. Only a pull from a registry
   # that needs a login fails.
   #
+  # The manager can replace this service with the image of another tag (see "Self-update" in
+  # logos-node-manager/README.md). A helper container does the swap. It needs the names in this service: the
+  # service and its container are both called logos-node-manager, and Compose must have made the container.
+  #
   # The Docker socket is root on the host, and a read-only mount does not change
   # that. The container therefore gets nothing else: no published port, no new
   # privileges, no Linux capability except DAC_OVERRIDE, and a read-only root
