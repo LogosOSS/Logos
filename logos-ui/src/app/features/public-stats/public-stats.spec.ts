@@ -159,7 +159,7 @@ describe('PublicStats page', () => {
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
     expect(root.textContent).toContain('Service keys');
-    expect(root.textContent).toContain('Keys for automated backend jobs');
+    expect(root.textContent).toContain('Keys for automated jobs and services');
   });
 });
 

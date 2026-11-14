@@ -68,6 +68,7 @@ export class SettingsTabComponent implements OnChanges {
   @Input() canLinkKeycloak = false;
   @Output() refresh = new EventEmitter<void>();
   @Output() teamDeleted = new EventEmitter<void>();
+  @Output() publicStatsSaved = new EventEmitter<Pick<TeamDetail, 'show_on_public_stats' | 'public_category'>>();
 
   private teamService = inject(TeamManagementService);
 
@@ -82,6 +83,13 @@ export class SettingsTabComponent implements OnChanges {
   /** Categories other teams already use, so the same label is spelled the same way. */
   publicCategoryOptions = signal<string[]>([]);
   private publicCategoriesRequested = false;
+  publicCategoriesLoading = signal(false);
+  publicCategoriesError = signal('');
+  newPublicCategory = signal('');
+  publicStatsLoading = signal(false);
+  publicStatsError = signal('');
+  publicStatsSuccess = signal(false);
+  private savedPublicStats = { show: false, category: '' };
 
   providerBudgets = signal<TeamProviderBudget[]>([]);
   cloudProviders = signal<ProviderItem[]>([]);
@@ -140,7 +148,7 @@ export class SettingsTabComponent implements OnChanges {
   }
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (this.team) this.resetForm();
+    if (this.team) this.resetForm(changes['team']?.previousValue);
     if (this.teamId && changes['teamId']) void this.loadProviderBudgets();
     if (this.canEdit && !this.publicCategoriesRequested) {
       this.publicCategoriesRequested = true;
@@ -152,24 +160,95 @@ export class SettingsTabComponent implements OnChanges {
     }
   }
 
-  private resetForm(): void {
-    this.teamBudget.set(mcToDollars(this.team.team_monthly_budget_micro_cents));
-    this.defaultBudget.set(mcToDollars(this.team.default_monthly_budget_micro_cents));
-    this.cloudRpm.set(this.team.default_cloud_rpm_limit?.toString() ?? '');
-    this.cloudTpm.set(this.team.default_cloud_tpm_limit?.toString() ?? '');
-    this.localRpm.set(this.team.default_local_rpm_limit?.toString() ?? '');
-    this.localTpm.set(this.team.default_local_tpm_limit?.toString() ?? '');
-    this.keycloakGroup.set(this.team.keycloak_group ?? '');
-    this.showOnPublicStats.set(!!this.team.show_on_public_stats);
-    this.publicCategory.set(this.team.public_category ?? '');
+  private resetForm(previous?: TeamDetail): void {
+    if (previous?.id !== this.team.id) previous = undefined;
+    if (!previous || previous.team_monthly_budget_micro_cents !== this.team.team_monthly_budget_micro_cents) {
+      this.teamBudget.set(mcToDollars(this.team.team_monthly_budget_micro_cents));
+    }
+    if (!previous || previous.default_monthly_budget_micro_cents !== this.team.default_monthly_budget_micro_cents) {
+      this.defaultBudget.set(mcToDollars(this.team.default_monthly_budget_micro_cents));
+    }
+    if (!previous || previous.default_cloud_rpm_limit !== this.team.default_cloud_rpm_limit) {
+      this.cloudRpm.set(this.team.default_cloud_rpm_limit?.toString() ?? '');
+    }
+    if (!previous || previous.default_cloud_tpm_limit !== this.team.default_cloud_tpm_limit) {
+      this.cloudTpm.set(this.team.default_cloud_tpm_limit?.toString() ?? '');
+    }
+    if (!previous || previous.default_local_rpm_limit !== this.team.default_local_rpm_limit) {
+      this.localRpm.set(this.team.default_local_rpm_limit?.toString() ?? '');
+    }
+    if (!previous || previous.default_local_tpm_limit !== this.team.default_local_tpm_limit) {
+      this.localTpm.set(this.team.default_local_tpm_limit?.toString() ?? '');
+    }
+    if (!previous || previous.keycloak_group !== this.team.keycloak_group) {
+      this.keycloakGroup.set(this.team.keycloak_group ?? '');
+    }
+    if (!previous || previous.show_on_public_stats !== this.team.show_on_public_stats) {
+      this.showOnPublicStats.set(!!this.team.show_on_public_stats);
+    }
+    if (!previous || previous.public_category !== this.team.public_category) {
+      this.publicCategory.set(this.team.public_category ?? '');
+    }
+    this.savedPublicStats = { show: !!this.team.show_on_public_stats, category: this.team.public_category ?? '' };
   }
 
-  /** Category suggestions; the field stays free text when they cannot be loaded. */
-  private async fetchPublicCategories(): Promise<void> {
+  /** Load the full catalog before offering category selection or creation. */
+  async fetchPublicCategories(): Promise<void> {
+    this.publicCategoriesLoading.set(true);
+    this.publicCategoriesError.set('');
     try {
       this.publicCategoryOptions.set(await this.teamService.getPublicCategories());
     } catch {
-      this.publicCategoryOptions.set([]);
+      this.publicCategoriesError.set('Failed to load categories. Please retry.');
+    } finally {
+      this.publicCategoriesLoading.set(false);
+    }
+  }
+
+  selectablePublicCategories(): string[] {
+    return [...new Set([...this.publicCategoryOptions(), this.publicCategory()].filter(Boolean))].sort();
+  }
+
+  canCreatePublicCategory(): boolean {
+    const category = this.newPublicCategory().trim();
+    return this.canEdit && !this.publicStatsLoading() && !this.publicCategoriesLoading()
+      && !this.publicCategoriesError() && category.length > 0 && category.length <= 64
+      && !this.selectablePublicCategories().some((existing) => existing.toLowerCase() === category.toLowerCase());
+  }
+
+  createPublicCategory(): void {
+    if (!this.canCreatePublicCategory()) return;
+    const category = this.newPublicCategory().trim();
+    this.publicCategoryOptions.update((options) => [...options, category]);
+    this.publicCategory.set(category);
+    this.newPublicCategory.set('');
+    this.publicStatsSuccess.set(false);
+  }
+
+  publicStatsChanged(): boolean {
+    return this.showOnPublicStats() !== this.savedPublicStats.show
+      || this.publicCategory() !== this.savedPublicStats.category;
+  }
+
+  async savePublicStats(): Promise<void> {
+    if (!this.canEdit || this.publicStatsLoading() || !this.publicStatsChanged()) return;
+    const payload = {
+      show_on_public_stats: this.showOnPublicStats(),
+      public_category: this.publicCategory(),
+    };
+    this.publicStatsLoading.set(true);
+    this.publicStatsError.set('');
+    this.publicStatsSuccess.set(false);
+    try {
+      await this.teamService.updateTeamLimits(this.teamId, payload);
+      this.savedPublicStats = { show: payload.show_on_public_stats, category: payload.public_category };
+      this.publicStatsSuccess.set(true);
+      // Update the parent model without unmounting the tab or clearing budget drafts.
+      this.publicStatsSaved.emit({ ...payload, public_category: payload.public_category || null });
+    } catch (err) {
+      this.publicStatsError.set(errorDetail(err) ?? 'Failed to save public stats settings. Please try again.');
+    } finally {
+      this.publicStatsLoading.set(false);
     }
   }
 
@@ -286,8 +365,6 @@ export class SettingsTabComponent implements OnChanges {
       default_cloud_tpm_limit: strToIntOrNull(this.cloudTpm()),
       default_local_rpm_limit: strToIntOrNull(this.localRpm()),
       default_local_tpm_limit: strToIntOrNull(this.localTpm()),
-      show_on_public_stats: this.showOnPublicStats(),
-      public_category: this.publicCategory().trim(),
     };
 
     try {

@@ -176,7 +176,11 @@ See [Logos Admin → Keycloak Group Links](logos-admin.md#keycloak-group-links).
 Under **Public stats** you decide whether the team appears on the public
 statistics page (`/stats`). There you can also give the team a **Category**,
 for example "Research" or "Teaching". The public page groups teams by this
-label. The field suggests the categories that other teams already use.
+label. Select an existing category from the list, explicitly create a new one, or
+select **Uncategorized** to clear it. Apply these choices with **Save Public Stats**
+in the same section; **Save Settings** below only saves the budget and rate limits.
+A confirmation appears after saving. The public page refreshes periodically, so
+changes may take up to 30 minutes to appear with the default cache setting.
 
 Provider batches do not reserve budget. At batch creation, Logos checks only costs that it already settled.
 A provider batch counts against the budget only after it finishes and Logos settles its costs.

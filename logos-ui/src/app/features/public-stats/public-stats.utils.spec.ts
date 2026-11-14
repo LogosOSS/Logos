@@ -112,7 +112,7 @@ describe('keyTypeSlices and laneSlices', () => {
       ['application', 2, 'var(--duo-2)'],
       ['service', 0, 'var(--duo-3)'],
     ]);
-    expect(slices.find((s) => s.key === 'service')!.caption).toContain('automated backend jobs');
+    expect(slices.find((s) => s.key === 'service')!.caption).toContain('automated jobs and services');
   });
 
   it('adds an unknown key-type slice only when deleted keys contribute', () => {
