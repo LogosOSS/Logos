@@ -128,7 +128,7 @@ class WrapperInstallTests(unittest.TestCase):
             with self.subTest(shell=shell):
                 self.env["SHELL"] = "/bin/" + shell
                 output = self.install()
-                self.assertIn('echo \'export PATH="$HOME/.local/bin:$PATH"\' >> ' + profile, output)
+                self.assertIn("echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> " + profile, output)
                 self.assertNotIn("fish_add_path", output)
 
     @unittest.skipUnless(shutil.which("fish"), "fish is not installed")
