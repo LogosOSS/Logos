@@ -2,8 +2,11 @@
 
 Measures the overhead Logos adds to a request that is forwarded from the
 orchestrator to a local workernode and back — scenario: **logosnode provider,
-warm lane (model already loaded), no other running requests**, non-streaming
-`POST /v1/chat/completions`. Headline metrics: p50 and p95 of via-Logos
+warm lane (model already loaded), no other running requests**. Default CI mode
+is **streaming** `POST /v1/chat/completions` measuring **time to first content
+chunk** (TTFT), with an artificial `/is_sleeping` delay and
+`LOGOS_LANE_STATUS_TTL_S=0` so a regression that awaits the sleep probe on
+acquire fails the gate (issue #165). Headline metrics: p50 and p95 of via-Logos
 latency minus the matching direct-lane percentile; goals are **< 10 ms p50**
 and **< 30 ms p95**. Cloud providers
 share the identical path up to the relay target, so the measured orchestrator
@@ -22,6 +25,9 @@ phases transfer; only the last network hop differs.
   per-request status dirty-marking) remove most of that path from the hot
   path anyway, so the CI number stays meaningful; the phase table shows the
   remaining worker status-build cost (3 HTTP probes against the mock lane).
+- **Sleep-probe regression:** `LOGOS_BENCH_IS_SLEEPING_DELAY_MS` (CI: 500) makes
+  `/is_sleeping` slow; with TTL 0 every acquire rebuilds status. Overhead must
+  stay well below that delay — proving acquire does not await the probe.
 - **Not measured:** vLLM generation time (the mock lane answers instantly with
   a fixed ~1.5 KB body), TLS, multi-tenant concurrency, cold lanes.
 
