@@ -461,6 +461,14 @@ class LaneManager:
         self._lane_status_ttl_seconds = _lane_status_ttl
         # lane_id -> (built_at monotonic, LaneStatus)
         self._lane_status_cache: dict[str, tuple[float, LaneStatus]] = {}
+        # Last known sleep_state per lane, updated by lifecycle (sleep/wake) and
+        # by background status builds that still probe /is_sleeping. The infer
+        # hot path (acquire_lane_for_infer) must NOT await /is_sleeping — that
+        # EngineCore round-trip added ~0.5–0.6 s TTFT (issue #165). Missing
+        # entries default to "awake" for a live sleep-capable lane: only
+        # sleep_lane marks sleeping, and a stale-awake race fails cleanly at
+        # stream_start (pretoken retry) rather than blocking every request.
+        self._known_sleep_state: dict[str, str] = {}
         self._model_profiles = model_profiles
         self._last_profile_state: dict[str, str] = {}
         # Stuck-inference detection: track BOTH prompt_tokens_total and
@@ -1077,6 +1085,7 @@ class LaneManager:
         return self._launch_gpu_set(lane_config) if lane_config is not None else None
 
     async def _finalize_unloaded(self, lane_id: str, handle: ProcessHandle, port: int | None) -> None:
+        self._forget_sleep_state(lane_id)
         finalized = self._finalizing[lane_id] = asyncio.Event()
         self._finalizing_gpus[lane_id] = self._launch_gpu_set(handle.lane_config) if handle.lane_config else None
         try:
@@ -1107,6 +1116,7 @@ class LaneManager:
         port = self._port_alloc.get_port(lane_id)
         self._active_requests.pop(lane_id, None)
         self._starting_deadlines.pop(lane_id, None)
+        self._forget_sleep_state(lane_id)
         return handle, port
 
     async def reconfigure_lane(
@@ -1377,6 +1387,9 @@ class LaneManager:
                     self._clear_transition(lane_id)
                     return await self._get_status_unlocked(lane_id)
             await handle.sleep(level=level, mode=mode)
+            # Authoritative for acquire: set before any status rebuild so a
+            # concurrent infer cannot race past a stale "awake" known state.
+            self._remember_sleep_state(lane_id, "sleeping")
             self._clear_transition(lane_id)
             # Refresh GPU snapshot BEFORE _record_event so that the status-push
             # triggered by mark_status_dirty carries post-sleep GPU numbers.
@@ -1424,6 +1437,9 @@ class LaneManager:
                 raise ValueError(f"Lane '{lane_id}' has no lane config")
             try:
                 await handle.wake_up()
+                # Lane is serveable again; acquire may admit before the
+                # background /is_sleeping probe refreshes the TTL cache.
+                self._remember_sleep_state(lane_id, "awake")
                 self._clear_transition(lane_id)
             except Exception as exc:
                 if not self._is_probable_cuda_oom(exc):
@@ -1885,6 +1901,13 @@ class LaneManager:
             self._count_revision += 1
             self._status_event.set()
 
+    def _remember_sleep_state(self, lane_id: str, sleep_state: str) -> None:
+        """Record the lifecycle-authoritative sleep_state for the infer hot path."""
+        self._known_sleep_state[lane_id] = sleep_state
+
+    def _forget_sleep_state(self, lane_id: str) -> None:
+        self._known_sleep_state.pop(lane_id, None)
+
     async def acquire_lane_for_infer(self, lane_id: str) -> LaneStatus:
         """Atomically verify the lane is routable AND count the request under a
         SINGLE lock acquisition (of this lane), returning its status.
@@ -1896,6 +1919,11 @@ class LaneManager:
         re-check ``_active_requests`` under this same lock, counting here makes the
         request visible to them before they can sleep/evict the lane.
 
+        Sleep readiness uses the lifecycle-tracked ``_known_sleep_state`` (and
+        the status TTL cache) — it does **not** await vLLM ``/is_sleeping``.
+        That probe stays on the background status path; awaiting it here cost
+        hundreds of milliseconds per request (issue #165).
+
         Raises LaneNotServingError if the lane is missing or not routable (e.g.
         already sleeping) so the bridge can fail cleanly and the orchestrator
         reroutes — rather than streaming to a lane that is going away.
@@ -1905,7 +1933,13 @@ class LaneManager:
         async with self._lock.scoped([lane_id], queue=False):
             if lane_id not in self._handles:
                 raise LaneNotServingError(f"Lane '{lane_id}' not found")
-            status = await self._get_status_unlocked(lane_id)
+            # A wake in flight is not yet serveable; reject so the orchestrator
+            # can wait/retry instead of POSTing into a half-woken engine.
+            if self._transitions.get(lane_id) == "waking":
+                raise LaneNotServingError(
+                    f"Lane '{lane_id}' is not routable (runtime_state=starting, sleep_state=sleeping)"
+                )
+            status = await self._get_status_unlocked(lane_id, probe_sleep=False)
             # Mirror _resolve_lane_for_infer's routable set; additionally reject a
             # lane that is sleeping (the race we are closing).
             if (
@@ -3194,6 +3228,12 @@ class LaneManager:
             self._handles[lane_id] = handle
             self._active_requests[lane_id] = 0
             self._starting_deadlines[lane_id] = asyncio.get_running_loop().time() + _RESTART_TIMEOUT
+            # Fresh spawn is awake (or unsupported when sleep mode is off).
+            # acquire must not wait for the first /is_sleeping probe.
+            if lane_config.vllm_config and lane_config.vllm_config.enable_sleep_mode:
+                self._remember_sleep_state(lane_id, "awake")
+            else:
+                self._remember_sleep_state(lane_id, "unsupported")
             self._record_event(lane_id, "spawned", model=lane_config.model, port=port)
             logger.info(
                 "Lane '%s' added (vllm=%s, model=%s, port=%d)",
@@ -3760,7 +3800,7 @@ class LaneManager:
         # in-memory patch of the last payload (no status rebuild).
         self._lane_status_cache.clear()
 
-    async def _get_status_unlocked(self, lane_id: str) -> LaneStatus:
+    async def _get_status_unlocked(self, lane_id: str, *, probe_sleep: bool = True) -> LaneStatus:
         handle = self._handles.get(lane_id)
         if handle is None:
             raise KeyError(f"Lane '{lane_id}' not found")
@@ -3774,11 +3814,26 @@ class LaneManager:
             if cached is not None and ps.state == ProcessState.RUNNING:
                 built_at, status = cached
                 if time.monotonic() - built_at < self._lane_status_ttl_seconds:
+                    # Infer hot path still prefers lifecycle sleep_state over a
+                    # cached probe result that may lag a just-completed sleep.
+                    if not probe_sleep:
+                        known = self._known_sleep_state.get(lane_id)
+                        if known and known != status.sleep_state:
+                            return status.model_copy(
+                                update={
+                                    "sleep_state": known,
+                                    "runtime_state": (
+                                        "sleeping"
+                                        if known == "sleeping" and status.runtime_state in {"loaded", "running", "sleeping"}
+                                        else status.runtime_state
+                                    ),
+                                }
+                            )
                     return status
         pid_vram_map = await self._query_process_vram_map(
             [ps.pid] if ps.state == ProcessState.RUNNING and ps.pid is not None else []
         )
-        status = await self._build_lane_status(handle, pid_vram_map)
+        status = await self._build_lane_status(handle, pid_vram_map, probe_sleep=probe_sleep)
         if self._lane_status_ttl_seconds > 0:
             self._lane_status_cache[lane_id] = (time.monotonic(), status)
         return status
@@ -4130,6 +4185,8 @@ class LaneManager:
         handle: ProcessHandle,
         pid_vram_map: dict[int, float] | None = None,
         pid_host_ram_map: dict[int, tuple[float, str]] | None = None,
+        *,
+        probe_sleep: bool = True,
     ) -> LaneStatus:
         ps = handle.status()
         lc = handle.lane_config
@@ -4225,8 +4282,14 @@ class LaneManager:
         if lc is not None:
             if not sleep_mode_enabled:
                 sleep_state = "unsupported"
+                self._remember_sleep_state(handle.lane_id, "unsupported")
             elif ps.state != ProcessState.RUNNING:
                 sleep_state = "unknown"
+            elif not probe_sleep:
+                # Infer hot path: never await /is_sleeping (issue #165). Use
+                # the lifecycle-tracked state; default awake for a live lane
+                # that has not been slept through sleep_lane.
+                sleep_state = self._known_sleep_state.get(handle.lane_id, "awake")
             else:
                 try:
                     sleeping = await handle.is_sleeping()
@@ -4237,7 +4300,9 @@ class LaneManager:
                 elif sleeping is False:
                     sleep_state = "awake"
                 else:
-                    sleep_state = "unknown"
+                    sleep_state = self._known_sleep_state.get(handle.lane_id, "unknown")
+                if sleep_state in {"sleeping", "awake", "unsupported"}:
+                    self._remember_sleep_state(handle.lane_id, sleep_state)
 
         active_requests = self._active_requests.get(handle.lane_id, 0)
         runtime_state: str = "stopped"

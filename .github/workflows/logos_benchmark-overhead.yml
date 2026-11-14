@@ -132,8 +132,13 @@ jobs:
       - name: Run benchmark
         # Offline: the model is in the local cache (restored or primed), so a
         # flaky HF Hub connection cannot turn a startup into a failure.
+        # Streaming TTFT + a slow /is_sleeping probe with TTL=0 makes a
+        # reintroduced acquire-time sleep wait fail the gate (issue #165).
         env:
           HF_HUB_OFFLINE: "1"
+          LOGOS_BENCH_STREAM: "1"
+          LOGOS_BENCH_IS_SLEEPING_DELAY_MS: "500"
+          LOGOS_LANE_STATUS_TTL_S: "0"
         run: |
           source .venv/bin/activate
           python ../benchmarks/per_request_overhead/run_benchmark.py
