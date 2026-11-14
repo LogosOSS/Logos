@@ -3832,20 +3832,28 @@ class LaneManager:
         self._lane_status_cache.clear()
 
     def _status_with_known_sleep(self, lane_id: str, status: LaneStatus) -> LaneStatus:
-        """Overlay lifecycle sleep_state onto a cached LaneStatus for infer."""
+        """Overlay lifecycle sleep_state onto a cached LaneStatus for infer.
+
+        Infer may reuse a status cached while the lane was sleeping. After a
+        wake / recovery probe updates ``_known_sleep_state`` to awake, the
+        cache is not rewritten by background collection — so this overlay must
+        also clear a stale ``runtime_state=sleeping`` or acquire keeps rejecting.
+        """
         known = self._known_sleep_state.get(lane_id)
-        if not known or known == status.sleep_state:
+        if not known:
             return status
-        return status.model_copy(
-            update={
-                "sleep_state": known,
-                "runtime_state": (
-                    "sleeping"
-                    if known == "sleeping" and status.runtime_state in {"loaded", "running", "sleeping"}
-                    else status.runtime_state
-                ),
-            }
-        )
+        updates: dict[str, str] = {}
+        if known != status.sleep_state:
+            updates["sleep_state"] = known
+        if known == "sleeping":
+            if status.runtime_state in {"loaded", "running", "sleeping"}:
+                updates["runtime_state"] = "sleeping"
+        elif known == "awake" and status.runtime_state == "sleeping":
+            active = self._active_requests.get(lane_id, 0)
+            updates["runtime_state"] = "running" if active > 0 else "loaded"
+        if not updates:
+            return status
+        return status.model_copy(update=updates)
 
     async def _get_status_unlocked(self, lane_id: str, *, probe_sleep: bool = True) -> LaneStatus:
         handle = self._handles.get(lane_id)

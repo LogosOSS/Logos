@@ -168,6 +168,32 @@ async def test_delayed_sleep_probe_does_not_overwrite_newer_wake() -> None:
 
 
 @pytest.mark.asyncio
+async def test_awake_overlay_clears_cached_sleeping_runtime() -> None:
+    """After recovery records awake, infer must not keep rejecting a sleeping cache."""
+    import time
+
+    manager = _manager()
+    lane_id, handle = _inject(manager, sleeping=True)
+    # Infer before the next background probe can cache a sleeping status
+    # (e.g. after automatic restart that retained known sleep_state).
+    sleeping_status = (await manager._build_lane_status(handle, {}, probe_sleep=False)).model_copy(  # noqa: SLF001
+        update={"sleep_state": "sleeping", "runtime_state": "sleeping"}
+    )
+    manager._lane_status_cache[lane_id] = (time.monotonic(), sleeping_status)  # noqa: SLF001
+
+    # Background probe / wake recovery publishes awake without rewriting that cache.
+    handle._sleeping = False
+    manager._remember_sleep_state(lane_id, "awake")  # noqa: SLF001
+
+    status = await manager.acquire_lane_for_infer(lane_id)
+    await manager.decrement_active_requests(lane_id)
+
+    assert status.sleep_state == "awake"
+    assert status.runtime_state in {"loaded", "running", "cold", "starting"}
+    assert handle.is_sleeping_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_obsolete_sleep_disabled_handle_does_not_clear_replacement_sleep() -> None:
     """A stale sleep-disabled handle must not publish unsupported over a sleeper."""
     manager = _manager()
