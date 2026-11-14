@@ -33,6 +33,15 @@ Environment (all optional, defaults in parentheses):
   LOGOS_BENCH_BLOCKS          (4)
   LOGOS_BENCH_OUTPUT          (benchmarks/per_request_overhead/reports)
   LOGOS_BENCH_NO_PERF_TRACE   (set to "1" to disable perf tracing)
+  LOGOS_BENCH_STREAM          (set to "1" to measure streaming time-to-first
+                               content chunk instead of non-streaming e2e)
+  LOGOS_BENCH_IS_SLEEPING_DELAY_MS
+                              (artificial /is_sleeping latency on the mock
+                               lane; with LOGOS_LANE_STATUS_TTL_S=0 this proves
+                               acquire does not await the sleep probe — issue #165)
+  LOGOS_LANE_STATUS_TTL_S     (forwarded to the worker; 0 forces a status rebuild
+                               on every acquire so the sleep-probe regression is
+                               deterministic)
   LOGOS_BENCH_WORKER_PYTHON   (auto: <orchestrator>/.venv-worker/bin/python if
                                it exists, else the orchestrator interpreter)
   HF_HOME / HF_HUB_OFFLINE    (inherited; see CI workflow for the HF cache)
@@ -143,12 +152,79 @@ def _wait_worker_connected(
     raise RuntimeError(f"worker never connected to the orchestrator within {timeout_s:.0f}s")
 
 
-def _bench_payload(model: str) -> Dict[str, Any]:
-    return {
+def _bench_payload(model: str, *, stream: bool) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": "Benchmark probe: reply with a short fixed answer."}],
-        "stream": False,
+        "stream": stream,
     }
+    if stream:
+        # Ask the upstream for a terminal usage frame so Logos' streamer can
+        # finish cleanly the same way production clients do.
+        payload["stream_options"] = {"include_usage": True}
+    return payload
+
+
+def _sse_content_ttft_ns(resp: httpx.Response, t0_ns: int) -> int:
+    """Stamp TTFT on the first SSE content delta; ignore comments and reject errors.
+
+    Keepalive commits headers early and may emit ``: logos-schedule`` /
+    ``: keepalive`` before the worker acquire runs. Timing the first body
+    byte would therefore miss a reintroduced ``/is_sleeping`` wait on acquire
+    (issue #165). Only a non-empty ``choices[].delta.content`` counts.
+    """
+    import json as _json
+
+    buf = bytearray()
+    first_ns: Optional[int] = None
+    saw_content = False
+    saw_error = False
+    for chunk in resp.iter_bytes():
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        while True:
+            end = buf.find(b"\n\n")
+            if end < 0:
+                break
+            raw_event = bytes(buf[:end])
+            del buf[: end + 2]
+            # Normalise CRLF event framing from some proxies.
+            event = raw_event.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            if not event.strip():
+                continue
+            # SSE comments (keepalive / logos-schedule) — never content.
+            if event.lstrip().startswith(b":"):
+                continue
+            for line in event.split(b"\n"):
+                if not line.startswith(b"data:"):
+                    continue
+                payload = line[5:].lstrip()
+                if payload == b"[DONE]":
+                    continue
+                try:
+                    obj = _json.loads(payload)
+                except _json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("error") is not None:
+                    saw_error = True
+                    continue
+                for choice in obj.get("choices") or []:
+                    if not isinstance(choice, dict):
+                        continue
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content") if isinstance(delta, dict) else None
+                    if content:
+                        if first_ns is None:
+                            first_ns = time.perf_counter_ns() - t0_ns
+                        saw_content = True
+    if saw_error:
+        raise RuntimeError("streaming response contained an error event")
+    if not saw_content or first_ns is None:
+        raise RuntimeError("streaming response produced no content delta")
+    return first_ns
 
 
 def run() -> int:
@@ -174,6 +250,12 @@ def run() -> int:
             raise RuntimeError(f"{_env_name} must be > 0, got {_value}")
     out_dir = Path(_env("LOGOS_BENCH_OUTPUT", str(_HERE / "reports")))
     perf_enabled = _env("LOGOS_BENCH_NO_PERF_TRACE", "0") != "1"
+    stream = _env("LOGOS_BENCH_STREAM", "0") == "1"
+    try:
+        is_sleeping_delay_ms = max(0, int(float(_env("LOGOS_BENCH_IS_SLEEPING_DELAY_MS", "0") or "0")))
+    except (TypeError, ValueError):
+        is_sleeping_delay_ms = 0
+    lane_status_ttl_s = _env("LOGOS_LANE_STATUS_TTL_S", "1.0")
 
     python = sys.executable or "python3"
     venv_python = _ORCH / ".venv" / "bin" / "python"
@@ -208,6 +290,8 @@ def run() -> int:
             "LOGOS_BENCH_SHARED_KEY": shared_key,
             "LOGOS_BENCH_LANE_PORT": str(lane_port),
             "LOGOS_BENCH_ORCHESTRATOR_URL": orch,
+            "LOGOS_BENCH_IS_SLEEPING_DELAY_MS": str(is_sleeping_delay_ms),
+            "LOGOS_LANE_STATUS_TTL_S": lane_status_ttl_s,
             "LOGOS_WORKER_PERF_TRACE": "1" if perf_enabled else "0",
             "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE", ""),
         }
@@ -298,25 +382,43 @@ def run() -> int:
             _wait_worker_connected(probe, orch, secret, provider_id=1)
 
         # -- 4. measurement ---------------------------------------------------
-        payload = _bench_payload(model)
+        payload = _bench_payload(model, stream=stream)
         headers_logos = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         headers_trace = {"Authorization": f"Bearer {secret}"}
+        metric = "ttft" if stream else "e2e"
+        print(
+            f"  [config] stream={stream} metric={metric} "
+            f"is_sleeping_delay_ms={is_sleeping_delay_ms} lane_status_ttl_s={lane_status_ttl_s}"
+        )
 
         logos_ns: List[int] = []
         direct_ns: List[int] = []
         traces: List[Dict[str, Any]] = []
 
         def _timed_post(client: httpx.Client, url: str, headers: Dict[str, str]) -> tuple[httpx.Response, int]:
+            """Non-streaming: full response latency. Streaming: TTFT to first content delta."""
+            if not stream:
+                t0 = time.perf_counter_ns()
+                resp = client.post(url, headers=headers, json=payload)
+                return resp, time.perf_counter_ns() - t0
             t0 = time.perf_counter_ns()
-            resp = client.post(url, headers=headers, json=payload)
-            t1 = time.perf_counter_ns()
-            return resp, t1 - t0
+            with client.stream("POST", url, headers=headers, json=payload) as resp:
+                if resp.status_code != 200:
+                    # Drain/raise with status so callers see the failure.
+                    for _ in resp.iter_bytes():
+                        pass
+                    raise RuntimeError(f"streaming request failed: {resp.status_code}")
+                first_ns = _sse_content_ttft_ns(resp, t0)
+                status_code = resp.status_code
+                response_headers = resp.headers
+            stand_in = httpx.Response(status_code, headers=response_headers, request=httpx.Request("POST", url))
+            return stand_in, first_ns
 
         def _do_logos(client: httpx.Client) -> None:
             """One measured Logos-path request + its perf-trace fetch."""
             resp, dt = _timed_post(client, f"{orch}/v1/chat/completions", headers_logos)
             if resp.status_code != 200:
-                raise RuntimeError(f"logos request failed: {resp.status_code} {resp.text[:400]}")
+                raise RuntimeError(f"logos request failed: {resp.status_code}")
             logos_ns.append(dt)
             if perf_enabled:
                 request_id = resp.headers.get("X-Request-ID", "")
@@ -332,7 +434,7 @@ def run() -> int:
             a fast error response cannot skew the baseline median low."""
             resp, dt = _timed_post(client, f"{lane}/v1/chat/completions", {"Content-Type": "application/json"})
             if resp.status_code != 200:
-                raise RuntimeError(f"direct baseline request failed: {resp.status_code} {resp.text[:400]}")
+                raise RuntimeError(f"direct baseline request failed: {resp.status_code}")
             direct_ns.append(dt)
 
         with httpx.Client(timeout=httpx.Timeout(60.0, connect=5.0)) as client:
@@ -340,9 +442,15 @@ def run() -> int:
             for i in range(warmup):
                 resp, _ = _timed_post(client, f"{orch}/v1/chat/completions", headers_logos)
                 if resp.status_code != 200:
-                    raise RuntimeError(f"warmup request {i} failed: {resp.status_code} {resp.text[:400]}")
+                    raise RuntimeError(f"warmup request {i} failed: {resp.status_code}")
             print(f"  [warmup] {warmup} requests OK")
             client.delete(f"{orch}/internal/perf_trace", headers=headers_trace)  # drop warmup traces
+            # Reset the sleep-probe counter after warmup so the regression
+            # check only counts measured acquires.
+            try:
+                client.post(f"{lane}/_bench/reset_is_sleeping_hits", timeout=2.0)
+            except Exception:  # noqa: BLE001
+                pass
 
             for block in range(blocks):
                 # Interleave logos and direct within the block instead of
@@ -363,11 +471,46 @@ def run() -> int:
                     sent_logos += 1
                 print(f"  [block {block + 1}/{blocks}] logos={len(logos_ns)} direct={len(direct_ns)}")
 
+            sleep_probe_hits = 0
+            try:
+                hits_resp = client.get(f"{lane}/_bench/is_sleeping_hits", timeout=2.0)
+                if hits_resp.status_code == 200:
+                    sleep_probe_hits = int(hits_resp.json().get("hits", 0))
+            except Exception:  # noqa: BLE001
+                sleep_probe_hits = -1
+
         # -- 5. report ----------------------------------------------------------
         ov = overhead_ns(logos_ns, direct_ns)
         verdict_str = overall_verdict(ov["overhead_p50_ns"], ov["overhead_p95_ns"])
+        # Issue #165 regression: with an injected /is_sleeping delay and a
+        # forced status rebuild (TTL=0), acquire must not await the probe —
+        # otherwise overhead ≈ delay. Fail when p50 overhead reaches 25% of
+        # the injected delay (well above normal forwarding noise).
+        sleep_probe_gate: Optional[Dict[str, Any]] = None
+        if is_sleeping_delay_ms > 0:
+            limit_ns = int(is_sleeping_delay_ms * 0.25 * 1_000_000)
+            sleep_probe_ok = ov["overhead_p50_ns"] < limit_ns
+            sleep_probe_gate = {
+                "delay_ms": is_sleeping_delay_ms,
+                "limit_ns": limit_ns,
+                "overhead_p50_ns": ov["overhead_p50_ns"],
+                "ok": sleep_probe_ok,
+                "hits_during_run": sleep_probe_hits,
+            }
+            if not sleep_probe_ok:
+                verdict_str = "FAIL"
+        mode = "streaming TTFT" if stream else "non-streaming e2e"
         result = {
-            "scenario": "logosnode, warm lane, no concurrent requests, non-streaming POST /v1/chat/completions",
+            "scenario": (
+                f"logosnode, warm lane, no concurrent requests, {mode} "
+                f"POST /v1/chat/completions"
+                + (
+                    f" (is_sleeping_delay={is_sleeping_delay_ms}ms, ttl={lane_status_ttl_s}s)"
+                    if is_sleeping_delay_ms
+                    else ""
+                )
+            ),
+            "metric": metric,
             "overhead": ov,
             "summary": {"logos": summarize(logos_ns), "direct": summarize(direct_ns)},
             "phases": merge_phase_totals([t.get("phases", {}) for t in traces]),
@@ -376,6 +519,7 @@ def run() -> int:
             "goal_ns": GOAL_NS,
             "p95_goal_ns": P95_GOAL_NS,
             "fail_ns": FAIL_NS,
+            "sleep_probe_gate": sleep_probe_gate,
             "env": {
                 "python": python,
                 "worker_python": worker_python,
@@ -383,6 +527,9 @@ def run() -> int:
                 "mock_lane": lane,
                 "db_url_host": db_url.split("@")[-1] if "@" in db_url else db_url,
                 "perf_trace": perf_enabled,
+                "stream": stream,
+                "is_sleeping_delay_ms": is_sleeping_delay_ms,
+                "lane_status_ttl_s": lane_status_ttl_s,
             },
         }
         paths = write_reports(result, str(out_dir))
