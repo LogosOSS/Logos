@@ -90,10 +90,21 @@ def build_markdown(result: Dict[str, Any]) -> str:
 
     lines.append("## Method")
     lines.append("")
-    lines.append(
-        "- Scenario: local logosnode provider, **warm lane** (model loaded, no other running "
-        "requests), non-streaming `POST /v1/chat/completions`."
+    scenario = result.get("scenario") or (
+        "local logosnode provider, **warm lane** (model loaded, no other running "
+        "requests), `POST /v1/chat/completions`"
     )
+    lines.append(f"- Scenario: {scenario}.")
+    sleep_gate = result.get("sleep_probe_gate")
+    if sleep_gate:
+        lines.append(
+            f"- Sleep-probe gate (issue #165): injected `/is_sleeping` delay "
+            f"{sleep_gate.get('delay_ms')} ms; overhead p50 "
+            f"{ns_to_us(float(sleep_gate.get('overhead_p50_ns', 0.0)))} µs "
+            f"{'OK' if sleep_gate.get('ok') else 'FAIL'} "
+            f"(limit {ns_to_us(float(sleep_gate.get('limit_ns', 0.0)))} µs; "
+            f"hits during run={sleep_gate.get('hits_during_run')})."
+        )
     lines.append(
         "- Overhead p50/p95 = the matching percentile of via Logos minus the same "
         "percentile of the direct baseline, with interleaved blocks to cancel common-mode drift."
