@@ -469,6 +469,10 @@ class LaneManager:
         # sleep_lane marks sleeping, and a stale-awake race fails cleanly at
         # stream_start (pretoken retry) rather than blocking every request.
         self._known_sleep_state: dict[str, str] = {}
+        # Bumped on every lifecycle sleep-state write so a delayed background
+        # /is_sleeping response cannot overwrite a newer sleep/wake result
+        # (get_all_statuses probes without holding the lane lock).
+        self._sleep_state_generation: dict[str, int] = {}
         self._model_profiles = model_profiles
         self._last_profile_state: dict[str, str] = {}
         # Stuck-inference detection: track BOTH prompt_tokens_total and
@@ -1904,9 +1908,36 @@ class LaneManager:
     def _remember_sleep_state(self, lane_id: str, sleep_state: str) -> None:
         """Record the lifecycle-authoritative sleep_state for the infer hot path."""
         self._known_sleep_state[lane_id] = sleep_state
+        self._sleep_state_generation[lane_id] = self._sleep_state_generation.get(lane_id, 0) + 1
 
     def _forget_sleep_state(self, lane_id: str) -> None:
         self._known_sleep_state.pop(lane_id, None)
+        self._sleep_state_generation.pop(lane_id, None)
+
+    def _publish_probed_sleep_state(
+        self,
+        lane_id: str,
+        handle: ProcessHandle,
+        sleep_state: str,
+        *,
+        handle_at_probe: ProcessHandle,
+        generation_at_probe: int,
+    ) -> None:
+        """Apply a background /is_sleeping result only if still current.
+
+        ``get_all_statuses`` / status refresh probe without holding the lane
+        lock. A probe that sampled ``sleeping`` before a wake must not land
+        after the wake and flip known state back to sleeping (and vice versa).
+        """
+        if sleep_state not in {"sleeping", "awake", "unsupported"}:
+            return
+        if self._handles.get(lane_id) is not handle_at_probe:
+            return
+        if handle is not handle_at_probe:
+            return
+        if self._sleep_state_generation.get(lane_id, 0) != generation_at_probe:
+            return
+        self._remember_sleep_state(lane_id, sleep_state)
 
     async def acquire_lane_for_infer(self, lane_id: str) -> LaneStatus:
         """Atomically verify the lane is routable AND count the request under a
@@ -3824,7 +3855,8 @@ class LaneManager:
                                     "sleep_state": known,
                                     "runtime_state": (
                                         "sleeping"
-                                        if known == "sleeping" and status.runtime_state in {"loaded", "running", "sleeping"}
+                                        if known == "sleeping"
+                                        and status.runtime_state in {"loaded", "running", "sleeping"}
                                         else status.runtime_state
                                     ),
                                 }
@@ -4291,18 +4323,30 @@ class LaneManager:
                 # that has not been slept through sleep_lane.
                 sleep_state = self._known_sleep_state.get(handle.lane_id, "awake")
             else:
+                generation_at_probe = self._sleep_state_generation.get(handle.lane_id, 0)
+                handle_at_probe = handle
                 try:
                     sleeping = await handle.is_sleeping()
                 except Exception:
                     sleeping = None
                 if sleeping is True:
-                    sleep_state = "sleeping"
+                    probed = "sleeping"
                 elif sleeping is False:
-                    sleep_state = "awake"
+                    probed = "awake"
                 else:
-                    sleep_state = self._known_sleep_state.get(handle.lane_id, "unknown")
-                if sleep_state in {"sleeping", "awake", "unsupported"}:
-                    self._remember_sleep_state(handle.lane_id, sleep_state)
+                    probed = None
+                # Prefer the live known state when the probe is inconclusive or
+                # stale relative to a sleep/wake that finished during the await.
+                sleep_state = self._known_sleep_state.get(handle.lane_id, "unknown")
+                if probed is not None:
+                    self._publish_probed_sleep_state(
+                        handle.lane_id,
+                        handle,
+                        probed,
+                        handle_at_probe=handle_at_probe,
+                        generation_at_probe=generation_at_probe,
+                    )
+                    sleep_state = self._known_sleep_state.get(handle.lane_id, probed)
 
         active_requests = self._active_requests.get(handle.lane_id, 0)
         runtime_state: str = "stopped"

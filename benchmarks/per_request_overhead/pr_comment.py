@@ -49,9 +49,7 @@ def _gate(result: Dict[str, Any]) -> int:
     p95_ns = float(overhead.get("overhead_p95_ns", 0.0))
     failures = []
     if p50_ns > FAIL_NS:
-        failures.append(
-            f"p50 {p50_ns / 1000.0:,.1f} µs exceeds the CI fail threshold of {FAIL_NS / 1000.0:,.0f} µs"
-        )
+        failures.append(f"p50 {p50_ns / 1000.0:,.1f} µs exceeds the CI fail threshold of {FAIL_NS / 1000.0:,.0f} µs")
     if p95_ns > FAIL_P95_NS:
         failures.append(
             f"p95 {p95_ns / 1000.0:,.1f} µs exceeds the CI fail threshold of {FAIL_P95_NS / 1000.0:,.0f} µs"

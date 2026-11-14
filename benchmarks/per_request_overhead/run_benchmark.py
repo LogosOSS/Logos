@@ -165,6 +165,68 @@ def _bench_payload(model: str, *, stream: bool) -> Dict[str, Any]:
     return payload
 
 
+def _sse_content_ttft_ns(resp: httpx.Response, t0_ns: int) -> int:
+    """Stamp TTFT on the first SSE content delta; ignore comments and reject errors.
+
+    Keepalive commits headers early and may emit ``: logos-schedule`` /
+    ``: keepalive`` before the worker acquire runs. Timing the first body
+    byte would therefore miss a reintroduced ``/is_sleeping`` wait on acquire
+    (issue #165). Only a non-empty ``choices[].delta.content`` counts.
+    """
+    import json as _json
+
+    buf = bytearray()
+    first_ns: Optional[int] = None
+    saw_content = False
+    saw_error = False
+    for chunk in resp.iter_bytes():
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        while True:
+            end = buf.find(b"\n\n")
+            if end < 0:
+                break
+            raw_event = bytes(buf[:end])
+            del buf[: end + 2]
+            # Normalise CRLF event framing from some proxies.
+            event = raw_event.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            if not event.strip():
+                continue
+            # SSE comments (keepalive / logos-schedule) — never content.
+            if event.lstrip().startswith(b":"):
+                continue
+            for line in event.split(b"\n"):
+                if not line.startswith(b"data:"):
+                    continue
+                payload = line[5:].lstrip()
+                if payload == b"[DONE]":
+                    continue
+                try:
+                    obj = _json.loads(payload)
+                except _json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("error") is not None:
+                    saw_error = True
+                    continue
+                for choice in obj.get("choices") or []:
+                    if not isinstance(choice, dict):
+                        continue
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content") if isinstance(delta, dict) else None
+                    if content:
+                        if first_ns is None:
+                            first_ns = time.perf_counter_ns() - t0_ns
+                        saw_content = True
+    if saw_error:
+        raise RuntimeError("streaming response contained an error event")
+    if not saw_content or first_ns is None:
+        raise RuntimeError("streaming response produced no content delta")
+    return first_ns
+
+
 def run() -> int:
     db_url = _env("LOGOS_BENCH_DB_URL", "postgresql://postgres:root@127.0.0.1:5433/logosdb")
     orch_port = _env_int("LOGOS_BENCH_PORT", 8090)
@@ -334,22 +396,19 @@ def run() -> int:
         traces: List[Dict[str, Any]] = []
 
         def _timed_post(client: httpx.Client, url: str, headers: Dict[str, str]) -> tuple[httpx.Response, int]:
-            """Non-streaming: full response latency. Streaming: time to first body byte."""
+            """Non-streaming: full response latency. Streaming: TTFT to first content delta."""
             if not stream:
                 t0 = time.perf_counter_ns()
                 resp = client.post(url, headers=headers, json=payload)
                 return resp, time.perf_counter_ns() - t0
             t0 = time.perf_counter_ns()
             with client.stream("POST", url, headers=headers, json=payload) as resp:
-                # Headers alone do not count: keepalive commits them before the
-                # pipeline runs. Stamp TTFT on the first non-empty body chunk,
-                # then drain so the connection returns to the pool cleanly.
-                first_ns: Optional[int] = None
-                for chunk in resp.iter_bytes():
-                    if chunk and first_ns is None:
-                        first_ns = time.perf_counter_ns() - t0
-                if first_ns is None:
-                    raise RuntimeError(f"streaming response produced no body bytes (status={resp.status_code})")
+                if resp.status_code != 200:
+                    # Drain/raise with status so callers see the failure.
+                    for _ in resp.iter_bytes():
+                        pass
+                    raise RuntimeError(f"streaming request failed: {resp.status_code}")
+                first_ns = _sse_content_ttft_ns(resp, t0)
                 status_code = resp.status_code
                 response_headers = resp.headers
             stand_in = httpx.Response(status_code, headers=response_headers, request=httpx.Request("POST", url))
@@ -445,7 +504,11 @@ def run() -> int:
             "scenario": (
                 f"logosnode, warm lane, no concurrent requests, {mode} "
                 f"POST /v1/chat/completions"
-                + (f" (is_sleeping_delay={is_sleeping_delay_ms}ms, ttl={lane_status_ttl_s}s)" if is_sleeping_delay_ms else "")
+                + (
+                    f" (is_sleeping_delay={is_sleeping_delay_ms}ms, ttl={lane_status_ttl_s}s)"
+                    if is_sleeping_delay_ms
+                    else ""
+                )
             ),
             "metric": metric,
             "overhead": ov,

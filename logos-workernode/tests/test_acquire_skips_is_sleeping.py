@@ -132,3 +132,68 @@ async def test_acquire_rejects_while_wake_transition_is_in_flight() -> None:
         await manager.acquire_lane_for_infer(lane_id)
 
     assert handle.is_sleeping_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_delayed_sleep_probe_does_not_overwrite_newer_wake() -> None:
+    """A probe that sampled sleeping before wake must not land after wake."""
+    import asyncio
+
+    manager = _manager()
+    lane_id, handle = _inject(manager, sleeping=True)
+    release = asyncio.Event()
+    sampled = asyncio.Event()
+    sample_value: list[bool] = []
+
+    async def _slow_is_sleeping() -> bool | None:
+        sample_value.append(handle._sleeping)
+        sampled.set()
+        await release.wait()
+        return sample_value[0]
+
+    handle.is_sleeping = _slow_is_sleeping  # type: ignore[method-assign]
+
+    probe = asyncio.create_task(manager._get_status_unlocked(lane_id, probe_sleep=True))  # noqa: SLF001
+    await sampled.wait()
+    assert sample_value == [True]
+
+    handle._sleeping = False
+    manager._remember_sleep_state(lane_id, "awake")  # noqa: SLF001 — wake wins
+    release.set()
+    status = await probe
+
+    assert manager._known_sleep_state[lane_id] == "awake"  # noqa: SLF001
+    assert status.sleep_state == "awake"
+
+
+@pytest.mark.asyncio
+async def test_delayed_awake_probe_does_not_overwrite_newer_sleep() -> None:
+    """A probe that sampled awake before sleep must not clear a later sleep."""
+    import asyncio
+
+    manager = _manager()
+    lane_id, handle = _inject(manager, sleeping=False)
+    release = asyncio.Event()
+    sampled = asyncio.Event()
+    sample_value: list[bool] = []
+
+    async def _slow_is_sleeping() -> bool | None:
+        sample_value.append(handle._sleeping)
+        sampled.set()
+        await release.wait()
+        return sample_value[0]
+
+    handle.is_sleeping = _slow_is_sleeping  # type: ignore[method-assign]
+
+    probe = asyncio.create_task(manager._get_status_unlocked(lane_id, probe_sleep=True))  # noqa: SLF001
+    await sampled.wait()
+    assert sample_value == [False]
+
+    handle._sleeping = True
+    manager._remember_sleep_state(lane_id, "sleeping")  # noqa: SLF001
+    release.set()
+    await probe
+
+    assert manager._known_sleep_state[lane_id] == "sleeping"  # noqa: SLF001
+    with pytest.raises(LaneNotServingError, match="sleep_state=sleeping"):
+        await manager.acquire_lane_for_infer(lane_id)
