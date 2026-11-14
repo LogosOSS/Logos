@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import time
 
-import httpx
 import pytest
 
 from run_benchmark import _sse_content_ttft_ns

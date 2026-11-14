@@ -3831,13 +3831,34 @@ class LaneManager:
         # in-memory patch of the last payload (no status rebuild).
         self._lane_status_cache.clear()
 
+    def _status_with_known_sleep(self, lane_id: str, status: LaneStatus) -> LaneStatus:
+        """Overlay lifecycle sleep_state onto a cached LaneStatus for infer."""
+        known = self._known_sleep_state.get(lane_id)
+        if not known or known == status.sleep_state:
+            return status
+        return status.model_copy(
+            update={
+                "sleep_state": known,
+                "runtime_state": (
+                    "sleeping"
+                    if known == "sleeping" and status.runtime_state in {"loaded", "running", "sleeping"}
+                    else status.runtime_state
+                ),
+            }
+        )
+
     async def _get_status_unlocked(self, lane_id: str, *, probe_sleep: bool = True) -> LaneStatus:
         handle = self._handles.get(lane_id)
         if handle is None:
             raise KeyError(f"Lane '{lane_id}' not found")
         ps = handle.status()
+        cached = self._lane_status_cache.get(lane_id)
+        # Infer hot path: reuse ANY cached status (even past TTL) so sequential
+        # acquires with TTL=0 do not pay /v1/models + /metrics every request.
+        # Sleep readiness comes from _known_sleep_state, not those probes.
+        if not probe_sleep and cached is not None and ps.state == ProcessState.RUNNING:
+            return self._status_with_known_sleep(lane_id, cached[1])
         if self._lane_status_ttl_seconds > 0:
-            cached = self._lane_status_cache.get(lane_id)
             # The cheap synchronous process check is ALWAYS consulted fresh:
             # a dead process must never be masked by a cached status. While
             # the process is alive, a steady-state re-acquire within the TTL
@@ -3845,28 +3866,21 @@ class LaneManager:
             if cached is not None and ps.state == ProcessState.RUNNING:
                 built_at, status = cached
                 if time.monotonic() - built_at < self._lane_status_ttl_seconds:
-                    # Infer hot path still prefers lifecycle sleep_state over a
-                    # cached probe result that may lag a just-completed sleep.
                     if not probe_sleep:
-                        known = self._known_sleep_state.get(lane_id)
-                        if known and known != status.sleep_state:
-                            return status.model_copy(
-                                update={
-                                    "sleep_state": known,
-                                    "runtime_state": (
-                                        "sleeping"
-                                        if known == "sleeping"
-                                        and status.runtime_state in {"loaded", "running", "sleeping"}
-                                        else status.runtime_state
-                                    ),
-                                }
-                            )
+                        return self._status_with_known_sleep(lane_id, status)
                     return status
-        pid_vram_map = await self._query_process_vram_map(
-            [ps.pid] if ps.state == ProcessState.RUNNING and ps.pid is not None else []
-        )
+        # Infer rebuilds skip nvidia-smi / host-RAM; background status keeps them.
+        if probe_sleep:
+            pid_vram_map = await self._query_process_vram_map(
+                [ps.pid] if ps.state == ProcessState.RUNNING and ps.pid is not None else []
+            )
+        else:
+            pid_vram_map = {}
         status = await self._build_lane_status(handle, pid_vram_map, probe_sleep=probe_sleep)
-        if self._lane_status_ttl_seconds > 0:
+        # Always cache infer builds too so the next acquire is free even when
+        # LOGOS_LANE_STATUS_TTL_S=0 (TTL 0 only disables time-based reuse for
+        # background telemetry builds).
+        if self._lane_status_ttl_seconds > 0 or not probe_sleep:
             self._lane_status_cache[lane_id] = (time.monotonic(), status)
         return status
 
@@ -4228,7 +4242,12 @@ class LaneManager:
         host_ram_mb = 0.0
         host_ram_source = "unknown"
 
-        if ps.state == ProcessState.RUNNING:
+        # Infer acquire (probe_sleep=False) must not await lane HTTP probes —
+        # /v1/models, /metrics, and /is_sleeping are background telemetry only
+        # (issue #165). Port + known sleep_state are enough to route.
+        collect_telemetry = probe_sleep
+
+        if ps.state == ProcessState.RUNNING and collect_telemetry:
             try:
                 raw_models = await handle.get_loaded_models()
                 for m in raw_models:
@@ -4252,7 +4271,7 @@ class LaneManager:
             except Exception:
                 logger.debug("Could not query loaded models for lane '%s'", handle.lane_id)
 
-        if ps.state == ProcessState.RUNNING and ps.pid is not None:
+        if ps.state == ProcessState.RUNNING and ps.pid is not None and collect_telemetry:
             if pid_vram_map is None:
                 pid_vram_map = await self._query_process_vram_map([ps.pid])
             vram_by_pid_mb = float(pid_vram_map.get(ps.pid, 0.0))
@@ -4294,14 +4313,17 @@ class LaneManager:
                 if lc.vllm_config
                 else 1
             )
-            occupied_gpu_devices = await self._lane_occupied_gpu_devices(lc, effective_gpu_devices, gpu_count)
+            if collect_telemetry:
+                occupied_gpu_devices = await self._lane_occupied_gpu_devices(lc, effective_gpu_devices, gpu_count)
+            else:
+                occupied_gpu_devices = effective_gpu_devices
             if lc.vllm_config:
                 sleep_mode_enabled = bool(lc.vllm_config.enable_sleep_mode)
                 backend_metrics = lc.vllm_config.model_dump(mode="json")
                 parallel_sizes = self._launch_parallel_sizes(lc.vllm_config, self._vllm_engine_config.global_extra_args)
                 if parallel_sizes:
                     backend_metrics["pipeline_parallel_size"] = parallel_sizes["pp"]
-        if hasattr(handle, "get_backend_metrics"):
+        if collect_telemetry and hasattr(handle, "get_backend_metrics"):
             try:
                 backend_metrics.update(await handle.get_backend_metrics())
             except Exception:
@@ -4314,7 +4336,10 @@ class LaneManager:
         if lc is not None:
             if not sleep_mode_enabled:
                 sleep_state = "unsupported"
-                self._remember_sleep_state(handle.lane_id, "unsupported")
+                # get_all_statuses snapshots handles; an obsolete sleep-disabled
+                # handle must not overwrite a replacement lane's known state.
+                if self._handles.get(handle.lane_id) is handle:
+                    self._remember_sleep_state(handle.lane_id, "unsupported")
             elif ps.state != ProcessState.RUNNING:
                 sleep_state = "unknown"
             elif not probe_sleep:

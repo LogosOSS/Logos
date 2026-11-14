@@ -72,8 +72,9 @@ async def test_acquire_does_not_call_is_sleeping() -> None:
     await manager.decrement_active_requests(lane_id)
 
     assert handle.is_sleeping_calls == 0
+    assert handle.model_probe_count == 0  # no /v1/models on infer either
     assert status.sleep_state == "awake"
-    assert status.runtime_state in {"loaded", "running"}
+    assert status.runtime_state in {"loaded", "running", "cold", "starting"}
 
 
 @pytest.mark.asyncio
@@ -164,6 +165,27 @@ async def test_delayed_sleep_probe_does_not_overwrite_newer_wake() -> None:
 
     assert manager._known_sleep_state[lane_id] == "awake"  # noqa: SLF001
     assert status.sleep_state == "awake"
+
+
+@pytest.mark.asyncio
+async def test_obsolete_sleep_disabled_handle_does_not_clear_replacement_sleep() -> None:
+    """A stale sleep-disabled handle must not publish unsupported over a sleeper."""
+    manager = _manager()
+    lane_id = "bench-model"
+    sleep_off = LaneConfig(model="bench-model", vllm=True, vllm_config=VllmConfig(enable_sleep_mode=False))
+    sleep_on = LaneConfig(model="bench-model", vllm=True, vllm_config=VllmConfig(enable_sleep_mode=True))
+    obsolete = _ProbeHandle(lane_id, 15100, sleep_off)
+    replacement = _ProbeHandle(lane_id, 15101, sleep_on)
+    replacement._sleeping = True
+    manager._handles[lane_id] = replacement  # noqa: SLF001
+    manager._remember_sleep_state(lane_id, "sleeping")  # noqa: SLF001
+
+    # Background collection still holds the obsolete handle from a snapshot.
+    await manager._build_lane_status(obsolete, {}, probe_sleep=True)  # noqa: SLF001
+
+    assert manager._known_sleep_state[lane_id] == "sleeping"  # noqa: SLF001
+    with pytest.raises(LaneNotServingError, match="sleep_state=sleeping"):
+        await manager.acquire_lane_for_infer(lane_id)
 
 
 @pytest.mark.asyncio
