@@ -5,5 +5,8 @@ import java.util.List;
 public record CreateTeamRepoLinkRequestDTO(
     String repoUrl,
     String branch,
-    List<String> paths
+    List<String> paths,
+    Boolean agentEnabled,
+    String agentInstructions,
+    String verificationCommand
 ) {}

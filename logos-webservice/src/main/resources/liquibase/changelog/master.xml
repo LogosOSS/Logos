@@ -82,4 +82,5 @@
     <include file="liquibase/changelog/075_answer_cache.xml"/>
     <include file="liquibase/changelog/076_team_show_on_public_stats.xml"/>
     <include file="liquibase/changelog/077_team_public_category.xml"/>
+    <include file="liquibase/changelog/078_repository_coding_agent.xml"/>
 </databaseChangeLog>

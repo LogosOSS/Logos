@@ -479,6 +479,8 @@ async def retry_session(session_id: int, principal: Principal = Depends(require_
             repo_url=row.get("repo_url"),
             repo_slug=row.get("repo_slug"),
             team_repository_id=row.get("team_repository_id"),
+            verification_command=row.get("verification_command"),
+            repo_base_branch=row.get("repo_base_branch"),
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

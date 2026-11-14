@@ -44,10 +44,26 @@ public class TeamRepoLink {
     private List<String> paths;
 
     @Column(nullable = false)
+    private boolean agentEnabled;
+
+    @Column(columnDefinition = "text")
+    private String agentInstructions;
+
+    @Column(columnDefinition = "text")
+    private String verificationCommand;
+
+    @Column(nullable = false)
     private Instant createdAt;
 
     @Column(nullable = false)
     private Instant updatedAt;
+
+    public boolean isAgentEnabled() { return agentEnabled; }
+    public String getAgentInstructions() { return agentInstructions; }
+    public String getVerificationCommand() { return verificationCommand; }
+    public void setAgentEnabled(boolean value) { agentEnabled = value; }
+    public void setAgentInstructions(String value) { agentInstructions = value; }
+    public void setVerificationCommand(String value) { verificationCommand = value; }
 
     public Integer getId() { return id; }
     public Integer getTeamId() { return teamId; }

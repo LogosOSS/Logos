@@ -216,3 +216,11 @@ def no_session_address_by_default(monkeypatch):
 
     monkeypatch.setattr(docker_engine, "container_ip", no_address)
     monkeypatch.setattr(upstream, "cancel_client_requests", nothing_cancelled)
+
+
+@pytest.fixture(autouse=True)
+def no_linked_coding_repositories(monkeypatch):
+    async def enabled():
+        return []
+
+    monkeypatch.setattr(db, "enabled_coding_repositories", enabled)
