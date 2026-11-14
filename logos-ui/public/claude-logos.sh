@@ -44,7 +44,7 @@ set -euo pipefail
 # version string: the comparison is a single `-gt` that cannot misread anything,
 # where sorting "1.10" against "1.9" needs care to get right. The date is here for
 # people; only the number is compared.
-CLAUDE_LOGOS_VERSION=7          # 2026-10-09
+CLAUDE_LOGOS_VERSION=8          # 2026-11-14
 
 CONFIG_DIR="${LOGOS_CONFIG_DIR:-$HOME/.config/claude-logos}"
 CONFIG_FILE="$CONFIG_DIR/config"
@@ -277,8 +277,20 @@ logos_install() {
       printf 'Run: claude-logos\n' ;;
     *)
       printf '%s is not on your PATH yet. Add it:\n\n' "$(dirname "$INSTALL_PATH")"
-      printf '  echo '\''export PATH="$HOME/.local/bin:$PATH"'\'' >> %s\n\n' "$(login_profile)"
-      printf 'Then open a new terminal and run: claude-logos\n' ;;
+      case "$(basename "${SHELL:-bash}")" in
+        fish)
+          # fish_add_path updates this session and persists the directory for future shells.
+          # Fish single quotes interpret escaped backslashes and apostrophes.
+          local fish_path
+          fish_path="$(dirname "$INSTALL_PATH")"
+          fish_path="${fish_path//\\/\\\\}"
+          fish_path="${fish_path//\'/\\\'}"
+          printf "  fish_add_path '%s'\n\n" "$fish_path"
+          printf 'Then run: claude-logos\n' ;;
+        *)
+          printf '  echo '\''export PATH="$HOME/.local/bin:$PATH"'\'' >> %s\n\n' "$(login_profile)"
+          printf 'Then open a new terminal and run: claude-logos\n' ;;
+      esac ;;
   esac
 }
 
@@ -287,7 +299,6 @@ login_profile() {
   # shellcheck disable=SC2088
   case "$(basename "${SHELL:-bash}")" in
     zsh) printf '~/.zshrc' ;;
-    fish) printf '~/.config/fish/config.fish' ;;
     *) printf '~/.bashrc' ;;
   esac
 }
