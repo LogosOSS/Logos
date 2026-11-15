@@ -42,6 +42,28 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
         """, nativeQuery = true)
     java.util.Optional<RequestPayloadProjection> findRequestPayloads(@Param("requestId") String requestId);
 
+    /** Enrich recorded candidates only on expansion; the selected IDs come from the actual dispatch. */
+    @Transactional(readOnly = true)
+    @Query(value = """
+        SELECT jsonb_build_object(
+            'selected_model_id', le.model_id,
+            'selected_provider_id', le.provider_id,
+            'candidates', COALESCE((
+                SELECT jsonb_agg(c.value || jsonb_build_object(
+                    'provider_name', p.name, 'model_name', m.name) ORDER BY c.ordinality)
+                FROM jsonb_array_elements(le.classification_statistics->'routing_decision'->'candidates')
+                    WITH ORDINALITY AS c(value, ordinality)
+                LEFT JOIN providers p ON p.id = (c.value->>'provider_id')::integer
+                LEFT JOIN models m ON m.id = (c.value->>'model_id')::integer
+            ), '[]'::jsonb)
+        )::text
+        FROM log_entry le
+        WHERE le.request_id = :requestId
+        ORDER BY le.id DESC
+        LIMIT 1
+        """, nativeQuery = true)
+    java.util.Optional<String> findRequestRouting(@Param("requestId") String requestId);
+
     /**
      * Successful usage on opted-in teams, one row per UTC day, team, user, key
      * type, serving lane and model, flagged whether it falls inside the

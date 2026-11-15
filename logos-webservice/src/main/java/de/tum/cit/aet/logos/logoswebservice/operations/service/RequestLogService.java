@@ -66,6 +66,13 @@ public class RequestLogService {
         return result;
     }
 
+    /** Historical scheduling observations, never reconstructed from current worker state. */
+    public Object getRequestRouting(String requestId) {
+        String routing = logEntryRepository.findRequestRouting(requestId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Request not found"));
+        return parsePayload(routing);
+    }
+
     private Object parsePayload(String text) {
         if (text == null) return null;
         try {
