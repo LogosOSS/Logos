@@ -4,10 +4,10 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
+from tests.unit.pipeline.test_correcting_scheduler import _make_request, _make_scheduler
 
 from logos.pipeline.ettft_estimator import EttftEstimate, ReadinessTier
 from logos.pipeline.scheduler_interface import SchedulingResult
-from tests.unit.pipeline.test_correcting_scheduler import _make_request, _make_scheduler
 
 
 def _candidate(provider_id, tier, wait, provider_type="logosnode"):
