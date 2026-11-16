@@ -330,6 +330,11 @@ async def _destroy_quietly(handle: ProcessHandle) -> None:
         logger.debug("Closing an unregistered lane handle failed", exc_info=True)
 
 
+def _parallel_layout(lane_config: LaneConfig) -> tuple[int, int] | None:
+    vc = lane_config.vllm_config
+    return (vc.tensor_parallel_size, vc.parallel_gpu_count) if vc is not None else None
+
+
 class LaneManager:
     """Manages a pool of vLLM process handles, one per model lane."""
 
@@ -772,6 +777,7 @@ class LaneManager:
             snapshot: dict[str, tuple[ProcessHandle, LaneConfig | None, int | None]] = {
                 lid: (h, h.lane_config, self._port_alloc.get_port(lid)) for lid, h in self._handles.items()
             }
+            overrides_before = (set(self._explicit_lanes), {k: dict(v) for k, v in self._override_baselines.items()})
             # Track completed operations for rollback
             removed_snapshots: dict[str, tuple[ProcessHandle, LaneConfig | None, int]] = {}
             added_ids: list[str] = []
@@ -978,6 +984,8 @@ class LaneManager:
                     restarted_ids,
                     snapshot,
                 )
+                # The restored lanes run what they ran before the batch.
+                self._explicit_lanes, self._override_baselines = overrides_before
 
             lane_statuses = await self._collect_statuses_unlocked()
             prom.LANE_TRANSITIONS_TOTAL.labels(action="apply").inc()
@@ -1195,6 +1203,11 @@ class LaneManager:
         if not changed and not force_restart:
             return await self._get_status_unlocked(lane_id)
 
+        if not changed:
+            # A forced restart without new values runs under today's overrides,
+            # even if they change the layout; benchmark candidates keep theirs.
+            current_data = self._refresh_node_overrides(lane_id, current, topology=True).model_dump()
+
         parallel_changed = False
         if current.vllm_config is not None and current_data.get("vllm_config"):
             requested_vllm = VllmConfig(**current_data["vllm_config"])
@@ -1209,9 +1222,6 @@ class LaneManager:
                 if lane_id not in self._static_lane_ids:
                     current_data["gpu_devices"] = ""
         new_lc = LaneConfig(**current_data)
-        if not changed:
-            # A forced restart without new values; benchmark candidates keep theirs.
-            new_lc = self._refresh_node_overrides(lane_id, new_lc)
         if held_gpus is not None and (parallel_changed or self._launch_gpu_set(new_lc) != held_gpus):
             return _NEEDS_WHOLE_LOCK
         if parallel_changed:
@@ -1927,15 +1937,19 @@ class LaneManager:
         self._known_sleep_state[lane_id] = sleep_state
         self._sleep_state_generation[lane_id] = self._sleep_state_generation.get(lane_id, 0) + 1
 
-    def _refresh_node_overrides(self, lane_id: str, lane_config: LaneConfig) -> LaneConfig:
+    def _refresh_node_overrides(self, lane_id: str, lane_config: LaneConfig, *, topology: bool = False) -> LaneConfig:
         """The config of a restart without new values, under today's overrides.
 
         The baseline it would leave is only staged: a restart that is rejected
-        or fails must leave the lane's record as it was.
+        or fails must leave the lane's record as it was. An automatic restart
+        keeps the parallel layout it has; only a planned one may change it.
         """
         if lane_id in self._explicit_lanes:
             return lane_config
         config, baseline = self._resolve_model_vllm_overrides(lane_config, lane_id)
+        if not topology and _parallel_layout(config) != _parallel_layout(lane_config):
+            logger.info("Lane '%s': an override changes its parallel layout; it waits for a planned start", lane_id)
+            return lane_config
         self._staged_baselines[lane_id] = baseline
         return config
 
