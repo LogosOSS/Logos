@@ -273,6 +273,30 @@ class ModelProfileRecord:
         return self.estimate_host_ram_mb()
 
 
+# Keys _apply_manual_overrides reads; a test keeps this set in step with it.
+PROFILE_OVERRIDE_KEYS = frozenset(
+    {
+        "base_residency_mb",
+        "sleeping_residual_mb",
+        "loaded_vram_mb",
+        "kv_budget_mb",
+        "min_kv_cache_mb",
+        "max_kv_cache_mb",
+        "kv_per_token_bytes",
+        "max_context_length",
+        "calibration_max_model_len",
+        "calibration_max_num_seqs",
+        "kv_cache_to_max_model_len_pairs",
+        "min_context_fraction",
+        "engine",
+        "tensor_parallel_size",
+        "host_ram_mb",
+        "host_ram_residual_mb",
+        "metal_capacity_floor_mb",
+    }
+)
+
+
 class ModelProfileRegistry:
     """Model VRAM profiles, held in memory and synced with Logos."""
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ import yaml
 
 from logos_worker_node.calibration import plans_from_config
 from logos_worker_node.config import _wire_kv_budget
+from logos_worker_node.model_profiles import PROFILE_OVERRIDE_KEYS, ModelProfileRegistry
 from logos_worker_node.models import AppConfig
 from logos_worker_node.node_config import (
     apply_node_config,
@@ -18,6 +21,7 @@ from logos_worker_node.node_config import (
     normalize_node_config,
     plans_from_app_config,
     plans_from_entries,
+    validation_errors,
 )
 from logos_worker_node.profile_fingerprint import plan_hash
 
@@ -185,3 +189,30 @@ def test_logos_answer_is_normalized():
 def test_an_unusable_logos_answer_is_refused(body):
     with pytest.raises(RuntimeError):
         normalize_node_config(body)
+
+
+def _entry(overrides=None, capability=None):
+    return {"model_name": "org/a", "capability": capability or {}, "overrides": overrides or {}}
+
+
+def test_a_misspelled_override_is_refused_with_a_suggestion():
+    errors = validation_errors([_entry({"max_modell_len": 8192})])
+    assert errors == ["org/a: max_modell_len: unknown setting (did you mean max_model_len?)"]
+
+
+def test_an_override_without_a_close_match_is_refused_without_a_hint():
+    assert validation_errors([_entry({"zzzzzz": 1})]) == ["org/a: zzzzzz: unknown setting"]
+
+
+def test_engine_and_profile_override_keys_are_accepted():
+    overrides = {"max_model_len": 8192, "quantization": "awq", "max_context_length": 4096, "host_ram_mb": 100}
+    assert validation_errors([_entry(overrides)]) == []
+
+
+def test_a_wrong_value_is_still_refused():
+    assert validation_errors([_entry({"max_model_len": "lots"})])
+
+
+def test_profile_override_keys_match_what_the_registry_reads():
+    source = inspect.getsource(ModelProfileRegistry._apply_manual_overrides)
+    assert set(re.findall(r'"(\w+)" in overrides', source)) == PROFILE_OVERRIDE_KEYS

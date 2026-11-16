@@ -8,6 +8,7 @@ what it writes under ``engines.vllm.model_overrides``.
 from __future__ import annotations
 
 import copy
+import difflib
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ import yaml
 from pydantic import ValidationError
 
 from logos_worker_node.config import _wire_kv_budget
+from logos_worker_node.model_profiles import PROFILE_OVERRIDE_KEYS
 from logos_worker_node.models import AppConfig, VllmConfig
 
 SYNC_NODE_CONFIG_ACTION = "sync_node_config"
@@ -128,17 +130,32 @@ def apply_node_config(cfg: AppConfig, entries: list[dict[str, Any]], revision: i
     _wire_kv_budget(cfg)
 
 
+def _unknown_key_errors(name: Any, overrides: dict[str, Any]) -> list[str]:
+    """Overrides no lane start reads: a typo would be stored and do nothing."""
+    known = set(VllmConfig.model_fields) | PROFILE_OVERRIDE_KEYS
+    errors = []
+    for key in overrides:
+        if key in known:
+            continue
+        close = difflib.get_close_matches(key, sorted(known), n=1)
+        hint = f" (did you mean {close[0]}?)" if close else ""
+        errors.append(f"{name}: {key}: unknown setting{hint}")
+    return errors
+
+
 def validation_errors(entries: list[dict[str, Any]]) -> list[str]:
-    """What the lane start would reject: engine settings that VllmConfig refuses."""
+    """What the lane start would reject, plus override keys nothing reads."""
     fields = VllmConfig.model_fields
     errors: list[str] = []
     for item in entries:
         entry = _mapping(item)
+        name = entry.get("model_name")
+        overrides = _mapping(entry.get("overrides"))
+        errors.extend(_unknown_key_errors(name, overrides))
         engine = {k: v for k, v in _mapping(entry.get("capability")).items() if k in fields}
-        engine.update({k: v for k, v in _mapping(entry.get("overrides")).items() if k in fields})
+        engine.update({k: v for k, v in overrides.items() if k in fields})
         try:
             VllmConfig.model_validate(engine)
         except ValidationError as exc:
-            name = entry.get("model_name")
             errors.extend(f"{name}: {'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
     return errors
