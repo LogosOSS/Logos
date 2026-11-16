@@ -38,7 +38,12 @@ from logos.dbutils.dbrequest import (
     LogosNodeWakeLaneRequest,
 )
 from logos.errors import admin_error_response
-from logos.logosnode_registry import LogosNodeCommandError, LogosNodeOfflineError, LogosNodeSessionConflictError
+from logos.logosnode_registry import (
+    LogosNodeCommandError,
+    LogosNodeCommandRejectedError,
+    LogosNodeOfflineError,
+    LogosNodeSessionConflictError,
+)
 from logos.logosnode_snapshot import _LOGOSNODE_STATS_STALE_AFTER_SECONDS, _parse_iso_datetime
 from logos.main import (
     _benchmark_sessions_by_job,
@@ -922,16 +927,17 @@ async def _worker_refusal(provider_id: int, rows: list[Dict[str, Any]]) -> JSONR
     if not registry.supports_action(provider_id, VALIDATE_NODE_CONFIG_ACTION):
         return admin_error_response(409, "The worker is too old to validate a configuration; update it first")
     try:
-        result = await registry.send_command(
+        await registry.send_command(
             provider_id, VALIDATE_NODE_CONFIG_ACTION, params={"entries": rows}, timeout_seconds=30
         )
     except LogosNodeOfflineError:
         return admin_error_response(503, "Worker not connected")
+    except LogosNodeCommandRejectedError as exc:
+        # The registry raises a refusal; its message lists the problems.
+        return admin_error_response(400, str(exc))
     except LogosNodeCommandError as exc:
         return admin_error_response(502, f"The worker could not validate the configuration: {exc}")
-    if result.get("ok"):
-        return None
-    return admin_error_response(400, "; ".join(result.get("errors") or ["The worker refused the configuration"]))
+    return None
 
 
 @router.post("/logosdb/providers/logosnode/node-config", tags=["logosnode"])

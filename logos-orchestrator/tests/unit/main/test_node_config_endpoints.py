@@ -15,7 +15,7 @@ from logos.dbutils.dbrequest import (
     LogosNodeConfigRequest,
     NodeConfigEntry,
 )
-from logos.logosnode_registry import LogosNodeCommandError, LogosNodeOfflineError
+from logos.logosnode_registry import LogosNodeCommandError, LogosNodeCommandRejectedError, LogosNodeOfflineError
 from logos.node_config import SYNC_NODE_CONFIG_ACTION, VALIDATE_NODE_CONFIG_ACTION
 from logos.routers import logosnode as logosnode_mod
 
@@ -75,7 +75,6 @@ class _FakeRegistry:
         self.actions = set(actions)
         self.fail = fail
         self.connected = connected
-        self.validation = {"ok": True, "errors": []}
         self.validate_error: Exception | None = None
         self.sent: list = []
         self.validated: list = []
@@ -91,7 +90,7 @@ class _FakeRegistry:
             if self.validate_error is not None:
                 raise self.validate_error
             self.validated.append((provider_id, params))
-            return self.validation
+            return {"ok": True, "errors": []}
         if self.fail:
             raise RuntimeError("socket closed")
         self.sent.append((provider_id, action, params))
@@ -247,19 +246,13 @@ def test_the_worker_validates_the_models_before_they_are_stored(env):
 
 
 def test_what_the_worker_refuses_is_not_stored(env):
+    # The registry raises a refusal instead of returning ok=False.
     db, registry = env()
-    registry.validation = {"ok": False, "errors": ["org/a: dtype: bad", "org/b: x: bad"]}
+    registry.validate_error = LogosNodeCommandRejectedError("org/a: dtype: bad; org/b: x: bad")
     status, body = _body(_replace())
     assert status == 400
     assert body["error"] == "org/a: dtype: bad; org/b: x: bad"
     assert db.replaced == []
-
-
-def test_a_refusal_without_a_reason_still_answers_400(env):
-    _, registry = env()
-    registry.validation = {"ok": False}
-    status, body = _body(_replace())
-    assert status == 400 and "refused" in body["error"]
 
 
 def test_an_offline_worker_cannot_validate_so_nothing_is_stored(env):

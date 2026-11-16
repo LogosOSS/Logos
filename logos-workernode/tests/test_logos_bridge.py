@@ -4881,6 +4881,7 @@ async def test_validation_names_the_model_and_the_setting_it_refuses(tmp_path):
 
     assert response["ok"] is False
     assert len(response["errors"]) == 1 and response["errors"][0].startswith("org/a: tensor_parallel_size")
+    assert response["error"] == response["errors"][0]
 
 
 @pytest.mark.asyncio
@@ -4889,7 +4890,11 @@ async def test_validation_needs_a_list_of_entries(tmp_path):
 
     response = await client._execute_command("validate_node_config", {})  # noqa: SLF001
 
-    assert response == {"ok": False, "errors": ["'entries' must be a list"]}
+    assert response == {
+        "ok": False,
+        "errors": ["'entries' must be a list"],
+        "error": "'entries' must be a list",
+    }
 
 
 @pytest.mark.asyncio

@@ -1178,10 +1178,11 @@ class LogosBridgeClient:
     def _handle_validate_node_config(self, params: dict[str, Any]) -> dict[str, Any]:
         """Check models before Logos stores them, the way a lane start would."""
         entries = params.get("entries")
-        if not isinstance(entries, list):
-            return {"ok": False, "errors": ["'entries' must be a list"]}
-        errors = validation_errors(entries)
-        return {"ok": not errors, "errors": errors}
+        errors = validation_errors(entries) if isinstance(entries, list) else ["'entries' must be a list"]
+        if not errors:
+            return {"ok": True, "errors": []}
+        # Logos raises a refusal from "error", so the problems travel there too.
+        return {"ok": False, "errors": errors, "error": "; ".join(errors)}
 
     def _announce_calibrated_capabilities(self) -> None:
         """Add configured models that now have a profile to the capabilities.
