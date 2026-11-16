@@ -447,21 +447,43 @@ class ModelProfileRegistry:
     def _overrides_for(self, model_name: str) -> dict[str, Any]:
         return {**self._manual_overrides.get(model_name, {}), **self._config_overrides.get(model_name, {})}
 
-    def replace_config_overrides(self, overrides: dict[str, dict[str, Any]]) -> None:
+    def overrides_removed_by(self, overrides: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+        """Profile keys that stop applying when ``overrides`` replace the config-owned set."""
+        with self._lock:
+            return self._removed_by(overrides)
+
+    def _removed_by(self, overrides: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+        removed = {}
+        for model_name, old in self._config_overrides.items():
+            gone = sorted(
+                set(old) - set(overrides.get(model_name, {})) - set(self._manual_overrides.get(model_name, {}))
+            )
+            if gone and model_name in self._profiles:
+                removed[model_name] = gone
+        return removed
+
+    def replace_config_overrides(
+        self, overrides: dict[str, dict[str, Any]], central: dict[str, Any] | None = None
+    ) -> None:
         """Make ``overrides`` all that Logos' node configuration owns.
 
-        A key that disappeared stops applying. A measured field is restored
-        by the recalibration the changed plan triggers; a field only the
-        configuration sets (min_context_fraction) is cleared at once.
+        A key that disappeared stops applying, and its field takes the value
+        Logos stores beneath the override (``central``), or none when Logos has
+        none or could not be asked.
         """
         with self._lock:
-            previous = self._config_overrides
+            removed = self._removed_by(overrides)
             self._config_overrides = {str(m): dict(ov) for m, ov in overrides.items() if isinstance(ov, dict) and ov}
-            for model_name, old in previous.items():
-                profile = self._profiles.get(model_name)
-                if profile is not None and "min_context_fraction" not in self._overrides_for(model_name):
-                    if "min_context_fraction" in old:
-                        profile.min_context_fraction = None
+            for model_name, keys in removed.items():
+                profile = self._profiles[model_name]
+                stored = (central or {}).get(model_name)
+                for key in keys:
+                    if key not in _RECORD_FIELDS:
+                        continue
+                    underlying = stored if isinstance(stored, dict) and key in stored else None
+                    setattr(profile, key, underlying[key] if underlying else None)
+                    if key == "base_residency_mb":
+                        profile.residency_source = underlying.get("residency_source") if underlying else None
             for model_name, profile in self._profiles.items():
                 self._apply_manual_overrides(model_name, profile)
 

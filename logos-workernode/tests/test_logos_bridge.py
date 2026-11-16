@@ -4892,6 +4892,84 @@ async def test_a_failing_preparation_does_not_undo_the_applied_configuration(tmp
 
 
 @pytest.mark.asyncio
+async def test_a_removed_profile_override_takes_the_measured_value_from_logos(tmp_path):
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(3, _entry("org/ready", {"base_residency_mb": 500}))
+    )
+    assert registry.get_profile("org/ready").base_residency_mb == 500.0
+    fetched: list = []
+
+    async def _fetch(hashes, counts):
+        fetched.append((hashes, counts))
+        return {"org/ready": {"base_residency_mb": 9000.0, "residency_source": "calibrated"}}
+
+    client.fetch_model_profiles = _fetch  # noqa: SLF001
+
+    await client._execute_command("sync_node_config", _central(4, _entry("org/ready")))  # noqa: SLF001
+
+    profile = registry.get_profile("org/ready")
+    assert len(fetched) == 1
+    assert (profile.base_residency_mb, profile.residency_source) == (9000.0, "calibrated")
+
+
+@pytest.mark.asyncio
+async def test_a_removed_override_is_cleared_when_logos_cannot_be_asked(tmp_path):
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(3, _entry("org/ready", {"base_residency_mb": 500}))
+    )
+
+    async def _fetch(*_args):
+        raise RuntimeError("Logos unreachable")
+
+    client.fetch_model_profiles = _fetch  # noqa: SLF001
+
+    response = await client._execute_command("sync_node_config", _central(4, _entry("org/ready")))  # noqa: SLF001
+
+    assert response["applied"] is True
+    assert registry.get_profile("org/ready").base_residency_mb is None
+
+
+@pytest.mark.asyncio
+async def test_a_push_without_removed_overrides_does_not_ask_logos_for_profiles(tmp_path):
+    client = _node_config_client(tmp_path)
+
+    async def _fetch(*_args):
+        raise AssertionError("not needed")
+
+    client.fetch_model_profiles = _fetch  # noqa: SLF001
+
+    response = await client._execute_command("sync_node_config", _central(3, _entry("org/ready")))  # noqa: SLF001
+
+    assert response["applied"] is True
+
+
+@pytest.mark.asyncio
+async def test_keys_calculated_for_a_superseded_revision_are_discarded(tmp_path, monkeypatch):
+    client = _node_config_client(tmp_path)
+    client._app.state.gpu_collector = MagicMock(
+        get_snapshot=AsyncMock(return_value=MagicMock(devices=[]))
+    )  # noqa: SLF001
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    published: list = []
+    registry.set_calibration_keys = lambda keys: published.append(keys) or []
+
+    def _keys_while_a_newer_push_lands(*_args):
+        client._cfg.node_config_revision += 1  # noqa: SLF001
+        return {"org/ready": {"schema": 2}}
+
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_calibration_keys", _keys_while_a_newer_push_lands)
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_slice_gpu_counts", lambda *_a: {})
+
+    await client._refresh_calibration_keys()  # noqa: SLF001
+
+    assert published == []
+
+
+@pytest.mark.asyncio
 async def test_a_node_config_waits_for_a_running_calibration_and_applies_afterwards(tmp_path):
     client = _node_config_client(tmp_path)
     client._calibration_session_is_live = lambda: True  # noqa: SLF001

@@ -2517,6 +2517,72 @@ async def test_a_restarted_lane_runs_with_the_overrides_the_node_has_now(monkeyp
     assert spawned[0].vllm_config.quantization == "awq"
 
 
+def _overridden_lane(overrides: dict) -> tuple[LaneManager, VllmEngineConfig, LaneConfig]:
+    engine = VllmEngineConfig(model_overrides={"org/model": overrides})
+    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15000, lane_port_end=15010)
+    lane = LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig(extra_args=["--own"]))
+    return manager, engine, lane
+
+
+def test_a_removed_engine_override_gives_the_original_back_on_restart() -> None:
+    manager, engine, lane = _overridden_lane({"extra_args": ["--from-node"], "quantization": "awq"})
+    launched = manager._apply_model_vllm_overrides(lane, "l1")  # noqa: SLF001
+    assert launched.vllm_config.extra_args == ["--from-node"]
+
+    engine.model_overrides["org/model"] = {"quantization": "awq"}
+    restarted = manager._refresh_node_overrides("l1", launched)  # noqa: SLF001
+
+    assert restarted.vllm_config.extra_args == ["--own"]
+    assert restarted.vllm_config.quantization == "awq"
+
+
+def test_a_changed_engine_override_replaces_the_old_one_and_keeps_the_original() -> None:
+    manager, engine, lane = _overridden_lane({"quantization": "awq"})
+    launched = manager._apply_model_vllm_overrides(lane, "l1")  # noqa: SLF001
+
+    engine.model_overrides["org/model"] = {"quantization": "gptq"}
+    changed = manager._refresh_node_overrides("l1", launched)  # noqa: SLF001
+    engine.model_overrides.pop("org/model")
+    removed = manager._refresh_node_overrides("l1", changed)  # noqa: SLF001
+
+    assert changed.vllm_config.quantization == "gptq"
+    assert removed.vllm_config.quantization == ""
+
+
+def test_an_explicit_lane_keeps_its_values_whatever_the_overrides_say() -> None:
+    manager, engine, lane = _overridden_lane({"quantization": "awq"})
+    launched = manager._apply_model_vllm_overrides(lane, "l1")  # noqa: SLF001
+    manager._explicit_lanes.add("l1")  # noqa: SLF001
+    engine.model_overrides.pop("org/model")
+
+    assert manager._refresh_node_overrides("l1", launched) is launched  # noqa: SLF001
+
+
+def test_a_lane_that_is_forgotten_has_no_baseline_left() -> None:
+    manager, _, lane = _overridden_lane({"quantization": "awq"})
+    manager._apply_model_vllm_overrides(lane, "l1")  # noqa: SLF001
+    manager._explicit_lanes.add("l1")  # noqa: SLF001
+
+    manager._forget_lane_overrides("l1")  # noqa: SLF001
+
+    assert "l1" not in manager._override_baselines and "l1" not in manager._explicit_lanes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_forced_restart_after_removing_an_override_launches_without_it() -> None:
+    manager, engine, lane = _overridden_lane({"extra_args": ["--from-node"]})
+    launched = manager._apply_model_vllm_overrides(lane, "benchmark-lane")  # noqa: SLF001
+    manager._handles["benchmark-lane"] = _StubHandle(launched)
+    manager._restart_lane_unlocked = AsyncMock()
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+    engine.model_overrides.pop("org/model")
+
+    await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+
+    assert manager._restart_lane_unlocked.await_args.args[1].vllm_config.extra_args == ["--own"]
+
+
 @pytest.mark.asyncio
 async def test_stuck_lane_no_restart_when_auto_restart_false(monkeypatch) -> None:
     """When auto_restart=False (lock held), stuck lane is stopped but NOT restarted."""

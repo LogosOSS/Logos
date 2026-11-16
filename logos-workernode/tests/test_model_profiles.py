@@ -1200,3 +1200,57 @@ def test_replacing_config_overrides_applies_the_new_ones_to_existing_profiles():
     registry.replace_config_overrides({"m": {"host_ram_mb": 123.0}, "other": {"host_ram_mb": 1.0}})
 
     assert registry.get_profile("m").host_ram_mb == 123.0
+
+
+def _with_host_ram(value: float) -> ModelProfileRegistry:
+    registry = ModelProfileRegistry()
+    registry._profiles["m"] = ModelProfileRecord(host_ram_mb=value)  # noqa: SLF001
+    registry.add_overrides({"m": {"host_ram_mb": 100000.0}})
+    return registry
+
+
+def test_a_removed_override_takes_the_value_logos_stores_beneath_it():
+    registry = _with_host_ram(50.0)
+    assert registry.get_profile("m").host_ram_mb == 100000.0
+    assert registry.overrides_removed_by({}) == {"m": ["host_ram_mb"]}
+
+    registry.replace_config_overrides({}, {"m": {"host_ram_mb": 50.0}})
+
+    assert registry.get_profile("m").host_ram_mb == 50.0
+    assert registry.get_all_profiles()["m"]["overridden_fields"] == []
+
+
+def test_a_removed_override_without_a_stored_value_is_cleared():
+    registry = _with_host_ram(50.0)
+
+    registry.replace_config_overrides({}, {"m": {"engine": "vllm"}})
+
+    assert registry.get_profile("m").host_ram_mb is None
+
+
+def test_a_removed_override_is_cleared_when_logos_could_not_be_asked():
+    registry = _with_host_ram(50.0)
+
+    registry.replace_config_overrides({})
+
+    assert registry.get_profile("m").host_ram_mb is None
+
+
+def test_a_removed_residency_override_restores_the_measured_source_too():
+    registry = ModelProfileRegistry()
+    registry._profiles["m"] = ModelProfileRecord(
+        base_residency_mb=9000.0, residency_source="calibrated"
+    )  # noqa: SLF001
+    registry.add_overrides({"m": {"base_residency_mb": 500.0}})
+    assert registry.get_profile("m").residency_source == "override"
+
+    registry.replace_config_overrides({}, {"m": {"base_residency_mb": 9000.0, "residency_source": "calibrated"}})
+
+    profile = registry.get_profile("m")
+    assert (profile.base_residency_mb, profile.residency_source) == (9000.0, "calibrated")
+
+
+def test_an_override_that_stays_is_not_reported_as_removed():
+    registry = _with_host_ram(50.0)
+    assert registry.overrides_removed_by({"m": {"host_ram_mb": 7.0}}) == {}
+    assert ModelProfileRegistry({"m": {"host_ram_mb": 1.0}}).overrides_removed_by({}) == {}

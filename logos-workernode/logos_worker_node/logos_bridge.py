@@ -1187,7 +1187,17 @@ class LogosBridgeClient:
         # Only models that were announced stay so; new ones follow with a profile.
         cfg.logos.capabilities_models = [m for m in cfg.logos.configured_models if m in serving]
         model_profiles = self._app.state.model_profiles
-        model_profiles.replace_config_overrides(profile_overrides_of(cfg))
+        new_overrides = profile_overrides_of(cfg)
+        central = None
+        if model_profiles.overrides_removed_by(new_overrides):
+            # Logos keeps the measured values beneath an override.
+            try:
+                central = await self.fetch_model_profiles(
+                    model_profiles.calibration_key_hashes(), model_profiles.slice_gpu_counts()
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("[NodeConfig] Removed overrides are cleared; Logos' values return at the next start")
+        model_profiles.replace_config_overrides(new_overrides, central)
         model_profiles.seed_capabilities(cfg.logos.configured_models, engine="vllm")
         self._announce_calibrated_capabilities()
         await self._refresh_calibration_keys()
@@ -2024,6 +2034,8 @@ class LogosBridgeClient:
         gpu_collector = getattr(self._app.state, "gpu_collector", None)
         if gpu_collector is None:
             return
+        # Pushes can overlap while the keys are calculated.
+        revision = self._app.state.config.logos.node_config_revision
         try:
             from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
             from logos_worker_node.profile_fingerprint import (  # noqa: PLC0415
@@ -2038,6 +2050,9 @@ class LogosBridgeClient:
             counts = node_slice_gpu_counts(self._app.state.config, plans, list(snapshot.devices))
         except Exception:  # noqa: BLE001
             logger.warning("[Calibration] Could not refresh calibration keys; keeping the previous ones", exc_info=True)
+            return
+        if self._app.state.config.logos.node_config_revision != revision:
+            logger.info("[Calibration] Discarding keys of revision %d: a newer configuration was applied", revision)
             return
         self._app.state.model_profiles.set_slice_gpu_counts(counts)
         changed = self._app.state.model_profiles.set_calibration_keys(keys)
