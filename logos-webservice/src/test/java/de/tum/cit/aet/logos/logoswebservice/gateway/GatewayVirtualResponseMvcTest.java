@@ -489,8 +489,38 @@ class GatewayVirtualResponseMvcTest {
     }
 
     private void awaitReleased() {
-        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(3))
-            .untilAsserted(() -> assertThat(limit.inFlight()).isZero());
+        try {
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(3))
+                .untilAsserted(() -> assertThat(limit.inFlight()).isZero());
+        } catch (org.awaitility.core.ConditionTimeoutException failure) {
+            dumpOwnedThreads(failure);
+            throw failure;
+        }
+    }
+
+    private void dumpOwnedThreads(Throwable failure) {
+        // ManagementFactory's platform-thread dump omits the virtual owners we need here.
+        try {
+            Path dump = Path.of("target", "surefire-reports", "gateway-owned-timeout-" + System.nanoTime() + ".txt")
+                .toAbsolutePath();
+            Process command = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "jcmd").toString(),
+                Long.toString(ProcessHandle.current().pid()), "Thread.dump_to_file", dump.toString())
+                .redirectErrorStream(true).start();
+            if (!command.waitFor(5, TimeUnit.SECONDS)) {
+                command.destroyForcibly().waitFor();
+                throw new IllegalStateException("Gateway thread dump timed out");
+            }
+            if (command.exitValue() != 0) {
+                throw new IllegalStateException(new String(command.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+            }
+            for (String thread : java.nio.file.Files.readString(dump).split("\\R\\R")) {
+                if (thread.contains("gateway-") || thread.contains("logos-response-") || thread.contains("logos-request-")) {
+                    System.err.println(thread);
+                }
+            }
+        } catch (Exception diagnosticFailure) {
+            failure.addSuppressed(diagnosticFailure);
+        }
     }
 
     private record Resources(long fds, int threads, long heap, long rssKiB) {}
