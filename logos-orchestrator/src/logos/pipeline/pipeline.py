@@ -832,6 +832,10 @@ class RequestPipeline:
         """
         return self._monitoring.take_buffer(request_id)
 
+    def record_answer_reuse_miss(self, request_id: str) -> None:
+        """Persist that the answer cache had no reusable answer for the request."""
+        self._monitoring.record_answer_reuse_miss(request_id)
+
     def record_rate_limit_admission(self, request_id: str, admitted: bool) -> None:
         """Persist the limiter's admission decision on the request's log row."""
         self._monitoring.record_rate_limit_admission(request_id, admitted)

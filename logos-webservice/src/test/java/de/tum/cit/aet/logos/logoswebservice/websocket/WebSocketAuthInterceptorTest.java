@@ -1,5 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.websocket;
 
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -44,9 +45,10 @@ class WebSocketAuthInterceptorTest {
     private void authenticate(boolean active, String role) {
         Jwt jwt = Jwt.withTokenValue("the-token").header("alg", "RS256")
             .subject("11111111-1111-1111-1111-111111111111")
-            .claim("preferred_username", "alice").build();
+            .claim("preferred_username", "alice").expiresAt(Instant.now().plusSeconds(300)).build();
         SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
         User user = new User();
+        org.springframework.test.util.ReflectionTestUtils.setField(user, "id", 123);
         user.setActive(active);
         user.setRole(role);
         when(syncService.syncIfStale(any(KeycloakClaims.class))).thenReturn(user);
@@ -69,7 +71,10 @@ class WebSocketAuthInterceptorTest {
         authenticate(true, Role.Names.LOGOS_ADMIN);
         HandshakeResult result = handshake();
         assertThat(result.accepted()).isTrue();
-        assertThat(result.attributes()).containsKey("logosKey");
+        assertThat(result.attributes()).containsEntry("logosKey", "the-token")
+            .containsEntry(WebSocketSessionAuth.USER_ID, 123)
+            .containsEntry(WebSocketSessionAuth.EXPIRES_AT,
+                ((JwtAuthenticationToken) SecurityContextHolder.getContext().getAuthentication()).getToken().getExpiresAt());
     }
 
     @Test
@@ -114,7 +119,7 @@ class WebSocketAuthInterceptorTest {
         // than the 403 that a known user lacking the role gets.
         Jwt jwt = Jwt.withTokenValue("the-token").header("alg", "RS256")
             .subject("11111111-1111-1111-1111-111111111111")
-            .claim("preferred_username", "alice").build();
+            .claim("preferred_username", "alice").expiresAt(Instant.now().plusSeconds(300)).build();
         SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
         when(syncService.syncIfStale(any(KeycloakClaims.class)))
             .thenThrow(new DataAccessResourceFailureException("directory unreachable"));

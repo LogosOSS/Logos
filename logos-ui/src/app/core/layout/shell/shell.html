@@ -31,7 +31,7 @@
     <div class="sidebar-spacer"></div>
 
     <div class="sidebar-footer">
-      <button (click)="openLogoutModal()" class="user-info">
+      <button (click)="openLogoutModal()" class="user-info" aria-haspopup="dialog" [attr.aria-label]="'Open account menu for ' + fullName()">
         <app-icon-tile [label]="userInitials()" [size]="38" />
         <div class="user-text">
           <p class="user-name">{{ fullName() }}</p>
@@ -71,11 +71,18 @@
       role="dialog"
       aria-modal="true"
       aria-labelledby="logout-modal-name"
+      cdkTrapFocus
+      [cdkTrapFocusAutoCapture]="true"
+      (keydown.escape)="closeLogoutModal()"
     >
       <app-icon-tile [label]="userInitials()" [size]="56" class="logout-modal__avatar" />
       <p class="logout-modal__name" id="logout-modal-name">{{ fullName() }}</p>
       <p class="logout-modal__email">{{ auth.currentUser()?.email }}</p>
       <p class="logout-modal__role">{{ auth.currentUser()?.role }}</p>
+      <a routerLink="/settings" class="btn-secondary" cdkFocusInitial (click)="closeLogoutModal()">
+        <i class="pi pi-cog" aria-hidden="true"></i>
+        Account settings
+      </a>
       <div class="logout-modal__actions">
         <button class="btn-secondary" (click)="closeLogoutModal()">Cancel</button>
         <button class="btn-danger" (click)="confirmLogout()">

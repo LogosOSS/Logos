@@ -171,7 +171,7 @@ class LogosNodeSchedulingDataFacade:
         return self._providers[int(provider_id)].get_capacity_info()
 
     def get_parallel_capacity(self, model_id: int, provider_id: int) -> tuple[int, str]:
-        """Get the parallel capacity for a model on a specific provider."""
+        """Get a worker's local ledger ceiling, separate from live admission."""
         provider = self._get_provider_for_model(model_id, provider_id)
         return provider.get_parallel_capacity(model_id)
 

@@ -169,6 +169,7 @@ def emitted(monkeypatch) -> _Emitter:
 
 @pytest.mark.asyncio
 async def test_a_report_becomes_one_notification_for_the_logos_admins(service, emitted):
+    service.request(1, "d1")
     answer = await logosnode_mod.logosnode_maintenance_report(_report(), _request())
 
     assert answer == {"status": "accepted"}
@@ -181,6 +182,7 @@ async def test_a_report_becomes_one_notification_for_the_logos_admins(service, e
 
 @pytest.mark.asyncio
 async def test_a_repeated_report_carries_the_same_key_so_the_application_server_stores_it_once(service, emitted):
+    service.request(1, "d1")
     await logosnode_mod.logosnode_maintenance_report(_report(), _request())
 
     answer = await logosnode_mod.logosnode_maintenance_report(_report(), _request())
@@ -192,6 +194,10 @@ async def test_a_repeated_report_carries_the_same_key_so_the_application_server_
 
 @pytest.mark.asyncio
 async def test_the_same_deployment_id_on_two_nodes_is_two_notifications(service, emitted):
+    service.request(1, "d1")
+    service.release(1, "d1")
+    service.request(2, "d1")
+    service.release(2, "d1")
     await logosnode_mod.logosnode_maintenance_report(_report("key-a"), _request())
     await logosnode_mod.logosnode_maintenance_report(_report("key-b"), _request())
 
@@ -201,6 +207,7 @@ async def test_the_same_deployment_id_on_two_nodes_is_two_notifications(service,
 
 @pytest.mark.asyncio
 async def test_a_notification_that_was_not_delivered_can_be_reported_again(service, emitted):
+    service.request(1, "d1")
     emitted.delivered = False
     with pytest.raises(HTTPException) as exc_info:
         await logosnode_mod.logosnode_maintenance_report(_report(), _request())
@@ -216,6 +223,7 @@ async def test_a_notification_that_was_not_delivered_can_be_reported_again(servi
 @pytest.mark.asyncio
 async def test_a_repeat_during_a_slow_delivery_is_delivered_again_when_the_first_one_fails(service, monkeypatch):
     """The manager gives up on a slow call and repeats it. The repeat must not be taken for a finished report."""
+    service.request(1, "d1")
     release_first = asyncio.Event()
     calls: list[dict] = []
 
@@ -261,6 +269,7 @@ async def test_a_key_that_belongs_to_no_node_reports_nothing(service, emitted):
 
 @pytest.mark.asyncio
 async def test_a_deployment_that_changed_nothing_is_reported_as_a_success(service, emitted):
+    service.request(1, "d1")
     answer = await logosnode_mod.logosnode_maintenance_report(_report(outcome="unchanged"), _request())
 
     assert answer == {"status": "accepted"}
@@ -270,3 +279,100 @@ async def test_a_deployment_that_changed_nothing_is_reported_as_a_success(servic
 def test_an_outcome_that_is_not_an_ending_is_not_accepted():
     with pytest.raises(ValidationError):
         _report(outcome="running")
+
+
+@pytest.mark.parametrize("tag", ["v1.2-rc_1", "_build", "A" * 128])
+def test_reports_accept_node_manager_tag_grammar(tag):
+    assert _report(tag=tag).tag == tag
+
+
+@pytest.mark.parametrize("tag", ["", "-tag", ".tag", "has space", "tag\n", "tag/extra", "x" * 129, "<b>tag</b>"])
+def test_reports_reject_invalid_tags(tag):
+    with pytest.raises(ValidationError):
+        _report(tag=tag)
+
+
+@pytest.mark.parametrize("field, limit", [("message", 2000), ("requested_by", 300)])
+def test_report_text_is_bounded(field, limit):
+    assert getattr(_report(**{field: "x" * limit}), field) == "x" * limit
+    with pytest.raises(ValidationError):
+        _report(**{field: "x" * (limit + 1)})
+
+
+async def test_reports_require_a_granted_lease_on_the_authenticated_node(service, emitted):
+    service.request(1, "d1")
+    assert service.request(2, "d1")["status"] == "denied"
+    for body in [_report("key-b"), _report(deployment_id="never-granted")]:
+        assert await logosnode_mod.logosnode_maintenance_report(body, _request()) == {"status": "dropped"}
+    assert emitted == []
+
+
+@pytest.mark.parametrize("end", ["release", "expire", "admin"])
+async def test_lease_evidence_survives_the_end_of_the_lease(service, emitted, end):
+    service.request(1, "d1")
+    if end == "expire":
+        service._clock.advance(7200)
+        assert not service.is_cordoned(1)
+    elif end == "admin":
+        service.admin_release(1, "d1")
+    else:
+        service.release(1, "d1")
+    assert await logosnode_mod.logosnode_maintenance_report(_report(), _request()) == {"status": "accepted"}
+    assert len(emitted) == 1
+
+
+async def test_report_limit_covers_new_ids_retries_and_concurrent_calls_per_node(service, emitted, caplog):
+    for i in range(21):
+        service.request(1, f"d{i}")
+        service.release(1, f"d{i}")
+    answers = await asyncio.gather(
+        *[logosnode_mod.logosnode_maintenance_report(_report(deployment_id=f"d{i}"), _request()) for i in range(21)]
+    )
+    assert [a["status"] for a in answers].count("accepted") == 20
+    assert [a["status"] for a in answers].count("dropped") == 1
+    assert len(emitted) == 20
+    assert "hourly report limit reached" in caplog.text
+    assert await logosnode_mod.logosnode_maintenance_report(_report(), _request()) == {"status": "dropped"}
+    service.request(2, "d1")
+    assert await logosnode_mod.logosnode_maintenance_report(_report("key-b"), _request()) == {"status": "accepted"}
+    service._clock.advance(3599)
+    assert await logosnode_mod.logosnode_maintenance_report(_report(), _request()) == {"status": "dropped"}
+    service._clock.advance(1)
+    assert await logosnode_mod.logosnode_maintenance_report(_report(), _request()) == {"status": "accepted"}
+
+
+@pytest.mark.parametrize("role", [None, "app_developer", "app_admin", "logos_admin"])
+async def test_operator_endpoints_require_a_logos_admin_key(service, monkeypatch, role):
+    from logos.dbutils.dbrequest import AdminReleaseNodeMaintenanceRequest, LogosKeyModel
+
+    db = MagicMock()
+    db.get_user_by_api_key.return_value = {"role": role} if role else None
+    manager = MagicMock()
+    manager.__enter__.return_value = db
+    monkeypatch.setattr(logosnode_mod, "DBManager", lambda: manager)
+    service.request(1, "d1")
+    for endpoint, body in [
+        (logosnode_mod.logosnode_maintenance_admin_status, LogosKeyModel(logos_key="operator")),
+        (
+            logosnode_mod.logosnode_maintenance_admin_release,
+            AdminReleaseNodeMaintenanceRequest(logos_key="operator", provider_id=1, deployment_id="d1"),
+        ),
+    ]:
+        if role == "logos_admin":
+            await endpoint(body)
+        else:
+            with pytest.raises(HTTPException) as exc:
+                await endpoint(body)
+            assert exc.value.status_code == 403
+    assert service.is_cordoned(1) is (role != "logos_admin")
+
+
+async def test_failed_delivery_attempts_also_consume_the_report_budget(service, emitted):
+    service._reports_per_hour = 1
+    service.request(1, "d1")
+    emitted.delivered = False
+    with pytest.raises(HTTPException) as exc:
+        await logosnode_mod.logosnode_maintenance_report(_report(), _request())
+    assert exc.value.status_code == 503
+    assert await logosnode_mod.logosnode_maintenance_report(_report(), _request()) == {"status": "dropped"}
+    assert len(emitted) == 1

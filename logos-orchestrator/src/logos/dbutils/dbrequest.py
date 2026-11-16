@@ -108,7 +108,7 @@ class LogosNodeDeploymentReport(LogosNodeMaintenanceRequest):
     limited, because they end up in an inbox item.
     """
 
-    tag: str = Field(max_length=128)
+    tag: str = Field(pattern=r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
     outcome: Literal["succeeded", "unchanged", "rolled_back", "failed"]
     # The kind of failure of the node manager (for example ``drain_timeout``); empty after a success.
     failure: Optional[str] = Field(default=None, max_length=40)
@@ -279,6 +279,15 @@ class InternalStopCalibrationRequest(BaseModel):
 class InternalReleaseCalibrationClaimRequest(BaseModel):
     provider_id: int
     claim_token: str
+
+
+class ReleaseNodeMaintenanceRequest(BaseModel):
+    provider_id: int = Field(gt=0)
+    deployment_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+class AdminReleaseNodeMaintenanceRequest(ReleaseNodeMaintenanceRequest, LogosKeyModel):
+    pass
 
 
 class InternalReleaseRecoveryRequest(BaseModel):

@@ -9,9 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
-import os
-import stat
-from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -30,6 +27,7 @@ from . import (
     pulse,
     triggers,
 )
+from .artifacts import read_artifact
 from .auth import Principal, require_agent_operator
 from .config import settings
 from .schemas import (
@@ -606,47 +604,16 @@ async def stream_events(
     )
 
 
-def _serve_session_file(target: Path) -> Response | None:
-    """Open one of a session's own files without following links, or None.
-
-    The session that wrote the file ran unprivileged: it can leave a
-    symlink named like a file, and a check-then-serve sequence leaves a
-    window in which a still-running session can swap the file for a link
-    before the read. Opening with ``O_NOFOLLOW`` and verifying the opened
-    descriptor closes both: whatever name the link had, the open fails,
-    and the regular-file check happens on the descriptor, not on the name.
-    """
+def _serve_session_file(directory: Path, relative: Path, limit: int) -> Response | None:
+    """Serve a bounded artifact without following agent-written links."""
     try:
-        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
+        data = read_artifact(directory, relative, limit=limit)
     except OSError:
         return None
-    try:
-        info = os.fstat(fd)
-    except OSError:
-        os.close(fd)
-        return None
-    if not stat.S_ISREG(info.st_mode):
-        os.close(fd)
-        return None
-    file = os.fdopen(fd, "rb")
-
-    def stream() -> Iterator[bytes]:
-        # The response object must be what actually reads the descriptor:
-        # a plain Response sends its (empty) body and never touches
-        # body_iterator, which would advertise the file's length and then
-        # ship zero bytes. Owning the file here is what guarantees the
-        # descriptor is closed exactly once, when the stream ends.
-        try:
-            while chunk := file.read(65536):
-                yield chunk
-        finally:
-            file.close()
-
     return StreamingResponse(
-        stream(),
-        status_code=200,
-        media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream",
-        headers={"Content-Length": str(info.st_size)},
+        iter([data]),
+        media_type=mimetypes.guess_type(relative.name)[0] or "application/octet-stream",
+        headers={"Content-Length": str(len(data))},
     )
 
 
@@ -656,19 +623,7 @@ async def get_screenshot(session_id: int, name: str, _: Principal = Depends(requ
     # from a URL, and the artefact root holds every session's output.
     if "/" in name or "\\" in name or name.startswith("."):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid name")
-    # The trusted root is the artefact directory as the runner knows it —
-    # never the resolved screenshots path: the session that wrote it ran
-    # unprivileged and could turn `screenshots` itself into a link into
-    # anywhere the runner can read (its own /proc/self included), and a
-    # link resolved into its own root would pass any containment check
-    # built on it.
-    base = artifact_dir(session_id) / "screenshots"
-    target = base / name
-    if base.is_symlink() or target.is_symlink() or not target.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Screenshot not found")
-    if not target.resolve().is_relative_to(base.resolve()):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Screenshot not found")
-    response = _serve_session_file(target)
+    response = _serve_session_file(artifact_dir(session_id), Path("screenshots") / name, settings.screenshot_max_bytes)
     if response is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Screenshot not found")
     return response

@@ -55,6 +55,11 @@
   margin-bottom: 3px;
 }
 
+.kv-hidden {
+  font-size: 0.85rem;
+  color: rgb(var(--color-typography-500));
+}
+
 .kv-text {
   font-family: monospace;
   font-size: var(--font-size-md);

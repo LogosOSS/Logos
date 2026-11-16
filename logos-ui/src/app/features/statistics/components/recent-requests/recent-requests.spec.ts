@@ -1,9 +1,93 @@
 import { SimpleChange } from '@angular/core';
+import { vi } from 'vitest';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { providerLabel } from '../../statistics.utils';
 import { RequestItem } from '../../statistics.models';
 import { StatisticsService } from '../../services/statistics.service';
 import { chaseStep, tokenLabel, RecentRequests } from './recent-requests';
+import { StatsClockService } from '../../services/stats-clock.service';
+
+describe('recent request time progression', () => {
+  let fixture: ComponentFixture<RecentRequests>;
+  const epoch = Date.parse('2026-11-13T12:00:00Z');
+  const row = (changes: Partial<RequestItem> = {}): RequestItem => ({
+    request_id: 'request-time', model_name: 'model', provider_name: 'provider', status: 'success',
+    timestamp: new Date(epoch).toISOString(), enqueue_ts: new Date(epoch).toISOString(),
+    scheduled_ts: new Date(epoch).toISOString(), request_complete_ts: null,
+    ...changes,
+  } as RequestItem);
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(epoch);
+    await TestBed.configureTestingModule({
+      imports: [RecentRequests], providers: [{ provide: StatisticsService, useValue: {} }],
+    }).compileComponents();
+    fixture = TestBed.createComponent(RecentRequests);
+  });
+  afterEach(() => {
+    fixture?.destroy();
+    vi.useRealTimers();
+  });
+
+  function push(item: RequestItem): void {
+    fixture.componentRef.setInput('liveRequests', [item]);
+    fixture.detectChanges();
+  }
+
+  it('refreshes the clock before rendering a newly scheduled row between ticks', () => {
+    push(row({ scheduled_ts: null }));
+    vi.advanceTimersByTime(500);
+    const running = row({ scheduled_ts: new Date(epoch + 400).toISOString() });
+    push(running);
+    expect(fixture.componentInstance.elapsedOf(running)).toBe('0.1s');
+  });
+
+  it('keeps a steady ticker when streaming pushes arrive faster than its cadence', () => {
+    const running = row();
+    push(running);
+    for (let i = 0; i < 9; i++) {
+      vi.advanceTimersByTime(100);
+      push({ ...running, completion_tokens: i });
+    }
+    vi.advanceTimersByTime(100);
+    expect(fixture.componentInstance.elapsedOf(running)).toBe('1.0s');
+    vi.advanceTimersByTime(1000);
+    expect(fixture.componentInstance.elapsedOf(running)).toBe('2.0s');
+  });
+
+  it('advances relative ages every second without another push, including completed rows', () => {
+    const complete = row({ request_complete_ts: new Date(epoch).toISOString(), total_seconds: 0.5 });
+    push(complete);
+    vi.advanceTimersByTime(10_000);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.rr-card__age').textContent.trim()).toBe('10s ago');
+    vi.advanceTimersByTime(1000);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.rr-card__age').textContent.trim()).toBe('11s ago');
+    expect(fixture.componentInstance.totalTimeLabelOf(complete)).toBe('0.50s');
+  });
+
+  it('uses the server clock when the browser is behind and advances queue time between pushes', () => {
+    vi.setSystemTime(epoch - 300_000);
+    TestBed.inject(StatsClockService).synchronize(new Date(epoch + 100).toISOString());
+    const queued = row({ scheduled_ts: null });
+    push(queued);
+    expect(fixture.componentInstance.totalTimeLabelOf(queued)).toBe('0.1s');
+    vi.advanceTimersByTime(2000);
+    expect(fixture.componentInstance.totalTimeLabelOf(queued)).toBe('2.1s');
+  });
+
+  it('bounds cross-host timestamp skew and old negative stored durations at zero', () => {
+    const future = row({ scheduled_ts: new Date(epoch + 500).toISOString() });
+    push(future);
+    expect(fixture.componentInstance.elapsedOf(future)).toBe('0.0s');
+    push(row({ request_complete_ts: new Date(epoch).toISOString(), total_seconds: -1,
+      queue_seconds: -2, duration: -0.5 }));
+    expect(fixture.nativeElement.textContent).toContain('queue 0.00s · exec 0.00s');
+    expect(fixture.nativeElement.querySelector('.rr-card__total-time').textContent.trim()).toBe('0.00s');
+  });
+});
 
 /**
  * The provider label of a request row.

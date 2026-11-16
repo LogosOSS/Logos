@@ -16,6 +16,7 @@
  * Without arguments, shots marked `needs` are left out: the seed does not
  * create their example state, and the committed PNG stays in place.
  * OUT_DIR writes the PNGs to another folder instead of overwriting static/img/.
+ * LOGOS_SCREENSHOT_WIDTH overrides the viewport width for mobile PR screenshots.
  * The nightly shots change the schedule of llama-3.1-8b-instruct on Docs Local
  * Worker. Use only the isolated documentation stack.
  */
@@ -29,6 +30,7 @@ const DB_CONTAINER = process.env.LOGOS_DB_CONTAINER || "doks-db";
 const IMG = path.join(__dirname, "..", "static", "img");
 const OUT = process.env.OUT_DIR || IMG;
 const ONLY = process.argv.slice(2);
+const WIDTH = Number(process.env.LOGOS_SCREENSHOT_WIDTH || 1440);
 
 const ADMIN = "tobias.wasner";
 const APP_ADMIN = "alexandra.szuminska";
@@ -60,7 +62,7 @@ function lookupIds() {
 
 async function login(browser, user, dark = false) {
   const ctx = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
+    viewport: { width: WIDTH, height: 900 },
     deviceScaleFactor: 2,
     colorScheme: dark ? "dark" : "light",
     reducedMotion: "reduce",
@@ -286,10 +288,21 @@ const SHOTS = [
   },
   { file: "roles/logos-admin-models.png", user: ADMIN, full: true, go: (p) => p.goto(BASE + "/models") },
   { file: "roles/logos-admin-providers.png", user: ADMIN, go: (p) => p.goto(BASE + "/providers") },
+  {
+    file: "roles/logos-admin-provider-connections.png",
+    user: ADMIN,
+    go: async (p) => {
+      await p.goto(BASE + "/providers");
+      await settle(p);
+      await p.getByRole("button", { name: "Expand Docs Cloud (EU)" }).first().click();
+      await p.locator('[data-testid="batch-support"]').first().waitFor();
+    },
+  },
   { file: "roles/logos-admin-policies.png", user: ADMIN, go: (p) => p.goto(BASE + "/policies") },
   { file: "roles/logos-admin-billing.png", user: ADMIN, go: (p) => p.goto(BASE + "/billing") },
   { file: "roles/logos-admin-user-management.png", user: ADMIN, go: (p) => p.goto(BASE + "/user-management") },
   { file: "roles/logos-admin-team-management.png", user: ADMIN, go: (p) => p.goto(BASE + "/team-management") },
+  { file: "roles/logos-admin-permission-audit.png", user: ADMIN, full: true, go: (p, ids) => p.goto(`${BASE}/permission-audit-log?team_id=${ids.team}`) },
   {
     file: "roles/logos-admin-new-team.png",
     user: ADMIN,
@@ -312,6 +325,16 @@ const SHOTS = [
     full: true,
     needs: "an owner-edited diagram with a differing agent update (Edited / Agent update / Keep mine)", go: (p, ids) => teamTab(p, ids, "Workflows") },
 
+  {
+    file: "roles/logos-admin-benchmark-window-ended.png",
+    user: ADMIN,
+    full: true,
+    needs: "LOGOS_DOCS_WINDOW_ENDED=true request-workload-example.py seed",
+    go: async (p, ids) => {
+      await resultsView(p, ids);
+      await p.getByRole("status", { name: "Benchmark stopped" }).waitFor();
+    },
+  },
   // Model performance: overview, results and analysis
   {
     file: "roles/logos-admin-nightly-results.png",

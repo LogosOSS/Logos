@@ -1,7 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.common;
 
 import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.concurrent.ConcurrentHashMap;
@@ -40,6 +39,12 @@ import jakarta.servlet.http.HttpServletRequest;
 public class IpRateLimiterService {
 
     private static final Duration DEFAULT_WINDOW = Duration.ofMinutes(1);
+    /**
+     * The private address space: the proxy hop in front of this service is a
+     * container of the stack whose address Docker takes from its pool (172.17
+     * to 172.31 while free, then 192.168.x); the service publishes no host port.
+     */
+    static final String DEFAULT_TRUSTED_PROXY_CIDRS = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"; // NOSONAR - private ranges, not hosts
 
     /**
      * How often {@link #evictStaleWindows} runs, in milliseconds ({@code @Scheduled} needs a compile-time
@@ -58,19 +63,19 @@ public class IpRateLimiterService {
     private final ConcurrentHashMap<String, Integer> pendingAuthRequests = new ConcurrentHashMap<>();
 
     public IpRateLimiterService(RateLimitingProperties properties) {
-        this(properties, DEFAULT_WINDOW, "172.16.0.0/12");
+        this(properties, DEFAULT_WINDOW, DEFAULT_TRUSTED_PROXY_CIDRS);
     }
 
     @Autowired
     public IpRateLimiterService(
             RateLimitingProperties properties,
-            @Value("${logos.rate-limiting.trusted-proxy-cidrs:172.16.0.0/12}") String trustedProxyCidrs) {
+            @Value("${logos.rate-limiting.trusted-proxy-cidrs:10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}") String trustedProxyCidrs) {
         this(properties, DEFAULT_WINDOW, trustedProxyCidrs);
     }
 
     /** Package-private: lets tests use a short window so real-time expiry can be observed without sleeping a minute. */
     IpRateLimiterService(RateLimitingProperties properties, Duration window) {
-        this(properties, window, "172.16.0.0/12");
+        this(properties, window, DEFAULT_TRUSTED_PROXY_CIDRS);
     }
 
     private IpRateLimiterService(RateLimitingProperties properties, Duration window, String trustedProxyCidrs) {
@@ -207,10 +212,20 @@ public class IpRateLimiterService {
     public String clientIp(HttpServletRequest request) {
         String remoteAddr = request.getRemoteAddr();
         String forwardedFor = request.getHeader("X-Forwarded-For");
-        if (isTrustedProxy(remoteAddr) && forwardedFor != null && !forwardedFor.isBlank()) {
-            return forwardedFor.split(",")[0].strip();
+        String address = remoteAddr;
+        if (forwardedFor == null || forwardedFor.isBlank()) {
+            return address;
         }
-        return remoteAddr;
+        String[] hops = forwardedFor.split(",", -1);
+        for (int i = hops.length - 1; i >= 0 && isTrustedProxy(address); i--) {
+            try {
+                address = InetAddress.ofLiteral(hops[i].strip()).getHostAddress();
+            } catch (IllegalArgumentException e) {
+                // A malformed chain must not create arbitrary limiter buckets.
+                return remoteAddr;
+            }
+        }
+        return address;
     }
 
     private boolean isTrustedProxy(String address) {
@@ -228,8 +243,8 @@ public class IpRateLimiterService {
     private static boolean addressInCidr(String address, String cidr) {
         try {
             int slash = cidr.indexOf('/');
-            InetAddress candidate = InetAddress.getByName(address);
-            InetAddress network = InetAddress.getByName(slash < 0 ? cidr : cidr.substring(0, slash));
+            InetAddress candidate = InetAddress.ofLiteral(address);
+            InetAddress network = InetAddress.ofLiteral(slash < 0 ? cidr : cidr.substring(0, slash));
             byte[] candidateBytes = candidate.getAddress();
             byte[] networkBytes = network.getAddress();
             if (candidateBytes.length != networkBytes.length) {
@@ -249,7 +264,7 @@ public class IpRateLimiterService {
             int mask = (0xFF << (8 - remainingBits)) & 0xFF;
             return remainingBits == 0
                 || ((candidateBytes[fullBytes] & 0xFF) & mask) == ((networkBytes[fullBytes] & 0xFF) & mask);
-        } catch (UnknownHostException | NumberFormatException e) {
+        } catch (IllegalArgumentException e) {
             return false;
         }
     }

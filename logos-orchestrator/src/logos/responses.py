@@ -4,19 +4,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Union
 
 import yaml
-from starlette.requests import Request
 
+from logos.client_address import get_client_ip  # noqa: F401 — shared import for existing callers
 from logos.dbutils.dbmanager import DBManager, get_unique_models_from_deployments
 from logos.dbutils.types import infer_cloud_provider_type, normalize_provider_type
 
 logger = logging.getLogger(__name__)
-
-
-def get_client_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return request.client.host
 
 
 def _extract_text_from_content(content: Union[str, List[Dict[str, Any]]]) -> str:

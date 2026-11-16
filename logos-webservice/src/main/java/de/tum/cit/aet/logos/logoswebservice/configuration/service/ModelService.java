@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
 import de.tum.cit.aet.logos.logoswebservice.common.ConflictException;
+import de.tum.cit.aet.logos.logoswebservice.configuration.ModelNames;
 import de.tum.cit.aet.logos.logoswebservice.configuration.ModelProfileRatings;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.AddModelRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ModelCapabilitiesDTO;
@@ -118,6 +119,7 @@ public class ModelService {
 
     @Transactional
     public Map<String, Object> addModel(AddModelRequestDTO req) {
+        ModelNames.rejectControlCharacters(req.name());
         lockModelAliasNamespace();
         Model model = new Model();
         model.setName(req.name());
@@ -142,6 +144,7 @@ public class ModelService {
 
     @Transactional
     public Map<String, Object> updateModelInfo(UpdateModelRequestDTO req) {
+        ModelNames.rejectControlCharacters(req.name());
         lockModelAliasNamespace();
         Model model = modelRepository.findById(req.modelId())
             .orElseThrow(() -> new IllegalArgumentException("Model not found: " + req.modelId()));
@@ -290,6 +293,7 @@ public class ModelService {
         List<String> normalized = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         for (String raw : aliases) {
+            ModelNames.rejectControlCharacters(raw);
             String alias = raw == null ? "" : raw.trim();
             if (alias.isEmpty()) {
                 continue;

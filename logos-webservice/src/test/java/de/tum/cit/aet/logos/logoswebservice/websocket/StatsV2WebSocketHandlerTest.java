@@ -60,6 +60,9 @@ class StatsV2WebSocketHandlerTest {
         WebSocketSession session = mock(WebSocketSession.class);
         when(session.getId()).thenReturn("test-v2-ping-session");
         when(session.isOpen()).thenReturn(true);
+        when(session.getAttributes()).thenReturn(java.util.Map.of(
+            WebSocketSessionAuth.USER_ID, 1003,
+            WebSocketSessionAuth.EXPIRES_AT, Instant.now().plusSeconds(300)));
 
         handler.afterConnectionEstablished(session);
         handler.handleMessage(session, new TextMessage("{\"action\":\"ping\"}"));
@@ -78,6 +81,9 @@ class StatsV2WebSocketHandlerTest {
         WebSocketSession session = mock(WebSocketSession.class);
         when(session.getId()).thenReturn("test-v2-broken-session");
         when(session.isOpen()).thenReturn(true);
+        when(session.getAttributes()).thenReturn(java.util.Map.of(
+            WebSocketSessionAuth.USER_ID, 1003,
+            WebSocketSessionAuth.EXPIRES_AT, Instant.now().plusSeconds(300)));
         doThrow(new java.io.IOException("broken pipe")).when(session).sendMessage(any());
 
         handler.afterConnectionEstablished(session);
@@ -98,6 +104,9 @@ class StatsV2WebSocketHandlerTest {
         WebSocketSession session = mock(WebSocketSession.class);
         when(session.getId()).thenReturn("test-v2-feed-status-session");
         when(session.isOpen()).thenReturn(true);
+        when(session.getAttributes()).thenReturn(java.util.Map.of(
+            WebSocketSessionAuth.USER_ID, 1003,
+            WebSocketSessionAuth.EXPIRES_AT, Instant.now().plusSeconds(300)));
 
         handler.afterConnectionEstablished(session);
         handler.handleMessage(session, new TextMessage("{\"action\":\"init\"}"));

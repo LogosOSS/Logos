@@ -110,6 +110,22 @@ class TestScreenshotContainment:
         assert response.headers["content-length"] == str(len(payload))
         assert await self._body(response) == payload
 
+    async def test_an_oversized_screenshot_is_not_served(self, monkeypatch, tmp_path):
+        from dataclasses import replace
+
+        from app import main
+        from fastapi import HTTPException
+
+        self._patch_root(monkeypatch, tmp_path)
+        monkeypatch.setattr(main, "settings", replace(main.settings, screenshot_max_bytes=4))
+        directory = tmp_path / "7" / "screenshots"
+        directory.mkdir(parents=True)
+        (directory / "shot.png").write_bytes(b"12345")
+
+        with pytest.raises(HTTPException) as exc:
+            await main.get_screenshot(session_id=7, name="shot.png", _=None)
+        assert exc.value.status_code == 404
+
     async def test_a_regular_file_is_streamed_over_the_asgi_layer(self, monkeypatch, tmp_path):
         # Through the real ASGI call path, not by iterating the attribute:
         # a plain Response object sent by that path carries only its

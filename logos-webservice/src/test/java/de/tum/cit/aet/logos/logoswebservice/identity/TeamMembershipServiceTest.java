@@ -63,11 +63,11 @@ class TeamMembershipServiceTest {
         when(teamRepository.findById(10)).thenReturn(Optional.of(team));
     }
 
-    private static ApiKey developerKey(String keyValue) {
+    private static ApiKey developerKey(String keyValue, boolean active) {
         ApiKey key = new ApiKey();
         key.setKeyValue(keyValue);
         key.setKeyType(ApiKeyType.developer);
-        key.setIsActive(false);
+        key.setIsActive(active);
         return key;
     }
 
@@ -110,22 +110,41 @@ class TeamMembershipServiceTest {
     }
 
     @Test
-    void rejoin_reactivatesExistingKeyInsteadOfCreatingNew() {
+    void rejoin_reactivatesExistingKeyWithAFreshValue() {
         when(memberRepository.findById(any())).thenReturn(Optional.empty());
         when(userRepository.findById(any())).thenReturn(Optional.of(user));
         when(teamRepository.findById(any())).thenReturn(Optional.of(team));
 
-        ApiKey inactiveKey = new ApiKey();
-        inactiveKey.setKeyValue("lg-artemis-alice-old");
-        inactiveKey.setIsActive(false);
-
+        // Deactivated when the membership ended; its value may be why it ended.
+        ApiKey inactiveKey = developerKey("lg-artemis-alice-old", false);
         when(apiKeyRepository.findByUserIdAndTeamIdAndKeyType(any(), any(), eq(ApiKeyType.developer)))
             .thenReturn(List.of(inactiveKey));
+        when(apiKeyFactory.createDeveloperKey(user, team)).thenReturn(developerKey("lg-artemis-alice-fresh", true));
 
         Optional<String> result = service.join(1, 10, false, TeamMemberSource.KEYCLOAK);
 
-        assertThat(result).isPresent().contains("lg-artemis-alice-old");
+        assertThat(result).isPresent().contains("lg-artemis-alice-fresh");
+        assertThat(inactiveKey.getKeyValue()).isEqualTo("lg-artemis-alice-fresh");
         assertThat(inactiveKey.getIsActive()).isTrue();
+        verify(apiKeyRepository).save(inactiveKey);
+    }
+
+    @Test
+    void join_ofAnExistingMemberLeavesTheActiveKeyUntouched() {
+        stubUserAndTeam();
+        TeamMember existing = new TeamMember();
+        existing.setId(new TeamMemberId(1, 10));
+        existing.setIsOwner(false);
+        existing.setSource(TeamMemberSource.KEYCLOAK);
+        ApiKey activeKey = developerKey("lg-artemis-alice-current", true);
+        when(memberRepository.findById(new TeamMemberId(1, 10))).thenReturn(Optional.of(existing));
+        when(apiKeyRepository.findByUserIdAndTeamIdAndKeyType(1, 10, ApiKeyType.developer))
+            .thenReturn(List.of(activeKey));
+
+        Optional<String> result = service.join(1, 10, false, TeamMemberSource.KEYCLOAK);
+
+        assertThat(result).isPresent().contains("lg-artemis-alice-current");
+        verify(apiKeyRepository, never()).save(activeKey);
         verify(apiKeyFactory, never()).createDeveloperKey(any(), any());
     }
 
@@ -136,7 +155,7 @@ class TeamMembershipServiceTest {
         manual.setId(new TeamMemberId(1, 10));
         manual.setIsOwner(true);
         manual.setSource(TeamMemberSource.MANUAL);
-        ApiKey existingKey = developerKey("lg-artemis-alice-existing");
+        ApiKey existingKey = developerKey("lg-artemis-alice-existing", true);
         when(memberRepository.findById(new TeamMemberId(1, 10))).thenReturn(Optional.of(manual));
         when(apiKeyRepository.findByUserIdAndTeamIdAndKeyType(1, 10, ApiKeyType.developer))
             .thenReturn(List.of(existingKey));
@@ -148,7 +167,6 @@ class TeamMembershipServiceTest {
         assertThat(manual.getIsOwner()).isTrue();
         assertThat(existingKey.getIsActive()).isTrue();
         verify(memberRepository).save(manual);
-        verify(apiKeyRepository).save(existingKey);
         verify(apiKeyFactory, never()).createDeveloperKey(any(), any());
     }
 
@@ -159,7 +177,7 @@ class TeamMembershipServiceTest {
         keycloak.setId(new TeamMemberId(1, 10));
         keycloak.setIsOwner(false);
         keycloak.setSource(TeamMemberSource.KEYCLOAK);
-        ApiKey existingKey = developerKey("lg-artemis-alice-existing");
+        ApiKey existingKey = developerKey("lg-artemis-alice-existing", true);
         when(memberRepository.findById(new TeamMemberId(1, 10))).thenReturn(Optional.of(keycloak));
         when(apiKeyRepository.findByUserIdAndTeamIdAndKeyType(1, 10, ApiKeyType.developer))
             .thenReturn(List.of(existingKey));
@@ -170,7 +188,6 @@ class TeamMembershipServiceTest {
         assertThat(keycloak.getSource()).isEqualTo(TeamMemberSource.KEYCLOAK);
         assertThat(existingKey.getIsActive()).isTrue();
         verify(memberRepository).save(keycloak);
-        verify(apiKeyRepository).save(existingKey);
         verify(apiKeyFactory, never()).createDeveloperKey(any(), any());
     }
 }

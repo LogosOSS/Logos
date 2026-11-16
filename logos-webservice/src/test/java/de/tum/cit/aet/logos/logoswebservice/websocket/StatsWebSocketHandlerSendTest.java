@@ -39,7 +39,10 @@ class StatsWebSocketHandlerSendTest {
         RequestLogService requests = mock(RequestLogService.class);
         when(vram.getVramStats(any())).thenReturn(Map.of("providers", List.of()));
         when(requests.getLatestRequests(isNull(), isNull())).thenReturn(Map.of("requests", List.of()));
-        handler = new StatsWebSocketHandler(vram, requests, new ObjectMapper());
+        WebSocketSessionAuth sessionAuth = mock(WebSocketSessionAuth.class);
+        when(sessionAuth.register(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
+        when(sessionAuth.isAuthorized(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
+        handler = new StatsWebSocketHandler(vram, requests, new ObjectMapper(), sessionAuth);
         session = mock(WebSocketSession.class);
         when(session.getId()).thenReturn("stats-v1-session");
         when(session.isOpen()).thenReturn(true);

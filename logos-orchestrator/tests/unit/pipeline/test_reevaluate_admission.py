@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 from logos.pipeline.correcting_scheduler import ClassificationCorrectingScheduler
 from logos.queue import PriorityQueueManager
 from logos.queue.priority_queue import Priority
+from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
 from logos.sdi.models import AdmissionDecision
 
 MODEL_ID = 7
@@ -121,6 +122,58 @@ def test_facade_that_cannot_answer_is_not_treated_as_a_block():
     facade, done = _dispatch(4, None, queued=10)
     assert facade.admission_calls == 1
     assert sum(done) == 4
+
+
+def test_real_worker_dispatch_uses_live_budget_instead_of_stored_quota(monkeypatch):
+    """A stored quota of one must not shrink a live four-request dispatch step."""
+
+    class Registry:
+        def peek_runtime_snapshot(self, provider_id):
+            return {
+                "runtime_revision": 1,
+                "runtime": {
+                    "lanes": [
+                        {
+                            "lane_id": "lane-a",
+                            "model": "model-a",
+                            "runtime_state": "loaded",
+                            "num_parallel": 4,
+                            "backend_metrics": {"queue_waiting": 0, "gpu_cache_usage_percent": 0},
+                        }
+                    ]
+                },
+            }
+
+        def is_provider_online(self, provider_id):
+            return True
+
+        def is_cordoned(self, provider_id):
+            return False
+
+    monkeypatch.setattr(
+        "logos.sdi.providers.logosnode_provider.LogosNodeDataProvider._load_provider_config",
+        lambda self: {"parallel_capacity": 1},
+    )
+    queue = PriorityQueueManager()
+    facade = LogosNodeSchedulingDataFacade(queue, runtime_registry=Registry())
+    facade.register_model(MODEL_ID, "logosnode", "http://fake", "model-a", 65536, provider_id=PROVIDER_ID)
+    scheduler = ClassificationCorrectingScheduler(
+        queue_manager=queue, logosnode_facade=facade, azure_facade=MagicMock()
+    )
+    scheduler.update_model_registry({(MODEL_ID, PROVIDER_ID): "logosnode"})
+
+    loop = asyncio.new_event_loop()
+    try:
+        futures = [loop.create_future() for _ in range(6)]
+        for future in futures:
+            queue.enqueue(future, MODEL_ID, PROVIDER_ID, Priority.NORMAL)
+        scheduler.reevaluate_model_queues("model-a")
+        loop.run_until_complete(asyncio.sleep(0))
+        assert sum(future.done() for future in futures) == 4
+        assert queue.get_total_depth_by_deployment(MODEL_ID, PROVIDER_ID) == 2
+        assert facade.get_parallel_capacity(MODEL_ID, PROVIDER_ID) == (200, "runtime")
+    finally:
+        loop.close()
 
 
 # ---------------------------------------------------------------------------

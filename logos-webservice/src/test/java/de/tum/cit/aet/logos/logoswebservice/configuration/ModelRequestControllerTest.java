@@ -449,4 +449,18 @@ class ModelRequestControllerTest {
                 .content("{\"name\": \"openai/gpt-5\", \"team_id\": 2001}"))
            .andExpect(status().isUnauthorized());
     }
+    @Test
+    void modelRequestsRejectControlsBeforeNormalization() throws Exception {
+        for (char control : new char[] {0, '\r', '\n', '\t', 27, 127, 133, 159}) {
+            for (String name : java.util.List.of(control + "org/model", "org/model" + control)) {
+                mvc.perform(post("/logosdb/add_model_request")
+                        .with(TestJwt.testUser())
+                        .contentType("application/json")
+                        .content(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(
+                            java.util.Map.of("name", name, "team_id", 2001))))
+                   .andExpect(status().isBadRequest());
+            }
+        }
+    }
+
 }

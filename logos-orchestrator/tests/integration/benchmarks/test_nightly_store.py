@@ -636,3 +636,41 @@ def test_selection_diagnostics_keep_workloads_separate_and_explain_rejected_fast
     assert summary["best_observed"]["issues"] == ["1 answer lengths differ by more than 20% from baseline"]
     assert {item["benchmark_id"] for item in summary["comparisons"]} == {1, 2}
     assert "source_log_id" not in str(summary)
+
+
+async def test_failed_adoption_alert_is_delivered_even_with_pending_worker_recovery(database, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from logos import notifications
+
+    failure = {
+        "status": "adoption_failed",
+        "benchmark_id": 164,
+        "baseline_id": 160,
+        "parameters": {"max_num_batched_tokens": 2304},
+        "throughput": 32.8,
+        "baseline_throughput": 22.9,
+        "reason": "Could not make enough GPU capacity available to load the model.",
+    }
+    store.set_enabled(31, True, expected=False)
+    journal = {"provider_id": 1}
+    for _ in range(2):
+        store.save(31, "recovery_required", [failure], journal, adoption_failure=failure)
+
+    emit = AsyncMock(return_value=True)
+    monkeypatch.setattr(notifications, "emit_notification", emit)
+    await store.deliver_completion_events()
+    await store.deliver_completion_events()
+
+    assert store.status(31)["recovery_required"]
+    emit.assert_awaited_once()
+    notification_type, title, body, payload, recipients = emit.await_args.args
+    assert notification_type == "benchmark_result_ready"
+    assert title == "Nightly configuration adoption failed"
+    assert "Benchmark #164" in body
+    assert "Max batched tokens 2304" in body
+    assert "32.8 tok/s (+43.2% vs. baseline #160)" in body
+    assert failure["reason"] in body
+    assert payload["model_id"] == 11 and payload["benchmark_id"] == 164
+    assert recipients == [{"kind": "role", "role": "logos_admin"}]
+    assert emit.await_args.kwargs["event_key"] == "nightly-adoption-failed:31:164"

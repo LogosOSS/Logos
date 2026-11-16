@@ -25,6 +25,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from grpclocal import model_pb2_grpc
 from grpclocal.grpc_server import LogosServicer
 from logos import perf_trace, refcache, write_queue
+from logos.answer_reuse.context import InvalidContextId
+from logos.answer_reuse.service import (
+    CACHE_RESPONSE_HEADERS,
+    AnswerCache,
+    cache_hit_headers,
+    chat_completion_payload,
+    reuse_request_from,
+)
 from logos.anthropic_compat import (
     MessagesStreamTranslator,
     UpstreamDialect,
@@ -35,7 +43,7 @@ from logos.anthropic_compat import (
     translate_response,
 )
 from logos.anthropic_compat.common import sse
-from logos.auth import AuthContext, authenticate_api_key, resolve_log_level
+from logos.auth import AuthContext, authenticate_api_key, initialize_rate_limits, resolve_log_level
 from logos.batch_api import batch_reconciler_loop, handle_batch_api_request
 from logos.batch_local import local_batch_runner_loop
 from logos.benchmarks.guidellm_runner import (
@@ -67,6 +75,8 @@ from logos.dbutils.types import (
     normalize_provider_type,
 )
 from logos.errors import UpstreamStreamError, coerce_upstream_error, openai_error_response, upstream_error_message
+from logos.image_generation_tool import image_tool_access_error
+from logos.inference_paths import require_inference_path
 from logos.jobs.job_service import JobService, JobSubmission
 from logos.live_stream import _LiveStreamRegistry, _StreamingLogAccumulator, _usage_tokens_from_payload
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeOfflineError, LogosNodeRuntimeRegistry
@@ -99,6 +109,8 @@ from logos.request_content import (
     metered_whisper_response_format,
     parse_audio_upload,
     payload_requests_streaming,
+    reject_client_multipart_marker,
+    reject_stateful_references,
     render_metered_whisper_response,
     sanitized_headers_for_persistence,
     sanitized_payload_for_logging,
@@ -110,6 +122,7 @@ from logos.sdi.azure_facade import AzureSchedulingDataFacade
 from logos.sdi.cloud_model_sync import CloudModelSyncService
 from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
 from logos.sdi.providers.azure_provider import extract_azure_deployment_name
+from logos.stream_drain import UsageDrainIterator, UsageDrainResponse
 from logos.terminal_logging import (
     GREEN,
     RED,
@@ -904,6 +917,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],  # logos_key, Authorization, etc.
+    # Browser clients can read only exposed response headers.
+    expose_headers=list(CACHE_RESPONSE_HEADERS),
 )
 
 
@@ -1965,13 +1980,9 @@ async def _streaming_response(
             # registry is dropped in the finally below, so a client that walks
             # away cannot leave an entry behind.
             _live_streams.start(request_id, model_name_cache.get(model_id) if model_id else None)
-            # A client that walks away mid-stream closes this generator, which
-            # raises GeneratorExit at the `yield` — no exception reaches the
-            # handler below, so without this flag the request was recorded as
-            # a success. It is not one: nobody read the answer, and the
-            # generation was cancelled on the worker. Recording it honestly
-            # also completes the disconnect count, which until now only saw
-            # the clients that left *before* the first token.
+            # Closing at a yield raises GeneratorExit, which bypasses the
+            # exception handler. Track completion so an abandoned generation
+            # is recorded as a disconnect even when its partial usage is billed.
             stream_completed = False
             # The provider's last byte is the last chunk off the worker stream.
             # _chunks_with_arrival captures each chunk's arrival on a
@@ -1998,16 +2009,12 @@ async def _streaming_response(
                     produced = False
                     held_rejection = None
                     try:
-                        # `aclosing` is what makes an abandoned request reach
-                        # the worker promptly. When this generator is closed
-                        # mid-stream — a client that walked away — a bare
-                        # `async for` would leave the inner generator to the
-                        # async-generator GC hook, so its cleanup (which is
-                        # what sends the cancellation) would run at some
-                        # unspecified later point. Closing it here runs that
-                        # cleanup while the disconnect is being handled. The
-                        # chunks are read through _chunks_with_arrival so the
-                        # arrival instant is captured off the client's pace.
+                        # An abandoned request must reach the worker promptly.
+                        # `aclosing` runs the inner cleanup that sends cancellation
+                        # while handling the disconnect; a bare `async for` would
+                        # defer it to the async-generator GC hook. Do not drain
+                        # worker streams: cancel generation and release capacity
+                        # immediately instead of waiting for final usage.
                         lane_id = context.lane_id
                         if attempt:
                             lane = await _logosnode_registry.select_lane_for_model(
@@ -2064,7 +2071,7 @@ async def _streaming_response(
                         # before stream_start). Nothing was sent downstream, so a
                         # fresh dispatch is transparent. Once any chunk has gone to
                         # the client we cannot un-send it, so re-raise.
-                        if not produced and attempt < attempts - 1:
+                        if not produced and attempt < attempts - 1 and not isinstance(e, UpstreamStreamError):
                             logger.warning(
                                 "logosnode pre-token stream failure (attempt %d/%d), retrying: %s",
                                 attempt + 1,
@@ -2100,6 +2107,7 @@ async def _streaming_response(
                     break  # stream completed without raising
             finally:
                 if not stream_completed and error_message is None:
+                    stream_log.client_disconnected = True
                     error_message = (
                         "Client disconnected mid-stream; upstream generation cancelled "
                         f"after {stream_log.streamed_tokens().get('completion_tokens', 0)} token(s)."
@@ -2109,7 +2117,7 @@ async def _streaming_response(
                 # A terminal ``response.failed`` frame ends the stream cleanly,
                 # but the request still failed and must not be billed or logged
                 # as a success.
-                if error_message is None and stream_log.upstream_error:
+                if stream_log.upstream_error:
                     error_message = str(stream_log.upstream_error.get("message") or stream_log.upstream_error)
                 # Client close after [DONE] jumps here via GeneratorExit before
                 # the post-loop stamp. Persist the captured terminal arrival so
@@ -2121,7 +2129,13 @@ async def _streaming_response(
                     and last_chunk_at is not None
                 ):
                     _pipeline.record_provider_response(request_id, at=last_chunk_at)
-                billable = stream_completed and stream_log.upstream_error is None
+                # A disconnect cancels generation but still bills the work
+                # already observed. Provider failures remain non-billable.
+                billable = (
+                    (stream_completed and error_message is None) or stream_log.client_disconnected
+                ) and stream_log.upstream_error is None
+                if billable:
+                    stream_log.estimate_disconnected_usage(prepared_payload, estimate_unseen_prompt=True)
                 response_payload = stream_log.response_payload()
                 usage_tokens = _usage_tokens_from_payload(
                     response_payload,
@@ -2282,8 +2296,9 @@ async def _streaming_response(
     # Bound before http_streamer so the closure can claim it when the body runs.
     unconsumed_cleanup = None
 
+    stream_log = _StreamingLogAccumulator()
+
     async def http_streamer():
-        stream_log = _StreamingLogAccumulator()
         cost_enricher = (
             _StreamingCostEnricher(provider_id, model_id, request_payload=prepared_payload, path=request_path or "")
             if context.provider_type == "cloud" and upstream_media_type in {"", "text/event-stream"}
@@ -2329,12 +2344,7 @@ async def _streaming_response(
             return await asyncio.to_thread(cost_enricher.feed, chunk)
 
         def client_chunks(chunk: bytes | str) -> list[bytes | str]:
-            """Record one upstream chunk and return what the client receives.
-
-            Logging, billing and the live view all read the upstream's own
-            frames, so the accumulator is fed before any translation — only
-            the bytes on the wire change shape.
-            """
+            """Record enriched chunks before translating to the client's protocol."""
             stream_log.feed(chunk)
             return translated_stream.feed(chunk) if translated_stream else [chunk]
 
@@ -2349,10 +2359,11 @@ async def _streaming_response(
         # chunk's arrival would be stamped only after the client took chunk
         # one — inflating the provider's run figure.
         async def _source():
-            if first_chunk:
-                yield first_chunk
-            async for chunk in chunk_iter:
-                yield chunk
+            async with aclosing(chunk_iter):
+                if first_chunk:
+                    yield first_chunk
+                async for chunk in chunk_iter:
+                    yield chunk
 
         # Discard of a never-started body cannot run this generator's finally;
         # claim ownership of the prefetched upstream + slot as soon as we run.
@@ -2366,6 +2377,7 @@ async def _streaming_response(
                     # chunks use the pump's recorded arrival.
                     last_chunk_at = stream_first_byte_at if first_chunk_pending else arrival
                     first_chunk_pending = False
+                    stream_log.received_bytes = stream_log.received_bytes or bool(chunk)
                     for outgoing_chunk in await enriched_chunks(chunk):
                         for client_chunk in client_chunks(outgoing_chunk):
                             yield client_chunk
@@ -2447,17 +2459,19 @@ async def _streaming_response(
                 yield b"data: [DONE]\n\n"
         finally:
             _live_streams.finish(request_id)
+            stream_log.finish()
             if error_message is None:
                 error_message = stream_status.error
             if error_message is None and stream_log.upstream_error:
                 error_message = str(stream_log.upstream_error.get("message") or stream_log.upstream_error)
             failed = error_message is not None
-            stream_log.finish()
             # Client close after [DONE] jumps here via GeneratorExit before the
             # post-loop stamp. Persist the captured terminal arrival so the
             # exec figure does not fall back to completion (billing) time.
             if request_id and not provider_response_stamped and stream_log.terminal_event_received:
                 _pipeline.record_provider_response(request_id, at=last_chunk_at)
+            if not failed:
+                stream_log.estimate_disconnected_usage(prepared_payload)
             response_payload = stream_log.response_payload()
             usage_tokens = _usage_tokens_from_payload(
                 response_payload,
@@ -2519,8 +2533,8 @@ async def _streaming_response(
             _release()
 
     unconsumed_cleanup = _UnconsumedStreamCleanup(chunk_iter, _release)
-    response = StreamingResponse(
-        http_streamer(),
+    response = UsageDrainResponse(
+        UsageDrainIterator(http_streamer(), stream_log, claim_prefetched=unconsumed_cleanup.claim_for_streamer),
         headers=response_headers,
     )
     response._logos_unconsumed_cleanup = unconsumed_cleanup
@@ -3255,20 +3269,7 @@ async def _execute_proxy_mode(
         model_id = matching_deployments[0]["model_id"] if len(matching_deployments) == 1 else None
         model_name = requested_model_name if model_id is not None else None
     else:
-        # auth_parse_log resolved the model in the same session as the
-        # deployment lookup (same permission data, one checkout — );
-        # reuse it when present. The reuse is not traced again under
-        # "mode.resolve_model": the pre-resolve already recorded the phase,
-        # a second near-zero sample under the same name would skew its p50.
-        resolved = auth.resolved_proxy_model
-        if resolved is None:
-            # Not resolved on the auth path (other callers, or no "model" at
-            # auth time): permission data — read fresh per request, never
-            # from the ref cache (a removed model permission must not wait
-            # for a TTL).
-            with perf_trace.phase(request_id, "mode.resolve_model"):
-                with DBManager() as db:
-                    resolved = db.resolve_proxy_model(auth.api_key_id, requested_model_name)
+        resolved = _resolve_requested_model(auth, requested_model_name, request_id)
         if resolved is None:
             raise HTTPException(
                 status_code=404,
@@ -3439,9 +3440,20 @@ async def _execute_resource_mode(
                 except Exception:
                     logger.warning("Failed to release scheduler slot after rate limit reject")
                 if is_async_job:
+                    # The sync path closes the log row in its HTTPException
+                    # handler; a returned rejection must close it here.
+                    _record_log_failure(
+                        log_id,
+                        result.scheduling_stats.get("request_id") or request_id,
+                        f"Rate limit exceeded: {reason}",
+                        result_status="error",
+                        provider_id=result.provider_id,
+                        model_id=result.model_id,
+                    )
                     return {
                         "status_code": 429,
                         "data": {"error": f"Rate limit exceeded: {reason}"},
+                        "headers": {"Retry-After": str(RateLimitConfig.window_seconds)},
                     }
                 # Retry-After: the limiter uses a sliding 60s window, so the
                 # budget is guaranteed to have room again after one window.
@@ -3578,6 +3590,173 @@ async def _execute_resource_mode(
             raise e
 
 
+_answer_cache: Optional[AnswerCache] = None
+
+
+def _load_answer_cache_entries(scope: str) -> list[dict]:
+    """Read one scope's stored answers for the in-memory answer cache."""
+    with DBManager() as db:
+        return db.get_answer_cache_entries(scope)
+
+
+def _encode_for_answer_reuse(text: str):
+    """Embed ``text`` with the classifier's model, so stored and new questions share one space."""
+    pipeline = globals().get("_pipeline")
+    if pipeline is None:
+        raise RuntimeError("the request pipeline is not started")
+    return pipeline.classifier.laura.model.encode(text, normalize_embeddings=True, show_progress_bar=False)
+
+
+def _get_answer_cache() -> AnswerCache:
+    global _answer_cache
+    if _answer_cache is None:
+        _answer_cache = AnswerCache(_load_answer_cache_entries, _encode_for_answer_reuse)
+    return _answer_cache
+
+
+def _record_answer_reuse_miss(request_id: Optional[str]) -> None:
+    """Mark the request's log row: the cache was checked and had no reusable answer."""
+    if not request_id:
+        return
+    pipeline = globals().get("_pipeline")
+    if pipeline is None:
+        return
+    try:
+        pipeline.record_answer_reuse_miss(request_id)
+    except Exception:  # noqa: BLE001 — monitoring must never break a request
+        logger.debug("Failed to record answer-cache miss for %s", request_id, exc_info=True)
+
+
+def _persist_cache_hit(log_id, request_id: Optional[str], entry_id: int, payload: Dict[str, Any]) -> None:
+    """Settle a request answered from the cache: its log row, the entry's hit count, the payload.
+
+    The same terminal duties as `_record_log_failure`, for a success that
+    never reached the scheduler: drain the buffered lifecycle fields, end
+    the in-flight accounting, then write the row.
+    """
+    buffered_metrics: Dict[str, Any] = {}
+    if request_id:
+        pipeline = globals().get("_pipeline")
+        if pipeline is not None:
+            try:
+                buffered_metrics = pipeline.take_monitoring_buffer(request_id)
+            except Exception:  # noqa: BLE001 — monitoring must never break a request
+                logger.debug("Failed to drain monitoring buffer for %s", request_id, exc_info=True)
+    _discard_in_flight(request_id, "success")
+
+    try:
+        with DBManager() as db:
+            actual_log_id = _materialize_log_id(db, log_id)
+            if actual_log_id is None:
+                db.record_answer_cache_hit(entry_id)
+                return
+            db.finalize_cache_hit_row(actual_log_id, entry_id, request_id=request_id)
+            db.store_response_payload(actual_log_id, payload)
+            metrics_fields = {k: v for k, v in buffered_metrics.items() if v is not None}
+            if metrics_fields:
+                db.update_log_entry_metrics(log_id=actual_log_id, request_id=request_id, **metrics_fields)
+    except Exception:
+        logger.exception("Failed to record answer-cache hit (log_id=%s, request_id=%s)", log_id, request_id)
+
+
+def _resolve_requested_model(
+    auth: "AuthContext", requested_model_name: str, request_id: Optional[str]
+) -> Optional[tuple]:
+    """Return ``(model_id, model_name)`` if the key may use the named model, else None.
+
+    auth_parse_log resolved the model in the same session as the deployment
+    lookup (same permission data, one checkout) and its result is reused when
+    present. The reuse is not traced again under "mode.resolve_model": the
+    pre-resolve already recorded the phase, and a second near-zero sample
+    under the same name would skew its p50. A result looked up here is kept
+    on ``auth`` so that a later caller for the same request reuses it.
+    """
+    resolved = auth.resolved_proxy_model
+    if resolved is None:
+        # Not resolved on the auth path (other callers, or no "model" at
+        # auth time): permission data — read fresh per request, never
+        # from the ref cache (a removed model permission must not wait
+        # for a TTL).
+        with perf_trace.phase(request_id, "mode.resolve_model"):
+            with DBManager() as db:
+                resolved = db.resolve_proxy_model(auth.api_key_id, requested_model_name)
+        auth.resolved_proxy_model = resolved
+    return resolved
+
+
+def _may_answer_from_cache(
+    body: Dict[str, Any],
+    auth: "AuthContext",
+    request_id: Optional[str],
+    required_provider_id: Optional[int],
+) -> bool:
+    """Whether a stored answer may stand in for this request's normal path.
+
+    A request pinned to one provider is an internal benchmark and must reach
+    that provider. A request naming a model may only be answered if the key
+    may use that model: the normal path checks this in proxy mode and rejects
+    it with a 404, and a cached answer must not skip that check. Any failure
+    here counts as "no", so the normal path decides.
+    """
+    if required_provider_id is not None:
+        return False
+    requested_model_name = str(body.get("model") or "").strip()
+    if not requested_model_name:
+        return True
+    try:
+        return _resolve_requested_model(auth, requested_model_name, request_id) is not None
+    except Exception:  # noqa: BLE001 — the normal path repeats the check and reports it
+        logger.exception("Model check before answer reuse failed (request_id=%s)", request_id)
+        return False
+
+
+async def _answer_from_cache(
+    body: Dict[str, Any],
+    headers: Dict[str, str],
+    auth: "AuthContext",
+    path: str,
+    log_id: Optional[int],
+    request_id: Optional[str],
+    is_async_job: bool,
+    required_provider_id: Optional[int] = None,
+):
+    """Answer the request from the answer cache, or return None to take the normal path.
+
+    Runs before classification, scheduling, the rate-limit and budget
+    checks and the model call: a hit uses none of them and books no
+    scheduler slot. A named model is access-checked first, as in proxy
+    mode. A failing lookup never fails the request; it falls through to
+    the normal path.
+
+    Raises:
+        HTTPException: 400 when the ``logos-context`` header is unusable.
+    """
+    try:
+        reuse = reuse_request_from(body, headers, path, auth.team_id, auth.api_key_id)
+    except InvalidContextId as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if reuse is None:
+        return None
+    if not await asyncio.to_thread(_may_answer_from_cache, body, auth, request_id, required_provider_id):
+        return None
+
+    try:
+        answer, _match = await asyncio.to_thread(_get_answer_cache().find, reuse)
+    except Exception:  # noqa: BLE001 — the cache is an optimisation, never a failure
+        logger.exception("Answer cache lookup failed; continuing without it (request_id=%s)", request_id)
+        return None
+    if answer is None:
+        _record_answer_reuse_miss(request_id)
+        return None
+
+    payload = chat_completion_payload(answer)
+    await asyncio.to_thread(_persist_cache_hit, log_id, request_id, answer.entry_id, payload)
+    if is_async_job:
+        return {"status_code": 200, "data": payload}
+    response_headers = {**(_decision_response_headers(request_id, None) or {}), **cache_hit_headers(answer)}
+    return JSONResponse(content=payload, status_code=200, headers=response_headers)
+
+
 async def route_and_execute(
     deployments: list[dict[str, int]],
     body: Dict[str, Any],
@@ -3608,6 +3787,8 @@ async def route_and_execute(
 
     Routing logic:
     - Case 1: No deployments available → 404 error
+    - Then: a ``logos-context`` request the answer cache can answer → the
+      stored answer, before any classification or scheduling
     - Case 2: body["model"] specified → PROXY mode (model pinned, no classification)
     - Case 3: no body["model"] → RESOURCE mode (classification + scheduling)
 
@@ -3652,6 +3833,15 @@ async def route_and_execute(
         else:
             raise HTTPException(status_code=404, detail="No models available for this API key.")
 
+    # The Responses image tool runs a second model; the key needs access to it
+    # as well, checked before the request is scheduled anywhere.
+    image_tool_error = image_tool_access_error(body, deployments)
+    if image_tool_error:
+        _record_log_failure(log_id, request_id, image_tool_error, result_status="error")
+        if is_async_job:
+            return {"status_code": 403, "data": {"error": image_tool_error}}
+        raise HTTPException(status_code=403, detail=image_tool_error)
+
     # Jobs reach this point without going through handle_sync_request, so they
     # publish their live view here. start() is non-destructive, so a request
     # that already arrived on the sync path keeps the entry it has.
@@ -3659,6 +3849,14 @@ async def route_and_execute(
 
     response = None
     try:
+        # Answer reuse comes first: a hit returns before classification and
+        # scheduling, so it books no scheduler slot and calls no model.
+        response = await _answer_from_cache(
+            body, headers, auth, path, log_id, request_id, is_async_job, required_provider_id
+        )
+        if response is not None:
+            return response
+
         # PROXY mode (body["model"] specified → direct forwarding)
         if body.get("model"):
             response = await _execute_proxy_mode(
@@ -3769,24 +3967,22 @@ async def _discard_response(response: Any) -> None:
     """Close a response nobody is left to read.
 
     ``_streaming_response`` pulls the first chunk before handing the response
-    over, so by then the upstream connection is already open. Closing only
-    the never-started body generator would leave that iterator and the
-    scheduler slot behind — the attached cleanup closes both, then the body
-    iterator is closed for any streamer that did start.
+    over, so its usage-aware iterator claims the prefetched provider stream
+    for background billing before cleanup runs. An unstarted worker iterator
+    has no provider work to drain; its attached cleanup releases the slot.
     """
     if response is None:
         return
+    iterator = getattr(response, "body_iterator", None)
+    if iterator is not None:
+        with suppress(Exception):
+            await iterator.aclose()
     cleanup = getattr(response, "_logos_unconsumed_cleanup", None)
     if cleanup is not None:
         with suppress(Exception):
             await cleanup.close()
         with suppress(Exception):
             response._logos_unconsumed_cleanup = None
-    iterator = getattr(response, "body_iterator", None)
-    if iterator is None:
-        return
-    with suppress(Exception):
-        await iterator.aclose()
 
 
 async def _execute_cancelling_on_disconnect(request: Request, **kwargs):
@@ -4114,6 +4310,8 @@ def _error_frames(path: str, status: int, body: Any) -> list:
 
 def _instream_error_frames(path: str, exc: Exception) -> list:
     """An exception from the execution path as in-stream error frames."""
+    if isinstance(exc, UpstreamStreamError):
+        return _error_frames(path, exc.status_code, exc.body)
     if isinstance(exc, HTTPException):
         return _error_frames(path, exc.status_code, {"error": str(exc.detail)})
     return _error_frames(path, 500, {"error": str(exc)})
@@ -4177,9 +4375,10 @@ async def _keepalive_producer(inner_iterator, queue: "asyncio.Queue") -> None:
 
     A producer task (rather than awaiting the streamer inline) keeps the drain
     robust under cancellation: when the client walks away, cancelling this task
-    unwinds the ``aclosing`` context, which closes the inner streamer and runs
-    its cleanup — the worker cancel, the scheduler release — promptly, instead
-    of leaving the streamer to the async-generator GC hook.
+    unwinds the ``aclosing`` context. Cloud streams transfer to a bounded
+    background usage drain. Worker streams close immediately, sending worker
+    cancellation and releasing the scheduler slot without waiting for final
+    usage or the async-generator GC hook.
     """
     try:
         async with aclosing(inner_iterator):
@@ -4340,11 +4539,8 @@ async def _keepalive_streaming_response(request: Request, **execute_kwargs):
                     producer.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await producer
-            # Always discard the settled response. Closing only a never-started
-            # body_iterator (e.g. cancel at the scheduling-comment yield before
-            # the producer enters http_streamer) bypasses its finally and would
-            # leave the prefetched upstream / reserved slot behind; discard runs
-            # the attached cleanup first, then closes the body.
+            # Discard transfers prefetched provider work to its usage drain.
+            # A worker stream that never started only releases its reservation.
             if completed is not None:
                 await _discard_response(completed)
             elif inner_iterator is not None:
@@ -4356,7 +4552,7 @@ async def _keepalive_streaming_response(request: Request, **execute_kwargs):
             # leaves the request registered forever.
             _live_streams.finish(request_id)
 
-    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
+    return UsageDrainResponse(gen(), media_type="text/event-stream", headers=headers)
 
 
 async def handle_sync_request(path: str, request: Request):
@@ -4371,6 +4567,7 @@ async def handle_sync_request(path: str, request: Request):
     # forwarded to a Batch-capable cloud provider the key may use.
     if is_batch_api_path(path):
         return await handle_batch_api_request(request)
+    require_inference_path(path)
 
     # The request id is minted before authentication so perf tracing can cover
     # the auth phases as well; the log insert inside auth_parse_log stores it
@@ -4522,6 +4719,7 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
         HTTPException(400): Invalid JSON body
         HTTPException(401): Missing or invalid authentication
     """
+    arrived_at = datetime.datetime.now(datetime.timezone.utc)
     # Authenticate before parsing multipart bodies. This prevents unauthenticated
     # callers from consuming the audio upload/base64 memory budget.
     headers = dict(request.headers)
@@ -4538,6 +4736,8 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
             body = await request.json()
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+        reject_client_multipart_marker(body)
+        reject_stateful_references(body)
 
     if body is None:
         body = {}
@@ -4547,33 +4747,17 @@ async def auth_parse_log(request: Request, use_profile_auth: bool = False, reque
     if use_profile_auth:
         log_id: Optional[int] = None
 
-        # Rate limits apply to every key, including those owned by
-        # logos_admins. Admin keys derive their limits from their team /
-        # key settings exactly like any other key. Budget is checked later,
-        # once permitted deployments are known (see _check_budget_if_cloud).
-        s = auth.settings or {}
         with perf_trace.phase(request_id, "auth.team_lookup"):
             # The team row (rate-limit defaults) is reference data — the
             # short-TTL ref cache serves it instead of a per-request checkout
             # .
             team_info = _cached_team(auth.team_id)
-
-        generic_rpm = s.get("rpm_limit")
-        generic_tpm = s.get("tpm_limit")
-
-        cloud_rpm = s.get("cloud_rpm_limit") or generic_rpm or (team_info and team_info.get("default_cloud_rpm_limit"))
-        cloud_tpm = s.get("cloud_tpm_limit") or generic_tpm or (team_info and team_info.get("default_cloud_tpm_limit"))
-        local_rpm = s.get("local_rpm_limit") or generic_rpm or (team_info and team_info.get("default_local_rpm_limit"))
-        local_tpm = s.get("local_tpm_limit") or generic_tpm or (team_info and team_info.get("default_local_tpm_limit"))
-
-        if cloud_rpm is not None or cloud_tpm is not None:
-            auth.cloud_rl = {"rpm": cloud_rpm, "tpm": cloud_tpm}
-        if local_rpm is not None or local_tpm is not None:
-            auth.local_rl = {"rpm": local_rpm, "tpm": local_tpm}
+        initialize_rate_limits(auth, team_info)
 
         deployment_cache = refcache.get_ref_cache()
         cached_deployments = deployment_cache.get(("deployments", auth.api_key_id))
         log_fields = {
+            "timestamp_request": arrived_at,
             "api_key_id": auth.api_key_id,
             "team_id": auth.team_id,
             "user_id": auth.user_id,
@@ -4662,6 +4846,7 @@ async def submit_job_request(path: str, request: Request) -> Response:
     # jobs, they are forwarded to the provider's Batch API.
     if is_batch_api_path(path):
         return await handle_batch_api_request(request)
+    require_inference_path(path)
 
     # Auth with full context + initial logging
     headers, auth, json_data, client_ip, log_id, _job_deployments = await auth_parse_log(request, use_profile_auth=True)
@@ -4753,6 +4938,9 @@ async def execute_proxy_job(
     """
     headers = headers or dict()
     json_data = json_data or dict()
+
+    # Jobs and local batch lines can arrive without HTTP authentication setup.
+    initialize_rate_limits(auth, _cached_team(auth.team_id))
 
     request_id = secrets.token_urlsafe(16)
 

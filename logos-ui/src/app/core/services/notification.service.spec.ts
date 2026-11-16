@@ -135,3 +135,52 @@ describe('NotificationService', () => {
     expect(notificationMeta('something_new')).toEqual({ label: 'Notification', icon: 'pi-bell', tone: 'primary' });
   });
 });
+
+
+describe('notification websocket token refresh', () => {
+  class Socket {
+    static instances: Socket[] = [];
+    onclose: ((event: CloseEvent) => void) | null = null;
+    close = vi.fn();
+    constructor(readonly url: string) { Socket.instances.push(this); }
+  }
+  let service: NotificationService;
+  let freshToken: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    Socket.instances = [];
+    vi.stubGlobal('WebSocket', Socket);
+    freshToken = vi.fn().mockResolvedValueOnce('old-token')
+      .mockResolvedValueOnce('').mockResolvedValueOnce('fresh-token');
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(), provideHttpClientTesting(),
+        { provide: AuthService, useValue: { freshToken } },
+      ],
+    });
+    service = TestBed.inject(NotificationService);
+    vi.spyOn(service, 'refreshUnreadCount').mockResolvedValue();
+  });
+
+  afterEach(() => {
+    service.stop();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('forces a fresh token after expiry and keeps retrying refresh if it fails', async () => {
+    service.start();
+    await Promise.resolve();
+    expect(Socket.instances[0].url).toContain('token=old-token');
+    Socket.instances[0].onclose!({ code: 4001 } as CloseEvent);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(freshToken).toHaveBeenLastCalledWith(true);
+    expect(Socket.instances).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(freshToken).toHaveBeenLastCalledWith(true);
+    expect(Socket.instances).toHaveLength(2);
+    expect(Socket.instances[1].url).toContain('token=fresh-token');
+  });
+});

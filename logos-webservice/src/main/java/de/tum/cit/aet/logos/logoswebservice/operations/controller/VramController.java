@@ -3,12 +3,14 @@ package de.tum.cit.aet.logos.logoswebservice.operations.controller;
 import java.util.Map;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
+import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.VramService;
 
 @RestController
@@ -20,7 +22,9 @@ public class VramController {
         this.vramService = vramService;
     }
 
+    /** Platform-wide provider telemetry, shown on the statistics page, which only logos admins open. */
     @PostMapping("/logosdb/get_ollama_vram_stats")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> getVramStats(@RequestAttribute("authContext") AuthContext auth,
                                           @RequestBody(required = false) Map<String, Object> body) {
         String day = body != null ? (String) body.get("day") : null;

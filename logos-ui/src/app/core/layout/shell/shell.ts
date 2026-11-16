@@ -1,5 +1,6 @@
 import { Component, computed, inject, signal, ChangeDetectionStrategy } from '@angular/core';
 import { Router, RouterModule } from '@angular/router';
+import { A11yModule } from '@angular/cdk/a11y';
 import { AuthService } from '../../auth/services/auth.service';
 import { MENU_ITEMS, NAV_GROUP_LABELS } from '../../../shared/constants/nav-items';
 import { MenuItem } from '../../../shared/models/nav.model';
@@ -18,7 +19,7 @@ interface NavSection {
 @Component({
   selector: 'app-shell',
   standalone: true,
-  imports: [RouterModule, Logo, NotificationBell, ThemeToggle, IconTileComponent],
+  imports: [RouterModule, A11yModule, Logo, NotificationBell, ThemeToggle, IconTileComponent],
   templateUrl: './shell.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './shell.scss',
@@ -84,9 +85,6 @@ export class Shell {
   openLogoutModal() {
     this.opener = document.activeElement as HTMLElement;
     this.showLogoutModal.set(true);
-    setTimeout(() => {
-      document.querySelector<HTMLElement>('.btn-cancel')?.focus();
-    }, 0);
   }
 
   closeLogoutModal() {

@@ -12,6 +12,11 @@ that is configured in `KEYCLOAK_ROLES_LOGOS_ADMIN` (see the
 
 The UI shows the role badge "Logos Admin" in the header menu.
 
+## Account settings
+
+Open the user menu and select **Account settings** to manage your personal passkeys.
+Follow the shared [account settings procedure](app-developer.md#account-settings).
+
 ## Statistics
 
 This page shows the usage of the complete platform: the request volume, the
@@ -75,6 +80,30 @@ now, and these can be benchmark settings. Check the model on the worker first.
 The audit log records every release.
 
 The box updates together with the rest of the page.
+
+### Release a Node Deployment Lease
+
+**Node deployment** shows the worker, deployment ID, lease age and time until expiry without renewal.
+Node deployments use a separate lease. Only 1 node can hold this lease at a time.
+By default, a deployment can hold it for at most 2 hours, even with renewals.
+
+![Node deployment lease in Maintenance](/img/roles/logos-admin-node-maintenance.png)
+
+CAUTION: Stop the deployment on the node before you release its lease.
+The node can receive requests again after the release.
+
+1. Open **Statistics → Local Providers**.
+2. Find the worker and deployment ID in **Maintenance**.
+3. Click **Release node lease**.
+4. Check the worker in the confirmation dialog.
+5. Click **Release node lease** to confirm.
+
+![Confirmation for a node lease release](/img/roles/logos-admin-node-maintenance-release.png)
+
+The lease disappears from **Maintenance**, and a success message confirms the release.
+Another node can then deploy. The released deployment cannot renew or acquire its lease again.
+If the deployment ID changes before confirmation, Logos refuses the release. Refresh the page and check the current deployment.
+The audit log records the release from the web application.
 
 ### Idle Lanes and Lane Locks
 
@@ -184,6 +213,14 @@ The status card separates the provider, request progress and completed runs.
 Select **Stop benchmark** to cancel the active batch.
 
 ![Running benchmark status and progress](../static/img/roles/logos-admin-benchmark-status.png)
+
+**Stopped · nightly window ended** means the schedule stopped a test before half of its requests completed.
+The unfinished test does not produce a completed measurement. Earlier completed measurements remain in **Benchmark runs**.
+Expand **View stop details & configuration** to read the technical reason.
+This stop alone does not confirm that the worker is ready. Actual worker errors remain errors.
+
+![Benchmark stopped at the end of the nightly window](../static/img/roles/logos-admin-benchmark-window-ended.png)
+
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
 The **Performance** tab shows **Currently deployed** and **Timeline**.
@@ -207,21 +244,24 @@ A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
-The **Timeline** starts with the first comparable baseline for the dataset.
-The vertical axis shows output tokens per second. Each subsequent point is a new throughput record.
-Slower runs do not add points. Each point keeps its actual measurement date and configuration.
-The chart separates datasets, providers and captured test settings. Worker releases can share a record history.
+The **Timeline** shows absolute throughput in output tokens per second (tok/s).
+The solid line includes complete slower runs and repeated baselines.
+The dashed line shows the freshly measured production baseline of each round.
+The visible legend identifies square baselines, circular trials and outlined points that fail automatic selection checks.
+Each point is one complete benchmark run. A filled point does not confirm production deployment.
+Each point keeps its actual measurement date and configuration.
+The percentage change compares each measurement with its captured baseline from the same round.
+The chart separates datasets, providers and captured test settings. Worker releases can share a measurement history.
 Select a point to open its benchmark result.
-Expand **Record configurations** to read the dates and parameters.
-Saved-request variants must pass the response and latency checks before they enter the timeline.
-For example, 40 → 42 → 44 tok/s gives 10% total improvement and 4.8% improvement from the previous point.
-The chart does not show automatic parameter adoption or statistical significance.
+Expand **Measured configurations** to read the dates and parameters.
+Outlined points fail automatic selection checks and remain visible to show measurement variation.
+The chart does not establish automatic parameter adoption or statistical significance.
 Expand **Benchmark runs** to see the latest 5 results per dataset.
 A baseline shows its own throughput and 0% change. Missing comparisons show why the baseline is unavailable. Select **Show all** to read older results.
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
 Select the same column again to reverse the order. Missing values stay at the end.
 
-![Performance overview with current configuration and record timeline](../static/img/roles/logos-admin-nightly-results.png)
+![Performance overview with current configuration and absolute throughput timeline](../static/img/roles/logos-admin-nightly-results.png)
 
 Read **Currently deployed** at the top of **Performance**.
 The summary shows throughput, baseline, change and the main batching parameters.
@@ -346,6 +386,14 @@ worker control actions (calibrate, sleep, wake, lane management).
 
 ![Providers page](/img/roles/logos-admin-providers.png)
 
+Expand a provider to see its connected models. Next to the endpoint, each model
+shows whether its batches can use the provider's Batch API: **Batch**, **No
+batch**, **Batch unchecked**, or **Batch in Logos** for worker nodes. The tooltip
+names the batch deployment or the reason for a refusal. See
+[Batch status of a model](../batch-processing.md#batch-status-of-a-model).
+
+![Providers page — connected models with their batch status](/img/roles/logos-admin-provider-connections.png)
+
 ## Policies
 
 Policies are the rules that decide which models a team or an API key can use.
@@ -376,6 +424,9 @@ members from Keycloak has a lock badge. The badge shows the name of the linked
 group.
 
 ![Teams page](/img/roles/logos-admin-team-management.png)
+
+Select the **View permission history** action beside a team to open its permission audit log.
+The log starts with that team's ID as a filter.
 
 ### Keycloak Group Links
 
@@ -418,6 +469,31 @@ Logos Admins also get a **Providers** tab. This tab shows which cloud
 providers and worker providers the team can use.
 
 ![Team detail — Providers](/img/roles/team-detail-providers.png)
+
+## Permission Audit
+
+Only Logos Admins can open **Permission Audit** in the sidebar.
+The page shows model and provider permission changes for teams and API keys.
+Each entry shows the action, time, recorded names, IDs, actor and cause.
+
+1. Open **Permission Audit** to see changes across all teams.
+2. Enter a team, API key, model or provider ID to limit the results.
+3. Enter a local time range if necessary.
+4. Select **Apply filters**.
+5. Select **Older** or **Newer** to move through the results.
+
+Select a name in the results to filter by its ID.
+Select **Clear filters** to see all changes again.
+The end of a time range excludes changes at that time.
+The URL keeps the filters when you share or bookmark the page.
+
+![Permission audit log](/img/roles/logos-admin-permission-audit.png)
+
+If you delete a team or API key, its history remains available from **Permission Audit**.
+The entries keep the names and IDs from the time of each change.
+Deletion also records the removal of its permission grants.
+History starts when permission auditing is enabled.
+The page does not change permissions.
 
 ## Agent Sessions
 

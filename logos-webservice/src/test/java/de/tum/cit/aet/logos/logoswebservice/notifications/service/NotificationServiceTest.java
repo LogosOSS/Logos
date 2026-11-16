@@ -29,6 +29,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
+
+import de.tum.cit.aet.logos.logoswebservice.websocket.WebSocketSessionAuth;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -211,6 +213,8 @@ class NotificationServiceTest {
         WebSocketSession session = mock(WebSocketSession.class);
         Map<String, Object> attributes = new HashMap<>();
         attributes.put("notificationUserId", userId);
+        attributes.put(WebSocketSessionAuth.USER_ID, userId);
+        attributes.put(WebSocketSessionAuth.EXPIRES_AT, java.time.Instant.now().plusSeconds(600));
         when(session.getId()).thenReturn(id);
         when(session.getAttributes()).thenReturn(attributes);
         when(session.isOpen()).thenReturn(true);

@@ -51,6 +51,12 @@
             }
           </span>
           <div class="name-mobile-actions">
+            @if (isLogosAdmin()) {
+              <button type="button" class="btn-icon" [attr.aria-label]="'View permission history for ' + team.name"
+                title="View permission history" (click)="$event.stopPropagation(); viewPermissionHistory(team.id)">
+                <i class="pi pi-history" aria-hidden="true"></i>
+              </button>
+            }
             @if (!team.managed && (isLogosAdmin() || team.is_caller_owner)) {
               <button
                 class="btn-icon btn-icon--danger"
@@ -104,6 +110,12 @@
 
         <!-- ACTIONS col -->
         <div class="col-actions actions-cell" role="cell">
+          @if (isLogosAdmin()) {
+            <button type="button" class="btn-icon" [attr.aria-label]="'View permission history for ' + team.name"
+              title="View permission history" (click)="$event.stopPropagation(); viewPermissionHistory(team.id)">
+              <i class="pi pi-history" aria-hidden="true"></i>
+            </button>
+          }
           @if (!team.managed && (isLogosAdmin() || team.is_caller_owner)) {
             <button
               class="btn-icon btn-icon--danger"

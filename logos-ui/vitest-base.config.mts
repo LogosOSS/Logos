@@ -22,6 +22,22 @@ function inlineUiAngular(): Plugin {
   };
 }
 
+/** Angular supplies literal absolute file names; brackets in a workspace path are not globs. */
+function literalTestPaths(): Plugin {
+  return {
+    name: 'logos-ui:literal-test-paths',
+    config(config) {
+      const include = config.test?.include;
+      if (!include) return;
+      return {
+        test: {
+          include: include.map(path => path.replaceAll('[', '\\[').replaceAll(']', '\\]')),
+        },
+      };
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [inlineUiAngular()],
+  plugins: [inlineUiAngular(), literalTestPaths()],
 });

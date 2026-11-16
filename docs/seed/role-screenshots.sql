@@ -185,14 +185,16 @@ INSERT INTO teams (
     name,
     default_cloud_rpm_limit, default_cloud_tpm_limit,
     default_local_rpm_limit, default_local_tpm_limit,
-    default_monthly_budget_micro_cents, team_monthly_budget_micro_cents
+    default_monthly_budget_micro_cents, team_monthly_budget_micro_cents,
+    show_on_public_stats, public_category
 )
 SELECT
     'Logos',
     5, 10000,
     5, 10000,
     100000000,   -- $1.00 key default / month
-    500000000    -- $5.00 team member budget / month
+    500000000,   -- $5.00 team member budget / month
+    TRUE, 'Research'  -- Settings tab shows the public stats opt-in filled
 WHERE NOT EXISTS (SELECT 1 FROM teams WHERE name = 'Logos');
 
 -- Members: Alexandra owns; Tobias + Henriette are members.
@@ -352,6 +354,23 @@ WHERE m.name = 'llama-3.1-8b-instruct'
       SELECT 1 FROM model_provider mp
       WHERE mp.model_id = m.id AND mp.provider_id = p.id
   );
+
+-- Batch status on the Providers page: the cloud deployment of the model was
+-- probed and its batch deployment accepted a batch.
+INSERT INTO provider_model_batch_eligibility
+    (provider_id, model_id, eligible, detail, checked_at, batch_deployment, source)
+SELECT p.id, m.id, true, 'llama-31-8b-batch: The Batch API accepted this deployment.',
+       now() - interval '2 hours', 'llama-31-8b-batch', 'probe'
+FROM models m
+CROSS JOIN providers p
+WHERE m.name = 'llama-3.1-8b-instruct'
+  AND p.name = 'Docs Cloud (EU)'
+ON CONFLICT (provider_id, model_id) DO UPDATE
+    SET eligible = EXCLUDED.eligible,
+        detail = EXCLUDED.detail,
+        checked_at = EXCLUDED.checked_at,
+        batch_deployment = EXCLUDED.batch_deployment,
+        source = EXCLUDED.source;
 
 INSERT INTO team_model_permissions (team_id, model_id)
 SELECT t.id, m.id

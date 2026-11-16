@@ -1,0 +1,108 @@
+@use 'styles/glass' as *;
+
+.account-settings {
+  max-width: 1120px;
+  padding: 36px 32px 48px;
+}
+
+.page-subtitle { margin-bottom: 24px; }
+
+.passkeys-card {
+  @include glass-card;
+  padding: 24px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+
+  h2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 8px;
+    color: rgb(var(--color-typography-0));
+  }
+
+  p { margin: 0; }
+  button { flex-shrink: 0; }
+}
+
+.account-note {
+  margin: 20px 0 0;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: rgb(var(--color-primary-500) / var(--opacity-soft));
+}
+
+.passkey-list { padding: 0; margin: 20px 0 0; list-style: none; }
+
+.passkey-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 0;
+  border-top: 1px solid rgb(var(--color-outline-200) / var(--opacity-muted));
+
+  &:last-child { padding-bottom: 0; }
+  button { flex-shrink: 0; }
+}
+
+.passkey-details {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  h3 { margin: 0 0 4px; color: rgb(var(--color-typography-0)); }
+  p { margin: 0; }
+}
+
+.state-message, .empty-state { padding: 36px 0 20px; text-align: center; }
+.empty-state {
+  > i { font-size: 28px; color: rgb(var(--color-text-accent)); }
+  h3 { margin: 12px 0 6px; }
+  p { margin: 0; }
+}
+
+.load-error { display: grid; gap: 16px; margin-top: 20px; justify-items: start; }
+.success-message { color: rgb(var(--color-success)); overflow-wrap: anywhere; }
+.add-form {
+  display: grid;
+  gap: 12px;
+  padding: 4px 0;
+  p { margin: 0; }
+  input { width: 100%; }
+}
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.field-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgb(var(--input-border) / var(--input-border-opacity));
+  background: rgb(var(--input-fill) / var(--input-fill-opacity));
+  color: rgb(var(--color-typography-0));
+  font-size: var(--font-size-base);
+  box-sizing: border-box;
+
+  &:focus {
+    outline: none;
+    border-color: rgb(var(--color-text-accent));
+    box-shadow: 0 0 0 3px rgb(var(--color-primary-400) / var(--opacity-soft));
+  }
+
+  &:disabled {
+    opacity: var(--opacity-disabled);
+    cursor: not-allowed;
+  }
+}
+
+@media (max-width: 600px) {
+  .account-settings { padding: 24px 16px 32px; }
+  .passkeys-card { padding: 20px 16px; }
+  .section-heading { flex-direction: column; gap: 16px; }
+  .section-heading > button { width: 100%; }
+  .passkey-row { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .dialog-actions { flex-wrap: wrap; }
+}

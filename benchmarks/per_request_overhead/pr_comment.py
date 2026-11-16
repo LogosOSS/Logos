@@ -47,16 +47,22 @@ def _gate(result: Dict[str, Any]) -> int:
     overhead = result["overhead"]
     p50_ns = float(overhead.get("overhead_p50_ns", overhead["overhead_ns"]))
     p95_ns = float(overhead.get("overhead_p95_ns", 0.0))
-    if p50_ns > FAIL_NS or p95_ns > FAIL_P95_NS:
-        failures = []
-        if p50_ns > FAIL_NS:
-            failures.append(
-                f"p50 {p50_ns / 1000.0:,.1f} µs exceeds the CI fail threshold of {FAIL_NS / 1000.0:,.0f} µs"
-            )
-        if p95_ns > FAIL_P95_NS:
-            failures.append(
-                f"p95 {p95_ns / 1000.0:,.1f} µs exceeds the CI fail threshold of {FAIL_P95_NS / 1000.0:,.0f} µs"
-            )
+    failures = []
+    if p50_ns > FAIL_NS:
+        failures.append(f"p50 {p50_ns / 1000.0:,.1f} µs exceeds the CI fail threshold of {FAIL_NS / 1000.0:,.0f} µs")
+    if p95_ns > FAIL_P95_NS:
+        failures.append(
+            f"p95 {p95_ns / 1000.0:,.1f} µs exceeds the CI fail threshold of {FAIL_P95_NS / 1000.0:,.0f} µs"
+        )
+    sleep_gate = result.get("sleep_probe_gate") or {}
+    if sleep_gate and not sleep_gate.get("ok", True):
+        failures.append(
+            f"is_sleeping probe still on the acquire hot path: overhead p50 "
+            f"{float(sleep_gate.get('overhead_p50_ns', 0.0)) / 1000.0:,.1f} µs reaches "
+            f"{float(sleep_gate.get('limit_ns', 0.0)) / 1000.0:,.0f} µs "
+            f"(25% of the injected {sleep_gate.get('delay_ms')} ms delay; issue #165)"
+        )
+    if failures:
         print(
             f"GATE FAIL: {'; '.join(failures)} "
             f"(goals: p50 < {GOAL_NS / 1000.0:,.0f} µs, p95 < {P95_GOAL_NS / 1000.0:,.0f} µs; "

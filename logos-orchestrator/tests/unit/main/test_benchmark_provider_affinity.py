@@ -468,7 +468,7 @@ async def test_sync_request_records_affinity_http_errors_on_the_request_log(monk
     monkeypatch.setattr(main, "_record_log_failure", failure)
 
     with pytest.raises(main.HTTPException) as exc_info:
-        await main.handle_sync_request("chat/completions", MagicMock())
+        await main.handle_sync_request("v1/chat/completions", MagicMock())
 
     assert exc_info.value.status_code == 401
     failure.assert_called_once()

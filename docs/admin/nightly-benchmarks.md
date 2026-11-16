@@ -79,6 +79,8 @@ It then gives the other admitted pair its turn.
 Further rounds use the same saved inputs and refine the candidate until 08:00.
 The daily quota limits distinct pairs, not rounds.
 A failed baseline or a round without successful variants does not schedule another round.
+If the baseline fails, the scheduler stops the remaining variants and restores the worker.
+The round has status `failed` because the variants have no valid comparison baseline.
 Disabling a schedule stops further rounds. Pending recovery always takes priority.
 
 ## Time and Failure Policy
@@ -171,6 +173,9 @@ GuideLLM measures every configuration on the complete snapshot with 4 concurrent
 Each request retains its temperature, tools and output limits.
 If the source omits an output limit, then Logos adds no output limit.
 Worker context limits still apply. A truncated or incomplete response fails the configuration.
+Failure details show successful, errored and incomplete request counts.
+Known response failures also show the source request ID and a fixed error description.
+HTTP failures show the status code. Provider error text, request content and credentials remain excluded.
 GuideLLM measures throughput, request latency, TTFT and TPOT.
 The result distributions include the maximum observation, shown as p100.
 The saved results also contain token counts and completion reasons.
@@ -243,29 +248,47 @@ If it exceeds the current production baseline, then Logos applies its sequence a
 Logos compares measurements from the same frozen dataset and environment.
 An older throughput record alone cannot trigger adoption.
 If no eligible configuration improves throughput, then the original production settings return.
-The fixed reference remains unchanged after adoption. The next round measures the adopted settings first.
+The optimizer keeps its historical reference after adoption. The next round measures the adopted settings as a fresh baseline.
 
-The recovery journal records adoption intent before the worker configuration changes.
-The worker must confirm the configuration, restart and model readiness before production traffic resumes.
-If adoption fails, then Logos restores the original configuration.
+The PostgreSQL recovery journal records adoption intent before Logos changes the live lane.
+After the worker confirms the lane is ready, Logos stores the adopted benchmark and its parameters in `nightly_benchmarks.optimizer.production_adoption`.
+Automatic adoption applies to the running lane. Central node model configuration is managed separately.
+Logos allows up to 15 minutes for fresh readiness telemetry after a restart command succeeds.
+If adoption fails, then Logos records a separate notification for Logos Admins and tries to restore the original configuration.
+The notification links to the eligible benchmark and shows the parameter values, throughput gain, and failure reason.
 If rollback fails, then the worker remains reserved until recovery succeeds.
 After an application restart, recovery completes the recorded adoption or restores the original settings.
 A disabled schedule cancels pending adoption.
 The round report identifies an adopted benchmark or an adoption failure.
 
 The **Performance** tab contains the **Timeline** section.
-The chart starts with the first comparable baseline for each dataset and provider.
-The vertical axis shows output tokens per second. Subsequent points show only new throughput records.
-Each point keeps the measurement date and configuration. Slower runs do not add points.
-Saved-request variants must pass the response and latency checks before they set a record.
-Select a point to open its benchmark. Expand **Record configurations** to read dates and parameters.
-The chart separates captured workloads and test settings. Records can span worker releases.
+The vertical axis shows throughput in output tokens per second (tok/s).
+The solid line shows complete measurements, including slower runs and repeated baselines.
+The dashed line shows the measured production baseline of each round.
+The visible legend identifies square baselines, circular trials and outlined points that fail selection checks.
+Each point represents a complete benchmark run. It does not represent one request or confirm production deployment.
+Each new round measures the current production settings first, including previously adopted improvements.
+Each point keeps its measurement date and configuration. Its percentage change uses the captured baseline from the same round.
+Outlined points fail automatic selection checks. They remain visible so that the chart shows measurement variation.
+Select a point to open its benchmark. Expand **Measured configurations** to read dates and parameters.
+The chart separates captured workloads and test settings. Measurements can span worker releases.
 A historical record does not replace the fresh comparison required for production adoption.
 Expand **Currently deployed → Configuration & selection details** to inspect current settings and selection failures.
 A completed eligible winner is saved before the next trial starts.
 Recovery can apply this saved winner if a later trial is interrupted. Disabling the schedule cancels pending adoption.
 These measurements do not establish statistical significance.
-Ten synthetic requests provide an integration pilot, not a representative thesis evaluation dataset.
+The Dev coding pilot uses 50 stored synthetic coding conversations with natural output lengths.
+Ten scenarios contain code, schemas, incident logs and specific change requests.
+They cover leases, permissions, caching, pagination, streaming, billing, webhooks, uploads, recovery and dependency scheduling.
+Forty requests contain an earlier analysis and a follow-up question. Ten requests start a conversation.
+The inputs contain approximately 1,070–1,296 Qwen tokens per request, including the chat template.
+These counts use the model tokenizer. Deployed counts can differ with another template.
+The corpus is `logos-orchestrator/src/logos/benchmarks/dev_coding_workload.json`.
+Each replay uses the same inputs, seeds and concurrent request count.
+Requests use temperature `0.2` and repetition penalty `1.05`. They contain no `ignore_eos` or explicit output limit.
+The model can end each answer naturally. Logos does not force a fixed output length.
+The corpus contains no copied production requests.
+This pilot does not reproduce the full production request distribution or guarantee a standard deviation below 2%.
 Use repeated measurements and a separate evaluation dataset before drawing performance conclusions.
 
 ## Completion Notifications
@@ -540,7 +563,7 @@ last successful measurement. The current pair limit is the code constant
 | `continuing` | The production configuration is confirmed. Another round waits for its turn within this window. |
 | `completed` | The night finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
 | `window_closed` | No further configuration can start after 08:00. |
-| `window_closed_below_half` | The 08:00 check found fewer than 25 of 50 successful completions. |
+| `window_closed_below_half` | The window ended before half of the current test requests completed. The UI shows **Stopped · nightly window ended**. |
 | `preparation_timeout` / `stalled` | Preparation exceeded its budget, or measurement stopped making progress. Inspect the attempt report. |
 | `recovery_required` | The original configuration is not ready. Resolve the worker error; keep the reservation and journal intact. |
 | `interrupted_recovered` | The scheduler restored a worker from its persisted recovery journal. |

@@ -141,7 +141,17 @@ def eligibility_issues(candidate, baseline):
         finishes, native, lengths = 0, 0, 0
         for row in samples:
             original = base_samples[row["source_log_id"]]
-            if row["finish_reason"] != original["finish_reason"] or row["finish_reason"] not in {"stop", "tool_calls"}:
+            reason = row["finish_reason"]
+            budget = row.get("fixed_output_budget")
+            reached_fixed_budget = (
+                reason == "length"
+                and type(budget) is int
+                and budget > 0
+                and budget == original.get("fixed_output_budget") == row["output_tokens"] == original["output_tokens"]
+            )
+            if reason != original["finish_reason"] or (
+                reason not in {"stop", "tool_calls"} and not reached_fixed_budget
+            ):
                 finishes += 1
             if row.get("native_finish_reason") != original.get("native_finish_reason"):
                 native += 1

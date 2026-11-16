@@ -122,15 +122,41 @@ public interface ModelProviderRepository extends JpaRepository<ModelProvider, In
     int deleteBenchmark(@Param("benchmarkId") int benchmarkId);
 
     @Query(value = """
-        SELECT m.id AS model_id, m.name AS model_name, mp.endpoint, NULL::text AS api_key
+        SELECT m.id AS model_id, m.name AS model_name, mp.endpoint, NULL::text AS api_key,
+               CASE
+                   WHEN p.provider_type <> 'cloud' THEN 'logos'
+                   WHEN be.eligible IS TRUE THEN 'supported'
+                   WHEN be.eligible IS FALSE THEN 'unsupported'
+                   ELSE 'unknown'
+               END AS batch_support,
+               CASE WHEN be.eligible THEN be.batch_deployment END AS batch_deployment,
+               be.detail AS batch_detail,
+               be.source AS batch_source,
+               be.checked_at AS batch_checked_at
         FROM model_provider mp JOIN models m ON m.id = mp.model_id
+             JOIN providers p ON p.id = mp.provider_id
+             LEFT JOIN provider_model_batch_eligibility be
+                    ON be.provider_id = mp.provider_id AND be.model_id = mp.model_id
         WHERE mp.provider_id = :providerId ORDER BY m.name ASC
         """, nativeQuery = true)
     List<ProviderModelProjection> findModelsForProvider(@Param("providerId") int providerId);
 
     @Query(value = """
-        SELECT m.id AS model_id, m.name AS model_name, mp.endpoint, mp.api_key
+        SELECT m.id AS model_id, m.name AS model_name, mp.endpoint, mp.api_key,
+               CASE
+                   WHEN p.provider_type <> 'cloud' THEN 'logos'
+                   WHEN be.eligible IS TRUE THEN 'supported'
+                   WHEN be.eligible IS FALSE THEN 'unsupported'
+                   ELSE 'unknown'
+               END AS batch_support,
+               CASE WHEN be.eligible THEN be.batch_deployment END AS batch_deployment,
+               be.detail AS batch_detail,
+               be.source AS batch_source,
+               be.checked_at AS batch_checked_at
         FROM model_provider mp JOIN models m ON m.id = mp.model_id
+             JOIN providers p ON p.id = mp.provider_id
+             LEFT JOIN provider_model_batch_eligibility be
+                    ON be.provider_id = mp.provider_id AND be.model_id = mp.model_id
         WHERE mp.provider_id = :providerId ORDER BY m.name ASC
         """, nativeQuery = true)
     List<ProviderModelProjection> findModelsForProviderWithCredentials(@Param("providerId") int providerId);
