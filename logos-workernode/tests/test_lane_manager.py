@@ -4615,7 +4615,9 @@ async def test_a_batch_that_succeeds_keeps_the_explicit_mark_of_a_restarted_lane
 @pytest.mark.asyncio
 async def test_a_forced_restart_follows_a_parallel_layout_the_overrides_now_ask_for() -> None:
     engine = VllmEngineConfig(model_overrides={"org/model": {"extra_args": ["--pipeline-parallel-size=2"]}})
-    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110, gpu_device_count=lambda: 2)
+    manager = LaneManager(
+        WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110, gpu_device_count=lambda: 2
+    )
     current = LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig(), gpu_devices="0")
     manager._handles["benchmark-lane"] = _StubHandle(current)
     manager._restart_lane_unlocked = AsyncMock()
@@ -4633,7 +4635,9 @@ async def test_a_forced_restart_follows_a_parallel_layout_the_overrides_now_ask_
 @pytest.mark.asyncio
 async def test_a_forced_restart_refuses_a_layout_the_node_has_no_gpus_for() -> None:
     engine = VllmEngineConfig(model_overrides={"org/model": {"extra_args": ["--pipeline-parallel-size=2"]}})
-    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110, gpu_device_count=lambda: 1)
+    manager = LaneManager(
+        WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110, gpu_device_count=lambda: 1
+    )
     manager._handles["benchmark-lane"] = _StubHandle(
         LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig(), gpu_devices="0")
     )
