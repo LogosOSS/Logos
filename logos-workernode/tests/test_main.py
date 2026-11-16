@@ -131,6 +131,41 @@ async def test_prefetch_rechecks_the_disk_before_each_later_download(tmp_path, m
     assert [call.args[0] for call in fit.call_args_list] == [["first", "second", "third"], ["second"], ["third"]]
 
 
+def _prepare_app(missing: list[str], prefetch: bool):
+    lane_manager = MagicMock()
+    lane_manager.validate_capabilities.return_value = missing
+    cfg = AppConfig()
+    cfg.worker.prefetch_missing_models = prefetch
+    state = MagicMock(config=cfg, lane_manager=lane_manager, hf_home="/hf", cache_root="/cache")
+    return MagicMock(state=state), lane_manager
+
+
+@pytest.mark.asyncio
+async def test_models_added_while_running_get_their_missing_weights_downloaded(monkeypatch) -> None:
+    app, lane_manager = _prepare_app(["org/new"], prefetch=True)
+    started = MagicMock()
+    monkeypatch.setattr(worker_main, "_run_in_background", started)
+    monkeypatch.setattr(worker_main, "_prefetch_missing_models", MagicMock(return_value="prefetch"))
+
+    worker_main._prepare_added_models(app, ["org/new"])  # noqa: SLF001
+
+    lane_manager.validate_capabilities.assert_called_once_with(["org/new"], "/hf", "/cache")
+    worker_main._prefetch_missing_models.assert_called_once_with(["org/new"], "/hf")  # noqa: SLF001
+    started.assert_called_once_with("prefetch")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing,prefetch", [([], True), (["org/new"], False)])
+async def test_added_models_are_not_downloaded_when_present_or_prefetch_is_off(monkeypatch, missing, prefetch) -> None:
+    app, _ = _prepare_app(missing, prefetch)
+    started = MagicMock()
+    monkeypatch.setattr(worker_main, "_run_in_background", started)
+
+    worker_main._prepare_added_models(app, ["org/new"])  # noqa: SLF001
+
+    started.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_prefetch_downloads_only_models_selected_by_disk_budget(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(worker_main, "_models_that_fit_disk", AsyncMock(return_value=["fits"]))
@@ -471,6 +506,30 @@ async def test_the_first_start_imports_config_yml_and_reads_it_back(_yaml_models
     assert cfg.engines.vllm.model_overrides["org/pinned"] == {"quantization": "awq"}
     assert cfg.logos.node_config_revision == 1
     assert "org/pinned: 'x' differs" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_config_yml_that_differs_from_what_logos_stores_is_reported(_yaml_models, caplog) -> None:
+    stored = {
+        "revision": 4,
+        "yaml_imported": True,
+        "entries": [
+            {"model_name": "org/from-yaml", "capability": {}, "overrides": {}},
+            {"model_name": "org/pinned", "capability": {}, "overrides": {"quantization": "gptq"}},
+        ],
+    }
+
+    await worker_main._load_central_node_config(_central_cfg(True), _ConfigBridge(stored))  # noqa: SLF001
+
+    assert "Logos wins" in caplog.text and "org/pinned has other settings in Logos" in caplog.text
+    assert "org/from-yaml has other" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_config_yml_that_matches_logos_is_not_reported(_yaml_models, caplog) -> None:
+    await worker_main._load_central_node_config(_central_cfg(True), _ConfigBridge())  # noqa: SLF001
+
+    assert "Logos wins" not in caplog.text
 
 
 @pytest.mark.asyncio

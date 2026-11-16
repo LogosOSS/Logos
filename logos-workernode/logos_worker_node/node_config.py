@@ -183,3 +183,21 @@ def profile_overrides_of(cfg: AppConfig) -> dict[str, dict[str, Any]]:
         if merged:
             result[name] = merged
     return result
+
+
+def yaml_drift(from_yaml: list[dict[str, Any]], stored: list[dict[str, Any]]) -> list[str]:
+    """Models config.yml lists differently from what Logos stores.
+
+    Once Logos holds a node's models the file no longer counts, so a change
+    made there (by Ansible, say) would otherwise do nothing, silently.
+    """
+    by_name = {entry["model_name"]: entry for entry in stored}
+    notes = []
+    for entry in from_yaml:
+        name = entry["model_name"]
+        other = by_name.get(name)
+        if other is None:
+            notes.append(f"{name} is not stored in Logos")
+        elif entry["capability"] != other["capability"] or entry["overrides"] != other["overrides"]:
+            notes.append(f"{name} has other settings in Logos")
+    return notes

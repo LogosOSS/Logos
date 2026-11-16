@@ -4853,6 +4853,45 @@ async def test_an_older_or_equal_node_config_changes_nothing(tmp_path, revision)
 
 
 @pytest.mark.asyncio
+async def test_models_a_push_adds_are_prepared_and_the_known_ones_are_not(tmp_path):
+    client = _node_config_client(tmp_path)
+    prepared: list = []
+    client._app.state.prepare_added_models = prepared.append  # noqa: SLF001
+
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(3, _entry("org/ready"), _entry("org/new"), _entry("org/newer"))
+    )
+
+    assert prepared == [["org/new", "org/newer"]]
+
+
+@pytest.mark.asyncio
+async def test_a_push_without_new_models_prepares_nothing(tmp_path):
+    client = _node_config_client(tmp_path)
+    prepared: list = []
+    client._app.state.prepare_added_models = prepared.append  # noqa: SLF001
+
+    await client._execute_command("sync_node_config", _central(3, _entry("org/ready")))  # noqa: SLF001
+
+    assert prepared == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_preparation_does_not_undo_the_applied_configuration(tmp_path):
+    client = _node_config_client(tmp_path)
+
+    def _boom(_models):
+        raise OSError("disk")
+
+    client._app.state.prepare_added_models = _boom  # noqa: SLF001
+
+    response = await client._execute_command("sync_node_config", _central(3, _entry("org/new")))  # noqa: SLF001
+
+    assert response["applied"] is True
+    assert client._cfg.node_config_revision == 3  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_a_node_config_waits_for_a_running_calibration_and_applies_afterwards(tmp_path):
     client = _node_config_client(tmp_path)
     client._calibration_session_is_live = lambda: True  # noqa: SLF001

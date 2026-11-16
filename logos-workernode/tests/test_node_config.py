@@ -28,6 +28,7 @@ from logos_worker_node.node_config import (
     plans_from_entries,
     profile_overrides_of,
     validation_errors,
+    yaml_drift,
 )
 from logos_worker_node.profile_fingerprint import plan_hash
 
@@ -278,3 +279,22 @@ def test_profile_overrides_of_the_stored_models_cover_capability_and_routed_keys
     assert set(found) == {"org/a"}
     assert found["org/a"]["base_residency_mb"] == 900 and found["org/a"]["host_ram_mb"] == 10
     assert found["org/a"]["kv_budget_mb"] == 2048.0 and "quantization" not in found["org/a"]
+
+
+def test_no_drift_when_logos_stores_what_config_yml_lists():
+    entries = [_entry({"quantization": "awq"}, {"base_residency_mb": 900})]
+    assert yaml_drift(entries, [dict(e) for e in entries]) == []
+
+
+def test_drift_names_models_with_other_settings_or_missing_in_logos():
+    from_yaml = [_entry({"quantization": "awq"}), {**_entry(), "model_name": "org/b"}, _entry_named("org/c")]
+    stored = [_entry({"quantization": "gptq"}), _entry_named("org/c")]
+    assert yaml_drift(from_yaml, stored) == ["org/a has other settings in Logos", "org/b is not stored in Logos"]
+
+
+def test_models_only_logos_stores_are_not_drift():
+    assert yaml_drift([], [_entry({"quantization": "awq"})]) == []
+
+
+def _entry_named(name):
+    return {"model_name": name, "capability": {}, "overrides": {}}

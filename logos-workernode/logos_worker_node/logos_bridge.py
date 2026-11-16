@@ -1182,6 +1182,7 @@ class LogosBridgeClient:
     async def _apply_node_config(self, config: dict[str, Any]) -> None:
         cfg = self._app.state.config
         serving = set(cfg.logos.capabilities_models)
+        known = set(cfg.logos.configured_models)
         apply_node_config(cfg, config["entries"], config["revision"])
         # Only models that were announced stay so; new ones follow with a profile.
         cfg.logos.capabilities_models = [m for m in cfg.logos.configured_models if m in serving]
@@ -1194,6 +1195,13 @@ class LogosBridgeClient:
         if lane_manager is not None:
             lane_manager.mark_status_dirty()
         logger.info("[NodeConfig] Applied revision %d (%d model(s))", config["revision"], len(config["entries"]))
+        added = [m for m in cfg.logos.configured_models if m not in known]
+        prepare = getattr(self._app.state, "prepare_added_models", None)
+        if added and prepare is not None:
+            try:
+                prepare(added)
+            except Exception:  # noqa: BLE001
+                logger.warning("[NodeConfig] Could not prepare %s", added, exc_info=True)
 
     def _handle_validate_node_config(self, params: dict[str, Any]) -> dict[str, Any]:
         """Check models before Logos stores them, the way a lane start would."""

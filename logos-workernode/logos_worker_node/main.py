@@ -30,7 +30,7 @@ from logos_worker_node.metal import MetalMetricsCollector, is_metal_backend
 from logos_worker_node.model_cache import ModelRamCache, _DisabledModelRamCache, create_model_cache
 from logos_worker_node.model_profiles import ModelProfileRegistry
 from logos_worker_node.models import HF_REDUNDANT_WEIGHT_PATTERNS, ProcessState, model_can_sleep
-from logos_worker_node.node_config import apply_node_config, entries_from_yaml_file, plans_from_app_config
+from logos_worker_node.node_config import apply_node_config, entries_from_yaml_file, plans_from_app_config, yaml_drift
 from logos_worker_node.profile_fingerprint import node_calibration_keys, node_slice_gpu_counts
 from logos_worker_node.runtime import SERVICE_VERSION, _build_host_memory_summary, existing_volume_path
 
@@ -242,6 +242,21 @@ async def _load_central_node_config(cfg: AppConfig, logos_bridge: LogosBridgeCli
             delay = min(delay * 2, 60.0)
     apply_node_config(cfg, central["entries"], central["revision"])
     logger.info("Loaded %d model(s) from Logos (revision %d)", len(central["entries"]), central["revision"])
+    drift = yaml_drift(from_yaml, central["entries"])
+    if drift:
+        logger.warning("config.yml differs from what Logos stores; Logos wins: %s", "; ".join(drift))
+
+
+def _prepare_added_models(app: FastAPI, models: list[str]) -> None:
+    """Do for models added while running what the start does for all of them.
+
+    Weights missing on this node are downloaded in the background, so the
+    first request does not wait for them.
+    """
+    cfg = app.state.config
+    missing = app.state.lane_manager.validate_capabilities(models, app.state.hf_home, app.state.cache_root)
+    if missing and cfg.worker.prefetch_missing_models:
+        _run_in_background(_prefetch_missing_models(missing, app.state.hf_home))
 
 
 async def _load_central_profiles(
@@ -1133,6 +1148,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     hf_home = os.environ.get("HF_HOME", "").strip() or os.path.join(cache_root, ".hf_cache")
     # The heartbeat reports free space on this volume (statistics page).
     app.state.hf_home = hf_home
+    app.state.cache_root = cache_root
+    app.state.prepare_added_models = lambda models: _prepare_added_models(app, models)
     model_cache = create_model_cache(
         tmpfs_path=os.environ.get("LOGOS_TMPFS_CACHE_PATH", "").strip() or None,
         hf_home=hf_home,
