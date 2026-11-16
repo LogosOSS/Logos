@@ -10,6 +10,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
+import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -24,6 +25,7 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.web.BearerTokenResolver;
 import org.springframework.security.oauth2.server.resource.web.DefaultBearerTokenResolver;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.header.HeaderWriterFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -51,6 +53,14 @@ public class SecurityConfig {
             @Qualifier("logosCorsConfigurationSource") CorsConfigurationSource corsSource) throws Exception {
         http
             .cors(cors -> cors.configurationSource(corsSource))
+            // An async relay can commit before the servlet chain returns. Write headers once,
+            // before either thread can commit, instead of racing the deferred commit callback.
+            .headers(headers -> headers.withObjectPostProcessor(new ObjectPostProcessor<HeaderWriterFilter>() {
+                @Override public <O extends HeaderWriterFilter> O postProcess(O filter) {
+                    filter.setShouldWriteHeadersEagerly(true);
+                    return filter;
+                }
+            }))
             .csrf(csrf -> csrf.disable()) // NOSONAR stateless API: no session or auth cookie a browser would attach; credentials travel in headers
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth

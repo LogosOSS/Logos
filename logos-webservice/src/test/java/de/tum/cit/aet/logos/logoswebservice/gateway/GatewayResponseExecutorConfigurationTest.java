@@ -157,6 +157,40 @@ class GatewayResponseExecutorConfigurationTest {
         }
     }
 
+    @Test
+    void securityHeadersAreReadyBeforeAsyncResponsesCanCommit() throws Exception {
+        ConcurrentLinkedQueue<String> headersAtAdmission = new ConcurrentLinkedQueue<>();
+        when(auth.requireActiveKey(any())).thenAnswer(invocation -> {
+            var attributes = (org.springframework.web.context.request.ServletRequestAttributes)
+                org.springframework.web.context.request.RequestContextHolder.currentRequestAttributes();
+            var response = attributes.getResponse();
+            headersAtAdmission.add(String.valueOf(response.getHeader("X-Content-Type-Options"))
+                + "|" + response.getHeader("X-Frame-Options"));
+            return new GatewayKey(1, "lg-test", "k", ApiKeyType.developer,
+                1, null, "test", false, null, 0, "BILLING");
+        });
+        int port = context.getEnvironment().getRequiredProperty("local.server.port", Integer.class);
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/v1/models"))
+            .header("Authorization", "Bearer lg-test").GET().build();
+        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
+             HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).executor(executor).build()) {
+            for (int wave = 0; wave < 4; wave++) {
+                var responses = new java.util.ArrayList<CompletableFuture<HttpResponse<String>>>();
+                for (int i = 0; i < 64; i++) responses.add(client.sendAsync(request, HttpResponse.BodyHandlers.ofString()));
+                for (var pending : responses) {
+                    var response = pending.get(15, TimeUnit.SECONDS);
+                    assertThat(response.statusCode()).isEqualTo(200);
+                    assertThat(response.body()).isEqualTo("{\"data\":[]}");
+                    assertThat(response.headers().firstValue("X-Content-Type-Options")).contains("nosniff");
+                    assertThat(response.headers().firstValue("X-Frame-Options")).contains("DENY");
+                }
+            }
+        }
+        // Checking at admission makes this fail deterministically when headers are deferred until commit.
+        assertThat(headersAtAdmission).hasSize(256).containsOnly("nosniff|DENY");
+        System.out.println("SECURITY_HEADER_STRESS requests=256 waves=4 concurrent=64 passed");
+    }
+
     @TestConfiguration(proxyBeanMethods = false)
     static class ProbeConfiguration {
         @Bean AsyncProbe asyncProbe() { return new AsyncProbe(); }
