@@ -254,8 +254,10 @@ start, before it calculates its calibration keys, and ignores the model entries
 of its `config.yml` from then on. On its first start Logos has nothing stored,
 so the worker imports its `config.yml` models unchanged, then reads them back.
 Later changes reach a connected worker at once: the model list applies
-immediately, overrides from the next lane start. Until Logos answers, the worker
-retries with a backoff.
+immediately, overrides from the next lane start (a lane restart counts). While
+a calibration runs, the worker keeps the revision it has and applies the newer
+one when the session ends. Until Logos answers, the worker retries with a
+backoff.
 
 Each model has `capability` (`tensor_parallel_size`, `kv_cache_memory_bytes`,
 `gpu_devices`, `base_residency_mb`, `min_context_fraction`) and `overrides`

@@ -613,7 +613,7 @@ def test_apply_hf_precheck_does_not_overwrite_an_override_added_mid_call():
                 override_applied.wait(timeout=0.2)
             return stale
 
-    registry._manual_overrides = _RacyOverrides(registry._manual_overrides)  # noqa: SLF001
+    registry._config_overrides = _RacyOverrides(registry._config_overrides)  # noqa: SLF001
 
     registry.apply_hf_precheck("org/model", kv_per_token_bytes=1024)
     override_applied.wait(timeout=1.0)

@@ -2506,7 +2506,9 @@ async def test_a_restarted_lane_runs_with_the_overrides_the_node_has_now(monkeyp
 
     manager._handles[lane_id] = OldHandle()  # noqa: SLF001
     manager._port_alloc._used[lane_id] = 15000  # noqa: SLF001
-    monkeypatch.setattr("logos_worker_node.lane_manager._create_handle", lambda lid, port, *_a, **_k: NewHandle(lid, port))
+    monkeypatch.setattr(
+        "logos_worker_node.lane_manager._create_handle", lambda lid, port, *_a, **_k: NewHandle(lid, port)
+    )
     monkeypatch.setattr(PortAllocator, "_is_port_available", staticmethod(lambda _port: True))
     engine.model_overrides["Qwen/Qwen3-8B"] = {"quantization": "awq"}
 

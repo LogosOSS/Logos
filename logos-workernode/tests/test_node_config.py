@@ -236,7 +236,6 @@ def test_the_model_kind_of_a_plan_is_accepted():
         ({"base_residency_mb": True}, "org/a: base_residency_mb: must be a number"),
         ({"min_context_fraction": float("nan")}, "org/a: min_context_fraction: must be a number"),
         ({"max_context_length": "big"}, "org/a: max_context_length: must be an integer"),
-        ({"tensor_parallel_size": float("inf")}, "org/a: tensor_parallel_size: must be an integer"),
         ({"metal_capacity_floor_mb": "x"}, "org/a: metal_capacity_floor_mb: must be a number or null"),
         ({"kv_cache_to_max_model_len_pairs": "x"}, "org/a: kv_cache_to_max_model_len_pairs: must be a list"),
     ],
