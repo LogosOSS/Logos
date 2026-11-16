@@ -129,6 +129,9 @@ jobs:
               echo "NODE_MANAGER_DRAIN_ENABLED=false" >> .env
             fi
           fi
+          echo "NODE_MANAGER_COMPOSE_FROM_TAG=true" >> .env
+          echo "NODE_MANAGER_SELF_UPDATE=true" >> .env
+          echo "LOGOS_DEPLOYMENTS_PROTECTED=false" >> .env
         env:
           VARS_CONTEXT: ${{ toJson(vars) }}
           DEPLOY_TARGET: ${{ matrix.compose-file == './docker-compose.yaml' && 'core' || 'worker' }}
