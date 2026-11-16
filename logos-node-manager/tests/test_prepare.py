@@ -208,3 +208,53 @@ def test_a_rollback_restores_the_previous_image_together_with_the_previous_compo
     assert last_file_before.read_text(encoding="utf-8") == "services: previous\n"
     # The rollback did not end well for the new file: the old one is still the one that ran last.
     assert source.current_path().read_text(encoding="utf-8") == "services: previous\n"
+
+
+def run_a_bundled_deployment(deployer, docker, store, engine) -> None:
+    """A deployment that changes nothing and ends well with a bundled file: that file is the one that ran last."""
+    engine.content = "services: previous\n"
+    docker.registry[f"{REPO}:latest"] = OLD
+    assert deployer.process(queued(store, "latest", "run-1")).outcome is Outcome.UNCHANGED
+
+
+def compose_file_of_the_restore(docker) -> Path | None:
+    """The compose file in use when the previous image was started again. None is the compose file of the host."""
+    restoring = docker.calls.index(("up", "latest", True, True))
+    return [call[1] for call in docker.calls[:restoring] if call[0] == "use_compose"][-1]
+
+
+def test_a_rollback_after_the_switch_was_turned_off_restores_the_previous_compose_file(
+    make_deployer, docker, store, settings, source, engine
+):
+    deployer = make_deployer(compose=source)
+    run_a_bundled_deployment(deployer, docker, store, engine)
+    # The next deployment goes on with the file of the host, and its image does not become healthy.
+    write_env(settings, "REGISTRY=harbor.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=false")
+    docker.new_container_timeline = list(UNHEALTHY)
+    docker.registry[f"{REPO}:v2"] = NEW
+
+    record = deployer.process(queued(store, "v2", "run-2"))
+
+    assert record.outcome is Outcome.ROLLED_BACK and record.compose_file == ""
+    restored_with = compose_file_of_the_restore(docker)
+    assert restored_with is not None and restored_with.read_text(encoding="utf-8") == "services: previous\n"
+    # The rollback did not end well for the file of the host: the old file is still the one that ran last.
+    assert source.current_path().read_text(encoding="utf-8") == "services: previous\n"
+
+
+def test_a_rollback_after_a_tag_without_compose_files_restores_the_previous_compose_file(
+    make_deployer, docker, store, source, engine
+):
+    deployer = make_deployer(compose=source)
+    run_a_bundled_deployment(deployer, docker, store, engine)
+    # The image of the next tag carries no compose file, so the deployment goes on with the file of the host.
+    engine.pull_error = MISSING_TAG[0]
+    docker.new_container_timeline = list(UNHEALTHY)
+    docker.registry[f"{REPO}:v2"] = NEW
+
+    record = deployer.process(queued(store, "v2", "run-2"))
+
+    assert record.outcome is Outcome.ROLLED_BACK and record.compose_file == ""
+    restored_with = compose_file_of_the_restore(docker)
+    assert restored_with is not None and restored_with.read_text(encoding="utf-8") == "services: previous\n"
+    assert source.current_path().read_text(encoding="utf-8") == "services: previous\n"

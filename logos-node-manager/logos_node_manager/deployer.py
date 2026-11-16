@@ -157,7 +157,14 @@ class Deployer:
         return path
 
     def _settle_compose(self, deployment: Deployment, docker: Docker, compose: ComposeSource) -> None:
-        """Take the compose file out of the image of the tag, if the host is set to, and check it before it is used."""
+        """Take the compose file out of the image of the tag, if the host is set to, and check it before it is used.
+
+        The record also keeps the compose file that ran last, whichever file this deployment ends up with: the rollback
+        of a worker restores the previous image together with it.
+        """
+        if self.target.can_roll_back:
+            current = compose.current_path()
+            deployment.previous_compose_file = str(current) if current else ""
         if not compose.enabled():
             deployment.compose_settled = True
             self.store.save(deployment)
@@ -186,9 +193,6 @@ class Deployer:
             return
         deployment.compose_file = str(fetched.path)
         deployment.compose_sha256 = fetched.sha256
-        if self.target.can_roll_back:
-            current = compose.current_path()
-            deployment.previous_compose_file = str(current) if current else ""
         deployment.compose_settled = True
         self.event(
             deployment,
