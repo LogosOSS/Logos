@@ -50,6 +50,25 @@ describe('Request routing details', () => {
     expect(fixture.nativeElement.querySelector('.wait').textContent.trim()).toBe('—');
   });
 
+  it('reloads when a queued request starts executing on the same provider', async () => {
+    const fixture = TestBed.createComponent(RequestRoutingComponent);
+    fixture.componentRef.setInput('requestId', 'queued');
+    fixture.componentRef.setInput('providerName', 'Node B');
+    fixture.componentRef.setInput('scheduledTs', null);
+    getRequestRouting.mockResolvedValueOnce({ ...decision, candidates: [] });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('No routing decision recorded');
+
+    fixture.componentRef.setInput('scheduledTs', '2026-11-16T10:00:00Z');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(getRequestRouting).toHaveBeenCalledTimes(2);
+    expect(fixture.nativeElement.querySelector('tr.selected')?.textContent).toContain('Node B');
+  });
+
   it('ignores an earlier response after switching requests or destroying the panel', async () => {
     const component = TestBed.runInInjectionContext(() => new RequestRoutingComponent());
     let resolve!: (value: RequestRouting) => void;

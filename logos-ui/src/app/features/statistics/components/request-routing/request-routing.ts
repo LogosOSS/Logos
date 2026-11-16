@@ -12,6 +12,8 @@ export class RequestRoutingComponent implements OnChanges, OnDestroy {
   @Input({ required: true }) requestId = '';
   @Input() complete = false;
   @Input() providerName = '';
+  /** Scheduling persists the candidates, so a change reloads a panel opened while queued. */
+  @Input() scheduledTs: string | null = null;
 
   private readonly statistics = inject(StatisticsService);
   private generation = 0;

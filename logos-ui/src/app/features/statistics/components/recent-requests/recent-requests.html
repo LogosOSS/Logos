@@ -162,7 +162,8 @@
           }
           @if (expandedRoutingId() === item.request_id) {
             <app-request-routing [id]="'routing-' + item.request_id" [requestId]="item.request_id"
-              [complete]="stageOf(item) === 'complete'" [providerName]="item.provider_name" />
+              [complete]="stageOf(item) === 'complete'" [providerName]="item.provider_name"
+              [scheduledTs]="item.scheduled_ts" />
           }
           @if (expandedRequestId() === item.request_id) {
             <section class="rr-payload" aria-label="Request content">
