@@ -164,7 +164,13 @@ class _StreamingLogAccumulator:
     metadata is not lost when it arrives split across chunks.
     """
 
+    client_disconnected: bool = False
+    drain_timed_out: bool = False
+    provider_usage: Optional[Dict[str, Any]] = None
+    received_bytes: bool = False
+    completion_characters: int = 0
     buffer: str = ""
+    _sse_event_type: str = ""
     full_text: str = ""
     first_chunk: Optional[Dict[str, Any]] = None
     last_chunk: Optional[Dict[str, Any]] = None
@@ -202,6 +208,7 @@ class _StreamingLogAccumulator:
     )
 
     def feed(self, chunk: bytes | str) -> None:
+        self.received_bytes = self.received_bytes or bool(chunk)
         if isinstance(chunk, bytes):
             text = self._decoder.decode(chunk, final=False)
         else:
@@ -213,12 +220,11 @@ class _StreamingLogAccumulator:
     def finish(self) -> None:
         self.buffer += self._decoder.decode(b"", final=True)
         self._decoder.reset()
-        if not self.buffer:
-            return
         remainder = self.buffer
         self.buffer = ""
         for line in remainder.splitlines():
             self._consume_line(line.rstrip("\r"))
+        self._consume_line("")
 
     def streamed_tokens(self) -> Dict[str, int]:
         """Best current view of this request's tokens, mid-stream.
@@ -250,7 +256,34 @@ class _StreamingLogAccumulator:
             completion = self.delta_count
         return {"prompt_tokens": prompt, "completion_tokens": completion}
 
+    def has_final_usage(self) -> bool:
+        """Whether settled counts arrived, excluding the Messages start placeholder."""
+        if self._saw_messages_events:
+            return self._messages_final_usage
+        return bool(self.usage())
+
+    def estimate_disconnected_usage(self, request_payload: Any, *, estimate_unseen_prompt: bool = False) -> None:
+        """Estimate missing usage after disconnect, including a cancelled worker's unseen prompt."""
+        if not self.client_disconnected or self.has_final_usage() or self.upstream_error:
+            return
+        include_prompt = self.received_bytes or self.drain_timed_out or estimate_unseen_prompt
+        prompt = estimate_prompt_tokens(request_payload) if include_prompt else 0
+        if not prompt and include_prompt and request_payload:
+            prompt = (len(json.dumps(request_payload, ensure_ascii=False, default=str)) + 3) // 4
+        completion = (self.completion_characters + 3) // 4
+        self.provider_usage = {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+            "usage_estimated": 1,
+        }
+        self.messages_usage = None
+        if self.responses_final is not None:
+            self.responses_final = dict(self.responses_final, usage=self.provider_usage)
+
     def usage(self) -> Dict[str, Any]:
+        if self.provider_usage is not None:
+            return self.provider_usage
         if isinstance(self.responses_final, dict):
             usage = self.responses_final.get("usage")
             if isinstance(usage, dict):
@@ -270,13 +303,16 @@ class _StreamingLogAccumulator:
         if isinstance(self.responses_final, dict):
             return self.responses_final
         if self._saw_responses_events:
-            return {"content": self.full_text}
+            payload = {"content": self.full_text}
+            if self.usage():
+                payload["usage"] = self.usage()
+            return payload
         if self._saw_messages_events:
             # No chunk to rebuild from: an Anthropic stream never sends the
             # response as one object, only the events that assemble it.
             payload: Dict[str, Any] = {"content": self.full_text}
-            if self.messages_usage:
-                payload["usage"] = self.messages_usage
+            if self.usage():
+                payload["usage"] = self.usage()
             return payload
 
         usage = self.usage()
@@ -314,28 +350,58 @@ class _StreamingLogAccumulator:
     def _consume_line(self, line: str) -> None:
         stripped = line.strip()
         if not stripped:
+            if self._sse_event_type in {"error", "response.error", "response.failed"} and not self.upstream_error:
+                self.upstream_error = {"message": f"Provider stream reported {self._sse_event_type}"}
+                self.terminal_event_received = True
+            self._sse_event_type = ""
+            return
+        if stripped.startswith("event:"):
+            self._sse_event_type = stripped[6:].strip()
             return
         if stripped == "data: [DONE]":
             self.terminal_event_received = True
             return
-        if not stripped.startswith("data: "):
+        if not stripped.startswith("data:"):
             return
         try:
-            blob = json.loads(stripped[6:])
+            blob = json.loads(stripped[5:].lstrip())
         except json.JSONDecodeError:
             return
         if not isinstance(blob, dict):
             return
 
+        event_type = blob.get("type") or self._sse_event_type
+        response = blob.get("response")
         blob_error = blob.get("error")
-        if isinstance(blob_error, dict) and blob_error:
-            self.upstream_error = blob_error
-            return
-        if isinstance(blob_error, str) and blob_error:
-            self.upstream_error = {"message": blob_error}
+        is_failure = (
+            event_type in {"response.failed", "response.error", "error"} if isinstance(event_type, str) else False
+        )
+        is_failure = is_failure or self._sse_event_type in {"response.failed", "response.error", "error"}
+        if (isinstance(blob_error, (dict, str)) and blob_error) or is_failure:
+            if not blob_error and isinstance(response, dict):
+                blob_error = response.get("error")
+            if isinstance(blob_error, dict) and blob_error:
+                self.upstream_error = blob_error
+            else:
+                self.upstream_error = {
+                    "message": (
+                        blob_error
+                        if isinstance(blob_error, str) and blob_error
+                        else blob.get("message") or f"Provider stream reported {event_type}"
+                    )
+                }
+            self.terminal_event_received = True
+            # Capture usage before returning: failed generations can still carry
+            # provider-reported billable work, but must never gain an estimate.
+            usage = response.get("usage") if isinstance(response, dict) else None
+            if not isinstance(usage, dict):
+                usage = blob.get("usage")
+            if isinstance(usage, dict):
+                self.provider_usage = usage
+            if isinstance(response, dict):
+                self.responses_final = response
             return
 
-        event_type = blob.get("type")
         if isinstance(event_type, str) and event_type.startswith("response."):
             if event_type in {"response.completed", "response.incomplete", "response.failed"}:
                 self.terminal_event_received = True
@@ -347,10 +413,13 @@ class _StreamingLogAccumulator:
             self._consume_messages_event(event_type, blob)
             return
 
+        if isinstance(blob.get("usage"), dict) and blob["usage"]:
+            self.provider_usage = blob["usage"]
         self.last_chunk = blob
         if self.first_chunk is None:
             self.first_chunk = blob
 
+        self.completion_characters += _completion_characters(blob)
         choices = blob.get("choices")
         if isinstance(choices, list) and choices:
             first_choice = choices[0]
@@ -368,6 +437,7 @@ class _StreamingLogAccumulator:
 
     def _consume_responses_event(self, event_type: str, blob: Dict[str, Any]) -> None:
         """Consume one Responses-API SSE event (``{"type": "response.*", ...}``)."""
+        self.completion_characters += _completion_characters(blob)
         self._saw_responses_events = True
         if event_type == "response.output_text.delta":
             delta = blob.get("delta")
@@ -378,20 +448,6 @@ class _StreamingLogAccumulator:
             response = blob.get("response")
             if isinstance(response, dict):
                 self.responses_final = response
-            # A terminal ``response.failed`` is the Responses-API equivalent of a
-            # mid-stream ``data: {"error": {...}}`` frame: generation began, the
-            # bytes reached the client, but the request is not a success and must
-            # not be billed. ``response.incomplete`` is deliberately excluded: it
-            # means the generation stopped at max_output_tokens or a content
-            # filter, and the partial output it carries is real, billed usage.
-            if event_type == "response.failed":
-                err = response.get("error") if isinstance(response, dict) else None
-                if isinstance(err, dict) and err:
-                    self.upstream_error = err
-                elif isinstance(err, str) and err:
-                    self.upstream_error = {"message": err}
-                else:
-                    self.upstream_error = {"message": "Responses API stream reported response.failed"}
 
     def _consume_messages_event(self, event_type: str, blob: Dict[str, Any]) -> None:
         """Consume one Anthropic Messages SSE event.
@@ -410,6 +466,7 @@ class _StreamingLogAccumulator:
         Both events are merged instead, later winning, since message_delta
         carries the settled figures.
         """
+        self.completion_characters += _completion_characters(blob)
         self._saw_messages_events = True
         if event_type == "content_block_delta":
             delta = blob.get("delta")
@@ -470,3 +527,36 @@ def _usage_tokens_from_payload(
             if estimated > 0:
                 usage["estimated_prompt_tokens"] = estimated
     return usage
+
+
+def _completion_characters(event: dict) -> int:
+    """Count text, reasoning and tool arguments without counting SSE framing."""
+
+    def text_size(value):
+        if isinstance(value, str):
+            return len(value)
+        if isinstance(value, list):
+            return sum(text_size(item) for item in value)
+        if isinstance(value, dict):
+            return sum(text_size(value.get(key)) for key in ("text", "content", "arguments"))
+        return 0
+
+    count = 0
+    choices = event.get("choices")
+    for choice in choices if isinstance(choices, list) else []:
+        if not isinstance(choice, dict):
+            continue
+        count += text_size(choice.get("text"))
+        delta = choice.get("delta")
+        if isinstance(delta, dict):
+            count += sum(text_size(delta.get(key)) for key in ("content", "reasoning", "reasoning_content"))
+            tools = delta.get("tool_calls")
+            for tool in tools if isinstance(tools, list) else []:
+                if isinstance(tool, dict):
+                    count += text_size(tool.get("function"))
+    kind = event.get("type", "")
+    if isinstance(kind, str) and kind.startswith("response.") and kind.endswith(".delta"):
+        count += text_size(event.get("delta"))
+    if kind == "content_block_delta" and isinstance(event.get("delta"), dict):
+        count += sum(text_size(event["delta"].get(key)) for key in ("text", "thinking", "partial_json"))
+    return count

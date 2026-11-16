@@ -150,6 +150,16 @@ describe('Benchmark runner', () => {
     })).toBe(expected);
   });
 
+  it('labels scheduled cutoffs as stopped while preserving real failures', () => {
+    const stopped = { ...run, status: 'failed' as const, error_message: 'window_closed_below_half', updated_at: '2026-11-11T07:00:01Z' };
+    expect(component.benchmarkStatusLabel(stopped)).toContain('Stopped · nightly window ended');
+    expect(component.isBenchmarkWindowStop(stopped)).toBe(true);
+    const failed = { ...stopped, error_message: 'stalled' };
+    expect(component.benchmarkStatusLabel(failed)).toContain('Failed');
+    expect(component.isBenchmarkWindowStop(failed)).toBe(false);
+    expect(component.isBenchmarkWindowStop({ ...stopped, status: 'running' })).toBe(false);
+  });
+
   it('does not present all started requests as completed', () => {
     expect(component.benchmarkStatusLabel({ ...run,
       result: { stage: 'benchmarking', started_samples: 10, total_samples: 10 },

@@ -79,8 +79,13 @@ public class TeamMembershipService {
         List<ApiKey> existing = apiKeyRepository.findByUserIdAndTeamIdAndKeyType(userId, teamId, ApiKeyType.developer);
         if (!existing.isEmpty()) {
             ApiKey key = existing.getFirst();
-            key.setIsActive(true);
-            apiKeyRepository.save(key);
+            if (!Boolean.TRUE.equals(key.getIsActive())) {
+                // The value of a deactivated key may be why the membership ended;
+                // a returning member gets a fresh one rather than the old value back.
+                key.setKeyValue(apiKeyFactory.createDeveloperKey(user, team).getKeyValue());
+                key.setIsActive(true);
+                apiKeyRepository.save(key);
+            }
             return Optional.of(key.getKeyValue());
         }
 

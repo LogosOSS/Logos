@@ -44,7 +44,12 @@ from logos_worker_node.models import (
     model_can_sleep,
     model_uses_sharded_checkpoint,
 )
-from logos_worker_node.request_content import MULTIPART_PAYLOAD_KEY, httpx_request_parts
+from logos_worker_node.request_content import (
+    MULTIPART_PAYLOAD_KEY,
+    MediaReferenceError,
+    httpx_request_parts,
+    validate_media_references,
+)
 from logos_worker_node.runtime import build_runtime_status
 from logos_worker_node.vllm_compat import DEFAULT_VLLM
 from logos_worker_node.vllm_metrics_export import collect_vllm_metrics_text
@@ -646,6 +651,8 @@ class LogosBridgeClient:
         )
 
     def _runtime_has_transient_lanes(self) -> bool:
+        if self._last_runtime_payload.get("lane_transfers"):
+            return True
         lanes = self._last_runtime_payload.get("lanes") or []
         if not isinstance(lanes, list):
             return False
@@ -2453,26 +2460,31 @@ class LogosBridgeClient:
         except Exception:  # noqa: BLE001
             logger.exception("[Calibration] Sharded conversion errored for %s", model_name)
 
-    # vLLM endpoints that must never be reachable through proxied inference
-    # requests.  These are internal management endpoints (sleep/wake, cache
-    # reset, weight updates, etc.) that should only be triggered by the
-    # lane manager or capacity planner, not by external API clients.
-    _BLOCKED_REQUEST_PATHS: ClassVar[frozenset[str]] = frozenset(
+    # Only inference operations may be relayed to a lane. Management endpoints
+    # remain accessible exclusively through the worker's control plane.
+    _ALLOWED_REQUEST_PATHS: ClassVar[frozenset[str]] = frozenset(
         {
-            "sleep",
-            "wake_up",
-            "is_sleeping",
-            "pause",
-            "resume",
-            "is_paused",
-            "reset_prefix_cache",
-            "reset_mm_cache",
-            "reset_encoder_cache",
-            "update_weights",
-            "init_weight_transfer_engine",
-            "scale_elastic_ep",
-            "is_scaling_elastic_ep",
-            "collective_rpc",
+            "v1/chat/completions",
+            "v1/completions",
+            "v1/embeddings",
+            "v1/responses",
+            "v1/messages",
+            "v1/audio/transcriptions",
+            "v1/audio/translations",
+            "v1/audio/speech",
+            "v1/models",
+            # Decision readouts for models without a decision profile (orchestrator system_one route).
+            "v1/systemone",
+            "v1/rerank",
+            "v1/score",
+            "v2/embed",
+            "v2/rerank",
+            "pooling",
+            "score",
+            "rerank",
+            "classify",
+            "tokenize",
+            "detokenize",
         }
     )
 
@@ -2482,17 +2494,23 @@ class LogosBridgeClient:
         payload: dict[str, Any] | None = None,
         request_path: str | None = None,
     ) -> str:
-        # If the caller forwarded the original API path (e.g. "v1/embeddings",
-        # "v2/embed", "tokenize"), use it directly so vLLM decides what it supports.
-        if request_path:
-            endpoint = request_path.strip("/")
-            # Block internal vLLM management endpoints from being reached
-            # through proxied inference requests.
-            if endpoint in LogosBridgeClient._BLOCKED_REQUEST_PATHS:
-                raise ValueError(f"Request path '/{endpoint}' is not allowed through the inference proxy")
-        else:
-            endpoint = str(lane_status.get("inference_endpoint") or "/v1/chat/completions").lstrip("/")
+        if not request_path:
+            request_path = str(lane_status.get("inference_endpoint") or "/v1/chat/completions")
+        # Accept one leading path separator, but reject ambiguous paths before
+        # httpx or the lane server can normalize or decode them.
+        endpoint = request_path.removeprefix("/")
+        if (
+            any(segment in {"", ".", ".."} for segment in endpoint.split("/"))
+            or any(char in "\\%" or ord(char) < 32 or 127 <= ord(char) <= 159 for char in endpoint)
+            or endpoint not in LogosBridgeClient._ALLOWED_REQUEST_PATHS
+        ):
+            raise ValueError(f"Request path '/{endpoint}' is not allowed through the inference proxy")
         return f"http://127.0.0.1:{lane_status['port']}/{endpoint}"
+
+    def _validate_media(self, payload: dict[str, Any]) -> None:
+        config = getattr(self._app.state, "config", None)
+        domains = config.engines.vllm.allowed_media_domains if config is not None else ()
+        validate_media_references(payload, domains)
 
     async def _execute_infer_command(self, params: dict[str, Any]) -> dict[str, Any]:
         lane_manager = self._app.state.lane_manager
@@ -2500,6 +2518,11 @@ class LogosBridgeClient:
         payload = params.get("payload") or {}
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
+
+        try:
+            self._validate_media(payload)
+        except MediaReferenceError as exc:
+            return {"status_code": 400, "body": exc.error_body(), "headers": {"content-type": "application/json"}}
 
         tracer = worker_perf.begin()
 
@@ -2580,6 +2603,22 @@ class LogosBridgeClient:
                     "cmd_id": cmd_id,
                     "success": False,
                     "error": "payload must be an object",
+                },
+            )
+            return
+
+        try:
+            self._validate_media(payload)
+        except MediaReferenceError as exc:
+            await self._send_json(
+                ws,
+                {
+                    "type": "stream_end",
+                    "cmd_id": cmd_id,
+                    "success": False,
+                    "status_code": 400,
+                    "body": exc.error_body(),
+                    "error": str(exc),
                 },
             )
             return

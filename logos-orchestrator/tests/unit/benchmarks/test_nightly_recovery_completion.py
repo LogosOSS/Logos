@@ -90,3 +90,49 @@ def test_completed_night_keeps_the_interruption_and_measurement_from_an_earlier_
     title, body = notification_message(event)
     assert title == "Nightly benchmark finished"
     assert "Benchmark #135" in body and REASON in body
+
+
+@pytest.mark.parametrize(
+    ("failed_adoption", "target"),
+    [
+        (False, None),
+        (True, None),
+        (True, {"model_id": 11, "provider_name": "Test worker"}),
+    ],
+)
+def test_save_queues_the_failed_candidate_with_its_rollback(monkeypatch, failed_adoption, target):
+    failure = {
+        "status": "adoption_failed",
+        "benchmark_id": 164,
+        "baseline_id": 160,
+        "parameters": {"max_num_batched_tokens": 2304},
+        "throughput": 32.8,
+        "baseline_throughput": 22.92,
+        "reason": REASON,
+    }
+    db = Mock()
+    db.session.execute.return_value.mappings.return_value.first.return_value = target
+    monkeypatch.setattr(store, "DBManager", lambda: nullcontext(db))
+
+    journal = {"provider_id": 4}
+    report = [failure] if failed_adoption else []
+    store.save(31, "running", report, journal, adoption_failure=failure if failed_adoption else None)
+
+    calls = db.session.execute.call_args_list
+    assert json.loads(calls[0].args[1]["recovery"]) == journal
+    assert json.loads(calls[0].args[1]["report"]) == report
+    db.session.commit.assert_called_once_with()
+    if target is None:
+        assert len(calls) == (2 if failed_adoption else 1)
+        return
+
+    assert len(calls) == 3
+    outbox = calls[2].args[1]
+    assert outbox["event"] == "nightly-adoption-failed:31:164"
+    payload = json.loads(outbox["payload"])
+    assert payload == {**failure, **target, "model_provider_id": 31}
+    title, body = notification_message(payload)
+    assert title == "Nightly configuration adoption failed"
+    assert "Test worker · Benchmark #164 · Max batched tokens 2304" in body
+    assert "32.8 tok/s (+43.1% vs. baseline #160)" in body
+    assert REASON in body

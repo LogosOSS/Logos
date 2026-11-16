@@ -8,6 +8,10 @@
 services:
   traefik:
     image: traefik:v3.7.16
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     container_name: traefik
     restart: unless-stopped
     command:
@@ -193,6 +197,10 @@ services:
 
   logos-orchestrator:
     image: ${REGISTRY:-ghcr.io/logososs}/logos-orchestrator:${IMAGE_TAG:-latest}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     container_name: logos-orchestrator
     restart: unless-stopped
     # The single uvicorn worker holds one open fd per in-flight client stream
@@ -211,6 +219,8 @@ services:
     volumes:
       - data_volume:/src/logos
     environment:
+      DB_PASSWORD: "${LOGOS_DB_PASSWORD:?LOGOS_DB_PASSWORD must be set}"
+      LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS: "${LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
       LOGOS_DOMAIN: "${LOGOS_DOMAIN:-localhost}"
       LOGOS_CAPACITY_PLANNER_ENABLED: "${LOGOS_CAPACITY_PLANNER_ENABLED:-true}"
       # Seconds a vLLM lane may stay idle before the capacity planner puts it to
@@ -347,6 +357,10 @@ services:
 
   logos-webservice:
     image: ${REGISTRY:-ghcr.io/logososs}/logos-webservice:${IMAGE_TAG:-latest}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     # No fixed container_name: Traefik load-balances across replicas.
     # Production/dev/test deploy workflows scale from the node's .env:
     #   LOGOS_WEBSERVICE_REPLICAS=<N>   # default 1
@@ -366,8 +380,9 @@ services:
       DB_PORT: 5432
       DB_NAME: logosdb
       DB_USER: postgres
-      DB_PASSWORD: root
+      DB_PASSWORD: "${LOGOS_DB_PASSWORD:?LOGOS_DB_PASSWORD must be set}"
       REDIS_HOST: logos-redis
+      REDIS_PASSWORD: "${LOGOS_REDIS_PASSWORD:?LOGOS_REDIS_PASSWORD must be set}"
       REDIS_PORT: 6379
       # Hikari pool per replica. Auth, admission and settlement each need a
       # connection, so a few slow queries must not be able to take them all.
@@ -395,7 +410,7 @@ services:
       LOGOS_RATE_LIMITING_ENABLED: "${LOGOS_RATE_LIMITING_ENABLED:-true}"
       LOGOS_RATE_LIMIT_PUBLIC_RPM: "${LOGOS_RATE_LIMIT_PUBLIC_RPM:-60}"
       LOGOS_RATE_LIMIT_AUTH_FAILURE_RPM: "${LOGOS_RATE_LIMIT_AUTH_FAILURE_RPM:-20}"
-      LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS: "${LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}"
+      LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS: "${LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
       JDK_JAVA_OPTIONS: "-XX:MaxRAMPercentage=80.0"
       # Keycloak (also served back to the UI via /api/info)
       KEYCLOAK_ISSUER_URI: "${KEYCLOAK_ISSUER_URI:?KEYCLOAK_ISSUER_URI must be set}"
@@ -463,6 +478,15 @@ services:
       - "traefik.http.routers.webservice-identity.service=logos-webservice-svc"
       - "traefik.http.routers.webservice-identity.middlewares=strip-api,rl-admin"
       - "traefik.http.routers.webservice-identity.priority=200"
+
+      # === Routing: /api/public/stats (unauthenticated aggregates) ===
+      # Must outrank the orchestrator's /api catch-all (priority 100); Spring
+      # serves GET /public/stats after strip-api removes the /api prefix.
+      - "traefik.http.routers.webservice-public-stats.rule=Path(`/api/public/stats`)"
+      - "traefik.http.routers.webservice-public-stats.entrypoints=internal8090"
+      - "traefik.http.routers.webservice-public-stats.service=logos-webservice-svc"
+      - "traefik.http.routers.webservice-public-stats.middlewares=strip-api,rl-admin"
+      - "traefik.http.routers.webservice-public-stats.priority=200"
 
       # === Routing: /api/logosdb ===
       - "traefik.http.routers.webservice-config.rule=PathPrefix(`/api/logosdb`)"
@@ -533,7 +557,7 @@ services:
       -c shared_buffers=${LOGOS_DB_SHARED_BUFFERS:-2GB}
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: root
+      POSTGRES_PASSWORD: "${LOGOS_DB_PASSWORD:?LOGOS_DB_PASSWORD must be set}"
       POSTGRES_DB: logosdb
       POSTGRES_HOST: localhost
     ports:
@@ -556,7 +580,16 @@ services:
     image: redis:7-alpine
     container_name: logos-redis
     restart: unless-stopped
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    environment:
+      REDISCLI_AUTH: "${LOGOS_REDIS_PASSWORD:?LOGOS_REDIS_PASSWORD must be set}"
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --requirepass
+      - "${LOGOS_REDIS_PASSWORD:?LOGOS_REDIS_PASSWORD must be set}"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -567,6 +600,15 @@ services:
 
   logos-agent:
     image: ${REGISTRY:-ghcr.io/logososs}/logos-agent:${IMAGE_TAG:-latest}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The runner hands session directories to their UID and maintains their files.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
     container_name: logos-agent
     # Long enough to freeze every running session before the process is
     # killed. A deploy restarts this service and the model gateway together;
@@ -591,7 +633,7 @@ services:
       DB_PORT: 5432
       DB_NAME: logosdb
       DB_USER: postgres
-      DB_PASSWORD: root
+      DB_PASSWORD: "${LOGOS_DB_PASSWORD:?LOGOS_DB_PASSWORD must be set}"
       LOGOS_ORCHESTRATOR_URL: "http://logos-orchestrator:8080"
       LOGOS_INTERNAL_SECRET: "${LOGOS_INTERNAL_SECRET:-}"
       # Same encryption secret as logos-webservice — needed to decrypt

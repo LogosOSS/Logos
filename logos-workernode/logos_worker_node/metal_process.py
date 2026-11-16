@@ -53,6 +53,7 @@ from logos_worker_node.vllm_compat import (
     _infer_reasoning_parser,
     _infer_tool_call_parser,
     _resolve_chat_template,
+    strip_host_args,
 )
 from logos_worker_node.vllm_process import _DEFAULT_LANE_CONTEXT_LENGTH, VllmProcessHandle
 
@@ -292,14 +293,10 @@ class MetalVllmProcessHandle(VllmProcessHandle):
         if merged_kwargs:
             cmd.extend(["--default-chat-template-kwargs", json.dumps(merged_kwargs)])
 
-        cmd.extend(self._vllm_engine_config.global_extra_args)
-        cmd.extend(vc.extra_args)
+        cmd.extend(strip_host_args(self._vllm_engine_config.global_extra_args))
+        cmd.extend(strip_host_args(vc.extra_args))
 
-        # Repeat the bind settings AFTER the extras: argparse keeps the last
-        # occurrence, so a --host/--port smuggled in through global_extra_args
-        # or per-model extra_args (either "--host 0.0.0.0" or
-        # "--host=0.0.0.0" form) would otherwise override the loopback bind
-        # and expose the unauthenticated API to the local network.
+        # Keep the bind settings last so extras cannot redirect the bridge's port.
         cmd.extend(["--host", "127.0.0.1", "--port", str(self.port)])
         return cmd
 

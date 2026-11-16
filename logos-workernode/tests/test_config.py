@@ -68,3 +68,34 @@ def test_env_file_resolves_from_cwd_without_config_env(tmp_path, monkeypatch) ->
 
     cfg = worker_config.load_config()
     assert cfg.logos.logos_url == "https://cwd.example"
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        "",
+        "*",
+        "*.example.com",
+        "https://example.com",
+        "example.com/path",
+        "example.com:443",
+        "user@example.com",
+        "example.com.",
+        " example.com",
+        "example..com",
+    ],
+)
+def test_media_domains_reject_non_hostnames(domain):
+    from logos_worker_node.models import VllmEngineConfig
+
+    with pytest.raises(ValueError, match="bare ASCII hostnames"):
+        VllmEngineConfig(allowed_media_domains=[domain])
+
+
+def test_media_domains_load_from_worker_yaml(monkeypatch, tmp_path):
+    from logos_worker_node.config import _load_config_yml
+
+    path = tmp_path / "config.yml"
+    path.write_text("engines:\n  vllm:\n    allowed_media_domains: [MEDIA.Example, assets.example, media.example]\n")
+    monkeypatch.setenv("LOGOS_WORKER_NODE_CONFIG", str(path))
+    assert _load_config_yml().engines.vllm.allowed_media_domains == ["media.example", "assets.example"]

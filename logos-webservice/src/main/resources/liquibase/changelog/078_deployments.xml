@@ -22,7 +22,7 @@
 
          A plan that is `running` is unique: a second one is refused. The index makes that true across several
          webservice copies. -->
-    <changeSet id="072-deployers" author="logos">
+    <changeSet id="078-deployers" author="logos">
         <preConditions onFail="MARK_RAN">
             <not><tableExists tableName="deployers"/></not>
         </preConditions>
@@ -49,7 +49,7 @@
         </rollback>
     </changeSet>
 
-    <changeSet id="072-deployment-plans" author="logos">
+    <changeSet id="078-deployment-plans" author="logos">
         <preConditions onFail="MARK_RAN">
             <not><tableExists tableName="deployment_plans"/></not>
         </preConditions>
@@ -86,7 +86,7 @@
         </rollback>
     </changeSet>
 
-    <changeSet id="072-deployment-steps" author="logos">
+    <changeSet id="078-deployment-steps" author="logos">
         <preConditions onFail="MARK_RAN">
             <not><tableExists tableName="deployment_steps"/></not>
         </preConditions>

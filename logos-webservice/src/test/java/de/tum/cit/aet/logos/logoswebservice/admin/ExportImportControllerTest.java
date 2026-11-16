@@ -386,4 +386,23 @@ class ExportImportControllerTest {
             .contains("quality")
             .contains("price");
     }
+    @Test
+    void importRejectsControlCharactersWithoutReplacingData() throws Exception {
+        String body = mvc.perform(post("/logosdb/export").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        com.fasterxml.jackson.databind.JsonNode data = objectMapper.readTree(body).get("result");
+        for (char control : new char[] {0, '\r', '\n', '\t', 27, 127, 133, 159}) {
+            ((com.fasterxml.jackson.databind.node.ObjectNode) data.get("models").get(0))
+                .put("name", "model" + control + "LOGOS");
+            mvc.perform(post("/logosdb/import").with(TestJwt.logosAdmin())
+                    .contentType("application/json")
+                    .content(objectMapper.writeValueAsString(java.util.Map.of("json_data", data))))
+               .andExpect(status().isBadRequest())
+               .andExpect(jsonPath("$.error").value("Model names must not contain control characters"));
+        }
+        org.assertj.core.api.Assertions.assertThat(
+            jdbc.queryForObject("SELECT name FROM models WHERE id = 5001", String.class)).isEqualTo("gpt-4");
+    }
+
 }

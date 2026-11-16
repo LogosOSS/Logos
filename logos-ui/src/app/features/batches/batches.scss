@@ -44,7 +44,9 @@
   }
 
   select,
-  input[type='file'] {
+  input[type='file'],
+  input[type='number'] {
+    box-sizing: border-box;
     width: 100%;
     max-width: 520px;
     padding: 8px 10px;
@@ -149,4 +151,24 @@ table {
 
 .notice {
   opacity: 0.85;
+}
+
+.estimate {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid rgb(var(--color-outline-200) / var(--opacity-strong));
+  border-radius: 8px;
+
+  h3 {
+    margin: 0 0 12px;
+    font-size: 1rem;
+  }
+
+  small {
+    opacity: 0.75;
+  }
+}
+
+.estimate-models {
+  overflow-wrap: anywhere;
 }

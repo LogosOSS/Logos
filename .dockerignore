@@ -22,7 +22,21 @@
 !logos-agent/pyproject.toml
 !logos-agent/app
 !logos-agent/workspace/run_session.py
+!logos-agent/workspace/verify_checkout.py
 !logos-agent/workspace/screenshot.js
+# Compile caches are resolved at image build time for offline session checks.
+!logos-webservice/pom.xml
+!logos-webservice/src
+!logos-ui/package.json
+!logos-ui/package-lock.json
+!logos-ui/src
+!logos-ui/public
+!logos-ui/angular.json
+!logos-ui/tsconfig.json
+!logos-ui/tsconfig.app.json
+!logos-ui/tsconfig.spec.json
+!logos-ui/postcss.config.mjs
+!logos-ui/vitest-base.config.mts
 # The E2E node simulator image: the real worker package plus the harness.
 !logos-workernode/requirements.txt
 !logos-workernode/logos_worker_node

@@ -389,6 +389,22 @@ def test_record_rate_limit_admission_persists_the_flag_both_ways(monkeypatch):
     assert flags == {"req-rl-admitted": True, "req-rl-rejected": False}
 
 
+def test_an_answer_cache_miss_rides_the_completion_write_as_false(monkeypatch):
+    """A miss must reach the row as FALSE, not be dropped like an unset
+    value: the reuse rate is hits over lookups, so a request the cache was
+    checked for has to be told apart from one it never saw (NULL)."""
+    recorder, calls = _make_recorder(monkeypatch, {}, {})
+    _patch_prom(monkeypatch)
+
+    recorder.record_answer_reuse_miss("req-miss")
+
+    assert calls == []
+
+    recorder.record_complete("req-miss", result_status="success")
+
+    assert [call["cache_hit"] for call in calls if call["request_id"] == "req-miss"] == [False]
+
+
 def test_record_provider_call_rides_the_completion_write(monkeypatch):
     """The statistics page splits a finished request's wall time at the
     provider call, not at scheduling — the value must land on the same

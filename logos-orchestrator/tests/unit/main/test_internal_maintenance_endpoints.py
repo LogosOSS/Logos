@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
-from logos.dbutils.dbrequest import InternalReleaseCalibrationClaimRequest, InternalReleaseRecoveryRequest
+from logos.dbutils.dbrequest import (
+    InternalReleaseCalibrationClaimRequest,
+    InternalReleaseRecoveryRequest,
+    ReleaseNodeMaintenanceRequest,
+)
 from logos.logosnode_registry import MaintenanceBusyError
 from logos.routers import internal as module
 
@@ -112,3 +116,47 @@ async def test_recovery_release_without_coordinator_is_unavailable(coordinator, 
     with pytest.raises(HTTPException) as exc:
         await module.internal_release_recovery(InternalReleaseRecoveryRequest(model_provider_id=31), _request())
     assert exc.value.status_code == 503
+
+
+async def test_node_release_requires_internal_secret(coordinator, monkeypatch):
+    service = MagicMock()
+    monkeypatch.setattr(module._main, "_node_maintenance", service)
+    with pytest.raises(HTTPException) as exc:
+        await module.internal_release_node_maintenance(
+            ReleaseNodeMaintenanceRequest(provider_id=1, deployment_id="d1"), _request("Bearer wrong")
+        )
+    assert exc.value.status_code == 401
+    service.admin_release.assert_not_called()
+
+
+async def test_status_includes_node_leases(coordinator, monkeypatch):
+    service = MagicMock()
+    service.admin_status.return_value = [{"provider_id": 1, "deployment_id": "d1"}]
+    monkeypatch.setattr(module._main, "_node_maintenance", service)
+    coordinator.slot_status.return_value = {"calibrations": [], "benchmarks": [], "recoveries": []}
+    assert (await module.internal_maintenance_status(_request()))[
+        "node_maintenance"
+    ] == service.admin_status.return_value
+
+
+@pytest.mark.parametrize("error, status", [(LookupError("gone"), 404), (MaintenanceBusyError("changed"), 409)])
+async def test_node_release_maps_refusals(coordinator, monkeypatch, error, status):
+    service = MagicMock()
+    service.admin_release.side_effect = error
+    monkeypatch.setattr(module._main, "_node_maintenance", service)
+    with pytest.raises(HTTPException) as exc:
+        await module.internal_release_node_maintenance(
+            ReleaseNodeMaintenanceRequest(provider_id=1, deployment_id="d1"), _request()
+        )
+    assert exc.value.status_code == status
+
+
+async def test_node_release_forwards_selected_identity(coordinator, monkeypatch):
+    service = MagicMock()
+    service.admin_release.return_value = {"released": True}
+    monkeypatch.setattr(module._main, "_node_maintenance", service)
+    result = await module.internal_release_node_maintenance(
+        ReleaseNodeMaintenanceRequest(provider_id=1, deployment_id="d1"), _request()
+    )
+    assert result == {"released": True}
+    service.admin_release.assert_called_once_with(1, "d1")

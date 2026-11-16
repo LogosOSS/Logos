@@ -261,6 +261,7 @@ async def build_runtime_status(app: FastAPI) -> WorkerRuntimeStatus:
     if not isinstance(lifecycle_revision, int):
         lifecycle_revision = None
     lanes = await lane_manager.get_all_statuses()
+    lane_transfers = await lane_manager.lane_transfer_statuses()
     devices = await gpu_collector.get_snapshot()
     # The derived summary is the last resort: it is built only when the
     # collector has no device data at all (mode "none"). Both collectors
@@ -344,6 +345,7 @@ async def build_runtime_status(app: FastAPI) -> WorkerRuntimeStatus:
         disk=disk,
         capacity=capacity,
         lanes=lanes,
+        lane_transfers=lane_transfers,
         model_profiles=model_profiles if model_profiles else None,
         max_lanes=cfg.worker.max_lanes,
         gpu_performance_score=cfg.worker.gpu_performance_score,

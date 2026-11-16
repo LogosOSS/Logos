@@ -13,7 +13,7 @@ import { CommonModule } from '@angular/common';
 import { StatisticsService, ProviderModel } from '../../services/statistics.service';
 import { getLaneStateColor } from '../../statistics.constants';
 import { formatTokenCount } from '../../statistics.utils';
-import { LaneSignalData, VramProviderMeta } from '../../statistics.models';
+import { LaneSignalData, LaneTransferStatus, VramProviderMeta } from '../../statistics.models';
 import { EmptyState } from '../empty-state/empty-state';
 
 const STATE_ORDER: Record<string, number> = {
@@ -246,6 +246,23 @@ export class LaneHealthPanel implements OnChanges, OnDestroy {
   @Input() lanesByProvider: Record<string, Record<string, LaneSignalData>> = {};
   @Input() providerMeta: Record<string, VramProviderMeta> = {};
   @Input() selectedProvider: string | null = null;
+  @Input() laneTransfers?: LaneTransferStatus[];
+
+  get acceptedLoadHasTelemetry(): boolean {
+    const model = this.acceptedModel();
+    return this.laneTransfers?.some((transfer) => transfer.operation === 'loading' && transfer.model === model) ?? false;
+  }
+
+  transferProgress(transfer: LaneTransferStatus): number | null {
+    const { resident_vram_mb: resident, reference_vram_mb: reference } = transfer;
+    if (resident == null || reference == null || reference <= 0) return null;
+    const fraction = resident / reference;
+    return Math.max(0, Math.min(1, transfer.operation === 'loading' ? fraction : 1 - fraction));
+  }
+
+  vramGiB(mib: number): string {
+    return `${(mib / 1024).toFixed(1)} GiB`;
+  }
 
   private statisticsService = inject(StatisticsService);
 

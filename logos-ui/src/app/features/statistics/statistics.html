@@ -493,6 +493,7 @@
                       [lanesByProvider]="lanesByProvider()"
                       [providerMeta]="vramProviderMetaByName()"
                       [selectedProvider]="row.name"
+                      [laneTransfers]="row.online ? latestSampleByProvider()[row.name]?.scheduler_signals?.provider?.lane_transfers : undefined"
                     />
                   </app-stats-chart-panel>
                   </div>

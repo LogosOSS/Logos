@@ -20,6 +20,7 @@ export class ModalFormComponent {
   @Input({ required: true }) visible!: boolean;
   @Input({ required: true }) title!: string;
   @Input() size: 'sm' | 'md' | 'lg' | 'xl' = 'md';
+  @Input() dismissible = true;
   @Output() visibleChange = new EventEmitter<boolean>();
 
   protected get tumUiSize(): TumAetUiDialogSize {

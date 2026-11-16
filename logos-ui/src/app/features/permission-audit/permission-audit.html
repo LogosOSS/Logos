@@ -1,0 +1,95 @@
+<section class="permission-audit">
+  <div class="audit-header">
+    <div>
+      <h1 class="page-title">Permission audit log</h1>
+      <p class="page-subtitle">Trace model and provider access across teams and API keys.</p>
+    </div>
+  </div>
+
+  <form class="audit-filters" (ngSubmit)="applyFilters()">
+    <div class="filter-heading">
+      <h2>Filter history</h2>
+      <span class="read-only"><i class="pi pi-lock" aria-hidden="true"></i> Read-only</span>
+    </div>
+    <p class="filter-hint">Enter an ID or select a name in the log to filter. Deleted teams and keys remain in the history.</p>
+    <div class="filter-grid">
+      @for (field of idFields; track field.key) {
+        <label [for]="field.key">{{ field.label }}
+          <input class="field-input" [id]="field.key" [name]="field.key" type="text" inputmode="numeric"
+            [(ngModel)]="draft[field.key]" placeholder="All" />
+        </label>
+      }
+      <label for="audit-from">From (local time)
+        <input class="field-input" id="audit-from" name="from" type="datetime-local" [(ngModel)]="draft.from" />
+      </label>
+      <label for="audit-to">Until (local time, exclusive)
+        <input class="field-input" id="audit-to" name="to" type="datetime-local" [(ngModel)]="draft.to" />
+      </label>
+    </div>
+    @if (validationError()) { <app-error-message variant="banner" [message]="validationError()" /> }
+    <div class="filter-actions">
+      <button class="btn-primary" type="submit">Apply filters</button>
+      <button class="btn-secondary" type="button" (click)="reset()">Clear filters</button>
+    </div>
+  </form>
+
+  @if (error()) {
+    <div class="audit-error">
+      <app-error-message variant="banner" [message]="error()" />
+      <button type="button" class="btn-secondary" (click)="retry()">Try again</button>
+    </div>
+  }
+
+  <div class="history-heading">
+    <h2>Permission changes</h2>
+    <span>Newest first · Times shown in your local timezone</span>
+  </div>
+  <app-data-table role="table" aria-label="Permission changes" [attr.aria-busy]="loading()"
+    [columns]="['WHEN / ACTION', 'TEAM / SCOPE', 'TARGET', 'ACTOR', 'CAUSE']"
+    gridCols="1.1fr 1.5fr 1.4fr 0.9fr 0.9fr" [loading]="loading()"
+    [empty]="entries().length === 0" [emptyMessage]="error() ? 'History is unavailable.' : 'No permission changes match these filters.'">
+    @for (entry of entries(); track entry.id) {
+      <div class="table-row" role="row">
+        <div role="cell" data-label="When / action">
+          <span class="action-badge" [class.revoked]="entry.action === 'revoke'">
+            <i [class]="entry.action === 'grant' ? 'pi pi-plus' : 'pi pi-minus'" aria-hidden="true"></i>
+            {{ entry.action === 'grant' ? 'Granted' : 'Revoked' }}
+          </span>
+          <time [attr.datetime]="entry.occurred_at">{{ entry.occurred_at | date:'mediumDate' }}<br />{{ entry.occurred_at | date:'HH:mm:ss' }}</time>
+        </div>
+        <div role="cell" data-label="Team / scope">
+          @if (entry.team_id !== null) {
+            <button type="button" class="entity-link" [attr.aria-label]="'Filter by team ' + (entry.team_name || entry.team_id)"
+              (click)="filterBy('team_id', entry.team_id)">{{ entry.team_name || 'Unnamed team' }}</button>
+            <span class="meta">Team #{{ entry.team_id }}</span>
+          } @else { <span class="meta">No team</span> }
+          @if (entry.scope_type === 'api_key') {
+            <button type="button" class="entity-link key-name" [attr.aria-label]="'Filter by API key ' + (entry.scope_name || entry.scope_id)"
+              (click)="filterBy('api_key_id', entry.scope_id)">{{ entry.scope_name || 'Unnamed key' }}</button>
+            <span class="meta">API key #{{ entry.scope_id }}</span>
+          } @else { <span class="scope-note">Team permission</span> }
+        </div>
+        <div role="cell" data-label="Target">
+          <button type="button" class="entity-link" [attr.aria-label]="'Filter by ' + entry.target_type + ' ' + (entry.target_name || entry.target_id)"
+            (click)="filterBy(entry.target_type === 'model' ? 'model_id' : 'provider_id', entry.target_id)">{{ entry.target_name || 'Unnamed target' }}</button>
+          <span class="meta">{{ entry.target_type === 'model' ? 'Model' : 'Provider' }} #{{ entry.target_id }}</span>
+        </div>
+        <div role="cell" data-label="Actor">
+          @if (entry.actor_user_id !== null) {
+            <span class="actor">User #{{ entry.actor_user_id }}</span>
+            <span class="meta">{{ roles[entry.actor_role] || entry.actor_role }}</span>
+          } @else { <span class="actor"><i class="pi pi-cog" aria-hidden="true"></i> System</span> }
+        </div>
+        <div role="cell" data-label="Cause"><span class="cause">{{ causes[entry.cause] }}</span></div>
+      </div>
+    }
+  </app-data-table>
+  <nav class="pagination" aria-label="Audit history pages">
+    <span aria-live="polite">{{ entries().length }} changes · Page {{ pageIndex() + 1 }}</span>
+    <div>
+      <button type="button" class="btn-secondary" (click)="previous()" [disabled]="loading() || !!error() || pageIndex() === 0">Newer</button>
+      <button type="button" class="btn-secondary" (click)="next()" [disabled]="loading() || !!error() || !hasMore()">Older</button>
+    </div>
+  </nav>
+  <p class="history-note">Names are recorded at the time of each change. History begins when permission auditing is enabled.</p>
+</section>

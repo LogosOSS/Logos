@@ -1,5 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.gateway;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -8,6 +10,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -52,7 +56,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * reads the key's whole month, so admission would slow down with every
  * request the key makes. Only a response that reports no usage at all, or
  * usage that prices to nothing, keeps the flat reservation, and failure
- * zeros it.
+ * bills only provider-reported usage.
  *
  * <p>{@link #finalizeUnsettled} finalizes successful rows that still carry no
  * stored price, in bounded batches on a schedule.
@@ -87,7 +91,7 @@ public class GatewayCloudAccounting {
                          WHERE ut.log_entry_id = le.id)),
                    CAST(:reservation AS BIGINT)),
                cost_finalized = TRUE
-         WHERE le.result_status = 'success'
+         WHERE le.result_status = CAST(:resultStatus AS result_status_enum)
            AND le.cost_finalized = FALSE
            AND %s
         """;
@@ -108,6 +112,9 @@ public class GatewayCloudAccounting {
     /** The only levels {@code logging_enum} has; anything else is not a level we may store. */
     private static final String LEVEL_FULL = GatewayLoggingLevel.LEVEL_FULL;
     private static final String LEVEL_BILLING = GatewayLoggingLevel.LEVEL_BILLING;
+
+    /** Same scale the orchestrator exposes on {@code usage.cost}. */
+    static final long MICRO_CENTS_PER_USD = 100_000_000L;
 
     private final NamedParameterJdbcTemplate jdbc;
     private final GatewayBudgetService budgetService;
@@ -132,6 +139,91 @@ public class GatewayCloudAccounting {
         this.staleAfterMinutes = Math.max(1, staleAfterMinutes);
         this.finalizeBatchSize = Math.max(1, finalizeBatchSize);
         this.finalizeMaxBatches = Math.max(1, finalizeMaxBatches);
+    }
+
+    /**
+     * Live client-facing pricer for one cloud deployment.
+     *
+     * <p>Used while the response streams so {@code usage.cost} matches what the
+     * ledger will settle via {@code logos_price_usage}. Best-effort: failures
+     * yield an empty optional and never reach the client as an error.
+     */
+    public GatewayCostPricer costPricer(GatewayDeployment deployment) {
+        if (deployment == null || deployment.providerId() == null) {
+            return (usage, serviceTier) -> OptionalDouble.empty();
+        }
+        int modelId = deployment.modelId();
+        int providerId = deployment.providerId();
+        return (usage, serviceTier) -> priceUsageUsd(modelId, providerId, usage, serviceTier);
+    }
+
+    /**
+     * Price one response's token usage in USD for the client body.
+     *
+     * @return empty when Logos has no catalogue price (or the lookup fails)
+     */
+    OptionalDouble priceUsageUsd(int modelId, int providerId, Map<String, Long> usage, String serviceTier) {
+        Map<String, Long> billable = billableUsage(usage);
+        if (billable.isEmpty()) {
+            return OptionalDouble.empty();
+        }
+        try {
+            String usageJson = objectMapper.writeValueAsString(billable);
+            OptionalLong microCents = jdbc.query(
+                """
+                    SELECT logos_price_usage(
+                        :modelId, :providerId, :responseAt, :serviceTier,
+                        CAST(:usage AS jsonb)
+                    ) AS cost_micro_cents
+                    """,
+                new MapSqlParameterSource()
+                    .addValue("modelId", modelId)
+                    .addValue("providerId", providerId)
+                    .addValue("responseAt", utc(Instant.now()))
+                    .addValue("serviceTier", serviceTier)
+                    .addValue("usage", usageJson),
+                rs -> {
+                    if (!rs.next()) {
+                        return OptionalLong.empty();
+                    }
+                    Object raw = rs.getObject("cost_micro_cents");
+                    if (raw == null) {
+                        return OptionalLong.empty();
+                    }
+                    return OptionalLong.of(((Number) raw).longValue());
+                });
+            if (microCents.isEmpty()) {
+                return OptionalDouble.empty();
+            }
+            double usd = BigDecimal.valueOf(microCents.getAsLong())
+                .divide(BigDecimal.valueOf(MICRO_CENTS_PER_USD), 8, RoundingMode.HALF_UP)
+                .doubleValue();
+            return OptionalDouble.of(usd);
+        } catch (Exception e) {
+            log.warn("Failed to calculate response cost (modelId={}, providerId={}): {}",
+                modelId, providerId, e.toString());
+            return OptionalDouble.empty();
+        }
+    }
+
+    /** Token counts logos_price_usage can charge; markers and negatives are dropped. */
+    static Map<String, Long> billableUsage(Map<String, Long> usage) {
+        if (usage == null || usage.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Long> billable = new LinkedHashMap<>();
+        for (Map.Entry<String, Long> e : usage.entrySet()) {
+            String name = e.getKey();
+            Long count = e.getValue();
+            if (name == null || name.isBlank() || count == null || count < 0) {
+                continue;
+            }
+            if ("usage_estimated".equals(name) || "provider_delivered_nothing".equals(name)) {
+                continue;
+            }
+            billable.put(name, count);
+        }
+        return billable;
     }
 
     /**
@@ -298,6 +390,18 @@ public class GatewayCloudAccounting {
         if (logEntryId == null) {
             return;
         }
+        if (usage != null && usage.containsKey("provider_delivered_nothing")) {
+            jdbc.update("""
+                UPDATE log_entry
+                   SET timestamp_response = :responded,
+                       %s,
+                       result_status = 'success',
+                       settled_cost_micro_cents = 0,
+                       cost_finalized = TRUE
+                 WHERE id = :id AND result_status IS NULL
+                """.formatted(TIMINGS_SET), timingParams(timings).addValue("id", logEntryId));
+            return;
+        }
         boolean priced = usage != null && !usage.isEmpty();
         // Claim the row first: a reservation already zeroed by reconcileStale
         // (or settled by a racing callback) must not gain usage rows. The tier
@@ -386,7 +490,7 @@ public class GatewayCloudAccounting {
     /** The reservation an unpriced success keeps; NULL when reservations are off. */
     private MapSqlParameterSource snapshotParams() {
         return new MapSqlParameterSource("reservation",
-            reservationMicroCents > 0 ? reservationMicroCents : null);
+            reservationMicroCents > 0 ? reservationMicroCents : null).addValue("resultStatus", "success");
     }
 
     /**
@@ -588,34 +692,49 @@ public class GatewayCloudAccounting {
         }
     }
 
-    /** Drop the reservation so a failed upstream does not consume budget. */
+    /** Release a failed request's reservation when the provider reported no usage. */
+    @Transactional
     public void settleFailure(Integer logEntryId, String errorMessage) {
-        settleFailure(logEntryId, errorMessage, GatewayForwardTimings.NONE);
+        settleFailure(logEntryId, errorMessage, GatewayForwardResult.none());
     }
 
-    /**
-     * Drop the reservation so a failed upstream does not consume budget, and
-     * keep the instants the forward reached so the failure's provider time is
-     * not read as Logos-side wait.
-     */
+    @Transactional
     public void settleFailure(Integer logEntryId, String errorMessage, GatewayForwardTimings timings) {
+        settleFailure(logEntryId, errorMessage, new GatewayForwardResult(Map.of(), null, null, timings));
+    }
+
+    /** Bill only provider-reported usage on failure, with no reservation or estimate fallback. */
+    @Transactional
+    public void settleFailure(Integer logEntryId, String errorMessage, GatewayForwardResult result) {
         if (logEntryId == null) {
             return;
         }
         String msg = errorMessage == null ? null
             : (errorMessage.length() > 500 ? errorMessage.substring(0, 500) : errorMessage);
-        jdbc.update("""
+        int claimed = jdbc.update("""
             UPDATE log_entry
                SET timestamp_response = :responded,
                    %s,
                    result_status = 'error',
+                   service_tier = :serviceTier,
                    settled_cost_micro_cents = 0,
-                   cost_finalized = TRUE,
+                   cost_finalized = FALSE,
                    error_message = :err
-             WHERE id = :id
-            """.formatted(TIMINGS_SET), timingParams(timings)
+             WHERE id = :id AND result_status IS NULL
+            """.formatted(TIMINGS_SET), timingParams(result.timings())
             .addValue("id", logEntryId)
+            .addValue("serviceTier", result.serviceTier())
             .addValue("err", msg));
+        if (claimed == 0) {
+            return;
+        }
+        storeResponsePayload(logEntryId, result.responseBody());
+        if (result.usage() != null && !result.usage().isEmpty()) {
+            upsertUsageTokens(logEntryId, result.usage());
+        }
+        jdbc.update(SETTLED_COST_SNAPSHOT_SQL.formatted("le.id = :id"),
+            new MapSqlParameterSource("id", logEntryId)
+                .addValue("reservation", 0L).addValue("resultStatus", "error"));
     }
 
     /**

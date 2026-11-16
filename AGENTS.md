@@ -28,6 +28,10 @@
 
 The Postgres schema is owned by `logos-webservice` and migrated via Liquibase changelogs in `logos-webservice/src/main/resources/liquibase/changelog/`. A changelog is only applied if it is `<include>`-ed in `master.xml` — a file left out is silently never run. The orchestrator and agent only read/write tables (raw SQL, no migrations); `db/` has no `init.sql`.
 
+### Cloud requests stay in the gateway
+
+Cloud named-model requests are served by the `logos-webservice` gateway, never via the orchestrator (deliberate architecture decision). Implement cloud-specific needs in the gateway; do not add orchestrator routes for cloud traffic.
+
 ### Entity hierarchy
 
 ```text
@@ -38,6 +42,8 @@ User (role: app_developer | app_admin | logos_admin)
                     use_custom_permissions=true  → key's own api_key_*_permissions
                     use_custom_permissions=false → team's team_*_permissions (default)
 ```
+
+Team permissions are only the **default** that keys with `use_custom_permissions=false` (typically developer keys) inherit — they are **not a ceiling**. A key with custom permissions (typically an application or production key) may hold any model or provider from the Logos catalog, including ones the team default does not contain, and a team owner (`app_admin`) granting that to a key of their own team is intended behavior, not a privilege escalation. Changing team permissions therefore never prunes custom key grants; only removing a provider from a key drops that key's models of the provider.
 
 The older Process/Profile hierarchy (`process`, `profiles`, `profile_model_permissions`, `model_api_keys` tables) **no longer exists** — never design against it.
 

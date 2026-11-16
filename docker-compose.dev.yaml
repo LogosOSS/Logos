@@ -49,8 +49,8 @@ services:
       - "--entrypoints.web8080.forwardedHeaders.trustedIPs=${LOGOS_GATEWAY_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}"
       - "--api.dashboard=false"
     ports:
-      - "${LOGOS_TRAEFIK_LANDING_PORT:-18443}:80" # landing page
-      - "${LOGOS_TRAEFIK_UI_PORT:-18081}:8080" # UI + API
+      - "127.0.0.1:${LOGOS_TRAEFIK_LANDING_PORT:-18443}:80" # landing page
+      - "127.0.0.1:${LOGOS_TRAEFIK_UI_PORT:-18081}:8080" # UI + API
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     labels:
@@ -159,6 +159,8 @@ services:
       - ./logos-orchestrator/src/logos/pipeline:/app/src/logos/pipeline:ro
       - ./logos-orchestrator/src/logos/sdi:/app/src/logos/sdi:ro
     environment:
+      DB_PASSWORD: root
+      LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS: "${LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
       LOGOS_DOMAIN: "${LOGOS_DOMAIN:-localhost}"
       LOGOS_SCHEDULER_ETTFT_ENABLED: "${LOGOS_SCHEDULER_ETTFT_ENABLED:-true}"
       LOGOS_CAPACITY_PLANNER_ENABLED: "${LOGOS_CAPACITY_PLANNER_ENABLED:-true}"
@@ -295,7 +297,7 @@ services:
       LOGOS_RATE_LIMITING_ENABLED: "${LOGOS_RATE_LIMITING_ENABLED:-true}"
       LOGOS_RATE_LIMIT_PUBLIC_RPM: "${LOGOS_RATE_LIMIT_PUBLIC_RPM:-60}"
       LOGOS_RATE_LIMIT_AUTH_FAILURE_RPM: "${LOGOS_RATE_LIMIT_AUTH_FAILURE_RPM:-20}"
-      LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS: "${LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}"
+      LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS: "${LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
       JDK_JAVA_OPTIONS: "-XX:MaxRAMPercentage=80.0"
       KEYCLOAK_ISSUER_URI: "${KEYCLOAK_ISSUER_URI:-http://localhost:8085/realms/tum}"
       KEYCLOAK_JWKS_URI: "${KEYCLOAK_JWKS_URI:-http://keycloak:8080/realms/tum/protocol/openid-connect/certs}"
@@ -361,6 +363,15 @@ services:
       - "traefik.http.routers.webservice-identity.middlewares=strip-api,rl-admin"
       - "traefik.http.routers.webservice-identity.priority=200"
 
+      # === Routing: /api/public/stats (unauthenticated aggregates) ===
+      # Must outrank the orchestrator's /api catch-all (priority 100); Spring
+      # serves GET /public/stats after strip-api removes the /api prefix.
+      - "traefik.http.routers.webservice-public-stats.rule=Path(`/api/public/stats`)"
+      - "traefik.http.routers.webservice-public-stats.entrypoints=internal8090"
+      - "traefik.http.routers.webservice-public-stats.service=logos-webservice-svc"
+      - "traefik.http.routers.webservice-public-stats.middlewares=strip-api,rl-admin"
+      - "traefik.http.routers.webservice-public-stats.priority=200"
+
       # === Routing: /api/logosdb ===
       - "traefik.http.routers.webservice-config.rule=PathPrefix(`/api/logosdb`)"
       - "traefik.http.routers.webservice-config.entrypoints=internal8090"
@@ -421,7 +432,7 @@ services:
       POSTGRES_DB: logosdb
       POSTGRES_HOST: localhost
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready", "--username=postgres"]
       interval: 1s
@@ -460,7 +471,7 @@ services:
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
     ports:
-      - "8085:8080"
+      - "127.0.0.1:8085:8080"
     healthcheck:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"status\": \"UP\"' <&3"]
       interval: 5s

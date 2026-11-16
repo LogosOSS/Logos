@@ -101,6 +101,7 @@ export class NotificationService {
 
   private ws: WebSocket | null = null;
   private active = false;
+  private forceTokenRefresh = false;
   private backoff = 2_000;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -187,12 +188,13 @@ export class NotificationService {
 
   private async connect(): Promise<void> {
     if (!this.active || typeof WebSocket === 'undefined') return;
-    const token = await this.auth.freshToken();
+    const token = await this.auth.freshToken(this.forceTokenRefresh);
     if (!this.active) return;
     if (!token) {
       this.scheduleReconnect();
       return;
     }
+    this.forceTokenRefresh = false;
     const ws = new WebSocket(buildNotificationWsUrl(token));
     this.ws = ws;
 
@@ -218,7 +220,10 @@ export class NotificationService {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event: CloseEvent) => {
+      if (this.ws !== ws) return;
+      // 4001 means the server rejected the token expiry; force a refresh before retrying.
+      if (event.code === 4001) this.forceTokenRefresh = true;
       if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
       this.keepaliveTimer = null;
       if (this.ws === ws) this.ws = null;

@@ -170,6 +170,10 @@ engines:
 
   # ── vLLM (all lanes) ───────────────────────────────────────────────────────
   vllm:
+    # Empty permits only embedded media. Exact HTTP(S) hostnames may be allowed
+    # explicitly, e.g. [media.example.com]. Local files and redirects stay disabled.
+    allowed_media_domains: []
+
     # Prometheus metrics endpoint exposed by each vLLM lane.
     metrics_path: /metrics
     metrics_timeout_seconds: 5

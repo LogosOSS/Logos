@@ -90,3 +90,62 @@ async def test_route_and_execute_resource_branch(monkeypatch):
     )
     assert out == {"status": "resource"}
     assert called.get("resource") is True
+
+
+IMAGE_BODY = {
+    "model": "gpt-5.6-luna",
+    "input": "draw a lighthouse",
+    "tools": [{"type": "image_generation", "model": "gpt-image-1.5"}],
+}
+
+
+async def test_an_image_tool_model_the_key_may_not_use_is_refused_before_scheduling(monkeypatch):
+    async def must_not_run(**kwargs):
+        raise AssertionError("the request must not be scheduled")
+
+    monkeypatch.setattr(main, "_execute_proxy_mode", must_not_run)
+
+    with pytest.raises(main.HTTPException) as exc:
+        await main.route_and_execute(
+            deployments=[{"model_id": 1, "provider_id": 8, "model_name": "gpt-5.6-luna"}],
+            body=IMAGE_BODY,
+            headers={},
+            auth=MagicMock(key_value="lg-key"),
+            path="responses",
+            log_id=None,
+            is_async_job=False,
+        )
+    assert exc.value.status_code == 403
+    assert "gpt-image-1.5" in exc.value.detail
+
+    result = await main.route_and_execute(
+        deployments=[{"model_id": 1, "provider_id": 8, "model_name": "gpt-5.6-luna"}],
+        body=IMAGE_BODY,
+        headers={},
+        auth=MagicMock(key_value="lg-key"),
+        path="responses",
+        log_id=None,
+        is_async_job=True,
+    )
+    assert result["status_code"] == 403
+
+
+async def test_an_image_tool_model_the_key_may_use_is_scheduled(monkeypatch):
+    async def fake_proxy(**kwargs):
+        return {"status": "proxy"}
+
+    monkeypatch.setattr(main, "_execute_proxy_mode", fake_proxy)
+
+    out = await main.route_and_execute(
+        deployments=[
+            {"model_id": 1, "provider_id": 8, "model_name": "gpt-5.6-luna"},
+            {"model_id": 2, "provider_id": 8, "model_name": "gpt-image-1.5"},
+        ],
+        body=IMAGE_BODY,
+        headers={},
+        auth=MagicMock(key_value="lg-key"),
+        path="responses",
+        log_id=None,
+        is_async_job=False,
+    )
+    assert out == {"status": "proxy"}

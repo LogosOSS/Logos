@@ -135,7 +135,7 @@
               </div>
               @if (item.queue_seconds != null && item.duration != null) {
                 <div class="rr-card__meta">
-                  queue {{ item.queue_seconds.toFixed(2) }}s · exec {{ item.duration.toFixed(2) }}s
+                  queue {{ settledTimeLabel(item.queue_seconds) }} · exec {{ settledTimeLabel(item.duration) }}
                 </div>
               }
             }

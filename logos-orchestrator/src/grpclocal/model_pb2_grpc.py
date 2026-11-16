@@ -3,9 +3,9 @@
 
 import grpc
 
-from grpclocal import model_pb2 as model__pb2
+from grpclocal import model_pb2 as grpclocal_dot_model__pb2
 
-GRPC_GENERATED_VERSION = "1.71.0"
+GRPC_GENERATED_VERSION = "1.71.2"
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -19,7 +19,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f"The grpc package installed is at version {GRPC_VERSION},"
-        + " but the generated code in model_pb2_grpc.py depends on"
+        + f" but the generated code in grpclocal/model_pb2_grpc.py depends on"
         + f" grpcio>={GRPC_GENERATED_VERSION}."
         + f" Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}"
         + f" or downgrade your generated code using grpcio-tools<={GRPC_VERSION}."
@@ -37,8 +37,8 @@ class LogosStub(object):
         """
         self.Generate = channel.unary_stream(
             "/logos.grpc.Logos/Generate",
-            request_serializer=model__pb2.GenerateRequest.SerializeToString,
-            response_deserializer=model__pb2.GenerateResponse.FromString,
+            request_serializer=grpclocal_dot_model__pb2.GenerateRequest.SerializeToString,
+            response_deserializer=grpclocal_dot_model__pb2.GenerateResponse.FromString,
             _registered_method=True,
         )
 
@@ -57,8 +57,8 @@ def add_LogosServicer_to_server(servicer, server):
     rpc_method_handlers = {
         "Generate": grpc.unary_stream_rpc_method_handler(
             servicer.Generate,
-            request_deserializer=model__pb2.GenerateRequest.FromString,
-            response_serializer=model__pb2.GenerateResponse.SerializeToString,
+            request_deserializer=grpclocal_dot_model__pb2.GenerateRequest.FromString,
+            response_serializer=grpclocal_dot_model__pb2.GenerateResponse.SerializeToString,
         ),
     }
     generic_handler = grpc.method_handlers_generic_handler("logos.grpc.Logos", rpc_method_handlers)
@@ -87,8 +87,8 @@ class Logos(object):
             request,
             target,
             "/logos.grpc.Logos/Generate",
-            model__pb2.GenerateRequest.SerializeToString,
-            model__pb2.GenerateResponse.FromString,
+            grpclocal_dot_model__pb2.GenerateRequest.SerializeToString,
+            grpclocal_dot_model__pb2.GenerateResponse.FromString,
             options,
             channel_credentials,
             insecure,

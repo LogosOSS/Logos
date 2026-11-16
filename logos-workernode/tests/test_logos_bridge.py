@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ import httpx
 import pytest
 
 from logos_worker_node.logos_bridge import LogosBridgeClient, _CalibrationSession
-from logos_worker_node.models import LaneStatus, LogosConfig, ProcessState, ProcessStatus
+from logos_worker_node.models import AppConfig, LaneStatus, LogosConfig, ProcessState, ProcessStatus
 
 
 @pytest.fixture(autouse=True)
@@ -692,21 +693,182 @@ async def test_send_runtime_status_skips_unchanged_payload(monkeypatch):
     assert [payload["type"] for payload in sends] == ["status", "status"]
 
 
-def test_lane_target_url_blocks_vllm_management_endpoints():
-    """Ensure vLLM sleep/wake and other management endpoints cannot be reached
-    through proxied inference requests."""
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "v1/chat/completions",
+        "v1/completions",
+        "v1/embeddings",
+        "v1/responses",
+        "v1/messages",
+        "v1/audio/transcriptions",
+        "v1/audio/translations",
+        "v1/audio/speech",
+        "v1/models",
+        "v1/systemone",
+        "v1/rerank",
+        "v1/score",
+        "v2/embed",
+        "v2/rerank",
+        "pooling",
+        "score",
+        "rerank",
+        "classify",
+        "tokenize",
+        "detokenize",
+    ],
+)
+@pytest.mark.parametrize("prefix", ["", "/"])
+def test_lane_target_url_allows_inference_endpoints(endpoint, prefix):
     lane_status = {"port": 11436, "inference_endpoint": "/v1/chat/completions"}
+    url = LogosBridgeClient._lane_target_url(lane_status, request_path=f"{prefix}{endpoint}")
+    assert url == f"http://127.0.0.1:11436/{endpoint}"
+    assert httpx.URL(url).path == f"/{endpoint}"
 
-    for blocked_path in ("sleep", "wake_up", "is_sleeping", "pause", "resume"):
-        with pytest.raises(ValueError, match="not allowed through the inference proxy"):
-            LogosBridgeClient._lane_target_url(lane_status, request_path=blocked_path)
 
-    # Normal inference paths should work fine
-    url = LogosBridgeClient._lane_target_url(lane_status, request_path="v1/chat/completions")
-    assert url == "http://127.0.0.1:11436/v1/chat/completions"
+@pytest.mark.parametrize(
+    "request_path",
+    [
+        "sleep",
+        "/sleep",
+        "wake_up",
+        "is_sleeping",
+        "pause",
+        "resume",
+        "is_paused",
+        "reset_prefix_cache",
+        "reset_mm_cache",
+        "reset_encoder_cache",
+        "update_weights",
+        "init_weight_transfer_engine",
+        "scale_elastic_ep",
+        "is_scaling_elastic_ep",
+        "collective_rpc",
+        "unknown_operation",
+        "v1/unknown_operation",
+        "v1/audio/unknown_operation",
+        "v1/../sleep",
+        "/v1/../sleep",
+        "./sleep",
+        "v1/%2e%2e/sleep",
+        "v1/%2E%2E/sleep",
+        "v1/.%2e/sleep",
+        "v1/%2e./sleep",
+        "v1/%252e%252e/sleep",
+        "v1%2f..%2fsleep",
+        "v1/%2e%2e%2fsleep",
+        "v1/%2e%2e%5csleep",
+        "v1/..\\sleep",
+        "v1\\..\\sleep",
+        "v1/./embeddings",
+        "v1/chat/../embeddings",
+        "v1//embeddings",
+        "//v1/embeddings",
+        "v1/embeddings/",
+        "v1/embeddings//",
+        "%76%31/embeddings",
+        "v1/embedding%73",
+        "v1/embeddings?path=/sleep",
+        "v1/embeddings#fragment",
+        "/",
+        "//",
+    ],
+)
+def test_lane_target_url_rejects_unsafe_or_unlisted_paths(request_path):
+    with pytest.raises(ValueError, match="not allowed through the inference proxy"):
+        LogosBridgeClient._lane_target_url({"port": 11436}, request_path=request_path)
 
-    url = LogosBridgeClient._lane_target_url(lane_status, request_path="v1/embeddings")
-    assert url == "http://127.0.0.1:11436/v1/embeddings"
+
+@pytest.mark.parametrize("control", [chr(code) for code in (*range(32), *range(127, 160))])
+def test_lane_target_url_rejects_control_characters(control):
+    with pytest.raises(ValueError, match="not allowed through the inference proxy"):
+        LogosBridgeClient._lane_target_url({"port": 11436}, request_path=f"v1/{control}embeddings")
+
+
+@pytest.mark.parametrize(
+    ("lane_status", "endpoint"),
+    [
+        ({"port": 11436}, "v1/chat/completions"),
+        ({"port": 11436, "inference_endpoint": "/v1/embeddings"}, "v1/embeddings"),
+    ],
+)
+def test_lane_target_url_uses_lane_endpoint_without_request_path(lane_status, endpoint):
+    assert LogosBridgeClient._lane_target_url(lane_status) == f"http://127.0.0.1:11436/{endpoint}"
+
+
+@pytest.mark.parametrize("endpoint", ["/sleep", "/v1/../sleep", "/v1//embeddings"])
+def test_lane_target_url_validates_lane_endpoint(endpoint):
+    with pytest.raises(ValueError, match="not allowed through the inference proxy"):
+        LogosBridgeClient._lane_target_url({"port": 11436, "inference_endpoint": endpoint})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_inference_rejects_path_traversal_before_http_request(stream):
+    app = _DummyApp()
+    app.state.lane_manager = SimpleNamespace(
+        acquire_lane_for_infer=AsyncMock(return_value=_make_lane_status()),
+        decrement_active_requests=AsyncMock(),
+    )
+    client = LogosBridgeClient(app, LogosConfig(enabled=True, logos_url="https://logos.example", shared_key="secret"))
+    await client._relay_client.aclose()
+    client._relay_client = MagicMock()
+    client._send_json = AsyncMock()
+    params = {"lane_id": "lane-a", "payload": {}, "request_path": "v1/../sleep"}
+
+    if stream:
+        await client._execute_stream_command(object(), "cmd-infer", params)
+        frame = client._send_json.call_args.args[1]
+        assert frame["type"] == "stream_end"
+        assert frame["success"] is False
+        assert "not allowed through the inference proxy" in frame["error"]
+    else:
+        with pytest.raises(RuntimeError, match="not allowed through the inference proxy") as exc_info:
+            await client._execute_infer_command(params)
+        assert isinstance(exc_info.value.__cause__, ValueError)
+
+    assert client._relay_client.mock_calls == []
+    app.state.lane_manager.decrement_active_requests.assert_awaited_once_with("lane-a")
+
+
+@pytest.mark.asyncio
+async def test_decision_readout_is_relayed_to_the_lane(monkeypatch):
+    # The orchestrator's system_one route forwards v1/systemone to the lane for
+    # models without a decision profile.
+    app = _DummyApp()
+    app.state.lane_manager = SimpleNamespace(
+        acquire_lane_for_infer=AsyncMock(return_value=_make_lane_status()),
+        decrement_active_requests=AsyncMock(return_value=None),
+    )
+    client = LogosBridgeClient(app, LogosConfig(enabled=True, logos_url="https://logos.example", shared_key="secret"))
+    posted: list[str] = []
+
+    class _Resp:
+        status_code = 200
+        content = b'{"answer": "ok"}'
+        text = '{"answer": "ok"}'
+
+        def __init__(self):
+            self.headers = {"content-type": "application/json"}
+
+        @staticmethod
+        def json():
+            return {"answer": "ok"}
+
+    class _HttpClient:
+        async def post(self, url, headers=None, **kwargs):  # noqa: ARG002
+            posted.append(url)
+            return _Resp()
+
+    monkeypatch.setattr(client, "_relay_client", _HttpClient())  # noqa: SLF001
+
+    result = await client._execute_infer_command(  # noqa: SLF001
+        {"lane_id": "lane-a", "request_path": "v1/systemone", "payload": {"model": "m", "questions": ["q"]}}
+    )
+
+    assert posted == ["http://127.0.0.1:19001/v1/systemone"]
+    assert result["status_code"] == 200
+    app.state.lane_manager.decrement_active_requests.assert_awaited_once_with("lane-a")
 
 
 @pytest.mark.asyncio
@@ -4561,3 +4723,94 @@ async def test_cancel_command_tasks_stops_every_command_and_logs_failures(caplog
     assert failing.done() and isinstance(failing.exception(), RuntimeError)
     assert client._command_tasks == {}  # noqa: SLF001
     assert "Bridge background command task failed during shutdown" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "path,content",
+    [
+        (
+            "v1/chat/completions",
+            {
+                "messages": [
+                    {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "http://127.0.0.1/"}}]}
+                ]
+            },
+        ),
+        (
+            "v1/responses",
+            {"input": [{"type": "message", "content": [{"type": "input_file", "file_url": "file:///etc/passwd"}]}]},
+        ),
+    ],
+)
+async def test_invalid_media_returns_400_without_acquiring_or_relaying(stream, path, content):
+    app = _DummyApp()
+    app.state.config = AppConfig()
+    app.state.lane_manager = SimpleNamespace(acquire_lane_for_infer=AsyncMock(), decrement_active_requests=AsyncMock())
+    client = LogosBridgeClient(app, LogosConfig())
+    await client._relay_client.aclose()
+    client._relay_client = MagicMock()
+    client._send_json = AsyncMock()
+    params = {"lane_id": "lane-a", "request_path": path, "payload": content}
+    if stream:
+        await client._execute_stream_command(object(), "cmd-media", params)
+        client._send_json.assert_awaited_once()
+        result = client._send_json.call_args.args[1]
+        assert result["type"] == "stream_end"
+        assert result["success"] is False
+        assert result["cmd_id"] == "cmd-media"
+    else:
+        result = await client._execute_infer_command(params)
+    assert result["status_code"] == 400
+    assert result["body"]["error"]["code"] == "invalid_media_url"
+    assert "base64 data:" in result["body"]["error"]["message"]
+    assert "127.0.0.1" not in result["body"]["error"]["message"]
+    assert client._relay_client.mock_calls == []
+    app.state.lane_manager.acquire_lane_for_infer.assert_not_awaited()
+    app.state.lane_manager.decrement_active_requests.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "url,domains",
+    [
+        ("data:image/png;base64,aGVsbG8=", []),
+        ("https://media.example/image.png", ["media.example"]),
+    ],
+)
+async def test_bridge_relays_embedded_or_allowlisted_media(stream, url, domains):
+    app = _DummyApp()
+    app.state.config = AppConfig(engines={"vllm": {"allowed_media_domains": domains}})
+    app.state.lane_manager = SimpleNamespace(
+        acquire_lane_for_infer=AsyncMock(return_value=_make_lane_status()), decrement_active_requests=AsyncMock()
+    )
+    client = LogosBridgeClient(app, LogosConfig())
+    await client._relay_client.aclose()
+    payload = {"input": [{"type": "input_image", "image_url": url}]}
+    requests = []
+
+    async def handle(request):
+        requests.append(request)
+        assert json.loads(request.content) == payload
+        return httpx.Response(200, json={"output": []})
+
+    client._relay_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    client._send_json = AsyncMock()
+    params = {"lane_id": "lane-a", "request_path": "v1/responses", "payload": payload}
+    try:
+        if stream:
+            await client._execute_stream_command(object(), "cmd-media", params)
+            frames = [call.args[1] for call in client._send_json.call_args_list]
+            assert [frame["type"] for frame in frames] == ["stream_start", "stream_chunk", "stream_end"]
+            assert frames[0]["status_code"] == 200
+            assert json.loads(base64.b64decode(frames[1]["chunk_b64"])) == {"output": []}
+            assert frames[2]["success"] is True
+        else:
+            result = await client._execute_infer_command(params)
+            assert result["status_code"] == 200
+        assert len(requests) == 1
+        app.state.lane_manager.decrement_active_requests.assert_awaited_once_with("lane-a")
+    finally:
+        await client._relay_client.aclose()

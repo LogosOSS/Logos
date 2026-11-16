@@ -97,11 +97,18 @@ class ApiKeyAdminControllerTest {
     }
 
     @Test
-    void deactivateKey_logosAdminDeactivates() throws Exception {
-        mvc.perform(delete("/admin/api-keys/3001")
+    void deactivateKey_logosAdminDeactivatesApplicationKey() throws Exception {
+        mvc.perform(delete("/admin/api-keys/3002")
                 .with(TestJwt.logosAdmin()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.result").value("API Key deleted successfully"));
+    }
+
+    @Test
+    void deactivateKey_rejectsDeveloperKeys() throws Exception {
+        mvc.perform(delete("/admin/api-keys/3001")
+                .with(TestJwt.logosAdmin()))
+           .andExpect(status().isConflict());
     }
 
     @Test
@@ -121,5 +128,33 @@ class ApiKeyAdminControllerTest {
                 .contentType("application/json")
                 .content("{\"default_priority\":3}"))
            .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void getTeamApiKeys_hidesOtherMembersPersonalKeys() throws Exception {
+        // adminuser (1002) owns team 2001: sees its own developer key, not those of testuser or logosadmin.
+        mvc.perform(get("/admin/teams/2001/api-keys")
+                .with(TestJwt.adminUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[?(@.id == 3003)].key_value").value("admin-key-1"))
+           .andExpect(jsonPath("$[?(@.id == 3001)].key_value").value(org.hamcrest.Matchers.contains((Object) null)))
+           .andExpect(jsonPath("$[?(@.id == 3004)].key_value").value(org.hamcrest.Matchers.contains((Object) null)));
+    }
+
+    @Test
+    void rotateKey_ofAnotherMembersPersonalKeyDoesNotReturnTheNewValue() throws Exception {
+        mvc.perform(post("/admin/api-keys/3004/rotate")
+                .with(TestJwt.adminUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.result").value("API key rotated successfully"))
+           .andExpect(jsonPath("$.api_key").doesNotExist());
+    }
+
+    @Test
+    void rotateKey_ofOwnPersonalKeyReturnsTheNewValue() throws Exception {
+        mvc.perform(post("/admin/api-keys/3003/rotate")
+                .with(TestJwt.adminUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.api_key").isString());
     }
 }

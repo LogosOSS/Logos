@@ -255,7 +255,7 @@ async def test_ingest_rejects_oversized_artifact(tmp_path, monkeypatch, caplog):
     _patch_artifact_root(monkeypatch, tmp_path)
     session_dir = tmp_path / "12"
     session_dir.mkdir()
-    huge = b"{" + b'"x":"' + (b"a" * (analysis_ingest.MAX_ANALYSIS_BYTES + 10)) + b'"}'
+    huge = b"{" + b'"x":"' + (b"a" * (analysis_ingest.settings.artifact_max_bytes + 10)) + b'"}'
     (session_dir / "analysis.json").write_bytes(huge)
     conn = _Conn()
     monkeypatch.setattr(db, "sessionmaker", lambda: (lambda: conn))

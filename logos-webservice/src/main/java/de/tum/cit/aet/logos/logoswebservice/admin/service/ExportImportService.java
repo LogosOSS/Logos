@@ -14,6 +14,8 @@ import org.springframework.transaction.annotation.Transactional;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import de.tum.cit.aet.logos.logoswebservice.audit.PermissionAuditContext;
+import de.tum.cit.aet.logos.logoswebservice.configuration.ModelNames;
 import de.tum.cit.aet.logos.logoswebservice.identity.ObjectivePriority;
 
 @Service
@@ -49,8 +51,10 @@ public class ExportImportService {
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
+    private final PermissionAuditContext permissionAudit;
 
-    public ExportImportService(JdbcTemplate jdbc, ObjectMapper objectMapper) {
+    public ExportImportService(JdbcTemplate jdbc, ObjectMapper objectMapper, PermissionAuditContext permissionAudit) {
+        this.permissionAudit = permissionAudit;
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
     }
@@ -124,7 +128,18 @@ public class ExportImportService {
 
     @Transactional
     public Map<String, Object> importData(Map<String, Object> jsonData) {
+        permissionAudit.withCause("direct", () -> replaceData(jsonData));
+        return Map.of("result", "Import successful");
+    }
+
+    private void replaceData(Map<String, Object> jsonData) {
         requireTables(jsonData);
+        // Validate before detaching links or replacing any existing rows.
+        List<Map<String, Object>> models = normalizeImportRows("models", (List<?>) jsonData.get("models"));
+        for (Map<String, Object> model : models) {
+            Object name = model.get("name");
+            ModelNames.rejectControlCharacters(name == null ? null : String.valueOf(name));
+        }
         // Snapshot (session_id → team_id + repo_slug) so linked analysis
         // sessions can be reattached after truncate replaces repository rows.
         List<Map<String, Object>> sessionLinks = jdbc.queryForList("""
@@ -158,7 +173,6 @@ public class ExportImportService {
         restoreAgentSessionRepositoryLinks(sessionLinks);
         sanitizeImportedAnalysisSessionLinks();
         resetSequences();
-        return Map.of("result", "Import successful");
     }
 
     static void requireTables(Map<String, Object> jsonData) {

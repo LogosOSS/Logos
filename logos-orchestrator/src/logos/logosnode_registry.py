@@ -18,6 +18,7 @@ from fastapi import WebSocket
 
 from logos.benchmarks.nightly import LEASE_CHECK, NIGHTLY_CONTEXT
 from logos.benchmarks.reservations import benchmark_reservations
+from logos.errors import UpstreamStreamError
 from logos.monitoring import prometheus_metrics as prom
 from logos.residency_policy import configured_residency_policy
 from logos.terminal_logging import (
@@ -33,6 +34,7 @@ from logos.terminal_logging import (
     render_section,
     wrap_plain,
 )
+from logos.worker_stream_buffer import WorkerStreamBudget, WorkerStreamBuffer, WorkerStreamOverflow
 
 if TYPE_CHECKING:
     from logos.pipeline.latency_store import LatencyStore
@@ -356,7 +358,8 @@ class ProviderSession:
     pending_commands: dict[str, asyncio.Future] = field(default_factory=dict)
     # Counts the runtime statuses received; see reflects_command.
     runtime_status_count: int = 0
-    pending_streams: dict[str, asyncio.Queue] = field(default_factory=dict)
+    pending_streams: dict[str, WorkerStreamBuffer] = field(default_factory=dict)
+    stream_budget: WorkerStreamBudget = field(default_factory=WorkerStreamBudget)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     desired_lanes: dict[str, dict[str, Any]] = field(default_factory=dict)
     max_lanes: int = 0  # 0 = unlimited (reported by worker in hello)
@@ -754,7 +757,9 @@ class LogosNodeRuntimeRegistry:
             return None
         return session
 
-    async def detach_session(self, provider_id: int, websocket: WebSocket | None = None) -> None:
+    async def detach_session(
+        self, provider_id: int, websocket: WebSocket | None = None, *, reason: str = "Worker disconnected"
+    ) -> None:
         async with self._lock:
             session = self._sessions.get(provider_id)
             if session is None:
@@ -777,22 +782,14 @@ class LogosNodeRuntimeRegistry:
                 accent=RED,
             )
         )
-        self._fail_pending_commands(session, "Worker disconnected")
-        for queue in list(session.pending_streams.values()):
-            try:
-                queue.put_nowait(
-                    {
-                        "type": "stream_end",
-                        "success": False,
-                        "error": "Worker disconnected",
-                    }
-                )
-            except Exception:  # noqa: BLE001
-                pass
-        session.pending_streams.clear()
-        await self._close_session(session)
+        self._fail_pending_commands(session, reason)
+        await self._close_session(session, reason=reason)
 
-    async def _close_session(self, session: ProviderSession) -> None:
+    async def _close_session(self, session: ProviderSession, *, reason: str = "Worker session replaced") -> None:
+        for buffer in session.pending_streams.values():
+            if not buffer.finished:
+                buffer.finish(False, reason, discard=True)
+        session.pending_streams.clear()
         try:
             await session.websocket.close()
         except Exception:  # noqa: BLE001
@@ -1223,12 +1220,8 @@ class LogosNodeRuntimeRegistry:
             return
         session.last_heartbeat = _utc_now()
         session.snapshot_version += 1  # heartbeat is peek-visible
-        cmd_id = str(payload.get("cmd_id", "")).strip()
-        if not cmd_id:
-            return
-        queue = session.pending_streams.get(cmd_id)
-        if queue is not None:
-            await queue.put({"type": "stream_start", **payload})
+        # Stream consumers need only chunks and the terminal result. Keeping
+        # start frames would let repeated metadata bypass the data budget.
 
     async def on_stream_chunk(self, provider_id: int, payload: dict[str, Any]) -> None:
         session = await self._get_session(provider_id)
@@ -1240,16 +1233,31 @@ class LogosNodeRuntimeRegistry:
         if not cmd_id:
             return
         queue = session.pending_streams.get(cmd_id)
-        if queue is None:
+        if queue is None or queue.finished:
             return
         encoded = payload.get("chunk_b64")
         if not isinstance(encoded, str):
             return
         try:
-            chunk = base64.b64decode(encoded)
-        except Exception:  # noqa: BLE001
-            chunk = b""
-        await queue.put({"type": "stream_chunk", "chunk": chunk})
+            # Reject oversized encoded frames before allocating decoded bytes.
+            if len(encoded) > 4 * ((session.stream_budget.max_chunk_bytes + 2) // 3):
+                raise WorkerStreamOverflow("chunk byte limit exceeded")
+            try:
+                chunk = base64.b64decode(encoded)
+            except Exception:  # noqa: BLE001
+                chunk = b""
+            queue.put_chunk(chunk)
+        except WorkerStreamOverflow as exc:
+            reason = f"Worker stream buffer overflow: {exc}"
+            logger.error(
+                "Closing worker session: provider=%s worker=%s session=%s cmd_id=%s: %s",
+                session.provider_id,
+                session.worker_id,
+                session.session_id,
+                cmd_id,
+                reason,
+            )
+            await self.detach_session(provider_id, session.websocket, reason=reason)
 
     async def on_stream_end(self, provider_id: int, payload: dict[str, Any]) -> None:
         session = await self._get_session(provider_id)
@@ -1262,12 +1270,11 @@ class LogosNodeRuntimeRegistry:
             return
         queue = session.pending_streams.get(cmd_id)
         if queue is not None:
-            await queue.put(
-                {
-                    "type": "stream_end",
-                    "success": bool(payload.get("success", False)),
-                    "error": payload.get("error"),
-                }
+            queue.finish(
+                bool(payload.get("success", False)),
+                payload.get("error"),
+                status_code=payload.get("status_code"),
+                body=payload.get("body"),
             )
 
     @staticmethod
@@ -1497,7 +1504,7 @@ class LogosNodeRuntimeRegistry:
     ) -> AsyncIterator[bytes]:
         session = await self._get_active_session(provider_id, stale_after_seconds)
         cmd_id = str(uuid.uuid4())
-        stream_queue: asyncio.Queue = asyncio.Queue()
+        stream_queue = WorkerStreamBuffer(session.stream_budget)
         session.pending_streams[cmd_id] = stream_queue
 
         message = {
@@ -1506,47 +1513,45 @@ class LogosNodeRuntimeRegistry:
             "action": action,
             "params": params or {},
         }
-        try:
-            async with session.send_lock:
-                self._check_benchmark_reservation(session, action, params, request_id)
-                await session.websocket.send_json(message)
-        except Exception as exc:  # noqa: BLE001
-            session.pending_streams.pop(cmd_id, None)
-            raise LogosNodeOfflineError(f"Failed to send command: {exc}") from exc
-
-        # The command is on the wire; session acquisition and the send lock no
-        # longer belong to the provider's own window.
-        if on_sent is not None:
-            on_sent()
-
         # Whether the worker told us the stream is over. False means we are
         # unwinding early — the consumer went away — and the worker is still
         # generating unless we say otherwise.
         stream_finished = False
+        writing = False
         try:
+            try:
+                async with session.send_lock:
+                    self._check_benchmark_reservation(session, action, params, request_id)
+                    writing = True
+                    await session.websocket.send_json(message)
+            except Exception as exc:  # noqa: BLE001
+                raise LogosNodeOfflineError(f"Failed to send command: {exc}") from exc
+
+            # The command is on the wire; session acquisition and the send lock no
+            # longer belong to the provider's own window.
+            if on_sent is not None:
+                on_sent()
+
             while True:
                 try:
                     event = await asyncio.wait_for(stream_queue.get(), timeout=max(1, timeout_seconds))
                 except asyncio.TimeoutError as exc:
                     raise LogosNodeOfflineError("Stream timeout waiting for worker response") from exc
                 event_type = event.get("type")
-                if event_type == "stream_start":
-                    continue
                 if event_type == "stream_chunk":
-                    chunk = event.get("chunk")
-                    if isinstance(chunk, bytes):
-                        yield chunk
-                    elif isinstance(chunk, str):
-                        yield chunk.encode("utf-8")
+                    yield event["chunk"]
                     continue
                 if event_type == "stream_end":
                     stream_finished = True
                     if not bool(event.get("success", False)):
+                        if event.get("status_code") == 400 and isinstance(event.get("body"), dict):
+                            raise UpstreamStreamError(400, event["body"])
                         raise LogosNodeCommandError(str(event.get("error", "unknown worker stream error")))
                     break
         finally:
             session.pending_streams.pop(cmd_id, None)
-            if not stream_finished:
+            stream_queue.clear()
+            if writing and not stream_finished and self._sessions.get(provider_id) is session:
                 self._request_command_cancellation(session, cmd_id)
 
     def _request_command_cancellation(self, session: ProviderSession, cmd_id: str) -> None:

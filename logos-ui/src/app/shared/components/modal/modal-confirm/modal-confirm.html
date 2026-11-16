@@ -3,6 +3,8 @@
   (visibleChange)="visibleChange.emit($event)"
   [showHeader]="false"
   [ariaLabel]="title"
+  [closable]="dismissible"
+  [closeOnEscape]="dismissible"
   size="small"
 >
   <div class="confirm-body">

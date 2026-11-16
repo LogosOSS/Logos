@@ -3267,3 +3267,44 @@ def test_private_dir_refuses_a_directory_others_can_write(tmp_path: Path, mode: 
     with pytest.raises(OSError):
         vllm_process._private_dir(target)
     assert target.stat().st_mode & 0o777 == mode
+
+
+@pytest.mark.parametrize(
+    "domains,expected",
+    [
+        ([], ["logos-media-disabled.invalid"]),
+        (["media.example", "assets.example"], ["media.example", "assets.example"]),
+    ],
+)
+def test_media_domain_flag_is_always_restricted(monkeypatch, domains, expected):
+    handle = VllmProcessHandle(
+        "lane-test", 19000, WorkerConfig(), vllm_engine_config=VllmEngineConfig(allowed_media_domains=domains)
+    )
+    monkeypatch.setattr(handle, "_resolve_vllm_binary", lambda _: ["/tmp/vllm"])
+    lane = LaneConfig(model="test/model", vllm=True, vllm_config=VllmConfig())
+    cmd = handle._build_cmd(lane)
+    assert cmd.count("--allowed-media-domains") == 1
+    assert cmd[cmd.index("--allowed-media-domains") + 1 :] == expected
+    assert not any(arg.startswith("--allowed-local-media-path") for arg in cmd)
+    monkeypatch.setenv("VLLM_MEDIA_URL_ALLOW_REDIRECTS", "1")
+    lane.vllm_config.env_overrides["VLLM_MEDIA_URL_ALLOW_REDIRECTS"] = "1"
+    assert handle._build_env(lane)["VLLM_MEDIA_URL_ALLOW_REDIRECTS"] == "0"
+
+
+@pytest.mark.parametrize("global_args", [False, True])
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--allowed-local-media-path", "/"],
+        ["--allowed-local-media-path=/"],
+        ["--allowed-media-domains", "other.example"],
+        ["--allowed-media-domains=[]"],
+    ],
+)
+def test_extra_args_cannot_override_media_policy(monkeypatch, global_args, args):
+    engine = VllmEngineConfig(global_extra_args=args if global_args else [])
+    handle = VllmProcessHandle("lane-test", 19000, WorkerConfig(), vllm_engine_config=engine)
+    monkeypatch.setattr(handle, "_resolve_vllm_binary", lambda _: ["/tmp/vllm"])
+    lane = LaneConfig(model="test/model", vllm=True, vllm_config=VllmConfig(extra_args=[] if global_args else args))
+    with pytest.raises(ValueError, match="Media access flags are managed"):
+        handle._build_cmd(lane)

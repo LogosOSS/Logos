@@ -99,3 +99,21 @@ def test_sync_cloud_models_reports_ids_for_existing_model_new_link():
         "new_model_ids": [9],
         "changed": True,
     }
+
+
+def test_all_catalogue_writers_skip_control_characters(caplog):
+    bad_names = ["bad" + chr(i) for i in [*range(32), *range(127, 160)]]
+    for method in ("sync_cloud_models", "sync_azure_deployments", "sync_logosnode_capabilities"):
+        db = DBManager.__new__(DBManager)
+        db.session = MagicMock()
+        db.session.execute.return_value.fetchall.return_value = []
+        values = (
+            [{"model_name": name, "endpoint": "https://example.test"} for name in bad_names]
+            if method == "sync_azure_deployments"
+            else bad_names
+        )
+        getattr(db, method)(1, values)
+        # No invalid name reaches a query, insert or link operation.
+        for call in db.session.execute.call_args_list:
+            assert all(value not in bad_names for value in call.args[1].values())
+    assert len([record for record in caplog.records if "control characters" in record.message]) == 3 * len(bad_names)

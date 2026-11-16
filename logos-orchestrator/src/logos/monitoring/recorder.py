@@ -438,6 +438,16 @@ class MonitoringRecorder:
         if effort:
             self._buffer(request_id, reasoning_effort=effort)
 
+    def record_answer_reuse_miss(self, request_id: str) -> None:
+        """Persist that the answer cache was checked and had no reusable answer.
+
+        Buffered like the other lifecycle fields, so it lands with the
+        request's terminal write. A hit settles its own row instead
+        (``finalize_cache_hit_row``); requests that never reached a lookup
+        keep the column NULL.
+        """
+        self._buffer(request_id, cache_hit=False)
+
     def record_rate_limit_admission(self, request_id: str, admitted: bool) -> None:
         """Persist whether this key's rate limiter admitted the request.
 

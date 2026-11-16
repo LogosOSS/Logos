@@ -11,7 +11,7 @@ Rules kept here:
   node asks again until the first lease is released.
 * A node that runs a calibration session, holds a calibration claim or hosts a benchmark gets no lease: replacing its
   container would end that work. The manager asks again once the work is done.
-* A lease that its manager stops renewing expires, so a manager that dies cannot cordon a node for good.
+* A lease expires after inactivity or the deployment duration limit, even if the manager keeps renewing it.
 * "Drained" means no request is tracked for the node by the orchestrator (this includes requests that are scheduled
   but have not reached the worker yet) and none runs on the worker, and that this has held for a settle time. The
   settle time covers the lag between the two views. A node without any session counts as drained at once, because
@@ -24,9 +24,11 @@ asks again and never replaces a container without a fresh answer that the node h
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -40,6 +42,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_LEASE_TTL_S = 1800.0
 # How long a node must stay idle before it counts as drained.
 DEFAULT_SETTLE_S = 10.0
+DEFAULT_MAX_LEASE_S = 7200.0
+DEFAULT_REPORTS_PER_HOUR = 20
+# Keep evidence and revocations until restart, without allowing arbitrary IDs to exhaust memory.
+MAX_DEPLOYMENTS_PER_NODE = 4096
 
 
 def _seconds_from_env(name: str, default: float) -> float:
@@ -50,7 +56,7 @@ def _seconds_from_env(name: str, default: float) -> float:
         value = float(raw)
     except ValueError:
         return default
-    return value if value >= 0 else default
+    return value if math.isfinite(value) and value >= 0 else default
 
 
 def _count(value: Any) -> int:
@@ -61,10 +67,17 @@ def _count(value: Any) -> int:
 
 
 @dataclass
+class _Deployment:
+    started: float
+    revoked: bool = False
+
+
+@dataclass
 class _Lease:
     provider_id: int
     deployment_id: str
     last_seen: float
+    deadline: float
     # Since when the node has been idle; None while a request is running on it.
     idle_since: float | None = None
 
@@ -78,6 +91,8 @@ class NodeMaintenance:
         *,
         ttl_s: float | None = None,
         settle_s: float | None = None,
+        max_lease_s: float | None = None,
+        reports_per_hour: int | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._registry = registry
@@ -85,6 +100,18 @@ class NodeMaintenance:
         self._settle_s = (
             _seconds_from_env("LOGOS_NODE_DRAIN_SETTLE_S", DEFAULT_SETTLE_S) if settle_s is None else settle_s
         )
+        self._max_lease_s = (
+            _seconds_from_env("LOGOS_NODE_MAINTENANCE_MAX_LEASE_S", DEFAULT_MAX_LEASE_S)
+            if max_lease_s is None
+            else max_lease_s
+        )
+        self._reports_per_hour = (
+            int(_seconds_from_env("LOGOS_NODE_MAINTENANCE_REPORTS_PER_HOUR", DEFAULT_REPORTS_PER_HOUR))
+            if reports_per_hour is None
+            else reports_per_hour
+        )
+        self._deployments: dict[int, dict[str, _Deployment]] = {}
+        self._reports: dict[int, deque[float]] = {}
         self._clock = clock
         self._leases: dict[int, _Lease] = {}
         self._lock = threading.RLock()
@@ -106,7 +133,7 @@ class NodeMaintenance:
             lease = self._leases.get(int(provider_id))
             if lease is None:
                 return False
-            if self._clock() - lease.last_seen > self._ttl_s:
+            if self._clock() >= lease.deadline or self._clock() - lease.last_seen > self._ttl_s:
                 self._drop(lease, "expired")
                 return False
             return True
@@ -130,8 +157,19 @@ class NodeMaintenance:
         with self._lock:
             self._expire()
             now = self._clock()
+            if self._max_lease_s <= 0:
+                return {"status": "denied", "reason": "lease_duration_exceeded"}
+            history = self._deployments.get(provider_id, {})
+            deployment = history.get(deployment_id)
+            if deployment is not None:
+                if deployment.revoked:
+                    return {"status": "denied", "reason": "lease_revoked"}
+                if now >= deployment.started + self._max_lease_s:
+                    return {"status": "denied", "reason": "lease_duration_exceeded"}
             lease = self._leases.get(provider_id)
             if lease is None:
+                if deployment is None and len(history) >= MAX_DEPLOYMENTS_PER_NODE:
+                    return {"status": "denied", "reason": "deployment_history_full"}
                 refusal = self._refusal(provider_id)
                 if refusal is not None:
                     logger.info(
@@ -141,7 +179,15 @@ class NodeMaintenance:
                         refusal["reason"],
                     )
                     return refusal
-                lease = _Lease(provider_id=provider_id, deployment_id=deployment_id, last_seen=now)
+                if deployment is None:
+                    deployment = _Deployment(started=now)
+                    self._deployments.setdefault(provider_id, {})[deployment_id] = deployment
+                lease = _Lease(
+                    provider_id=provider_id,
+                    deployment_id=deployment_id,
+                    last_seen=now,
+                    deadline=deployment.started + self._max_lease_s,
+                )
                 self._leases[provider_id] = lease
                 logger.info(
                     "Worker %s is cordoned for deployment %s; sole replica for: %s",
@@ -150,14 +196,7 @@ class NodeMaintenance:
                     ", ".join(self.sole_replica_models(provider_id)) or "no model",
                 )
             elif lease.deployment_id != deployment_id:
-                logger.warning(
-                    "Worker %s: deployment %s takes over the lease of deployment %s",
-                    self._name(provider_id),
-                    deployment_id,
-                    lease.deployment_id,
-                )
-                lease.deployment_id = deployment_id
-                lease.idle_since = None
+                return {"status": "denied", "reason": "held_by_other_deployment"}
             lease.last_seen = now
             return {
                 "status": "granted",
@@ -201,6 +240,53 @@ class NodeMaintenance:
                 )
         return {"status": "released"}
 
+    def admin_status(self) -> list[dict[str, Any]]:
+        """List live leases with the deployment identity needed for a guarded operator release."""
+        with self._lock:
+            self._expire()
+            now = self._clock()
+            return [
+                {
+                    "provider_id": lease.provider_id,
+                    "provider_name": self._name(lease.provider_id),
+                    "deployment_id": lease.deployment_id,
+                    "age_s": now - self._deployments[lease.provider_id][lease.deployment_id].started,
+                    "remaining_s": max(0, min(lease.deadline, lease.last_seen + self._ttl_s) - now),
+                }
+                for lease in self._leases.values()
+            ]
+
+    def admin_release(self, provider_id: int, deployment_id: str) -> dict[str, Any]:
+        """Revoke the selected deployment so a renewal cannot undo an operator's release."""
+        with self._lock:
+            self._expire()
+            lease = self._leases.get(provider_id)
+            if lease is None:
+                raise LookupError("The node has no maintenance lease")
+            if lease.deployment_id != deployment_id:
+                from logos.logosnode_registry import MaintenanceBusyError
+
+                raise MaintenanceBusyError("The node holds a different deployment lease; refresh the status")
+            self._deployments[provider_id][deployment_id].revoked = True
+            self.release(provider_id, deployment_id)
+            return {"released": True, "provider_id": provider_id, "deployment_id": deployment_id}
+
+    def accept_report(self, provider_id: int, deployment_id: str) -> bool:
+        """Admit a report only with lease evidence and within the node's rolling hourly budget."""
+        with self._lock:
+            now = self._clock()
+            reports = self._reports.setdefault(provider_id, deque())
+            while reports and reports[0] <= now - 3600:
+                reports.popleft()
+            if len(reports) >= self._reports_per_hour:
+                logger.warning("Dropping deployment report for provider %s: hourly report limit reached", provider_id)
+                return False
+            reports.append(now)
+            if deployment_id not in self._deployments.get(provider_id, {}):
+                logger.info("Dropping deployment report for provider %s: deployment never held a lease", provider_id)
+                return False
+            return True
+
     # ------------------------------------------------------------------ Reports of the node manager
 
     def node_name(self, provider_id: int) -> str:
@@ -212,7 +298,7 @@ class NodeMaintenance:
     def _expire(self) -> None:
         now = self._clock()
         for lease in list(self._leases.values()):
-            if now - lease.last_seen > self._ttl_s:
+            if now >= lease.deadline or now - lease.last_seen > self._ttl_s:
                 self._drop(lease, "expired")
 
     def _drop(self, lease: _Lease, why: str) -> None:

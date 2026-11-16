@@ -12,9 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,6 +20,7 @@ from typing import Any
 from sqlalchemy import text
 
 from . import db
+from .artifacts import read_artifact
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -30,8 +29,6 @@ ANALYSIS_FILE = "analysis.json"
 VALID_SLOS = frozenset({"ux-critical", "ux-high-prio", "ux-background"})
 OBJECTIVE_KEYS = ("latency", "quality", "price")
 DEFAULT_OBJECTIVE_PRIORITY = list(OBJECTIVE_KEYS)
-# Cap memory: an agent-written artifact must not exhaust the runner.
-MAX_ANALYSIS_BYTES = 2 * 1024 * 1024
 # Bound on walking pending predecessors back to the last reviewed decision.
 MAX_ANCESTOR_HOPS = 50
 # Bound on the candidate pairs one (file, workflow) group may build when matching.
@@ -69,47 +66,8 @@ def artifact_analysis_path(session_id: int) -> Path:
 
 
 def read_analysis_artifact(path: Path) -> bytes:
-    """Read ``analysis.json`` without following symlinks, as a regular file only.
-
-    The agent sandbox can create ``analysis.json -> ../other-session/...``.
-    Following that would let one session ingest another team's private
-    workflows. ``O_NOFOLLOW`` rejects a final-component symlink; ``O_NONBLOCK``
-    prevents a named pipe without a writer from hanging the asyncio loop;
-    ``fstat`` confirms a regular file; the read is byte-capped.
-    """
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_NONBLOCK"):
-        flags |= os.O_NONBLOCK
-    try:
-        fd = os.open(path, flags)
-    except FileNotFoundError:
-        raise
-    except OSError as exc:
-        raise OSError(f"unsafe or unreadable analysis artifact: {exc}") from exc
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise OSError("analysis artifact is not a regular file")
-        if st.st_size > MAX_ANALYSIS_BYTES:
-            raise OSError(f"analysis artifact exceeds {MAX_ANALYSIS_BYTES} bytes")
-        # Clear non-blocking for the actual read of a verified regular file.
-        if hasattr(os, "set_blocking"):
-            os.set_blocking(fd, True)
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = os.read(fd, 64 * 1024)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > MAX_ANALYSIS_BYTES:
-                raise OSError(f"analysis artifact exceeds {MAX_ANALYSIS_BYTES} bytes")
-            chunks.append(chunk)
-        return b"".join(chunks)
-    finally:
-        os.close(fd)
+    """Read analysis with the same safety and size bounds as other artifacts."""
+    return read_artifact(path.parent, path.name, limit=settings.artifact_max_bytes)
 
 
 async def ingest_session(session: dict[str, Any]) -> None:

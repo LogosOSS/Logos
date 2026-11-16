@@ -39,7 +39,7 @@ public class WebConfig implements WebMvcConfigurer {
             // internal secret in their controllers, not a JWT. The inference
             // gateway (/v1, /openai, /jobs) likewise uses Logos API keys.
             .excludePathPatterns(
-                "/error", "/info", "/ws/**",
+                "/error", "/info", "/public/stats", "/ws/**",
                 "/logosdb/get_model_health", "/internal/models_discovered",
                 "/internal/notifications",
                 "/internal/gateway_relay_stats", "/internal/gateway_relay_stats/**",

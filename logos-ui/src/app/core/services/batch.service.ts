@@ -10,6 +10,13 @@ export interface BatchKey {
   environment: string | null;
 }
 
+/** Standard rates in micro-cents per 1000 tokens; null means unknown. */
+export interface BatchModelPrice {
+  model_name: string;
+  input_price_per_k_tokens: number | null;
+  output_price_per_k_tokens: number | null;
+}
+
 /** The OpenAI batch object, as Logos reports it for either execution path. */
 export interface BatchObject {
   id: string;
@@ -38,6 +45,12 @@ export class BatchService {
 
   getKeys(): Promise<BatchKey[]> {
     return firstValueFrom(this.http.get<BatchKey[]>('/api/logosdb/batches/keys'));
+  }
+
+  getPrices(apiKeyId: number): Promise<BatchModelPrice[]> {
+    return firstValueFrom(
+      this.http.get<BatchModelPrice[]>('/api/logosdb/batches/prices', { params: { apiKeyId } }),
+    );
   }
 
   list(apiKeyId: number): Promise<{ data: BatchObject[] }> {

@@ -50,6 +50,7 @@ from logos_worker_node.models import (
     WorkerConfig,
     model_uses_sharded_checkpoint,
 )
+from logos_worker_node.request_content import DISABLED_MEDIA_DOMAIN
 from logos_worker_node.vllm_compat import (
     _SCRUBBED_ENV_VARS,
     _VLLM_DEV_MODE_LOG_FRAGMENTS,
@@ -76,6 +77,7 @@ from logos_worker_node.vllm_compat import (
     _infer_reasoning_parser,
     _infer_tool_call_parser,
     _resolve_chat_template,
+    strip_host_args,
 )
 
 logger = logging.getLogger("logos_worker_node.vllm_process")
@@ -2119,7 +2121,7 @@ class VllmProcessHandle:
             "serve",
             serve_target,
             "--host",
-            "0.0.0.0",
+            "127.0.0.1",
             "--port",
             str(self.port),
             "--tensor-parallel-size",
@@ -2272,8 +2274,18 @@ class VllmProcessHandle:
         # NFS-flavoured storage that vLLM's auto-detection misses) — applied
         # BEFORE per-lane extra_args so a lane can still override a global
         # default when needed (argparse takes the last occurrence).
-        cmd.extend(self._vllm_engine_config.global_extra_args)
-        cmd.extend(vc.extra_args)
+        extra_args = [
+            *strip_host_args(self._vllm_engine_config.global_extra_args),
+            *strip_host_args(vc.extra_args),
+        ]
+        for arg in extra_args:
+            flag = arg.split("=", 1)[0].replace("_", "-")
+            if flag.startswith("--allowed-media") or flag.startswith("--allowed-local-media"):
+                raise ValueError("Media access flags are managed by engines.vllm.allowed_media_domains")
+        cmd.extend(extra_args)
+        cmd.extend(
+            ["--allowed-media-domains", *(self._vllm_engine_config.allowed_media_domains or [DISABLED_MEDIA_DOMAIN])]
+        )
         return cmd
 
     @staticmethod
@@ -2531,6 +2543,8 @@ class VllmProcessHandle:
         if vc.env_overrides:
             env.update(vc.env_overrides)
 
+        # The domain check must also hold after a server responds with a redirect.
+        env["VLLM_MEDIA_URL_ALLOW_REDIRECTS"] = "0"
         return env
 
     def _build_process_env(

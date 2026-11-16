@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import datetime, timezone
 
 import psycopg2
 from psycopg2.extras import Json, RealDictCursor
@@ -155,14 +156,17 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
             "VALUES (%s, 'role', 'logos_admin')",
             (notification_id,),
         )
-        if os.environ.get("LOGOS_DOCS_ACTIVE_BENCHMARK") == "true":
-            # Status illustration only. A running row does not submit an inference task.
+        window_ended = os.environ.get("LOGOS_DOCS_WINDOW_ENDED") == "true"
+        if window_ended or os.environ.get("LOGOS_DOCS_ACTIVE_BENCHMARK") == "true":
+            # Status illustration only. These rows do not submit inference tasks.
             marker = "docs-performance-status"
             cursor.execute("DELETE FROM jobs WHERE request_payload->>'purpose' = %s", (marker,))
             cursor.execute(
-                "INSERT INTO jobs(status, environment, request_payload, result_payload) "
-                "VALUES ('running', 'model-provider-benchmark', %s, %s)",
+                "INSERT INTO jobs(status, environment, request_payload, result_payload, error_message, "
+                "created_at, updated_at) "
+                "VALUES (%s, 'model-provider-benchmark', %s, %s, %s, %s, %s)",
                 (
+                    "failed" if window_ended else "running",
                     Json(
                         {
                             "purpose": marker,
@@ -181,14 +185,18 @@ with psycopg2.connect(os.environ["LOGOS_DB_URL"]) as db:
                     ),
                     Json(
                         {
-                            "stage": "benchmarking",
+                            "stage": "cancelled" if window_ended else "benchmarking",
                             "started_samples": 10,
+                            **({"completed_samples": 3} if window_ended else {}),
                             "total_samples": 10,
                             "total_runs": 2,
                             "completed_runs": 0,
                             "run_index": 1,
                         }
                     ),
+                    "window_closed_below_half" if window_ended else None,
+                    datetime(2026, 11, 5, 7, 0, 1, tzinfo=timezone.utc) if window_ended else datetime.now(timezone.utc),
+                    datetime(2026, 11, 5, 7, 0, 1, tzinfo=timezone.utc) if window_ended else datetime.now(timezone.utc),
                 ),
             )
         print(json.dumps({"workload": workload["id"], "reference": reference, "illustrative_runs": len(runs)}))

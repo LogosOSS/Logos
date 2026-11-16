@@ -36,6 +36,16 @@ import jakarta.servlet.http.HttpServletResponse;
 @EnableMethodSecurity
 public class SecurityConfig {
 
+    // Answer reuse marks a reply from the answer cache with these response
+    // headers (logos.answer_reuse.service.CACHE_RESPONSE_HEADERS). A browser
+    // client can read a response header only if CORS exposes it.
+    static final List<String> ANSWER_CACHE_RESPONSE_HEADERS = List.of(
+        "X-Logos-Cache",
+        "X-Logos-Cache-Entry",
+        "X-Logos-Cache-Similarity",
+        "X-Logos-Cache-Source-Model"
+    );
+
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http,
             @Qualifier("logosCorsConfigurationSource") CorsConfigurationSource corsSource) throws Exception {
@@ -49,6 +59,10 @@ public class SecurityConfig {
                 // /info must be reachable before login — it tells the UI which
                 // Keycloak instance to talk to.
                 .requestMatchers(HttpMethod.GET, "/info").permitAll()
+                // The public stats page is meant to be readable before login;
+                // it serves aggregate counts only, and is rate limited per IP
+                // in the controller like /info.
+                .requestMatchers(HttpMethod.GET, "/public/stats").permitAll()
                 // get_model_health is authenticated with a Logos API key in the
                 // controller — a key is not a JWT, so the resource-server chain
                 // must not run for this path.
@@ -134,10 +148,13 @@ public class SecurityConfig {
             "logos-key",
             "logos-logging",
             "logos_logging",
+            "logos-context",
+            "logos_context",
             "policy",
             "X-Request-ID",
             "X-Logos-Batch-Execution"
         ));
+        inference.setExposedHeaders(ANSWER_CACHE_RESPONSE_HEADERS);
         inference.setAllowCredentials(credentialsSafe);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
