@@ -296,7 +296,9 @@ How it goes:
    says why (`verify_failed`, `swap_failed` or `internal_error`). If the way back fails too, it ends as `failed`
    (`rollback_failed`) and every image stays.
 7. **The clean-up.** The new manager removes the stopped helper, and after a success the old image. After a rollback it
-   removes the image that did not run.
+   removes the image that did not run. Then it deletes the oldest finished records beyond the 10 newest, with the
+   compose files that they took out of images. A record stays while the running manager was made from a compose file of
+   its directory, because the way back of the next update starts from that file.
 
 Every step can be repeated, and every step is in the record. If the helper ends without a result, for example because the
 host restarts, the manager that runs then (the old one or the new one) finishes the record from what Docker shows, and
@@ -458,7 +460,7 @@ the memory of the manager: if the manager stops in the middle of a deployment, f
 recreated, the next start continues from the recorded phase. Every step can be repeated. The record also holds the
 events of the deployment and, after a failure, the end of the log of the failed container. This is where to look when a
 deployment ended after the job that asked for it, and `docker logs logos-node-manager` is gone because a later run
-recreated the service. The manager keeps the 30 newest finished records. A file in `deployments/` whose name is not a
+recreated the service. The manager keeps the 30 newest finished deployment records and the 10 newest finished self-update records. A file in `deployments/` whose name is not a
 valid deployment id is ignored and logged once.
 
 ## Configuration

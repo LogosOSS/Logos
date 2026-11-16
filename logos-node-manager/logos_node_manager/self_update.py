@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Collection, Mapping
 
 from logos_node_manager.compose_source import ComposeSource
 from logos_node_manager.config import Settings
@@ -238,12 +238,20 @@ class SelfUpdateStore:
         records = self.all()
         return records[-1] if records else None
 
-    def prune(self, keep: int = KEEP_FINISHED) -> None:
-        """Delete the oldest finished records beyond ``keep``, and the compose files that belong to them."""
+    def prune(self, keep: int = KEEP_FINISHED, in_use: Collection[Path] = ()) -> None:
+        """Delete the oldest finished records beyond ``keep``, and the compose files that belong to them.
+
+        A record goes only after its clean-up, which needs it. It also stays while a compose file of its directory is
+        one in ``in_use``, the files that the running manager was made from: the way back of the next update starts
+        from that file.
+        """
         finished = [record for record in self.all() if record.finished]
         for record in finished[: max(0, len(finished) - keep)]:
+            folder = self.compose_dir / f"self-{record.id}"
+            if not record.cleaned_up or any(folder in path.parents for path in in_use):
+                continue
             self._path(record.id).unlink(missing_ok=True)
-            shutil.rmtree(self.compose_dir / f"self-{record.id}", ignore_errors=True)
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 class Recorder:
@@ -565,11 +573,16 @@ class SelfUpdater(Recorder):
             return f"the container {name} was made from an image ID, so there is no image name to go back to"
         return None
 
+    @staticmethod
+    def _config_files(me: ContainerInfo) -> list[Path]:
+        """The compose files that Compose made the container from, as the label of the container names them."""
+        return [Path(part.strip()) for part in (me.config_files or "").split(",") if part.strip()]
+
     def _compose_of(self, me: ContainerInfo) -> str:
         """The compose file that the running manager was made from, for the way back. Empty if it is not there."""
-        paths = [part.strip() for part in (me.config_files or "").split(",") if part.strip()]
-        if len(paths) == 1 and Path(paths[0]).is_file():
-            return paths[0]
+        paths = self._config_files(me)
+        if len(paths) == 1 and paths[0].is_file():
+            return str(paths[0])
         return ""
 
     def _settle_compose(self, record: SelfUpdate) -> bool:
@@ -800,6 +813,19 @@ class SelfUpdater(Recorder):
             self.helper.remove()
         for record in pending:
             self._clean_up_record(record)
+        self._prune()
+
+    def _prune(self) -> None:
+        """Keep the history bounded: the oldest finished requests go, with the compose files they took out of images.
+
+        It runs after a clean-up that had work to do, not on every pass. The compose file that made the running manager
+        stays. If the manager cannot be read, nothing is deleted this time. A problem here is only logged.
+        """
+        try:
+            me = self.docker.container()
+            self.store.prune(in_use=self._config_files(me) if me else [])
+        except (DockerError, OSError):
+            logger.warning("The old self-update records were not pruned", exc_info=True)
 
     def _clean_up_record(self, record: SelfUpdate) -> None:
         """Clean up after one finished request. The record notes it first, so that a problem is not tried for ever."""

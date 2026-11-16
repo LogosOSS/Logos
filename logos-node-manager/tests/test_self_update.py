@@ -536,17 +536,66 @@ def test_after_a_failed_rollback_every_image_stays(updater, su_store, own_docker
     assert own_docker.removed == [] and not any(call[0] == "remove_image" for call in own_docker.calls)
 
 
-def test_old_records_are_pruned_with_their_compose_files(su_store, store):
+def finished_with_compose_files(su_store, store, **fields) -> None:
+    """Twelve finished requests, the oldest first, each with the compose file that it took out of an image."""
     for number in range(12):
-        ended(su_store, Outcome.SUCCEEDED, update_id=f"u{number:02d}")
+        ended(su_store, Outcome.FAILED, update_id=f"u{number:02d}", **fields)
         folder = store.compose_dir / f"self-u{number:02d}"
         folder.mkdir(parents=True)
         (folder / "worker.yml").write_text("services: {}\n", encoding="utf-8")
+
+
+def test_old_records_are_pruned_with_their_compose_files(su_store, store):
+    finished_with_compose_files(su_store, store, cleaned_up=True)
 
     su_store.prune(keep=10)
 
     assert [record.id for record in su_store.all()] == [f"u{number:02d}" for number in range(2, 12)]
     assert not (store.compose_dir / "self-u00").exists() and (store.compose_dir / "self-u11").exists()
+
+
+def test_a_record_that_is_not_cleaned_up_yet_is_not_pruned(su_store, store):
+    finished_with_compose_files(su_store, store)
+
+    su_store.prune(keep=10)
+
+    assert len(su_store.all()) == 12
+
+
+def test_a_record_whose_compose_file_made_the_running_manager_is_not_pruned(su_store, store):
+    finished_with_compose_files(su_store, store, cleaned_up=True)
+    running = store.compose_dir / "self-u00" / "worker.yml"
+
+    su_store.prune(keep=10, in_use=[running])
+
+    assert [record.id for record in su_store.all()] == ["u00", *(f"u{number:02d}" for number in range(2, 12))]
+    assert running.is_file()
+
+
+def test_a_clean_up_prunes_the_old_records_but_not_the_compose_file_of_the_running_manager(
+    updater, su_store, store, own_docker
+):
+    finished_with_compose_files(su_store, store)
+    running = store.compose_dir / "self-u00" / "worker.yml"
+    own_docker.container_info = replace(own_docker.container_info, config_files=str(running))
+
+    work(updater)
+
+    assert [record.id for record in su_store.all()] == ["u00", *(f"u{number:02d}" for number in range(2, 12))]
+    assert running.is_file() and not (store.compose_dir / "self-u01").exists()
+
+
+def test_nothing_is_pruned_while_the_running_manager_cannot_be_read(updater, su_store, store, own_docker, monkeypatch):
+    finished_with_compose_files(su_store, store)
+
+    def unreadable():
+        raise DockerError("docker inspect failed")
+
+    monkeypatch.setattr(own_docker, "container", unreadable)
+
+    work(updater)
+
+    assert len(su_store.all()) == 12 and all(record.cleaned_up for record in su_store.all())
 
 
 def test_a_record_from_a_newer_manager_with_more_fields_is_still_read(su_store):
