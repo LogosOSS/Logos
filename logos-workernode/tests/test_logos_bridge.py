@@ -4951,9 +4951,8 @@ async def test_a_superseded_push_does_not_undo_the_overrides_of_a_newer_one(tmp_
 
     client.fetch_model_profiles = _slow_fetch  # noqa: SLF001
     # Revision 4 drops the override and waits for Logos' profiles.
-    older = asyncio.create_task(
-        client._execute_command("sync_node_config", _central(4, _entry("org/ready"), _entry("org/added")))  # noqa: SLF001
-    )
+    drop = _central(4, _entry("org/ready"), _entry("org/added"))
+    older = asyncio.create_task(client._execute_command("sync_node_config", drop))  # noqa: SLF001
     await started.wait()
     # Revision 5 sets it again and finishes first.
     await client._execute_command(  # noqa: SLF001
