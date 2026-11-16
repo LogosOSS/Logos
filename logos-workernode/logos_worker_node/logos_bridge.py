@@ -1183,6 +1183,7 @@ class LogosBridgeClient:
         cfg = self._app.state.config
         serving = set(cfg.logos.capabilities_models)
         known = set(cfg.logos.configured_models)
+        added = [e["model_name"] for e in config["entries"] if e["model_name"] not in known]
         apply_node_config(cfg, config["entries"], config["revision"])
         # Only models that were announced stay so; new ones follow with a profile.
         cfg.logos.capabilities_models = [m for m in cfg.logos.configured_models if m in serving]
@@ -1197,6 +1198,11 @@ class LogosBridgeClient:
                 )
             except Exception:  # noqa: BLE001
                 logger.warning("[NodeConfig] Removed overrides are cleared; Logos' values return at the next start")
+            if cfg.logos.node_config_revision != config["revision"]:
+                # A newer push applied meanwhile; keep its overrides.
+                logger.info("[NodeConfig] Revision %d was superseded while its profiles loaded", config["revision"])
+                self._prepare_added_models(added)
+                return
         model_profiles.replace_config_overrides(new_overrides, central)
         model_profiles.seed_capabilities(cfg.logos.configured_models, engine="vllm")
         self._announce_calibrated_capabilities()
@@ -1205,13 +1211,18 @@ class LogosBridgeClient:
         if lane_manager is not None:
             lane_manager.mark_status_dirty()
         logger.info("[NodeConfig] Applied revision %d (%d model(s))", config["revision"], len(config["entries"]))
-        added = [m for m in cfg.logos.configured_models if m not in known]
+        self._prepare_added_models(added)
+
+    def _prepare_added_models(self, added: list[str]) -> None:
+        """Weights of models a push added, unless a newer push dropped them again."""
+        cfg = self._app.state.config
+        models = [m for m in added if m in cfg.logos.configured_models]
         prepare = getattr(self._app.state, "prepare_added_models", None)
-        if added and prepare is not None:
+        if models and prepare is not None:
             try:
-                prepare(added)
+                prepare(models)
             except Exception:  # noqa: BLE001
-                logger.warning("[NodeConfig] Could not prepare %s", added, exc_info=True)
+                logger.warning("[NodeConfig] Could not prepare %s", models, exc_info=True)
 
     def _handle_validate_node_config(self, params: dict[str, Any]) -> dict[str, Any]:
         """Check models before Logos stores them, the way a lane start would."""

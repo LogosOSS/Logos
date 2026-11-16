@@ -4934,6 +4934,41 @@ async def test_a_removed_override_is_cleared_when_logos_cannot_be_asked(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_a_superseded_push_does_not_undo_the_overrides_of_a_newer_one(tmp_path):
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    prepared: list = []
+    client._app.state.prepare_added_models = prepared.append  # noqa: SLF001
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(3, _entry("org/ready", {"base_residency_mb": 500}))
+    )
+    started, gate = asyncio.Event(), asyncio.Event()
+
+    async def _slow_fetch(*_args):
+        started.set()
+        await gate.wait()
+        return {"org/ready": {"base_residency_mb": 9000.0, "residency_source": "calibrated"}}
+
+    client.fetch_model_profiles = _slow_fetch  # noqa: SLF001
+    # Revision 4 drops the override and waits for Logos' profiles.
+    older = asyncio.create_task(
+        client._execute_command("sync_node_config", _central(4, _entry("org/ready"), _entry("org/added")))  # noqa: SLF001
+    )
+    await started.wait()
+    # Revision 5 sets it again and finishes first.
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(5, _entry("org/ready", {"base_residency_mb": 700}), _entry("org/added"))
+    )
+    gate.set()
+    await older
+
+    assert registry.get_profile("org/ready").base_residency_mb == 700.0
+    assert client._cfg.node_config_revision == 5  # noqa: SLF001
+    # The model revision 4 added is still prepared, once, by the push that was overtaken.
+    assert prepared == [["org/added"]]
+
+
+@pytest.mark.asyncio
 async def test_a_push_without_removed_overrides_does_not_ask_logos_for_profiles(tmp_path):
     client = _node_config_client(tmp_path)
 
