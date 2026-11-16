@@ -1165,3 +1165,38 @@ def test_a_new_record_field_reaches_the_dict_and_comes_back():
     echoed = record.to_dict()
     assert set(echoed) == {field.name for field in fields(ModelProfileRecord)}
     assert _record_from_dict(echoed).to_dict() == echoed
+
+
+def test_replacing_config_overrides_stops_applying_a_removed_key():
+    registry = ModelProfileRegistry()
+    registry.seed_capabilities(["m"])
+    registry.add_overrides({"m": {"base_residency_mb": 900.0, "min_context_fraction": 0.5}})
+    assert registry.get_profile("m").base_residency_mb == 900.0
+
+    registry.replace_config_overrides({"m": {"base_residency_mb": 900.0}})
+    assert registry.get_profile("m").min_context_fraction is None
+    registry.replace_config_overrides({})
+
+    # A later calibration result is no longer overwritten by the removed override.
+    registry.apply_calibration_result("m", {"base_residency_mb": 5000.0, "residency_source": "calibrated"})
+    assert registry.get_profile("m").base_residency_mb == 5000.0
+    assert registry.get_all_profiles()["m"]["overridden_fields"] == []
+
+
+def test_replacing_config_overrides_keeps_the_ones_from_config_yml():
+    registry = ModelProfileRegistry({"m": {"min_context_fraction": 0.25}})
+    registry.seed_capabilities(["m"])
+    registry.add_overrides({"m": {"min_context_fraction": 0.5}})
+
+    registry.replace_config_overrides({})
+
+    assert registry.get_profile("m").min_context_fraction == 0.25
+
+
+def test_replacing_config_overrides_applies_the_new_ones_to_existing_profiles():
+    registry = ModelProfileRegistry()
+    registry.seed_capabilities(["m"])
+
+    registry.replace_config_overrides({"m": {"host_ram_mb": 123.0}, "other": {"host_ram_mb": 1.0}})
+
+    assert registry.get_profile("m").host_ram_mb == 123.0

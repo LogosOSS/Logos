@@ -12,7 +12,12 @@ import yaml
 
 from logos_worker_node.calibration import plans_from_config
 from logos_worker_node.config import _wire_kv_budget
-from logos_worker_node.model_profiles import PROFILE_OVERRIDE_KEYS, ModelProfileRegistry
+from logos_worker_node.model_profiles import (
+    _FLOAT_OVERRIDES,
+    _INT_OVERRIDES,
+    PROFILE_OVERRIDE_KEYS,
+    ModelProfileRegistry,
+)
 from logos_worker_node.models import AppConfig
 from logos_worker_node.node_config import (
     apply_node_config,
@@ -21,6 +26,7 @@ from logos_worker_node.node_config import (
     normalize_node_config,
     plans_from_app_config,
     plans_from_entries,
+    profile_overrides_of,
     validation_errors,
 )
 from logos_worker_node.profile_fingerprint import plan_hash
@@ -216,3 +222,60 @@ def test_a_wrong_value_is_still_refused():
 def test_profile_override_keys_match_what_the_registry_reads():
     source = inspect.getsource(ModelProfileRegistry._apply_manual_overrides)
     assert set(re.findall(r'"(\w+)" in overrides', source)) == PROFILE_OVERRIDE_KEYS
+
+
+def test_the_model_kind_of_a_plan_is_accepted():
+    assert validation_errors([_entry({"model_kind": "embedding"})]) == []
+    assert validation_errors([_entry({"model_kind": 3})]) == ["org/a: model_kind: must be a string"]
+
+
+@pytest.mark.parametrize(
+    "overrides,message",
+    [
+        ({"host_ram_mb": "lots"}, "org/a: host_ram_mb: must be a number"),
+        ({"base_residency_mb": True}, "org/a: base_residency_mb: must be a number"),
+        ({"min_context_fraction": float("nan")}, "org/a: min_context_fraction: must be a number"),
+        ({"max_context_length": "big"}, "org/a: max_context_length: must be an integer"),
+        ({"tensor_parallel_size": float("inf")}, "org/a: tensor_parallel_size: must be an integer"),
+        ({"metal_capacity_floor_mb": "x"}, "org/a: metal_capacity_floor_mb: must be a number or null"),
+        ({"kv_cache_to_max_model_len_pairs": "x"}, "org/a: kv_cache_to_max_model_len_pairs: must be a list"),
+    ],
+)
+def test_a_profile_override_that_cannot_be_applied_is_refused(overrides, message):
+    assert validation_errors([_entry(overrides)]) == [message]
+
+
+def test_profile_override_values_the_registry_converts_are_accepted():
+    overrides = {
+        "host_ram_mb": "1024",
+        "max_context_length": 4096,
+        "min_context_fraction": 0.5,
+        "metal_capacity_floor_mb": None,
+        "kv_cache_to_max_model_len_pairs": [{"kv_mb": 1, "max_model_len": 2}],
+    }
+    assert validation_errors([_entry(overrides)]) == []
+
+
+def test_every_profile_override_key_has_a_value_check():
+    checked = {*_FLOAT_OVERRIDES, *_INT_OVERRIDES, "metal_capacity_floor_mb", "kv_cache_to_max_model_len_pairs"}
+    assert PROFILE_OVERRIDE_KEYS - checked == {"engine"}
+
+
+def test_profile_overrides_of_the_stored_models_cover_capability_and_routed_keys():
+    cfg = AppConfig()
+    apply_node_config(
+        cfg,
+        [
+            {
+                "model_name": "org/a",
+                "capability": {"kv_cache_memory_bytes": "2G", "base_residency_mb": 900},
+                "overrides": {"quantization": "awq", "host_ram_mb": 10},
+            },
+            {"model_name": "org/b", "capability": {}, "overrides": {"quantization": "awq"}},
+        ],
+        1,
+    )
+    found = profile_overrides_of(cfg)
+    assert set(found) == {"org/a"}
+    assert found["org/a"]["base_residency_mb"] == 900 and found["org/a"]["host_ram_mb"] == 10
+    assert found["org/a"]["kv_budget_mb"] == 2048.0 and "quantization" not in found["org/a"]

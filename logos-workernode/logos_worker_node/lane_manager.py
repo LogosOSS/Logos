@@ -3376,6 +3376,8 @@ class LaneManager:
         self.reserve_model_startup(starting_model, lane_id)
         transfer = None
         try:
+            # The lane's saved config predates changes to the node's overrides.
+            new_config = self._apply_model_vllm_overrides(new_config)
             new_config = self._auto_tensor_parallel(new_config)
             old_handle = self._handles[lane_id]
             port = self._port_alloc.get_port(lane_id)

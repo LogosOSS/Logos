@@ -49,6 +49,7 @@ from logos_worker_node.node_config import (
     VALIDATE_NODE_CONFIG_ACTION,
     apply_node_config,
     normalize_node_config,
+    profile_overrides_of,
     validation_errors,
 )
 from logos_worker_node.request_content import (
@@ -195,6 +196,8 @@ class LogosBridgeClient:
         # so a stop_calibration_session RPC kills the in-progress vLLM probe
         # within ~2s (wait_ready polls cancel_event).
         self._active_calibration_session: _CalibrationSession | None = None
+        # A node configuration that arrived while a calibration was running.
+        self._pending_node_config: dict[str, Any] | None = None
         # Sequence counter for calibration event_id (independent of lane events).
         self._calibration_event_seq: int = 0
         # Lazily built by _get_hf_info_cache(); lives for the client's whole
@@ -1152,20 +1155,38 @@ class LogosBridgeClient:
 
         The push after every hello usually carries the revision the worker
         started with. Models apply at once; overrides from the next lane start.
+        During a calibration it waits: the session measures under the plans it
+        started with, and new keys would label its results wrongly.
         """
         try:
             config = normalize_node_config(params)
         except RuntimeError as exc:
             return {"ok": False, "error": str(exc)}
+        current = self._app.state.config.logos.node_config_revision
+        if config["revision"] <= current:
+            return {"ok": True, "applied": False, "revision": current}
+        if self._calibration_session_is_live():
+            pending = self._pending_node_config
+            if pending is None or config["revision"] > pending["revision"]:
+                self._pending_node_config = config
+            logger.info("[NodeConfig] Revision %d waits for the running calibration", config["revision"])
+            return {"ok": True, "applied": False, "deferred": True, "revision": current}
+        await self._apply_node_config(config)
+        return {"ok": True, "applied": True, "revision": config["revision"]}
+
+    async def _apply_pending_node_config(self) -> None:
+        config, self._pending_node_config = self._pending_node_config, None
+        if config is not None and config["revision"] > self._app.state.config.logos.node_config_revision:
+            await self._apply_node_config(config)
+
+    async def _apply_node_config(self, config: dict[str, Any]) -> None:
         cfg = self._app.state.config
-        if config["revision"] <= cfg.logos.node_config_revision:
-            return {"ok": True, "applied": False, "revision": cfg.logos.node_config_revision}
         serving = set(cfg.logos.capabilities_models)
         apply_node_config(cfg, config["entries"], config["revision"])
         # Only models that were announced stay so; new ones follow with a profile.
         cfg.logos.capabilities_models = [m for m in cfg.logos.configured_models if m in serving]
         model_profiles = self._app.state.model_profiles
-        model_profiles.add_overrides(cfg.logos.capabilities_overrides)
+        model_profiles.replace_config_overrides(profile_overrides_of(cfg))
         model_profiles.seed_capabilities(cfg.logos.configured_models, engine="vllm")
         self._announce_calibrated_capabilities()
         await self._refresh_calibration_keys()
@@ -1173,7 +1194,6 @@ class LogosBridgeClient:
         if lane_manager is not None:
             lane_manager.mark_status_dirty()
         logger.info("[NodeConfig] Applied revision %d (%d model(s))", config["revision"], len(config["entries"]))
-        return {"ok": True, "applied": True, "revision": config["revision"]}
 
     def _handle_validate_node_config(self, params: dict[str, Any]) -> dict[str, Any]:
         """Check models before Logos stores them, the way a lane start would."""
@@ -2424,6 +2444,10 @@ class LogosBridgeClient:
             if self._active_calibration_session is session:
                 self._active_calibration_session = None
             logger.info("[Calibration] Session ended (%s)", terminal_event)
+            try:
+                await self._apply_pending_node_config()
+            except Exception:  # noqa: BLE001
+                logger.warning("[NodeConfig] The configuration that waited could not be applied", exc_info=True)
 
     async def _maybe_convert_sharded_checkpoint(
         self,

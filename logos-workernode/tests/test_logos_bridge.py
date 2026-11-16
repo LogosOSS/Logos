@@ -4853,6 +4853,53 @@ async def test_an_older_or_equal_node_config_changes_nothing(tmp_path, revision)
 
 
 @pytest.mark.asyncio
+async def test_a_node_config_waits_for_a_running_calibration_and_applies_afterwards(tmp_path):
+    client = _node_config_client(tmp_path)
+    client._calibration_session_is_live = lambda: True  # noqa: SLF001
+
+    first = await client._execute_command("sync_node_config", _central(3, _entry("org/a")))  # noqa: SLF001
+    second = await client._execute_command("sync_node_config", _central(5, _entry("org/b")))  # noqa: SLF001
+    older = await client._execute_command("sync_node_config", _central(4, _entry("org/c")))  # noqa: SLF001
+
+    assert first == {"ok": True, "applied": False, "deferred": True, "revision": 2}
+    assert second["deferred"] and older["deferred"]
+    assert client._cfg.configured_models == ["org/ready", "org/pending"]  # noqa: SLF001
+
+    client._calibration_session_is_live = lambda: False  # noqa: SLF001
+    await client._apply_pending_node_config()  # noqa: SLF001
+
+    assert client._cfg.configured_models == ["org/b"]  # noqa: SLF001
+    assert client._cfg.node_config_revision == 5  # noqa: SLF001
+    assert client._pending_node_config is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_node_config_that_was_overtaken_is_dropped(tmp_path):
+    client = _node_config_client(tmp_path)
+    client._pending_node_config = _central(3, _entry("org/a"))  # noqa: SLF001
+    client._cfg.node_config_revision = 4  # noqa: SLF001
+
+    await client._apply_pending_node_config()  # noqa: SLF001
+
+    assert client._cfg.configured_models == ["org/ready", "org/pending"]  # noqa: SLF001
+    assert client._pending_node_config is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_removed_capability_override_stops_applying(tmp_path):
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(3, _entry("org/ready", {"min_context_fraction": 0.5}))
+    )
+    assert registry.get_profile("org/ready").min_context_fraction == 0.5
+
+    await client._execute_command("sync_node_config", _central(4, _entry("org/ready")))  # noqa: SLF001
+
+    assert registry.get_profile("org/ready").min_context_fraction is None
+
+
+@pytest.mark.asyncio
 async def test_a_malformed_node_config_push_is_refused(tmp_path):
     client = _node_config_client(tmp_path)
 

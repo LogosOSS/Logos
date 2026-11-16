@@ -2470,6 +2470,52 @@ async def test_stuck_lane_is_automatically_restarted(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_restarted_lane_runs_with_the_overrides_the_node_has_now(monkeypatch) -> None:
+    """The lane's saved config predates a change to engines.vllm.model_overrides."""
+    lane_id = "planner-Qwen_Qwen3-8B"
+    lane_config = LaneConfig(lane_id=lane_id, model="Qwen/Qwen3-8B", vllm=True, vllm_config=VllmConfig())
+    engine = VllmEngineConfig(model_overrides={})
+    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15000, lane_port_end=15010)
+    spawned: list[LaneConfig] = []
+
+    class OldHandle:
+        def __init__(self) -> None:
+            self.lane_id, self.port, self.lane_config = lane_id, 15000, lane_config
+
+        async def stop(self) -> ProcessStatus:
+            return ProcessStatus(state=ProcessState.STOPPED, pid=1, return_code=0)
+
+        async def destroy(self) -> None:
+            await asyncio.sleep(0)
+
+        async def close(self) -> None:
+            await asyncio.sleep(0)
+
+    class NewHandle:
+        def __init__(self, lid: str, port: int) -> None:
+            self.lane_id, self.port, self.lane_config = lid, port, None
+
+        async def init(self) -> None:
+            await asyncio.sleep(0)
+
+        async def spawn(self, lc: LaneConfig) -> ProcessStatus:
+            await asyncio.sleep(0)
+            self.lane_config = lc
+            spawned.append(lc)
+            return ProcessStatus(state=ProcessState.RUNNING, pid=2)
+
+    manager._handles[lane_id] = OldHandle()  # noqa: SLF001
+    manager._port_alloc._used[lane_id] = 15000  # noqa: SLF001
+    monkeypatch.setattr("logos_worker_node.lane_manager._create_handle", lambda lid, port, *_a, **_k: NewHandle(lid, port))
+    monkeypatch.setattr(PortAllocator, "_is_port_available", staticmethod(lambda _port: True))
+    engine.model_overrides["Qwen/Qwen3-8B"] = {"quantization": "awq"}
+
+    await manager._restart_stuck_lane(lane_id, lane_config)  # noqa: SLF001
+
+    assert spawned[0].vllm_config.quantization == "awq"
+
+
+@pytest.mark.asyncio
 async def test_stuck_lane_no_restart_when_auto_restart_false(monkeypatch) -> None:
     """When auto_restart=False (lock held), stuck lane is stopped but NOT restarted."""
     lane_id = "planner-Qwen_Qwen3-Embedding-8B"

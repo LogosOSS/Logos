@@ -16,11 +16,13 @@ import yaml
 from pydantic import ValidationError
 
 from logos_worker_node.config import _wire_kv_budget
-from logos_worker_node.model_profiles import PROFILE_OVERRIDE_KEYS
+from logos_worker_node.model_profiles import PROFILE_OVERRIDE_KEYS, profile_override_errors
 from logos_worker_node.models import AppConfig, VllmConfig
 
 SYNC_NODE_CONFIG_ACTION = "sync_node_config"
 VALIDATE_NODE_CONFIG_ACTION = "validate_node_config"
+# Settings of the calibration plan that are neither engine nor profile keys.
+PLAN_ONLY_KEYS = frozenset({"model_kind"})
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -132,7 +134,7 @@ def apply_node_config(cfg: AppConfig, entries: list[dict[str, Any]], revision: i
 
 def _unknown_key_errors(name: Any, overrides: dict[str, Any]) -> list[str]:
     """Overrides no lane start reads: a typo would be stored and do nothing."""
-    known = set(VllmConfig.model_fields) | PROFILE_OVERRIDE_KEYS
+    known = set(VllmConfig.model_fields) | PROFILE_OVERRIDE_KEYS | PLAN_ONLY_KEYS
     errors = []
     for key in overrides:
         if key in known:
@@ -152,6 +154,10 @@ def validation_errors(entries: list[dict[str, Any]]) -> list[str]:
         name = entry.get("model_name")
         overrides = _mapping(entry.get("overrides"))
         errors.extend(_unknown_key_errors(name, overrides))
+        profile_values = {k: v for k, v in overrides.items() if k in PROFILE_OVERRIDE_KEYS and k not in fields}
+        errors.extend(f"{name}: {message}" for message in profile_override_errors(profile_values))
+        if "model_kind" in overrides and not isinstance(overrides["model_kind"], str):
+            errors.append(f"{name}: model_kind: must be a string")
         engine = {k: v for k, v in _mapping(entry.get("capability")).items() if k in fields}
         engine.update({k: v for k, v in overrides.items() if k in fields})
         try:
@@ -159,3 +165,21 @@ def validation_errors(entries: list[dict[str, Any]]) -> list[str]:
         except ValidationError as exc:
             errors.extend(f"{name}: {'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
     return errors
+
+
+def profile_overrides_of(cfg: AppConfig) -> dict[str, dict[str, Any]]:
+    """The profile overrides the stored models carry.
+
+    Capability keys, with the KV budget wired from them, plus the profile keys
+    among the overrides, which a lane start routes the same way.
+    """
+    fields = VllmConfig.model_fields
+    result: dict[str, dict[str, Any]] = {}
+    for entry in (cfg.logos.node_entries if cfg.logos else None) or []:
+        name = entry["model_name"]
+        merged = dict(cfg.logos.capabilities_overrides.get(name, {}))
+        merged.update({k: v for k, v in entry["overrides"].items() if k not in fields})
+        merged = {k: v for k, v in merged.items() if k in PROFILE_OVERRIDE_KEYS}
+        if merged:
+            result[name] = merged
+    return result
