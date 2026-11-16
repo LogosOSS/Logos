@@ -23,6 +23,8 @@ from logos_node_manager.self_update import (
 from logos_node_manager.state import Deployment, Outcome, Phase
 
 LOGIN_FAILED = "the login to the registry harbor.example failed: unauthorized"
+# A third manager image: the one that runs after NEW gave way.
+NEWER = "sha256:" + "2" * 12 + "cccc"
 
 
 def write_env(settings, *lines: str) -> None:
@@ -488,6 +490,21 @@ def test_a_result_that_the_helper_wrote_just_before_it_ended_is_not_overwritten(
     assert engine.exists is False
 
 
+def test_a_success_that_the_manager_found_keeps_the_previous_image(updater, su_store, engine, own_docker):
+    own_docker.images = {f"{REPO}:latest": NEW, f"{REPO}:previous": OLD}
+    own_docker.container_info = replace(own_docker.container_info, image_id=NEW)
+    handed_over(su_store, UpdatePhase.VERIFYING)
+    engine.exists, engine.running, engine.exit_code = True, False, 137
+
+    work(updater)  # the manager finds the helper gone and judges by what Docker shows
+    work(updater)  # the clean-up
+
+    record = su_store.load("u1")
+    assert record.outcome is Outcome.SUCCEEDED and record.previous_kept and record.cleaned_up
+    assert "stays on the host" in record.message
+    assert own_docker.removed == [] and own_docker.images[f"{REPO}:previous"] == OLD
+
+
 # ---------------------------------------------------------------------- Cleaning up
 
 
@@ -536,6 +553,43 @@ def test_after_a_failed_rollback_every_image_stays(updater, su_store, own_docker
     assert own_docker.removed == [] and not any(call[0] == "remove_image" for call in own_docker.calls)
 
 
+def an_unchecked_success_and_a_later_request(su_store, own_docker, outcome: Outcome, **fields) -> None:
+    """Request u1 was a success that nobody checked, so it keeps OLD. Request u2 follows: NEW gave way to NEWER."""
+    own_docker.images = {f"{REPO}:latest": NEWER, f"{REPO}:previous": NEW}
+    own_docker.unnamed = {OLD}
+    own_docker.container_info = replace(own_docker.container_info, image_id=NEWER)
+    ended(su_store, Outcome.SUCCEEDED, update_id="u1", cleaned_up=True, previous_kept=True, target_image_id=NEW)
+    ended(su_store, outcome, update_id="u2", previous_image_id=NEW, target_image_id=NEWER, **fields)
+
+
+def test_a_success_after_its_checks_removes_the_image_that_an_unchecked_success_kept(updater, su_store, own_docker):
+    an_unchecked_success_and_a_later_request(su_store, own_docker, Outcome.SUCCEEDED)
+
+    work(updater)
+
+    assert {OLD, NEW} <= set(own_docker.removed)
+    assert su_store.load("u1").previous_kept is False
+
+
+@pytest.mark.parametrize(
+    ("outcome", "fields"),
+    [
+        (Outcome.FAILED, {}),
+        (Outcome.UNCHANGED, {}),
+        (Outcome.ROLLED_BACK, {}),
+        (Outcome.SUCCEEDED, {"previous_kept": True}),
+    ],
+)
+def test_only_a_success_after_its_checks_removes_the_image_that_an_unchecked_success_kept(
+    updater, su_store, own_docker, outcome, fields
+):
+    an_unchecked_success_and_a_later_request(su_store, own_docker, outcome, **fields)
+
+    work(updater)
+
+    assert OLD not in own_docker.removed and su_store.load("u1").previous_kept is True
+
+
 def finished_with_compose_files(su_store, store, **fields) -> None:
     """Twelve finished requests, the oldest first, each with the compose file that it took out of an image."""
     for number in range(12):
@@ -560,6 +614,17 @@ def test_a_record_that_is_not_cleaned_up_yet_is_not_pruned(su_store, store):
     su_store.prune(keep=10)
 
     assert len(su_store.all()) == 12
+
+
+def test_a_record_that_keeps_an_old_image_is_not_pruned(su_store, store):
+    finished_with_compose_files(su_store, store, cleaned_up=True)
+    kept = su_store.load("u00")
+    kept.previous_kept = True
+    su_store.save(kept)
+
+    su_store.prune(keep=10)
+
+    assert [record.id for record in su_store.all()] == ["u00", *(f"u{number:02d}" for number in range(2, 12))]
 
 
 def test_a_record_whose_compose_file_made_the_running_manager_is_not_pruned(su_store, store):

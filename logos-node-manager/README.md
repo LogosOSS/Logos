@@ -296,14 +296,18 @@ How it goes:
    says why (`verify_failed`, `swap_failed` or `internal_error`). If the way back fails too, it ends as `failed`
    (`rollback_failed`) and every image stays.
 7. **The clean-up.** The new manager removes the stopped helper, and after a success the old image. After a rollback it
-   removes the image that did not run. Then it deletes the oldest finished records beyond the 10 newest, with the
-   compose files that they took out of images. A record stays while the running manager was made from a compose file of
-   its directory, because the way back of the next update starts from that file.
+   removes the image that did not run. A success that nobody checked (see below) is the exception: the old image stays
+   as the way back, until a later request ends as `succeeded` after its checks and removes it. Then the manager deletes
+   the oldest finished records beyond the 10 newest, with the compose files that they took out of images. A record stays
+   while the running manager was made from a compose file of its directory, because the way back of the next update
+   starts from that file, and while it keeps an old image.
 
 Every step can be repeated, and every step is in the record. If the helper ends without a result, for example because the
 host restarts, the manager that runs then (the old one or the new one) finishes the record from what Docker shows, and
-says so in the record. A helper that runs longer than an hour is removed and the request ends as `failed` (`timed_out`), so a stuck helper
-cannot hold the deployments for ever.
+says so in the record. If it finds the new manager running, the request ends as `succeeded`, but nobody checked the new
+manager for the stability window: the record has `previous_kept: true` and the old image stays on the host. A helper that
+runs longer than an hour is removed and the request ends as `failed` (`timed_out`), so a stuck helper cannot hold the
+deployments for ever.
 
 The compose file of the manager's own service comes from the image of the tag, if `NODE_MANAGER_COMPOSE_FROM_TAG` is on:
 on a worker host it is `worker.yml`, which holds the service of the manager next to the worker, and on a core host it is
@@ -324,6 +328,12 @@ docker compose -p <project> -f <compose file> --env-file <.env> up -d --no-deps 
 
 The project, the compose file and the service are the ones of the manager's own service (see `SELF_*` under
 "Configuration"). Use `IMAGE_TAG=<tag>` in front of the command to choose the tag.
+
+**If the new manager misbehaves after a success that nobody checked.** The record has `previous_kept: true` and names the
+old image (`previous_image_id`). The name `<image>:previous` points to it until another swap moves the name. Start the
+service as above with `NODE_MANAGER_IMAGE_TAG=previous` in front of the command (it wins over the `.env` file). If the
+name has moved, give the old image a name first (`docker tag <previous_image_id> <image>:rescue`) and use that tag
+instead. Compose does not pull an image that is on the host already.
 
 ## Orders from Logos
 
@@ -632,9 +642,7 @@ replaces the container at once, as a manual `docker compose up` does. With the d
 * **The models of the node load again after the deployment.** The cordon lasts until the new container is checked, and the
   capacity planner places nothing on a cordoned node. The next node can start before the first one has its models back.
   Requests for a model that both nodes serve then wait for the load on the first node.
-* **A deployment that changes nothing still cordons the node.** The manager only finds out that nothing changes when
-  Compose does not recreate the container, which comes after the drain. A busy node can wait for its drain for nothing.
-* **Nothing counts a request the orchestrator lost track of.** If the orchestrator keeps a request that never ended in
+* **A request that the orchestrator never closes blocks the drain.** If the orchestrator keeps a request that never ended in
   its books, the node cannot drain, and the deployment ends as `drain_timeout`. The events show how many requests the
   orchestrator and the worker count.
 * **A mix of nodes with and without the drain breaks the one-at-a-time rule** (see "Use"). A node without the drain does

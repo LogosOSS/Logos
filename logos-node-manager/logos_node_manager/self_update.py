@@ -15,7 +15,9 @@ The manager (this module) decides, prepares and hands over:
 The helper (see ``self_update_helper``) swaps, checks and, if the new manager does not come up, restores the old one,
 the way the rollback of a worker does. Every step goes into the record ``<state dir>/self-update/<id>.json``. If the
 helper ends without a result, the manager that runs at that moment, the old or the new one, finishes the record from
-what Docker shows. The new manager removes the old image and the stopped helper after the record is finished.
+what Docker shows. The new manager removes the old image and the stopped helper after the record is finished. If the
+helper ended before it had checked the new manager, the old image stays as the way back, until a later request ends
+well after its checks.
 
 A request comes from the command line (``node-manager self-update``) or, if the host switched it on, from the end of a
 deployment that went well. It is queued as a record, like a deployment, and the daemon runs it when no deployment waits.
@@ -140,6 +142,9 @@ class SelfUpdate:
 
     # Whether the images that the request left without a purpose were removed. Set once the record is finished.
     cleaned_up: bool = False
+    # Whether the old image stays on the host as the way back: the manager found the new version running after the
+    # helper ended, so nobody checked it. A later request that ends well after its checks removes the image.
+    previous_kept: bool = False
     events: list[dict[str, str]] = field(default_factory=list)
 
     @property
@@ -241,14 +246,15 @@ class SelfUpdateStore:
     def prune(self, keep: int = KEEP_FINISHED, in_use: Collection[Path] = ()) -> None:
         """Delete the oldest finished records beyond ``keep``, and the compose files that belong to them.
 
-        A record goes only after its clean-up, which needs it. It also stays while a compose file of its directory is
-        one in ``in_use``, the files that the running manager was made from: the way back of the next update starts
-        from that file.
+        A record goes only after its clean-up, which needs it. It also stays while it keeps an old image on the host
+        (``previous_kept``), because a later update has to find it to remove the image, and while a compose file of its
+        directory is one in ``in_use``, the files that the running manager was made from: the way back of the next
+        update starts from that file.
         """
         finished = [record for record in self.all() if record.finished]
         for record in finished[: max(0, len(finished) - keep)]:
             folder = self.compose_dir / f"self-{record.id}"
-            if not record.cleaned_up or any(folder in path.parents for path in in_use):
+            if not record.cleaned_up or record.previous_kept or any(folder in path.parents for path in in_use):
                 continue
             self._path(record.id).unlink(missing_ok=True)
             shutil.rmtree(folder, ignore_errors=True)
@@ -749,10 +755,12 @@ class SelfUpdater(Recorder):
                     f"{ended}. The rollback did not finish: the new manager {record.target_image_ref} runs.",
                 )
             else:
+                record.previous_kept = True
                 self.finish(
                     record,
                     Outcome.SUCCEEDED,
-                    message=f"now running {record.target_image_ref}; {ended} before it noted the result",
+                    message=f"now running {record.target_image_ref}; {ended} before it noted the result. The new "
+                    f"manager was not checked, so the previous image {record.previous_image_ref} stays on the host",
                 )
             return
         if info is not None and info.image_id == record.previous_image_id:
@@ -833,8 +841,10 @@ class SelfUpdater(Recorder):
         self.store.save(record)
         removed = []
         try:
-            if record.outcome is Outcome.SUCCEEDED:
-                removed = self._remove_previous(record)
+            if record.outcome is Outcome.SUCCEEDED and record.previous_kept:
+                logger.info("Self-update %s: the previous image stays: nobody checked the new manager", record.id)
+            elif record.outcome is Outcome.SUCCEEDED:
+                removed = self._remove_previous(record) + self._release_kept_backups()
             elif record.outcome is Outcome.ROLLED_BACK and record.target_image_id:
                 if self.docker.remove_image(record.target_image_id):
                     removed.append(short_id(record.target_image_id))
@@ -846,6 +856,23 @@ class SelfUpdater(Recorder):
             record.id,
             f"removed {', '.join(removed)}" if removed else "nothing removed",
         )
+
+    def _release_kept_backups(self) -> list[str]:
+        """Remove the old images that earlier requests kept because nobody checked the swap that put the new one in.
+
+        It runs after a request that ended well after its checks. The manager that runs now has proven itself, so the
+        way back to a version before it is not needed any more. A request keeps its mark until its image is gone, so a
+        removal that the engine refused is tried again after the next such request.
+        """
+        removed = []
+        for other in self.store.all():
+            if not other.previous_kept:
+                continue
+            removed += self._remove_previous(other)
+            if not other.previous_image_id or self.docker.image_id(other.previous_image_id) is None:
+                other.previous_kept = False
+                self.store.save(other)
+        return removed
 
     def _remove_previous(self, record: SelfUpdate) -> list[str]:
         """Remove the name ``<image>:previous`` and the image of the manager that ran before."""
