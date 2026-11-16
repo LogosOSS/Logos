@@ -48,7 +48,13 @@ from logos.main import (
 )
 from logos.model_profile_store import shared_profiles_enabled
 from logos.model_profile_sync import profile_sync
-from logos.node_config import SYNC_NODE_CONFIG_ACTION, conflict_warnings, entry_errors, name_errors
+from logos.node_config import (
+    SYNC_NODE_CONFIG_ACTION,
+    VALIDATE_NODE_CONFIG_ACTION,
+    conflict_warnings,
+    entry_errors,
+    name_errors,
+)
 from logos.notifications import emit_notification
 from logos.notifications.deployment import deployment_notification
 from logos.role_auth import require_logos_admin_key
@@ -498,6 +504,7 @@ async def logosnode_session(websocket: WebSocket, token: str):
                     calibration_key_hashes=_string_map(payload.get("calibration_key_hashes")),
                     slice_gpu_counts=_int_map(payload.get("slice_gpu_counts")),
                 )
+                _schedule_node_config_push(ticket.provider_id)
             elif msg_type == "status":
                 runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
                 await _main._logosnode_registry.update_runtime(
@@ -877,6 +884,33 @@ async def _push_node_config(provider_id: int) -> None:
         logger.warning("Failed to push node config to provider %s", _resolve_provider_name(provider_id), exc_info=True)
 
 
+def _schedule_node_config_push(provider_id: int) -> None:
+    """Push in the background: the worker's answer arrives on the caller's socket."""
+    task = asyncio.create_task(_push_node_config(provider_id))
+    _main._background_tasks.add(task)
+    task.add_done_callback(_main._background_tasks.discard)
+
+
+async def _worker_refusal(provider_id: int, rows: list[Dict[str, Any]]) -> JSONResponse | None:
+    """An error response when the connected worker would not accept ``rows``."""
+    registry = _main._logosnode_registry
+    if registry.peek_runtime_snapshot(provider_id) is None:
+        return admin_error_response(503, "Worker not connected")
+    if not registry.supports_action(provider_id, VALIDATE_NODE_CONFIG_ACTION):
+        return admin_error_response(409, "The worker is too old to validate a configuration; update it first")
+    try:
+        result = await registry.send_command(
+            provider_id, VALIDATE_NODE_CONFIG_ACTION, params={"entries": rows}, timeout_seconds=30
+        )
+    except LogosNodeOfflineError:
+        return admin_error_response(503, "Worker not connected")
+    except LogosNodeCommandError as exc:
+        return admin_error_response(502, f"The worker could not validate the configuration: {exc}")
+    if result.get("ok"):
+        return None
+    return admin_error_response(400, "; ".join(result.get("errors") or ["The worker refused the configuration"]))
+
+
 @router.post("/logosdb/providers/logosnode/node-config", tags=["logosnode"])
 async def logosnode_node_config(data: LogosNodeConfigRequest, request: Request):
     """The configuration a worker starts with, before it starts any lane."""
@@ -930,13 +964,20 @@ async def logosnode_node_config_replace(data: LogosNodeConfigReplaceRequest):
     """Replace a node's configured models.
 
     expected_revision is the revision the admin edited; another save in the
-    meantime answers 409 with the current one.
+    meantime answers 409 with the current one. The connected worker checks the
+    models first, so nothing it would refuse at a lane start is stored.
     """
     admin_id = await asyncio.to_thread(_require_admin_user, data.logos_key)
     errors = entry_errors(data.entries)
     if errors:
         return admin_error_response(400, "; ".join(errors))
     rows = [{**entry.model_dump(), "model_name": entry.model_name.strip()} for entry in data.entries]
+    if rows:
+        if await asyncio.to_thread(_load_node_config, data.provider_id) is None:
+            return admin_error_response(404, f"Provider {data.provider_id} not found")
+        refusal = await _worker_refusal(data.provider_id, rows)
+        if refusal is not None:
+            return refusal
 
     def _replace() -> tuple[str, int]:
         with DBManager() as db:

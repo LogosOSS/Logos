@@ -4621,3 +4621,110 @@ async def test_a_refused_node_config_request_raises(tmp_path, monkeypatch, metho
 
     with pytest.raises(RuntimeError, match="HTTP 404"):
         await getattr(_central_client(tmp_path), method)(*args)
+
+
+def _node_config_client(tmp_path) -> LogosBridgeClient:
+    """A worker that started with org/ready (announced) and org/pending."""
+    client = _central_client(tmp_path)
+    cfg = client._app.state.config  # noqa: SLF001
+    cfg.logos = client._cfg  # noqa: SLF001
+    client._cfg.configured_models = ["org/ready", "org/pending"]  # noqa: SLF001
+    client._cfg.node_config_revision = 2  # noqa: SLF001
+    return client
+
+
+def _central(revision: int, *entries: dict) -> dict:
+    return {"revision": revision, "yaml_imported": True, "entries": list(entries)}
+
+
+def _entry(name: str, capability: dict | None = None, overrides: dict | None = None) -> dict:
+    return {"model_name": name, "capability": capability or {}, "overrides": overrides or {}}
+
+
+@pytest.mark.asyncio
+async def test_hello_offers_node_config_sync_and_validation(tmp_path):
+    ws = _CollectWS()
+    await _central_client(tmp_path)._send_hello(ws)  # noqa: SLF001
+
+    assert {"sync_node_config", "validate_node_config"} <= set(ws.frames[0]["actions"])
+
+
+@pytest.mark.asyncio
+async def test_a_newer_node_config_replaces_the_models_and_overrides(tmp_path):
+    client = _node_config_client(tmp_path)
+    cfg = client._app.state.config  # noqa: SLF001
+    push = _central(3, _entry("org/ready", {"base_residency_mb": 900}, {"quantization": "awq"}), _entry("org/new"))
+
+    response = await client._execute_command("sync_node_config", push)  # noqa: SLF001
+
+    assert response == {"ok": True, "applied": True, "revision": 3}
+    assert cfg.logos.configured_models == ["org/ready", "org/new"]
+    # org/pending is gone, org/ready keeps being announced, org/new waits for a profile.
+    assert cfg.logos.capabilities_models == ["org/ready"]
+    assert cfg.engines.vllm.model_overrides["org/ready"] == {"quantization": "awq"}
+    assert cfg.logos.node_config_revision == 3
+    assert client._app.state.model_profiles.get_profile("org/new") is not None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_new_model_with_a_profile_is_announced_at_once(tmp_path):
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    registry.apply_calibration_result("org/new", {"base_residency_mb": 5000.0, "residency_source": "calibrated"})
+
+    await client._execute_command("sync_node_config", _central(3, _entry("org/new")))  # noqa: SLF001
+
+    assert client._cfg.capabilities_models == ["org/new"]  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revision", [2, 1])
+async def test_an_older_or_equal_node_config_changes_nothing(tmp_path, revision):
+    client = _node_config_client(tmp_path)
+
+    response = await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(revision, _entry("org/other"))
+    )
+
+    assert response == {"ok": True, "applied": False, "revision": 2}
+    assert client._cfg.configured_models == ["org/ready", "org/pending"]  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_node_config_push_is_refused(tmp_path):
+    client = _node_config_client(tmp_path)
+
+    response = await client._execute_command("sync_node_config", {"revision": 5})  # noqa: SLF001
+
+    assert response["ok"] is False and "entries" in response["error"]
+    assert client._cfg.node_config_revision == 2  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_validation_accepts_what_a_lane_start_accepts(tmp_path):
+    client = _central_client(tmp_path)
+    entries = [_entry("org/a", {"tensor_parallel_size": 2, "base_residency_mb": 9}, {"quantization": "awq"})]
+
+    response = await client._execute_command("validate_node_config", {"entries": entries})  # noqa: SLF001
+
+    assert response == {"ok": True, "errors": []}
+
+
+@pytest.mark.asyncio
+async def test_validation_names_the_model_and_the_setting_it_refuses(tmp_path):
+    client = _central_client(tmp_path)
+    entries = [_entry("org/a", overrides={"tensor_parallel_size": 0}), _entry("org/b", overrides={"dtype": "half"})]
+
+    response = await client._execute_command("validate_node_config", {"entries": entries})  # noqa: SLF001
+
+    assert response["ok"] is False
+    assert len(response["errors"]) == 1 and response["errors"][0].startswith("org/a: tensor_parallel_size")
+
+
+@pytest.mark.asyncio
+async def test_validation_needs_a_list_of_entries(tmp_path):
+    client = _central_client(tmp_path)
+
+    response = await client._execute_command("validate_node_config", {})  # noqa: SLF001
+
+    assert response == {"ok": False, "errors": ["'entries' must be a list"]}

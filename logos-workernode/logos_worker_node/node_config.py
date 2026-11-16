@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
 from logos_worker_node.config import _wire_kv_budget
-from logos_worker_node.models import AppConfig
+from logos_worker_node.models import AppConfig, VllmConfig
 
 SYNC_NODE_CONFIG_ACTION = "sync_node_config"
 VALIDATE_NODE_CONFIG_ACTION = "validate_node_config"
@@ -125,3 +126,19 @@ def apply_node_config(cfg: AppConfig, entries: list[dict[str, Any]], revision: i
         else:
             model_overrides.pop(entry["model_name"], None)
     _wire_kv_budget(cfg)
+
+
+def validation_errors(entries: list[dict[str, Any]]) -> list[str]:
+    """What the lane start would reject: engine settings that VllmConfig refuses."""
+    fields = VllmConfig.model_fields
+    errors: list[str] = []
+    for item in entries:
+        entry = _mapping(item)
+        engine = {k: v for k, v in _mapping(entry.get("capability")).items() if k in fields}
+        engine.update({k: v for k, v in _mapping(entry.get("overrides")).items() if k in fields})
+        try:
+            VllmConfig.model_validate(engine)
+        except ValidationError as exc:
+            name = entry.get("model_name")
+            errors.extend(f"{name}: {'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+    return errors

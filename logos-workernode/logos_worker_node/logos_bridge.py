@@ -44,7 +44,13 @@ from logos_worker_node.models import (
     model_can_sleep,
     model_uses_sharded_checkpoint,
 )
-from logos_worker_node.node_config import normalize_node_config
+from logos_worker_node.node_config import (
+    SYNC_NODE_CONFIG_ACTION,
+    VALIDATE_NODE_CONFIG_ACTION,
+    apply_node_config,
+    normalize_node_config,
+    validation_errors,
+)
 from logos_worker_node.request_content import MULTIPART_PAYLOAD_KEY, httpx_request_parts
 from logos_worker_node.runtime import build_runtime_status
 from logos_worker_node.vllm_compat import DEFAULT_VLLM
@@ -661,6 +667,8 @@ class LogosBridgeClient:
                     "stop_calibration_session",
                     "get_calibration_status",
                     SYNC_MODEL_PROFILES_ACTION,
+                    SYNC_NODE_CONFIG_ACTION,
+                    VALIDATE_NODE_CONFIG_ACTION,
                 ],
             },
         )
@@ -1091,6 +1099,10 @@ class LogosBridgeClient:
 
         if action == SYNC_MODEL_PROFILES_ACTION:
             return self._handle_sync_model_profiles(params)
+        if action == SYNC_NODE_CONFIG_ACTION:
+            return await self._handle_sync_node_config(params)
+        if action == VALIDATE_NODE_CONFIG_ACTION:
+            return self._handle_validate_node_config(params)
         if action == "start_calibration_session":
             return await self._handle_start_calibration_session(params)
         if action == "stop_calibration_session":
@@ -1127,6 +1139,42 @@ class LogosBridgeClient:
         if lane_manager is not None:
             lane_manager.mark_status_dirty()
         return {"ok": True, "replaced": replaced}
+
+    async def _handle_sync_node_config(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Adopt the models Logos stores, unless this worker already has them.
+
+        The push after every hello usually carries the revision the worker
+        started with. Models apply at once; overrides from the next lane start.
+        """
+        try:
+            config = normalize_node_config(params)
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc)}
+        cfg = self._app.state.config
+        if config["revision"] <= cfg.logos.node_config_revision:
+            return {"ok": True, "applied": False, "revision": cfg.logos.node_config_revision}
+        serving = set(cfg.logos.capabilities_models)
+        apply_node_config(cfg, config["entries"], config["revision"])
+        # Only models that were announced stay so; new ones follow with a profile.
+        cfg.logos.capabilities_models = [m for m in cfg.logos.configured_models if m in serving]
+        model_profiles = self._app.state.model_profiles
+        model_profiles.add_overrides(cfg.logos.capabilities_overrides)
+        model_profiles.seed_capabilities(cfg.logos.configured_models, engine="vllm")
+        self._announce_calibrated_capabilities()
+        await self._refresh_calibration_keys()
+        lane_manager = getattr(self._app.state, "lane_manager", None)
+        if lane_manager is not None:
+            lane_manager.mark_status_dirty()
+        logger.info("[NodeConfig] Applied revision %d (%d model(s))", config["revision"], len(config["entries"]))
+        return {"ok": True, "applied": True, "revision": config["revision"]}
+
+    def _handle_validate_node_config(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Check models before Logos stores them, the way a lane start would."""
+        entries = params.get("entries")
+        if not isinstance(entries, list):
+            return {"ok": False, "errors": ["'entries' must be a list"]}
+        errors = validation_errors(entries)
+        return {"ok": not errors, "errors": errors}
 
     def _announce_calibrated_capabilities(self) -> None:
         """Add configured models that now have a profile to the capabilities.
