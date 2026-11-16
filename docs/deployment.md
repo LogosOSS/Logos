@@ -399,13 +399,12 @@ and a worker host need different steps, because a worker needs no key of its own
    Copy the key. Logos shows the key once.
 4. In the GitHub environment of the core host, set the secret `LOGOS_DEPLOYER_KEY`
    to the key.
-5. Give the key to the core host. Run the workflow **Logos - Sync host config** for
-   the host with **Also install or update the deployer** on. Or run the deploy
-   workflow of the environment again: it installs the deployer on a core host that
-   has the key. Both start the deployer as the compose project `logos-deployer`.
-6. For each worker host, run the workflow **Logos - Sync host config** with **Also
-   install or update the deployer** on. A worker already has the node manager.
-   The workflow replaces it with a new one.
+5. Give the key to the core host. Run the deploy workflow of the environment
+   again. It installs the deployer on a core host that has the key. It starts the
+   deployer as the compose project `logos-deployer`.
+6. For each worker host, run the deploy workflow of the environment. A worker
+   already has the node manager. The workflow replaces it with a new one, and then
+   deploys the worker.
 
 A worker needs no deployer key. Its node manager uses the address `LOGOS_URL` and
 the worker key `LOGOS_API_KEY` of the `.env` file of the worker. The worker uses
@@ -424,21 +423,23 @@ made for the core host. Do not give a host a key of another environment.
 | `LOGOS_DEPLOYER_KEY` | Core host | The key that the Logos of the environment made for the core deployer. |
 | `LOGOS_API_KEY` | Worker host | The worker key. The node manager of the worker uses it to ask the Logos of the environment for orders. A worker needs no `LOGOS_DEPLOYER_KEY`. |
 
-### Sync the settings of a host
+### Change the settings of a host
 
-A deployment from Logos carries only an image tag. The workflow **Logos - Sync
-host config** delivers everything else: the `.env` file and the compose file.
-GitHub stays the owner of the settings. Logos stores no secret of a host.
+A deployment from Logos carries only an image tag. The settings of a host stay in
+the `.env` file of the host. To change a setting, change the `.env` file on the
+host. A new `.env` file takes effect at the next deployment of the host. Compose
+then replaces the services whose settings changed.
 
-* The `.env` file holds only the names that the compose files of the host read.
-  It does not hold every secret of the repository.
-* The workflow does not write the image tag. Logos gives the tag to Compose with
-  each order.
-* Run the workflow when a setting, a secret or a compose file changes. Run it
-  before the deployment that needs the change. A new `.env` file takes effect at
-  the next deployment of the host.
-* A host of Prod takes its files from the branch `main` only. To make this rule
-  hold, restrict the GitHub environments of Prod to the branch `main`.
+CAUTION: Each run of a deploy workflow writes a new `.env` file from the GitHub
+settings of the environment. It replaces the file on the host. If you change a
+setting on the host, set the same value in the GitHub environment too.
+
+A new compose file can need a variable that the `.env` file does not have. If the
+compose file comes from the image of the tag (see
+[Let the Node Manager Log In and Get the Compose File](#let-the-node-manager-log-in-and-get-the-compose-file))
+and the variable is required, the deployment fails before it changes anything.
+The error names the variable. Add the variable to the `.env` file, and deploy
+again.
 
 ### Deploy from GitHub
 
