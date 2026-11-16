@@ -1201,6 +1201,9 @@ class LaneManager:
                 if lane_id not in self._static_lane_ids:
                     current_data["gpu_devices"] = ""
         new_lc = LaneConfig(**current_data)
+        if not changed:
+            # A forced restart without new values; benchmark candidates keep theirs.
+            new_lc = self._apply_model_vllm_overrides(new_lc)
         if held_gpus is not None and (parallel_changed or self._launch_gpu_set(new_lc) != held_gpus):
             return _NEEDS_WHOLE_LOCK
         if parallel_changed:
@@ -1766,7 +1769,7 @@ class LaneManager:
                     current = handle.status()
                     if current.state not in {ProcessState.STOPPED, ProcessState.ERROR}:
                         continue
-                    current_lc = handle.lane_config or lane_config
+                    current_lc = self._apply_model_vllm_overrides(handle.lane_config or lane_config)
                     await self._restart_lane_unlocked(lid, current_lc)
                 # Successful restart: reset the counter
                 self._crash_restart_counts[lid] = 0
@@ -3376,8 +3379,6 @@ class LaneManager:
         self.reserve_model_startup(starting_model, lane_id)
         transfer = None
         try:
-            # The lane's saved config predates changes to the node's overrides.
-            new_config = self._apply_model_vllm_overrides(new_config)
             new_config = self._auto_tensor_parallel(new_config)
             old_handle = self._handles[lane_id]
             port = self._port_alloc.get_port(lane_id)
@@ -4140,6 +4141,8 @@ class LaneManager:
     async def _restart_stuck_lane(self, lane_id: str, lane_config: LaneConfig) -> None:
         """Attempt to restart a lane that was killed by stuck detection."""
         logger.info("Lane '%s': attempting automatic restart after stuck detection", lane_id)
+        # The saved config predates changes to the node's overrides.
+        lane_config = self._apply_model_vllm_overrides(lane_config)
         self._record_event(lane_id, "stuck_restart_attempt", model=lane_config.model)
         try:
             async with self._lock:

@@ -3617,6 +3617,38 @@ async def test_benchmark_reconfigure_only_protects_requests_on_restarted_lane(bu
 
 
 @pytest.mark.asyncio
+async def test_benchmark_candidate_values_beat_the_node_overrides_on_restart() -> None:
+    engine = VllmEngineConfig(model_overrides={"org/model": {"max_model_len": 8192, "quantization": "awq"}})
+    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110)
+    current = LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig(max_model_len=8192))
+    manager._handles["benchmark-lane"] = _StubHandle(current)
+    manager._restart_lane_unlocked = AsyncMock()
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+    updates = {"vllm_config": {**current.vllm_config.model_dump(), "max_model_len": 16384}}
+
+    await manager.reconfigure_lane("benchmark-lane", updates, require_idle=True)
+
+    restarted = manager._restart_lane_unlocked.await_args.args[1]
+    assert restarted.vllm_config.max_model_len == 16384
+
+
+@pytest.mark.asyncio
+async def test_a_forced_restart_without_new_values_picks_up_the_node_overrides() -> None:
+    engine = VllmEngineConfig(model_overrides={"org/model": {"quantization": "awq"}})
+    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110)
+    current = LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig())
+    manager._handles["benchmark-lane"] = _StubHandle(current)
+    manager._restart_lane_unlocked = AsyncMock()
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+
+    await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+
+    assert manager._restart_lane_unlocked.await_args.args[1].vllm_config.quantization == "awq"
+
+
+@pytest.mark.asyncio
 async def test_benchmark_reconfigure_unchanged_settings_allow_active_requests() -> None:
     manager = LaneManager(WorkerConfig(), lane_port_start=15100, lane_port_end=15110)
     current = LaneConfig(model="org/model", vllm=True)
