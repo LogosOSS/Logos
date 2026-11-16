@@ -10,14 +10,14 @@ of 2+ replicas under real load is visible to clients.
 Companion to `../per_request_overhead`, which measures the *local* path
 (orchestrator → workernode) with no concurrency. This benchmark is the
 *cloud* path (webservice gateway → cloud provider) under concurrent
-streaming load — different bottleneck (a bounded thread pool + queue vs. a
-GPU lane), different tool.
+streaming load. Response callbacks use virtual threads; an independent I/O
+limit bounds requests and detached provider drains. GPU capacity is separate.
 
 ## What is measured (and what is not)
 
 - **Measured:** the webservice's own concurrency ceiling under held-open
-  streaming responses (`spring.task.execution.pool.*`, see
-  `application.properties`), added per-request latency vs. a direct call to
+  streaming responses (`logos.gateway.max-in-flight` /
+  `LOGOS_GATEWAY_MAX_IN_FLIGHT`, default 264 per replica), added per-request latency vs. a direct call to
   the same fake upstream, behaviour once the ceiling is crossed (graceful
   backpressure vs. hangs/crashes), and — with 2+ replicas up — whether
   killing one is visible to clients under real concurrent load (a heavier,
@@ -34,7 +34,9 @@ GPU lane), different tool.
   `/internal/gateway_relay_stats`). Counting at the upstream would
   over-count: `GatewayCloudForwarder.forward()` opens the upstream response
   before that executor task runs, so bytes can sit buffered in the socket
-  without occupying a pool slot.
+  before the response callback runs. The report reads the independent limit
+  and executor kind from replica stats; an unavailable live limit is labeled
+  as an environment/default fallback. Old JSON reports remain readable.
   A streaming request counts as successful only once its terminal
   `data: [DONE]` event arrives. The status line is written before the
   completion is relayed, so a stream cut off midway — what killing a
@@ -152,7 +154,7 @@ The leg (`budget_admission.py`) then:
 
 The report shows baseline vs. load percentiles, the time in Logos, latency per
 send-time window (a slow refresh shows as a window whose requests all finish
-late together), the status histogram (5xx = pool exhaustion), and both query
+late together), the status histogram (503 = I/O capacity exhaustion), and both query
 timings.
 
 **Threshold.** Set `LOGOS_BENCH_GW_BUDGET_LOGOS_P50_MAX_MS` and/or
@@ -172,14 +174,14 @@ cd benchmarks/gateway_concurrency
 See the module docstrings in `run_benchmark.py`, `gateway_client.py`,
 `load_generator.py`, `latency_diff.py`, `failover_under_load.py`, and
 `budget_admission.py` for the full list of tunables (concurrency steps, sample counts, durations, the
-informational `LOGOS_GATEWAY_ASYNC_MAX_SIZE`/`_QUEUE_CAPACITY` used to
-annotate the report against the webservice's actual config).
+fallback `LOGOS_GATEWAY_MAX_IN_FLIGHT` used only when the report cannot read
+the live per-replica I/O limits).
 
 ### CI measurement order
 
 The budget-admission latency gate runs after the interleaved latency warmup
 and before the concurrency ramp and failover experiments. The ramp deliberately
-saturates the executor; measuring admission immediately afterwards mixes
+saturates the gateway I/O limit; measuring admission immediately afterwards mixes
 recovery from overload into the steady-load result. Budget measurement also
 uses a fixed 15-second warmup at its measured concurrency, recorded separately
 in `budget.warmup`, before opening the database measurement window.

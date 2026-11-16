@@ -135,13 +135,24 @@ def build_markdown(result: Dict[str, Any]) -> str:
         lines.append("")
         onset = conc["onset_concurrency"]
         onset_str = str(onset) if onset is not None else "not reached within the tested steps"
+        if "gateway_max_in_flight_per_replica" in ceiling:
+            capacity_text = (
+                f"Configured gateway I/O limits: {ceiling['gateway_max_in_flight_per_replica']} "
+                f"across {ceiling['replicas']} replica(s) = {ceiling['configured_admission_ceiling']}. "
+                f"Executor: `{ceiling['executor_kind']}`. Source: {ceiling['source']}."
+            )
+        else:
+            # Historic artifacts predate the independent I/O limit.
+            capacity_text = (
+                f"Configured ceiling: `max-size`={ceiling['spring_task_execution_pool_max_size']} + "
+                f"`queue-capacity`={ceiling['spring_task_execution_pool_queue_capacity']} "
+                f"(≈{ceiling['approx_admission_ceiling_per_replica']} per replica) "
+                f"x {ceiling['replicas']} replica(s) = ≈{ceiling['approx_admission_ceiling']}."
+            )
         lines.append(
             f"Peak gateway relay tasks simultaneously: **{conc.get('max_concurrent_relays', 0)}**. "
             f"Onset of failures (>{conc['fail_threshold']:.0%} of a step): **{onset_str}** requests per step. "
-            f"Configured ceiling: `max-size`={ceiling['spring_task_execution_pool_max_size']} + "
-            f"`queue-capacity`={ceiling['spring_task_execution_pool_queue_capacity']} "
-            f"(≈{ceiling['approx_admission_ceiling_per_replica']} per replica) "
-            f"x {ceiling['replicas']} replica(s) = ≈{ceiling['approx_admission_ceiling']}."
+            + capacity_text
         )
         lines.append("")
         lines.append(

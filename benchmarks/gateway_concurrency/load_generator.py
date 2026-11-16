@@ -23,18 +23,11 @@ the threshold — far enough to see *how* it degrades (graceful backpressure
 vs. hangs/crashes), not so far that a runaway client outlives the point of
 the test.
 
-The known static ceiling (Spring's task-executor pool backing the streaming
-response body: ``spring.task.execution.pool.max-size`` + ``queue-capacity``,
-see ``application.properties``) is reported alongside the observed onset so
-a reader can tell "matches the configured limit" from "something else caps
-it first" without re-deriving the config by hand.
-
-Steps are derived from that ceiling rather than hard-coded, because a fixed
-ramp silently stops measuring anything the moment the stack changes: the
-previous 8..256 default topped out below a *single* replica's admission
-ceiling (64 + 200), and CI runs two — so the leg could never reach the onset
-it exists to find. The default ramp now runs to 1.5x the aggregate ceiling of
-the replicas actually behind Traefik.
+Response callbacks use a virtual thread per task. An independent gateway
+in-flight limit bounds request/provider I/O, including detached usage drains.
+Report that live limit when available; environment/default fallback is labeled
+explicitly. Background executor pool settings do not bound response concurrency.
+The ramp reaches 1.5x the aggregate configured limit of the serving replicas.
 
 Environment (all optional, defaults in parentheses):
   LOGOS_BENCH_GW_STEPS             (derived — see above; a comma-separated
@@ -52,9 +45,8 @@ Environment (all optional, defaults in parentheses):
                                     releasing the upstream hold; must stay
                                     below both the client and the gateway
                                     read timeouts
-  LOGOS_GATEWAY_ASYNC_MAX_SIZE          (64)   informational only — must match
-  LOGOS_GATEWAY_ASYNC_QUEUE_CAPACITY    (200)  the webservice's own config to
-                                                mean anything in the report
+  LOGOS_GATEWAY_MAX_IN_FLIGHT      (264) fallback per-replica limit when live
+                                    stats are unavailable; must match deployment
 """
 
 from __future__ import annotations
@@ -99,11 +91,7 @@ def _steps(aggregate_ceiling: int) -> List[int]:
     raw = os.environ.get("LOGOS_BENCH_GW_STEPS")
     if raw:
         return [int(s) for s in raw.split(",") if s.strip()]
-    # Up to 1.5x: the ceiling is approximate (max-size + queue-capacity is
-    # what the executor admits, not counting requests already past it), so a
-    # ramp that stops exactly at 1.0x can miss the onset by a handful of
-    # requests. The step loop stops two steps after the onset anyway, so the
-    # top of this list is only reached when nothing broke before it.
+    # Above the configured capacity so the ramp observes rejection and recovery.
     fractions = (0.05, 0.125, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5)
     return sorted({max(8, round(aggregate_ceiling * f)) for f in fractions})
 
@@ -183,21 +171,46 @@ async def _run_step(
     }
 
 
+def _configured_ceiling(replicas: int) -> Dict[str, Any]:
+    """Read independent I/O limits; never derive them from the background pool."""
+    try:
+        entries = gw.gateway_relay_stats().get("replicas", [])
+    except Exception:  # noqa: BLE001 — remote/non-compose target
+        entries = []
+    if len(entries) == replicas and all(
+        r.get("executor_kind") == "virtual-per-task" and int(r.get("limit", 0)) > 0 for r in entries
+    ):
+        limits = [int(r["limit"]) for r in entries]
+        source = "live gateway stats"
+    else:
+        limit = _env_int("LOGOS_GATEWAY_MAX_IN_FLIGHT", 264)
+        if limit <= 0:
+            raise ValueError("LOGOS_GATEWAY_MAX_IN_FLIGHT must be positive")
+        limits = [limit] * replicas
+        source = "environment/default fallback; verify against running replicas"
+    return {
+        "executor_kind": "virtual-per-task",
+        "gateway_max_in_flight_per_replica": limits,
+        "configured_admission_ceiling": sum(limits),
+        "replicas": replicas,
+        "source": source,
+    }
+
+
 async def run() -> Dict[str, Any]:
     url = f"{gw.gateway_url()}/v1/chat/completions"
     headers = gw.gateway_headers()
     fail_threshold = _env_float("LOGOS_BENCH_GW_FAIL_THRESHOLD", 0.05)
     steps_past_limit = _env_int("LOGOS_BENCH_GW_STEPS_PAST_LIMIT", 2)
     hold_timeout_s = _env_float("LOGOS_BENCH_GW_HOLD_TIMEOUT_S", 30.0)
-    configured_max_size = _env_int("LOGOS_GATEWAY_ASYNC_MAX_SIZE", 64)
-    configured_queue = _env_int("LOGOS_GATEWAY_ASYNC_QUEUE_CAPACITY", 200)
     replicas = _replica_count()
-    per_replica_ceiling = configured_max_size + configured_queue
-    aggregate_ceiling = per_replica_ceiling * replicas
+    ceiling = _configured_ceiling(replicas)
+    aggregate_ceiling = ceiling["configured_admission_ceiling"]
     steps = _steps(aggregate_ceiling)
     print(
-        f"  [concurrency] {replicas} replica(s) x (max-size {configured_max_size} + queue "
-        f"{configured_queue}) = ~{aggregate_ceiling} admitted; steps {steps}"
+        f"  [concurrency] {replicas} replica(s), virtual response tasks, "
+        f"in-flight limits {ceiling['gateway_max_in_flight_per_replica']} = {aggregate_ceiling} admitted; "
+        f"source={ceiling['source']}; steps {steps}"
     )
 
     step_results: List[Dict[str, Any]] = []
@@ -241,13 +254,7 @@ async def run() -> Dict[str, Any]:
         "max_concurrent_relays": peak_held,
         "hold_timeout_s": hold_timeout_s,
         "fail_threshold": fail_threshold,
-        "configured_ceiling": {
-            "spring_task_execution_pool_max_size": configured_max_size,
-            "spring_task_execution_pool_queue_capacity": configured_queue,
-            "replicas": replicas,
-            "approx_admission_ceiling_per_replica": per_replica_ceiling,
-            "approx_admission_ceiling": aggregate_ceiling,
-        },
+        "configured_ceiling": ceiling,
     }
 
 
