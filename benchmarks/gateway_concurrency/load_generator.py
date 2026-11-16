@@ -23,11 +23,13 @@ the threshold — far enough to see *how* it degrades (graceful backpressure
 vs. hangs/crashes), not so far that a runaway client outlives the point of
 the test.
 
-Response callbacks use a virtual thread per task. An independent gateway
+Response callbacks use a virtual thread per task. An optional gateway
 in-flight limit bounds request/provider I/O, including detached usage drains.
+Zero disables this limit; measurement steps remain finite.
 Report that live limit when available; environment/default fallback is labeled
 explicitly. Background executor pool settings do not bound response concurrency.
-The ramp reaches 1.5x the aggregate configured limit of the serving replicas.
+With a positive limit, the ramp reaches 1.5x the aggregate configured limit.
+Without a limit, it measures 8, 64, 256, 512 and 1024 held responses.
 
 Environment (all optional, defaults in parentheses):
   LOGOS_BENCH_GW_STEPS             (derived — see above; a comma-separated
@@ -45,7 +47,7 @@ Environment (all optional, defaults in parentheses):
                                     releasing the upstream hold; must stay
                                     below both the client and the gateway
                                     read timeouts
-  LOGOS_GATEWAY_MAX_IN_FLIGHT      (264) fallback per-replica limit when live
+  LOGOS_GATEWAY_MAX_IN_FLIGHT      (0) fallback per-replica limit when live
                                     stats are unavailable; must match deployment
 """
 
@@ -87,10 +89,12 @@ def _replica_count() -> int:
         return 1
 
 
-def _steps(aggregate_ceiling: int) -> List[int]:
+def _steps(aggregate_ceiling: int | None) -> List[int]:
     raw = os.environ.get("LOGOS_BENCH_GW_STEPS")
     if raw:
         return [int(s) for s in raw.split(",") if s.strip()]
+    if not aggregate_ceiling:
+        return [8, 64, 256, 512, 1024]
     # Above the configured capacity so the ramp observes rejection and recovery.
     fractions = (0.05, 0.125, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5)
     return sorted({max(8, round(aggregate_ceiling * f)) for f in fractions})
@@ -160,11 +164,9 @@ async def _run_step(
         "truncated_streams": len(truncated),
         "fail_rate": fail_rate,
         "ttfb_ms": summarize([r.ttfb_ms for r in ok if r.ttfb_ms is not None]),
-        # Measured under the barrier, so these are not comparable with the
-        # latency leg: a request past the ceiling waits for a held slot
-        # before its first byte, and that wait is indistinguishable here
-        # from the gateway's own queueing. The ramp is a capacity
-        # measurement; latency_diff.py is the latency measurement.
+        # Successful calls include the upstream barrier delay; excess calls
+        # can be rejected immediately when a positive cap is configured.
+        # This measures capacity and recovery, not per-request overhead.
         "total_ms": summarize([r.total_ms for r in results]),
         "error_samples": error_samples,
         "gateway_replicas": gateway_stats.get("replicas", []),
@@ -178,20 +180,20 @@ def _configured_ceiling(replicas: int) -> Dict[str, Any]:
     except Exception:  # noqa: BLE001 — remote/non-compose target
         entries = []
     if len(entries) == replicas and all(
-        r.get("executor_kind") == "virtual-per-task" and int(r.get("limit", 0)) > 0 for r in entries
+        r.get("executor_kind") == "virtual-per-task" and "limit" in r and int(r["limit"]) >= 0 for r in entries
     ):
         limits = [int(r["limit"]) for r in entries]
         source = "live gateway stats"
     else:
-        limit = _env_int("LOGOS_GATEWAY_MAX_IN_FLIGHT", 264)
-        if limit <= 0:
-            raise ValueError("LOGOS_GATEWAY_MAX_IN_FLIGHT must be positive")
+        limit = _env_int("LOGOS_GATEWAY_MAX_IN_FLIGHT", 0)
+        if limit < 0:
+            raise ValueError("LOGOS_GATEWAY_MAX_IN_FLIGHT must not be negative")
         limits = [limit] * replicas
         source = "environment/default fallback; verify against running replicas"
     return {
         "executor_kind": "virtual-per-task",
         "gateway_max_in_flight_per_replica": limits,
-        "configured_admission_ceiling": sum(limits),
+        "configured_admission_ceiling": None if 0 in limits else sum(limits),
         "replicas": replicas,
         "source": source,
     }
@@ -207,9 +209,10 @@ async def run() -> Dict[str, Any]:
     ceiling = _configured_ceiling(replicas)
     aggregate_ceiling = ceiling["configured_admission_ceiling"]
     steps = _steps(aggregate_ceiling)
+    aggregate_text = str(aggregate_ceiling) if aggregate_ceiling is not None else "unlimited"
     print(
         f"  [concurrency] {replicas} replica(s), virtual response tasks, "
-        f"in-flight limits {ceiling['gateway_max_in_flight_per_replica']} = {aggregate_ceiling} admitted; "
+        f"in-flight limits {ceiling['gateway_max_in_flight_per_replica']} = {aggregate_text} admitted; "
         f"source={ceiling['source']}; steps {steps}"
     )
 

@@ -105,6 +105,7 @@ class GatewayCloudBillingEndToEndTest {
     /** When set, the upstream sends this after {@link #responseBody}, {@link #tailDelayMs} later. */
     private volatile String responseTail;
     private volatile long tailDelayMs;
+    private volatile java.util.concurrent.CountDownLatch responseTailRelease;
 
     @BeforeEach
     void startUpstream() throws IOException {
@@ -121,7 +122,11 @@ class GatewayCloudBillingEndToEndTest {
                 exchange.getResponseBody().write(out);
                 exchange.getResponseBody().flush();
                 try {
-                    Thread.sleep(tailDelayMs);
+                    if (responseTailRelease != null) {
+                        responseTailRelease.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                    } else {
+                        Thread.sleep(tailDelayMs);
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
@@ -134,6 +139,7 @@ class GatewayCloudBillingEndToEndTest {
 
     @AfterEach
     void stopUpstream() {
+        if (responseTailRelease != null) responseTailRelease.countDown();
         if (upstream != null) {
             upstream.stop(0);
         }
@@ -807,6 +813,50 @@ class GatewayCloudBillingEndToEndTest {
             result -> accounting.settleSuccess(
                 logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings()),
             (err, result) -> accounting.settleFailure(logId, err, result));
+    }
+
+    @Test
+    void interruptedVirtualBodyAccountsForFailureAndRestoresInterrupt() throws Exception {
+        // Binary bodies pass through immediately, so the barrier proves the relay is waiting for more bytes.
+        responseContentType = "application/octet-stream";
+        responseBody = "first";
+        responseTail = "last";
+        responseTailRelease = new java.util.concurrent.CountDownLatch(1);
+        Fixture f = seedPricedDeployment();
+        int logId = admit(f);
+        var response = forward(f, requestBody(false), "/v1/chat/completions");
+        var firstByte = new java.util.concurrent.CountDownLatch(1);
+        var finished = new java.util.concurrent.CountDownLatch(1);
+        var interrupted = new java.util.concurrent.atomic.AtomicBoolean();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread relay = Thread.ofVirtual().start(() -> {
+            try {
+                response.getBody().writeTo(new OutputStream() {
+                    @Override public void write(int b) { firstByte.countDown(); }
+                    @Override public void write(byte[] b, int off, int len) { firstByte.countDown(); }
+                });
+            } catch (Throwable e) {
+                failure.set(e);
+            } finally {
+                interrupted.set(Thread.currentThread().isInterrupted());
+                finished.countDown();
+            }
+        });
+        try {
+            assertThat(firstByte.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            relay.interrupt();
+            assertThat(finished.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(failure.get()).isInstanceOf(java.io.InterruptedIOException.class);
+            assertThat(interrupted.get()).isTrue();
+            assertThat(status(logId)).isEqualTo("error");
+            assertThat(settledCost(logId)).isZero();
+            assertThat(jdbc.queryForObject("SELECT cost_finalized FROM log_entry WHERE id = ?",
+                Boolean.class, logId)).isTrue();
+        } finally {
+            relay.interrupt();
+            relay.join(5000);
+            responseTailRelease.countDown();
+        }
     }
 
     /** The reservation this forward belongs to — the one the controller just made. */

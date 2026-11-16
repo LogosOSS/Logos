@@ -32,6 +32,30 @@ class CapacityMetadataTest(unittest.TestCase):
         self.assertEqual(ceiling["configured_admission_ceiling"], 128)
         self.assertIn("fallback", self.render(ceiling))
 
+    def test_disabled_and_mixed_live_limits_have_no_aggregate_ceiling(self):
+        for limits in ((0, 0), (0, 128)):
+            stats = {"replicas": [{"executor_kind": "virtual-per-task", "limit": n} for n in limits]}
+            with patch.object(load_generator.gw, "gateway_relay_stats", return_value=stats):
+                ceiling = load_generator._configured_ceiling(2)
+            self.assertIsNone(ceiling["configured_admission_ceiling"])
+            self.assertEqual(ceiling["source"], "live gateway stats")
+            self.assertIn("unlimited", self.render(ceiling))
+            self.assertNotIn("= 0.", self.render(ceiling))
+
+    def test_default_is_unlimited_and_measurement_steps_stay_finite(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(load_generator.gw, "gateway_relay_stats", side_effect=RuntimeError()):
+                ceiling = load_generator._configured_ceiling(1)
+            self.assertIsNone(ceiling["configured_admission_ceiling"])
+            self.assertEqual(load_generator._steps(None), [8, 64, 256, 512, 1024])
+            self.assertEqual(load_generator._steps(100)[-1], 150)
+            with patch.dict(os.environ, {"LOGOS_BENCH_GW_STEPS": "7,99"}):
+                self.assertEqual(load_generator._steps(None), [7, 99])
+            with patch.dict(os.environ, {"LOGOS_GATEWAY_MAX_IN_FLIGHT": "-1"}):
+                with patch.object(load_generator.gw, "gateway_relay_stats", side_effect=RuntimeError()):
+                    with self.assertRaises(ValueError):
+                        load_generator._configured_ceiling(1)
+
     def test_historic_pool_metadata_remains_readable(self):
         text = self.render(
             {

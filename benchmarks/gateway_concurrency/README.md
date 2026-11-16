@@ -10,16 +10,17 @@ of 2+ replicas under real load is visible to clients.
 Companion to `../per_request_overhead`, which measures the *local* path
 (orchestrator → workernode) with no concurrency. This benchmark is the
 *cloud* path (webservice gateway → cloud provider) under concurrent
-streaming load. Response callbacks use virtual threads; an independent I/O
-limit bounds requests and detached provider drains. GPU capacity is separate.
+streaming load. Servlet requests and response callbacks use virtual threads. An optional I/O
+limit bounds requests and detached provider drains; the default is zero
+(no configured gateway cap). GPU capacity is separate.
 
 ## What is measured (and what is not)
 
 - **Measured:** the webservice's own concurrency ceiling under held-open
   streaming responses (`logos.gateway.max-in-flight` /
-  `LOGOS_GATEWAY_MAX_IN_FLIGHT`, default 264 per replica), added per-request latency vs. a direct call to
+  `LOGOS_GATEWAY_MAX_IN_FLIGHT`, default 0: unlimited), added per-request latency vs. a direct call to
   the same fake upstream, behaviour once the ceiling is crossed (graceful
-  backpressure vs. hangs/crashes), and — with 2+ replicas up — whether
+  rejection vs. hangs/crashes), and — with 2+ replicas up — whether
   killing one is visible to clients under real concurrent load (a heavier,
   automated version of `../../scripts/gateway-failover-demo.sh`'s light
   polling check).
@@ -37,6 +38,15 @@ limit bounds requests and detached provider drains. GPU capacity is separate.
   before the response callback runs. The report reads the independent limit
   and executor kind from replica stats; an unavailable live limit is labeled
   as an environment/default fallback. Old JSON reports remain readable.
+  Without a configured cap, the default ramp measures 8, 64, 256, 512 and
+  1024 held responses. Set `LOGOS_BENCH_GW_STEPS` for another measured range;
+  these steps are test sizes, not deployment limits. A positive configured cap
+  rejects excess requests with HTTP 503 immediately, without a gateway queue.
+  The background task pool retains its own queue. Authentication, routing and
+  waiting for initial upstream headers also use virtual servlet threads.
+  Socket, file descriptor, memory and database pool limits still apply. Each
+  admitted request can retain a body up to 51 MiB; a cloud response pump can
+  buffer up to 8 MiB. Use a positive cap when that memory bound is required.
   A streaming request counts as successful only once its terminal
   `data: [DONE]` event arrives. The status line is written before the
   completion is relayed, so a stream cut off midway — what killing a
@@ -181,8 +191,8 @@ the live per-replica I/O limits).
 
 The budget-admission latency gate runs after the interleaved latency warmup
 and before the concurrency ramp and failover experiments. The ramp deliberately
-saturates the gateway I/O limit; measuring admission immediately afterwards mixes
-recovery from overload into the steady-load result. Budget measurement also
+can saturate the gateway or a configured I/O limit; measuring admission
+immediately afterwards mixes recovery from overload into the steady-load result. Budget measurement also
 uses a fixed 15-second warmup at its measured concurrency, recorded separately
 in `budget.warmup`, before opening the database measurement window.
 `LOGOS_BENCH_GW_BUDGET_WARMUP_S` controls this fixed preparation interval.

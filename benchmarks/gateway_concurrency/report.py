@@ -136,9 +136,12 @@ def build_markdown(result: Dict[str, Any]) -> str:
         onset = conc["onset_concurrency"]
         onset_str = str(onset) if onset is not None else "not reached within the tested steps"
         if "gateway_max_in_flight_per_replica" in ceiling:
+            limits = [str(n) if n else "unlimited" for n in ceiling["gateway_max_in_flight_per_replica"]]
+            aggregate = ceiling["configured_admission_ceiling"]
+            aggregate_text = str(aggregate) if aggregate is not None else "unlimited"
             capacity_text = (
-                f"Configured gateway I/O limits: {ceiling['gateway_max_in_flight_per_replica']} "
-                f"across {ceiling['replicas']} replica(s) = {ceiling['configured_admission_ceiling']}. "
+                f"Configured gateway I/O limits: {', '.join(limits)} "
+                f"across {ceiling['replicas']} replica(s) = {aggregate_text}. "
                 f"Executor: `{ceiling['executor_kind']}`. Source: {ceiling['source']}."
             )
         else:

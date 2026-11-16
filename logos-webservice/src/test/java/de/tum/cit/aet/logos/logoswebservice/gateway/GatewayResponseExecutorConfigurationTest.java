@@ -45,6 +45,7 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 class GatewayResponseExecutorConfigurationTest {
     @MockitoBean JwtDecoder jwtDecoder;
     @MockitoBean GatewayAuthService auth;
+    @MockitoBean de.tum.cit.aet.logos.logoswebservice.identity.service.KeycloakUserSyncService userSync;
     @MockitoSpyBean GatewayOrchestratorProxy proxy;
     @Autowired ApplicationContext context;
     @Autowired RequestMappingHandlerAdapter adapter;
@@ -69,8 +70,12 @@ class GatewayResponseExecutorConfigurationTest {
 
     @Test
     void bootUsesVirtualResponsesAndKeepsItsBackgroundExecutor() throws Exception {
-        when(auth.requireActiveKey(any())).thenReturn(new GatewayKey(1, "lg-test", "k", ApiKeyType.developer,
-            1, null, "test", false, null, 0, "BILLING"));
+        ConcurrentLinkedQueue<Thread> requests = new ConcurrentLinkedQueue<>();
+        when(auth.requireActiveKey(any())).thenAnswer(invocation -> {
+            requests.add(Thread.currentThread());
+            return new GatewayKey(1, "lg-test", "k", ApiKeyType.developer,
+                1, null, "test", false, null, 0, "BILLING");
+        });
         ConcurrentLinkedQueue<Thread> callbacks = new ConcurrentLinkedQueue<>();
         doAnswer(invocation -> {
             @SuppressWarnings("unchecked")
@@ -94,6 +99,14 @@ class GatewayResponseExecutorConfigurationTest {
             assertThat(thread.isVirtual()).isTrue();
             assertThat(thread.getName()).startsWith("logos-response-");
         });
+        assertThat(requests).hasSize(1).allSatisfy(thread -> {
+            assertThat(thread.isVirtual()).isTrue();
+            assertThat(thread.getName()).startsWith("logos-request-");
+        });
+        var serverContext = (org.springframework.boot.web.server.servlet.context.ServletWebServerApplicationContext) context;
+        var server = (org.springframework.boot.tomcat.TomcatWebServer) serverContext.getWebServer();
+        assertThat(server.getTomcat().getConnector().getProtocolHandler().getExecutor())
+            .isSameAs(context.getBean("servletRequestExecutor"));
         // spring-webmvc 7.0.10 has no public getter. Recheck this field on an upgrade.
         Field executorField = RequestMappingHandlerAdapter.class.getDeclaredField("taskExecutor");
         executorField.setAccessible(true);
@@ -105,9 +118,58 @@ class GatewayResponseExecutorConfigurationTest {
         assertThat(background).isNotSameAs(executorField.get(adapter));
     }
 
+    @Test
+    void managementAuthenticationAndWebSocketFramesWorkWithVirtualServletThreads() throws Exception {
+        var jwt = org.springframework.security.oauth2.jwt.Jwt.withTokenValue("ws-test")
+            .header("alg", "RS256").subject("00000000-0000-0000-0000-000000000001")
+            .claim("preferred_username", "test-admin").expiresAt(java.time.Instant.now().plusSeconds(60)).build();
+        when(jwtDecoder.decode("ws-test")).thenReturn(jwt);
+        var user = org.mockito.Mockito.mock(de.tum.cit.aet.logos.logoswebservice.identity.entity.User.class);
+        when(user.getId()).thenReturn(1);
+        when(user.isActive()).thenReturn(true);
+        when(user.getRole()).thenReturn("logos_admin");
+        when(userSync.syncIfStale(any())).thenReturn(user);
+        int port = context.getEnvironment().getRequiredProperty("local.server.port", Integer.class);
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            assertThat(client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/me"))
+                .GET().build(), HttpResponse.BodyHandlers.discarding()).statusCode()).isEqualTo(401);
+            CompletableFuture<String> reply = new CompletableFuture<>();
+            var socket = client.newWebSocketBuilder().header("Authorization", "Bearer ws-test")
+                .buildAsync(URI.create("ws://127.0.0.1:" + port + "/ws/virtual-thread-probe"),
+                    new java.net.http.WebSocket.Listener() {
+                        @Override public void onOpen(java.net.http.WebSocket webSocket) { webSocket.request(1); }
+                        @Override public java.util.concurrent.CompletionStage<?> onText(
+                                java.net.http.WebSocket webSocket, CharSequence data, boolean last) {
+                            reply.complete(data.toString());
+                            return null;
+                        }
+                        @Override public void onError(java.net.http.WebSocket webSocket, Throwable error) {
+                            reply.completeExceptionally(error);
+                        }
+                    }).get(5, TimeUnit.SECONDS);
+            try {
+                socket.sendText("probe", true).get(5, TimeUnit.SECONDS);
+                assertThat(reply.get(5, TimeUnit.SECONDS)).startsWith("true|logos-request-");
+                socket.sendClose(java.net.http.WebSocket.NORMAL_CLOSURE, "done").get(5, TimeUnit.SECONDS);
+            } finally {
+                socket.abort();
+            }
+        }
+    }
+
     @TestConfiguration(proxyBeanMethods = false)
     static class ProbeConfiguration {
         @Bean AsyncProbe asyncProbe() { return new AsyncProbe(); }
+        @Bean org.springframework.web.socket.config.annotation.WebSocketConfigurer virtualSocketProbe(
+                de.tum.cit.aet.logos.logoswebservice.websocket.WebSocketAuthInterceptor auth) {
+            return registry -> registry.addHandler(new org.springframework.web.socket.handler.TextWebSocketHandler() {
+                @Override protected void handleTextMessage(org.springframework.web.socket.WebSocketSession session,
+                        org.springframework.web.socket.TextMessage message) throws Exception {
+                    session.sendMessage(new org.springframework.web.socket.TextMessage(
+                        Thread.currentThread().isVirtual() + "|" + Thread.currentThread().getName()));
+                }
+            }, "/ws/virtual-thread-probe").addInterceptors(auth);
+        }
     }
 
     static class AsyncProbe {

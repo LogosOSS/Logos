@@ -35,6 +35,7 @@ import com.sun.net.httpserver.HttpServer;
 
 import de.tum.cit.aet.logos.logoswebservice.auth.JwtAuthInterceptor;
 import de.tum.cit.aet.logos.logoswebservice.auth.WebConfig;
+import de.tum.cit.aet.logos.logoswebservice.auth.ServletExecutorConfiguration;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.ApiKeyType;
 import org.apache.catalina.Context;
 import org.apache.catalina.Wrapper;
@@ -71,6 +72,10 @@ class GatewayVirtualResponseMvcTest {
     private Tomcat tomcat;
     private AnnotationConfigWebApplicationContext mvc;
     private HttpClient client;
+    private final ExecutorService clientExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    private final CountDownLatch releaseHeaders = new CountDownLatch(1);
+    private CountDownLatch headersReached = new CountDownLatch(0);
+    private final ConcurrentLinkedQueue<Thread> requestThreads = new ConcurrentLinkedQueue<>();
     private GatewayInFlightLimit limit;
     private final GatewayAuthService auth = mock(GatewayAuthService.class);
     private final GatewayCloudAccounting accounting = mock(GatewayCloudAccounting.class);
@@ -83,11 +88,19 @@ class GatewayVirtualResponseMvcTest {
 
     void start(int capacity, boolean enabled) throws Exception {
         limit = new GatewayInFlightLimit(capacity);
-        upstream = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        upstream = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 4096);
         upstream.setExecutor(upstreamExecutor);
         upstream.createContext("/", exchange -> {
             upstreamCalls.incrementAndGet();
             String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            if (request.contains("\"hold_headers\":true")) {
+                headersReached.countDown();
+                try {
+                    releaseHeaders.await(45, TimeUnit.SECONDS);
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             boolean chat = exchange.getRequestURI().getPath().endsWith("chat/completions");
             exchange.getResponseHeaders().add("Content-Type", chat ? "text/event-stream" : "application/json");
             exchange.getResponseHeaders().add("X-Upstream", "first");
@@ -121,8 +134,11 @@ class GatewayVirtualResponseMvcTest {
         });
         upstream.start();
         providerBase = "http://127.0.0.1:" + upstream.getAddress().getPort();
-        when(auth.requireActiveKey(any())).thenReturn(new GatewayKey(1, "lg-test", "k", ApiKeyType.developer,
-            1, null, "test", false, null, 0, "BILLING"));
+        when(auth.requireActiveKey(any())).thenAnswer(invocation -> {
+            requestThreads.add(Thread.currentThread());
+            return new GatewayKey(1, "lg-test", "k", ApiKeyType.developer,
+                1, null, "test", false, null, 0, "BILLING");
+        });
         when(auth.deploymentsForModel(any(), any())).thenReturn(List.of());
         GatewayCloudForwarder cloud = new GatewayCloudForwarder(new ObjectMapper(), accounting) {
             @Override public ResponseEntity<StreamingResponseBody> forward(GatewayDeployment deployment,
@@ -149,27 +165,37 @@ class GatewayVirtualResponseMvcTest {
         controller = new InferenceGatewayController(enabled, auth, accounting, cloud,
             mock(GatewayCloudRateLimiter.class), proxy, new ObjectMapper(), limit);
         mvc = new AnnotationConfigWebApplicationContext();
-        mvc.register(GatewayMvc.class, WebConfig.class, GatewayResponseExecutorConfiguration.class);
+        mvc.register(GatewayMvc.class, WebConfig.class, GatewayResponseExecutorConfiguration.class, ServletExecutorConfiguration.class);
         tomcat = new Tomcat();
         tomcat.setBaseDir(tomcatBase.toString());
         tomcat.setPort(0);
-        tomcat.getConnector();
+        tomcat.getConnector().setProperty("acceptCount", "4096");
         Context context = tomcat.addContext("", null);
         Wrapper servlet = Tomcat.addServlet(context, "dispatcher", new DispatcherServlet(mvc));
         servlet.setAsyncSupported(true);
         servlet.setLoadOnStartup(1);
         context.addServletMappingDecoded("/", "dispatcher");
+        mvc.setServletContext(context.getServletContext());
+        mvc.refresh();
+        if (!Boolean.getBoolean("logos.test.bounded-servlet")) {
+            @SuppressWarnings("unchecked")
+            var customizer = (org.springframework.boot.tomcat.TomcatProtocolHandlerCustomizer<org.apache.coyote.ProtocolHandler>)
+                mvc.getBean("servletVirtualThreadCustomizer");
+            customizer.customize(tomcat.getConnector().getProtocolHandler());
+        }
         tomcat.start();
-        client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
+        client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).executor(clientExecutor).build();
     }
 
     @AfterEach
     void stop() throws Exception {
         release.countDown();
+        releaseHeaders.countDown();
         for (InputStream body : clients) {
             body.close();
         }
         if (client != null) client.close();
+        clientExecutor.close();
         if (tomcat != null) {
             tomcat.stop();
             tomcat.destroy();
@@ -182,7 +208,7 @@ class GatewayVirtualResponseMvcTest {
 
     @Test
     void responsesProgressWithEightHeldChats() throws Exception {
-        start(264, true);
+        start(0, true);
         assertProgress(8);
     }
 
@@ -198,6 +224,7 @@ class GatewayVirtualResponseMvcTest {
     }
 
     private void assertProgress(int held) throws Exception {
+        requireFileDescriptors(held);
         openHeld(held);
         long before = System.nanoTime();
         for (String path : List.of("/v1/chat/completions", "/v1/embeddings", "/v1/rerank", "/openai/embeddings", "/v1/embeddings/", "/v1/responses")) {
@@ -209,6 +236,7 @@ class GatewayVirtualResponseMvcTest {
                 ? "data: first\n\ndata: [DONE]\n\n" : "{\"data\":[1],\"raw\":true}");
         }
         assertThat(release.getCount()).isEqualTo(1);
+        assertVirtualRequests();
         assertThat(callbacks).hasSize(held + 6).allSatisfy(thread -> {
             assertThat(thread.isVirtual()).isTrue();
             assertThat(thread.getName()).startsWith("logos-response-");
@@ -232,22 +260,22 @@ class GatewayVirtualResponseMvcTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {32, 64, 256})
+    @ValueSource(ints = {32, 64, 256, 512, 1024})
     void responsesProgressUnderHeldStreamLoad(int held) throws Exception {
-        start(264, true);
+        start(0, true);
         assertProgress(held);
     }
 
     @Test
     void directCloudResponsesAreVirtualUnderLoad() throws Exception {
-        start(264, true);
+        start(0, true);
         useCloud();
         assertProgress(64);
     }
 
     @Test
     void disabledGatewayStillDeliversResponsesOnVirtualThreads() throws Exception {
-        start(264, false);
+        start(0, false);
         assertProgress(8);
     }
 
@@ -302,7 +330,7 @@ class GatewayVirtualResponseMvcTest {
 
     @Test
     void noAsyncBodyAndReturnHandlerFailureReleaseCapacityAndUpstream() throws Exception {
-        start(264, true);
+        start(0, true);
         for (String path : List.of("/v1/null", "/v1/return-failure", "/v1/route-failure")) {
             HttpResponse<String> response = client.send(request(path, false), HttpResponse.BodyHandlers.ofString());
             assertThat(response.statusCode()).isEqualTo(path.equals("/v1/null") ? 200 : 500);
@@ -313,7 +341,7 @@ class GatewayVirtualResponseMvcTest {
 
     @Test
     void closingExecutorInterruptsHeldLocalResponsesAndReleasesCapacity() throws Exception {
-        start(264, true);
+        start(0, true);
         openHeld(8);
         mvc.getBean("gatewayResponseExecutor", org.springframework.core.task.SimpleAsyncTaskExecutor.class).close();
         awaitReleased();
@@ -336,7 +364,7 @@ class GatewayVirtualResponseMvcTest {
 
     @Test
     void repeatedCompletedCloudCallsDoNotRetainCapacity() throws Exception {
-        start(264, true);
+        start(0, true);
         useCloud();
         for (int cycle = 0; cycle < 10; cycle++) {
             for (int i = 0; i < 32; i++) {
@@ -369,6 +397,7 @@ class GatewayVirtualResponseMvcTest {
                 .settleSuccess(any(), any(), any(), any(), any());
             clients.clear();
             callbacks.clear();
+            requestThreads.clear();
             Resources now = snapshot("disconnect-cycle-" + cycle);
             if (cycle == 2) warm = now;
             if (cycle > 2) {
@@ -379,6 +408,77 @@ class GatewayVirtualResponseMvcTest {
                     assertThat(now.rssKiB()).isLessThanOrEqualTo(warm.rssKiB() + 256L * 1024);
                 }
             }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void requestsProgressWhileManyCallsWaitForUpstreamHeaders(boolean cloud) throws Exception {
+        int held = 1024;
+        requireFileDescriptors(held);
+        start(0, true);
+        if (cloud) useCloud();
+        headersReached = new CountDownLatch(held);
+        var waiting = new ArrayList<java.util.concurrent.CompletableFuture<HttpResponse<String>>>();
+        try {
+            for (int i = 0; i < held; i++) {
+                waiting.add(client.sendAsync(headerRequest(), HttpResponse.BodyHandlers.ofString()));
+            }
+            boolean allArrived = headersReached.await(20, TimeUnit.SECONDS);
+            System.out.printf("GATEWAY_HEADER_WAIT target=%d arrived=%d cloud=%s bounded_control=%s%n",
+                held, held - headersReached.getCount(), cloud, Boolean.getBoolean("logos.test.bounded-servlet"));
+            assertThat(allArrived).as("all requests must reach the fake provider before headers are released").isTrue();
+            assertThat(limit.inFlight()).isEqualTo(held);
+            for (String path : List.of("/v1/chat/completions", "/v1/embeddings")) {
+                var probe = client.sendAsync(request(path, false), HttpResponse.BodyHandlers.ofString())
+                    .get(2, TimeUnit.SECONDS);
+                assertThat(probe.statusCode()).isEqualTo(200);
+            }
+            assertThat(releaseHeaders.getCount()).isEqualTo(1);
+            assertVirtualRequests();
+            snapshot("headers-held-" + held + "-cloud-" + cloud);
+        } finally {
+            releaseHeaders.countDown();
+            java.util.concurrent.CompletableFuture.allOf(waiting.toArray(java.util.concurrent.CompletableFuture[]::new))
+                .get(30, TimeUnit.SECONDS);
+        }
+        assertThat(waiting).allSatisfy(future -> assertThat(future.join().statusCode()).isEqualTo(200));
+        awaitReleased();
+    }
+
+    @Test
+    void closingTheContextInterruptsHeaderWaitsAndReleasesLocalCapacity() throws Exception {
+        start(0, true);
+        headersReached = new CountDownLatch(8);
+        var waiting = new ArrayList<java.util.concurrent.CompletableFuture<HttpResponse<String>>>();
+        for (int i = 0; i < 8; i++) waiting.add(client.sendAsync(headerRequest(), HttpResponse.BodyHandlers.ofString()));
+        assertThat(headersReached.await(5, TimeUnit.SECONDS)).isTrue();
+        mvc.close();
+        awaitReleased();
+        assertThat(requestThreads).allSatisfy(thread -> assertThat(thread.isAlive()).isFalse());
+        releaseHeaders.countDown();
+        for (var future : waiting) future.handle((response, error) -> null).get(3, TimeUnit.SECONDS);
+    }
+
+    private HttpRequest headerRequest() {
+        return HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + tomcat.getConnector().getLocalPort() + "/v1/embeddings"))
+            .header("Authorization", "Bearer lg-test").header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString("{\"model\":\"local\",\"hold_headers\":true}"))
+            .build();
+    }
+
+    private void assertVirtualRequests() {
+        assertThat(requestThreads).isNotEmpty().allSatisfy(thread -> {
+            assertThat(thread.isVirtual()).isTrue();
+            assertThat(thread.getName()).startsWith("logos-request-");
+        });
+    }
+
+    private static void requireFileDescriptors(int held) {
+        if (ManagementFactory.getOperatingSystemMXBean() instanceof com.sun.management.UnixOperatingSystemMXBean unix) {
+            assertThat(unix.getMaxFileDescriptorCount() - unix.getOpenFileDescriptorCount())
+                .as("need at least four descriptors per held HTTP call; raise ulimit -n for this load test")
+                .isGreaterThan(4L * held + 256);
         }
     }
 

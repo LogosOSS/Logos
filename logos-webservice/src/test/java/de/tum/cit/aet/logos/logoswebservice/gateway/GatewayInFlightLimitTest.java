@@ -57,7 +57,18 @@ class GatewayInFlightLimitTest {
     }
 
     @Test
-    void requiresPositiveCapacity() {
-        assertThatThrownBy(() -> new GatewayInFlightLimit(0)).isInstanceOf(IllegalArgumentException.class);
+    void disabledLimitAdmitsMoreThanTheOldCeilingAndStillTracksOwnership() {
+        GatewayInFlightLimit limit = new GatewayInFlightLimit(0);
+        var owners = new ArrayList<GatewayInFlightLimit.Owner>();
+        for (int i = 0; i < 1024; i++) owners.add(limit.tryAcquire());
+        assertThat(limit.inFlight()).isEqualTo(1024);
+        assertThat(limit.rejected()).isZero();
+        owners.forEach(GatewayInFlightLimit.Owner::close);
+        assertThat(limit.inFlight()).isZero();
+    }
+
+    @Test
+    void rejectsNegativeCapacity() {
+        assertThatThrownBy(() -> new GatewayInFlightLimit(-1)).isInstanceOf(IllegalArgumentException.class);
     }
 }

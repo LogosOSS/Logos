@@ -19,15 +19,15 @@ public final class GatewayInFlightLimit {
     private final AtomicInteger inFlight = new AtomicInteger();
     private final AtomicLong rejected = new AtomicLong();
 
-    public GatewayInFlightLimit(@Value("${logos.gateway.max-in-flight:264}") int limit) {
-        if (limit <= 0) throw new IllegalArgumentException("Gateway in-flight limit must be positive");
+    public GatewayInFlightLimit(@Value("${logos.gateway.max-in-flight:0}") int limit) {
+        if (limit < 0) throw new IllegalArgumentException("Gateway in-flight limit must not be negative");
         this.limit = limit;
     }
 
     Owner tryAcquire() {
         while (true) {
             int current = inFlight.get();
-            if (current >= limit) {
+            if (limit > 0 && current >= limit) {
                 rejected.incrementAndGet();
                 log.debug("Gateway capacity exhausted: in_flight={} limit={}", current, limit);
                 throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Gateway capacity exhausted");

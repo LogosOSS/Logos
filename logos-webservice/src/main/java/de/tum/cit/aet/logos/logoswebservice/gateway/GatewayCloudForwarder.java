@@ -178,16 +178,19 @@ public class GatewayCloudForwarder {
         try {
             upstream = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            if (onFailure != null) {
-                onFailure.accept("Interrupted while forwarding to cloud",
-                    new GatewayForwardResult(Map.of(), null, null,
-                        new GatewayForwardTimings(providerCall, null, Instant.now())));
+            try {
+                if (onFailure != null) {
+                    notifyFailure(onFailure, "Interrupted while forwarding to cloud",
+                        new GatewayForwardResult(Map.of(), null, null,
+                            new GatewayForwardTimings(providerCall, null, Instant.now())));
+                }
+            } finally {
+                Thread.currentThread().interrupt();
             }
             throw new IOException("Interrupted while forwarding to cloud", e);
         } catch (IOException e) {
             if (onFailure != null) {
-                onFailure.accept(e.getMessage(), new GatewayForwardResult(Map.of(), null, null,
+                notifyFailure(onFailure, e.getMessage(), new GatewayForwardResult(Map.of(), null, null,
                         new GatewayForwardTimings(providerCall, null, Instant.now())));
             }
             throw e;
@@ -275,23 +278,23 @@ public class GatewayCloudForwarder {
                     providerCall, capture.firstTokenAt(), pump.endedAt());
                 if (streamError != null) {
                     if (onFailure != null) {
-                        onFailure.accept(streamError.getMessage(), new GatewayForwardResult(
+                        notifyFailure(onFailure, streamError.getMessage(), new GatewayForwardResult(
                             capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
                     }
                     throw streamError;
                 }
                 if (capture.upstreamError() != null) {
                     if (onFailure != null) {
-                        onFailure.accept(capture.upstreamError(), new GatewayForwardResult(
+                        notifyFailure(onFailure, capture.upstreamError(), new GatewayForwardResult(
                             capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
                     }
                 } else if (upstreamOk) {
                     if (onSuccess != null) {
-                        onSuccess.accept(new GatewayForwardResult(
+                        notifySuccess(onSuccess, new GatewayForwardResult(
                             capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
                     }
                 } else if (onFailure != null) {
-                    onFailure.accept("Upstream HTTP " + status, new GatewayForwardResult(
+                    notifyFailure(onFailure, "Upstream HTTP " + status, new GatewayForwardResult(
                         capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
                 }
             } finally {
@@ -307,6 +310,27 @@ public class GatewayCloudForwarder {
 
         return ResponseEntity.status(status).headers(responseHeaders)
             .body(GatewayRelayOccupancy.track(stream));
+    }
+
+    /** An I/O cancellation must not interrupt the JDBC write that accounts for it. */
+    private static void notifyFailure(java.util.function.BiConsumer<String, GatewayForwardResult> callback,
+                                      String error, GatewayForwardResult result) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            callback.accept(error, result);
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void notifySuccess(java.util.function.Consumer<GatewayForwardResult> callback,
+                                      GatewayForwardResult result) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            callback.accept(result);
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
     }
 
     /** Transfers capture to a single background owner, independent of MVC's relay executor. */
@@ -352,13 +376,13 @@ public class GatewayCloudForwarder {
                 }
                 if (error != null || upstreamError != null) {
                     if (onFailure != null) {
-                        onFailure.accept(error, new GatewayForwardResult(capture.usage(), capture.capturedBody(),
+                        notifyFailure(onFailure, error, new GatewayForwardResult(capture.usage(), capture.capturedBody(),
                             capture.serviceTier(), timings));
                     }
                 } else if (onSuccess != null) {
                     Map<String, Long> usage = eventStream
                         ? capture.disconnectedUsage(request, timedOut) : capture.usage();
-                    onSuccess.accept(new GatewayForwardResult(usage, capture.capturedBody(),
+                    notifySuccess(onSuccess, new GatewayForwardResult(usage, capture.capturedBody(),
                         capture.serviceTier(), timings));
                 }
             } finally {
