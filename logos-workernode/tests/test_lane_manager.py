@@ -3699,6 +3699,59 @@ async def test_benchmark_candidate_values_beat_the_node_overrides_on_restart() -
     assert restarted.vllm_config.max_model_len == 16384
 
 
+def _reconfigurable(restart: AsyncMock | None = None) -> tuple[LaneManager, dict]:
+    engine = VllmEngineConfig(model_overrides={"org/model": {"max_model_len": 8192}})
+    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110)
+    current = LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig(max_model_len=8192))
+    manager._handles["benchmark-lane"] = _StubHandle(current)
+    manager._restart_lane_unlocked = restart or AsyncMock()
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+    return manager, {"vllm_config": {**current.vllm_config.model_dump(), "max_model_len": 16384}}
+
+
+@pytest.mark.asyncio
+async def test_a_successful_reconfiguration_with_new_values_marks_the_lane_explicit() -> None:
+    manager, updates = _reconfigurable()
+
+    await manager.reconfigure_lane("benchmark-lane", updates, require_idle=True)
+
+    assert "benchmark-lane" in manager._explicit_lanes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_reconfiguration_does_not_mark_the_lane_explicit() -> None:
+    manager, updates = _reconfigurable()
+    manager._active_requests["benchmark-lane"] = 1  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="active request"):
+        await manager.reconfigure_lane("benchmark-lane", updates, require_idle=True)
+
+    assert "benchmark-lane" not in manager._explicit_lanes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_reconfiguration_keeps_an_earlier_explicit_mark() -> None:
+    manager, updates = _reconfigurable()
+    manager._explicit_lanes.add("benchmark-lane")  # noqa: SLF001
+    manager._active_requests["benchmark-lane"] = 1  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="active request"):
+        await manager.reconfigure_lane("benchmark-lane", updates, require_idle=True)
+
+    assert "benchmark-lane" in manager._explicit_lanes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restart_does_not_mark_the_lane_explicit() -> None:
+    manager, updates = _reconfigurable(AsyncMock(side_effect=RuntimeError("spawn failed")))
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        await manager.reconfigure_lane("benchmark-lane", updates, require_idle=True)
+
+    assert "benchmark-lane" not in manager._explicit_lanes  # noqa: SLF001
+
+
 @pytest.mark.asyncio
 async def test_a_forced_restart_without_new_values_picks_up_the_node_overrides() -> None:
     engine = VllmEngineConfig(model_overrides={"org/model": {"quantization": "awq"}})

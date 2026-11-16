@@ -818,8 +818,8 @@ class LaneManager:
 
                     if current_lc is not None and _lane_needs_restart(current_lc, desired_lc):
                         try:
-                            self._explicit_lanes.add(lid)
                             await self._restart_lane_unlocked(lid, desired_lc)
+                            self._explicit_lanes.add(lid)
                             restarted_ids.append(lid)
                             details = f"restart: backend=vllm, ctx={desired_lc.context_length}"
                             actions.append(
@@ -1208,9 +1208,6 @@ class LaneManager:
                 if lane_id not in self._static_lane_ids:
                     current_data["gpu_devices"] = ""
         new_lc = LaneConfig(**current_data)
-        if changed:
-            # The caller's values stay in force over the node's overrides.
-            self._explicit_lanes.add(lane_id)
         if not changed:
             # A forced restart without new values; benchmark candidates keep theirs.
             new_lc = self._refresh_node_overrides(lane_id, new_lc)
@@ -1243,6 +1240,9 @@ class LaneManager:
                     "Wait for them to finish, or run the benchmark with the current settings."
                 )
             await self._restart_lane_unlocked(lane_id, new_lc, scoped=held_gpus is not None)
+            if changed:
+                # Applied: its values now win over the node's overrides.
+                self._explicit_lanes.add(lane_id)
         prom.LANE_TRANSITIONS_TOTAL.labels(action="reconfigure").inc()
 
         return await self._get_status_unlocked(lane_id)
