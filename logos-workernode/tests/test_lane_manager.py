@@ -2531,6 +2531,7 @@ def test_a_removed_engine_override_gives_the_original_back_on_restart() -> None:
 
     engine.model_overrides["org/model"] = {"quantization": "awq"}
     restarted = manager._refresh_node_overrides("l1", launched)  # noqa: SLF001
+    manager._settle_node_overrides("l1")  # noqa: SLF001
 
     assert restarted.vllm_config.extra_args == ["--own"]
     assert restarted.vllm_config.quantization == "awq"
@@ -2542,6 +2543,7 @@ def test_a_changed_engine_override_replaces_the_old_one_and_keeps_the_original()
 
     engine.model_overrides["org/model"] = {"quantization": "gptq"}
     changed = manager._refresh_node_overrides("l1", launched)  # noqa: SLF001
+    manager._settle_node_overrides("l1")  # noqa: SLF001
     engine.model_overrides.pop("org/model")
     removed = manager._refresh_node_overrides("l1", changed)  # noqa: SLF001
 
@@ -2566,6 +2568,43 @@ def test_a_lane_that_is_forgotten_has_no_baseline_left() -> None:
     manager._forget_lane_overrides("l1")  # noqa: SLF001
 
     assert "l1" not in manager._override_baselines and "l1" not in manager._explicit_lanes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_forced_restart_leaves_the_baseline_for_the_retry() -> None:
+    manager, engine, lane = _overridden_lane({"extra_args": ["--from-node"]})
+    launched = manager._apply_model_vllm_overrides(lane, "benchmark-lane")  # noqa: SLF001
+    manager._handles["benchmark-lane"] = _StubHandle(launched)
+    manager._restart_lane_unlocked = AsyncMock()
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+    engine.model_overrides.pop("org/model")
+    manager._active_requests["benchmark-lane"] = 1  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="active request"):
+        await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+    manager._active_requests["benchmark-lane"] = 0  # noqa: SLF001
+    await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+
+    assert manager._restart_lane_unlocked.await_args.args[1].vllm_config.extra_args == ["--own"]  # noqa: SLF001
+    assert "benchmark-lane" not in manager._override_baselines  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_failed_forced_restart_leaves_the_baseline_for_the_retry() -> None:
+    manager, engine, lane = _overridden_lane({"extra_args": ["--from-node"]})
+    launched = manager._apply_model_vllm_overrides(lane, "benchmark-lane")  # noqa: SLF001
+    manager._handles["benchmark-lane"] = _StubHandle(launched)
+    manager._restart_lane_unlocked = AsyncMock(side_effect=[RuntimeError("spawn failed"), None])
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+    engine.model_overrides.pop("org/model")
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+    await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+
+    assert manager._restart_lane_unlocked.await_args.args[1].vllm_config.extra_args == ["--own"]  # noqa: SLF001
 
 
 @pytest.mark.asyncio
