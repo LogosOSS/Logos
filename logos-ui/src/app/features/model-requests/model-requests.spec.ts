@@ -26,6 +26,8 @@ const makeLicense = (overrides: Partial<ModelLicense> = {}): ModelLicense => ({
   status: 'available',
   license_id: 'apache-2.0',
   license_text: 'Apache License 2.0',
+  use_policy_file: null,
+  use_policy_text: null,
   approved: false,
   approved_at: null,
   ...overrides,
@@ -446,6 +448,8 @@ describe('the license agreement column', () => {
       status: 'available',
       license_id: 'apache-2.0',
       license_text: 'Apache License 2.0 — full text',
+      use_policy_file: 'USE_POLICY.md',
+      use_policy_text: 'Community Use Policy — full text',
     }),
     [OPEN_ACCEPTED.id]: makeLicense({
       status: 'available',
@@ -568,6 +572,32 @@ describe('the license agreement column', () => {
     // The reload after the acceptance re-reads the list (once — the acceptance
     // does not re-run the remote recheck).
     expect(service.list.mock.calls.length).toBe(listCallsBeforeSave + 1);
+    fx.destroy();
+  });
+
+  it('shows the use policy with the license and extends the acceptance wording', async () => {
+    const { fx } = await renderPage('logos_admin');
+    (rowOf(fx, 'openai/gpt-5').querySelector('.license-state') as HTMLButtonElement).click();
+    fx.detectChanges();
+    await tick();
+    fx.detectChanges();
+
+    expect(document.body.textContent).toContain('Use policy — USE_POLICY.md');
+    expect(document.body.textContent).toContain('Community Use Policy — full text');
+    // Accepting covers both documents, so the wording says so.
+    expect(document.querySelector('.license-accept')?.textContent).toContain('and use policy');
+    fx.destroy();
+  });
+
+  it('offers no use policy section when the repository publishes none', async () => {
+    const { fx } = await renderPage('logos_admin');
+    (rowOf(fx, 'mistral/mistral-7b').querySelector('.license-state') as HTMLButtonElement).click();
+    fx.detectChanges();
+    await tick();
+    fx.detectChanges();
+
+    expect(document.body.textContent).toContain('MIT License');
+    expect(document.body.textContent).not.toContain('Use policy');
     fx.destroy();
   });
 

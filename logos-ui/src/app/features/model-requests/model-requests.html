@@ -241,6 +241,10 @@
               <code>{{ license()!.license_id }}</code> license.
             </p>
           }
+          @if (license()!.use_policy_text) {
+            <p class="license-note">Use policy — {{ license()!.use_policy_file }}</p>
+            <pre class="license-text">{{ license()!.use_policy_text }}</pre>
+          }
           @if (license()!.approved) {
             <p class="license-note license-approved">
               Accepted on {{ license()!.approved_at | date: 'medium' }}.
@@ -253,7 +257,8 @@
                 (change)="acceptChecked.set($any($event.target).checked)"
                 [disabled]="accepting()"
               />
-              I accept this model's license agreement.
+              I accept this model's license agreement@if (license()!.use_policy_text) { and use
+              policy }.
             </label>
           }
         }

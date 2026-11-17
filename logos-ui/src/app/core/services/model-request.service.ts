@@ -36,6 +36,10 @@ export interface ModelLicense {
   license_id: string | null;
   /** The license file's text; null when the repository carries no file. */
   license_text: string | null;
+  /** The repository file the use policy was read from; null when the repository publishes none. */
+  use_policy_file: string | null;
+  /** The use policy's text; null when the repository publishes none. */
+  use_policy_text: string | null;
   approved: boolean;
   approved_at: string | null;
 }
