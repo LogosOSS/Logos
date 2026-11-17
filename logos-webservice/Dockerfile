@@ -30,4 +30,9 @@ RUN groupadd --system --gid 10001 logos \
 ENV HOME=/home/logos
 USER 10001:10001
 EXPOSE 8081
-ENTRYPOINT ["java", "-jar", "app.war"]
+# The JRE's AVX-512 Base64 decoder intrinsic has a heap overflow reachable with
+# unauthenticated input (CVE-2026-114938); no Temurin 25 build with the fix is
+# published yet. Turn the intrinsic off (the portable Java decoder is used
+# instead) until the base image ships a fixed JRE. The flag sits in the
+# entrypoint so a JDK_JAVA_OPTIONS override cannot drop it.
+ENTRYPOINT ["java", "-XX:-UseBASE64Intrinsics", "-jar", "app.war"]
