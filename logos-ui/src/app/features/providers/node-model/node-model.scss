@@ -1172,6 +1172,11 @@ input[type='range'] {
   border-color: rgb(var(--color-primary-500) / 0.5);
   background: rgb(var(--color-primary-500) / 0.1);
 
+  // The icons take the colour of their text, not the warning colour of a banner.
+  i {
+    color: inherit;
+  }
+
   div {
     display: flex;
     flex: 1;
@@ -1254,7 +1259,7 @@ input[type='range'] {
   }
 }
 
-// The view shows the recommendation as a notice only; the editor offers to use it.
+// The view shows the recommendation as a notice only, in the same purple as the editor; the editor offers to use it.
 .banner--rec-view {
   display: block;
 
@@ -1268,11 +1273,6 @@ input[type='range'] {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: var(--font-size-xs);
-    font-weight: var(--font-weight-semibold);
-    letter-spacing: var(--letter-spacing-wider);
-    text-transform: uppercase;
-    color: rgb(var(--chip-warn-fg, var(--color-warning)));
   }
 
   b {

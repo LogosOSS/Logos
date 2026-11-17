@@ -216,9 +216,9 @@
           </button>
         </div>
       } @else {
-        <div class="banner banner--warn banner--rec-view" role="status">
+        <div class="banner banner--rec banner--rec-view" role="status">
           <div>
-            <small><i class="pi pi-exclamation-triangle" aria-hidden="true"></i>Recommendation not in use</small>
+            <small><i class="pi pi-bolt" aria-hidden="true"></i>Recommendation not in use</small>
             <b>Benchmark suggests {{ describePlacement(rec.settings) }}</b>
             <span>{{ speedup() ?? rec.throughput.toFixed(1) + ' tok/s, benchmark #' + rec.benchmark_id + '.' }}</span>
           </div>
@@ -596,14 +596,14 @@
               }
             </section>
           }
-          @if (editing() && placement(); as p) {
+          @if (editing() && saved(); as p) {
             <section class="card" aria-labelledby="cur-title">
               <h2 id="cur-title" class="eyebrow">Current configuration</h2>
               <dl class="facts facts--compact">
                 <div><dt>GPUs</dt><dd>TP {{ p.tp }} · {{ p.tp }} {{ p.tp === 1 ? 'GPU' : 'GPUs' }}</dd></div>
                 <div><dt>KV cache</dt><dd>{{ p.kvGb }} GB per GPU</dd></div>
                 <div><dt>Max. context</dt><dd>{{ formatTokens(p.ctx) }} tokens</dd></div>
-                @for (f of figures(); track f.caption) {
+                @for (f of savedFigures(); track f.caption) {
                   <div><dt>{{ f.caption.split(' · ')[0] }}</dt><dd>{{ f.value }}</dd></div>
                 }
               </dl>

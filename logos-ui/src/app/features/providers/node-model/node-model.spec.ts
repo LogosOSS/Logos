@@ -1019,4 +1019,38 @@ describe('NodeModel', () => {
       expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 8192 });
     });
   });
+
+  describe('the current configuration while editing', () => {
+    const side = (root: HTMLElement): string => root.querySelector('[aria-labelledby="cur-title"]')!.textContent!;
+
+    it('keeps showing what is stored while values change and shows the new values after a save', async () => {
+      service['getNodeInsights'].mockResolvedValue({ ...insights([insight()]), gpus: [{ index: 0, name: 'A', total_mb: 40960, used_mb: 0 }] });
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+      const before = side(root);
+      expect(before).toContain('4 GB per GPU');
+      expect(before).toContain('32,768 tokens');
+
+      fixture.componentInstance.setKv(2);
+      fixture.componentInstance.setCtx(8192);
+      fixture.detectChanges();
+
+      expect(side(root)).toBe(before);
+      expect(fixture.componentInstance.draft()).toEqual({ tp: 4, kvGb: 2, ctx: 8192 });
+      // The tiles under the sliders follow the draft.
+      expect(root.querySelector('.tiles')!.textContent).not.toBe('');
+      expect(fixture.componentInstance.figures()).not.toEqual(fixture.componentInstance.savedFigures());
+    });
+
+    it('is not shown for a model that has no stored placement yet', async () => {
+      service['getNodeInsights'].mockResolvedValue(insights([insight({ row: false, configured: false })]));
+      service['getNodeConfig'].mockResolvedValue({ ...config, entries: [] });
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      expect(root.querySelector('[aria-labelledby="cur-title"]')).toBeNull();
+    });
+  });
 });

@@ -168,10 +168,14 @@ export class NodeModel implements OnInit {
     const r = this.result();
     return p && r ? contextCapacity(r.pairs, p.kvGb, this.insight()?.calibration.context_limit) : null;
   });
-  /** Figures that follow from the placement: memory use, context, the benchmark of this placement, load times. */
-  readonly figures = computed(() => {
-    const p = this.placement();
-    const r = this.result();
+  /** Figures that follow from the placement being edited or shown. */
+  readonly figures = computed(() => this.figuresFor(this.placement()));
+  /** The same figures for what is stored: the side card shows these and changes only after a save. */
+  readonly savedFigures = computed(() => this.figuresFor(this.saved()));
+
+  private figuresFor(p: Placement | null): { value: string; caption: string }[] {
+    const results = this.insight()?.calibration.results ?? [];
+    const r = results.find((x) => x.tp === p?.tp) ?? this.result();
     if (!p || !r) {
       return [];
     }
@@ -187,7 +191,7 @@ export class NodeModel implements OnInit {
     } else if (usedMb !== null) {
       out.push({ value: `${gb(usedMb)} GB`, caption: 'GPU memory' });
     }
-    const cap = this.capacityAtPlacement();
+    const cap = contextCapacity(r.pairs, p.kvGb, this.insight()?.calibration.context_limit);
     if (cap) {
       out.push({ value: `~${cap >= 1000 ? Math.round(cap / 1000) + 'k' : cap} tokens`, caption: 'Context capacity per request' });
     }
@@ -206,7 +210,7 @@ export class NodeModel implements OnInit {
       out.push({ value: `${Math.round(r.cold_load_time_s)} s`, caption: `Cold start${wake}` });
     }
     return out;
-  });
+  }
 
   /** "8 % faster than the current configuration (52.3 vs 48.4 tok/s)", when the run had a baseline to compare with. */
   readonly speedup = computed(() => {
