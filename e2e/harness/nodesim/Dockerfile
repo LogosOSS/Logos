@@ -29,12 +29,13 @@ RUN apt-get update \
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv
 
-COPY logos-workernode/requirements.txt /tmp/requirements.txt
-# vllm and its CUDA stack are deliberately excluded: the simulator provides the
-# `vllm` binary, and installing the real one would pull ~5 GB of wheels that no
-# simulated lane ever loads.
-RUN grep -viE '^(vllm|torch|nvidia-|flashinfer)' /tmp/requirements.txt > /tmp/requirements.sim.txt \
- && uv pip install --system -r /tmp/requirements.sim.txt
+# The worker's standalone lock: exact versions with hashes, without vLLM and
+# its CUDA stack (the simulator provides the `vllm` binary, and the real one
+# would pull ~5 GB of wheels that no simulated lane ever loads).
+COPY logos-workernode/requirements-standalone.lock /tmp/requirements.lock
+RUN uv pip install --system --no-cache --no-deps --require-hashes -r /tmp/requirements.lock \
+ && uv pip check --system \
+ && rm /tmp/requirements.lock
 
 COPY logos-workernode/logos_worker_node/ /app/logos_worker_node/
 COPY e2e/harness/ /app/harness/

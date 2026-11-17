@@ -27,6 +27,8 @@ jobs:
     env:
       DOCKERFILE: logos-workernode/Dockerfile
       LOCK: logos-workernode/requirements.lock
+      # Every lock lock-requirements.sh writes; --upgrade refreshes all of them.
+      LOCKS: logos-workernode/requirements.lock logos-workernode/requirements-standalone.lock e2e/requirements.lock
       EFFORT_MODULE: logos-orchestrator/src/logos/pipeline/effort_normalization.py
     steps:
       - name: Checkout repository
@@ -111,9 +113,10 @@ jobs:
           # pins in requirements.txt no longer fit the new vLLM, resolution
           # fails: the PR is still opened (with the stale lock, which fails
           # its checks) so the conflict is fixed there by hand.
-          if logos-workernode/scripts/lock-vllm-image.sh --upgrade; then
+          if logos-workernode/scripts/lock-requirements.sh --upgrade; then
             echo "failed=false" >> "$GITHUB_OUTPUT"
-            git diff --stat -- "$LOCK"
+            # shellcheck disable=SC2086 # LOCKS is a space-separated path list
+            git diff --stat -- $LOCKS
           else
             echo "::warning::requirements.lock could not be resolved for the new vLLM pin; fix requirements.txt in the PR."
             echo "failed=true" >> "$GITHUB_OUTPUT"
@@ -155,7 +158,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add "$DOCKERFILE" "$EFFORT_MODULE" "$LOCK"
+          # shellcheck disable=SC2086 # LOCKS is a space-separated path list
+          git add "$DOCKERFILE" "$EFFORT_MODULE" $LOCKS
           git commit -m "Update vLLM to v$VERSION"
           git push -u origin "$BRANCH"
 
@@ -202,12 +206,12 @@ jobs:
                   f"**`{lock}` could not be resolved for this vLLM release** and still pins the previous one, "
                   f"so the image build and the lock check fail. The new vLLM conflicts with a pin in "
                   f"`logos-workernode/requirements.txt`: adjust that pin, run "
-                  f"`logos-workernode/scripts/lock-vllm-image.sh`, and commit both files."
+                  f"`logos-workernode/scripts/lock-requirements.sh`, and commit it with the regenerated locks."
               )
           else:
               lock_note = (
                   f"`{lock}` is regenerated for the new pin with "
-                  f"`logos-workernode/scripts/lock-vllm-image.sh --upgrade`; the image installs only that lock."
+                  f"`logos-workernode/scripts/lock-requirements.sh --upgrade` (which also refreshes the standalone worker and e2e locks); the image installs only that lock."
               )
 
           body = textwrap.dedent(f"""\

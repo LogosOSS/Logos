@@ -38,7 +38,7 @@
 !logos-ui/postcss.config.mjs
 !logos-ui/vitest-base.config.mts
 # The E2E node simulator image: the real worker package plus the harness.
-!logos-workernode/requirements.txt
+!logos-workernode/requirements-standalone.lock
 !logos-workernode/logos_worker_node
 !e2e/harness
 # The session image installs the repository's own hook environments at build

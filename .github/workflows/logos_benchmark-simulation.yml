@@ -98,8 +98,9 @@ jobs:
       - name: Install E2E dependencies
         run: |
           uv venv .venv
-          uv pip install --python .venv/bin/python -e .
-          uv pip install --python .venv/bin/python -r ../logos-workernode/requirements.txt
+          uv pip install --python .venv/bin/python --no-deps --require-hashes -r requirements.lock
+          uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e .
+          uv pip check --python .venv/bin/python
         working-directory: e2e
 
       - name: Prepare report directory

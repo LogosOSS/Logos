@@ -150,7 +150,8 @@ def test_image_lock_pins_the_dockerfile_vllm_and_both_audio_backends() -> None:
     match = _PIN_RE.search(_read(DOCKERFILE))
     assert match
     assert _locked_version("vllm") == match.group("version").lstrip("v"), (
-        "requirements.lock pins a different vLLM than VLLM_PIP_SPEC: " "run logos-workernode/scripts/lock-vllm-image.sh"
+        "requirements.lock pins a different vLLM than VLLM_PIP_SPEC: "
+        "run logos-workernode/scripts/lock-requirements.sh"
     )
     for backend in ("soundfile", "av"):
         assert _locked_version(backend), f"requirements.lock lacks {backend}, so the [audio] extra is not installed"

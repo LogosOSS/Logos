@@ -17,8 +17,8 @@ where every GPU-compatibility decision is actually read from.
 
 ```bash
 cd e2e
-uv venv .venv && uv pip install --python .venv/bin/python -e .
-uv pip install --python .venv/bin/python -r ../logos-workernode/requirements.txt
+uv venv .venv && uv pip install --python .venv/bin/python --no-deps --require-hashes -r requirements.lock
+uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e .
 
 # Tier 1 — no Docker
 .venv/bin/python -m pytest tests/gpu -v

@@ -58,8 +58,9 @@ jobs:
       - name: Install dependencies
         run: |
           uv venv .venv
-          uv pip install --python .venv/bin/python -e .
-          uv pip install --python .venv/bin/python -r ../logos-workernode/requirements.txt
+          uv pip install --python .venv/bin/python --no-deps --require-hashes -r requirements.lock
+          uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e .
+          uv pip check --python .venv/bin/python
         working-directory: e2e
 
       - name: Run Tier 1
@@ -99,7 +100,9 @@ jobs:
       - name: Install dependencies
         run: |
           uv venv .venv
-          uv pip install --python .venv/bin/python -e .
+          uv pip install --python .venv/bin/python --no-deps --require-hashes -r requirements.lock
+          uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e .
+          uv pip check --python .venv/bin/python
         working-directory: e2e
 
       - name: Start the stack
@@ -171,7 +174,9 @@ jobs:
       - name: Install stack dependencies
         run: |
           uv venv .venv
-          uv pip install --python .venv/bin/python -e .
+          uv pip install --python .venv/bin/python --no-deps --require-hashes -r requirements.lock
+          uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e .
+          uv pip check --python .venv/bin/python
         working-directory: e2e
 
       - name: Install UI dependencies
