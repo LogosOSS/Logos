@@ -80,9 +80,7 @@ def test_applying_changes_only_what_is_set_and_reports_it():
     cfg = _cfg()
     cfg.worker.gpu_devices = "all"
 
-    changed = apply_node_settings(
-        cfg, {"gpu_devices": "all", "global_extra_args": ["--x"], "gpu_poll_interval": 9}, 5
-    )
+    changed = apply_node_settings(cfg, {"gpu_devices": "all", "global_extra_args": ["--x"], "gpu_poll_interval": 9}, 5)
 
     assert changed == ["global_extra_args", "gpu_poll_interval"]
     assert cfg.engines.vllm.global_extra_args == ["--x"]
