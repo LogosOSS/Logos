@@ -10,11 +10,16 @@ import java.time.OffsetDateTime;
  * the repository carries one, {@code licenseId} the SPDX expression the model
  * card declares (null when it names none), and {@code approved}/{@code
  * approvedAt} the Logos admin's global acceptance (null while it is absent).
+ * The repository's acceptable-use policy — fetched alongside the license —
+ * comes with it: {@code usePolicyFile} the file it was read from, {@code
+ * usePolicyText} its text; both null when the repository publishes none.
  */
 public record ModelLicenseResponse(
     String status,
     String licenseId,
     String licenseText,
+    String usePolicyFile,
+    String usePolicyText,
     Boolean approved,
     OffsetDateTime approvedAt
 ) {}

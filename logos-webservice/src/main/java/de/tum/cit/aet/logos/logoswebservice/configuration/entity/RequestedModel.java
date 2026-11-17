@@ -66,6 +66,21 @@ public class RequestedModel {
      */
     private OffsetDateTime licenseFetchedDate;
 
+    /**
+     * The repository file the acceptable-use policy was read from (e.g.
+     * USE_POLICY.md, POLICY.md), fetched alongside the license in the same
+     * Hugging Face pass. Null either while no fetch has run yet or when the
+     * repository publishes no use policy file — unlike the license, whose
+     * absence is a state to flag, an absent use policy is nothing to show.
+     */
+    private String usePolicyFile;
+
+    /** The text of the repository's use policy file; null as above. */
+    private String usePolicyText;
+
+    /** When the last use-policy fetch ran (the license fetch's date). */
+    private OffsetDateTime usePolicyFetchedDate;
+
     public Integer getId() { return id; }
     public String getName() { return name; }
     public Boolean getIsGated() { return isGated; }
@@ -73,6 +88,9 @@ public class RequestedModel {
     public String getLicenseId() { return licenseId; }
     public String getLicenseText() { return licenseText; }
     public OffsetDateTime getLicenseFetchedDate() { return licenseFetchedDate; }
+    public String getUsePolicyFile() { return usePolicyFile; }
+    public String getUsePolicyText() { return usePolicyText; }
+    public OffsetDateTime getUsePolicyFetchedDate() { return usePolicyFetchedDate; }
 
     public void setName(String name) { this.name = name; }
     public void setIsGated(Boolean isGated) { this.isGated = isGated; }
@@ -80,4 +98,7 @@ public class RequestedModel {
     public void setLicenseId(String licenseId) { this.licenseId = licenseId; }
     public void setLicenseText(String licenseText) { this.licenseText = licenseText; }
     public void setLicenseFetchedDate(OffsetDateTime licenseFetchedDate) { this.licenseFetchedDate = licenseFetchedDate; }
+    public void setUsePolicyFile(String usePolicyFile) { this.usePolicyFile = usePolicyFile; }
+    public void setUsePolicyText(String usePolicyText) { this.usePolicyText = usePolicyText; }
+    public void setUsePolicyFetchedDate(OffsetDateTime usePolicyFetchedDate) { this.usePolicyFetchedDate = usePolicyFetchedDate; }
 }

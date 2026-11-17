@@ -29,20 +29,25 @@ public interface RequestedModelRepository extends JpaRepository<RequestedModel, 
     List<RequestedModel> findByIsGatedFalseAndLicenseFetchedDateIsNull();
 
     /**
-     * Record a fetched license on a row that has none yet. The condition makes
-     * concurrent fetches (a vote and the recheck at once) idempotent: the
-     * second update finds the date already set and changes nothing.
+     * Record a fetched license — and the use policy the same fetch brought
+     * back — on a row that has none yet. The condition makes concurrent
+     * fetches (a vote and the recheck at once) idempotent: the second update
+     * finds the date already set and changes nothing.
      *
      * @return the number of rows updated (0 when the row already had a license)
      */
     @Transactional
     @Modifying
     @Query("UPDATE RequestedModel m SET m.licenseId = :licenseId, m.licenseText = :licenseText, "
-        + "m.licenseFetchedDate = :fetchedAt WHERE m.id = :id AND m.licenseFetchedDate IS NULL")
-    int storeLicenseIfAbsent(@Param("id") Integer id,
-                             @Param("licenseId") String licenseId,
-                             @Param("licenseText") String licenseText,
-                             @Param("fetchedAt") OffsetDateTime fetchedAt);
+        + "m.usePolicyFile = :usePolicyFile, m.usePolicyText = :usePolicyText, "
+        + "m.licenseFetchedDate = :fetchedAt, m.usePolicyFetchedDate = :fetchedAt "
+        + "WHERE m.id = :id AND m.licenseFetchedDate IS NULL")
+    int storeLicenseAndUsePolicyIfAbsent(@Param("id") Integer id,
+                                         @Param("licenseId") String licenseId,
+                                         @Param("licenseText") String licenseText,
+                                         @Param("usePolicyFile") String usePolicyFile,
+                                         @Param("usePolicyText") String usePolicyText,
+                                         @Param("fetchedAt") OffsetDateTime fetchedAt);
 
     /**
      * Record a decisive Hugging Face gating verdict on a row that has none

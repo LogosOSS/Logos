@@ -78,10 +78,14 @@ import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabil
  * gated model's license agreement.
  *
  * The license itself — the SPDX expression the model's Hugging Face card
- * declares plus the license file's text — is fetched from the Hub through the
- * orchestrator's central HF_TOKEN and stored on the row: with the vote for a
- * non-gated model, when a gated row unflags (the token can read the
- * repository for the first time), and in the hourly recheck's backfill.
+ * declares plus the license file's text, and the acceptable-use policy file
+ * the repository publishes alongside it (USE_POLICY.md, POLICY.md) — is
+ * fetched from the Hub in the same pass through the orchestrator's central
+ * HF_TOKEN and stored on the row: with the vote for a non-gated model, when
+ * a gated row unflags (the token can read the repository for the first
+ * time), and in the hourly recheck's backfill. A repository without a use
+ * policy file stores nothing for it — that is not a state to flag, only
+ * something to show or not show in the acceptance dialog.
  * Accepting the agreement — the Logos admin globally, a team's app admin per
  * team — is recorded in {@code model_license_approvals}; a gated row's global
  * acceptance is recorded automatically (without a user) the moment a recheck
@@ -313,14 +317,18 @@ public class RequestedModelService {
             model = requestedModelRepository.save(model);
             if (license != null) {
                 OffsetDateTime fetchedAt = OffsetDateTime.now();
-                if (requestedModelRepository.storeLicenseIfAbsent(
-                        model.getId(), license.licenseId(), license.licenseText(), fetchedAt) > 0) {
+                if (requestedModelRepository.storeLicenseAndUsePolicyIfAbsent(
+                        model.getId(), license.licenseId(), license.licenseText(),
+                        license.usePolicyFile(), license.usePolicyText(), fetchedAt) > 0) {
                     // The conditional update is a bulk statement that bypasses
                     // the managed entity — mirror it there, so the vote's
                     // response already reports the stored license state.
                     model.setLicenseId(license.licenseId());
                     model.setLicenseText(license.licenseText());
+                    model.setUsePolicyFile(license.usePolicyFile());
+                    model.setUsePolicyText(license.usePolicyText());
                     model.setLicenseFetchedDate(fetchedAt);
+                    model.setUsePolicyFetchedDate(fetchedAt);
                 }
             }
 
@@ -498,13 +506,14 @@ public class RequestedModelService {
     }
 
     /**
-     * Fetch one model's license from Hugging Face — the SPDX expression the
-     * model card declares plus the license file's text — through the
-     * orchestrator's central HF_TOKEN, and record it on the row. Only rows
-     * without a license yet are written (the update is conditional, so a vote
-     * and the recheck racing never clobber each other). A fetch failure
-     * leaves the row pending for the next pass — the hourly recheck or the
-     * next vote. Never throws.
+     * Fetch one model's license — the SPDX expression the model card declares
+     * plus the license file's text — and, when the repository publishes one,
+     * the acceptable-use policy alongside it, through the orchestrator's
+     * central HF_TOKEN, and record both on the row. Only rows without a
+     * license yet are written (the update is conditional, so a vote and the
+     * recheck racing never clobber each other). A fetch failure leaves the
+     * row pending for the next pass — the hourly recheck or the next vote.
+     * Never throws.
      *
      * @return true when a license was recorded on a row that had none
      */
@@ -514,8 +523,9 @@ public class RequestedModelService {
             log.info("License fetch for {} will be retried: {}", model.getName(), license.error());
             return false;
         }
-        return requestedModelRepository.storeLicenseIfAbsent(
-            model.getId(), license.licenseId(), license.licenseText(), OffsetDateTime.now()) > 0;
+        return requestedModelRepository.storeLicenseAndUsePolicyIfAbsent(
+            model.getId(), license.licenseId(), license.licenseText(),
+            license.usePolicyFile(), license.usePolicyText(), OffsetDateTime.now()) > 0;
     }
 
     /**
@@ -566,6 +576,8 @@ public class RequestedModelService {
             licenseStatusOf(model),
             model.getLicenseId(),
             model.getLicenseText(),
+            model.getUsePolicyFile(),
+            model.getUsePolicyText(),
             approval != null,
             approval == null ? null : approval.getApprovedAt());
     }

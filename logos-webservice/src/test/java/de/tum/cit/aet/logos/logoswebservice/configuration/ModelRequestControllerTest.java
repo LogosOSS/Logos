@@ -57,7 +57,8 @@ class ModelRequestControllerTest {
 
     /**
      * The Hugging Face stubs: the precheck answers "reachable" and the license
-     * fetch answers with a license, unless a test says otherwise.
+     * fetch answers with a license and a use policy, unless a test says
+     * otherwise.
      */
     @BeforeEach
     void stubHfClients() {
@@ -65,7 +66,8 @@ class ModelRequestControllerTest {
             .thenReturn(new HfReachabilityResult(HfReachabilityResult.STATUS_REACHABLE, null, null));
         Mockito.lenient().when(hfLicenseClient.fetch(ArgumentMatchers.anyString()))
             .thenAnswer(invocation -> new HfLicenseResult(
-                "apache-2.0", "LICENSE.md", "Apache License 2.0 — " + invocation.getArgument(0), null));
+                "apache-2.0", "LICENSE.md", "Apache License 2.0 — " + invocation.getArgument(0),
+                "USE_POLICY.md", "Use policy of " + invocation.getArgument(0), null));
     }
 
     /** Vote for a model and return the id of its registry row. */
@@ -642,7 +644,7 @@ class ModelRequestControllerTest {
             expression += "mit OR ";
         }
         Mockito.when(hfLicenseClient.fetch("openai/gpt-5"))
-            .thenReturn(new HfLicenseResult(expression, null, null, null));
+            .thenReturn(new HfLicenseResult(expression, null, null, null, null, null));
 
         mvc.perform(post("/logosdb/add_model_request")
                 .with(TestJwt.testUser())
@@ -780,6 +782,60 @@ class ModelRequestControllerTest {
         assertThat(jdbc.queryForObject(
             "SELECT license_fetched_date IS NULL FROM requested_models WHERE name = 'acme/still-gated'",
             Boolean.class)).isTrue();
+    }
+
+    @Test
+    void vote_storesTheUsePolicyFileWithTheLicense() throws Exception {
+        // The use policy comes back in the same fetch as the license and is
+        // stored with it — the team's app admin accepts it together with the
+        // license agreement.
+        mvc.perform(post("/logosdb/add_model_request")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"name\": \"openai/gpt-5\", \"team_id\": 2001}"))
+           .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForObject(
+            "SELECT use_policy_file FROM requested_models WHERE name = 'openai/gpt-5'", String.class))
+           .isEqualTo("USE_POLICY.md");
+        assertThat(jdbc.queryForObject(
+            "SELECT use_policy_text FROM requested_models WHERE name = 'openai/gpt-5'", String.class))
+           .contains("Use policy of");
+        assertThat(jdbc.queryForObject(
+            "SELECT use_policy_fetched_date IS NOT NULL FROM requested_models WHERE name = 'openai/gpt-5'",
+            Boolean.class)).isTrue();
+    }
+
+    @Test
+    void getLicense_reportsTheStoredUsePolicy() throws Exception {
+        int id = seedModelWithLicense("acme/policy", "apache-2.0");
+        jdbc.update("UPDATE requested_models SET use_policy_file = 'USE_POLICY.md', "
+            + "use_policy_text = 'Use policy of acme/policy', use_policy_fetched_date = now() WHERE id = ?", id);
+
+        mvc.perform(post("/logosdb/get_model_license")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"model_id\": " + id + "}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.license_id").value("apache-2.0"))
+           .andExpect(jsonPath("$.use_policy_file").value("USE_POLICY.md"))
+           .andExpect(jsonPath("$.use_policy_text").value("Use policy of acme/policy"));
+    }
+
+    @Test
+    void getLicense_reportsNoUsePolicyWhenNoneWasStored() throws Exception {
+        // A repository without a use policy file stores nothing for it — the
+        // dialog shows the license only, which the null fields express.
+        int id = seedModelWithLicense("acme/nopolicy", "apache-2.0");
+
+        mvc.perform(post("/logosdb/get_model_license")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"model_id\": " + id + "}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.license_id").value("apache-2.0"))
+           .andExpect(jsonPath("$.use_policy_file", org.hamcrest.Matchers.nullValue()))
+           .andExpect(jsonPath("$.use_policy_text", org.hamcrest.Matchers.nullValue()));
     }
 
     @Test

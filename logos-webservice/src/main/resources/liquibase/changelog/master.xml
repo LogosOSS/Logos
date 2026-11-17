@@ -78,4 +78,5 @@
     <include file="liquibase/changelog/071_node_model_config.xml"/>
     <include file="liquibase/changelog/072_requested_model_license.xml"/>
     <include file="liquibase/changelog/073_model_license_approvals_nullable_user.xml"/>
+    <include file="liquibase/changelog/074_requested_model_use_policy.xml"/>
 </databaseChangeLog>

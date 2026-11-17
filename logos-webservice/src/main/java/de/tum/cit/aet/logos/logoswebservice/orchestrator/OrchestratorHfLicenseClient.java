@@ -18,8 +18,9 @@ import org.springframework.web.client.RestTemplate;
  * Asks the orchestrator's secret-gated /internal/hf_license for a model
  * repository's license, read with the central HF_TOKEN: the SPDX expression
  * the model card declares plus the license file's text when the repository
- * carries one. The token lives in the orchestrator's environment, so this
- * service never sees it.
+ * carries one, and the acceptable-use policy file (USE_POLICY.md,
+ * POLICY.md, ...) alongside it when the repository publishes one. The token
+ * lives in the orchestrator's environment, so this service never sees it.
  *
  * Like the reachability client, a transport failure on this side (orchestrator
  * not configured or unreachable, timeout, unparsable answer) is reported as an
@@ -46,10 +47,17 @@ public class OrchestratorHfLicenseClient {
         this.restTemplate = restTemplate;
     }
 
-    /** The repository's license. Never null; {@code error} is null on success. */
-    public record HfLicenseResult(String licenseId, String licenseFile, String licenseText, String error) {
+    /**
+     * The repository's license and use policy. Never null; {@code error} is
+     * null on success. The use-policy fields are null when the repository
+     * publishes no use policy file.
+     */
+    public record HfLicenseResult(
+        String licenseId, String licenseFile, String licenseText,
+        String usePolicyFile, String usePolicyText, String error
+    ) {
         public static HfLicenseResult failure(String error) {
-            return new HfLicenseResult(null, null, null, error);
+            return new HfLicenseResult(null, null, null, null, null, error);
         }
     }
 
@@ -90,6 +98,8 @@ public class OrchestratorHfLicenseClient {
             map.get("license_id") instanceof String s ? s : null,
             map.get("license_file") instanceof String f ? f : null,
             map.get("license_text") instanceof String t ? t : null,
+            map.get("use_policy_file") instanceof String f ? f : null,
+            map.get("use_policy_text") instanceof String t ? t : null,
             null);
     }
 }
