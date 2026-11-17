@@ -5,19 +5,9 @@ import { ProviderManagementService } from '../../../core/services/provider-manag
 import { NodeInsights, NodeModelInsight } from '../../../shared/models/node-config.model';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table';
 import { ErrorMessageComponent } from '../../../shared/components/error-message/error-message';
+import { CalibrationLabel, calibrationLabel, hasTuning } from './node-model-status';
 
-type StatusTone = 'ok' | 'gray' | 'warn' | 'err';
-
-export interface CalibrationLabel {
-  text: string;
-  tone: StatusTone;
-  title: string | null;
-}
-
-/** Settings of a lane or a benchmark run that decide where a model sits. */
-const PLACEMENT_KEYS = ['tensor_parallel_size', 'kv_cache_memory_bytes', 'max_model_len'] as const;
-
-/** The models of one logosnode: calibration and configuration state, one click to the model page. */
+/** The models of one logosnode: calibration and configuration state. */
 @Component({
   selector: 'app-node-models',
   standalone: true,
@@ -54,34 +44,12 @@ export class NodeModels implements OnInit {
     }
   }
 
-  /** Calibration column: status, with "tuning available" only where a benchmark found a better setting. */
   calibrationLabel(model: NodeModelInsight): CalibrationLabel {
-    const { status, reason } = model.calibration;
-    if (status === 'unsupported') {
-      return { text: 'Unsupported', tone: 'err', title: reason };
-    }
-    if (status === 'calibrated') {
-      return this.hasTuning(model)
-        ? { text: 'Calibrated · tuning available', tone: 'ok', title: null }
-        : { text: 'Calibrated', tone: 'ok', title: null };
-    }
-    if (model.calibrating) {
-      return { text: 'Calibrating…', tone: 'warn', title: null };
-    }
-    if (status === 'outdated') {
-      return { text: 'Calibration outdated', tone: 'gray', title: null };
-    }
-    return { text: 'Not calibrated', tone: 'gray', title: null };
+    return calibrationLabel(model);
   }
 
-  /** A benchmark run that is comparable and placed the model differently from how it runs now. */
   hasTuning(model: NodeModelInsight): boolean {
-    const best = model.benchmark?.best_eligible;
-    if (!best || !model.benchmark?.eligible_for_comparison) {
-      return false;
-    }
-    const current = model.benchmark.current;
-    return PLACEMENT_KEYS.some((key) => key in best.settings && String(best.settings[key]) !== String(current[key]));
+    return hasTuning(model);
   }
 
   private messageOf(e: unknown): string {

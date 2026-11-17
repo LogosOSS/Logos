@@ -1,0 +1,146 @@
+<div class="node-model">
+  <nav class="crumb" aria-label="Breadcrumb">
+    <a routerLink="/providers">Providers</a>
+    <i class="pi pi-chevron-right" aria-hidden="true"></i>
+    <a routerLink="/providers">{{ providerName() || 'Node' }}</a>
+    <i class="pi pi-chevron-right" aria-hidden="true"></i>
+    <span>Models</span>
+  </nav>
+
+  <h1 class="page-title">{{ modelName() || 'Model' }}</h1>
+
+  @if (loading()) {
+    <div class="loading" role="status" aria-live="polite">
+      <span class="vh">Loading the configuration of this model…</span>
+      <span class="skel pills"></span>
+      <span class="skel block"></span>
+      <span class="skel block"></span>
+    </div>
+  } @else if (error()) {
+    <app-error-message variant="banner" [message]="error()!" />
+    <button class="btn-secondary retry" type="button" (click)="load()">
+      <i class="pi pi-refresh" aria-hidden="true"></i>
+      Try again
+    </button>
+  } @else if (!insight() && !entry()) {
+    <app-error-message variant="banner" message="This node does not know this model." />
+    <a class="btn-secondary retry" routerLink="/providers">Back to providers</a>
+  } @else {
+    <div class="status-row">
+      @if (label(); as l) {
+        <div class="pill">
+          <span class="dot" [class]="'dot dot--' + l.tone" aria-hidden="true"></span>
+          <div><small>Calibration</small><b [attr.title]="l.title">{{ l.text }}</b></div>
+        </div>
+      }
+      <div class="pill">
+        <span class="dot" [class]="'dot dot--' + (insight()?.configured ? 'ok' : 'gray')" aria-hidden="true"></span>
+        <div><small>Configuration</small><b>{{ insight()?.configured ? 'Configured' : 'Not configured' }}</b></div>
+      </div>
+      <div class="pill">
+        <span class="dot" [class]="'dot dot--' + (workerOnline() ? 'ok' : 'warn')" aria-hidden="true"></span>
+        <div><small>Worker</small><b>{{ workerOnline() ? 'Online' : 'Offline' }}</b></div>
+      </div>
+    </div>
+
+    @if (!workerOnline()) {
+      <div class="banner banner--warn" role="status">
+        <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+        <div>
+          <b>Worker offline</b>
+          <span>{{ providerName() }} is not connected. The configuration cannot be edited.</span>
+        </div>
+      </div>
+    }
+
+    @if (tuning() && recommendation(); as rec) {
+      <div class="banner banner--warn" role="status">
+        <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+        <div>
+          <b>Recommendation not in use</b>
+          <span>
+            Benchmark suggests {{ describePlacement(rec.settings) }} ({{ rec.throughput.toFixed(1) }} tok/s,
+            benchmark #{{ rec.benchmark_id }}).
+          </span>
+        </div>
+      </div>
+    }
+
+    <div class="grid">
+      <div class="stack">
+        <section class="card" aria-labelledby="cfg-title">
+          <h2 id="cfg-title">Configuration</h2>
+          @if (insight()?.configured) {
+            <p class="sub">Current placement on {{ providerName() }}.</p>
+            <dl class="facts">
+              <div><dt>GPUs per instance (tensor parallel)</dt><dd>TP {{ settings()['tensor_parallel_size'] }}</dd></div>
+              <div><dt>KV cache memory per GPU</dt><dd>{{ formatGb(kvGb()) }}</dd></div>
+              <div><dt>Max. context length</dt><dd>{{ formatTokens(settings()['max_model_len']) }} tokens</dd></div>
+            </dl>
+          } @else {
+            <div class="empty">
+              <b>Not configured yet</b>
+              <span>
+                @if (insight()?.calibration?.status === 'calibrated') {
+                  This model is calibrated but has no placement. Configure it to let the worker serve it.
+                } @else {
+                  Logos measures this model in its next calibration window. Until then it has no placement.
+                }
+              </span>
+            </div>
+          }
+        </section>
+
+        @if (result(); as r) {
+          <section class="card" aria-labelledby="cal-title">
+            <h2 id="cal-title">Measured by calibration</h2>
+            <p class="sub">What Logos measured for this model on {{ providerName() }}.</p>
+            <div class="tiles">
+              <div class="tile"><b>{{ formatGb(mbToGb(r.base_residency_mb)) }}</b><span>Base residency</span></div>
+              <div class="tile">
+                <b>{{ formatGb(mbToGb(r.kv_min_mb)) }} to {{ formatGb(mbToGb(r.kv_max_mb)) }}</b>
+                <span>KV cache window per GPU</span>
+              </div>
+              <div class="tile"><b>{{ formatTokens(insight()?.calibration?.context_limit) }}</b><span>Context limit</span></div>
+              <div class="tile"><b>{{ formatSeconds(r.cold_load_time_s) }}</b><span>Cold start</span></div>
+              <div class="tile"><b>{{ formatSeconds(r.wake_from_sleep_time_s) }}</b><span>Wake from sleep</span></div>
+              <div class="tile"><b>TP {{ r.tp }}</b><span>Calibrated size</span></div>
+            </div>
+          </section>
+        }
+
+        @if (advanced().length > 0) {
+          <section class="card" aria-labelledby="adv-title">
+            <h2 id="adv-title">Advanced settings</h2>
+            <p class="sub">Settings this model is configured with besides placement.</p>
+            <dl class="facts">
+              @for (a of advanced(); track a.key) {
+                <div><dt class="mono">{{ a.key }}</dt><dd class="mono">{{ a.value }}</dd></div>
+              }
+            </dl>
+          </section>
+        }
+      </div>
+
+      <div class="stack">
+        @if (insight()?.benchmark; as b) {
+          <section class="card" aria-labelledby="bm-title">
+            <h2 id="bm-title" class="eyebrow">Best benchmark</h2>
+            @if (b.best_eligible ?? b.best_observed; as best) {
+              <div class="best">
+                <b>{{ best.throughput.toFixed(1) }} tok/s</b>
+                <span>{{ describePlacement(best.settings) }} · #{{ best.benchmark_id }}</span>
+              </div>
+            }
+          </section>
+          @if (b.current && describePlacement(b.current)) {
+            <section class="card" aria-labelledby="cur-title">
+              <h2 id="cur-title" class="eyebrow">Running now</h2>
+              <p class="running">{{ describePlacement(b.current) }}</p>
+            </section>
+          }
+        }
+      </div>
+    </div>
+  }
+</div>
