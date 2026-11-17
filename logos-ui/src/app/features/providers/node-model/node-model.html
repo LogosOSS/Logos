@@ -111,14 +111,16 @@
       </div>
     }
 
-    @if (savedNotice() && !editing()) {
-      <div class="banner banner--info" role="status">
-        <i class="pi pi-check-circle" aria-hidden="true"></i>
-        <div>
-          <b>Saved</b>
-          <span>The worker applies the new settings from the next lane start.</span>
+    @if (notice(); as n) {
+      @if (!editing()) {
+        <div class="banner banner--info" role="status">
+          <i class="pi pi-check-circle" aria-hidden="true"></i>
+          <div>
+            <b>{{ n.title }}</b>
+            <span>{{ n.text }}</span>
+          </div>
         </div>
-      </div>
+      }
     }
 
     @if (!workerOnline()) {
@@ -284,6 +286,20 @@
           </section>
         }
 
+        @if (entry() && !editing() && workerOnline()) {
+          <section class="card" aria-labelledby="rm-title">
+            <h2 id="rm-title">Remove configuration</h2>
+            <p class="sub">
+              The model stays calibrated and can be configured again later. The worker unloads it at the next lane
+              change.
+            </p>
+            <button class="btn-remove" type="button" (click)="openRemove()">
+              <i class="pi pi-trash" aria-hidden="true"></i>
+              Remove configuration
+            </button>
+          </section>
+        }
+
         @if (advanced().length > 0) {
           <section class="card" aria-labelledby="adv-title">
             <h2 id="adv-title">Advanced settings</h2>
@@ -348,3 +364,17 @@
     }
   }
 </div>
+
+<app-modal-confirm
+  [visible]="removeOpen()"
+  (visibleChange)="$event || closeRemove()"
+  title="Remove configuration?"
+  [message]="'The configuration of ' + modelName() + ' on ' + providerName() + ' will be removed, and all its settings return to their defaults. The model stays calibrated and can be configured again later.'"
+  confirmLabel="Remove configuration"
+  [loading]="removing()"
+  (confirmed)="confirmRemove()"
+>
+  @if (removeError()) {
+    <app-error-message modal-error [message]="removeError()!" />
+  }
+</app-modal-confirm>

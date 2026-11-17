@@ -15,6 +15,7 @@ import { combineLatest } from 'rxjs';
 
 import { ProviderManagementService } from '../../../core/services/provider-management.service';
 import { ErrorMessageComponent } from '../../../shared/components/error-message/error-message';
+import { ModalConfirmComponent } from '../../../shared/components/modal/modal-confirm/modal-confirm';
 import { NodeConfig, NodeInsights } from '../../../shared/models/node-config.model';
 import { CalibrationLabel, calibrationLabel, hasTuning } from '../node-models/node-model-status';
 import {
@@ -24,6 +25,7 @@ import {
   Placement,
   saveFailure,
   SaveFailure,
+  withoutEntry,
   withPlacement,
 } from './node-model-edit';
 import {
@@ -41,7 +43,7 @@ import {
 @Component({
   selector: 'app-node-model',
   standalone: true,
-  imports: [ErrorMessageComponent, RouterLink],
+  imports: [ErrorMessageComponent, ModalConfirmComponent, RouterLink],
   templateUrl: './node-model.html',
   styleUrl: './node-model.scss',
   changeDetection: ChangeDetectionStrategy.Eager,
@@ -83,7 +85,10 @@ export class NodeModel implements OnInit {
   readonly draft = signal<Placement | null>(null);
   readonly saving = signal(false);
   readonly failure = signal<SaveFailure | null>(null);
-  readonly savedNotice = signal(false);
+  readonly notice = signal<{ title: string; text: string } | null>(null);
+  readonly removeOpen = signal(false);
+  readonly removing = signal(false);
+  readonly removeError = signal<string | null>(null);
   private readonly failureBanner = viewChild<ElementRef<HTMLElement>>('failureBanner');
 
   /** A calibrated model can be placed while its worker can check the list. */
@@ -186,7 +191,7 @@ export class NodeModel implements OnInit {
     }
     this.draft.set(start);
     this.failure.set(null);
-    this.savedNotice.set(false);
+    this.notice.set(null);
     this.editing.set(true);
   }
 
@@ -258,12 +263,47 @@ export class NodeModel implements OnInit {
       await this.refresh();
       this.editing.set(false);
       this.draft.set(null);
-      this.savedNotice.set(true);
+      this.notice.set({ title: 'Saved', text: 'The worker applies the new settings from the next lane start.' });
     } catch (e) {
       this.failure.set(saveFailure(e));
       queueMicrotask(() => this.failureBanner()?.nativeElement.focus());
     } finally {
       this.saving.set(false);
+    }
+  }
+
+  openRemove(): void {
+    this.removeError.set(null);
+    this.removeOpen.set(true);
+  }
+
+  closeRemove(): void {
+    if (!this.removing()) {
+      this.removeOpen.set(false);
+    }
+  }
+
+  /** Takes the model out of the list; its calibration stays. */
+  async confirmRemove(): Promise<void> {
+    const id = this.providerId();
+    const cfg = this.config();
+    if (id === null || !cfg || this.removing()) {
+      return;
+    }
+    this.removing.set(true);
+    this.removeError.set(null);
+    try {
+      await this.service.replaceNodeConfig(id, cfg.revision, withoutEntry(cfg.entries, this.modelName()));
+      await this.refresh();
+      this.removeOpen.set(false);
+      this.notice.set({
+        title: 'Configuration removed',
+        text: 'The model stays calibrated. The worker unloads it at the next lane change.',
+      });
+    } catch (e) {
+      this.removeError.set(saveFailure(e).message);
+    } finally {
+      this.removing.set(false);
     }
   }
 

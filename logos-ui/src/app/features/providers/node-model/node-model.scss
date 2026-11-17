@@ -509,3 +509,22 @@ input[type='range'] {
     padding: 12px 16px;
   }
 }
+
+.btn-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  cursor: pointer;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  color: rgb(var(--color-error));
+  border-radius: 8px;
+  border: 1px solid rgb(var(--color-error));
+  background: transparent;
+
+  &:hover {
+    background: rgb(var(--color-error) / var(--opacity-soft));
+  }
+}

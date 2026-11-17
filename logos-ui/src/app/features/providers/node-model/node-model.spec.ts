@@ -443,4 +443,76 @@ describe('NodeModel', () => {
       expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 8192 });
     });
   });
+
+  describe('removing the configuration', () => {
+    const page = (): NodeModel => fixture.componentInstance;
+
+    it('offers it for a model that has an entry, while the worker can check the list', async () => {
+      const root = await create();
+      expect(root.textContent).toContain('Remove configuration');
+      expect(root.querySelector('.btn-remove')).not.toBeNull();
+
+      TestBed.resetTestingModule();
+      service['getNodeInsights'].mockResolvedValue(insights([insight()], false));
+      expect((await create()).querySelector('.btn-remove')).toBeNull();
+
+      TestBed.resetTestingModule();
+      service['getNodeInsights'].mockResolvedValue(insights([insight({ row: false, configured: false })]));
+      service['getNodeConfig'].mockResolvedValue({ ...config, entries: [] });
+      expect((await create()).querySelector('.btn-remove')).toBeNull();
+    });
+
+    it('opens a confirmation and closes it again without saving', async () => {
+      const root = await create();
+
+      root.querySelector<HTMLButtonElement>('.btn-remove')!.click();
+      expect(page().removeOpen()).toBe(true);
+      page().closeRemove();
+
+      expect(page().removeOpen()).toBe(false);
+      expect(service['replaceNodeConfig']).not.toHaveBeenCalled();
+    });
+
+    it('saves the list without the model, keeps the calibration and says so', async () => {
+      const root = await create();
+      page().openRemove();
+      service['getNodeConfig'].mockResolvedValue({ ...config, revision: 4, entries: [] });
+
+      await page().confirmRemove();
+      await settle();
+
+      expect(service['replaceNodeConfig']).toHaveBeenCalledWith(4, 3, []);
+      expect(page().removeOpen()).toBe(false);
+      expect(root.textContent).toContain('Configuration removed');
+      expect(root.textContent).toContain('The model stays calibrated');
+    });
+
+    it('keeps the dialog open and shows why when the removal is refused', async () => {
+      await create();
+      page().openRemove();
+      service['replaceNodeConfig'].mockRejectedValue({ status: 409, error: { error: 'Configuration changed meanwhile' } });
+
+      await page().confirmRemove();
+
+      expect(page().removeOpen()).toBe(true);
+      expect(page().removeError()).toBe('Configuration changed meanwhile');
+      expect(page().removing()).toBe(false);
+    });
+
+    it('cannot be closed or repeated while it is running', async () => {
+      await create();
+      let finish: (value: unknown) => void = () => undefined;
+      service['replaceNodeConfig'].mockReturnValue(new Promise((resolve) => (finish = resolve)));
+      page().openRemove();
+
+      const first = page().confirmRemove();
+      page().closeRemove();
+      void page().confirmRemove();
+
+      expect(page().removeOpen()).toBe(true);
+      expect(service['replaceNodeConfig']).toHaveBeenCalledTimes(1);
+      finish({ provider_id: 4, config_revision: 4 });
+      await first;
+    });
+  });
 });
