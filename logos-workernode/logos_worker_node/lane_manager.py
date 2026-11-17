@@ -330,6 +330,11 @@ async def _destroy_quietly(handle: ProcessHandle) -> None:
         logger.debug("Closing an unregistered lane handle failed", exc_info=True)
 
 
+def _parallel_layout(lane_config: LaneConfig) -> tuple[int, int] | None:
+    vc = lane_config.vllm_config
+    return (vc.tensor_parallel_size, vc.parallel_gpu_count) if vc is not None else None
+
+
 class LaneManager:
     """Manages a pool of vLLM process handles, one per model lane."""
 
@@ -509,6 +514,11 @@ class LaneManager:
         self._served_models: dict[str, int | None] = {}
         self._crash_restart_counts: dict[str, int] = {}
         self._static_lane_ids: set[str] = set()
+        # lane -> what the node's overrides replaced in its launch config, so a
+        # removed override gives the original back; explicit lanes keep theirs.
+        self._override_baselines: dict[str, dict[str, Any]] = {}
+        self._staged_baselines: dict[str, dict[str, Any]] = {}
+        self._explicit_lanes: set[str] = set()
         # GPUs held by a running calibration session. Non-None while
         # a session is live: auto-placement must not put new lanes on these GPUs
         # and an explicit lane targeting them is refused, so the calibration's
@@ -767,6 +777,7 @@ class LaneManager:
             snapshot: dict[str, tuple[ProcessHandle, LaneConfig | None, int | None]] = {
                 lid: (h, h.lane_config, self._port_alloc.get_port(lid)) for lid, h in self._handles.items()
             }
+            overrides_before = (set(self._explicit_lanes), {k: dict(v) for k, v in self._override_baselines.items()})
             # Track completed operations for rollback
             removed_snapshots: dict[str, tuple[ProcessHandle, LaneConfig | None, int]] = {}
             added_ids: list[str] = []
@@ -815,6 +826,7 @@ class LaneManager:
                     if current_lc is not None and _lane_needs_restart(current_lc, desired_lc):
                         try:
                             await self._restart_lane_unlocked(lid, desired_lc)
+                            self._explicit_lanes.add(lid)
                             restarted_ids.append(lid)
                             details = f"restart: backend=vllm, ctx={desired_lc.context_length}"
                             actions.append(
@@ -972,6 +984,8 @@ class LaneManager:
                     restarted_ids,
                     snapshot,
                 )
+                # The restored lanes run what they ran before the batch.
+                self._explicit_lanes, self._override_baselines = overrides_before
 
             lane_statuses = await self._collect_statuses_unlocked()
             prom.LANE_TRANSITIONS_TOTAL.labels(action="apply").inc()
@@ -1090,6 +1104,7 @@ class LaneManager:
 
     async def _finalize_unloaded(self, lane_id: str, handle: ProcessHandle, port: int | None) -> None:
         self._forget_sleep_state(lane_id)
+        self._forget_lane_overrides(lane_id)
         finalized = self._finalizing[lane_id] = asyncio.Event()
         self._finalizing_gpus[lane_id] = self._launch_gpu_set(handle.lane_config) if handle.lane_config else None
         try:
@@ -1121,6 +1136,7 @@ class LaneManager:
         self._active_requests.pop(lane_id, None)
         self._starting_deadlines.pop(lane_id, None)
         self._forget_sleep_state(lane_id)
+        self._forget_lane_overrides(lane_id)
         return handle, port
 
     async def reconfigure_lane(
@@ -1187,6 +1203,11 @@ class LaneManager:
         if not changed and not force_restart:
             return await self._get_status_unlocked(lane_id)
 
+        if not changed:
+            # A forced restart without new values runs under today's overrides,
+            # even if they change the layout; benchmark candidates keep theirs.
+            current_data = self._refresh_node_overrides(lane_id, current, topology=True).model_dump()
+
         parallel_changed = False
         if current.vllm_config is not None and current_data.get("vllm_config"):
             requested_vllm = VllmConfig(**current_data["vllm_config"])
@@ -1230,6 +1251,11 @@ class LaneManager:
                     "Wait for them to finish, or run the benchmark with the current settings."
                 )
             await self._restart_lane_unlocked(lane_id, new_lc, scoped=held_gpus is not None)
+            if not changed:
+                self._settle_node_overrides(lane_id)
+            if changed:
+                # Applied: its values now win over the node's overrides.
+                self._explicit_lanes.add(lane_id)
         prom.LANE_TRANSITIONS_TOTAL.labels(action="reconfigure").inc()
 
         return await self._get_status_unlocked(lane_id)
@@ -1766,8 +1792,9 @@ class LaneManager:
                     current = handle.status()
                     if current.state not in {ProcessState.STOPPED, ProcessState.ERROR}:
                         continue
-                    current_lc = handle.lane_config or lane_config
+                    current_lc = self._refresh_node_overrides(lid, handle.lane_config or lane_config)
                     await self._restart_lane_unlocked(lid, current_lc)
+                    self._settle_node_overrides(lid)
                 # Successful restart: reset the counter
                 self._crash_restart_counts[lid] = 0
                 self._record_event(lid, "crash_restart_ok", model=current_lc.model, port=status.port)
@@ -1909,6 +1936,37 @@ class LaneManager:
         """Record the lifecycle-authoritative sleep_state for the infer hot path."""
         self._known_sleep_state[lane_id] = sleep_state
         self._sleep_state_generation[lane_id] = self._sleep_state_generation.get(lane_id, 0) + 1
+
+    def _refresh_node_overrides(self, lane_id: str, lane_config: LaneConfig, *, topology: bool = False) -> LaneConfig:
+        """The config of a restart without new values, under today's overrides.
+
+        The baseline it would leave is only staged: a restart that is rejected
+        or fails must leave the lane's record as it was. An automatic restart
+        keeps the parallel layout it has; only a planned one may change it.
+        """
+        if lane_id in self._explicit_lanes:
+            return lane_config
+        config, baseline = self._resolve_model_vllm_overrides(lane_config, lane_id)
+        if not topology and _parallel_layout(config) != _parallel_layout(lane_config):
+            logger.info("Lane '%s': an override changes its parallel layout; it waits for a planned start", lane_id)
+            return lane_config
+        self._staged_baselines[lane_id] = baseline
+        return config
+
+    def _settle_node_overrides(self, lane_id: str) -> None:
+        """The restart used the staged config; its baseline is the lane's."""
+        baseline = self._staged_baselines.pop(lane_id, None)
+        if baseline is None:
+            return
+        if baseline:
+            self._override_baselines[lane_id] = baseline
+        else:
+            self._override_baselines.pop(lane_id, None)
+
+    def _forget_lane_overrides(self, lane_id: str) -> None:
+        self._override_baselines.pop(lane_id, None)
+        self._staged_baselines.pop(lane_id, None)
+        self._explicit_lanes.discard(lane_id)
 
     def _forget_sleep_state(self, lane_id: str) -> None:
         self._known_sleep_state.pop(lane_id, None)
@@ -2115,7 +2173,19 @@ class LaneManager:
     # CPU offload is controlled per-lane via vllm_config.cpu_offload_gb.
     # No auto-injection — only applied when explicitly set on a lane's config.
 
-    def _apply_model_vllm_overrides(self, lane_config: LaneConfig) -> LaneConfig:
+    def _apply_model_vllm_overrides(self, lane_config: LaneConfig, lane_id: str | None = None) -> LaneConfig:
+        """Merge the node's overrides into a lane that starts now."""
+        config, baseline = self._resolve_model_vllm_overrides(lane_config, lane_id)
+        if lane_id is not None:
+            if baseline:
+                self._override_baselines[lane_id] = baseline
+            else:
+                self._override_baselines.pop(lane_id, None)
+        return config
+
+    def _resolve_model_vllm_overrides(
+        self, lane_config: LaneConfig, lane_id: str | None
+    ) -> tuple[LaneConfig, dict[str, Any]]:
         """Merge worker-local per-model vLLM overrides into an incoming lane config.
 
         Reads engines.vllm.model_overrides from config.yml and merges matching
@@ -2136,11 +2206,12 @@ class LaneManager:
         Logos server sends.
         """
         if lane_config.vllm_config is None:
-            return lane_config
+            return lane_config, {}
         overrides = self._vllm_engine_config.model_overrides.get(lane_config.model) or {}
         disable_sleep = self._vllm_engine_config.disable_sleep_mode
-        if not overrides and not disable_sleep:
-            return lane_config
+        baseline = dict(self._override_baselines.get(lane_id, {})) if lane_id else {}
+        if not overrides and not disable_sleep and not baseline:
+            return lane_config, baseline
         engine_fields = VllmConfig.model_fields
         engine_overrides = {k: v for k, v in overrides.items() if k in engine_fields}
         profile_overrides = {k: v for k, v in overrides.items() if k not in engine_fields}
@@ -2154,7 +2225,12 @@ class LaneManager:
             )
             if self._model_profiles is not None:
                 self._model_profiles.add_overrides({lane_config.model: profile_overrides})
-        merged = {**lane_config.vllm_config.model_dump(), **engine_overrides}
+        current = lane_config.vllm_config.model_dump()
+        for key in set(baseline) - set(engine_overrides):
+            current[key] = baseline.pop(key)  # the override is gone: the original returns
+        for key in engine_overrides:
+            baseline.setdefault(key, current[key])
+        merged = {**current, **engine_overrides}
         if disable_sleep:
             merged["enable_sleep_mode"] = False
         new_vc = VllmConfig.model_validate(merged)
@@ -2168,7 +2244,7 @@ class LaneManager:
             lane_config.model,
             applied,
         )
-        return lane_config.model_copy(update={"vllm_config": new_vc})
+        return lane_config.model_copy(update={"vllm_config": new_vc}), baseline
 
     def _auto_tensor_parallel(self, lane_config: LaneConfig) -> LaneConfig:
         """Validate and optionally escalate tensor_parallel_size for vLLM lanes.
@@ -3196,7 +3272,8 @@ class LaneManager:
                         effective,
                         "tmpfs RAM cache" if is_tmpfs else "source filesystem",
                     )
-            lane_config = self._apply_model_vllm_overrides(lane_config)
+            self._forget_lane_overrides(lane_id)
+            lane_config = self._apply_model_vllm_overrides(lane_config, lane_id)
             lane_config = self._auto_tensor_parallel(lane_config)
             lane_config = await self._place_for_spawn(lane_id, lane_config, claim)
             # Last line of defence at the resource itself: an operator-explicit
@@ -4138,6 +4215,8 @@ class LaneManager:
     async def _restart_stuck_lane(self, lane_id: str, lane_config: LaneConfig) -> None:
         """Attempt to restart a lane that was killed by stuck detection."""
         logger.info("Lane '%s': attempting automatic restart after stuck detection", lane_id)
+        # The saved config predates changes to the node's overrides.
+        lane_config = self._refresh_node_overrides(lane_id, lane_config)
         self._record_event(lane_id, "stuck_restart_attempt", model=lane_config.model)
         try:
             async with self._lock:
@@ -4148,6 +4227,7 @@ class LaneManager:
                     )
                     return
                 await self._restart_lane_unlocked(lane_id, lane_config)
+                self._settle_node_overrides(lane_id)
             logger.info("Lane '%s': automatic restart after stuck detection succeeded", lane_id)
             self._record_event(lane_id, "stuck_restart_ok", model=lane_config.model)
         except Exception:

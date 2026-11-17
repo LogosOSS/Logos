@@ -352,12 +352,9 @@ def engine_vllm_overrides(model: str) -> dict[str, Any]:
         "kv_cache_memory_bytes",
         "max_model_len",
         "max_num_seqs",
-        "max_num_batched_tokens",
         "enforce_eager",
         "dtype",
-        "block_size",
         "enable_prefix_caching",
-        "enable_chunked_prefill",
         "reasoning_parser",
     ):
         if key in spec and spec[key] is not None:
