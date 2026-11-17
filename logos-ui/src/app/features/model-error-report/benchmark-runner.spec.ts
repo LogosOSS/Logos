@@ -250,7 +250,7 @@ describe('Benchmark runner', () => {
 });
 
 describe('Benchmark provider picker', () => {
-  it('displays the online selection after asynchronously loaded options arrive', async () => {
+  it('selects the online provider and preserves the form when navigating performance sections', async () => {
     const offline = { model_provider_id: 1, provider_id: 1, provider_name: 'Offline worker',
       provider_type: 'logosnode', endpoint_configured: true } as ModelBenchmarkPair;
     const online = { ...offline, model_provider_id: 2, provider_id: 2, provider_name: 'Online worker' };
@@ -285,7 +285,65 @@ describe('Benchmark provider picker', () => {
     expect(picker.value).toBe('2');
     expect(picker.selectedOptions[0].textContent).toContain('Online worker · Online');
     expect(picker.options[0].disabled).toBe(true);
+    const samples = fixture.nativeElement.querySelector('input[aria-label="Sample size"]') as HTMLInputElement;
+    samples.value = '7';
+    samples.dispatchEvent(new Event('input'));
+    const navigation = fixture.nativeElement.querySelector('nav[aria-label="Performance sections"]') as HTMLElement;
+    for (const view of ['measurements', 'analysis', 'results', 'run']) {
+      const button = navigation.querySelector(`[aria-controls="performance-${view}"]`) as HTMLButtonElement;
+      button.click();
+      fixture.detectChanges();
+      expect(button.getAttribute('aria-pressed')).toBe('true');
+      const visible = [...fixture.nativeElement.querySelectorAll('.performance-view')].filter((panel: any) => !panel.hidden);
+      expect(visible.map((panel: any) => panel.id)).toEqual([`performance-${view}`]);
+    }
+    expect(samples.value).toBe('7');
+    expect(picker.value).toBe('2');
+    expect(component.benchmarkSettingsOpen()).toBe(false);
+    const customize = fixture.nativeElement.querySelector('.benchmark-customize-button') as HTMLButtonElement;
+    customize.click();
+    fixture.detectChanges();
+    expect(component.benchmarkSettingsOpen()).toBe(true);
+    component.benchmarkSettings.update(value => ({ ...value, max_output_tokens: 256 }));
+    component.benchmarkSettingsOpen.set(false);
+    fixture.detectChanges();
+    expect(component.benchmarkSettings().max_output_tokens).toBe(256);
+    expect(samples.value).toBe('7');
     fixture.destroy();
     vi.restoreAllMocks();
+  });
+});
+
+describe('Benchmark deletion feedback', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows a rejected deletion outside the hidden overview while analysis stays selected', async () => {
+    const deleteBenchmark = vi.fn().mockRejectedValue(new Error('Service unavailable'));
+    TestBed.configureTestingModule({
+      imports: [ModelErrorReport],
+      providers: [provideRouter([]), provideHttpClient(), {
+        provide: ModelManagementService, useValue: { deleteBenchmark },
+      }],
+    });
+    vi.spyOn(ModelErrorReport.prototype, 'ngOnInit').mockResolvedValue();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const fixture = TestBed.createComponent(ModelErrorReport);
+    const component = fixture.componentInstance;
+    component.model.set({ id: 1, name: 'Test model' } as any);
+    component.loading.set(false);
+    component.activeTab.set('performance');
+    component.performanceView.set('analysis');
+    fixture.detectChanges();
+
+    await component.deleteBenchmark({ id: 7, recorded_at: '2026-11-17T04:00:00Z' } as ModelProviderBenchmark);
+    fixture.detectChanges();
+
+    expect(deleteBenchmark).toHaveBeenCalledWith(7);
+    expect(component.performanceView()).toBe('analysis');
+    const error = fixture.nativeElement.querySelector('app-error-message') as HTMLElement;
+    expect(error.textContent).toContain('Could not delete the selected benchmark run.');
+    expect(error.closest('[hidden]')).toBeNull();
+    expect(component.benchmarkDeletingId()).toBeNull();
+    fixture.destroy();
   });
 });
