@@ -12,7 +12,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param protect              whether this Logos is protected: its page asks the admin to confirm in a dialog, and the
  *                             Logos accepts only the tags of {@code restrictedTagPattern}. Default: yes, so that a
  *                             Logos that nobody configured is safe. Prod keeps it; Dev and Test switch it off.
- * @param restrictedTagPattern which tags a protected Logos accepts. Default: {@code latest} and release tags
+ * @param restrictedTagPattern which tags a protected Logos accepts. Default: {@code latest} and release versions such
+ *                             as {@code 1.0.2}
  * @param silenceLimit         how long a started step may stay silent before Logos ends it as timed out
  * @param onlineAfter          a deployer counts as online if it was seen within this time
  * @param pollHoldMax          the longest time a request for orders waits for one to appear
@@ -26,7 +27,11 @@ public record DeploymentProperties(
     Duration pollHoldMax
 ) {
 
-    public static final String DEFAULT_RESTRICTED_TAG_PATTERN = "(latest|v[0-9][A-Za-z0-9._-]*)";
+    /**
+     * {@code latest} and release versions. The release workflow tags the image of the release {@code v1.0.2} with
+     * {@code 1.0.2}, without the {@code v} of the git tag. A suffix such as {@code -rc1} is allowed.
+     */
+    public static final String DEFAULT_RESTRICTED_TAG_PATTERN = "(latest|[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?)";
 
     public DeploymentProperties {
         restrictedTagPattern = restrictedTagPattern == null || restrictedTagPattern.isBlank()

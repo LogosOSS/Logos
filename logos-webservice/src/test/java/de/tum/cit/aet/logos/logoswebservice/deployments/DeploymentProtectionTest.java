@@ -26,7 +26,7 @@ import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 
 /**
  * A Logos that nobody configured is protected (Prod): its page asks for a confirmation, and it accepts only
- * {@code latest} and release tags. The test does not set {@code logos.deployments.protect}, so it also pins that
+ * {@code latest} and release versions. The test does not set {@code logos.deployments.protect}, so it also pins that
  * default. Dev and Test switch the protection off.
  */
 @SpringBootTest
@@ -82,13 +82,14 @@ class DeploymentProtectionTest {
     }
 
     @Test
-    void aProtectedLogosAcceptsOnlyLatestAndReleaseTags() throws Exception {
+    void aProtectedLogosAcceptsOnlyLatestAndReleaseVersions() throws Exception {
         onlineCoreDeployer();
 
         rawStart("pr-93")
             .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.error").value("This Logos accepts only 'latest' and release tags, not 'pr-93'."));
+            .andExpect(jsonPath("$.error")
+                .value("This Logos accepts only 'latest' and release versions like '1.0.2', not 'pr-93'."));
         rawStart("main").andExpect(status().isBadRequest());
-        rawStart("latest").andExpect(status().isCreated());
+        rawStart("1.0.2").andExpect(status().isCreated());
     }
 }

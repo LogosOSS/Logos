@@ -8,8 +8,8 @@ import de.tum.cit.aet.logos.logoswebservice.deployments.DeploymentProperties;
 
 /**
  * Which image tags this Logos may be given. Every tag must be a Docker tag, because the deployer passes it to Compose.
- * A protected Logos (Prod) accepts only {@code latest} and release tags, which come from reviewed code. A pull request
- * build can run on Dev and Test, which are not protected.
+ * A protected Logos (Prod) accepts only {@code latest} and release versions such as {@code 1.0.2}, which come from
+ * reviewed code. A pull request build can run on Dev and Test, which are not protected.
  */
 @Component
 public class TagPolicy {
@@ -36,7 +36,7 @@ public class TagPolicy {
         }
         if (properties.protect() && !restricted.matcher(tag).matches()) {
             throw new IllegalArgumentException(
-                "This Logos accepts only 'latest' and release tags, not '" + tag + "'.");
+                "This Logos accepts only 'latest' and release versions like '1.0.2', not '" + tag + "'.");
         }
     }
 }

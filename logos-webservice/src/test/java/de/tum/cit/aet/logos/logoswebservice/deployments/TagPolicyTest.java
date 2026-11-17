@@ -17,17 +17,25 @@ class TagPolicyTest {
     private final TagPolicy open = new TagPolicy(new DeploymentProperties(false, null, null, null, null));
 
     @ParameterizedTest
-    @ValueSource(strings = {"latest", "v1", "v2026.10.4", "v1.2.3-rc1", "v1_x"})
-    void aProtectedLogosAcceptsLatestAndReleaseTags(String tag) {
+    @ValueSource(strings = {"latest", "1.0.2", "2026.10.4", "1.2.3-rc1", "1.2.3-rc.1"})
+    void aProtectedLogosAcceptsLatestAndReleaseVersions(String tag) {
         assertThatCode(() -> protectedLogos.check(tag)).doesNotThrowAnyException();
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"pr-93", "main", "abc1234", "V1", "vx", "latest2"})
+    @ValueSource(strings = {"pr-93", "main", "abc1234", "1.2", "latest2"})
     void aProtectedLogosRefusesTheOthers(String tag) {
         assertThatThrownBy(() -> protectedLogos.check(tag))
             .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("This Logos accepts only 'latest' and release tags");
+            .hasMessageContaining("This Logos accepts only 'latest' and release versions like '1.0.2'");
+    }
+
+    /** The release workflow tags the image of the release v1.0.2 with 1.0.2, so no image has the tag v1.0.2. */
+    @Test
+    void theGitTagOfAReleaseIsRefused() {
+        assertThatThrownBy(() -> protectedLogos.check("v1.0.2"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessage("This Logos accepts only 'latest' and release versions like '1.0.2', not 'v1.0.2'.");
     }
 
     @ParameterizedTest

@@ -561,8 +561,8 @@ for the worker. The risk is accepted for these reasons:
   against strict patterns before it accepts a request. The free text of `--requested-by` is only stored in the record.
   An order from Logos goes through the same checks, and the manager takes nothing else from it that reaches a command.
   A Logos can therefore order any tag that exists in the registry for its own hosts, and nothing more. Prod accepts
-  only `latest` and release tags, which Logos checks before it makes the order. A host obeys its own Logos only, so no
-  other Logos can order anything on it.
+  only `latest` and release versions such as `1.0.2`, which Logos checks before it makes the order. A host obeys its
+  own Logos only, so no other Logos can order anything on it.
 * The key that a Logos made for a host fetches the orders of that host and reports for that host only. It cannot place
   an order or read anything else. Logos stores only a hash of the key.
 * The container sees little of the host: the worker directory (read-only), its own state directory and the socket. The
@@ -574,8 +574,9 @@ for the worker. The risk is accepted for these reasons:
   Compose treats a compose file as trusted input: it can ask for privileged containers and for any host mount. Whoever
   can push an image to the tag of the registry then decides what runs as root on that host. This is already true of the
   image of the manager itself, which holds the socket, but that image changes only when a person updates it. Keep push
-  access to the registry limited, and let Prod take only `latest` and release tags (Logos checks that before it makes the
-  order). The manager checks the file with `docker compose config -q` and does not judge what it asks for.
+  access to the registry limited, and let Prod take only `latest` and release versions such as `1.0.2` (Logos checks
+  that before it makes the order). The manager checks the file with `docker compose config -q` and does not judge what
+  it asks for.
 * A self-update starts a second container, the helper, which also holds the socket. It has no more than the manager has:
   the volumes of the manager with the same modes (`--volumes-from`), the same hardening and no network. It gets the
   settings of the manager as variables, and no key: a name that ends in `KEY`, `PASSWORD`, `TOKEN` or `SECRET` stays out,

@@ -98,7 +98,8 @@ account.
 
 Only pushes to `main` write to the mirror. A pull request builds to Harbor only.
 There, the cleanup workflow prunes its `pr-<number>` tag. A release also
-publishes its version tag to Harbor. Nothing prunes a public package, so PR
+publishes its version tag to Harbor. The version tag has no `v`. For example,
+the release `v1.0.2` has the tag `1.0.2`. Nothing prunes a public package, so PR
 builds and release builds do not go to the mirror. When a package appears for the
 first time, check that it is public. A private package gives a 403 to a
 self-hosted installation. To fix this, use Package settings → Change visibility.
@@ -452,8 +453,9 @@ and a worker host need different steps, because a worker needs no key of its own
 
 1. On Dev and Test, set the variable `LOGOS_DEPLOYMENTS_PROTECTED` to `false` in
    the GitHub environment of the core host. Do not set it on Prod. A protected
-   Logos asks for a confirmation in a dialog and accepts only `latest` and
-   release tags. Every Logos is protected unless you set the variable.
+   Logos asks for a confirmation in a dialog. It accepts only `latest` and
+   release versions such as `1.0.2`. Every Logos is protected unless you set
+   the variable.
 2. Make sure that the core of the environment runs a version of Logos that has the
    page **Deployments**. If it does not, deploy it with the deploy workflow of the
    environment, for example **Logos - Deploy to Dev**. The page shows no deployer
@@ -481,7 +483,7 @@ made for the core host. Do not give a host a key of another environment.
 
 | Variable | Where | Meaning |
 |---|---|---|
-| `LOGOS_DEPLOYMENTS_PROTECTED` | Core | `true` (default) or `false`. A protected Logos shows a warning, asks you to confirm in a dialog, and accepts only `latest` and release tags. Set it to `false` on Dev and Test. |
+| `LOGOS_DEPLOYMENTS_PROTECTED` | Core | `true` (default) or `false`. A protected Logos shows a warning, asks you to confirm in a dialog, and accepts only `latest` and release versions such as `1.0.2`. Set it to `false` on Dev and Test. |
 | `LOGOS_DEPLOYMENTS_SILENCE_LIMIT` | Core | How long a started step can stay silent before Logos ends it. Default: `30m`. |
 | `LOGOS_DEPLOYER_KEY` | Core host | The key that the Logos of the environment made for the core deployer. |
 | `LOGOS_API_KEY` | Worker host | The worker key. The node manager of the worker uses it to ask the Logos of the environment for orders. A worker needs no `LOGOS_DEPLOYER_KEY`. |
@@ -533,7 +535,8 @@ last. A problem with the deployer does not stop the deployment.
 
 1. Open the page **Deployments** of the Logos of the environment that you want to
    deploy.
-2. Enter an image tag. Prod accepts only `latest` and release tags.
+2. Enter an image tag. Prod accepts only `latest` and release versions. For the
+   release `v1.0.2`, enter `1.0.2`.
 3. Click **Deploy**. On Prod, a dialog asks you to confirm. Click **Deploy** in
    the dialog to start the deployment, or click **Cancel** to not start it. Dev
    and Test start at once, without a dialog.
