@@ -57,6 +57,8 @@ class SchedulingResult:
     # Warmth of the chosen deployment at decision time:
     # -1 = cold, 0 = warm but idle, 1+x = running with x queued (None = cloud)
     warmth_state: Optional[int] = None
+    # Observed candidates, captured before reservation; never used for routing.
+    routing_candidates: Optional[List[Dict[str, Any]]] = None
 
     def __post_init__(self):
         if self.provider_metrics is None:
