@@ -63,9 +63,11 @@ describe('NodeSettingsPage', () => {
   it('shows the stored settings of the node', async () => {
     const root = await create();
 
-    expect(root.querySelector('h1')?.textContent).toContain('Node settings');
-    expect(root.textContent).toContain('hochbruegge');
-    expect((root.querySelector('#gpu-mode') as HTMLSelectElement).value).toBe('all');
+    expect(root.querySelector('h1')?.textContent).toContain('hochbruegge');
+    expect(root.textContent).toContain('Settings for the whole node');
+    expect(root.querySelector('.seg--on')?.textContent).toContain('All');
+    expect(root.textContent).toContain('2 × 39 GB');
+    expect(root.querySelectorAll('.gpu--on').length).toBe(2);
     expect(root.textContent).toContain('No changes.');
     expect(saveButton(root).disabled).toBe(true);
   });
@@ -78,7 +80,7 @@ describe('NodeSettingsPage', () => {
     (root.querySelector('.retry') as HTMLButtonElement).click();
     await settle();
 
-    expect(root.querySelector('#gpu-mode')).not.toBeNull();
+    expect(root.querySelector('.seg')).not.toBeNull();
   });
 
   it('needs a node', async () => {
@@ -102,19 +104,40 @@ describe('NodeSettingsPage', () => {
     expect(saveButton(root).disabled).toBe(false);
   });
 
-  it('lists the GPUs of the node when a selection is wanted', async () => {
+  it('drops and adds single GPUs, and says all or none when that is what is left', async () => {
     const root = await create();
 
-    page().setMode('pick');
     page().toggleGpu(1);
     fixture.detectChanges();
-
     expect(root.querySelectorAll('.gpu').length).toBe(2);
-    expect(root.textContent).toContain('GPU pool: all → 1');
+    expect(root.querySelectorAll('.gpu--on').length).toBe(1);
+    expect(root.textContent).toContain('GPU pool: all → 0');
+
     page().toggleGpu(1);
     fixture.detectChanges();
-    expect(root.textContent).toContain('Select at least one GPU');
-    expect(saveButton(root).disabled).toBe(true);
+    expect(page().draft()!.gpuMode).toBe('all');
+    expect(page().dirty()).toBe(false);
+
+    page().toggleGpu(0);
+    page().toggleGpu(1);
+    fixture.detectChanges();
+    expect(page().draft()!.gpuMode).toBe('none');
+    expect(root.textContent).toContain('GPU pool: all → none');
+    expect(saveButton(root).disabled).toBe(false);
+  });
+
+  it('sets the pool with All and None and goes back to the default', async () => {
+    const root = await create();
+
+    page().setMode('none');
+    fixture.detectChanges();
+    expect(root.querySelector('.seg--on')?.textContent).toContain('None');
+    expect(root.querySelectorAll('.gpu--on').length).toBe(0);
+
+    (Array.from(root.querySelectorAll('button')).find((b) => b.textContent?.includes('Use default')) as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(page().draft()!.gpuMode).toBe('default');
+    expect(root.querySelectorAll('.gpu--dim').length).toBe(2);
   });
 
   it('blocks Save with a message at the field while a value cannot be right', async () => {

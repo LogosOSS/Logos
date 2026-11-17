@@ -68,14 +68,20 @@ def test_the_benchmark_view_names_the_best_runs_and_the_current_settings():
         "best_observed": {"benchmark_id": 3, "throughput": 60.0},
         "best_eligible": {"benchmark_id": 2, "throughput": 52.3},
     }
-    runs = {2: {"serving": {"tensor_parallel_size": 4}, "recorded_at": "t2"}, 3: {"serving": {}, "recorded_at": "t3"}}
+    runs = {
+        2: {"serving": {"tensor_parallel_size": 4}, "recorded_at": "t2", "ttft_s": 0.47, "latency_s": 5.5},
+        3: {"serving": {}, "recorded_at": "t3"},
+    }
     view = benchmark_view(summary, runs, {"tensor_parallel_size": 2})
     assert view["best_eligible"] == {
         "benchmark_id": 2,
         "throughput": 52.3,
         "settings": {"tensor_parallel_size": 4},
         "recorded_at": "t2",
+        "ttft_s": 0.47,
+        "latency_s": 5.5,
     }
+    assert view["best_observed"]["ttft_s"] is None
     assert view["best_observed"]["benchmark_id"] == 3 and view["eligible_for_comparison"] is True
     assert view["current"] == {"tensor_parallel_size": 2}
 

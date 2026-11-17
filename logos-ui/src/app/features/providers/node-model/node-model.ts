@@ -9,6 +9,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { combineLatest } from 'rxjs';
@@ -16,11 +17,14 @@ import { combineLatest } from 'rxjs';
 import { ProviderManagementService } from '../../../core/services/provider-management.service';
 import { ErrorMessageComponent } from '../../../shared/components/error-message/error-message';
 import { ModalConfirmComponent } from '../../../shared/components/modal/modal-confirm/modal-confirm';
-import { NodeConfig, NodeInsights } from '../../../shared/models/node-config.model';
+import { NodeConfig, NodeGpuInsight, NodeInsights } from '../../../shared/models/node-config.model';
 import { CalibrationLabel, calibrationLabel, hasTuning } from '../node-models/node-model-status';
 import {
   ADVANCED_FIELDS,
   AdvancedDraft,
+  AdvancedField,
+  FIELD_GROUPS,
+  FieldGroup,
   advancedChanges,
   advancedErrors,
   initialAdvanced,
@@ -34,6 +38,7 @@ import {
   SaveFailure,
   withoutEntry,
   withPlacement,
+  withSettings,
 } from './node-model-edit';
 import {
   advancedSettings,
@@ -50,7 +55,7 @@ import {
 @Component({
   selector: 'app-node-model',
   standalone: true,
-  imports: [ErrorMessageComponent, ModalConfirmComponent, RouterLink],
+  imports: [ErrorMessageComponent, ModalConfirmComponent, NgTemplateOutlet, RouterLink],
   templateUrl: './node-model.html',
   styleUrl: './node-model.scss',
   changeDetection: ChangeDetectionStrategy.Eager,
@@ -91,12 +96,144 @@ export class NodeModel implements OnInit {
 
   readonly kvGb = computed(() => kvToGb(this.settings()['kv_cache_memory_bytes']));
 
+  /** What the page shows: the draft while editing, else the stored placement. */
+  readonly placement = computed<Placement | null>(() => this.draft() ?? this.saved());
+  /** The best benchmark run, eligible or not. */
+  readonly bestRun = computed(() => {
+    const b = this.insight()?.benchmark;
+    return b ? (b.best_eligible ?? b.best_observed) : null;
+  });
+  readonly bestTp = computed(() => Number(this.recommendation()?.settings['tensor_parallel_size']) || null);
+  readonly bestKv = computed(() => kvToGb(this.recommendation()?.settings['kv_cache_memory_bytes']));
+  readonly bestCtx = computed(() => Number(this.recommendation()?.settings['max_model_len']) || null);
+  /** The measured sizes while editing, the placed one while viewing. */
+  readonly tpTiles = computed(() => {
+    const all = this.insight()?.calibration.results ?? [];
+    if (this.editing()) {
+      return all;
+    }
+    const tp = this.placement()?.tp;
+    const placed = all.filter((r) => r.tp === tp);
+    return placed.length > 0 ? placed : all.filter((r) => r.active);
+  });
+  /** The largest context the sliders show: the limit of the model, else the best the sweep reached. */
+  readonly ctxMax = computed(() => {
+    const limit = this.insight()?.calibration.context_limit;
+    const sweep = Math.max(0, ...(this.result()?.pairs.map((p) => p.max_model_len ?? 0) ?? [0]));
+    return Math.max(1024, limit ?? sweep);
+  });
+  readonly kvTicks = computed(() => {
+    const w = this.window();
+    if (!w) {
+      return [];
+    }
+    const step = w.max <= 6 ? 1 : 2;
+    const ticks: { label: string; pct: number }[] = [];
+    for (let v = 0; v < w.max; v += step) {
+      if (v === 0 || (w.max - v) / w.max > 0.08) {
+        ticks.push({ label: v === 0 ? '0 GB' : String(v), pct: (v / w.max) * 100 });
+      }
+    }
+    ticks.push({ label: `${w.max} GB`, pct: 100 });
+    return ticks;
+  });
+  readonly ctxTicks = computed(() => {
+    const max = this.ctxMax();
+    const ticks: { label: string; pct: number }[] = [{ label: '0', pct: 0 }];
+    for (let v = 32768; v < max * 0.92; v += 32768) {
+      ticks.push({ label: `${v / 1024}k`, pct: (v / max) * 100 });
+    }
+    ticks.push({ label: `${Math.round(max / 1024)}k`, pct: 100 });
+    return ticks;
+  });
+  /** Where the measured window lies on the KV cache slider, in percent. */
+  readonly kvBand = computed(() => {
+    const w = this.window();
+    return w ? { left: (w.min / w.max) * 100, width: ((w.max - w.min) / w.max) * 100 } : null;
+  });
+  /** How far the context can go at the chosen KV cache size, in percent of the slider. */
+  readonly ctxBand = computed(() => {
+    const cap = this.capacity() ?? this.capacityAtPlacement();
+    return cap ? Math.min(100, (cap / this.ctxMax()) * 100) : 100;
+  });
+  readonly capacityAtPlacement = computed(() => {
+    const p = this.placement();
+    const r = this.result();
+    return p && r ? contextCapacity(r.pairs, p.kvGb, this.insight()?.calibration.context_limit) : null;
+  });
+  /** Figures that follow from the placement: memory use, context, the benchmark of this placement, load times. */
+  readonly figures = computed(() => {
+    const p = this.placement();
+    const r = this.result();
+    if (!p || !r) {
+      return [];
+    }
+    const gb = (mb: number) => (mb / 1024).toFixed(1);
+    const out: { value: string; caption: string }[] = [];
+    const usedMb = r.base_residency_mb != null ? r.base_residency_mb + p.kvGb * 1024 * p.tp : null;
+    const gpuMb = this.insights()?.gpus.find((g) => g.total_mb)?.total_mb ?? null;
+    if (usedMb !== null && gpuMb) {
+      out.push({
+        value: `${gb(usedMb)} of ${Math.round((gpuMb * p.tp) / 1024)} GB`,
+        caption: `GPU memory · ${gb(gpuMb * p.tp - usedMb)} GB free`,
+      });
+    } else if (usedMb !== null) {
+      out.push({ value: `${gb(usedMb)} GB`, caption: 'GPU memory' });
+    }
+    const cap = this.capacityAtPlacement();
+    if (cap) {
+      out.push({ value: `~${cap >= 1000 ? Math.round(cap / 1000) + 'k' : cap} tokens`, caption: 'Context capacity per request' });
+    }
+    const run = this.bestRun();
+    if (run && this.matches(run.settings, p)) {
+      out.push({ value: `${run.throughput.toFixed(1)} tok/s`, caption: 'Throughput · benchmark' });
+      if (run.ttft_s) {
+        out.push({ value: `${run.ttft_s.toFixed(2)} s`, caption: 'Time to first token · benchmark' });
+      }
+      if (run.latency_s) {
+        out.push({ value: `${run.latency_s.toFixed(1)} s`, caption: 'Response time · benchmark' });
+      }
+    }
+    if (r.cold_load_time_s != null) {
+      const wake = r.wake_from_sleep_time_s != null ? ` · wake from sleep ${Math.round(r.wake_from_sleep_time_s)} s` : '';
+      out.push({ value: `${Math.round(r.cold_load_time_s)} s`, caption: `Cold start${wake}` });
+    }
+    return out;
+  });
+
+  /** The tensor-parallel size of the best benchmark run. */
+  readonly bestRunTp = computed(() => Number(this.bestRun()?.settings['tensor_parallel_size']) || null);
+
+  /** Memory of the GPUs a size uses, in GB; 0 when the worker reports no GPU. */
+  gpuSizeGb(tp: number): number {
+    const mb = this.insights()?.gpus.find((g) => g.total_mb)?.total_mb ?? 0;
+    return Math.round((mb * tp) / 1024);
+  }
+
+  /** Whether the serving settings of a benchmark run are this placement. */
+  private matches(settings: Record<string, unknown>, p: Placement): boolean {
+    const tp = Number(settings['tensor_parallel_size']);
+    const kv = kvToGb(settings['kv_cache_memory_bytes']);
+    const ctx = Number(settings['max_model_len']);
+    return tp === p.tp && kv === p.kvGb && (!ctx || ctx === p.ctx);
+  }
+
   // Editing
   readonly editing = signal(false);
   readonly draft = signal<Placement | null>(null);
   readonly adv = signal<AdvancedDraft | null>(null);
   private readonly advStart = signal<AdvancedDraft | null>(null);
   readonly fields = ADVANCED_FIELDS;
+  readonly groups = FIELD_GROUPS;
+  readonly filter = signal('');
+  readonly allOpen = signal(false);
+  /** The engine settings below the first two groups show when asked for or when a filter is typed. */
+  readonly showAll = computed(() => this.allOpen() || this.filter().trim() !== '');
+  /** How many settings the draft sets: the fields with a value and the custom rows. */
+  readonly setCount = computed(() => {
+    const a = this.adv();
+    return a ? Object.values(a.values).filter((v) => v.trim() !== '').length + a.custom.filter((r) => r.key.trim() !== '').length : 0;
+  });
   readonly saving = signal(false);
   readonly failure = signal<SaveFailure | null>(null);
   readonly notice = signal<{ title: string; text: string } | null>(null);
@@ -108,6 +245,7 @@ export class NodeModel implements OnInit {
     return status === 'not_calibrated' || status === 'outdated';
   });
   readonly calibrating = computed(() => this.insight()?.calibrating ?? false);
+  readonly outdated = computed(() => this.insight()?.calibration.status === 'outdated');
   readonly removeOpen = signal(false);
   readonly removing = signal(false);
   readonly removeError = signal<string | null>(null);
@@ -115,6 +253,13 @@ export class NodeModel implements OnInit {
 
   /** A calibrated model can be placed while its worker can check the list. */
   readonly canEdit = computed(() => this.workerOnline() && this.result() !== null);
+  /** The settings of a model can be edited before it has a calibration: only its placement needs one. */
+  readonly canEditSettings = computed(() => this.workerOnline() && this.insight() !== null);
+  /** A model with no measurement has no placement to show. */
+  readonly measured = computed(() => this.result() !== null);
+  readonly advOpen = signal<boolean | null>(null);
+  /** The advanced settings are open unless the model has no calibration yet. */
+  readonly advExpanded = computed(() => this.advOpen() ?? this.measured());
   readonly window = computed(() => kvWindowGb(this.result()));
   readonly saved = computed<Placement | null>(() => {
     const s = this.settings();
@@ -148,7 +293,7 @@ export class NodeModel implements OnInit {
   readonly changes = computed(() => {
     const d = this.draft();
     const s = this.saved();
-    if (!d) return [];
+    if (!d) return this.advChanges();
     const out: string[] = [];
     if (!s) {
       out.push(`TP ${d.tp}`, `KV cache ${d.kvGb} GB per GPU`, `context ${d.ctx}`);
@@ -222,11 +367,11 @@ export class NodeModel implements OnInit {
   }
 
   startEdit(): void {
-    const start = this.initialPlacement();
-    if (!start || !this.canEdit()) {
+    if (!this.canEditSettings()) {
       return;
     }
-    this.draft.set(start);
+    // A model without a calibration has no placement: only its settings are edited.
+    this.draft.set(this.initialPlacement());
     const settings = initialAdvanced(this.entry());
     this.adv.set(settings);
     this.advStart.set(structuredClone(settings));
@@ -281,14 +426,69 @@ export class NodeModel implements OnInit {
   }
 
   applyRecommendation(): void {
-    this.startEdit();
+    if (!this.editing()) {
+      this.startEdit();
+    }
     const d = this.draft();
     const best = this.recommendation()?.settings ?? {};
-    if (!d || !this.window()) {
+    if (!d) {
       return;
     }
-    this.setKv(kvToGb(best['kv_cache_memory_bytes']) ?? d.kvGb);
+    const tp = Number(best['tensor_parallel_size']);
+    if (tp && this.insight()?.calibration.results.some((r) => r.tp === tp)) {
+      this.setTp(tp);
+    }
+    if (!this.window()) {
+      return;
+    }
+    this.setKv(kvToGb(best['kv_cache_memory_bytes']) ?? this.draft()!.kvGb);
     this.setCtx(Number(best['max_model_len']) || this.draft()!.ctx);
+  }
+
+  /** The fields of a group that match the filter. */
+  fieldsOf(group: FieldGroup): AdvancedField[] {
+    const q = this.filter().trim().toLowerCase();
+    return this.fields.filter(
+      (f) => f.group === group.id && (q === '' || f.label.toLowerCase().includes(q) || f.key.includes(q)),
+    );
+  }
+
+  /** Whether a group of the lower part has a field left after filtering. */
+  groupVisible(group: FieldGroup): boolean {
+    return (group.top || this.showAll()) && this.fieldsOf(group).length > 0;
+  }
+
+  isSet(key: string): boolean {
+    return (this.adv()?.values[key] ?? '').trim() !== '';
+  }
+
+  /** The GPUs of this node; empty when the worker reports none. */
+  nodeGpus(): NodeGpuInsight[] {
+    return this.insights()?.gpus ?? [];
+  }
+
+  /** A GPU is chosen when the list names it; no list means all of them. */
+  modelGpuOn(index: number): boolean {
+    const text = (this.adv()?.values['gpu_devices'] ?? '').trim();
+    return text === '' || text.split(',').map(Number).includes(index);
+  }
+
+  /** A tile adds or drops one GPU; all GPUs clear the setting, and the last GPU cannot be dropped. */
+  toggleModelGpu(index: number): void {
+    const all = this.nodeGpus().map((g) => g.index);
+    const chosen = all.filter((g) => (g === index ? !this.modelGpuOn(g) : this.modelGpuOn(g)));
+    if (chosen.length === 0) {
+      return;
+    }
+    this.setAdv('gpu_devices', chosen.length === all.length ? '' : chosen.join(','));
+  }
+
+  gpuFreeGb(gpu: NodeGpuInsight): string {
+    return gpu.total_mb ? `${(((gpu.total_mb - (gpu.used_mb ?? 0)) / 1024)).toFixed(1)} GB free` : '';
+  }
+
+  gpuUsedPct(gpu: NodeGpuInsight): number {
+    return gpu.total_mb ? Math.min(100, ((gpu.used_mb ?? 0) / gpu.total_mb) * 100) : 0;
   }
 
   setAdv(key: string, value: string): void {
@@ -338,7 +538,8 @@ export class NodeModel implements OnInit {
     const id = this.providerId();
     const cfg = this.config();
     const d = this.draft();
-    if (id === null || !cfg || !d || this.saving()) {
+    const adv = this.adv();
+    if (id === null || !cfg || (!d && !adv) || this.saving()) {
       return;
     }
     this.saving.set(true);
@@ -347,7 +548,7 @@ export class NodeModel implements OnInit {
       await this.service.replaceNodeConfig(
         id,
         cfg.revision,
-        withPlacement(cfg.entries, this.modelName(), d, this.adv() ?? undefined),
+        d ? withPlacement(cfg.entries, this.modelName(), d, adv ?? undefined) : withSettings(cfg.entries, this.modelName(), adv!),
       );
       await this.refresh();
       this.editing.set(false);

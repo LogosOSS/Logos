@@ -1,17 +1,43 @@
 import { NodeConfigEntry } from '../../../shared/models/node-config.model';
 import { entrySettings } from './node-model-format';
 
-export type FieldKind = 'text' | 'int' | 'num' | 'tri' | 'percent' | 'lines';
+export type FieldKind = 'text' | 'int' | 'num' | 'tri' | 'percent' | 'lines' | 'select' | 'gpus';
+
+export type GroupId = 'placement' | 'engine' | 'memory' | 'performance' | 'serving' | 'arguments';
+
+export interface FieldGroup {
+  id: GroupId;
+  title: string;
+  /** Shown at once; the others sit under "All engine settings". */
+  top: boolean;
+}
+
+export const FIELD_GROUPS: FieldGroup[] = [
+  { id: 'placement', title: 'Placement', top: true },
+  { id: 'engine', title: 'Engine', top: true },
+  { id: 'memory', title: 'Memory and precision', top: false },
+  { id: 'performance', title: 'Performance and stability', top: false },
+  { id: 'serving', title: 'Serving', top: false },
+  { id: 'arguments', title: 'Arguments', top: false },
+];
+
+export interface FieldOption {
+  value: string;
+  label: string;
+}
 
 export interface AdvancedField {
   key: string;
   label: string;
   kind: FieldKind;
+  group: GroupId;
   where: 'overrides' | 'capability';
   help: string;
   placeholder?: string;
   min?: number;
   max?: number;
+  unit?: string;
+  options?: FieldOption[];
 }
 
 export interface CustomRow {
@@ -25,20 +51,33 @@ export interface AdvancedDraft {
   custom: CustomRow[];
 }
 
+const DEFAULT_OPTION: FieldOption = { value: '', label: 'Default' };
+
 export const ADVANCED_FIELDS: AdvancedField[] = [
+  {
+    key: 'gpu_devices',
+    label: 'GPU devices',
+    kind: 'gpus',
+    group: 'placement',
+    where: 'capability',
+    help: 'The GPUs this model may use. All of them by default.',
+  },
   {
     key: 'min_context_fraction',
     label: 'Minimum context share',
     kind: 'percent',
+    group: 'placement',
     where: 'capability',
     min: 0,
     max: 100,
+    unit: '%',
     help: 'The planner only places this model where it can offer at least this share of its context window. 100 % means full context or nothing.',
   },
   {
     key: 'max_num_seqs',
     label: 'Max. parallel requests',
     kind: 'int',
+    group: 'engine',
     where: 'overrides',
     min: 1,
     placeholder: 'Default',
@@ -48,20 +87,15 @@ export const ADVANCED_FIELDS: AdvancedField[] = [
     key: 'enable_prefix_caching',
     label: 'Prefix caching',
     kind: 'tri',
+    group: 'engine',
     where: 'overrides',
     help: 'Reuse the KV cache of shared prompt beginnings.',
-  },
-  {
-    key: 'enforce_eager',
-    label: 'Eager mode',
-    kind: 'tri',
-    where: 'overrides',
-    help: 'Skip CUDA graph capture. Slower, but avoids graph memory overhead.',
   },
   {
     key: 'gpu_memory_utilization',
     label: 'GPU memory fraction',
     kind: 'num',
+    group: 'memory',
     where: 'overrides',
     min: 0.1,
     max: 1,
@@ -69,25 +103,148 @@ export const ADVANCED_FIELDS: AdvancedField[] = [
     help: 'Share of each GPU vLLM may use. Empty derives it from calibration.',
   },
   {
+    key: 'dtype',
+    label: 'Compute precision',
+    kind: 'select',
+    group: 'memory',
+    where: 'overrides',
+    options: [
+      DEFAULT_OPTION,
+      { value: 'auto', label: 'Auto' },
+      { value: 'half', label: 'half (float16)' },
+      { value: 'bfloat16', label: 'bfloat16' },
+      { value: 'float32', label: 'float32' },
+    ],
+    help: 'Data type of the weights and activations.',
+  },
+  {
     key: 'quantization',
     label: 'Quantization',
     kind: 'text',
+    group: 'memory',
     where: 'overrides',
     placeholder: 'From the model',
     help: 'Must match the model weights. Usually detected automatically.',
   },
   {
+    key: 'kv_cache_dtype',
+    label: 'KV cache data type',
+    kind: 'select',
+    group: 'memory',
+    where: 'overrides',
+    options: [
+      DEFAULT_OPTION,
+      { value: 'auto', label: 'Auto' },
+      { value: 'fp8', label: 'fp8' },
+      { value: 'fp8_e4m3', label: 'fp8_e4m3' },
+      { value: 'fp8_e5m2', label: 'fp8_e5m2' },
+    ],
+    help: 'fp8 shrinks the KV cache on supported GPUs.',
+  },
+  {
+    key: 'cpu_offload_gb',
+    label: 'CPU offload',
+    kind: 'num',
+    group: 'memory',
+    where: 'overrides',
+    min: 0,
+    max: 1024,
+    unit: 'GB',
+    placeholder: '0 (off)',
+    help: 'CPU memory used to offload weights. Slower, but fits larger models.',
+  },
+  {
+    key: 'mm_processor_cache_gb',
+    label: 'Multimodal cache',
+    kind: 'num',
+    group: 'memory',
+    where: 'overrides',
+    min: 0,
+    max: 1024,
+    unit: 'GB',
+    placeholder: 'Default',
+    help: 'Cache for image and audio inputs. 0 turns it off.',
+  },
+  {
+    key: 'enforce_eager',
+    label: 'Eager mode',
+    kind: 'tri',
+    group: 'performance',
+    where: 'overrides',
+    help: 'Skip CUDA graph capture. Slower, but avoids graph memory overhead.',
+  },
+  {
+    key: 'attention_backend',
+    label: 'Attention backend',
+    kind: 'select',
+    group: 'performance',
+    where: 'overrides',
+    options: [
+      DEFAULT_OPTION,
+      { value: 'FLASHINFER', label: 'FLASHINFER' },
+      { value: 'FLASH_ATTN', label: 'FLASH_ATTN' },
+      { value: 'TRITON_ATTN', label: 'TRITON_ATTN' },
+      { value: 'FLEX_ATTENTION', label: 'FLEX_ATTENTION' },
+    ],
+    help: 'The attention kernel. Empty lets vLLM choose.',
+  },
+  {
+    key: 'cuda_graph_sizes',
+    label: 'CUDA graph sizes',
+    kind: 'text',
+    group: 'performance',
+    where: 'overrides',
+    placeholder: 'vLLM default, e.g. 1,2,4,8',
+    help: 'Batch sizes to capture, comma separated. Ignored in eager mode.',
+  },
+  {
+    key: 'disable_custom_all_reduce',
+    label: 'Disable custom all-reduce',
+    kind: 'tri',
+    group: 'performance',
+    where: 'overrides',
+    help: 'On turns the custom all-reduce kernel off. Use it when multi-GPU runs hang.',
+  },
+  {
     key: 'chat_template',
     label: 'Chat template',
     kind: 'text',
+    group: 'serving',
     where: 'overrides',
     placeholder: 'From the model',
     help: 'A file name in the chat-templates folder of the worker.',
   },
   {
+    key: 'tool_call_parser',
+    label: 'Tool call parser',
+    kind: 'text',
+    group: 'serving',
+    where: 'overrides',
+    placeholder: 'None',
+    help: 'The parser for tool calls, for example hermes.',
+  },
+  {
+    key: 'reasoning_parser',
+    label: 'Reasoning parser',
+    kind: 'text',
+    group: 'serving',
+    where: 'overrides',
+    placeholder: 'None',
+    help: 'The parser that separates reasoning from the answer.',
+  },
+  {
+    key: 'enable_auto_tool_choice',
+    label: 'Automatic tool choice',
+    kind: 'tri',
+    group: 'serving',
+    where: 'overrides',
+    help: 'Let the model decide when to call a tool.',
+  },
+  {
     key: 'extra_args',
     label: 'Extra arguments',
     kind: 'lines',
+    group: 'arguments',
     where: 'overrides',
     placeholder: '--max-num-batched-tokens=2048',
     help: 'Passed to vllm serve, one per line.',
@@ -138,8 +295,12 @@ export function advancedErrors(draft: AdvancedDraft): Record<string, string> {
       errors[field.key] = `Use a whole number of ${field.min ?? 0} or more.`;
     } else if ((field.kind === 'num' || field.kind === 'percent') && !(Number.isFinite(n) && n >= field.min! && n <= field.max!)) {
       errors[field.key] = `Use a value from ${field.min} to ${field.max}.`;
-    } else if (field.key === 'quantization' && !/^[a-zA-Z0-9_.-]*$/.test(text)) {
+    } else if (['quantization', 'tool_call_parser', 'reasoning_parser'].includes(field.key) && !/^[a-zA-Z0-9_.-]*$/.test(text)) {
       errors[field.key] = 'Use letters, digits, dots, dashes and underscores only.';
+    } else if (field.key === 'cuda_graph_sizes' && !/^\d+(,\d+)*$/.test(text)) {
+      errors[field.key] = 'Use whole numbers separated by commas, like 1,2,4,8.';
+    } else if (field.kind === 'gpus' && !/^\d+(,\d+)*$/.test(text)) {
+      errors[field.key] = 'Use GPU numbers separated by commas, like 0,1.';
     } else if (field.key === 'chat_template' && text.includes('..')) {
       errors[field.key] = 'A file name cannot contain "..".';
     }

@@ -284,6 +284,15 @@ def _text(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
 
+def _seconds(milliseconds: Any) -> Optional[float]:
+    """A latency stored in milliseconds, in seconds; None when it was not measured."""
+    try:
+        value = float(milliseconds) / 1000.0
+    except (TypeError, ValueError):
+        return None
+    return round(value, 3) if value > 0 else None
+
+
 def _slice_gpu_count(value: Any) -> Optional[int]:
     """A plausible GPU count, else None; an unchecked value must not fail a report."""
     count = _number(value, int)
@@ -1992,12 +2001,14 @@ class DBManager:
         return {str(row.name): int(row.id) for row in rows}
 
     def get_benchmark_runs(self, run_ids: List[int]) -> Dict[int, Dict[str, Any]]:
-        """Serving settings and time of the given benchmark runs."""
+        """Serving settings, time and mean latencies (seconds) of the given benchmark runs."""
         if not run_ids:
             return {}
         rows = self.session.execute(
             text(
-                "SELECT id, configuration->'serving' AS serving, recorded_at "
+                "SELECT id, configuration->'serving' AS serving, recorded_at, "
+                "metrics->'time_to_first_token_ms'->'successful'->>'mean' AS ttft_ms, "
+                "metrics->'request_latency_ms'->'successful'->>'mean' AS latency_ms "
                 "FROM model_provider_benchmarks WHERE id = ANY(:ids)"
             ),
             {"ids": list(run_ids)},
@@ -2006,6 +2017,8 @@ class DBManager:
             int(row.id): {
                 "serving": row.serving if isinstance(row.serving, dict) else {},
                 "recorded_at": row.recorded_at.isoformat() if row.recorded_at else None,
+                "ttft_s": _seconds(getattr(row, "ttft_ms", None)),
+                "latency_s": _seconds(getattr(row, "latency_ms", None)),
             }
             for row in rows
         }

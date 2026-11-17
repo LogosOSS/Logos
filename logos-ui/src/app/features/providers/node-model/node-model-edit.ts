@@ -89,6 +89,15 @@ export function withPlacement(
   return [...entries, placed({ model_name: model, capability: {}, overrides: {} })];
 }
 
+/** The list with the settings of one model changed and its placement left as it is. */
+export function withSettings(entries: NodeConfigEntry[], model: string, advanced: AdvancedDraft): NodeConfigEntry[] {
+  const current = entries.find((e) => e.model_name === model) ?? { model_name: model, capability: {}, overrides: {} };
+  const changed = applyAdvanced(current, advanced);
+  return entries.some((e) => e.model_name === model)
+    ? entries.map((e) => (e.model_name === model ? changed : e))
+    : [...entries, changed];
+}
+
 /** The list without the entry of one model. */
 export function withoutEntry(entries: NodeConfigEntry[], model: string): NodeConfigEntry[] {
   return entries.filter((e) => e.model_name !== model);

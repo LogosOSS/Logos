@@ -16,7 +16,7 @@ const entry = {
     enforce_eager: true,
     extra_args: ['--a=1', '--b'],
     custom_flag: 'x',
-    attention_backend: 'TRITON_ATTN',
+    swap_space: 'TRITON_ATTN',
   },
 };
 
@@ -30,8 +30,8 @@ describe('reading the settings of an entry', () => {
     expect(draft.values['extra_args']).toBe('--a=1\n--b');
     expect(draft.values['max_num_seqs']).toBe('');
     expect(draft.custom).toEqual([
-      { key: 'attention_backend', value: 'TRITON_ATTN' },
       { key: 'custom_flag', value: 'x' },
+      { key: 'swap_space', value: 'TRITON_ATTN' },
     ]);
   });
 
@@ -172,5 +172,48 @@ describe('listing the changes', () => {
       'Extra arguments: --a=1 --b → default',
       'Custom settings changed',
     ]);
+  });
+});
+
+describe('the groups of the advanced settings', () => {
+  it('puts every field in a group and keeps the keys apart', async () => {
+    const { ADVANCED_FIELDS, FIELD_GROUPS } = await import('./node-model-advanced');
+    const groups = new Set(FIELD_GROUPS.map((g) => g.id));
+
+    expect(ADVANCED_FIELDS.every((f) => groups.has(f.group))).toBe(true);
+    expect(new Set(ADVANCED_FIELDS.map((f) => f.key)).size).toBe(ADVANCED_FIELDS.length);
+    expect(FIELD_GROUPS.filter((g) => g.top).map((g) => g.id)).toEqual(['placement', 'engine']);
+  });
+
+  it('offers a choice for the fields that have a fixed list of values', async () => {
+    const { ADVANCED_FIELDS } = await import('./node-model-advanced');
+    const select = (key: string) => ADVANCED_FIELDS.find((f) => f.key === key)!;
+
+    expect(select('dtype').options!.map((o) => o.value)).toEqual(['', 'auto', 'half', 'bfloat16', 'float32']);
+    expect(select('kv_cache_dtype').options!.map((o) => o.value)).toContain('fp8');
+    expect(select('attention_backend').options!.map((o) => o.value)).toContain('FLASH_ATTN');
+  });
+
+  it('checks the new fields', () => {
+    const draft = (values: Record<string, string>) => ({ values: { ...initialAdvanced(undefined).values, ...values }, custom: [] });
+
+    expect(advancedErrors(draft({ cuda_graph_sizes: '1,2,4,8', gpu_devices: '0,2', cpu_offload_gb: '16', tool_call_parser: 'hermes' }))).toEqual({});
+    const errors = advancedErrors(
+      draft({ cuda_graph_sizes: '1, 2', gpu_devices: 'a', cpu_offload_gb: '-1', mm_processor_cache_gb: '2000', tool_call_parser: 'a b' }),
+    );
+    expect(Object.keys(errors).sort()).toEqual(['cpu_offload_gb', 'cuda_graph_sizes', 'gpu_devices', 'mm_processor_cache_gb', 'tool_call_parser']);
+  });
+
+  it('writes the GPU choice to capability and the others to the overrides', () => {
+    const draft = initialAdvanced(undefined);
+    draft.values['gpu_devices'] = '0,1';
+    draft.values['dtype'] = 'bfloat16';
+    draft.values['cpu_offload_gb'] = '8';
+    draft.values['cuda_graph_sizes'] = '1,2';
+
+    const result = applyAdvanced({ model_name: 'm', capability: {}, overrides: {} }, draft);
+
+    expect(result.capability).toEqual({ gpu_devices: '0,1' });
+    expect(result.overrides).toEqual({ dtype: 'bfloat16', cpu_offload_gb: 8, cuda_graph_sizes: '1,2' });
   });
 });

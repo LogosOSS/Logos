@@ -114,6 +114,11 @@
   align-items: start;
 }
 
+// Without a right column (no benchmark) the cards take the whole width.
+.grid--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .stack {
   display: flex;
   flex-direction: column;
@@ -316,8 +321,8 @@
 }
 
 .banner--info {
-  border-color: rgb(var(--color-primary-500) / 0.5);
-  background: rgb(var(--color-primary-500) / 0.08);
+  border-color: rgb(var(--color-outline-200));
+  background: rgb(var(--color-background-0) / 0.7);
 
   i {
     color: rgb(var(--color-text-accent));
@@ -362,6 +367,7 @@
 .label {
   display: block;
   margin-bottom: 8px;
+  font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -514,9 +520,11 @@ input[type='range'] {
 .btn-remove {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 6px;
   height: 36px;
   padding: 0 16px;
+  white-space: nowrap;
   cursor: pointer;
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-medium);
@@ -598,6 +606,9 @@ input[type='range'] {
 }
 
 .settings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   min-width: 0;
   padding: 0;
   margin: 16px 0 0;
@@ -605,8 +616,8 @@ input[type='range'] {
 }
 
 .gpus {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
   margin-top: 10px;
 }
@@ -636,4 +647,470 @@ input[type='range'] {
   gap: 6px;
   align-items: flex-start;
   margin-bottom: 8px;
+}
+
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+
+  h2 {
+    margin: 0;
+  }
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-700));
+  background: none;
+  border: 0;
+}
+
+.card--row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+
+  h2,
+  p {
+    margin-bottom: 4px;
+  }
+}
+
+@media (max-width: 768px) {
+  .card--row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+.page-sub {
+  margin: 4px 0 0;
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-700));
+}
+
+// A setting as a row: the name and its explanation on the left, the control on the right.
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 320px);
+  gap: 24px;
+  align-items: start;
+  margin-top: 20px;
+
+  .row-text .label {
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  .row-text .hint {
+    margin: 0;
+  }
+
+  .row-control {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+}
+
+.group {
+  margin: 20px 0 4px;
+  padding-bottom: 6px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-wider);
+  text-transform: uppercase;
+  color: rgb(var(--color-typography-700));
+  border-bottom: 1px solid rgb(var(--color-outline-200));
+}
+
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid rgb(var(--color-outline-200));
+  border-radius: 8px;
+
+  button {
+    padding: 6px 16px;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    border-radius: 6px;
+  }
+
+  .seg--on {
+    font-weight: var(--font-weight-semibold);
+    color: rgb(var(--color-text-accent));
+    background: rgb(var(--color-background-50));
+  }
+}
+
+.link {
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-text-accent));
+  background: none;
+  border: 0;
+}
+
+.gpu {
+  position: relative;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+
+  &.gpu--on {
+    border-color: rgb(var(--color-text-accent));
+  }
+
+  &.gpu--dim {
+    opacity: 0.6;
+  }
+
+  .gpu-check {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    color: rgb(var(--color-text-accent));
+  }
+}
+
+@media (max-width: 768px) {
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .row .row-control {
+    align-items: flex-start;
+  }
+}
+
+// The configuration card: tiles, sliders with a scale, figures.
+.req {
+  color: rgb(var(--color-error));
+}
+
+.option {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 220px;
+  text-align: left;
+
+  &:disabled {
+    cursor: default;
+    opacity: 1;
+  }
+
+  .option-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+}
+
+.best-tag {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: rgb(var(--color-text-accent));
+}
+
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+
+  .label {
+    margin: 0;
+  }
+}
+
+.field-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  .big {
+    font-size: var(--font-size-md);
+    font-weight: var(--font-weight-bold);
+  }
+}
+
+.best-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-xs);
+  color: rgb(var(--color-text-accent));
+  background: rgb(var(--color-primary-500) / 0.08);
+  border: 1px solid rgb(var(--color-primary-500) / 0.4);
+  border-radius: 999px;
+
+  .best-dot {
+    width: 8px;
+    height: 8px;
+    border: 2px solid currentcolor;
+    border-radius: 50%;
+  }
+}
+
+.slider {
+  position: relative;
+  padding: 10px 0 22px;
+
+  input[type='range'] {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    margin: 0;
+    background: transparent;
+  }
+
+  // The measured window: the part of the track the slider may reach.
+  .band {
+    position: absolute;
+    top: 50%;
+    height: 6px;
+    margin-top: -14px;
+    background: rgb(var(--color-primary-500) / 0.25);
+    border-radius: 3px;
+  }
+
+  .mark {
+    position: absolute;
+    top: 50%;
+    z-index: 2;
+    width: 8px;
+    height: 8px;
+    margin: -17px 0 0 -4px;
+    background: rgb(var(--color-background-0));
+    border: 2px solid rgb(var(--color-primary-500));
+    border-radius: 50%;
+  }
+
+  .scale {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 14px;
+    font-size: var(--font-size-2xs);
+    color: rgb(var(--color-typography-700));
+
+    span {
+      position: absolute;
+      transform: translateX(-50%);
+      white-space: nowrap;
+
+      &:first-child {
+        transform: none;
+      }
+
+      &:last-child {
+        transform: translateX(-100%);
+      }
+    }
+  }
+
+  // Read-only in the view: the colours of an active slider, but it does not move.
+  &.slider--off input[type='range'] {
+    pointer-events: none;
+  }
+}
+
+.tiles {
+  margin-top: 8px;
+}
+
+.best .best-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.facts--compact {
+  font-size: var(--font-size-sm);
+
+  div {
+    padding: 4px 0;
+  }
+}
+
+// Advanced settings: a setting per row, grouped; the explanation on the left, the control on the right.
+.filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 320px;
+  margin: 12px 0 4px;
+  padding: 0 10px;
+  border: 1px solid rgb(var(--color-outline-200));
+  border-radius: 8px;
+
+  input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 0;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    outline: 0;
+  }
+}
+
+.arow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(200px, 320px);
+  gap: 8px 24px;
+  align-items: start;
+  padding: 14px 0;
+
+  .arow-text .label {
+    margin-bottom: 2px;
+  }
+
+  .arow-text .hint {
+    margin: 0;
+  }
+
+  .arow-control {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+
+    .num,
+    .control {
+      width: 100%;
+    }
+
+    .num.wide {
+      max-width: none;
+    }
+  }
+
+  &.arow--wide {
+    grid-template-columns: minmax(0, 1fr);
+
+    .arow-control {
+      align-items: stretch;
+    }
+  }
+
+  .arow-error {
+    grid-column: 1 / -1;
+    margin: 0;
+  }
+}
+
+.set-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 4px 2px;
+  vertical-align: middle;
+  background: rgb(var(--color-primary-500));
+  border-radius: 50%;
+}
+
+.all-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: 12px 0 0;
+  padding: 14px 0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: var(--font-weight-semibold);
+  color: inherit;
+  background: none;
+  border: 0;
+  border-top: 1px solid rgb(var(--color-outline-200));
+}
+
+.summary {
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-700));
+}
+
+.gpus--compact .gpu {
+  min-width: 0;
+
+  .gpu-bar {
+    display: block;
+    width: 100%;
+    height: 4px;
+    background: rgb(var(--color-outline-200));
+    border-radius: 2px;
+
+    span {
+      display: block;
+      height: 100%;
+      background: rgb(var(--color-primary-500));
+      border-radius: 2px;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .arow {
+    grid-template-columns: minmax(0, 1fr);
+
+    .arow-control {
+      align-items: stretch;
+    }
+  }
+}
+
+.banner--rec {
+  align-items: center;
+  border-color: rgb(var(--color-primary-500) / 0.5);
+  background: rgb(var(--color-primary-500) / 0.1);
+
+  div {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  small {
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: var(--letter-spacing-wider);
+    text-transform: uppercase;
+    color: rgb(var(--color-text-accent));
+  }
 }

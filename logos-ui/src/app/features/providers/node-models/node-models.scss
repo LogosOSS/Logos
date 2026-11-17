@@ -4,7 +4,7 @@
 
 .expanded-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 12px;
@@ -18,11 +18,8 @@
   color: rgb(var(--color-typography-700));
 }
 
-.node-subtitle {
-  max-width: 640px;
-  margin: 6px 0 0;
-  font-size: var(--font-size-sm);
-  color: rgb(var(--color-typography-700));
+.provider-name {
+  font-weight: var(--font-weight-semibold);
 }
 
 .dot {
@@ -93,9 +90,10 @@
 .head-actions {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
-  gap: 12px;
+  gap: 8px;
+  white-space: nowrap;
 }
 
 .form-body {
@@ -119,4 +117,17 @@
 
 .required {
   color: rgb(var(--color-error));
+}
+
+// The status columns read right to left, as in the design: values end at the column edge.
+@media (min-width: 769px) {
+  :host ::ng-deep .table-header > div:nth-child(2),
+  :host ::ng-deep .table-header > div:nth-child(3) {
+    text-align: right;
+  }
+
+  :host ::ng-deep a.table-row > div[data-label] {
+    display: flex;
+    justify-content: flex-end;
+  }
 }

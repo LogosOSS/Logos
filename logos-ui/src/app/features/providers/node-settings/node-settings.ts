@@ -98,13 +98,45 @@ export class NodeSettingsPage implements OnInit {
     this.patch({ gpuMode: mode });
   }
 
+  /** Whether a GPU is in the pool: "all" and the default count every GPU in. */
+  gpuChosen(index: number): boolean {
+    const d = this.draft();
+    if (!d || d.gpuMode === 'none') {
+      return false;
+    }
+    return d.gpuMode === 'pick' ? d.gpus.includes(index) : true;
+  }
+
+  /** A tile adds or drops one GPU; all GPUs make it "all" and no GPU makes it "none". */
   toggleGpu(index: number): void {
     const d = this.draft();
-    if (d) {
-      const gpus = d.gpus.includes(index) ? d.gpus.filter((g) => g !== index) : [...d.gpus, index];
-      this.patch({ gpus });
+    if (!d) {
+      return;
+    }
+    const all = this.gpus().map((g) => g.index);
+    const chosen = all.filter((g) => (g === index ? !this.gpuChosen(g) : this.gpuChosen(g)));
+    if (all.length > 0 && chosen.length === all.length) {
+      this.patch({ gpuMode: 'all', gpus: [] });
+    } else if (chosen.length === 0) {
+      this.patch({ gpuMode: 'none', gpus: [] });
+    } else {
+      this.patch({ gpuMode: 'pick', gpus: chosen });
     }
   }
+
+  gpuMemory(gpu: NodeGpuInsight): string {
+    return gpu.total_mb ? `${Math.round(gpu.total_mb / 1024)} GB` : 'unknown';
+  }
+
+  /** "4 × 40 GB" for equal GPUs, else the count. */
+  readonly gpuSummary = computed(() => {
+    const gpus = this.gpus();
+    if (gpus.length === 0) {
+      return 'None reported';
+    }
+    const sizes = new Set(gpus.map((g) => this.gpuMemory(g)));
+    return sizes.size === 1 ? `${gpus.length} × ${[...sizes][0]}` : `${gpus.length} GPUs`;
+  });
 
   setArgs(value: string): void {
     this.patch({ args: value });

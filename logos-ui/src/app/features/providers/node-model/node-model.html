@@ -11,11 +11,38 @@
     <h1 class="page-title">{{ modelName() || 'Model' }}</h1>
     @if (editing()) {
       <span class="chip">Editing</span>
-    } @else if (!loading() && !error() && canEdit()) {
-      <button class="btn-primary" type="button" (click)="startEdit()">
-        <i class="pi pi-pencil" aria-hidden="true"></i>
-        {{ insight()?.configured ? 'Edit configuration' : 'Configure model' }}
-      </button>
+    } @else if (!loading() && !error()) {
+      <div class="head-actions">
+        @if (canEditSettings()) {
+          <button
+            type="button"
+            [class.btn-primary]="measured()"
+            [class.btn-secondary]="!measured()"
+            (click)="startEdit()"
+          >
+            <i class="pi pi-pencil" aria-hidden="true"></i>
+            {{ !measured() ? 'Edit settings' : insight()?.configured ? 'Edit configuration' : 'Configure model' }}
+          </button>
+        }
+        @if (canCalibrate()) {
+          <button
+            type="button"
+            [class.btn-primary]="!measured()"
+            [class.btn-secondary]="measured()"
+            [disabled]="!workerOnline() || calibrating() || calibrationStarting()"
+            [attr.aria-busy]="calibrationStarting()"
+            [attr.title]="workerOnline() ? null : 'The worker must be online to calibrate.'"
+            (click)="calibrate()"
+          >
+            @if (calibrationStarting() || calibrating()) {
+              <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+            } @else {
+              <i class="pi pi-play" aria-hidden="true"></i>
+            }
+            {{ calibrating() ? 'Calibrating…' : 'Calibrate model' }}
+          </button>
+        }
+      </div>
     }
   </div>
 
@@ -43,10 +70,12 @@
           <div><small>Calibration</small><b [attr.title]="l.title">{{ l.text }}</b></div>
         </div>
       }
-      <div class="pill">
-        <span class="dot" [class]="'dot dot--' + (insight()?.configured ? 'ok' : 'gray')" aria-hidden="true"></span>
-        <div><small>Configuration</small><b>{{ insight()?.configured ? 'Configured' : 'Not configured' }}</b></div>
-      </div>
+      @if (measured()) {
+        <div class="pill">
+          <span class="dot" [class]="'dot dot--' + (insight()?.configured ? 'ok' : 'gray')" aria-hidden="true"></span>
+          <div><small>Configuration</small><b>{{ insight()?.configured ? 'Configured' : 'Not configured' }}</b></div>
+        </div>
+      }
       <div class="pill">
         <span class="dot" [class]="'dot dot--' + (workerOnline() ? 'ok' : 'warn')" aria-hidden="true"></span>
         <div><small>Worker</small><b>{{ workerOnline() ? 'Online' : 'Offline' }}</b></div>
@@ -133,268 +162,305 @@
       </div>
     }
 
-    @if (tuning() && recommendation(); as rec) {
+    @if (outdated() && !editing() && !calibrating()) {
       <div class="banner banner--warn" role="status">
         <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
         <div>
-          <b>Recommendation not in use</b>
-          <span>
-            Benchmark suggests {{ describePlacement(rec.settings) }} ({{ rec.throughput.toFixed(1) }} tok/s,
-            benchmark #{{ rec.benchmark_id }}).
-          </span>
+          <b>Calibration outdated</b>
+          <span>The calibration no longer matches how {{ providerName() }} runs this model. Calibrate it again to place the model.</span>
         </div>
-        @if (canEdit() && !editing()) {
-          <button class="btn-secondary btn-sm" type="button" (click)="applyRecommendation()">Use recommendation</button>
-        }
       </div>
     }
 
-    <div class="grid" [attr.inert]="saving() ? '' : null" [attr.aria-busy]="saving()">
+    @if (!measured() && !outdated() && !editing() && !calibrating()) {
+      <div class="banner banner--info" role="status">
+        <i class="pi pi-info-circle" aria-hidden="true"></i>
+        <div>
+          <b>Not calibrated yet</b>
+          <span>These settings are used when Logos calibrates this model. TP, KV cache and context can be chosen after calibration.</span>
+        </div>
+      </div>
+    }
+
+    @if (calibrating()) {
+      <div class="banner banner--info" role="status">
+        <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+        <div>
+          <b>Calibrating</b>
+          <span>The worker is measuring this model. This takes several minutes.</span>
+        </div>
+      </div>
+    }
+
+    @if (calibrationError(); as e) {
+      <div class="banner banner--err" role="alert">
+        <i class="pi pi-times-circle" aria-hidden="true"></i>
+        <div>
+          <b>Calibration not started</b>
+          <span>{{ e }}</span>
+        </div>
+      </div>
+    }
+
+    @if (tuning() && recommendation(); as rec) {
+      @if (editing()) {
+        <div class="banner banner--rec" role="status">
+          <div>
+            <small>Recommended by benchmark</small>
+            <b>{{ describePlacement(rec.settings) }}</b>
+            <span>{{ rec.throughput.toFixed(1) }} tok/s, benchmark #{{ rec.benchmark_id }}.</span>
+          </div>
+          <button class="btn-primary btn-sm" type="button" (click)="applyRecommendation()">
+            <i class="pi pi-bolt" aria-hidden="true"></i>
+            Use recommendation
+          </button>
+        </div>
+      } @else {
+        <div class="banner banner--warn" role="status">
+          <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+          <div>
+            <b>Recommendation not in use</b>
+            <span>
+              Benchmark suggests {{ describePlacement(rec.settings) }} ({{ rec.throughput.toFixed(1) }} tok/s,
+              benchmark #{{ rec.benchmark_id }}).
+            </span>
+          </div>
+          @if (canEdit() && !editing()) {
+            <button class="btn-secondary btn-sm" type="button" (click)="applyRecommendation()">Use recommendation</button>
+          }
+        </div>
+      }
+    }
+
+    <div class="grid" [class.grid--single]="!insight()?.benchmark" [attr.inert]="saving() ? '' : null" [attr.aria-busy]="saving()">
       <div class="stack">
-        <section class="card" aria-labelledby="cfg-title">
-          <h2 id="cfg-title">Configuration</h2>
-          @if (editing() && draft(); as d) {
-            <p class="sub">
-              How this model is placed on {{ providerName() }}. Only options that calibrated successfully can be chosen.
-            </p>
-
-            <div class="field">
-              <span class="label" id="tp-label">GPUs per instance (tensor parallel)</span>
-              <div class="options" role="radiogroup" aria-labelledby="tp-label">
-                @for (r of insight()!.calibration.results; track r.tp) {
-                  <button
-                    type="button"
-                    role="radio"
-                    class="option"
-                    [class.option--on]="d.tp === r.tp"
-                    [attr.aria-checked]="d.tp === r.tp"
-                    (click)="setTp(r.tp)"
-                  >
-                    <b>TP {{ r.tp }}</b>
-                    <small>{{ r.tp }} {{ r.tp === 1 ? 'GPU' : 'GPUs' }}</small>
-                  </button>
+        @if (measured()) {
+          <section class="card" aria-labelledby="cfg-title">
+            <h2 id="cfg-title">Configuration</h2>
+            @if (placement(); as p) {
+              <p class="sub">
+                @if (editing()) {
+                  How this model is placed on {{ providerName() }}. Only options that calibrated successfully can be chosen.
+                } @else {
+                  Current placement on {{ providerName() }}.
                 }
-              </div>
-              @if (fieldError('tensor_parallel_size'); as e) {
-                <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e.message }}</p>
+              </p>
+              @if (!editing() && insight()?.source === 'tuning') {
+                <p class="hint hint--note"><i class="pi pi-moon" aria-hidden="true"></i>Set by the nightly tuning, which found better values than the earlier configuration.</p>
               }
-            </div>
 
-            @if (window(); as w) {
               <div class="field">
-                <label class="label" for="kv">KV cache memory per GPU</label>
-                <div class="control">
-                  <input
-                    id="kv"
-                    type="number"
-                    class="num"
-                    [min]="w.min"
-                    [max]="w.max"
-                    step="1"
-                    [value]="d.kvGb"
-                    [class.invalid]="fieldError('kv_cache_memory_bytes')"
-                    [attr.aria-invalid]="fieldError('kv_cache_memory_bytes') ? 'true' : null"
-                    (input)="setKv($any($event.target).value)"
-                  />
-                  <span class="unit">GB</span>
+                <span class="label" id="tp-label">GPUs per instance (tensor parallel) @if (editing()) {<span class="req">*</span>}</span>
+                <div class="options" role="radiogroup" aria-labelledby="tp-label">
+                  @for (r of tpTiles(); track r.tp) {
+                    <button
+                      type="button"
+                      role="radio"
+                      class="option"
+                      [class.option--on]="p.tp === r.tp"
+                      [attr.aria-checked]="p.tp === r.tp"
+                      [disabled]="!editing()"
+                      (click)="setTp(r.tp)"
+                    >
+                      <span class="option-top">
+                        <b>TP {{ r.tp }}</b>
+                        @if (bestTp() === r.tp) {
+                          <span class="best-tag">Best</span>
+                        }
+                      </span>
+                      <small>{{ r.tp }} {{ r.tp === 1 ? 'GPU' : 'GPUs' }}@if (gpuSizeGb(r.tp); as size) { · {{ size }} GB }</small>
+                    </button>
+                  }
                 </div>
-                <input
-                  type="range"
-                  aria-label="KV cache memory per GPU"
-                  [min]="w.min"
-                  [max]="w.max"
-                  step="1"
-                  [value]="d.kvGb"
-                  (input)="setKv($any($event.target).value)"
-                />
-                <p class="hint">Measured range: {{ w.min }} to {{ w.max }} GB per GPU, in whole GB.</p>
-                @if (fieldError('kv_cache_memory_bytes'); as e) {
+                @if (fieldError('tensor_parallel_size'); as e) {
                   <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e.message }}</p>
                 }
               </div>
-            }
 
-            <div class="field">
-              <label class="label" for="ctx">Max. context length</label>
-              <div class="control">
-                <input
-                  id="ctx"
-                  type="number"
-                  class="num"
-                  min="1024"
-                  [max]="capacity() ?? null"
-                  step="1024"
-                  [value]="d.ctx"
-                  [class.invalid]="fieldError('max_model_len')"
-                  [attr.aria-invalid]="fieldError('max_model_len') ? 'true' : null"
-                  (change)="setCtx($any($event.target).value)"
-                />
-                <span class="unit">tokens</span>
-              </div>
-              <input
-                type="range"
-                aria-label="Max. context length"
-                min="1024"
-                [max]="capacity() ?? 131072"
-                step="1024"
-                [value]="d.ctx"
-                (input)="setCtx($any($event.target).value)"
-              />
-              @if (capacity(); as cap) {
-                <p class="hint">Up to about {{ formatTokens(cap) }} tokens at this KV cache size.</p>
+              @if (window(); as w) {
+                <div class="field">
+                  <div class="field-head">
+                    <label class="label" for="kv">KV cache memory per GPU @if (editing()) {<span class="req">*</span>}</label>
+                    <div class="field-value">
+                      @if (editing()) {
+                        @if (bestKv() !== null) {
+                          <button class="best-chip" type="button" (click)="setKv(bestKv())"><span class="best-dot"></span>Best <b>{{ bestKv() }} GB</b></button>
+                        }
+                        <input
+                          id="kv"
+                          type="number"
+                          class="num"
+                          [min]="w.min"
+                          [max]="w.max"
+                          step="1"
+                          [value]="p.kvGb"
+                          [class.invalid]="fieldError('kv_cache_memory_bytes')"
+                          [attr.aria-invalid]="fieldError('kv_cache_memory_bytes') ? 'true' : null"
+                          (input)="setKv($any($event.target).value)"
+                        />
+                      } @else {
+                        <b class="big">{{ p.kvGb }}</b>
+                      }
+                      <span class="unit">GB</span>
+                    </div>
+                  </div>
+                  <div class="slider" [class.slider--off]="!editing()">
+                    @if (kvBand(); as band) {
+                      <span class="band" [style.left.%]="band.left" [style.width.%]="band.width"></span>
+                    }
+                    @if (bestKv() !== null && bestKv()! <= w.max) {
+                      <span class="mark" [style.left.%]="(bestKv()! / w.max) * 100" aria-hidden="true"></span>
+                    }
+                    <input
+                      type="range"
+                      aria-label="KV cache memory per GPU"
+                      min="0"
+                      [max]="w.max"
+                      step="1"
+                      [value]="p.kvGb"
+                      [attr.tabindex]="editing() ? null : -1"
+                      [attr.aria-readonly]="!editing()"
+                      (input)="setKv($any($event.target).value)"
+                    />
+                    <div class="scale" aria-hidden="true">
+                      @for (t of kvTicks(); track t.pct) {
+                        <span [style.left.%]="t.pct">{{ t.label }}</span>
+                      }
+                    </div>
+                  </div>
+                  @if (editing()) {
+                    <p class="hint">Measured range: {{ w.min }} to {{ w.max }} GB per GPU, in whole GB.</p>
+                  }
+                  @if (fieldError('kv_cache_memory_bytes'); as e) {
+                    <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e.message }}</p>
+                  }
+                </div>
               }
-              @if (fieldError('max_model_len'); as e) {
-                <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e.message }}</p>
-              }
-            </div>
-          } @else if (insight()?.configured) {
-            <p class="sub">Current placement on {{ providerName() }}.</p>
-            @if (insight()?.source === 'tuning') {
-              <p class="hint hint--note"><i class="pi pi-moon" aria-hidden="true"></i>Set by the nightly tuning, which found better values than the earlier configuration.</p>
-            }
-            <dl class="facts">
-              <div><dt>GPUs per instance (tensor parallel)</dt><dd>TP {{ settings()['tensor_parallel_size'] }}</dd></div>
-              <div><dt>KV cache memory per GPU</dt><dd>{{ formatGb(kvGb()) }}</dd></div>
-              <div><dt>Max. context length</dt><dd>{{ formatTokens(settings()['max_model_len']) }} tokens</dd></div>
-            </dl>
-          } @else {
-            <div class="empty">
-              <b>Not configured yet</b>
-              <span>
-                @if (insight()?.calibration?.status === 'calibrated') {
-                  This model is calibrated but has no placement. Configure it to let the worker serve it.
-                } @else {
-                  This model has no placement until it is calibrated. Calibrate it below, or Logos measures it in the next calibration window.
+
+              <div class="field">
+                <div class="field-head">
+                  <label class="label" for="ctx">Max. context length @if (editing()) {<span class="req">*</span>}</label>
+                  <div class="field-value">
+                    @if (editing()) {
+                      @if (bestCtx() !== null) {
+                        <button class="best-chip" type="button" (click)="setCtx(bestCtx())"><span class="best-dot"></span>Best <b>{{ formatTokens(bestCtx()) }}</b></button>
+                      }
+                      <input
+                        id="ctx"
+                        type="number"
+                        class="num"
+                        min="1024"
+                        [max]="capacity() ?? null"
+                        step="1024"
+                        [value]="p.ctx"
+                        [class.invalid]="fieldError('max_model_len')"
+                        [attr.aria-invalid]="fieldError('max_model_len') ? 'true' : null"
+                        (change)="setCtx($any($event.target).value)"
+                      />
+                    } @else {
+                      <b class="big">{{ p.ctx }}</b>
+                    }
+                    <span class="unit">tokens</span>
+                  </div>
+                </div>
+                <div class="slider" [class.slider--off]="!editing()">
+                  <span class="band" [style.left.%]="0" [style.width.%]="ctxBand()"></span>
+                  <input
+                    type="range"
+                    aria-label="Max. context length"
+                    min="0"
+                    [max]="ctxMax()"
+                    step="1024"
+                    [value]="p.ctx"
+                    [attr.tabindex]="editing() ? null : -1"
+                    [attr.aria-readonly]="!editing()"
+                    (input)="setCtx($any($event.target).value)"
+                  />
+                  <div class="scale" aria-hidden="true">
+                    @for (t of ctxTicks(); track t.pct) {
+                      <span [style.left.%]="t.pct">{{ t.label }}</span>
+                    }
+                  </div>
+                </div>
+                @if (editing() && capacity(); as cap) {
+                  <p class="hint">Up to about {{ formatTokens(cap) }} tokens at this KV cache size.</p>
                 }
-              </span>
-            </div>
-          }
-        </section>
-
-        @if (canCalibrate() && !editing()) {
-          <section class="card" aria-labelledby="calrun-title">
-            <h2 id="calrun-title">Calibration settings</h2>
-            <p class="sub">
-              @if (insight()?.calibration?.status === 'outdated') {
-                The calibration no longer matches how {{ providerName() }} runs this model. Measure it again to place the model.
-              } @else {
-                Logos has not measured this model on {{ providerName() }} yet. It measures the possible GPU, KV cache and context combinations.
-              }
-            </p>
-            @if (calibrationError(); as e) {
-              <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
-            }
-            <div class="calrun">
-              <button
-                class="btn-primary"
-                type="button"
-                [disabled]="!workerOnline() || calibrating() || calibrationStarting()"
-                [attr.aria-busy]="calibrationStarting()"
-                (click)="calibrate()"
-              >
-                @if (calibrationStarting() || calibrating()) {
-                  <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+                @if (fieldError('max_model_len'); as e) {
+                  <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e.message }}</p>
                 }
-                {{ calibrating() ? 'Calibrating…' : 'Calibrate model' }}
-              </button>
-              @if (!workerOnline()) {
-                <span class="hint">The worker must be online to calibrate.</span>
-              } @else if (calibrating()) {
-                <span class="hint">The worker is measuring this model. This takes several minutes.</span>
-              }
-            </div>
-          </section>
-        }
-
-        @if (result(); as r) {
-          <section class="card" aria-labelledby="cal-title">
-            <h2 id="cal-title">Measured by calibration</h2>
-            <p class="sub">What Logos measured for this model on {{ providerName() }}.</p>
-            <div class="tiles">
-              <div class="tile"><b>{{ formatGb(mbToGb(r.base_residency_mb)) }}</b><span>Base residency</span></div>
-              <div class="tile">
-                <b>{{ formatGb(mbToGb(r.kv_min_mb)) }} to {{ formatGb(mbToGb(r.kv_max_mb)) }}</b>
-                <span>KV cache window per GPU</span>
               </div>
-              <div class="tile"><b>{{ formatTokens(insight()?.calibration?.context_limit) }}</b><span>Context limit</span></div>
-              <div class="tile"><b>{{ formatSeconds(r.cold_load_time_s) }}</b><span>Cold start</span></div>
-              <div class="tile"><b>{{ formatSeconds(r.wake_from_sleep_time_s) }}</b><span>Wake from sleep</span></div>
-              <div class="tile"><b>TP {{ r.tp }}</b><span>Calibrated size</span></div>
-            </div>
-          </section>
-        }
 
-        @if (entry() && !editing() && workerOnline()) {
-          <section class="card" aria-labelledby="rm-title">
-            <h2 id="rm-title">Remove configuration</h2>
-            <p class="sub">
-              The model stays calibrated and can be configured again later. The worker unloads it at the next lane
-              change.
-            </p>
-            <button class="btn-remove" type="button" (click)="openRemove()">
-              <i class="pi pi-trash" aria-hidden="true"></i>
-              Remove configuration
-            </button>
+              @if (figures().length > 0) {
+                <div class="tiles">
+                  @for (f of figures(); track f.caption) {
+                    <div class="tile"><b>{{ f.value }}</b><span>{{ f.caption }}</span></div>
+                  }
+                </div>
+              }
+            } @else {
+              <div class="empty">
+                <b>Not configured yet</b>
+                <span>
+                  @if (insight()?.calibration?.status === 'calibrated') {
+                    This model is calibrated but has no placement. Configure it to let the worker serve it.
+                  } @else {
+                    The calibration no longer matches how {{ providerName() }} runs this model. Calibrate it again to place the model.
+                  }
+                </span>
+              </div>
+            }
           </section>
         }
 
         @if (editing() && adv(); as a) {
           <section class="card" aria-labelledby="adv-title">
-            <h2 id="adv-title">Advanced settings</h2>
+            <div class="card-head">
+              <h2 id="adv-title">Advanced settings</h2>
+              <span class="summary">{{ setCount() === 0 ? 'All default' : setCount() + ' set' }}</span>
+            </div>
             <p class="sub">Optional. Empty fields use the default or the value measured by calibration.</p>
+            <label class="filter">
+              <i class="pi pi-search" aria-hidden="true"></i>
+              <input
+                type="search"
+                placeholder="Filter settings…"
+                aria-label="Filter settings"
+                [value]="filter()"
+                (input)="filter.set($any($event.target).value)"
+              />
+            </label>
 
-            @for (f of fields; track f.key) {
-              <div class="field">
-                <label class="label" [for]="'adv-' + f.key">
-                  {{ f.label }} <code class="key">{{ f.key }}</code>
-                </label>
-                @switch (f.kind) {
-                  @case ('tri') {
-                    <select
-                      class="num sel"
-                      [id]="'adv-' + f.key"
-                      [value]="a.values[f.key]"
-                      (change)="setAdv(f.key, $any($event.target).value)"
-                    >
-                      <option value="">Default</option>
-                      <option value="true">On</option>
-                      <option value="false">Off</option>
-                    </select>
-                  }
-                  @case ('lines') {
-                    <textarea
-                      class="area mono"
-                      rows="3"
-                      [id]="'adv-' + f.key"
-                      [placeholder]="f.placeholder ?? ''"
-                      [value]="a.values[f.key]"
-                      [attr.aria-invalid]="advFieldError(f.key) ? 'true' : null"
-                      (input)="setAdv(f.key, $any($event.target).value)"
-                    ></textarea>
-                  }
-                  @default {
-                    <div class="control">
-                      <input
-                        class="num wide"
-                        type="text"
-                        [id]="'adv-' + f.key"
-                        [placeholder]="f.placeholder ?? ''"
-                        [value]="a.values[f.key]"
-                        [class.invalid]="advFieldError(f.key)"
-                        [attr.aria-invalid]="advFieldError(f.key) ? 'true' : null"
-                        (input)="setAdv(f.key, $any($event.target).value)"
-                      />
-                      @if (f.kind === 'percent') {
-                        <span class="unit">%</span>
-                      }
-                    </div>
+            @for (g of groups; track g.id) {
+              @if (g.top && groupVisible(g)) {
+                <h3 class="group">{{ g.title }}</h3>
+                @for (f of fieldsOf(g); track f.key) {
+                  <ng-container [ngTemplateOutlet]="row" [ngTemplateOutletContext]="{ $implicit: f }" />
+                }
+              }
+            }
+
+            <button
+              class="all-toggle"
+              type="button"
+              [attr.aria-expanded]="showAll()"
+              (click)="allOpen.set(!allOpen())"
+            >
+              <span>All engine settings</span>
+              <i class="pi" [class.pi-chevron-up]="showAll()" [class.pi-chevron-down]="!showAll()" aria-hidden="true"></i>
+            </button>
+            @if (showAll()) {
+              <p class="hint hint--note">
+                <i class="pi pi-info-circle" aria-hidden="true"></i>
+                Changing a setting can mark the calibration of this model as outdated.
+              </p>
+              @for (g of groups; track g.id) {
+                @if (!g.top && groupVisible(g)) {
+                  <h3 class="group">{{ g.title }}</h3>
+                  @for (f of fieldsOf(g); track f.key) {
+                    <ng-container [ngTemplateOutlet]="row" [ngTemplateOutletContext]="{ $implicit: f }" />
                   }
                 }
-                <p class="hint">{{ f.help }}</p>
-                @if (advFieldError(f.key); as e) {
-                  <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
-                }
-              </div>
+              }
             }
 
             <h3 class="subhead">Custom settings</h3>
@@ -441,38 +507,90 @@
               Add setting
             </button>
           </section>
-        } @else if (advanced().length > 0) {
+        } @else if (advanced().length > 0 || !measured()) {
           <section class="card" aria-labelledby="adv-title">
-            <h2 id="adv-title">Advanced settings</h2>
-            <p class="sub">Settings this model is configured with besides placement.</p>
-            <dl class="facts">
-              @for (a of advanced(); track a.key) {
-                <div><dt class="mono">{{ a.key }}</dt><dd class="mono">{{ a.value }}</dd></div>
-              }
-            </dl>
+            <div class="card-head">
+              <h2 id="adv-title">{{ measured() ? 'Advanced settings' : 'Calibration settings' }}</h2>
+              <button
+                class="toggle"
+                type="button"
+                [attr.aria-expanded]="advExpanded()"
+                [attr.aria-controls]="'adv-body'"
+                (click)="advOpen.set(!advExpanded())"
+              >
+                {{ advanced().length === 0 ? 'All default' : advanced().length + ' set' }}
+                <i class="pi" [class.pi-chevron-up]="advExpanded()" [class.pi-chevron-down]="!advExpanded()" aria-hidden="true"></i>
+              </button>
+            </div>
+            @if (advExpanded()) {
+              <div id="adv-body">
+                @if (advanced().length === 0) {
+                  <p class="sub">No settings yet. Logos calibrates this model with the defaults.</p>
+                } @else {
+                  <p class="sub">
+                    {{ measured() ? 'Settings this model is configured with besides placement.' : 'Logos uses these settings when it calibrates this model.' }}
+                  </p>
+                  <dl class="facts">
+                    @for (a of advanced(); track a.key) {
+                      <div><dt class="mono">{{ a.key }}</dt><dd class="mono">{{ a.value }}</dd></div>
+                    }
+                  </dl>
+                }
+              </div>
+            }
+          </section>
+        }
+
+        @if (entry() && !editing() && workerOnline()) {
+          <section class="card card--row" aria-labelledby="rm-title">
+            <div>
+              <h2 id="rm-title">Remove configuration</h2>
+              <p class="sub">
+                The model stays calibrated and can be configured again later. The worker unloads it at the next lane
+                change.
+              </p>
+            </div>
+            <button class="btn-remove" type="button" (click)="openRemove()">
+              <i class="pi pi-trash" aria-hidden="true"></i>
+              Remove configuration
+            </button>
           </section>
         }
       </div>
 
-      <div class="stack">
-        @if (insight()?.benchmark; as b) {
-          <section class="card" aria-labelledby="bm-title">
-            <h2 id="bm-title" class="eyebrow">Best benchmark</h2>
-            @if (b.best_eligible ?? b.best_observed; as best) {
-              <div class="best">
-                <b>{{ best.throughput.toFixed(1) }} tok/s</b>
-                <span>{{ describePlacement(best.settings) }} · #{{ best.benchmark_id }}</span>
-              </div>
-            }
-          </section>
-          @if (b.current && describePlacement(b.current)) {
-            <section class="card" aria-labelledby="cur-title">
-              <h2 id="cur-title" class="eyebrow">Running now</h2>
-              <p class="running">{{ describePlacement(b.current) }}</p>
+      @if (insight()?.benchmark || editing()) {
+        <div class="stack">
+          @if (insight()?.benchmark; as b) {
+            <section class="card" aria-labelledby="bm-title">
+              <h2 id="bm-title" class="eyebrow">Best benchmark{{ bestRunTp() ? ' at TP ' + bestRunTp() : '' }}</h2>
+              @if (bestRun(); as best) {
+                <div class="best">
+                  <div class="best-top">
+                    <b>{{ best.throughput.toFixed(1) }} tok/s</b>
+                    @if (b.best_eligible) {
+                      <span class="best-tag">Best</span>
+                    }
+                  </div>
+                  <span>{{ describePlacement(best.settings) }} · #{{ best.benchmark_id }}</span>
+                </div>
+              }
             </section>
           }
-        }
-      </div>
+          @if (editing() && placement(); as p) {
+            <section class="card" aria-labelledby="cur-title">
+              <h2 id="cur-title" class="eyebrow">Current configuration</h2>
+              <dl class="facts facts--compact">
+                <div><dt>GPUs</dt><dd>TP {{ p.tp }} · {{ p.tp }} {{ p.tp === 1 ? 'GPU' : 'GPUs' }}</dd></div>
+                <div><dt>KV cache</dt><dd>{{ p.kvGb }} GB per GPU</dd></div>
+                <div><dt>Max. context</dt><dd>{{ formatTokens(p.ctx) }} tokens</dd></div>
+                @for (f of figures(); track f.caption) {
+                  <div><dt>{{ f.caption.split(' · ')[0] }}</dt><dd>{{ f.value }}</dd></div>
+                }
+              </dl>
+            </section>
+          }
+        </div>
+      }
     </div>
 
     @if (editing()) {
@@ -519,3 +637,92 @@
     <app-error-message modal-error [message]="removeError()!" />
   }
 </app-modal-confirm>
+
+<ng-template #row let-f>
+  <div class="arow" [class.arow--wide]="f.kind === 'lines' || f.kind === 'gpus'">
+    <div class="arow-text">
+      <label class="label" [for]="'adv-' + f.key">
+        {{ f.label }}
+        @if (isSet(f.key)) {
+          <span class="set-dot" title="Set" aria-label="Set"></span>
+        }
+        <code class="key">{{ f.key }}</code>
+      </label>
+      <p class="hint">{{ f.help }}</p>
+    </div>
+    <div class="arow-control">
+      @switch (f.kind) {
+        @case ('tri') {
+          <select class="num sel" [id]="'adv-' + f.key" [value]="adv()!.values[f.key]" (change)="setAdv(f.key, $any($event.target).value)">
+            <option value="">Default</option>
+            <option value="true">On</option>
+            <option value="false">Off</option>
+          </select>
+        }
+        @case ('select') {
+          <select class="num sel" [id]="'adv-' + f.key" [value]="adv()!.values[f.key]" (change)="setAdv(f.key, $any($event.target).value)">
+            @for (o of f.options; track o.value) {
+              <option [value]="o.value" [selected]="adv()!.values[f.key] === o.value">{{ o.label }}</option>
+            }
+          </select>
+        }
+        @case ('lines') {
+          <textarea
+            class="area mono"
+            rows="3"
+            [id]="'adv-' + f.key"
+            [placeholder]="f.placeholder ?? ''"
+            [value]="adv()!.values[f.key]"
+            [attr.aria-invalid]="advFieldError(f.key) ? 'true' : null"
+            (input)="setAdv(f.key, $any($event.target).value)"
+          ></textarea>
+        }
+        @case ('gpus') {
+          <div class="gpus gpus--compact" role="group" [attr.aria-label]="f.label">
+            @for (gpu of nodeGpus(); track gpu.index) {
+              <button
+                type="button"
+                class="gpu"
+                [class.gpu--on]="modelGpuOn(gpu.index)"
+                [attr.aria-pressed]="modelGpuOn(gpu.index)"
+                (click)="toggleModelGpu(gpu.index)"
+              >
+                <span class="gpu-name"><b>GPU {{ gpu.index }}</b></span>
+                <span class="gpu-bar" aria-hidden="true"><span [style.width.%]="gpuUsedPct(gpu)"></span></span>
+                <small>{{ gpuFreeGb(gpu) }}</small>
+                @if (modelGpuOn(gpu.index)) {
+                  <i class="pi pi-check-circle gpu-check" aria-hidden="true"></i>
+                }
+              </button>
+            } @empty {
+              <p class="hint">The worker reports no GPUs. It must be online to list them.</p>
+            }
+          </div>
+        }
+        @default {
+          <div class="control">
+            <input
+              class="num wide"
+              type="text"
+              [id]="'adv-' + f.key"
+              [placeholder]="f.placeholder ?? ''"
+              [value]="adv()!.values[f.key]"
+              [class.invalid]="advFieldError(f.key)"
+              [attr.aria-invalid]="advFieldError(f.key) ? 'true' : null"
+              (input)="setAdv(f.key, $any($event.target).value)"
+            />
+            @if (f.unit) {
+              <span class="unit">{{ f.unit }}</span>
+            }
+          </div>
+        }
+      }
+      @if (isSet(f.key)) {
+        <button class="link" type="button" (click)="setAdv(f.key, '')">Use default</button>
+      }
+    </div>
+    @if (advFieldError(f.key); as e) {
+      <p class="ferr arow-error" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
+    }
+  </div>
+</ng-template>

@@ -107,6 +107,8 @@ def benchmark_view(
             "throughput": row["throughput"],
             "settings": run.get("serving") or {},
             "recorded_at": run.get("recorded_at"),
+            "ttft_s": run.get("ttft_s"),
+            "latency_s": run.get("latency_s"),
         }
 
     eligible = _best(summary.get("best_eligible"))

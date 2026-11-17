@@ -109,10 +109,16 @@ describe('NodeModel', () => {
     expect(root.textContent).toContain('hochbruegge');
     expect(root.textContent).toContain('TP 4');
     expect(root.textContent).toContain('4 GB');
-    expect(root.textContent).toContain('32,768 tokens');
-    expect(root.textContent).toContain('Measured by calibration');
-    expect(root.textContent).toContain('40.2 GB');
-    expect(root.textContent).toContain('54.6 s');
+    expect(root.textContent).toContain('32768');
+    expect(root.textContent).toContain('tokens');
+    expect(root.textContent).not.toContain('Measured by calibration');
+    // Base residency 41.2 GB and 4 GB of KV cache on each of 4 GPUs.
+    expect(root.textContent).toContain('56.2 GB');
+    expect(root.textContent).toContain('GPU memory');
+    expect(root.textContent).toContain('~33k tokens');
+    expect(root.textContent).toContain('55 s');
+    expect(root.textContent).toContain('wake from sleep 1 s');
+    expect(root.querySelectorAll('[role="radio"]').length).toBe(1);
     expect(root.textContent).toContain('Calibrated');
     expect(root.textContent).toContain('Configured');
     expect(root.textContent).toContain('Online');
@@ -134,9 +140,10 @@ describe('NodeModel', () => {
     );
     const root = await create();
 
-    expect(root.textContent).toContain('Not configured yet');
-    expect(root.textContent).toContain('no placement until it is calibrated');
+    expect(root.textContent).toContain('Not calibrated yet');
+    expect(root.textContent).toContain('chosen after calibration');
     expect(root.textContent).not.toContain('Measured by calibration');
+    expect(root.querySelector('#cfg-title')).toBeNull();
   });
 
   it('tells a calibrated model without a placement to configure it', async () => {
@@ -173,8 +180,7 @@ describe('NodeModel', () => {
     expect(root.textContent).toContain('Recommendation not in use');
     expect(root.textContent).toContain('TP 2 · context 16384');
     expect(root.textContent).toContain('52.3 tok/s');
-    expect(root.textContent).toContain('Running now');
-    expect(root.textContent).toContain('TP 4 · context 32768');
+    expect(root.textContent).toContain('Best benchmark at TP 2');
   });
 
   it('shows no recommendation when the model already runs as the benchmark placed it', async () => {
@@ -209,7 +215,7 @@ describe('NodeModel', () => {
     await settle();
 
     expect(service['getNodeConfig']).toHaveBeenCalledTimes(2);
-    expect(root.textContent).toContain('Measured by calibration');
+    expect(root.textContent).toContain('Configuration');
   });
 
   it('needs a model in the address', async () => {
@@ -392,15 +398,20 @@ describe('NodeModel', () => {
       expect(service['replaceNodeConfig']).not.toHaveBeenCalled();
     });
 
-    it('offers no editing while the worker is offline or the model is not calibrated', async () => {
+    it('offers no editing while the worker is offline', async () => {
       service['getNodeInsights'].mockResolvedValue(insights([insight()], false));
       expect((await create()).querySelector('.head button')).toBeNull();
+    });
 
-      TestBed.resetTestingModule();
+    it('offers only the settings, not the placement, of a model that is not calibrated', async () => {
       service['getNodeInsights'].mockResolvedValue(
         insights([insight({ calibration: { status: 'not_calibrated', reason: null, results: [] } })]),
       );
-      expect((await create()).querySelector('.head button')).toBeNull();
+      const root = await create();
+      const labels = Array.from(root.querySelectorAll('.head button')).map((b) => b.textContent!.trim());
+
+      expect(labels).toEqual(['Edit settings', 'Calibrate model']);
+      expect(root.textContent).not.toContain('Configure model');
     });
 
     it('starts a model without a placement from the best benchmark and calls it Configure', async () => {
@@ -528,6 +539,8 @@ describe('NodeModel', () => {
 
     it('shows the fields of the entry and counts a change of one of them', async () => {
       const root = await start();
+      page().allOpen.set(true);
+      fixture.detectChanges();
 
       expect(root.querySelector<HTMLInputElement>('#adv-quantization')!.value).toBe('awq');
       expect(root.querySelector<HTMLInputElement>('#adv-min_context_fraction')!.value).toBe('100');
@@ -665,7 +678,7 @@ describe('NodeModel', () => {
       service['getNodeInsights'].mockResolvedValue({ ...uncalibrated(), worker: { online: false, supports_actions: {}, config_revision: 3 } });
       let root = await create();
       expect(button(root)!.disabled).toBe(true);
-      expect(root.textContent).toContain('must be online');
+      expect(button(root)!.getAttribute('title')).toContain('must be online');
 
       TestBed.resetTestingModule();
       service['getNodeInsights'].mockResolvedValue(uncalibrated({ calibrating: true }));
@@ -769,5 +782,189 @@ describe('NodeModel', () => {
     const root = await create();
 
     expect(root.textContent).not.toContain('Set by the nightly tuning');
+  });
+
+  describe('the configuration card', () => {
+    const gpus = [0, 1, 2, 3].map((index) => ({ index, name: 'A100', total_mb: 40960, used_mb: 100 }));
+    const withBenchmark = (settings: Record<string, unknown>) => {
+      const best = { benchmark_id: 7, throughput: 52.3, settings, recorded_at: null, ttft_s: 0.47, latency_s: 5.5 };
+      return insights([
+        insight({
+          benchmark: { best_eligible: best, best_observed: best, current: {}, eligible_for_comparison: true },
+        }),
+      ]);
+    };
+
+    it('shows memory use against the GPUs of the size and what is left', async () => {
+      service['getNodeInsights'].mockResolvedValue({ ...insights([insight()]), gpus });
+      const root = await create();
+
+      // 41.2 GB of weights plus 4 GB of KV cache on each of 4 GPUs of 40 GB.
+      expect(root.textContent).toContain('56.2 of 160 GB');
+      expect(root.textContent).toContain('103.8 GB free');
+      expect(root.textContent).toContain('4 GPUs · 160 GB');
+    });
+
+    it('shows the time to first token and the response time of a benchmark that ran this placement', async () => {
+      service['getNodeInsights'].mockResolvedValue(
+        withBenchmark({ tensor_parallel_size: 4, kv_cache_memory_bytes: '4G', max_model_len: 32768 }),
+      );
+      const root = await create();
+
+      expect(root.textContent).toContain('52.3 tok/s');
+      expect(root.textContent).toContain('0.47 s');
+      expect(root.textContent).toContain('5.5 s');
+      expect(root.textContent).toContain('Throughput · benchmark');
+    });
+
+    it('leaves out the benchmark figures when the benchmark ran another placement', async () => {
+      service['getNodeInsights'].mockResolvedValue(
+        withBenchmark({ tensor_parallel_size: 2, kv_cache_memory_bytes: '8G', max_model_len: 16384 }),
+      );
+      const root = await create();
+
+      expect(root.textContent).not.toContain('Throughput · benchmark');
+      expect(root.textContent).not.toContain('Time to first token');
+    });
+
+    it('draws a scale to the end of the measured window and to the context limit', async () => {
+      await create();
+      const page = fixture.componentInstance;
+
+      expect(page.kvTicks().map((t) => t.label)).toEqual(['0 GB', '1', '2', '3', '4 GB']);
+      expect(page.kvTicks().at(-1)!.pct).toBe(100);
+      expect(page.ctxMax()).toBe(32768);
+      expect(page.ctxTicks().map((t) => t.label)).toEqual(['0', '32k']);
+      expect(page.kvBand()).toEqual({ left: 25, width: 75 });
+    });
+
+    it('leaves the sliders in place but unreachable in the view and lets them move while editing', async () => {
+      const root = await create();
+      expect(root.querySelector('.slider--off')).not.toBeNull();
+      expect(root.querySelector<HTMLInputElement>('.slider input')!.getAttribute('tabindex')).toBe('-1');
+
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      expect(root.querySelector('.slider--off')).toBeNull();
+      expect(root.querySelector<HTMLInputElement>('.slider input')!.getAttribute('tabindex')).toBeNull();
+    });
+
+    it('marks the benchmark size as best and shows the current configuration while editing', async () => {
+      service['getNodeInsights'].mockResolvedValue(withBenchmark({ tensor_parallel_size: 4, kv_cache_memory_bytes: '3G' }));
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      expect(root.querySelector('.best-tag')?.textContent).toContain('Best');
+      expect(root.querySelector('.best-chip')?.textContent).toContain('3 GB');
+      expect(root.textContent).toContain('Current configuration');
+      expect(root.textContent).toContain('4 GB per GPU');
+    });
+
+    it('takes the best KV cache size when its chip is selected', async () => {
+      service['getNodeInsights'].mockResolvedValue(withBenchmark({ tensor_parallel_size: 4, kv_cache_memory_bytes: '3G' }));
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      root.querySelector<HTMLButtonElement>('.best-chip')!.click();
+
+      expect(fixture.componentInstance.draft()!.kvGb).toBe(3);
+    });
+  });
+
+  describe('the advanced settings in groups', () => {
+    const gpus = [0, 1].map((index) => ({ index, name: 'A100', total_mb: 40960, used_mb: 10240 }));
+    const open = async (): Promise<HTMLElement> => {
+      service['getNodeInsights'].mockResolvedValue({ ...insights([insight()]), gpus });
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+      return root;
+    };
+    const page = (): NodeModel => fixture.componentInstance;
+
+    it('shows placement and engine at once and keeps the rest under All engine settings', async () => {
+      const root = await open();
+
+      expect(Array.from(root.querySelectorAll('h3.group')).map((h) => h.textContent!.trim())).toEqual(['Placement', 'Engine']);
+      expect(root.querySelector('#adv-dtype')).toBeNull();
+
+      Array.from(root.querySelectorAll('button')).find((b) => b.textContent?.includes('All engine settings'))!.click();
+      fixture.detectChanges();
+
+      expect(root.querySelector('#adv-dtype')).not.toBeNull();
+      expect(Array.from(root.querySelectorAll('h3.group')).map((h) => h.textContent!.trim())).toContain('Memory and precision');
+      expect(root.textContent).toContain('can mark the calibration of this model as outdated');
+    });
+
+    it('narrows the list to what the filter matches and opens the lower part for it', async () => {
+      const root = await open();
+
+      page().filter.set('quant');
+      fixture.detectChanges();
+
+      expect(root.querySelector('#adv-quantization')).not.toBeNull();
+      expect(root.querySelector('#adv-max_num_seqs')).toBeNull();
+      page().filter.set('kv_cache_dtype');
+      fixture.detectChanges();
+      expect(root.querySelector('#adv-kv_cache_dtype')).not.toBeNull();
+      page().filter.set('nothing matches this');
+      fixture.detectChanges();
+      expect(root.querySelectorAll('.arow').length).toBe(0);
+    });
+
+    it('marks a set value and clears it with Use default', async () => {
+      const root = await open();
+      const before = page().setCount();
+
+      expect(root.querySelectorAll('.set-dot').length).toBeGreaterThan(0);
+      expect(page().isSet('min_context_fraction')).toBe(true);
+      (Array.from(root.querySelectorAll('.arow button.link')).find((b) =>
+        b.closest('.arow')!.textContent!.includes('Minimum context share'),
+      ) as HTMLButtonElement).click();
+      fixture.detectChanges();
+
+      expect(page().isSet('min_context_fraction')).toBe(false);
+      expect(page().advChanges().some((c) => c.includes('Minimum context share'))).toBe(true);
+      expect(page().setCount()).toBe(before - 1);
+    });
+
+    it('chooses the GPUs of the model with tiles and clears the setting for all of them', async () => {
+      const root = await open();
+      expect(root.querySelectorAll('.gpus--compact .gpu--on').length).toBe(2);
+      expect(root.textContent).toContain('30.0 GB free');
+
+      page().toggleModelGpu(1);
+      fixture.detectChanges();
+      expect(page().adv()!.values['gpu_devices']).toBe('0');
+      expect(root.querySelectorAll('.gpus--compact .gpu--on').length).toBe(1);
+
+      page().toggleModelGpu(0);
+      expect(page().adv()!.values['gpu_devices']).toBe('0');
+
+      page().toggleModelGpu(1);
+      expect(page().adv()!.values['gpu_devices']).toBe('');
+    });
+
+    it('shows the recommendation as a banner of the editor and applies it', async () => {
+      const best = { benchmark_id: 7, throughput: 52.3, settings: { tensor_parallel_size: 4, kv_cache_memory_bytes: '2G', max_model_len: 8192 }, recorded_at: null };
+      service['getNodeInsights'].mockResolvedValue({
+        ...insights([
+          insight({ benchmark: { best_eligible: best, best_observed: best, current: { tensor_parallel_size: 4, max_model_len: 32768 }, eligible_for_comparison: true } }),
+        ]),
+        gpus,
+      });
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      expect(root.querySelector('.banner--rec')!.textContent).toContain('Recommended by benchmark');
+      root.querySelector<HTMLButtonElement>('.banner--rec button')!.click();
+      fixture.detectChanges();
+
+      expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 8192 });
+    });
   });
 });

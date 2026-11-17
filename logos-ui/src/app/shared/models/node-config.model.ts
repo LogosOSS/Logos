@@ -49,6 +49,9 @@ export interface BenchmarkResult {
   throughput: number;
   settings: Record<string, unknown>;
   recorded_at: string | null;
+  /** Mean time to first token and mean response time, in seconds, when the run measured them. */
+  ttft_s?: number | null;
+  latency_s?: number | null;
 }
 
 export interface BenchmarkInsight {

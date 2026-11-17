@@ -8,8 +8,24 @@
   </nav>
 
   <div class="head">
-    <h1 class="page-title">Node settings</h1>
+    <div>
+      <h1 class="page-title">{{ providerName() || 'Node settings' }}</h1>
+      <p class="page-sub">Settings for the whole node. Settings of a single model are on its model page.</p>
+    </div>
   </div>
+
+  @if (!loading() && !error()) {
+    <div class="status-row">
+      <div class="pill">
+        <span class="dot" [class]="'dot dot--' + (workerOnline() ? 'ok' : 'warn')" aria-hidden="true"></span>
+        <div><small>Worker</small><b>{{ workerOnline() ? 'Online' : 'Offline' }}</b></div>
+      </div>
+      <div class="pill">
+        <span class="dot" [class]="'dot dot--' + (gpus().length > 0 ? 'ok' : 'gray')" aria-hidden="true"></span>
+        <div><small>GPUs</small><b>{{ gpuSummary() }}</b></div>
+      </div>
+    </div>
+  }
 
   @if (loading()) {
     <div class="loading" role="status" aria-live="polite">
@@ -93,55 +109,64 @@
 
     <fieldset class="settings" [disabled]="saving()">
       <section class="card" aria-labelledby="pool-title">
-        <h2 id="pool-title">GPU pool</h2>
-        <p class="sub">The GPUs this node may place lanes on. Empty uses the value of config.yml.</p>
-        <div class="field">
-          <label class="label" for="gpu-mode">Pool <code class="key">gpu_devices</code></label>
-          <select
-            id="gpu-mode"
-            class="num sel"
-            [value]="d.gpuMode"
-            (change)="setMode($any($event.target).value)"
-          >
-            <option value="default">Default (config.yml)</option>
-            <option value="all">All GPUs</option>
-            <option value="pick">Selected GPUs</option>
-            <option value="none">No GPU</option>
-          </select>
-          @if (d.gpuMode === 'pick') {
-            <div class="gpus" role="group" aria-label="GPUs of the pool">
-              @for (gpu of gpus(); track gpu.index) {
-                <label class="gpu">
-                  <input type="checkbox" [checked]="d.gpus.includes(gpu.index)" (change)="toggleGpu(gpu.index)" />
-                  <span>GPU {{ gpu.index }}</span>
-                  <small>{{ gpu.name || 'unknown' }}</small>
-                </label>
-              } @empty {
-                <p class="hint">The worker reports no GPUs. It must be online to list them.</p>
-              }
+        <h2 id="pool-title">Placement</h2>
+        <p class="sub">Which GPUs Logos may use on this node.</p>
+        <div class="row">
+          <div class="row-text">
+            <label class="label" id="pool-label">GPUs available to Logos <code class="key">gpu_devices</code></label>
+            <p class="hint">Models without their own GPU choice are placed on these. Empty uses the value of config.yml.</p>
+          </div>
+          <div class="row-control">
+            <div class="seg" role="radiogroup" aria-labelledby="pool-label">
+              <button type="button" role="radio" [class.seg--on]="d.gpuMode === 'all'" [attr.aria-checked]="d.gpuMode === 'all'" (click)="setMode('all')">All</button>
+              <button type="button" role="radio" [class.seg--on]="d.gpuMode === 'none'" [attr.aria-checked]="d.gpuMode === 'none'" (click)="setMode('none')">None</button>
             </div>
-          }
-          @if (fieldError('gpu_devices'); as e) {
-            <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
+            @if (d.gpuMode !== 'default') {
+              <button class="link" type="button" (click)="setMode('default')">Use default</button>
+            }
+          </div>
+        </div>
+        <div class="gpus" role="group" aria-label="GPUs of the pool">
+          @for (gpu of gpus(); track gpu.index) {
+            <button
+              type="button"
+              class="gpu"
+              [class.gpu--on]="gpuChosen(gpu.index)"
+              [class.gpu--dim]="d.gpuMode === 'default'"
+              [attr.aria-pressed]="gpuChosen(gpu.index)"
+              (click)="toggleGpu(gpu.index)"
+            >
+              <span class="gpu-name"><b>GPU {{ gpu.index }}</b></span>
+              <small>{{ gpuMemory(gpu) }}</small>
+              @if (gpuChosen(gpu.index)) {
+                <i class="pi pi-check-circle gpu-check" aria-hidden="true"></i>
+              }
+            </button>
+          } @empty {
+            <p class="hint">The worker reports no GPUs. It must be online to list them.</p>
           }
         </div>
+        @if (fieldError('gpu_devices'); as e) {
+          <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
+        }
       </section>
 
       <section class="card" aria-labelledby="engine-title">
         <h2 id="engine-title">Engine defaults</h2>
-        <p class="sub">Flags added to the command line of every vLLM lane of this node.</p>
+        <p class="sub">vLLM settings for every model on this node. A model can override them on its own page.</p>
+        <h3 class="group">All models</h3>
         <div class="field">
-          <label class="label" for="global-args">Global arguments <code class="key">global_extra_args</code></label>
+          <label class="label" for="global-args">Extra arguments <code class="key">global_extra_args</code></label>
+          <p class="hint">Passed to every vllm serve, before the arguments of the model, one per line.</p>
           <textarea
             id="global-args"
             class="area mono"
-            rows="4"
-            placeholder="--safetensors-load-strategy=prefetch"
+            rows="3"
+            placeholder="--disable-log-requests"
             [value]="d.args"
             [attr.aria-invalid]="fieldError('global_extra_args') ? 'true' : null"
             (input)="setArgs($any($event.target).value)"
           ></textarea>
-          <p class="hint">One per line. They follow the arguments of each model.</p>
           @if (remeasuring()) {
             <p class="hint hint--warn" role="status">
               <i class="pi pi-info-circle" aria-hidden="true"></i>
@@ -156,36 +181,44 @@
 
       <section class="card" aria-labelledby="care-title">
         <h2 id="care-title">Node care</h2>
-        <p class="sub">How the worker watches its GPUs.</p>
-        <div class="field">
-          <label class="label" for="reboot">Reboot a stuck host <code class="key">auto_reboot_on_stuck_gpu</code></label>
-          <select id="reboot" class="num sel" [value]="d.reboot" (change)="setReboot($any($event.target).value)">
-            <option value="">Default (config.yml)</option>
-            <option value="true">On</option>
-            <option value="false">Off</option>
-          </select>
-          <p class="hint">Restarts the host when every lane exhausted its restarts and a GPU holds memory nobody uses.</p>
-        </div>
-        <div class="field">
-          <label class="label" for="poll">GPU poll interval <code class="key">gpu_poll_interval</code></label>
-          <div class="control">
-            <input
-              id="poll"
-              class="num"
-              type="text"
-              inputmode="numeric"
-              placeholder="Default"
-              [value]="d.poll"
-              [class.invalid]="fieldError('gpu_poll_interval')"
-              [attr.aria-invalid]="fieldError('gpu_poll_interval') ? 'true' : null"
-              (input)="setPoll($any($event.target).value)"
-            />
-            <span class="unit">seconds</span>
+        <p class="sub">How the worker watches and protects its hardware.</p>
+        <div class="row">
+          <div class="row-text">
+            <label class="label" for="poll">GPU check interval <code class="key">gpu_poll_interval</code></label>
+            <p class="hint">Lower is fresher, higher is lighter on nvidia-smi, 1 to {{ maxPoll }} seconds. Applies at the next worker start.</p>
           </div>
-          <p class="hint">How often the worker reads GPU memory, 1 to {{ maxPoll }}. Applies at the next worker start.</p>
-          @if (fieldError('gpu_poll_interval'); as e) {
-            <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
-          }
+          <div class="row-control">
+            <div class="control">
+              <input
+                id="poll"
+                class="num"
+                type="text"
+                inputmode="numeric"
+                placeholder="Default"
+                [value]="d.poll"
+                [class.invalid]="fieldError('gpu_poll_interval')"
+                [attr.aria-invalid]="fieldError('gpu_poll_interval') ? 'true' : null"
+                (input)="setPoll($any($event.target).value)"
+              />
+              <span class="unit">s</span>
+            </div>
+          </div>
+        </div>
+        @if (fieldError('gpu_poll_interval'); as e) {
+          <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
+        }
+        <div class="row">
+          <div class="row-text">
+            <label class="label" for="reboot">Reboot on stuck GPU <code class="key">auto_reboot_on_stuck_gpu</code></label>
+            <p class="hint">Restart the host when lanes keep crashing and a GPU is stuck.</p>
+          </div>
+          <div class="row-control">
+            <select id="reboot" class="num sel" [value]="d.reboot" (change)="setReboot($any($event.target).value)">
+              <option value="">Default (config.yml)</option>
+              <option value="true">On</option>
+              <option value="false">Off</option>
+            </select>
+          </div>
         </div>
       </section>
     </fieldset>

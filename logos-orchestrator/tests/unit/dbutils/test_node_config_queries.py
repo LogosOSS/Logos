@@ -93,12 +93,12 @@ def test_the_sources_pairs_and_runs_are_read_as_maps():
     assert db.get_model_provider_pairs(7) == {"org/a": 11}
     when = datetime.datetime(2026, 11, 1)
     db.session.execute.return_value.fetchall.return_value = [
-        SimpleNamespace(id=2, serving={"tensor_parallel_size": 2}, recorded_at=when),
-        SimpleNamespace(id=3, serving=None, recorded_at=None),
+        SimpleNamespace(id=2, serving={"tensor_parallel_size": 2}, recorded_at=when, ttft_ms="470.0", latency_ms=5500),
+        SimpleNamespace(id=3, serving=None, recorded_at=None, ttft_ms=None, latency_ms="x"),
     ]
     assert db.get_benchmark_runs([2, 3]) == {
-        2: {"serving": {"tensor_parallel_size": 2}, "recorded_at": when.isoformat()},
-        3: {"serving": {}, "recorded_at": None},
+        2: {"serving": {"tensor_parallel_size": 2}, "recorded_at": when.isoformat(), "ttft_s": 0.47, "latency_s": 5.5},
+        3: {"serving": {}, "recorded_at": None, "ttft_s": None, "latency_s": None},
     }
 
 
