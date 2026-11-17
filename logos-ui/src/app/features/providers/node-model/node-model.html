@@ -286,22 +286,25 @@
                         @if (bestKv() !== null) {
                           <button class="best-chip" type="button" (click)="setKv(bestKv())"><span class="best-dot"></span>Best <b>{{ bestKv() }} GB</b></button>
                         }
-                        <input
-                          id="kv"
-                          type="number"
-                          class="num"
-                          [min]="w.min"
-                          [max]="w.max"
-                          step="1"
-                          [value]="p.kvGb"
-                          [class.invalid]="fieldError('kv_cache_memory_bytes')"
-                          [attr.aria-invalid]="fieldError('kv_cache_memory_bytes') ? 'true' : null"
-                          (input)="setKv($any($event.target).value)"
-                        />
+                        <span class="unit-in">
+                          <input
+                            id="kv"
+                            type="number"
+                            class="num"
+                            [min]="w.min"
+                            [max]="w.max"
+                            step="1"
+                            [value]="p.kvGb"
+                            [class.invalid]="fieldError('kv_cache_memory_bytes')"
+                            [attr.aria-invalid]="fieldError('kv_cache_memory_bytes') ? 'true' : null"
+                            (input)="setKv($any($event.target).value)"
+                          />
+                          <span class="unit">GB</span>
+                        </span>
                       } @else {
                         <b class="big">{{ p.kvGb }}</b>
+                        <span class="unit">GB</span>
                       }
-                      <span class="unit">GB</span>
                     </div>
                   </div>
                   <div class="sl" [class.sl--edit]="editing()">
@@ -351,22 +354,25 @@
                       @if (bestCtx() !== null) {
                         <button class="best-chip" type="button" (click)="setCtx(bestCtx())"><span class="best-dot"></span>Best <b>{{ formatTokens(bestCtx()) }}</b></button>
                       }
-                      <input
-                        id="ctx"
-                        type="number"
-                        class="num"
-                        min="1024"
-                        [max]="capacity() ?? null"
-                        step="1024"
-                        [value]="p.ctx"
-                        [class.invalid]="fieldError('max_model_len')"
-                        [attr.aria-invalid]="fieldError('max_model_len') ? 'true' : null"
-                        (change)="setCtx($any($event.target).value)"
-                      />
+                      <span class="unit-in">
+                        <input
+                          id="ctx"
+                          type="number"
+                          class="num"
+                          min="1024"
+                          [max]="capacity() ?? null"
+                          step="1024"
+                          [value]="p.ctx"
+                          [class.invalid]="fieldError('max_model_len')"
+                          [attr.aria-invalid]="fieldError('max_model_len') ? 'true' : null"
+                          (change)="setCtx($any($event.target).value)"
+                        />
+                        <span class="unit">tokens</span>
+                      </span>
                     } @else {
                       <b class="big">{{ p.ctx }}</b>
+                      <span class="unit">tokens</span>
                     }
-                    <span class="unit">tokens</span>
                   </div>
                 </div>
                 <div class="sl" [class.sl--edit]="editing()">

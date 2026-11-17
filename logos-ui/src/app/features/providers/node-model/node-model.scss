@@ -1187,3 +1187,69 @@ input[type='range'] {
     color: rgb(var(--color-text-accent));
   }
 }
+
+// A value field with its unit inside the box: every box has the same size, so the edges line up.
+.unit-in {
+  position: relative;
+  display: inline-block;
+
+  input.num {
+    box-sizing: border-box;
+    width: 136px;
+    height: 34px;
+    padding: 0 48px 0 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+    background: rgb(var(--color-background-50) / 0.06);
+    border-color: rgb(var(--color-outline-200) / 0.7);
+
+    &:focus {
+      outline: 2px solid rgb(var(--color-primary-500) / 0.6);
+      outline-offset: 1px;
+    }
+  }
+
+  .unit {
+    position: absolute;
+    top: 50%;
+    right: 12px;
+    font-size: var(--font-size-sm);
+    color: rgb(var(--color-typography-700));
+    pointer-events: none;
+    transform: translateY(-50%);
+  }
+}
+
+// The size tiles: a clear name, the memory below, "Best" at the edge.
+.option {
+  gap: 4px;
+  padding: 14px 16px;
+
+  .option-top b {
+    font-size: var(--font-size-lg);
+  }
+
+  small {
+    font-size: var(--font-size-sm);
+  }
+}
+
+.field-value {
+  min-height: 34px;
+}
+
+// All value fields of the settings rows share the look of the placement fields.
+.arow,
+.row {
+  .num {
+    height: 34px;
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+    background: rgb(var(--color-background-50) / 0.06);
+    border-color: rgb(var(--color-outline-200) / 0.7);
+  }
+
+  .control .num {
+    width: 100%;
+  }
+}
