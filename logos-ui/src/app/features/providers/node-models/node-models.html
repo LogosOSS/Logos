@@ -7,10 +7,22 @@
         apply at the next lane start.
       </p>
     </div>
-    <span class="worker-chip" [class.worker-chip--offline]="!workerOnline()" role="status">
-      <span class="dot" aria-hidden="true"></span>
-      {{ workerOnline() ? 'Worker online' : 'Worker offline' }}
-    </span>
+    <div class="head-actions">
+      <span class="worker-chip" [class.worker-chip--offline]="!workerOnline()" role="status">
+        <span class="dot" aria-hidden="true"></span>
+        {{ workerOnline() ? 'Worker online' : 'Worker offline' }}
+      </span>
+      <button
+        class="btn-primary btn-sm"
+        type="button"
+        [disabled]="!workerOnline() || loading()"
+        [attr.title]="workerOnline() ? null : 'The worker must be online to change its models.'"
+        (click)="openConnect()"
+      >
+        <i class="pi pi-plus" aria-hidden="true"></i>
+        Connect model
+      </button>
+    </div>
   </div>
 
   @if (error()) {
@@ -55,3 +67,40 @@
     </app-data-table>
   }
 </section>
+
+<app-modal-form [visible]="connectOpen()" (visibleChange)="$event || closeConnect()" title="Connect model">
+  <div class="form-body">
+    <p class="form-intro">
+      Add a model from the Logos catalog to this node. It shows up in the list as not calibrated.
+    </p>
+    <div class="form-field">
+      <label class="field-label" for="connect-model">Model <span class="required">*</span></label>
+      @if (catalogLoading()) {
+        <p class="form-hint" role="status"><i class="pi pi-spin pi-spinner" aria-hidden="true"></i> Loading the catalog…</p>
+      } @else {
+        <app-select
+          [id]="'connect-model'"
+          [options]="connectOptions()"
+          [value]="connectChoice() ?? ''"
+          [disabled]="connecting()"
+          (valueChange)="connectChoice.set($event)"
+        />
+        @if (connectOptions().length === 0 && !connectError()) {
+          <p class="form-hint">Every model of the catalog is already on this node.</p>
+        }
+      }
+    </div>
+    @if (connectError()) {
+      <app-error-message [message]="connectError()!" />
+    }
+  </div>
+  <div class="modal-footer" modal-footer>
+    <button class="btn-secondary" type="button" [disabled]="connecting()" (click)="closeConnect()">Cancel</button>
+    <button class="btn-primary" type="button" [disabled]="!connectChoice() || connecting()" (click)="submitConnect()">
+      @if (connecting()) {
+        <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+      }
+      Connect
+    </button>
+  </div>
+</app-modal-form>

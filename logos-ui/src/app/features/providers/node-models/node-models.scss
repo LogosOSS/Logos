@@ -89,3 +89,34 @@
   color: inherit;
   text-decoration: none;
 }
+
+.head-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.form-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-intro,
+.form-hint {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-700));
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: var(--font-weight-semibold);
+}
+
+.required {
+  color: rgb(var(--color-error));
+}

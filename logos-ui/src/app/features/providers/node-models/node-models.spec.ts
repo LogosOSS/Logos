@@ -2,6 +2,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ModelManagementService } from '../../../core/services/model-management.service';
 import { ProviderManagementService } from '../../../core/services/provider-management.service';
 import { NodeInsights, NodeModelInsight } from '../../../shared/models/node-config.model';
 import { NodeModels } from './node-models';
@@ -29,6 +30,8 @@ describe('NodeModels', () => {
   let fixture: ComponentFixture<NodeModels>;
   let component: NodeModels;
   let getNodeInsights: ReturnType<typeof vi.fn>;
+  let service: Record<string, ReturnType<typeof vi.fn>>;
+  let getModels: ReturnType<typeof vi.fn>;
 
   const create = async (result: NodeInsights | { failure: unknown }): Promise<void> => {
     getNodeInsights = vi.fn();
@@ -37,9 +40,19 @@ describe('NodeModels', () => {
     } else {
       getNodeInsights.mockResolvedValue(result);
     }
+    getModels = vi.fn().mockResolvedValue([{ name: 'org/a' }, { name: 'org/z' }, { name: 'org/m' }]);
+    service = {
+      getNodeInsights,
+      getNodeConfig: vi.fn().mockResolvedValue({ provider_id: 4, revision: 3, yaml_imported: true, entries: [] }),
+      replaceNodeConfig: vi.fn().mockResolvedValue({ provider_id: 4, config_revision: 4 }),
+    };
     TestBed.configureTestingModule({
       imports: [NodeModels],
-      providers: [provideRouter([]), { provide: ProviderManagementService, useValue: { getNodeInsights } }],
+      providers: [
+        provideRouter([]),
+        { provide: ProviderManagementService, useValue: service },
+        { provide: ModelManagementService, useValue: { getModels } },
+      ],
     });
     fixture = TestBed.createComponent(NodeModels);
     fixture.componentRef.setInput('providerId', 4);
@@ -147,6 +160,102 @@ describe('NodeModels', () => {
       expect(component.hasTuning(withBenchmark({ tensor_parallel_size: 4 }, false))).toBe(false);
       expect(component.hasTuning(withBenchmark({ block_size: 16 }))).toBe(false);
       expect(component.hasTuning(model())).toBe(false);
+    });
+  });
+
+  describe('connecting a model', () => {
+    it('offers the catalog models the node does not list yet, sorted', async () => {
+      await create(insights([model()]));
+
+      await component.openConnect();
+
+      expect(component.connectOpen()).toBe(true);
+      expect(component.connectOptions().map((o) => o.value)).toEqual(['org/m', 'org/z']);
+      expect(component.catalogLoading()).toBe(false);
+    });
+
+    it('adds the model without a placement and shows the new list', async () => {
+      await create(insights([model()]));
+      await component.openConnect();
+      component.connectChoice.set('org/z');
+      getNodeInsights.mockResolvedValue(insights([model(), model({ model_name: 'org/z', configured: false })]));
+
+      await component.submitConnect();
+      fixture.detectChanges();
+
+      expect(service['replaceNodeConfig']).toHaveBeenCalledWith(4, 3, [
+        { model_name: 'org/z', capability: {}, overrides: {} },
+      ]);
+      expect(component.connectOpen()).toBe(false);
+      expect(text()).toContain('org/z');
+    });
+
+    it('keeps the dialog open and says why the worker refused', async () => {
+      await create(insights([model()]));
+      await component.openConnect();
+      component.connectChoice.set('org/z');
+      service['replaceNodeConfig'].mockRejectedValue({ status: 503, error: { error: 'Worker not connected' } });
+
+      await component.submitConnect();
+
+      expect(component.connectOpen()).toBe(true);
+      expect(component.connectError()).toBe('Worker not connected');
+      expect(component.connecting()).toBe(false);
+    });
+
+    it('does nothing without a choice, and cannot close or repeat while it runs', async () => {
+      await create(insights([model()]));
+      await component.openConnect();
+
+      await component.submitConnect();
+      expect(service['replaceNodeConfig']).not.toHaveBeenCalled();
+
+      let finish: (value: unknown) => void = () => undefined;
+      service['replaceNodeConfig'].mockReturnValue(new Promise((resolve) => (finish = resolve)));
+      component.connectChoice.set('org/z');
+      const first = component.submitConnect();
+      component.closeConnect();
+      void component.submitConnect();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(component.connectOpen()).toBe(true);
+      expect(service['replaceNodeConfig']).toHaveBeenCalledTimes(1);
+      finish({ provider_id: 4, config_revision: 4 });
+      await first;
+      expect(component.connectOpen()).toBe(false);
+    });
+
+    it('tells when the catalog cannot be loaded and when it has nothing left to add', async () => {
+      await create(insights([model()]));
+      getModels.mockRejectedValueOnce(new Error('down'));
+      await component.openConnect();
+      expect(component.connectError()).toBe('The model catalog could not be loaded.');
+
+      getModels.mockResolvedValue([{ name: 'org/a' }]);
+      await component.openConnect();
+      expect(component.connectOptions()).toEqual([]);
+      expect(component.connectError()).toBeNull();
+    });
+
+    it('closes without saving', async () => {
+      await create(insights([model()]));
+      await component.openConnect();
+
+      component.closeConnect();
+
+      expect(component.connectOpen()).toBe(false);
+      expect(service['replaceNodeConfig']).not.toHaveBeenCalled();
+    });
+
+    it('is switched off while the worker is offline', async () => {
+      await create(insights([model()], false));
+
+      const button = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button')).find((b) =>
+        b.textContent?.includes('Connect model'),
+      )!;
+
+      expect(button.disabled).toBe(true);
+      expect(button.getAttribute('title')).toContain('must be online');
     });
   });
 });
