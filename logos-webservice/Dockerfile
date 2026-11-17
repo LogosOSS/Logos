@@ -13,7 +13,7 @@ FROM eclipse-temurin:25-jre-noble@sha256:e3b6f7887a50f20d8f07abf279d8a81a5953fb3
 # design, hence the apt setting.
 ARG APT_SNAPSHOT=20261117T000000Z
 RUN sed -i -E \
-      "s#https?://(archive|security)\.ubuntu\.com/ubuntu/?#http://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT}/#g" \
+      "s#https?://(archive|security)\.ubuntu\.com/ubuntu/?#https://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT}/#g" \
       /etc/apt/sources.list.d/ubuntu.sources \
   && ! grep -q -E '(archive|security)\.ubuntu\.com' /etc/apt/sources.list.d/ubuntu.sources \
   && printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/99snapshot

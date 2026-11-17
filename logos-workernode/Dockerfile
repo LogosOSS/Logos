@@ -102,13 +102,20 @@ FROM ghcr.io/astral-sh/uv:0.13.6 AS uv
 # ---------------------------------------------------------------------------
 FROM ${BASE_IMAGE}
 
+# snapshot.ubuntu.com serves HTTPS only, and the bare Ubuntu base has no CA
+# bundle yet (the ca-certificates package below installs the real one).
+# Borrow the bundle of a digest-pinned image so apt can verify the snapshot's
+# TLS certificate; the packages themselves are still verified against
+# Ubuntu's signed InRelease files.
+COPY --from=python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 \
+     /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 # apt installs exact versions from a fixed Ubuntu archive snapshot, so every
 # build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
 # digest together. Snapshot lists are older than their Valid-Until date by
 # design, hence the apt setting.
 ARG APT_SNAPSHOT=20261117T000000Z
 RUN sed -i -E \
-      "s#https?://(archive|security)\.ubuntu\.com/ubuntu/?#http://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT}/#g" \
+      "s#https?://(archive|security)\.ubuntu\.com/ubuntu/?#https://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT}/#g" \
       /etc/apt/sources.list.d/ubuntu.sources \
   && ! grep -q -E '(archive|security)\.ubuntu\.com' /etc/apt/sources.list.d/ubuntu.sources \
   && printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/99snapshot
