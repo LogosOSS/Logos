@@ -299,6 +299,16 @@ describe('Benchmark provider picker', () => {
     }
     expect(samples.value).toBe('7');
     expect(picker.value).toBe('2');
+    expect(component.benchmarkSettingsOpen()).toBe(false);
+    const customize = fixture.nativeElement.querySelector('.benchmark-customize-button') as HTMLButtonElement;
+    customize.click();
+    fixture.detectChanges();
+    expect(component.benchmarkSettingsOpen()).toBe(true);
+    component.benchmarkSettings.update(value => ({ ...value, max_output_tokens: 256 }));
+    component.benchmarkSettingsOpen.set(false);
+    fixture.detectChanges();
+    expect(component.benchmarkSettings().max_output_tokens).toBe(256);
+    expect(samples.value).toBe('7');
     fixture.destroy();
     vi.restoreAllMocks();
   });

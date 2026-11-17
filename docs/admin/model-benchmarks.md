@@ -22,9 +22,11 @@ Benchmarks measure speed and throughput. They do not grade the generated answers
 3. Open **Performance → Run benchmark**.
 4. Check the selected online worker, or select another available provider.
 5. Set the sample size.
-6. Open **Dataset and settings** to change the dataset, request profile or output limit.
-7. If necessary, change the vLLM settings for the selected Logos worker.
-8. Open **Repeat or compare settings** to configure a batch.
+6. Select **Review benchmark**.
+
+To change the test setup, select **Customize**. Change the dataset, request profile, output limit or worker parameters.
+Select **Done** to keep the settings and return.
+To compare configurations, open **Repeat or compare settings** in the same dialog.
 
 Logos selects an online worker when available. Offline workers cannot be selected.
 Your explicit provider selection remains unchanged when the status updates.
@@ -49,13 +51,13 @@ A small sample size does not necessarily limit the dataset download size.
 
 ### Saved Request Datasets
 
-For a Logos worker, **Dataset and settings → Input dataset** also lists saved request datasets for that model.
+For a Logos worker, **Customize → Input dataset** also lists saved request datasets for that model.
 Select a dataset to replay all its saved requests. The sample size becomes fixed at the saved request count.
 Each run preserves the source prompts, inference controls and output limits.
 The Hugging Face dataset, prompt column, seed and output-limit controls do not apply to these runs.
 Select **Concurrent** and set **Concurrent requests** to use the same load for each configuration.
 Batch configurations keep the selected saved dataset. They cannot vary its request count, seed or output limits.
-Create a saved dataset through **Nightly benchmarks → Request workload** before selecting it here.
+Create a saved dataset through **Nightly benchmarks → Manage → Request workload** before selecting it here.
 
 ![Manual benchmark with a saved request dataset](/img/roles/logos-admin-benchmark-saved-requests.png)
 
@@ -110,12 +112,12 @@ Other traffic on that provider can affect the measurements.
 
 ## Run a Batch
 
-1. Open **Repeat or compare settings** and enable **Run a batch**.
+1. Select **Customize**, open **Repeat or compare settings**, and enable **Run a batch**.
 2. Set the repetitions per configuration.
 3. Add the parameters to vary.
 4. Enter each value list or numeric range.
 5. Check the configuration preview.
-6. Select **Review batch** and confirm the batch.
+6. Select **Done**, then select **Review batch** and confirm the batch.
 
 One confirmation starts the complete batch.
 Each configuration repeats before the next configuration starts.
@@ -182,7 +184,7 @@ For deployment checks, use the [developer verification checklist](https://github
 
 ## Reload Worker GPU Limits
 
-1. Open **Run benchmark → Dataset and settings → vLLM settings for the next run**.
+1. Open **Run benchmark → Customize → vLLM settings for the next run**.
 2. Select **Reload GPU limits**.
 3. If the GPU count stays unknown, wait for a worker status update.
 4. Select **Reload GPU limits** again.

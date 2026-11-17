@@ -1,17 +1,25 @@
 <section class="nightly" [class.nightly--active]="state()?.enabled" aria-label="Nightly benchmarks">
   <div class="nightly__heading">
     <div class="nightly__title">
-      <strong><i class="pi pi-moon" aria-hidden="true"></i> Nightly benchmarks · {{ providerName }}</strong>
+      <strong>{{ providerName }}</strong>
       <p class="nightly__status" role="status" [class.nightly__status--enabled]="state()?.enabled && !state()?.recovery_required"
         [class.nightly__status--blocked]="state()?.recovery_required">
         <i [class]="!state() ? 'pi pi-spin pi-spinner' : state()!.recovery_required ? 'pi pi-exclamation-circle' : state()!.enabled ? 'pi pi-calendar' : 'pi pi-pause-circle'" aria-hidden="true"></i>
         {{ !state() ? 'Loading nightly status…' : state()!.recovery_required ? 'Recovery pending' : state()!.enabled ? 'Enabled · in nightly rotation' : 'Disabled · not scheduled' }}
       </p>
     </div>
-    <button type="button" (click)="review()" [disabled]="!state() || saving() || (!state()!.enabled && (!window || state()!.recovery_required))">
-      {{ state()?.enabled ? 'Disable nightly runs…' : 'Enable nightly runs…' }}
+    <button type="button" (click)="managing.set(true)" aria-haspopup="dialog" [disabled]="!state()" [attr.aria-label]="'Manage nightly benchmarks on ' + providerName">
+      <i class="pi pi-cog" aria-hidden="true"></i> Manage
     </button>
   </div>
+  @if (state()?.enabled && window; as timing) {
+    <p class="nightly__summary">{{ timing.start }}–{{ timing.end }} · {{ timing.timezone }} @if (state()?.last_run_date) { · Last run {{ state()?.last_run_date }} }</p>
+  }
+  @if (state()?.recovery_required) { <p role="alert">Worker recovery is pending. Nightly benchmarks are paused.</p> }
+  @if (error() && !managing() && !confirming()) { <p role="alert">{{ error() }}</p> }
+</section>
+<app-modal-form [visible]="managing()" (visibleChange)="managing.set($event)" [title]="'Nightly benchmarks · ' + providerName" size="lg" [dismissible]="!saving()">
+<div class="nightly-management">
   <div class="nightly__preview">
     <strong>Adaptive testing until {{ window?.end ?? 'the window ends' }}</strong>
     <p class="nightly__round-note">Baseline → batching variants → apply verified improvement → next round. Initial values are shown below.</p>
@@ -93,12 +101,21 @@
             @if (result.reason) { — {{ result.reason }} }
           </li>
         }</ul>
-        <p>Successful measurements appear in the performance comparison below. Saved request datasets can automatically improve production settings. Without an eligible improvement, the original settings return.</p>
+        <p>Successful measurements appear in Overview and Analysis. Saved request datasets can automatically improve production settings. Without an eligible improvement, the original settings return.</p>
       </details>
     }
   }
-  @if (error() && !confirming()) { <p role="alert">{{ error() }}</p> }
-</section>
+
+
+  @if (error()) { <p role="alert">{{ error() }}</p> }
+</div>
+<div modal-footer class="nightly__actions">
+  <button type="button" (click)="review()" [disabled]="!state() || saving() || (!state()!.enabled && (!window || state()!.recovery_required))">
+    <i [class]="state()?.enabled ? 'pi pi-pause' : 'pi pi-play'" aria-hidden="true"></i> {{ state()?.enabled ? 'Disable nightly runs…' : 'Enable nightly runs…' }}
+  </button>
+  <button type="button" (click)="managing.set(false)" [disabled]="saving()">Done</button>
+</div>
+</app-modal-form>
 <app-modal-confirm [visible]="confirming()" (visibleChange)="!saving() && confirming.set($event)"
   [title]="enabling ? 'Enable nightly runs?' : 'Disable nightly runs?'"
   [message]="confirmationMessage" [confirmLabel]="enabling ? 'Enable nightly runs' : 'Disable nightly runs'"

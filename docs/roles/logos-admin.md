@@ -230,14 +230,17 @@ Without a nightly series, **Highest recorded throughput** shows the best result 
 Older workloads are not ranked against it. Unknown controls do not establish a comparison.
 Manual benchmarks do not apply these parameters automatically. Nightly runs with saved request datasets can apply verified improvements.
 
-To benchmark saved requests manually, open **Run benchmark → Dataset and settings**.
+Select **Run benchmark** to start a manual run. The page shows the provider, sample size and current test setup.
+Select **Customize** to change advanced controls. Select **Done** to keep the settings and return to the start button.
+
+To benchmark saved requests manually, open **Run benchmark → Customize**.
 Select the saved dataset under **Input dataset**. Logos fixes the sample size to its request count.
 The run preserves each source request's output limit. Set the profile and concurrency for the comparison.
 **Repeat or compare settings** uses the same saved requests for every configuration.
 
 ![Manual benchmark with a saved request dataset](../static/img/roles/logos-admin-benchmark-saved-requests.png)
 
-Open **Repeat or compare settings** and select **Run a batch** to compare parameter values.
+Select **Customize**, open **Repeat or compare settings**, and select **Run a batch** to compare parameter values.
 Open **View run plan & fixed settings** to check each combination and the saved request count.
 The frozen dataset keeps its source inference and output settings for all runs.
 A response that reaches the caller's explicit token limit completes the requested output budget.
@@ -313,7 +316,7 @@ See the [nightly benchmark guide](../admin/nightly-benchmarks.md) for rotation, 
 1. Open a model from **Models**.
 2. Select **Performance**.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Expand **Schedule and test plan**.
+4. Select **Manage**, then expand **Schedule and test plan**.
 5. Select **Enable nightly runs…**.
 6. Read the dialog and select **Enable nightly runs**.
 
@@ -325,10 +328,10 @@ The confirmation dialog shows the time window and the effect on production traff
 The card then shows **Enabled · in nightly rotation**.
 The schedule stays active after a page reload.
 Each night, Logos selects up to 2 eligible pairs, with new or older attempts first.
-The card shows possible parameter values for this pair, not a guaranteed place for tonight.
+Select **Manage** to inspect the parameter values for this pair. The plan does not guarantee a place for tonight.
 
 The example uses illustrative measurements and an active nightly schedule.
-Use **Manual benchmark** to configure a run during the day.
+Use **Run a benchmark** to configure a run during the day.
 These controls do not change the nightly workload.
 Use **Request workload** to select a saved dataset for the nightly schedule.
 Select **Create a fixed dataset from FULL request logs** to copy 1–100 successful requests from the database.
@@ -355,20 +358,25 @@ If the measurement is deleted, then the page identifies the unavailable benchmar
 ![Selected benchmark with its result and changed parameters](../static/img/roles/logos-admin-benchmark-linked-result.png)
 
 
-![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
+![Run a benchmark and compact nightly status](../static/img/roles/logos-admin-nightly-benchmarks.png)
+
+Select **Manage** beside a worker to inspect its workload and schedule.
+The **Schedule and test plan** section explains the rounds and the maintenance window.
+
+![Nightly management with the schedule and test plan](../static/img/roles/logos-admin-nightly-plan.png)
 
 Some deployments select a user instead of a fixed dataset.
-The card then shows **Latest 50 successful FULL requests**, the username and the cutoff.
+The management dialog shows **Latest 50 successful FULL requests**, the username and the cutoff.
 All configurations use the same selection for that night.
 The dataset controls are unavailable because the deployment setting controls this source.
-If fewer than 50 requests qualify, then the card shows the selection error.
+If fewer than 50 requests qualify, then the management dialog shows the selection error.
 See [deployment-specific request sources](../admin/nightly-benchmarks.md#deployment-specific-request-sources) for the exact rules.
 
 ![Nightly selection of recent user requests](../static/img/roles/logos-admin-nightly-automatic-source.png)
 
 To remove the pair from the nightly rotation:
 
-1. Select **Disable nightly runs…**.
+1. Select **Manage → Disable nightly runs…**.
 2. Read the dialog and select **Disable nightly runs**.
 3. Check that the card shows **Disabled · not scheduled**.
 

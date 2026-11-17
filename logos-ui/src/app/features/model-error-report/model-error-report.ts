@@ -43,6 +43,7 @@ import type { RequestLatencyScope } from '../statistics/services/request-latency
 import { TimeRangeBarComponent } from '../../shared/components/time-range-bar/time-range-bar';
 import { TimePreset, calendarRange } from '../../shared/utils/time-range';
 
+import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
 import { ErrorMessageComponent } from '../../shared/components/error-message/error-message';
 import { ModelAccess } from '../model-access/model-access';
@@ -691,6 +692,7 @@ const GENERIC_CALIBRATION_ERROR_DETAIL_MAX_LINES = 80;
     NightlyBenchmarks,
 
     ModalConfirmComponent,
+    ModalFormComponent,
     ScrollingModule,
     ErrorMessageComponent,
     ModelAccess,
@@ -778,10 +780,10 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   readonly performanceError = signal(false);
   readonly deployedPairs = computed(() => this.benchmarkPairs().filter(pair => pair.provider_type === 'logosnode'));
   readonly performanceViews = [
-    { id: 'results', label: 'Overview', description: 'Active configuration and recorded benchmark results' },
-    { id: 'run', label: 'Benchmarks', description: 'Configure a manual run or manage nightly benchmarks' },
-    { id: 'measurements', label: 'Request measurements', description: 'Response times from production requests' },
-    { id: 'analysis', label: 'Analysis', description: 'Compare runs, inspect configurations and look up metrics' },
+    { id: 'results', label: 'Overview', icon: 'pi-chart-line', description: 'Active configuration and recorded benchmark results' },
+    { id: 'run', label: 'Benchmarks', icon: 'pi-play', description: 'Configure a manual run or manage nightly benchmarks' },
+    { id: 'measurements', label: 'Request measurements', icon: 'pi-clock', description: 'Response times from production requests' },
+    { id: 'analysis', label: 'Analysis', icon: 'pi-sliders-h', description: 'Compare runs, inspect configurations and look up metrics' },
   ] as const;
   readonly performanceView = signal<'results' | 'run' | 'measurements' | 'analysis'>('results');
   readonly performanceDescription = computed(() => this.performanceViews.find(view => view.id === this.performanceView())!.description);
@@ -790,6 +792,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   readonly benchmarkStartingPairId = signal<number | null>(null);
   readonly benchmarkCancellingJobId = signal<number | null>(null);
   readonly benchmarkStartError = signal<string | null>(null);
+  readonly benchmarkSettingsOpen = signal(false);
   readonly benchmarkSampleSize = signal(COMPARISON_SAMPLE_SIZE);
   readonly benchmarkSettings = signal<BenchmarkSettings>({ ...DEFAULT_BENCHMARK_SETTINGS, serving_overrides: {} });
   readonly benchmarkSettingsValid = signal(true);
@@ -1208,7 +1211,10 @@ export class ModelErrorReport implements OnInit, OnDestroy {
       const id = Number(params.get('id'));
       const requestedTab = query.get('tab');
       const tab = (requestedTab === 'delays' || requestedTab === 'improvement' ? 'performance' : requestedTab) as ModelErrorTab | null;
-      if (this.modelId() !== id) this.performanceView.set('results');
+      if (this.modelId() !== id) {
+        this.performanceView.set('results');
+        this.benchmarkSettingsOpen.set(false);
+      }
       if (requestedTab === 'delays') this.performanceView.set('measurements');
       const benchmark = Number(query.get('benchmark'));
       const linked = Number.isSafeInteger(benchmark) && benchmark > 0 ? benchmark : null;

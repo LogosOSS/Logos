@@ -5,9 +5,7 @@ title: Nightly Benchmarks
 # Nightly Benchmarks
 
 Logos admins enable or disable a nightly schedule for each model/worker pair on
-**Model Details → Performance**. Both actions require confirmation. Schedules
-show the model and concrete parameter values to be tested, in the
-**Run benchmark** view with its manual benchmark editor. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
+**Model Details → Performance**. Both actions require confirmation. Select **Benchmarks → Manage** to inspect the schedule and parameter values for a worker. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
 settings; the scheduler builds the plan again when the nightly run starts.
 
 Schedules are off by default and persist in PostgreSQL. The nightly plan is independent
@@ -19,27 +17,31 @@ restores the worker before it returns to production.
 See the [illustrated admin walkthrough](../roles/logos-admin.md#nightly-benchmarks)
 for screenshots of the plan and both confirmation dialogs.
 
-![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
+![Run a benchmark and compact nightly status](../static/img/roles/logos-admin-nightly-benchmarks.png)
+
+Select **Manage** beside the intended worker to inspect its workload, schedule and results.
+
+![Nightly management with the schedule and test plan](../static/img/roles/logos-admin-nightly-plan.png)
 
 1. Sign in as a Logos Admin and open **Models**.
 2. Open the model's **Model Details → Performance** tab.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Expand **Schedule and test plan**.
+4. Select **Manage**, then expand **Schedule and test plan**.
 5. Select **Enable nightly runs…**, then confirm **Enable nightly runs**.
 6. Check that the card shows **Enabled · in nightly rotation**.
 
 The schedule persists after a page reload or browser close. To remove the pair
-from rotation, select **Disable nightly runs…** and confirm **Disable nightly runs**.
+from rotation, select **Manage → Disable nightly runs…** and confirm **Disable nightly runs**.
 Cancelling either dialog leaves the saved state unchanged. Activation requires
 an updated, connected worker. Run admission also checks the lane and the other
 available workers.
 
-The card shows a plan for this pair, not a guaranteed reservation for tonight.
-The scheduler selects eligible pairs at runtime. Use **Manual benchmark** for the dataset editor and question previews.
+Select **Manage** to inspect the plan for this pair. The plan does not guarantee a reservation for tonight.
+The scheduler selects eligible pairs at runtime. Use **Run a benchmark** for the dataset editor and question previews.
 These controls configure manual runs. They do not alter the nightly workload.
 
-The next day, expand **Latest round results** and inspect each configuration's
-outcome, attempt and benchmark ID. Use the performance comparison below for
+The next day, select **Manage**, then expand **Latest round results** and inspect each configuration's
+outcome, attempt and benchmark ID. Use **Overview** or **Analysis** for
 successful measurements. A finished plan can contain failed configurations;
 review individual outcomes before comparing throughput.
 
