@@ -61,9 +61,10 @@ Create a saved dataset through **Nightly benchmarks → Request workload** befor
 
 ### Desktop Example
 
-**Performance** shows the current configuration and the record timeline.
-Select **Run benchmark** to open **Benchmark setup & nightly automation**.
-Expand **Benchmark runs** for the history. Active jobs remain visible above these sections.
+**Performance → Overview** shows the current configuration and the record timeline.
+Select **Benchmarks** or **Run benchmark** to configure a manual run and manage nightly benchmarks.
+Select **Request measurements** for production request times, or **Analysis** for comparisons and saved configurations.
+Expand **Overview → Benchmark runs** for the history. Active jobs remain visible in every section.
 
 The screenshots show the local application with example data, navigation and complete page content.
 They demonstrate the interface, not a live benchmark measurement.
@@ -131,7 +132,7 @@ Worker disconnects and orchestrator restarts stop the job. Batches do not resume
 ## Read the Comparison Charts
 
 Expand **Performance → Benchmark runs** to see runs, changed parameters, measurement times and throughput.
-Expand **More analysis & details → Charts and comparison**.
+Select **Performance → Analysis**. The **Charts and comparison** section opens first.
 Select a **Reference run**, **Parameter** and **Metric** in **Parameter comparison**.
 The chart shows one parameter at a time: sequence limit, batch token limit, tensor parallelism or concurrent requests.
 Other captured settings must match the reference.

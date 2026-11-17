@@ -54,7 +54,7 @@ Select **Run**, **Measured from → to**, **Before**, **After** or **Change** to
 Each sort control cycles through the initial order, ascending order and descending order.
 The third selection restores the initial order. Missing measurements remain last.
 A dash means the value or baseline is unavailable. Historical timestamps are not reconstructed.
-Expand **Charts and comparison** or **Run details and saved configurations** for more information.
+Select **Performance → Analysis** for **Charts and comparison** or **Run details and saved configurations**.
 
 ## Automatic Pair Rotation
 
@@ -261,11 +261,11 @@ After an application restart, recovery completes the recorded adoption or restor
 A disabled schedule cancels pending adoption.
 The round report identifies an adopted benchmark or an adoption failure.
 
-The **Performance** tab contains the **Timeline** section.
+The **Performance → Overview** section contains the **Timeline** section.
 The vertical axis shows throughput in output tokens per second (tok/s).
 The solid line shows complete measurements, including slower runs and repeated baselines.
 The dashed line shows the measured production baseline of each round.
-The visible legend identifies square baselines, circular trials and outlined points that fail selection checks.
+Expand **How to read this chart** for the legend and explanations of selection checks.
 Each point represents a complete benchmark run. It does not represent one request or confirm production deployment.
 Each new round measures the current production settings first, including previously adopted improvements.
 Each point keeps its measurement date and configuration. Its percentage change uses the captured baseline from the same round.

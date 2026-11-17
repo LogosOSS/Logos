@@ -223,7 +223,8 @@ This stop alone does not confirm that the worker is ready. Actual worker errors 
 
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
-The **Performance** tab shows **Currently deployed** and **Timeline**.
+The **Performance → Overview** section shows **Currently deployed** and **Timeline**.
+Select **Benchmarks** for manual runs and nightly settings, **Request measurements** for request times, or **Analysis** for comparisons.
 Expand **Benchmark runs** to read saved runs grouped by dataset.
 Without a nightly series, **Highest recorded throughput** shows the best result within each provider's latest captured workload.
 Older workloads are not ranked against it. Unknown controls do not establish a comparison.
@@ -247,7 +248,7 @@ A missing stream terminator or an earlier context limit makes the run fail.
 The **Timeline** shows absolute throughput in output tokens per second (tok/s).
 The solid line includes complete slower runs and repeated baselines.
 The dashed line shows the freshly measured production baseline of each round.
-The visible legend identifies square baselines, circular trials and outlined points that fail automatic selection checks.
+Expand **How to read this chart** for the legend and explanations of automatic selection checks.
 Each point is one complete benchmark run. A filled point does not confirm production deployment.
 Each point keeps its actual measurement date and configuration.
 The percentage change compares each measurement with its captured baseline from the same round.
@@ -277,13 +278,12 @@ A fresh comparison must verify a historical candidate before automatic adoption.
 
 ![Current worker configuration and its measured result](../static/img/roles/logos-admin-deployed-configuration.png)
 
-The configuration and measurement sections start closed.
-The desktop overview places **Currently deployed** and **Timeline** side by side.
-On small screens, these cards appear below each other.
-Select **Run benchmark** to open **Benchmark setup & nightly automation**.
-Expand **More analysis & details** for the comparison charts, saved configurations and glossary.
+The overview shows **Currently deployed** above **Timeline** on desktop and mobile.
+Configuration details and benchmark history start closed.
+Select **Benchmarks** or **Run benchmark** for manual runs and nightly settings.
+Select **Analysis** for the comparison charts, saved configurations and glossary.
 The large analysis sections open one at a time.
-Expand **Charts and comparison**. Select the **Reference run**, **Parameter** and **Metric**.
+**Charts and comparison** opens first. Select the **Reference run**, **Parameter** and **Metric**.
 The chart shows one parameter at a time, with a dashed reference line and measured changes.
 Only matching workloads and other captured settings enter the comparison.
 A single parameter value shows an explanation instead of an empty comparison chart.

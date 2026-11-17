@@ -777,7 +777,14 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   private performanceRequestVersion = 0;
   readonly performanceError = signal(false);
   readonly deployedPairs = computed(() => this.benchmarkPairs().filter(pair => pair.provider_type === 'logosnode'));
-  readonly performanceView = signal<'results' | 'run' | 'measurements'>('results');
+  readonly performanceViews = [
+    { id: 'results', label: 'Overview', description: 'Active configuration and recorded benchmark results' },
+    { id: 'run', label: 'Benchmarks', description: 'Configure a manual run or manage nightly benchmarks' },
+    { id: 'measurements', label: 'Request measurements', description: 'Response times from production requests' },
+    { id: 'analysis', label: 'Analysis', description: 'Compare runs, inspect configurations and look up metrics' },
+  ] as const;
+  readonly performanceView = signal<'results' | 'run' | 'measurements' | 'analysis'>('results');
+  readonly performanceDescription = computed(() => this.performanceViews.find(view => view.id === this.performanceView())!.description);
   readonly linkedBenchmarkId = signal<number | null>(null);
   private navigation?: Subscription;
   readonly benchmarkStartingPairId = signal<number | null>(null);
@@ -1201,6 +1208,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
       const id = Number(params.get('id'));
       const requestedTab = query.get('tab');
       const tab = (requestedTab === 'delays' || requestedTab === 'improvement' ? 'performance' : requestedTab) as ModelErrorTab | null;
+      if (this.modelId() !== id) this.performanceView.set('results');
       if (requestedTab === 'delays') this.performanceView.set('measurements');
       const benchmark = Number(query.get('benchmark'));
       const linked = Number.isSafeInteger(benchmark) && benchmark > 0 ? benchmark : null;

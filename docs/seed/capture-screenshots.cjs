@@ -211,11 +211,15 @@ async function runView(page, ids, { nightly, open = [] }) {
 
 async function resultsView(page, ids, sections = [], query = "") {
   await performance(page, ids, null, query);
-  for (const section of sections) await details(page, section);
+  for (const section of sections) {
+    if (section === "Request measurements") await page.getByRole("navigation", { name: "Performance sections" }).getByRole("button", { name: section, exact: true }).click();
+    else await details(page, section);
+  }
 }
 
 async function analysisView(page, ids, section) {
-  await resultsView(page, ids, ["More analysis & details", section]);
+  await performance(page, ids, "Analysis");
+  await details(page, section);
 }
 
 async function selectSavedDataset(page) {

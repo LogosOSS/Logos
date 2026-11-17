@@ -250,7 +250,7 @@ describe('Benchmark runner', () => {
 });
 
 describe('Benchmark provider picker', () => {
-  it('displays the online selection after asynchronously loaded options arrive', async () => {
+  it('selects the online provider and preserves the form when navigating performance sections', async () => {
     const offline = { model_provider_id: 1, provider_id: 1, provider_name: 'Offline worker',
       provider_type: 'logosnode', endpoint_configured: true } as ModelBenchmarkPair;
     const online = { ...offline, model_provider_id: 2, provider_id: 2, provider_name: 'Online worker' };
@@ -285,6 +285,20 @@ describe('Benchmark provider picker', () => {
     expect(picker.value).toBe('2');
     expect(picker.selectedOptions[0].textContent).toContain('Online worker · Online');
     expect(picker.options[0].disabled).toBe(true);
+    const samples = fixture.nativeElement.querySelector('input[aria-label="Sample size"]') as HTMLInputElement;
+    samples.value = '7';
+    samples.dispatchEvent(new Event('input'));
+    const navigation = fixture.nativeElement.querySelector('nav[aria-label="Performance sections"]') as HTMLElement;
+    for (const view of ['measurements', 'analysis', 'results', 'run']) {
+      const button = navigation.querySelector(`[aria-controls="performance-${view}"]`) as HTMLButtonElement;
+      button.click();
+      fixture.detectChanges();
+      expect(button.getAttribute('aria-pressed')).toBe('true');
+      const visible = [...fixture.nativeElement.querySelectorAll('.performance-view')].filter((panel: any) => !panel.hidden);
+      expect(visible.map((panel: any) => panel.id)).toEqual([`performance-${view}`]);
+    }
+    expect(samples.value).toBe('7');
+    expect(picker.value).toBe('2');
     fixture.destroy();
     vi.restoreAllMocks();
   });

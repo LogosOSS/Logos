@@ -517,9 +517,22 @@
           <div class="performance-header">
             <div>
               <h2>Performance</h2>
+              <p>{{ performanceDescription() }}</p>
             </div>
-            <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()" [attr.aria-expanded]="performanceView() === 'run'" aria-controls="benchmark-setup">Run benchmark</button>
+            <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()" [hidden]="performanceView() === 'run'" aria-controls="benchmark-setup">Run benchmark</button>
           </div>
+
+          <nav class="performance-nav" aria-label="Performance sections">
+            @for (view of performanceViews; track view.id) {
+              <button type="button" [class.performance-nav__active]="performanceView() === view.id"
+                [attr.aria-pressed]="performanceView() === view.id" [attr.aria-controls]="'performance-' + view.id"
+                (click)="performanceView.set(view.id)">{{ view.label }}</button>
+            }
+          </nav>
+
+          @if (benchmarkStartError(); as error) {
+            <p class="benchmark-runner__error" role="alert">{{ error }}</p>
+          }
 
           @for (pair of benchmarkPairs(); track pair.model_provider_id) {
             @if (latestBenchmarkRun(pair.model_provider_id); as run) {
@@ -560,6 +573,7 @@
             }
           }
 
+          <section id="performance-results" class="performance-view" aria-label="Performance overview" [hidden]="performanceView() !== 'results'">
           <div class="performance-overview">
           <section class="deployment-overview" aria-label="Currently deployed">
             <h3>Currently deployed</h3>
@@ -569,9 +583,6 @@
           </section>
             <app-benchmark-results [runs]="performance()" [showHistory]="false" />
           </div>
-          @if (benchmarkStartError(); as error) {
-            <p class="benchmark-runner__error" role="alert">{{ error }}</p>
-          }
 
           <div class="performance-results">
           @if (performanceLoading()) {
@@ -608,13 +619,10 @@
 
           </div>
 
-          <details id="benchmark-setup" class="performance-detail-section" [hidden]="performanceView() !== 'run'" [open]="performanceView() === 'run'" (toggle)="performanceView.set($any($event.target).open ? 'run' : 'results')">
-          <summary>Benchmark setup &amp; nightly automation</summary>
-          @for (pair of benchmarkPairs(); track pair.model_provider_id) {
-            @if (pair.provider_type === 'logosnode') {
-              <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [modelName]="model.name" />
-            }
-          }
+          </section>
+
+          <section id="performance-run" class="performance-view" aria-label="Benchmarks" [hidden]="performanceView() !== 'run'">
+          <div id="benchmark-setup">
           @if (selectedBenchmarkPair(); as pair) {
             <section class="benchmark-runner" id="benchmark-runner" aria-label="Benchmark setup">
               <header class="benchmark-runner__header">
@@ -692,10 +700,15 @@
             <div class="empty-state"><h3>No provider available</h3><p>Add a provider for this model to run a benchmark.</p></div>
           }
 
-          </details>
+          </div>
+          @for (pair of benchmarkPairs(); track pair.model_provider_id) {
+            @if (pair.provider_type === 'logosnode') {
+              <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [modelName]="model.name" />
+            }
+          }
+          </section>
 
-          <details class="performance-detail-section" [open]="performanceView() === 'measurements'">
-            <summary>Request measurements</summary>
+          <section id="performance-measurements" class="performance-view performance-request-view" aria-label="Request measurements" [hidden]="performanceView() !== 'measurements'">
           <div class="delays">
             <div class="delays__header">
               <div>
@@ -726,12 +739,11 @@
             }
           </div>
 
-          </details>
+          </section>
 
-          <details class="performance-detail-section performance-advanced">
-            <summary>More analysis &amp; details</summary>
+          <section id="performance-analysis" class="performance-view performance-advanced" aria-label="Benchmark analysis" [hidden]="performanceView() !== 'analysis'">
             <div class="performance-advanced__content">
-<details class="performance-analysis-item" name="performance-analysis"><summary>Charts and comparison</summary>
+<details class="performance-analysis-item" name="performance-analysis" open><summary>Charts and comparison</summary>
               <app-benchmark-comparison [runs]="performance()" />
             </details>
 <details class="performance-analysis-item" name="performance-analysis"><summary>Run details and saved configurations</summary>
@@ -925,9 +937,7 @@
             </dl></details>
           </details>
             </div>
-          </details>
-
-
+          </section>
 
           </div>
 
