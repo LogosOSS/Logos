@@ -83,8 +83,11 @@ import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabil
  * non-gated model, when a gated row unflags (the token can read the
  * repository for the first time), and in the hourly recheck's backfill.
  * Accepting the agreement — the Logos admin globally, a team's app admin per
- * team — is recorded in {@code model_license_approvals}; revoking the global
- * acceptance removes the team acceptances that depend on it.
+ * team — is recorded in {@code model_license_approvals}; a gated row's global
+ * acceptance is recorded automatically (without a user) the moment a recheck
+ * unflags it, because accepting the repository's terms on Hugging Face is
+ * what granted the central HF_TOKEN access in the first place. Revoking the
+ * global acceptance removes the team acceptances that depend on it.
  */
 @Service
 public class RequestedModelService {
@@ -442,6 +445,12 @@ public class RequestedModelService {
      * button calls this before re-reading the list, so an accepted license
      * unflags the row without anyone voting again.
      *
+     * The moment a flagged row unflags, the global acceptance is recorded
+     * (without a user): accepting the repository's terms on Hugging Face is
+     * what granted the central HF_TOKEN access, so the Logos admin would only
+     * accept the same agreement a second time in Logos otherwise. The row
+     * then shows a tick like a manually accepted one.
+     *
      * Deliberately not transactional around the loop: the prechecks are
      * remote round trips and must not hold a pooled database connection while
      * waiting (the same reason the vote's precheck runs before its
@@ -459,6 +468,10 @@ public class RequestedModelService {
             if (HfReachabilityResult.STATUS_REACHABLE.equals(reachability.status())
                 && requestedModelRepository.clearGatedFlagIfStillSet(model.getId()) > 0) {
                 cleared++;
+                // The unflag is the acceptance: record it (no user, database
+                // timestamp) before fetching, so the tick shows even while the
+                // license text is still coming.
+                licenseApprovalRepository.recordGlobalApprovalIfAbsent(model.getId());
                 // The token can read the repository now, so its license is
                 // readable for the first time — fetch it (best effort).
                 fetchAndStoreLicense(model);

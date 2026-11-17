@@ -710,6 +710,57 @@ class ModelRequestControllerTest {
     }
 
     @Test
+    void recheck_unflaggingRecordsTheGlobalAcceptanceWithoutAUser() throws Exception {
+        // The moment the flag clears, the acceptance has happened on Hugging
+        // Face — the recheck records it, and the list reports the row as
+        // approved (the tick in the web application), so the Logos admin does
+        // not accept the same agreement a second time.
+        jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/auto-accepted', true)");
+
+        hfStatusRechecker.recheck();
+
+        int id = jdbc.queryForObject(
+            "SELECT id FROM requested_models WHERE name = 'acme/auto-accepted'", Integer.class);
+        assertThat(isGated("acme/auto-accepted")).isFalse();
+        // The system-recorded row: no team, no user, the database's timestamp.
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM model_license_approvals WHERE requested_model_id = ?",
+            Integer.class, id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+            "SELECT user_id IS NULL FROM model_license_approvals WHERE requested_model_id = ? AND team_id IS NULL",
+            Boolean.class, id)).isTrue();
+        assertThat(jdbc.queryForObject(
+            "SELECT approved_at IS NOT NULL FROM model_license_approvals WHERE requested_model_id = ?",
+            Boolean.class, id)).isTrue();
+
+        mvc.perform(post("/logosdb/get_model_requests")
+                .with(TestJwt.testUser())
+                .contentType("application/json").content("{}"))
+           .andExpect(jsonPath("$[0].license_approved").value(true));
+    }
+
+    @Test
+    void recheck_unflaggingKeepsAnEarlierAcceptance() {
+        // A named acceptance predates the unflag: the recheck must not
+        // replace it with the user-less row — the agreement is accepted
+        // either way, and the named user stays the audit record.
+        jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/early-accepted', true)");
+        int id = jdbc.queryForObject(
+            "SELECT id FROM requested_models WHERE name = 'acme/early-accepted'", Integer.class);
+        jdbc.update("INSERT INTO model_license_approvals (requested_model_id, team_id, user_id, approved_at) "
+            + "VALUES (?, NULL, 1003, now())", id);
+
+        hfStatusRechecker.recheck();
+
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM model_license_approvals WHERE requested_model_id = ?",
+            Integer.class, id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+            "SELECT user_id FROM model_license_approvals WHERE requested_model_id = ? AND team_id IS NULL",
+            Integer.class, id)).isEqualTo(1003);
+    }
+
+    @Test
     void recheckFetchBackfillsReadableRowsWithoutALicense() {
         jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/backfill', false)");
         jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/still-gated', true)");
