@@ -374,7 +374,9 @@ async def internal_hf_reachability(data: HfReachabilityRequest, request: Request
 async def internal_hf_license(data: HfReachabilityRequest, request: Request):
     """The license of a Hugging Face model repository, read with the central
     HF_TOKEN: the SPDX expression the model card declares plus the license
-    file's text when the repository carries one.
+    file's text when the repository carries one, and the acceptable-use
+    policy file (USE_POLICY.md, POLICY.md, ...) alongside it when the
+    repository publishes one.
 
     Gated repositories are only readable for a token whose account was
     granted access, so call this for a repository the reachability check has

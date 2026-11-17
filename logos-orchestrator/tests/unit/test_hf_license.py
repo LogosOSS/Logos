@@ -130,7 +130,7 @@ async def test_oversized_license_file_is_refused_before_buffering(hub):
         hub,
         {"cardData": {"license": "mit"}},
         {"main": [{"type": "file", "path": "LICENSE"}]},
-        {"LICENSE": "x" * (hf_license.MAX_LICENSE_FILE_BYTES + 1)},
+        {"LICENSE": "x" * (hf_license.MAX_REPO_FILE_BYTES + 1)},
     )
 
     result = await hf_license.fetch_hf_license("org/model")
@@ -140,6 +140,88 @@ async def test_oversized_license_file_is_refused_before_buffering(hub):
     assert result.license_id is None
     assert result.license_file is None
     assert result.license_text is None
+
+
+async def test_use_policy_file_is_fetched_alongside_the_license(hub):
+    # Meta's Llama repositories carry the community use policy next to the
+    # license file; both come from the same tree scan, so no extra call.
+    _hub_with(
+        hub,
+        {"cardData": {"license": "llama3_1"}},
+        {
+            "main": [
+                {"type": "file", "path": "LICENSE"},
+                {"type": "file", "path": "USE_POLICY.md"},
+                {"type": "file", "path": "model.safetensors"},
+            ]
+        },
+        {"LICENSE": "Llama 3.1 Community License ...", "USE_POLICY.md": "Llama 3.1 Community Use Policy ..."},
+    )
+
+    result = await hf_license.fetch_hf_license("org/model")
+
+    assert result.error is None
+    assert result.license_file == "LICENSE"
+    assert result.license_text.startswith("Llama 3.1")
+    assert result.use_policy_file == "USE_POLICY.md"
+    assert result.use_policy_text == "Llama 3.1 Community Use Policy ..."
+    assert [str(r.url.path) for r in hub.requests] == [
+        "/api/models/org/model",
+        "/api/models/org/model/tree/main",
+        "/org/model/resolve/main/LICENSE",
+        "/org/model/resolve/main/USE_POLICY.md",
+    ]
+
+
+async def test_policy_file_name_is_found_in_the_repository(hub):
+    # Black Forest Labs' FLUX publishes its use policy as POLICY.md.
+    _hub_with(
+        hub,
+        {"cardData": {"license": "flux-dev-non-commercial-license"}},
+        {"main": [{"type": "file", "path": "LICENSE.md"}, {"type": "file", "path": "POLICY.md"}]},
+        {"LICENSE.md": "FLUX.1 [dev] License ...", "POLICY.md": "FLUX.1 [dev] Licensing and Use Policy ..."},
+    )
+
+    result = await hf_license.fetch_hf_license("org/model")
+
+    assert result.error is None
+    assert result.use_policy_file == "POLICY.md"
+    assert result.use_policy_text.startswith("FLUX.1 [dev]")
+
+
+async def test_no_use_policy_file_is_not_an_error(hub):
+    _hub_with(
+        hub,
+        {"cardData": {"license": "mit"}},
+        {"main": [{"type": "file", "path": "LICENSE"}]},
+        {"LICENSE": "MIT ..."},
+    )
+
+    result = await hf_license.fetch_hf_license("org/model")
+
+    assert result.error is None
+    assert result.license_file == "LICENSE"
+    assert result.use_policy_file is None
+    assert result.use_policy_text is None
+
+
+async def test_oversized_use_policy_file_is_refused_before_buffering(hub):
+    _hub_with(
+        hub,
+        {"cardData": {"license": "mit"}},
+        {"main": [{"type": "file", "path": "LICENSE"}, {"type": "file", "path": "USE_POLICY.md"}]},
+        {"LICENSE": "MIT ...", "USE_POLICY.md": "x" * (hf_license.MAX_REPO_FILE_BYTES + 1)},
+    )
+
+    result = await hf_license.fetch_hf_license("org/model")
+
+    assert result.error is not None
+    assert "larger than" in result.error
+    # The fetch is atomic per row: an unreadable use policy leaves the row
+    # pending, license included, for the next pass.
+    assert result.license_id is None
+    assert result.license_text is None
+    assert result.use_policy_file is None
 
 
 async def test_provider_specific_license_file_names_are_found(hub):
