@@ -146,6 +146,13 @@ export class NodeModel implements OnInit {
     ticks.push({ label: `${Math.round(max / 1024)}k`, pct: 100 });
     return ticks;
   });
+  /** How far the filled part of the KV cache slider reaches, in percent of the track. */
+  readonly kvFill = computed(() => {
+    const w = this.window();
+    const p = this.placement();
+    const band = this.kvBand();
+    return w && p && band ? Math.max(0, (p.kvGb / w.max) * 100 - band.left) : 0;
+  });
   /** Where the measured window lies on the KV cache slider, in percent. */
   readonly kvBand = computed(() => {
     const w = this.window();

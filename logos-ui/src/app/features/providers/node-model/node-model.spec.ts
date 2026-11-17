@@ -838,16 +838,27 @@ describe('NodeModel', () => {
       expect(page.kvBand()).toEqual({ left: 25, width: 75 });
     });
 
-    it('leaves the sliders in place but unreachable in the view and lets them move while editing', async () => {
+    it('draws the range in the view without a handle and adds the handle and the input while editing', async () => {
       const root = await create();
-      expect(root.querySelector('.slider--off')).not.toBeNull();
-      expect(root.querySelector<HTMLInputElement>('.slider input')!.getAttribute('tabindex')).toBe('-1');
+      expect(root.querySelectorAll('.sl').length).toBe(2);
+      expect(root.querySelectorAll('.sl-win').length).toBe(2);
+      expect(root.querySelector('.sl-thumb')).toBeNull();
+      expect(root.querySelector('.sl-input')).toBeNull();
 
       root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
       fixture.detectChanges();
 
-      expect(root.querySelector('.slider--off')).toBeNull();
-      expect(root.querySelector<HTMLInputElement>('.slider input')!.getAttribute('tabindex')).toBeNull();
+      expect(root.querySelectorAll('.sl-thumb').length).toBe(2);
+      expect(root.querySelectorAll('.sl-input').length).toBe(2);
+    });
+
+    it('fills the track from the start of the measured window to the chosen value', async () => {
+      await create();
+      const page = fixture.componentInstance;
+
+      // The window is 1 to 4 GB on a track of 4 GB, and the chosen value is 4 GB: the fill covers the window.
+      expect(page.kvBand()).toEqual({ left: 25, width: 75 });
+      expect(page.kvFill()).toBe(75);
     });
 
     it('marks the benchmark size as best and shows the current configuration while editing', async () => {

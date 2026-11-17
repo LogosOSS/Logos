@@ -304,27 +304,33 @@
                       <span class="unit">GB</span>
                     </div>
                   </div>
-                  <div class="slider" [class.slider--off]="!editing()">
-                    @if (kvBand(); as band) {
-                      <span class="band" [style.left.%]="band.left" [style.width.%]="band.width"></span>
+                  <div class="sl" [class.sl--edit]="editing()">
+                    <div class="sl-track">
+                      @if (kvBand(); as band) {
+                        <div class="sl-off" [style.left.%]="0" [style.width.%]="band.left" style="border-radius: 99px 0 0 99px"></div>
+                        <div class="sl-win" [style.left.%]="band.left" [style.width.%]="band.width"></div>
+                        <div class="sl-fill" [style.left.%]="band.left" [style.width.%]="kvFill()"></div>
+                      }
+                      @if (bestKv() !== null && bestKv()! <= w.max) {
+                        <i class="sl-best" [style.left.%]="(bestKv()! / w.max) * 100" aria-hidden="true"></i>
+                      }
+                    </div>
+                    @if (editing()) {
+                      <div class="sl-thumb" [style.left.%]="(p.kvGb / w.max) * 100" aria-hidden="true"></div>
+                      <input
+                        class="sl-input"
+                        type="range"
+                        aria-label="KV cache memory per GPU"
+                        min="0"
+                        [max]="w.max"
+                        step="1"
+                        [value]="p.kvGb"
+                        (input)="setKv($any($event.target).value)"
+                      />
                     }
-                    @if (bestKv() !== null && bestKv()! <= w.max) {
-                      <span class="mark" [style.left.%]="(bestKv()! / w.max) * 100" aria-hidden="true"></span>
-                    }
-                    <input
-                      type="range"
-                      aria-label="KV cache memory per GPU"
-                      min="0"
-                      [max]="w.max"
-                      step="1"
-                      [value]="p.kvGb"
-                      [attr.tabindex]="editing() ? null : -1"
-                      [attr.aria-readonly]="!editing()"
-                      (input)="setKv($any($event.target).value)"
-                    />
-                    <div class="scale" aria-hidden="true">
+                    <div class="sl-scale" aria-hidden="true">
                       @for (t of kvTicks(); track t.pct) {
-                        <span [style.left.%]="t.pct">{{ t.label }}</span>
+                        <div class="tick" [class.first]="$first" [class.last]="$last" [style.left.%]="t.pct"><span>{{ t.label }}</span></div>
                       }
                     </div>
                   </div>
@@ -363,22 +369,31 @@
                     <span class="unit">tokens</span>
                   </div>
                 </div>
-                <div class="slider" [class.slider--off]="!editing()">
-                  <span class="band" [style.left.%]="0" [style.width.%]="ctxBand()"></span>
-                  <input
-                    type="range"
-                    aria-label="Max. context length"
-                    min="0"
-                    [max]="ctxMax()"
-                    step="1024"
-                    [value]="p.ctx"
-                    [attr.tabindex]="editing() ? null : -1"
-                    [attr.aria-readonly]="!editing()"
-                    (input)="setCtx($any($event.target).value)"
-                  />
-                  <div class="scale" aria-hidden="true">
+                <div class="sl" [class.sl--edit]="editing()">
+                  <div class="sl-track">
+                    <div class="sl-win" [style.left.%]="0" [style.width.%]="ctxBand()" style="border-radius: 99px 0 0 99px"></div>
+                    <div class="sl-off" [style.left.%]="ctxBand()" [style.width.%]="100 - ctxBand()" style="border-radius: 0 99px 99px 0"></div>
+                    <div class="sl-fill" [style.left.%]="0" [style.width.%]="(p.ctx / ctxMax()) * 100" style="border-radius: 99px 0 0 99px"></div>
+                    @if (bestCtx() !== null && bestCtx()! <= ctxMax()) {
+                      <i class="sl-best" [style.left.%]="(bestCtx()! / ctxMax()) * 100" aria-hidden="true"></i>
+                    }
+                  </div>
+                  @if (editing()) {
+                    <div class="sl-thumb" [style.left.%]="(p.ctx / ctxMax()) * 100" aria-hidden="true"></div>
+                    <input
+                      class="sl-input"
+                      type="range"
+                      aria-label="Max. context length"
+                      min="0"
+                      [max]="ctxMax()"
+                      step="1024"
+                      [value]="p.ctx"
+                      (input)="setCtx($any($event.target).value)"
+                    />
+                  }
+                  <div class="sl-scale" aria-hidden="true">
                     @for (t of ctxTicks(); track t.pct) {
-                      <span [style.left.%]="t.pct">{{ t.label }}</span>
+                      <div class="tick" [class.first]="$first" [class.last]="$last" [style.left.%]="t.pct"><span>{{ t.label }}</span></div>
                     }
                   </div>
                 </div>
