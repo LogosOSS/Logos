@@ -529,3 +529,62 @@ input[type='range'] {
     background: rgb(var(--color-error) / var(--opacity-soft));
   }
 }
+
+.key {
+  margin-left: 6px;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-regular);
+  color: rgb(var(--color-typography-700));
+}
+
+.num.wide {
+  width: 100%;
+  max-width: 360px;
+  text-align: left;
+}
+
+.sel {
+  width: 200px;
+  text-align: left;
+}
+
+.area {
+  width: 100%;
+  padding: 8px 10px;
+  color: inherit;
+  border-radius: 8px;
+  border: 1px solid rgb(var(--color-outline-200));
+  background: transparent;
+}
+
+.subhead {
+  margin: 24px 0 4px;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+}
+
+.crow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 36px;
+  gap: 8px;
+  margin: 10px 0 0;
+  align-items: center;
+
+  .num {
+    width: 100%;
+    text-align: left;
+  }
+}
+
+.fix {
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--font-family-mono);
+  font-weight: var(--font-weight-semibold);
+  text-decoration: underline;
+  color: rgb(var(--color-text-accent));
+  background: none;
+  border: 0;
+}

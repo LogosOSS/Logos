@@ -19,6 +19,13 @@ import { ModalConfirmComponent } from '../../../shared/components/modal/modal-co
 import { NodeConfig, NodeInsights } from '../../../shared/models/node-config.model';
 import { CalibrationLabel, calibrationLabel, hasTuning } from '../node-models/node-model-status';
 import {
+  ADVANCED_FIELDS,
+  AdvancedDraft,
+  advancedChanges,
+  advancedErrors,
+  initialAdvanced,
+} from './node-model-advanced';
+import {
   contextCapacity,
   ErrorItem,
   kvWindowGb,
@@ -83,6 +90,9 @@ export class NodeModel implements OnInit {
   // Editing
   readonly editing = signal(false);
   readonly draft = signal<Placement | null>(null);
+  readonly adv = signal<AdvancedDraft | null>(null);
+  private readonly advStart = signal<AdvancedDraft | null>(null);
+  readonly fields = ADVANCED_FIELDS;
   readonly saving = signal(false);
   readonly failure = signal<SaveFailure | null>(null);
   readonly notice = signal<{ title: string; text: string } | null>(null);
@@ -106,21 +116,36 @@ export class NodeModel implements OnInit {
     const r = this.result();
     return d && r ? contextCapacity(r.pairs, d.kvGb, this.insight()?.calibration.context_limit) : null;
   });
+  readonly advChanges = computed(() => {
+    const start = this.advStart();
+    const now = this.adv();
+    return start && now ? advancedChanges(start, now) : [];
+  });
+  /** Problems the editor finds itself, by field key or "custom:<row>". */
+  readonly advErrors = computed(() => {
+    const now = this.adv();
+    return now ? advancedErrors(now) : {};
+  });
+  readonly hasAdvErrors = computed(() => Object.keys(this.advErrors()).length > 0);
   readonly dirty = computed(() => {
     const d = this.draft();
     const s = this.saved();
-    return d !== null && (s === null || s.tp !== d.tp || s.kvGb !== d.kvGb || s.ctx !== d.ctx);
+    const placed = d !== null && (s === null || s.tp !== d.tp || s.kvGb !== d.kvGb || s.ctx !== d.ctx);
+    return placed || this.advChanges().length > 0;
   });
   readonly changes = computed(() => {
     const d = this.draft();
     const s = this.saved();
     if (!d) return [];
-    if (!s) return [`TP ${d.tp}`, `KV cache ${d.kvGb} GB per GPU`, `context ${d.ctx}`];
     const out: string[] = [];
-    if (s.tp !== d.tp) out.push(`TP ${s.tp} → ${d.tp}`);
-    if (s.kvGb !== d.kvGb) out.push(`KV cache ${s.kvGb} → ${d.kvGb} GB per GPU`);
-    if (s.ctx !== d.ctx) out.push(`Context ${s.ctx} → ${d.ctx}`);
-    return out;
+    if (!s) {
+      out.push(`TP ${d.tp}`, `KV cache ${d.kvGb} GB per GPU`, `context ${d.ctx}`);
+    } else {
+      if (s.tp !== d.tp) out.push(`TP ${s.tp} → ${d.tp}`);
+      if (s.kvGb !== d.kvGb) out.push(`KV cache ${s.kvGb} → ${d.kvGb} GB per GPU`);
+      if (s.ctx !== d.ctx) out.push(`Context ${s.ctx} → ${d.ctx}`);
+    }
+    return [...out, ...this.advChanges()];
   });
 
   readonly formatGb = formatGb;
@@ -190,6 +215,9 @@ export class NodeModel implements OnInit {
       return;
     }
     this.draft.set(start);
+    const settings = initialAdvanced(this.entry());
+    this.adv.set(settings);
+    this.advStart.set(structuredClone(settings));
     this.failure.set(null);
     this.notice.set(null);
     this.editing.set(true);
@@ -201,6 +229,7 @@ export class NodeModel implements OnInit {
     }
     this.editing.set(false);
     this.draft.set(null);
+    this.adv.set(null);
     this.failure.set(null);
   }
 
@@ -244,6 +273,44 @@ export class NodeModel implements OnInit {
     this.setCtx(Number(best['max_model_len']) || this.draft()!.ctx);
   }
 
+  setAdv(key: string, value: string): void {
+    const now = this.adv();
+    if (now) this.adv.set({ ...now, values: { ...now.values, [key]: value } });
+  }
+
+  addCustom(): void {
+    const now = this.adv();
+    if (now) this.adv.set({ ...now, custom: [...now.custom, { key: '', value: '' }] });
+  }
+
+  removeCustom(index: number): void {
+    const now = this.adv();
+    if (now) this.adv.set({ ...now, custom: now.custom.filter((_, i) => i !== index) });
+  }
+
+  setCustom(index: number, part: 'key' | 'value', value: string): void {
+    const now = this.adv();
+    if (now) {
+      this.adv.set({ ...now, custom: now.custom.map((row, i) => (i === index ? { ...row, [part]: value } : row)) });
+    }
+  }
+
+  /** What is wrong with a field: our own check first, else the worker's. */
+  advFieldError(key: string): string | null {
+    return this.advErrors()[key] ?? this.fieldError(key)?.message ?? null;
+  }
+
+  customError(index: number): string | null {
+    const row = this.adv()?.custom[index];
+    return this.advErrors()[`custom:${index}`] ?? (row ? this.fieldError(row.key.trim())?.message ?? null : null);
+  }
+
+  /** The key the worker suggests for a custom setting it did not know. */
+  customSuggestion(index: number): string | null {
+    const row = this.adv()?.custom[index];
+    return (row ? this.fieldError(row.key.trim())?.suggestion : null) ?? null;
+  }
+
   /** The message of the worker about one field, if it refused it. */
   fieldError(key: string): ErrorItem | null {
     return this.failure()?.items.find((i) => i.key === key) ?? null;
@@ -259,10 +326,15 @@ export class NodeModel implements OnInit {
     this.saving.set(true);
     this.failure.set(null);
     try {
-      await this.service.replaceNodeConfig(id, cfg.revision, withPlacement(cfg.entries, this.modelName(), d));
+      await this.service.replaceNodeConfig(
+        id,
+        cfg.revision,
+        withPlacement(cfg.entries, this.modelName(), d, this.adv() ?? undefined),
+      );
       await this.refresh();
       this.editing.set(false);
       this.draft.set(null);
+      this.adv.set(null);
       this.notice.set({ title: 'Saved', text: 'The worker applies the new settings from the next lane start.' });
     } catch (e) {
       this.failure.set(saveFailure(e));
@@ -314,6 +386,7 @@ export class NodeModel implements OnInit {
       await this.refresh();
       this.editing.set(false);
       this.draft.set(null);
+      this.adv.set(null);
       this.failure.set(null);
     } catch (e) {
       this.failure.set(saveFailure(e));

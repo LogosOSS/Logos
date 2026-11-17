@@ -515,4 +515,104 @@ describe('NodeModel', () => {
       await first;
     });
   });
+
+  describe('editing the advanced settings', () => {
+    const page = (): NodeModel => fixture.componentInstance;
+    const start = async (): Promise<HTMLElement> => {
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+      return root;
+    };
+
+    it('shows the fields of the entry and counts a change of one of them', async () => {
+      const root = await start();
+
+      expect(root.querySelector<HTMLInputElement>('#adv-quantization')!.value).toBe('awq');
+      expect(root.querySelector<HTMLInputElement>('#adv-min_context_fraction')!.value).toBe('100');
+      expect(page().dirty()).toBe(false);
+
+      page().setAdv('quantization', 'gptq');
+      fixture.detectChanges();
+
+      expect(page().dirty()).toBe(true);
+      expect(root.textContent).toContain('Quantization: awq → gptq');
+    });
+
+    it('blocks Save with a message at the field while a value cannot be right', async () => {
+      const root = await start();
+
+      page().setAdv('max_num_seqs', '0');
+      fixture.detectChanges();
+
+      expect(root.querySelector('#adv-max_num_seqs')!.getAttribute('aria-invalid')).toBe('true');
+      expect(root.textContent).toContain('whole number');
+      expect(root.querySelector<HTMLButtonElement>('.savebar .btn-primary')!.disabled).toBe(true);
+    });
+
+    it('saves the changed setting with the rest of the entry', async () => {
+      const root = await start();
+      page().setAdv('max_num_seqs', '16');
+      page().addCustom();
+      page().setCustom(0, 'key', 'depth');
+      page().setCustom(0, 'value', '3');
+      fixture.detectChanges();
+
+      root.querySelector<HTMLButtonElement>('.savebar .btn-primary')!.click();
+      await settle();
+
+      const [, , entries] = service['replaceNodeConfig'].mock.calls[0];
+      expect(entries[0].overrides).toMatchObject({ max_model_len: 32768, max_num_seqs: 16, quantization: 'awq', depth: 3 });
+      expect(entries[0].capability.min_context_fraction).toBe(1);
+    });
+
+    it('adds and removes custom settings', async () => {
+      await start();
+
+      page().addCustom();
+      page().addCustom();
+      page().removeCustom(0);
+
+      expect(page().adv()!.custom).toHaveLength(1);
+    });
+
+    it('shows the worker refusal at a custom setting and applies its suggestion', async () => {
+      const root = await start();
+      page().addCustom();
+      page().setCustom(0, 'key', 'max_modell_len');
+      page().setCustom(0, 'value', '8192');
+      fixture.detectChanges();
+      service['replaceNodeConfig'].mockRejectedValue({
+        status: 400,
+        error: {
+          error: 'org/a: max_modell_len: unknown setting (did you mean max_model_len?)',
+          errors: [{ model: 'org/a', key: 'max_modell_len', message: 'unknown setting', suggestion: 'max_model_len' }],
+        },
+      });
+
+      root.querySelector<HTMLButtonElement>('.savebar .btn-primary')!.click();
+      await settle();
+
+      expect(root.textContent).toContain('unknown setting');
+      const fix = root.querySelector<HTMLButtonElement>('.fix')!;
+      expect(fix.textContent).toContain('max_model_len');
+      fix.click();
+      fixture.detectChanges();
+
+      expect(page().adv()!.custom[0].key).toBe('max_model_len');
+    });
+
+    it('drops the settings draft on cancel and after a save', async () => {
+      const root = await start();
+      page().setAdv('quantization', 'gptq');
+
+      root.querySelector<HTMLButtonElement>('.savebar .btn-secondary')!.click();
+      fixture.detectChanges();
+      expect(page().adv()).toBeNull();
+
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+      expect(page().adv()!.values['quantization']).toBe('awq');
+    });
+  });
 });

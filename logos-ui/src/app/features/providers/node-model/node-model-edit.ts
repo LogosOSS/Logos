@@ -1,4 +1,5 @@
 import { CalibrationPair, CalibrationResult, NodeConfigEntry } from '../../../shared/models/node-config.model';
+import { AdvancedDraft, applyAdvanced } from './node-model-advanced';
 
 const CONTEXT_STEP = 1024;
 
@@ -59,14 +60,19 @@ export function contextCapacity(pairs: CalibrationPair[], kvGb: number, limit: n
 }
 
 /** The list with one model's placement written as the orchestrator expects. */
-export function withPlacement(entries: NodeConfigEntry[], model: string, placement: Placement): NodeConfigEntry[] {
+export function withPlacement(
+  entries: NodeConfigEntry[],
+  model: string,
+  placement: Placement,
+  advanced?: AdvancedDraft,
+): NodeConfigEntry[] {
   const placed = (entry: NodeConfigEntry): NodeConfigEntry => {
     const overrides = { ...entry.overrides };
     // TP and KV cache live in capability; a copy in overrides would conflict.
     delete overrides['tensor_parallel_size'];
     delete overrides['kv_cache_memory_bytes'];
     overrides['max_model_len'] = placement.ctx;
-    return {
+    const result = {
       ...entry,
       capability: {
         ...entry.capability,
@@ -75,6 +81,7 @@ export function withPlacement(entries: NodeConfigEntry[], model: string, placeme
       },
       overrides,
     };
+    return advanced ? applyAdvanced(result, advanced) : result;
   };
   if (entries.some((e) => e.model_name === model)) {
     return entries.map((e) => (e.model_name === model ? placed(e) : e));

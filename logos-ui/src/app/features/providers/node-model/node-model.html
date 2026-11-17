@@ -300,7 +300,110 @@
           </section>
         }
 
-        @if (advanced().length > 0) {
+        @if (editing() && adv(); as a) {
+          <section class="card" aria-labelledby="adv-title">
+            <h2 id="adv-title">Advanced settings</h2>
+            <p class="sub">Optional. Empty fields use the default or the value measured by calibration.</p>
+
+            @for (f of fields; track f.key) {
+              <div class="field">
+                <label class="label" [for]="'adv-' + f.key">
+                  {{ f.label }} <code class="key">{{ f.key }}</code>
+                </label>
+                @switch (f.kind) {
+                  @case ('tri') {
+                    <select
+                      class="num sel"
+                      [id]="'adv-' + f.key"
+                      [value]="a.values[f.key]"
+                      (change)="setAdv(f.key, $any($event.target).value)"
+                    >
+                      <option value="">Default</option>
+                      <option value="true">On</option>
+                      <option value="false">Off</option>
+                    </select>
+                  }
+                  @case ('lines') {
+                    <textarea
+                      class="area mono"
+                      rows="3"
+                      [id]="'adv-' + f.key"
+                      [placeholder]="f.placeholder ?? ''"
+                      [value]="a.values[f.key]"
+                      [attr.aria-invalid]="advFieldError(f.key) ? 'true' : null"
+                      (input)="setAdv(f.key, $any($event.target).value)"
+                    ></textarea>
+                  }
+                  @default {
+                    <div class="control">
+                      <input
+                        class="num wide"
+                        type="text"
+                        [id]="'adv-' + f.key"
+                        [placeholder]="f.placeholder ?? ''"
+                        [value]="a.values[f.key]"
+                        [class.invalid]="advFieldError(f.key)"
+                        [attr.aria-invalid]="advFieldError(f.key) ? 'true' : null"
+                        (input)="setAdv(f.key, $any($event.target).value)"
+                      />
+                      @if (f.kind === 'percent') {
+                        <span class="unit">%</span>
+                      }
+                    </div>
+                  }
+                }
+                <p class="hint">{{ f.help }}</p>
+                @if (advFieldError(f.key); as e) {
+                  <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
+                }
+              </div>
+            }
+
+            <h3 class="subhead">Custom settings</h3>
+            <p class="hint">Any other vLLM setting. The worker rejects names it does not know.</p>
+            @for (row of a.custom; track $index; let i = $index) {
+              <div class="crow">
+                <input
+                  class="num mono"
+                  type="text"
+                  aria-label="Setting name"
+                  placeholder="setting_name"
+                  [value]="row.key"
+                  [class.invalid]="customError(i)"
+                  [attr.aria-invalid]="customError(i) ? 'true' : null"
+                  (input)="setCustom(i, 'key', $any($event.target).value)"
+                />
+                <input
+                  class="num mono"
+                  type="text"
+                  aria-label="Setting value"
+                  placeholder="value"
+                  [value]="row.value"
+                  (input)="setCustom(i, 'value', $any($event.target).value)"
+                />
+                <button class="btn-icon btn-icon--danger" type="button" aria-label="Remove setting" (click)="removeCustom(i)">
+                  <i class="pi pi-trash" aria-hidden="true"></i>
+                </button>
+              </div>
+              @if (customError(i); as e) {
+                <p class="ferr" role="alert">
+                  <i class="pi pi-exclamation-circle" aria-hidden="true"></i>
+                  <span>
+                    {{ e }}
+                    @if (customSuggestion(i); as hint) {
+                      Did you mean
+                      <button class="fix" type="button" (click)="setCustom(i, 'key', hint)">{{ hint }}</button>?
+                    }
+                  </span>
+                </p>
+              }
+            }
+            <button class="btn-secondary btn-sm" type="button" (click)="addCustom()">
+              <i class="pi pi-plus" aria-hidden="true"></i>
+              Add setting
+            </button>
+          </section>
+        } @else if (advanced().length > 0) {
           <section class="card" aria-labelledby="adv-title">
             <h2 id="adv-title">Advanced settings</h2>
             <p class="sub">Settings this model is configured with besides placement.</p>
@@ -351,7 +454,7 @@
         </p>
         <div class="actions">
           <button class="btn-secondary" type="button" [disabled]="saving()" (click)="cancelEdit()">Cancel</button>
-          <button class="btn-primary" type="button" [disabled]="!dirty() || saving()" [attr.aria-busy]="saving()" (click)="save()">
+          <button class="btn-primary" type="button" [disabled]="!dirty() || saving() || hasAdvErrors()" [attr.aria-busy]="saving()" (click)="save()">
             @if (saving()) {
               <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
               Checking…
