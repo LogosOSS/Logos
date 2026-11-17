@@ -2,6 +2,11 @@
 
 Logos compares a node's current key with the key a calibration was measured
 under; any difference marks the calibration stale.
+
+The key holds the conditions a measurement depends on. The operator's choice
+inside the measured range (KV cache size, context length) is not one of them:
+it is covered by the calibration or it is not, and it is tracked by the
+configuration fingerprint, which never triggers a measurement.
 """
 
 from __future__ import annotations
@@ -18,7 +23,12 @@ from logos_worker_node.vllm_compat import DEFAULT_VLLM
 
 logger = logging.getLogger(__name__)
 
-_KEY_SCHEMA = 1
+_KEY_SCHEMA = 2
+# The operator's pick inside the calibrated range; calibration ignores both.
+SELECTION_KEYS = frozenset({"kv_cache_memory_bytes", "max_model_len"})
+# A KV size a calibration is pinned to; unlike the pick above, it shapes the
+# measurement and therefore belongs to the key.
+CALIBRATION_KV_KEY = "calibration_kv_cache_memory_bytes"
 # Launch-contract revision for CUDA probes with prefix caching disabled.
 # These profiles are valid only when the negative CLI flag is explicit;
 # unaffected default/true and Metal plans retain their existing keys.
@@ -33,14 +43,40 @@ def key_hash(key: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical(key).encode("utf-8")).hexdigest()
 
 
-def plan_hash(plan: dict[str, Any]) -> str:
-    """Hash of everything the operator configured for the model's lane.
+def _configured(plan: dict[str, Any]) -> dict[str, Any]:
+    """What the operator configured; the GPU pin is node layout, ``_``-keys bookkeeping."""
+    return {k: v for k, v in plan.items() if k not in ("model", "gpu_devices") and not str(k).startswith("_")}
 
-    The GPU pin is node layout, not configuration; ``_``-keys are plan
-    bookkeeping.
+
+def plan_hash(plan: dict[str, Any]) -> str:
+    """Hash of what a calibration of the model's lane depends on.
+
+    It leaves out the choice inside the measured range, so changing the KV
+    cache size or the context length does not invalidate a calibration.
     """
-    relevant = {k: v for k, v in plan.items() if k not in ("model", "gpu_devices") and not str(k).startswith("_")}
+    relevant = {k: v for k, v in _configured(plan).items() if k not in SELECTION_KEYS}
     return hashlib.sha256(_canonical(relevant).encode("utf-8")).hexdigest()
+
+
+def config_fingerprint(plan: dict[str, Any]) -> str:
+    """Hash of everything configured for the lane, the choice included.
+
+    It tells configurations apart for preferring a shared calibration; it never
+    makes a calibration stale.
+    """
+    return hashlib.sha256(_canonical(_configured(plan)).encode("utf-8")).hexdigest()
+
+
+def calibration_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    """The plan a calibration measures: the full range, whatever the lane is set to.
+
+    A KV size to pin the measurement to comes only from ``CALIBRATION_KV_KEY``.
+    """
+    measured = {k: v for k, v in plan.items() if k not in SELECTION_KEYS and k != CALIBRATION_KV_KEY}
+    pinned = plan.get(CALIBRATION_KV_KEY)
+    if pinned:
+        measured["kv_cache_memory_bytes"] = pinned
+    return measured
 
 
 def gpu_classes(devices: Iterable[DeviceInfo]) -> list[dict[str, Any]]:
@@ -144,6 +180,35 @@ def calibration_keys(
         name: compute_calibration_key(cfg, plan_by_model.get(name) or {"model": name}, devices, vllm_version)
         for name in model_names
     }
+
+
+def config_fingerprints(plans: list[dict[str, Any]], model_names: Iterable[str]) -> dict[str, str]:
+    """Configuration fingerprint per model; models without a plan use a bare one."""
+    plan_by_model = {p["model"]: p for p in plans if p.get("model")}
+    return {name: config_fingerprint(plan_by_model.get(name) or {"model": name}) for name in model_names}
+
+
+def node_config_fingerprints(cfg: AppConfig, plans: list[dict[str, Any]]) -> dict[str, str]:
+    models = list(cfg.logos.configured_models) if cfg.logos else []
+    return config_fingerprints(plans, models)
+
+
+def node_selections(cfg: AppConfig, plans: list[dict[str, Any]]) -> dict[str, tuple[float | None, int | None]]:
+    """KV cache size (MB) and context length chosen for each configured model."""
+    from logos_worker_node.calibration import _parse_kv_to_mb  # noqa: PLC0415
+
+    plan_by_model = {p["model"]: p for p in plans if p.get("model")}
+    result: dict[str, tuple[float | None, int | None]] = {}
+    for name in cfg.logos.configured_models if cfg.logos else []:
+        plan = plan_by_model.get(name) or {}
+        kv_text = str(plan.get("kv_cache_memory_bytes") or "").strip()
+        try:
+            kv_mb = _parse_kv_to_mb(kv_text) if kv_text else None
+        except ValueError:
+            kv_mb = None
+        context = plan.get("max_model_len")
+        result[name] = (kv_mb, int(context) if context else None)
+    return result
 
 
 def slice_gpu_counts(

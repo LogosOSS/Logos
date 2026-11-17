@@ -364,7 +364,7 @@ class _FakeBridge:
         self.profiles = profiles
         self.calls: list = []
 
-    async def fetch_model_profiles(self, key_hashes, slice_gpu_counts):
+    async def fetch_model_profiles(self, key_hashes, slice_gpu_counts, config_fingerprints=None):
         self.calls.append(key_hashes)
         if len(self.calls) <= self.failures:
             raise RuntimeError("Logos unreachable")

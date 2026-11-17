@@ -11,6 +11,8 @@ import pytest
 from fastapi import HTTPException
 
 from logos.dbutils.dbrequest import (
+    InternalNodeConfigReplaceRequest,
+    InternalNodeConfigRequest,
     LogosNodeConfigGetRequest,
     LogosNodeConfigImportRequest,
     LogosNodeConfigReplaceRequest,
@@ -19,7 +21,6 @@ from logos.dbutils.dbrequest import (
 )
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeCommandRejectedError, LogosNodeOfflineError
 from logos.node_config import SYNC_NODE_CONFIG_ACTION, VALIDATE_NODE_CONFIG_ACTION
-from logos.dbutils.dbrequest import InternalNodeConfigReplaceRequest, InternalNodeConfigRequest
 from logos.routers import internal as internal_mod
 from logos.routers import logosnode as logosnode_mod
 
@@ -406,7 +407,9 @@ def test_the_internal_endpoints_need_the_internal_secret(env):
     env()
     with pytest.raises(HTTPException) as caught:
         asyncio.run(
-            internal_mod.internal_logosnode_node_config_get(InternalNodeConfigRequest(provider_id=7), request=MagicMock())
+            internal_mod.internal_logosnode_node_config_get(
+                InternalNodeConfigRequest(provider_id=7), request=MagicMock()
+            )
         )
     assert caught.value.status_code == 403
 
@@ -420,9 +423,17 @@ def test_the_insights_gather_profiles_benchmarks_and_the_live_worker(internal, m
     monkeypatch.setattr(internal_mod, "DBManager", lambda: db)
     db.get_node_config_sources = lambda pid: {"org/a": "ui"}
     db.get_central_model_profiles = lambda pid: [
-        {"model_name": "org/a", "profile": {"residency_source": "calibrated", "base_residency_mb": 1.0}, "sync_revision": 1,
-         "calibration_key_hash": "k", "cal_id": 9, "cal_key_hash": "k", "cal_source_provider_id": 7,
-         "cal_invalidated_at": None, "cal_calibrated_at": None}
+        {
+            "model_name": "org/a",
+            "profile": {"residency_source": "calibrated", "base_residency_mb": 1.0},
+            "sync_revision": 1,
+            "calibration_key_hash": "k",
+            "cal_id": 9,
+            "cal_key_hash": "k",
+            "cal_source_provider_id": 7,
+            "cal_invalidated_at": None,
+            "cal_calibrated_at": None,
+        }
     ]
     db.get_model_provider_pairs = lambda pid: {"org/a": 11}
     db.get_benchmark_runs = lambda ids: {2: {"serving": {"tensor_parallel_size": 2}, "recorded_at": "t"}}
@@ -430,7 +441,11 @@ def test_the_insights_gather_profiles_benchmarks_and_the_live_worker(internal, m
     monkeypatch.setattr(
         internal_mod.nightly_store,
         "selection_summary",
-        lambda pair: {"best_observed": {"benchmark_id": 2, "throughput": 5.0}, "best_eligible": None, "comparisons": []},
+        lambda pair: {
+            "best_observed": {"benchmark_id": 2, "throughput": 5.0},
+            "best_eligible": None,
+            "comparisons": [],
+        },
     )
     monkeypatch.setattr(internal_mod.nightly_store, "calibration_claims", lambda: [{"provider_id": 7}])
     monkeypatch.setattr(internal_mod, "extract_serving_configuration", lambda snapshot, model: {"max_model_len": 1})

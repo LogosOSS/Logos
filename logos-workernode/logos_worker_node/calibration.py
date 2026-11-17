@@ -2391,6 +2391,11 @@ def calibrate_model(
     # inside the probe's closures is observable here without a shared
     # mutable object threaded through every level.
     cache_use_reserved: list[bool] = [False]
+    from logos_worker_node.profile_fingerprint import calibration_plan  # noqa: PLC0415
+
+    # The lane's KV size and context length are a choice inside the range this
+    # measures; only a KV size pinned for calibration itself is kept.
+    plan = calibration_plan(plan)
     try:
         return _calibrate_model_probe(
             plan,

@@ -4,13 +4,7 @@ from __future__ import annotations
 
 import datetime
 
-from logos.node_config_insights import (
-    benchmark_view,
-    build_insights,
-    calibration_view,
-    gpu_view,
-    is_configured,
-)
+from logos.node_config_insights import benchmark_view, build_insights, calibration_view, gpu_view, is_configured
 
 _PROFILE = {
     "residency_source": "calibrated",
@@ -28,14 +22,20 @@ _PROFILE = {
 
 
 def test_a_model_with_tp_kv_and_context_is_configured_wherever_they_are_set():
-    entry = {"capability": {"tensor_parallel_size": 2, "kv_cache_memory_bytes": "4G"}, "overrides": {"max_model_len": 8192}}
+    entry = {
+        "capability": {"tensor_parallel_size": 2, "kv_cache_memory_bytes": "4G"},
+        "overrides": {"max_model_len": 8192},
+    }
     assert is_configured(entry) is True
 
 
 def test_a_model_without_a_placement_or_a_row_is_not_configured():
     assert is_configured(None) is False
     assert is_configured({"capability": {}, "overrides": {"quantization": "awq"}}) is False
-    assert is_configured({"capability": {"tensor_parallel_size": 2, "kv_cache_memory_bytes": ""}, "overrides": {}}) is False
+    assert (
+        is_configured({"capability": {"tensor_parallel_size": 2, "kv_cache_memory_bytes": ""}, "overrides": {}})
+        is False
+    )
 
 
 def test_a_calibrated_profile_shows_its_measured_values():
@@ -57,7 +57,9 @@ def test_a_stale_calibration_is_outdated_and_an_unsupported_one_names_its_reason
 def test_a_model_without_a_measurement_is_not_calibrated():
     assert calibration_view(None) == {"status": "not_calibrated", "reason": None, "results": []}
     assert calibration_view({"residency_source": "hf"})["status"] == "not_calibrated"
-    view = calibration_view({"residency_source": "hf", "calibration_unsupported": True, "calibration_unsupported_reason": "x"})
+    view = calibration_view(
+        {"residency_source": "hf", "calibration_unsupported": True, "calibration_unsupported_reason": "x"}
+    )
     assert (view["status"], view["reason"]) == ("unsupported", "x")
 
 
@@ -86,7 +88,11 @@ def test_no_eligible_run_is_not_comparable_and_no_run_at_all_is_none():
 
 
 def test_gpus_come_from_the_workers_device_summary():
-    runtime = {"devices": {"devices": [{"name": "A", "memory_total_mb": 24000, "memory_used_mb": 10, "extra": {"index": 1}}, "junk"]}}
+    runtime = {
+        "devices": {
+            "devices": [{"name": "A", "memory_total_mb": 24000, "memory_used_mb": 10, "extra": {"index": 1}}, "junk"]
+        }
+    }
     assert gpu_view(runtime) == [{"index": 1, "name": "A", "total_mb": 24000, "used_mb": 10}]
     assert gpu_view(None) == []
 

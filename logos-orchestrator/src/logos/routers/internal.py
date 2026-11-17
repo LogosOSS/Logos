@@ -70,9 +70,6 @@ from logos.dbutils.dbrequest import (
 )
 from logos.dbutils.types import Deployment
 from logos.errors import admin_error_response
-from logos.model_profile_store import effective_profile
-from logos.node_config import SYNC_NODE_CONFIG_ACTION, VALIDATE_NODE_CONFIG_ACTION
-from logos.node_config_insights import benchmark_view, build_insights
 from logos.hf_reachability import check_hf_reachability
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeOfflineError, MaintenanceBusyError
 from logos.logosnode_snapshot import _logosnode_snapshot_is_connected
@@ -96,6 +93,9 @@ from logos.main import (
     _served_context_window_stats,
     refresh_pipeline_runtime_state,
 )
+from logos.model_profile_store import effective_profile
+from logos.node_config import SYNC_NODE_CONFIG_ACTION, VALIDATE_NODE_CONFIG_ACTION
+from logos.node_config_insights import benchmark_view, build_insights
 from logos.request_content import sanitized_payload_for_logging
 from logos.routers.logosnode import _load_node_config, save_node_config
 
@@ -1041,8 +1041,11 @@ async def internal_logosnode_calibrate_uncalibrated(data: InternalCalibrateReque
     if not snap.get("first_status_received"):
         return admin_error_response(503, "Worker has not sent its first status yet")
     models = _find_uncalibrated_models_on_provider(data.provider_id)
+    if data.model:
+        models = [name for name in models if name == data.model]
     if not models:
-        return {"message": "No uncalibrated models on this worker", "count": 0, "models": []}
+        message = f"{data.model} does not need calibration" if data.model else "No uncalibrated models on this worker"
+        return {"message": message, "count": 0, "models": []}
     sleep_level = (
         _main._calibration_orchestrator._config.sleep_level if _main._calibration_orchestrator is not None else 1
     )
@@ -1056,7 +1059,11 @@ async def internal_logosnode_calibrate_uncalibrated(data: InternalCalibrateReque
         await _main._logosnode_registry.send_command(
             data.provider_id,
             "start_calibration_session",
-            params={"sleep_level": sleep_level, "skip_models": skip_models},
+            params={
+                "sleep_level": sleep_level,
+                "skip_models": skip_models,
+                **({"models": models} if data.model else {}),
+            },
             timeout_seconds=30,
         )
     except LogosNodeOfflineError as exc:

@@ -31,7 +31,7 @@ from logos_worker_node.model_cache import ModelRamCache, _DisabledModelRamCache,
 from logos_worker_node.model_profiles import ModelProfileRegistry
 from logos_worker_node.models import HF_REDUNDANT_WEIGHT_PATTERNS, ProcessState, model_can_sleep
 from logos_worker_node.node_config import apply_node_config, entries_from_yaml_file, plans_from_app_config, yaml_drift
-from logos_worker_node.profile_fingerprint import node_calibration_keys, node_slice_gpu_counts
+from logos_worker_node.profile_fingerprint import node_calibration_keys, node_config_fingerprints, node_slice_gpu_counts
 from logos_worker_node.runtime import SERVICE_VERSION, _build_host_memory_summary, existing_volume_path
 
 logging.basicConfig(
@@ -272,7 +272,10 @@ async def _load_central_profiles(
     """
     snapshot = await gpu_collector.get_snapshot()
     plans = plans_from_app_config(cfg)
-    model_profiles.set_calibration_keys(node_calibration_keys(cfg, plans, list(snapshot.devices)))
+    model_profiles.set_calibration_keys(
+        node_calibration_keys(cfg, plans, list(snapshot.devices)),
+        node_config_fingerprints(cfg, plans),
+    )
     model_profiles.set_slice_gpu_counts(node_slice_gpu_counts(cfg, plans, list(snapshot.devices)))
     if not (cfg.logos and cfg.logos.enabled):
         logger.info("Logos bridge disabled — starting without model profiles")
@@ -282,7 +285,9 @@ async def _load_central_profiles(
     while True:
         try:
             profiles = await logos_bridge.fetch_model_profiles(
-                model_profiles.calibration_key_hashes(), model_profiles.slice_gpu_counts()
+                model_profiles.calibration_key_hashes(),
+                model_profiles.slice_gpu_counts(),
+                model_profiles.config_fingerprints(),
             )
             break
         except Exception as exc:  # noqa: BLE001

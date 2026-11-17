@@ -4901,7 +4901,7 @@ async def test_a_removed_profile_override_takes_the_measured_value_from_logos(tm
     assert registry.get_profile("org/ready").base_residency_mb == 500.0
     fetched: list = []
 
-    async def _fetch(hashes, counts):
+    async def _fetch(hashes, counts, fingerprints=None):
         fetched.append((hashes, counts))
         return {"org/ready": {"base_residency_mb": 9000.0, "residency_source": "calibrated"}}
 
@@ -5184,3 +5184,24 @@ async def test_bridge_relays_embedded_or_allowlisted_media(stream, url, domains)
         app.state.lane_manager.decrement_active_requests.assert_awaited_once_with("lane-a")
     finally:
         await client._relay_client.aclose()
+
+
+def test_a_session_started_for_one_model_lists_only_that_model(tmp_path):
+    from logos_worker_node.logos_bridge import _CalibrationSession
+
+    app = _make_app_for_calibration(tmp_path)
+    cfg = LogosConfig(
+        enabled=True,
+        logos_url="https://logos.example",
+        shared_key="secret",
+        configured_models=["org/a", "org/b"],
+    )
+    client = LogosBridgeClient(app, cfg)
+
+    assert sorted(client._list_uncalibrated_models()) == ["org/a", "org/b"]  # noqa: SLF001
+
+    client._active_calibration_session = _CalibrationSession(  # noqa: SLF001
+        sleep_level=1, only_models=frozenset({"org/b"})
+    )
+
+    assert client._list_uncalibrated_models() == ["org/b"]  # noqa: SLF001

@@ -365,7 +365,9 @@ async def logosnode_model_profiles(data: LogosNodeModelProfilesRequest, request:
 
     def _load() -> Dict[str, Dict[str, Any]]:
         if data.calibration_key_hashes:
-            profile_sync.update_reported_keys(provider_id, data.calibration_key_hashes, data.slice_gpu_counts)
+            profile_sync.update_reported_keys(
+                provider_id, data.calibration_key_hashes, data.slice_gpu_counts, data.config_fingerprints
+            )
         return profile_sync.load_effective_profiles(provider_id)
 
     profile_sync.write_cache.forget(provider_id)
@@ -532,6 +534,7 @@ async def logosnode_session(websocket: WebSocket, token: str):
                     ticket.provider_id,
                     calibration_key_hashes=_string_map(payload.get("calibration_key_hashes")),
                     slice_gpu_counts=_int_map(payload.get("slice_gpu_counts")),
+                    config_fingerprints=_string_map(payload.get("config_fingerprints")),
                 )
                 _schedule_node_config_push(ticket.provider_id)
             elif msg_type == "status":

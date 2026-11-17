@@ -125,7 +125,7 @@ def test_reset_is_a_revision_bump_that_keeps_the_context_high_water_mark():
 
 def test_reported_key_hashes_are_updated_in_one_statement():
     db = _db()
-    db.update_reported_calibration_keys(7, {"a": "H1", "b": "H2"}, {"a": 2})
+    db.update_reported_calibration_keys(7, {"a": "H1", "b": "H2"}, {"a": 2}, {"b": "F2"})
     assert db.session.execute.call_count == 1
     _sql, params = db.session.execute.call_args.args
     assert params == {
@@ -133,6 +133,7 @@ def test_reported_key_hashes_are_updated_in_one_statement():
         "model_names": ["a", "b"],
         "key_hashes": ["H1", "H2"],
         "slice_counts": [2, None],
+        "fingerprints": [None, "F2"],
     }
 
 
@@ -191,3 +192,91 @@ def test_the_profile_changes_leave_the_commit_to_the_caller():
 
 def test_the_columns_a_calibration_clears_are_typed_columns():
     assert set(_CALIBRATED_PROFILE_COLUMNS) <= set(_model_profile_column_params({}))
+
+
+def _candidate(snapshot_id, **profile):
+    return SimpleNamespace(id=snapshot_id, profile=json.dumps(profile))
+
+
+def _hint(fingerprint=None):
+    return SimpleNamespace(calibration_key_hash="K", slice_gpu_count=4, config_fingerprint=fingerprint)
+
+
+def _results(candidates, selection, locked_ids):
+    """Session results in call order: candidates, the node's choice, then one lock per attempt."""
+    answers = [
+        SimpleNamespace(fetchall=lambda: candidates),
+        SimpleNamespace(fetchone=lambda: selection),
+    ]
+    for snapshot_id in locked_ids:
+        answers.append(
+            SimpleNamespace(fetchone=lambda snapshot_id=snapshot_id: SimpleNamespace(id=snapshot_id, profile="{}"))
+        )
+    return answers
+
+
+def test_adoption_prefers_the_snapshot_of_the_nodes_configuration_in_the_query():
+    db = _db()
+    db.session.execute.return_value = SimpleNamespace(fetchall=lambda: [])
+
+    assert db._pick_shared_snapshot(7, "org/m", _hint("FP")) is None
+
+    _sql, params = db.session.execute.call_args.args
+    # Checked against the source: the unit-test conftest stubs sqlalchemy.
+    source = inspect.getsource(DBManager._pick_shared_snapshot)
+    assert "profile->>'config_fingerprint' = CAST(:fingerprint AS text)) DESC" in source
+    assert params["fingerprint"] == "FP"
+    assert params["key_hash"] == "K"
+
+
+def test_adoption_takes_the_first_candidate_that_covers_the_nodes_choice():
+    db = _db()
+    narrow = _candidate(1, min_kv_cache_mb=1024.0, max_kv_cache_mb=2048.0)
+    wide = _candidate(2, min_kv_cache_mb=1024.0, max_kv_cache_mb=8192.0)
+    selection = SimpleNamespace(kv="4G", context=None)
+    db.session.execute.side_effect = _results([narrow, wide], selection, [2])
+
+    picked = db._pick_shared_snapshot(7, "org/m", _hint())
+
+    assert picked.id == 2
+
+
+def test_adoption_takes_nothing_when_no_candidate_covers_the_choice():
+    db = _db()
+    narrow = _candidate(1, min_kv_cache_mb=1024.0, max_kv_cache_mb=2048.0)
+    db.session.execute.side_effect = _results([narrow], SimpleNamespace(kv="8G", context=None), [])
+
+    assert db._pick_shared_snapshot(7, "org/m", _hint()) is None
+
+
+def test_adoption_skips_a_snapshot_invalidated_before_it_was_locked():
+    db = _db()
+    first, second = _candidate(1), _candidate(2)
+    answers = [
+        SimpleNamespace(fetchall=lambda: [first, second]),
+        SimpleNamespace(fetchone=lambda: None),
+        SimpleNamespace(fetchone=lambda: None),
+        SimpleNamespace(fetchone=lambda: SimpleNamespace(id=2, profile="{}")),
+    ]
+    db.session.execute.side_effect = answers
+
+    assert db._pick_shared_snapshot(7, "org/m", _hint()).id == 2
+
+
+def test_adoption_without_a_configured_choice_takes_the_first_candidate():
+    db = _db()
+    db.session.execute.side_effect = _results([_candidate(1, max_kv_cache_mb=1.0)], None, [1])
+
+    assert db._pick_shared_snapshot(7, "org/m", _hint()).id == 1
+
+
+def test_the_nodes_choice_is_read_from_its_configuration():
+    db = _db()
+    db.session.execute.return_value = SimpleNamespace(fetchone=lambda: SimpleNamespace(kv="2G", context="8192"))
+    assert db._node_selection(7, "org/m") == (2048.0, 8192)
+
+    db.session.execute.return_value = SimpleNamespace(fetchone=lambda: SimpleNamespace(kv="bad", context="x"))
+    assert db._node_selection(7, "org/m") == (None, None)
+
+    db.session.execute.return_value = SimpleNamespace(fetchone=lambda: None)
+    assert db._node_selection(7, "org/m") == (None, None)

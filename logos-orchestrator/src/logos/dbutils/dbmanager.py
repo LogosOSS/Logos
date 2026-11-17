@@ -27,6 +27,7 @@ from logos.dbutils.types import (
 )
 from logos.model_names import is_safe_model_name
 from logos.model_profile_store import CALIBRATION_FIELDS, base_residency_agrees
+from logos.node_config import kv_size_mb, selection_covered
 
 # Backwards-compatible re-export (temporary; remove once all imports are migrated)
 __all__ = [
@@ -2014,8 +2015,9 @@ class DBManager:
         provider_id: int,
         key_hashes: Dict[str, str],
         slice_gpu_counts: Optional[Dict[str, int]] = None,
+        config_fingerprints: Optional[Dict[str, str]] = None,
     ) -> None:
-        """Record the calibration key and GPU count each model has on the node.
+        """Record the calibration key, GPU count and configuration fingerprint of each model on the node.
 
         A model without a row gets an empty one, so a node that never ran the
         model can still be offered a shared calibration. The caller commits.
@@ -2025,23 +2027,28 @@ class DBManager:
         counts = slice_gpu_counts or {}
         self.session.execute(
             text("""
-                INSERT INTO model_profiles (provider_id, model_name, calibration_key_hash, slice_gpu_count)
-                SELECT :provider_id, k.model_name, k.key_hash, k.slice_gpu_count
+                INSERT INTO model_profiles (
+                    provider_id, model_name, calibration_key_hash, slice_gpu_count, config_fingerprint)
+                SELECT :provider_id, k.model_name, k.key_hash, k.slice_gpu_count, k.fingerprint
                 FROM unnest(CAST(:model_names AS text[]), CAST(:key_hashes AS text[]),
-                            CAST(:slice_counts AS integer[]))
-                     AS k(model_name, key_hash, slice_gpu_count)
+                            CAST(:slice_counts AS integer[]), CAST(:fingerprints AS text[]))
+                     AS k(model_name, key_hash, slice_gpu_count, fingerprint)
                 ON CONFLICT (provider_id, model_name) DO UPDATE
                 SET calibration_key_hash = EXCLUDED.calibration_key_hash,
-                    slice_gpu_count = COALESCE(EXCLUDED.slice_gpu_count, model_profiles.slice_gpu_count)
+                    slice_gpu_count = COALESCE(EXCLUDED.slice_gpu_count, model_profiles.slice_gpu_count),
+                    config_fingerprint = COALESCE(EXCLUDED.config_fingerprint, model_profiles.config_fingerprint)
                 WHERE model_profiles.calibration_key_hash IS DISTINCT FROM EXCLUDED.calibration_key_hash
                    OR model_profiles.slice_gpu_count IS DISTINCT FROM
                       COALESCE(EXCLUDED.slice_gpu_count, model_profiles.slice_gpu_count)
+                   OR model_profiles.config_fingerprint IS DISTINCT FROM
+                      COALESCE(EXCLUDED.config_fingerprint, model_profiles.config_fingerprint)
             """),
             {
                 "provider_id": provider_id,
                 "model_names": list(key_hashes),
                 "key_hashes": list(key_hashes.values()),
                 "slice_counts": [_slice_gpu_count(counts.get(name)) for name in key_hashes],
+                "fingerprints": [(config_fingerprints or {}).get(name) for name in key_hashes],
             },
         )
 
@@ -2125,6 +2132,7 @@ class DBManager:
         return self.session.execute(
             text(f"""
                 SELECT mp.profile, mp.calibration_id, mp.calibration_key_hash, mp.slice_gpu_count,
+                       mp.config_fingerprint,
                        mc.calibration_key_hash AS linked_key_hash,
                        mc.source_provider_id AS linked_source,
                        mc.profile->>'tensor_parallel_size' AS linked_tp
@@ -2135,6 +2143,72 @@ class DBManager:
             """),
             {"provider_id": provider_id, "model_name": model_name},
         ).fetchone()
+
+    def _pick_shared_snapshot(self, provider_id: int, model_name: str, hint: Any) -> Any:
+        """The shared calibration a node adopts: same validity key, covering its choice.
+
+        A snapshot measured under the node's own configuration fingerprint comes
+        first, then the newest. One whose measured range lies outside the KV
+        cache size or context length the node is configured with is skipped.
+        The chosen snapshot is locked, so one invalidated meanwhile is never linked.
+        """
+        candidates = self.session.execute(
+            text("""
+                SELECT id, profile
+                FROM model_calibrations
+                WHERE model_name = :model_name
+                  AND calibration_key_hash = :key_hash
+                  AND invalidated_at IS NULL
+                  AND source_provider_id IS DISTINCT FROM :provider_id
+                  AND NOT (CAST(:provider_id AS integer) = ANY(rejected_by))
+                  AND CASE WHEN profile->>'tensor_parallel_size' ~ '^[0-9]+$'
+                           THEN (profile->>'tensor_parallel_size')::int ELSE 1 END <= :slice_gpu_count
+                ORDER BY (CAST(:fingerprint AS text) IS NOT NULL
+                          AND profile->>'config_fingerprint' = CAST(:fingerprint AS text)) DESC,
+                         calibrated_at DESC
+                LIMIT 20
+            """),
+            {
+                "model_name": model_name,
+                "key_hash": hint.calibration_key_hash,
+                "provider_id": provider_id,
+                "slice_gpu_count": int(hint.slice_gpu_count),
+                "fingerprint": hint.config_fingerprint,
+            },
+        ).fetchall()
+        if not candidates:
+            return None
+        kv_mb, context = self._node_selection(provider_id, model_name)
+        for candidate in candidates:
+            shared = json.loads(candidate.profile) if isinstance(candidate.profile, str) else dict(candidate.profile)
+            if not selection_covered(shared, kv_mb, context):
+                continue
+            locked = self.session.execute(
+                text("""
+                    SELECT id, profile FROM model_calibrations
+                    WHERE id = :id AND invalidated_at IS NULL
+                    FOR UPDATE
+                """),
+                {"id": int(candidate.id)},
+            ).fetchone()
+            if locked is not None:
+                return locked
+        return None
+
+    def _node_selection(self, provider_id: int, model_name: str) -> Tuple[Optional[float], Optional[int]]:
+        """The KV cache size (MB) and context length configured for a model on a node."""
+        row = self.session.execute(
+            text("""
+                SELECT capability->>'kv_cache_memory_bytes' AS kv, overrides->>'max_model_len' AS context
+                FROM node_model_config
+                WHERE provider_id = :provider_id AND model_name = :model_name
+            """),
+            {"provider_id": provider_id, "model_name": model_name},
+        ).fetchone()
+        if row is None:
+            return None, None
+        context = int(row.context) if row.context and str(row.context).isdigit() else None
+        return kv_size_mb(row.kv), context
 
     def _adopt_shared_calibration(
         self, provider_id: int, model_name: str, adopt: bool = True
@@ -2149,32 +2223,7 @@ class DBManager:
         hint = self._node_calibration_state(provider_id, model_name)
         if hint is None or not hint.calibration_key_hash or not hint.slice_gpu_count:
             return False, None
-        snapshot = (
-            None
-            if not adopt
-            else self.session.execute(
-                text("""
-                SELECT id, profile
-                FROM model_calibrations
-                WHERE model_name = :model_name
-                  AND calibration_key_hash = :key_hash
-                  AND invalidated_at IS NULL
-                  AND source_provider_id IS DISTINCT FROM :provider_id
-                  AND NOT (CAST(:provider_id AS integer) = ANY(rejected_by))
-                  AND CASE WHEN profile->>'tensor_parallel_size' ~ '^[0-9]+$'
-                           THEN (profile->>'tensor_parallel_size')::int ELSE 1 END <= :slice_gpu_count
-                ORDER BY calibrated_at DESC
-                LIMIT 1
-                FOR UPDATE
-            """),
-                {
-                    "model_name": model_name,
-                    "key_hash": hint.calibration_key_hash,
-                    "provider_id": provider_id,
-                    "slice_gpu_count": int(hint.slice_gpu_count),
-                },
-            ).fetchone()
-        )
+        snapshot = self._pick_shared_snapshot(provider_id, model_name, hint) if adopt else None
         node = self._node_calibration_state(provider_id, model_name, lock=True)
         if (
             node is None

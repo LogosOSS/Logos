@@ -268,6 +268,41 @@
           }
         </section>
 
+        @if (canCalibrate() && !editing()) {
+          <section class="card" aria-labelledby="calrun-title">
+            <h2 id="calrun-title">Calibration settings</h2>
+            <p class="sub">
+              @if (insight()?.calibration?.status === 'outdated') {
+                The calibration no longer matches how {{ providerName() }} runs this model. Measure it again to place the model.
+              } @else {
+                Logos has not measured this model on {{ providerName() }} yet. It measures the possible GPU, KV cache and context combinations.
+              }
+            </p>
+            @if (calibrationError(); as e) {
+              <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
+            }
+            <div class="calrun">
+              <button
+                class="btn-primary"
+                type="button"
+                [disabled]="!workerOnline() || calibrating() || calibrationStarting()"
+                [attr.aria-busy]="calibrationStarting()"
+                (click)="calibrate()"
+              >
+                @if (calibrationStarting() || calibrating()) {
+                  <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+                }
+                {{ calibrating() ? 'Calibrating…' : 'Calibrate model' }}
+              </button>
+              @if (!workerOnline()) {
+                <span class="hint">The worker must be online to calibrate.</span>
+              } @else if (calibrating()) {
+                <span class="hint">The worker is measuring this model. This takes several minutes.</span>
+              }
+            </div>
+          </section>
+        }
+
         @if (result(); as r) {
           <section class="card" aria-labelledby="cal-title">
             <h2 id="cal-title">Measured by calibration</h2>

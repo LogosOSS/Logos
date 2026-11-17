@@ -695,6 +695,34 @@ class ProviderControllerTest {
     }
 
     @Test
+    void calibrateUncalibrated_passesTheModelOfTheRequest() throws Exception {
+        when(workerAdminClient.calibrateUncalibrated(6001, "org/a"))
+            .thenReturn(ResponseEntity.ok(Map.of("count", 1)));
+
+        mvc.perform(post("/logosdb/providers/logosnode/calibrate_uncalibrated")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"model\":\"org/a\"}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.count").value(1));
+
+        verify(workerAdminClient).calibrateUncalibrated(eq(6001), eq("org/a"));
+    }
+
+    @Test
+    void calibrateUncalibrated_withoutAModelCalibratesEverything() throws Exception {
+        when(workerAdminClient.calibrateUncalibrated(eq(6001), org.mockito.ArgumentMatchers.isNull()))
+            .thenReturn(ResponseEntity.ok(Map.of("count", 2)));
+
+        mvc.perform(post("/logosdb/providers/logosnode/calibrate_uncalibrated")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.count").value(2));
+    }
+
+    @Test
     void stopCalibration_requiresProviderId() throws Exception {
         mvc.perform(post("/logosdb/providers/logosnode/stop_calibration")
                 .with(TestJwt.logosAdmin())

@@ -98,8 +98,15 @@ class _CalibrationSession:
     RPCs and consumes calibration_* events back from the worker.
     """
 
-    def __init__(self, sleep_level: int, skip_models: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        sleep_level: int,
+        skip_models: frozenset[str] = frozenset(),
+        only_models: frozenset[str] = frozenset(),
+    ) -> None:
         self.sleep_level: int = sleep_level
+        # When not empty, the session calibrates only these models.
+        self.only_models: frozenset[str] = only_models
         self.cancel_event: threading.Event = threading.Event()
         self.task: asyncio.Task | None = None
         self.started_at: float = time.time()
@@ -403,6 +410,7 @@ class LogosBridgeClient:
         self,
         calibration_key_hashes: dict[str, str],
         slice_gpu_counts: dict[str, int],
+        config_fingerprints: dict[str, str] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """This node's profiles from Logos, the only place they are stored."""
         url = f"{self._logos_base_url()}/logosdb/providers/logosnode/model-profiles"
@@ -411,6 +419,8 @@ class LogosBridgeClient:
             "calibration_key_hashes": calibration_key_hashes,
             "slice_gpu_counts": slice_gpu_counts,
         }
+        if config_fingerprints:
+            payload["config_fingerprints"] = config_fingerprints
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, json=payload)
         if resp.status_code >= 400:
@@ -626,10 +636,12 @@ class LogosBridgeClient:
         if hasattr(self._app, "state") and hasattr(self._app.state, "lane_manager"):
             static_lane_ids = sorted(self._app.state.lane_manager._static_lane_ids)
         calibration_key_hashes: dict[str, str] = {}
+        config_fingerprints: dict[str, str] = {}
         slice_gpu_counts: dict[str, int] = {}
         pending_snapshots: list[str] = []
         if hasattr(self._app, "state") and hasattr(self._app.state, "model_profiles"):
             calibration_key_hashes = self._app.state.model_profiles.calibration_key_hashes()
+            config_fingerprints = self._app.state.model_profiles.config_fingerprints()
             slice_gpu_counts = self._app.state.model_profiles.slice_gpu_counts()
             pending_snapshots = self._app.state.model_profiles.awaiting_snapshot_models()
         await self._send_json(
@@ -654,6 +666,7 @@ class LogosBridgeClient:
                 "calibrating_model": self._calibrating_model(),
                 "pending_snapshots": pending_snapshots,
                 "calibration_key_hashes": calibration_key_hashes,
+                "config_fingerprints": config_fingerprints,
                 "slice_gpu_counts": slice_gpu_counts,
                 "actions": [
                     "infer",
@@ -1194,7 +1207,9 @@ class LogosBridgeClient:
             # Logos keeps the measured values beneath an override.
             try:
                 central = await self.fetch_model_profiles(
-                    model_profiles.calibration_key_hashes(), model_profiles.slice_gpu_counts()
+                    model_profiles.calibration_key_hashes(),
+                    model_profiles.slice_gpu_counts(),
+                    model_profiles.config_fingerprints(),
                 )
             except Exception:  # noqa: BLE001
                 logger.warning("[NodeConfig] Removed overrides are cleared; Logos' values return at the next start")
@@ -1729,15 +1744,17 @@ class LogosBridgeClient:
             logger.debug("[Calibration] node_health evaluation failed", exc_info=True)
 
         skip_models = frozenset(str(m) for m in (params.get("skip_models") or []))
-        session = _CalibrationSession(sleep_level=sleep_level, skip_models=skip_models)
+        only_models = frozenset(str(m) for m in (params.get("models") or []))
+        session = _CalibrationSession(sleep_level=sleep_level, skip_models=skip_models, only_models=only_models)
         session.task = asyncio.create_task(
             self._run_calibration_session(session),
             name="calibration-session",
         )
         self._active_calibration_session = session
         logger.info(
-            "[Calibration] Session started (sleep_level=%d) — worker drives model selection",
+            "[Calibration] Session started (sleep_level=%d, %s) — worker drives model selection",
             sleep_level,
+            ", ".join(sorted(only_models)) or "all models",
         )
         return {
             "ok": True,
@@ -1982,6 +1999,13 @@ class LogosBridgeClient:
             if self._active_calibration_session is not None
             else frozenset()
         )
+        only_models = (
+            self._active_calibration_session.only_models
+            if self._active_calibration_session is not None
+            else frozenset()
+        )
+        if only_models:
+            candidates = [name for name in candidates if name in only_models]
 
         ordered: list[str] = []
         for model_name in candidates:
@@ -2051,6 +2075,8 @@ class LogosBridgeClient:
             from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
             from logos_worker_node.profile_fingerprint import (  # noqa: PLC0415
                 node_calibration_keys,
+                node_config_fingerprints,
+                node_selections,
                 node_slice_gpu_counts,
             )
 
@@ -2059,6 +2085,8 @@ class LogosBridgeClient:
             # Resolving an unknown vLLM version may fork a subprocess.
             keys = await asyncio.to_thread(node_calibration_keys, self._app.state.config, plans, list(snapshot.devices))
             counts = node_slice_gpu_counts(self._app.state.config, plans, list(snapshot.devices))
+            fingerprints = node_config_fingerprints(self._app.state.config, plans)
+            selections = node_selections(self._app.state.config, plans)
         except Exception:  # noqa: BLE001
             logger.warning("[Calibration] Could not refresh calibration keys; keeping the previous ones", exc_info=True)
             return
@@ -2066,9 +2094,9 @@ class LogosBridgeClient:
             logger.info("[Calibration] Discarding keys of revision %d: a newer configuration was applied", revision)
             return
         self._app.state.model_profiles.set_slice_gpu_counts(counts)
-        changed = self._app.state.model_profiles.set_calibration_keys(keys)
+        changed = self._app.state.model_profiles.set_calibration_keys(keys, fingerprints, selections)
         if changed:
-            logger.info("[Calibration] Calibration key changed for %s — re-measuring", ", ".join(sorted(changed)))
+            logger.info("[Calibration] Calibration no longer fits %s — re-measuring", ", ".join(sorted(changed)))
 
     async def _run_calibration_session(self, session: _CalibrationSession) -> None:
         """Async driver that walks uncalibrated models one at a time.

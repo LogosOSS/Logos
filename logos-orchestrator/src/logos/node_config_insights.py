@@ -59,7 +59,9 @@ def calibration_view(profile: Mapping[str, Any] | None, calibrated_at: Any = Non
     }
 
 
-def benchmark_view(summary: Mapping[str, Any] | None, runs: Mapping[int, Mapping[str, Any]], current: Mapping[str, Any]):
+def benchmark_view(
+    summary: Mapping[str, Any] | None, runs: Mapping[int, Mapping[str, Any]], current: Mapping[str, Any]
+):
     """The best benchmark results of a model on this node; None without one."""
     if not summary or not summary.get("best_observed"):
         return None

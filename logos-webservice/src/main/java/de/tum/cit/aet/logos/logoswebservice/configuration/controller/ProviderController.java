@@ -181,7 +181,7 @@ public class ProviderController {
     public ResponseEntity<?> calibrateUncalibrated(@RequestBody CalibrateUncalibratedRequestDTO req) {
         if (req.providerId() == null) return ResponseEntity.badRequest().body(Map.of("error", "provider_id is required"));
         try {
-            return workerAdminClient.calibrateUncalibrated(req.providerId());
+            return workerAdminClient.calibrateUncalibrated(req.providerId(), req.model());
         } catch (RestClientResponseException e) {
             return ResponseEntity.status(e.getStatusCode()).body(parseOrWrap(e.getResponseBodyAsString()));
         } catch (Exception e) {

@@ -55,4 +55,13 @@ describe('ProviderManagementService node configuration', () => {
 
     expect((await result).worker.online).toBe(true);
   });
+
+  it('starts the calibration of one model of a node', async () => {
+    const result = service.calibrateModel(4, 'org/a');
+    const request = http.expectOne('/api/logosdb/providers/logosnode/calibrate_uncalibrated');
+    expect(request.request.body).toEqual({ provider_id: 4, model: 'org/a' });
+    request.flush({ message: 'started', count: 1 });
+
+    expect(await result).toEqual({ message: 'started', count: 1 });
+  });
 });

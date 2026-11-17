@@ -158,6 +158,8 @@ class LogosNodeModelProfilesRequest(BaseModel):
     calibration_key_hashes: dict[str, str] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
     # model name -> GPUs the node can calibrate and serve the model on
     slice_gpu_counts: dict[str, int] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
+    # model name -> hash of the whole configuration, the KV cache choice included
+    config_fingerprints: dict[str, str] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
 
 
 class LogosNodeCalibrationReservationRequest(BaseModel):
@@ -270,6 +272,8 @@ class LaneLockChangedRequest(BaseModel):
 
 class InternalCalibrateRequest(BaseModel):
     provider_id: int
+    # Calibrate only this model; empty calibrates everything that needs it.
+    model: str | None = None
 
 
 class InternalNodeConfigRequest(BaseModel):

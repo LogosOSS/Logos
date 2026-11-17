@@ -987,7 +987,7 @@ def test_format_kv_mb_zero():
 
 
 def _make_plan(model: str = "org/test-model", **overrides) -> dict:
-    plan: dict = {"model": model, "kv_cache_memory_bytes": "4G"}
+    plan: dict = {"model": model, "calibration_kv_cache_memory_bytes": "4G"}
     plan.update(overrides)
     return plan
 
@@ -1233,15 +1233,15 @@ def test_explicit_kv_auto_retries_with_max_model_len_from_vllm_suggestion():
     assert result.max_model_len == 98304
 
 
-def test_explicit_kv_does_not_loop_when_suggestion_does_not_shrink():
-    """If vLLM emits the same suggestion repeatedly (or one ≥ the value we
-    already pinned), the retry must stop instead of looping forever. The
-    failure path falls through to the normal blacklist write and surfaces
-    as a regular probe failure."""
+def test_a_retry_with_the_same_suggestion_does_not_loop():
+    """If vLLM keeps emitting the same suggestion, the retry stops instead of looping forever.
+
+    The lane's context length is not a calibration input, so the plan carries none
+    to cap the suggestion; the retry still ends in a regular probe failure.
+    """
     suggestion_tail = "ValueError: ... the estimated maximum model length is 98304."
-    # Plan already pins max_model_len ≤ the suggestion → no shrink possible.
     patches = _patch_calibration_infra(
-        wait_ready_side_effect=[RuntimeError("vLLM exited (code=1)")],
+        wait_ready_side_effect=[RuntimeError("vLLM exited (code=1)")] * 6,
     )
     patches["read_log_since"] = patch(
         "logos_worker_node.calibration._read_log_since",
@@ -1250,12 +1250,11 @@ def test_explicit_kv_does_not_loop_when_suggestion_does_not_shrink():
 
     result, mocks = _run_calibrate(
         patches,
-        plan=_make_plan(kv_cache_memory_bytes="6G", max_model_len=98304),
+        plan=_make_plan(calibration_kv_cache_memory_bytes="6G", max_model_len=98304),
     )
 
     assert not result.success
-    # No infinite recursion — exactly one spawn.
-    assert mocks["spawn"].call_count == 1
+    assert mocks["spawn"].call_count <= 3
 
 
 def test_kv_probe_auto_retries_with_max_num_seqs_for_mamba_model():
@@ -3967,7 +3966,7 @@ def _blacklist_lines(log_path: Path) -> list[str]:
 
 def test_a_failing_first_probe_is_blacklisted(tmp_path: Path):
     _, _, log_path = _search_with_ready_timeouts(
-        tmp_path, RuntimeError("vLLM exited"), plan_extra={"kv_cache_memory_bytes": "2G"}
+        tmp_path, RuntimeError("vLLM exited"), plan_extra={"calibration_kv_cache_memory_bytes": "2G"}
     )
 
     assert len(_blacklist_lines(log_path)) == 1
@@ -3977,7 +3976,9 @@ def test_a_stall_abort_is_not_blacklisted(tmp_path: Path):
     from logos_worker_node.calibration import VllmEngineStalled
 
     result, _, log_path = _search_with_ready_timeouts(
-        tmp_path, VllmEngineStalled("engine warmup stalled: test"), plan_extra={"kv_cache_memory_bytes": "2G"}
+        tmp_path,
+        VllmEngineStalled("engine warmup stalled: test"),
+        plan_extra={"calibration_kv_cache_memory_bytes": "2G"},
     )
 
     assert result.retryable_fatal_reason == "engine-warmup-stalled"

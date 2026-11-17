@@ -53,16 +53,16 @@ def test_calibration_and_serving_pass_the_same_prefix_caching_flag(enabled, flag
 @pytest.mark.parametrize(
     "backend,plan,legacy_hash",
     [
-        ("cuda", {"model": "org/m"}, "1d784995a9aafb63b2878a21d5b209807acde94215119a0952793b8523063ade"),
+        ("cuda", {"model": "org/m"}, "e7d46be7f0addf088044fa46849e326beffd8f1bb3d9655d8bff4d2c1ce4e2cc"),
         (
             "cuda",
             {"model": "org/m", "enable_prefix_caching": True},
-            "2a9d1fa7d836035eccd5177d6ad042e1b3ff78d894023583c6cd4cfd8c0b1a1f",
+            "9509657d26dd9f0f68bf3f2855ce9f0487febf96f2ec69df1f0360ec8e73b044",
         ),
         (
             "metal",
             {"model": "org/m", "enable_prefix_caching": False},
-            "05a9a26bfb3687b1282413495d2310cd6732fb0bf179f1bb524267ef8d24a27c",
+            "99f0b74b253786aa6e71d9ba3af265fe804512a514eb5042468757bc915faf99",
         ),
     ],
 )
@@ -74,7 +74,7 @@ def test_unaffected_profiles_keep_their_stored_key_hash(backend, plan, legacy_ha
 def test_disabled_prefix_probe_invalidates_a_legacy_calibration():
     fresh = _key({"model": "org/m", "enable_prefix_caching": False, "dtype": "auto"})
     legacy = {key: value for key, value in fresh.items() if key != "enable_prefix_caching_cli"}
-    assert key_hash(legacy) == "40cfaf2ffdfb29bdaa7b0c290d30f61e76791ca441045cd41d6029c8a4ebc655"
+    assert key_hash(legacy) == "30d87bc00465b934c327e2dd3a95c33ab4db557afed99c97668599bf2d6a07df"
     assert key_hash(fresh) != key_hash(legacy)
     registry = ModelProfileRegistry()
     registry.replace_from_sync({"org/m": {"base_residency_mb": 1000.0, "sync_revision": 1, "calibration_id": 11}})

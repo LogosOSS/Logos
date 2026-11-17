@@ -96,6 +96,14 @@ export class NodeModel implements OnInit {
   readonly saving = signal(false);
   readonly failure = signal<SaveFailure | null>(null);
   readonly notice = signal<{ title: string; text: string } | null>(null);
+  readonly calibrationStarting = signal(false);
+  readonly calibrationError = signal<string | null>(null);
+  /** A model that is not calibrated or whose calibration is outdated can be measured now. */
+  readonly canCalibrate = computed(() => {
+    const status = this.insight()?.calibration.status;
+    return status === 'not_calibrated' || status === 'outdated';
+  });
+  readonly calibrating = computed(() => this.insight()?.calibrating ?? false);
   readonly removeOpen = signal(false);
   readonly removing = signal(false);
   readonly removeError = signal<string | null>(null);
@@ -376,6 +384,32 @@ export class NodeModel implements OnInit {
       this.removeError.set(saveFailure(e).message);
     } finally {
       this.removing.set(false);
+    }
+  }
+
+  /** Asks the worker to measure this model now. */
+  async calibrate(): Promise<void> {
+    const id = this.providerId();
+    if (id === null || this.calibrationStarting() || !this.canCalibrate()) {
+      return;
+    }
+    this.calibrationStarting.set(true);
+    this.calibrationError.set(null);
+    try {
+      const result = await this.service.calibrateModel(id, this.modelName());
+      if (result.count === 0) {
+        this.calibrationError.set(result.message || 'This model does not need calibration.');
+      } else {
+        this.notice.set({
+          title: 'Calibration started',
+          text: 'The worker measures this model now. This takes several minutes; the page shows the result when it is done.',
+        });
+      }
+      await this.refresh();
+    } catch (e) {
+      this.calibrationError.set(saveFailure(e).message.replace('The configuration could not be saved.', 'The calibration could not be started.'));
+    } finally {
+      this.calibrationStarting.set(false);
     }
   }
 

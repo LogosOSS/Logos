@@ -67,7 +67,46 @@ def test_error_items_split_model_key_message_and_suggestion():
             "model_name must not be blank",
         ]
     )
-    assert items[0] == {"model": "org/a", "key": "max_modell_len", "message": "unknown setting", "suggestion": "max_model_len"}
+    assert items[0] == {
+        "model": "org/a",
+        "key": "max_modell_len",
+        "message": "unknown setting",
+        "suggestion": "max_model_len",
+    }
     assert items[1]["key"] == "max_model_len" and items[1]["message"].endswith("unable to parse")
     assert items[2] == {"model": "org/c", "key": None, "message": "listed twice", "suggestion": None}
     assert items[3] == {"model": None, "key": None, "message": "model_name must not be blank", "suggestion": None}
+
+
+def test_kv_sizes_are_read_in_megabytes():
+    from logos.node_config import kv_size_mb
+
+    assert kv_size_mb("4G") == 4096.0
+    assert kv_size_mb("512m") == 512.0
+    assert kv_size_mb("2048K") == 2.0
+    assert kv_size_mb("1048576") == 1.0
+    assert kv_size_mb("lots") is None
+    assert kv_size_mb("") is None
+    assert kv_size_mb(None) is None
+
+
+def test_a_calibration_covers_a_choice_inside_its_measured_range():
+    from logos.node_config import selection_covered
+
+    profile = {
+        "min_kv_cache_mb": 1024.0,
+        "max_kv_cache_mb": 8192.0,
+        "kv_cache_to_max_model_len_pairs": [
+            {"kv_mb": 1024.0, "max_model_len": 4096},
+            {"kv_mb": 4096.0, "max_model_len": 16384},
+            {"kv_mb": 8192.0, "max_model_len": 32768},
+        ],
+    }
+
+    assert selection_covered(profile, None, None)
+    assert selection_covered(profile, 4096.0, 16384)
+    assert selection_covered(profile, 8192.0, 32768)
+    assert not selection_covered(profile, 512.0, None)
+    assert not selection_covered(profile, 16384.0, None)
+    assert not selection_covered(profile, 4096.0, 20000)
+    assert selection_covered({}, 99999.0, 999999)

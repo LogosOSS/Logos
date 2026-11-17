@@ -97,6 +97,16 @@ export class ProviderManagementService {
     return firstValueFrom(this.http.post<NodeInsights>('/api/logosdb/node_config/insights', { provider_id: providerId }));
   }
 
+  /** Starts a calibration of one model; the worker measures it right away. */
+  calibrateModel(providerId: number, model: string): Promise<{ message?: string; count?: number }> {
+    return firstValueFrom(
+      this.http.post<{ message?: string; count?: number }>('/api/logosdb/providers/logosnode/calibrate_uncalibrated', {
+        provider_id: providerId,
+        model,
+      }),
+    );
+  }
+
   getProviderModels(providerId: number): Promise<ModelConnection[]> {
     return firstValueFrom(this.http.post<ModelConnection[]>('/api/logosdb/get_provider_models', { provider_id: providerId }));
   }

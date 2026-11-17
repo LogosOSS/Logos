@@ -98,6 +98,7 @@ describe('NodeModel', () => {
       getNodeInsights: vi.fn().mockResolvedValue(insights([insight()])),
       getProviders: vi.fn().mockResolvedValue([{ id: 4, name: 'hochbruegge' }]),
       replaceNodeConfig: vi.fn().mockResolvedValue({ provider_id: 4, config_revision: 4 }),
+      calibrateModel: vi.fn().mockResolvedValue({ count: 1, message: 'started' }),
     };
   });
 
@@ -613,6 +614,94 @@ describe('NodeModel', () => {
       root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
       fixture.detectChanges();
       expect(page().adv()!.values['quantization']).toBe('awq');
+    });
+  });
+
+  describe('calibrating the model', () => {
+    const uncalibrated = (extra: Partial<NodeModelInsight> = {}) =>
+      insights([
+        insight({
+          row: false,
+          configured: false,
+          calibration: { status: 'not_calibrated', reason: null, results: [] },
+          ...extra,
+        }),
+      ]);
+    const button = (root: HTMLElement): HTMLButtonElement | undefined =>
+      Array.from(root.querySelectorAll('button')).find((b) => b.textContent?.includes('Calibrat')) as
+        | HTMLButtonElement
+        | undefined;
+
+    it('offers the calibration for a model that has none and starts it', async () => {
+      service['getNodeInsights'].mockResolvedValue(uncalibrated());
+      const root = await create();
+
+      expect(root.textContent).toContain('Calibration settings');
+      expect(button(root)!.textContent).toContain('Calibrate model');
+      button(root)!.click();
+      await settle();
+
+      expect(service['calibrateModel']).toHaveBeenCalledWith(4, 'org/a');
+      expect(root.textContent).toContain('Calibration started');
+    });
+
+    it('offers it again for an outdated calibration and says why', async () => {
+      service['getNodeInsights'].mockResolvedValue(
+        insights([insight({ calibration: { status: 'outdated', reason: null, results: [] } })]),
+      );
+      const root = await create();
+
+      expect(root.textContent).toContain('no longer matches');
+      expect(button(root)).toBeDefined();
+    });
+
+    it('offers nothing for a calibrated model', async () => {
+      const root = await create();
+
+      expect(root.textContent).not.toContain('Calibration settings');
+    });
+
+    it('is switched off while the worker is offline or already measuring the model', async () => {
+      service['getNodeInsights'].mockResolvedValue({ ...uncalibrated(), worker: { online: false, supports_actions: {}, config_revision: 3 } });
+      let root = await create();
+      expect(button(root)!.disabled).toBe(true);
+      expect(root.textContent).toContain('must be online');
+
+      TestBed.resetTestingModule();
+      service['getNodeInsights'].mockResolvedValue(uncalibrated({ calibrating: true }));
+      root = await create();
+      expect(button(root)!.textContent).toContain('Calibrating');
+      expect(button(root)!.disabled).toBe(true);
+    });
+
+    it('says so when the worker has nothing to calibrate or refuses', async () => {
+      service['getNodeInsights'].mockResolvedValue(uncalibrated());
+      const root = await create();
+      service['calibrateModel'].mockResolvedValue({ count: 0, message: 'org/a does not need calibration' });
+
+      button(root)!.click();
+      await settle();
+      expect(root.textContent).toContain('org/a does not need calibration');
+
+      service['calibrateModel'].mockRejectedValue({ status: 409, error: { error: 'Worker is reserved for nightly benchmarks' } });
+      button(root)!.click();
+      await settle();
+      expect(root.textContent).toContain('Worker is reserved for nightly benchmarks');
+    });
+
+    it('does not start twice while the request runs', async () => {
+      service['getNodeInsights'].mockResolvedValue(uncalibrated());
+      const root = await create();
+      let finish: (value: unknown) => void = () => undefined;
+      service['calibrateModel'].mockReturnValue(new Promise((resolve) => (finish = resolve)));
+
+      button(root)!.click();
+      void fixture.componentInstance.calibrate();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(service['calibrateModel']).toHaveBeenCalledTimes(1);
+      finish({ count: 1 });
+      await settle();
     });
   });
 });

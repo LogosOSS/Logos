@@ -101,3 +101,40 @@ def conflict_warnings(entries: Iterable[Any]) -> list[str]:
         for entry in entries
         for key, (cap, ovr) in sorted(conflicts(entry.capability, entry.overrides).items())
     ]
+
+
+def kv_size_mb(text: Any) -> float | None:
+    """A KV cache size like ``"8G"`` in megabytes; ``None`` when it is not one."""
+    value = str(text or "").strip().upper()
+    if not value or not _KV_SIZE.match(value):
+        return None
+    unit = value[-1]
+    if unit == "G":
+        return float(value[:-1]) * 1024.0
+    if unit == "M":
+        return float(value[:-1])
+    if unit == "K":
+        return float(value[:-1]) / 1024.0
+    return float(value) / (1024.0 * 1024.0)
+
+
+def selection_covered(profile: dict[str, Any], kv_mb: float | None, context: int | None) -> bool:
+    """Whether a calibration covers the KV cache size and context length chosen for a node.
+
+    Nothing chosen, or nothing known about the measured range, is covered: only a
+    value the calibration can show to be out of range counts against it.
+    """
+    low, high = profile.get("min_kv_cache_mb"), profile.get("max_kv_cache_mb")
+    if kv_mb is not None and low is not None and high is not None:
+        if not (float(low) - 1e-6 <= kv_mb <= float(high) + 1e-6):
+            return False
+    pairs = profile.get("kv_cache_to_max_model_len_pairs")
+    if context is not None and isinstance(pairs, list) and pairs:
+        reachable = [
+            int(pair.get("max_model_len") or 0)
+            for pair in pairs
+            if isinstance(pair, dict) and (kv_mb is None or float(pair.get("kv_mb") or 0) <= kv_mb + 1e-6)
+        ]
+        best = max(reachable, default=0)
+        return context <= best if best > 0 else True
+    return True

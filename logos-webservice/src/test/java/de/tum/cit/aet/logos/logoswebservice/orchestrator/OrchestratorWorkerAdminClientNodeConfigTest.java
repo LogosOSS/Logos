@@ -73,4 +73,28 @@ class OrchestratorWorkerAdminClientNodeConfigTest {
         assertThat(sentTo("http://orchestrator/internal/logosnode/node_config/replace").getBody())
             .doesNotContainKey("user_id");
     }
+
+    @Test
+    void calibratingAllModelsSendsOnlyTheProvider() {
+        client.calibrateUncalibrated(7, null);
+
+        assertThat(sentTo("http://orchestrator/internal/logosnode/calibrate_uncalibrated").getBody())
+            .isEqualTo(Map.of("provider_id", 7));
+    }
+
+    @Test
+    void calibratingOneModelNamesIt() {
+        client.calibrateUncalibrated(7, "org/a");
+
+        assertThat(sentTo("http://orchestrator/internal/logosnode/calibrate_uncalibrated").getBody())
+            .isEqualTo(Map.of("provider_id", 7, "model", "org/a"));
+    }
+
+    @Test
+    void aBlankModelCalibratesEverything() {
+        client.calibrateUncalibrated(7, " ");
+
+        assertThat(sentTo("http://orchestrator/internal/logosnode/calibrate_uncalibrated").getBody())
+            .isEqualTo(Map.of("provider_id", 7));
+    }
 }

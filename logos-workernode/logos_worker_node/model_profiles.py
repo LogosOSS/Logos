@@ -214,6 +214,9 @@ class ModelProfileRecord:
     calibration_origin: str | None = None
     calibration_stale: bool | None = None
     calibration_key: dict[str, Any] | None = None
+    # Hash of the whole configuration the calibration was measured under, the
+    # KV cache and context choice included; used to prefer a matching snapshot.
+    config_fingerprint: str | None = None
     calibration_duration_s: float | None = None
 
     def known_base_residency_mb(self) -> float | None:
@@ -357,6 +360,7 @@ class ModelProfileRegistry:
         self._lock = threading.Lock()
         # model -> (calibration key this node computes for it now, its hash)
         self._calibration_keys: dict[str, tuple[dict[str, Any], str]] = {}
+        self._config_fingerprints: dict[str, str] = {}
         self._slice_gpu_counts: dict[str, int] = {}
         # config.yml's model_profile_overrides never change; the ones Logos'
         # node configuration owns are replaced as a whole when it changes.
@@ -997,6 +1001,8 @@ class ModelProfileRegistry:
                     entry["calibration_key_hash"] = key_hash(profile.calibration_key)
                 else:
                     entry["calibration_key_hash"] = self._calibration_keys.get(name, (None, None))[1]
+                if profile.config_fingerprint is None:
+                    entry["config_fingerprint"] = self._config_fingerprints.get(name)
                 entry["overridden_fields"] = self._overridden_fields(name)
                 result[name] = entry
             return result
@@ -1005,22 +1011,35 @@ class ModelProfileRegistry:
         overrides = self._overrides_for(model_name)
         return sorted(key for key in overrides if key in _RECORD_FIELDS)
 
-    def set_calibration_keys(self, keys: dict[str, dict[str, Any]]) -> list[str]:
-        """Adopt the node's current keys; returns the models whose key changed.
+    def set_calibration_keys(
+        self,
+        keys: dict[str, dict[str, Any]],
+        fingerprints: dict[str, str] | None = None,
+        selections: dict[str, tuple[float | None, int | None]] | None = None,
+    ) -> list[str]:
+        """Adopt the node's current keys; returns the models to re-measure.
 
-        Their stored calibration no longer describes how the node runs them,
-        so it is re-measured like a stale one.
+        A changed key means the stored calibration no longer describes how the
+        node runs the model. So does a choice of KV cache size or context
+        length outside the measured range (``selections``: per model the KV
+        size in MB and the context length, ``None`` for not configured).
         """
         from logos_worker_node.profile_fingerprint import key_hash  # noqa: PLC0415
 
         with self._lock:
             previous = self._calibration_keys
             self._calibration_keys = {name: (key, key_hash(key)) for name, key in keys.items()}
+            if fingerprints is not None:
+                self._config_fingerprints = dict(fingerprints)
             changed = [
                 name
                 for name, (_, digest) in self._calibration_keys.items()
                 if name in previous and previous[name][1] != digest
             ]
+            for name, (kv_mb, context) in (selections or {}).items():
+                profile = self._profiles.get(name)
+                if name not in changed and profile is not None and not selection_covered(profile, kv_mb, context):
+                    changed.append(name)
             for name in changed:
                 profile = self._profiles.get(name)
                 if profile is not None and profile.calibration_id is not None:
@@ -1044,6 +1063,10 @@ class ModelProfileRegistry:
     def slice_gpu_counts(self) -> dict[str, int]:
         with self._lock:
             return dict(self._slice_gpu_counts)
+
+    def config_fingerprints(self) -> dict[str, str]:
+        with self._lock:
+            return dict(self._config_fingerprints)
 
     def calibration_key_hashes(self) -> dict[str, str]:
         with self._lock:
@@ -1101,12 +1124,34 @@ class ModelProfileRegistry:
             record.calibration_stale = False
             key = self._calibration_keys.get(model_name)
             record.calibration_key = dict(key[0]) if key is not None else None
+            record.config_fingerprint = self._config_fingerprints.get(model_name)
             record.calibration_duration_s = round(duration_s, 1) if duration_s is not None else None
             self._profiles[model_name] = record
             self._apply_manual_overrides(model_name, record)
 
 
 _RECORD_FIELDS = frozenset(field.name for field in fields(ModelProfileRecord))
+
+
+def selection_covered(profile: ModelProfileRecord, kv_mb: float | None, context: int | None) -> bool:
+    """Whether a calibration covers the KV cache size and context length chosen for the lane.
+
+    Nothing chosen, or nothing known about the measured range, is covered: only
+    a value the calibration can show to be out of range counts against it.
+    """
+    low, high = profile.min_kv_cache_mb, profile.max_kv_cache_mb
+    if kv_mb is not None and low is not None and high is not None and not (low - 1e-6 <= kv_mb <= high + 1e-6):
+        return False
+    pairs = profile.kv_cache_to_max_model_len_pairs
+    if context is not None and pairs:
+        reachable = [
+            int(pair.get("max_model_len") or 0)
+            for pair in pairs
+            if isinstance(pair, dict) and (kv_mb is None or float(pair.get("kv_mb") or 0) <= kv_mb + 1e-6)
+        ]
+        best = max(reachable, default=0)
+        return context <= best if best > 0 else True
+    return True
 
 
 def _awaits_snapshot(profile: ModelProfileRecord) -> bool:

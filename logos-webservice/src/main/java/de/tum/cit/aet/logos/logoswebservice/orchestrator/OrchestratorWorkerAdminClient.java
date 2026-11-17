@@ -34,8 +34,14 @@ public class OrchestratorWorkerAdminClient {
         this.restTemplate = restTemplate;
     }
 
-    public ResponseEntity<Map> calibrateUncalibrated(int providerId) {
-        return post("/internal/logosnode/calibrate_uncalibrated", Map.of("provider_id", providerId));
+    /** Calibrates the models of a node that need it; with a model name, only that one. */
+    public ResponseEntity<Map> calibrateUncalibrated(int providerId, String model) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("provider_id", providerId);
+        if (model != null && !model.isBlank()) {
+            body.put("model", model);
+        }
+        return post("/internal/logosnode/calibrate_uncalibrated", body);
     }
 
     /** The models a node is configured with and the revision of that list. */

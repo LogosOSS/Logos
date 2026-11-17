@@ -1254,3 +1254,66 @@ def test_an_override_that_stays_is_not_reported_as_removed():
     registry = _with_host_ram(50.0)
     assert registry.overrides_removed_by({"m": {"host_ram_mb": 7.0}}) == {}
     assert ModelProfileRegistry({"m": {"host_ram_mb": 1.0}}).overrides_removed_by({}) == {}
+
+
+def _record(**fields):
+    from logos_worker_node.model_profiles import ModelProfileRecord
+
+    return ModelProfileRecord(**fields)
+
+
+def test_a_choice_is_covered_when_it_lies_in_the_measured_range():
+    from logos_worker_node.model_profiles import selection_covered
+
+    profile = _record(
+        min_kv_cache_mb=1024.0,
+        max_kv_cache_mb=8192.0,
+        kv_cache_to_max_model_len_pairs=[
+            {"kv_mb": 1024.0, "max_model_len": 4096},
+            {"kv_mb": 4096.0, "max_model_len": 16384},
+            {"kv_mb": 8192.0, "max_model_len": 32768},
+        ],
+    )
+
+    assert selection_covered(profile, None, None)
+    assert selection_covered(profile, 4096.0, 16384)
+    assert selection_covered(profile, 8192.0, 32768)
+    assert not selection_covered(profile, 512.0, None)
+    assert not selection_covered(profile, 16384.0, None)
+    assert not selection_covered(profile, 4096.0, 20000)
+
+
+def test_a_choice_is_covered_when_nothing_is_known_about_the_range():
+    from logos_worker_node.model_profiles import selection_covered
+
+    assert selection_covered(_record(), 99999.0, 999999)
+
+
+def test_a_choice_outside_the_range_makes_the_calibration_stale_without_changing_the_key():
+    registry = ModelProfileRegistry()
+    registry.replace_from_sync(
+        {
+            "org/m": {
+                "base_residency_mb": 1000.0,
+                "min_kv_cache_mb": 1024.0,
+                "max_kv_cache_mb": 4096.0,
+                "sync_revision": 1,
+                "calibration_id": 11,
+            }
+        }
+    )
+    key = {"org/m": {"plan_hash": "x"}}
+    assert registry.set_calibration_keys(key, {"org/m": "f1"}, {"org/m": (2048.0, None)}) == []
+    assert registry.get_profile("org/m").calibration_stale is not True
+
+    assert registry.set_calibration_keys(key, {"org/m": "f2"}, {"org/m": (8192.0, None)}) == ["org/m"]
+    assert registry.get_profile("org/m").calibration_stale is True
+
+
+def test_profiles_report_the_current_fingerprint_until_a_calibration_carries_its_own():
+    registry = ModelProfileRegistry()
+    registry.replace_from_sync({"org/m": {"base_residency_mb": 1.0, "sync_revision": 1, "calibration_id": 3}})
+    registry.set_calibration_keys({"org/m": {"plan_hash": "x"}}, {"org/m": "fp-now"})
+
+    assert registry.get_all_profiles()["org/m"]["config_fingerprint"] == "fp-now"
+    assert registry.config_fingerprints() == {"org/m": "fp-now"}
