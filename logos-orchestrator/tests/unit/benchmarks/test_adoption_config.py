@@ -163,7 +163,9 @@ def test_the_scheduler_stores_the_adoption_and_survives_every_failure(monkeypatc
         return None
 
     monkeypatch.setattr(scheduler_mod, "record_adoption", record)
-    asyncio.run(NightlyScheduler.store_adoption({"provider_id": 7, "model": "org/a"}, {"parameters": {"max_num_seqs": 2}}))
+    asyncio.run(
+        NightlyScheduler.store_adoption({"provider_id": 7, "model": "org/a"}, {"parameters": {"max_num_seqs": 2}})
+    )
     assert calls == [(7, "org/a", {"max_num_seqs": 2})]
 
     asyncio.run(NightlyScheduler.store_adoption({"provider_id": 7}, {"parameters": {}}))

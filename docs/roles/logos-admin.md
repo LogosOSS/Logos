@@ -394,6 +394,126 @@ names the batch deployment or the reason for a refusal. See
 
 ![Providers page — connected models with their batch status](/img/roles/logos-admin-provider-connections.png)
 
+### Node models
+
+Expand a worker node to see the **Node models** list. The list shows each model
+that the worker can serve. Cloud providers keep the **Connected Models** list.
+
+![Node models of a worker node](/img/roles/logos-admin-node-models.png)
+
+Each row shows two statuses:
+
+- **Calibration**: **Calibrated**, **Not calibrated**, **Outdated** or **Unsupported**.
+  Logos measures the memory use of a model during a calibration.
+- **Configured**: **Configured** if the model has a placement (GPUs, KV cache and
+  context length). Otherwise **Not configured**.
+
+The chip at the top shows **Worker online** or **Worker offline**. Select a row
+to open the page of the model.
+
+### Model page
+
+The model page shows the configuration of one model on one worker node.
+
+![Model page of a configured model](/img/roles/logos-admin-node-model-view.png)
+
+The page has these parts:
+
+- **Configuration**: the number of GPUs for each instance (tensor parallel, TP),
+  the KV cache memory for each GPU and the maximum context length.
+- **Measured by calibration**: the base memory, the KV cache range, the context
+  limit and the load times that the last calibration found.
+- **Advanced settings**: the settings of the model that are not part of the placement.
+- **Best benchmark**: the best result of the nightly benchmarks for this model.
+  The part is not shown if the model has no benchmark.
+
+If the nightly tuning set the configuration, the page shows **Set by the nightly tuning**.
+If the worker is offline, the page shows a banner and you cannot edit the model.
+
+### Edit the configuration of a model
+
+You can edit a model that has a calibration. The worker must be online.
+
+1. Open the model page.
+2. Select **Edit configuration**. For a model without a placement, select **Configure model**.
+3. Select the number of GPUs. Only sizes that the calibration measured are available.
+4. Set the KV cache memory. You can use whole GB inside the measured range.
+5. Set the maximum context length. The limit follows the chosen KV cache size.
+6. Change the fields in **Advanced settings** if necessary.
+7. Select **Save**.
+
+![Editor of a model configuration](/img/roles/logos-admin-node-model-edit.png)
+
+The save bar lists your changes. The worker checks all settings before Logos stores them.
+This takes a few seconds. The worker uses the new settings when it starts the lane the next time.
+
+If a value is not valid, then Logos shows the message at the field. Nothing is saved.
+If another admin saved the node at the same time, then Logos shows **Configuration changed**.
+Select **Reload** to load the new state. Your changes are lost.
+
+A change of the KV cache size or the context length inside the measured range does
+not start a new calibration. A change of a setting that the calibration depends on
+does start one. Examples are the tensor parallel size, the quantization and the
+extra arguments.
+
+Use **Custom settings** for a vLLM setting that has no field. The worker rejects a name that it
+does not know. If the name looks like a known one, then Logos suggests the correct name.
+
+### Calibrate a model
+
+A model without a calibration has no placement. The page shows **Calibration settings**
+instead of the editor.
+
+![Model page of a model that is not calibrated](/img/roles/logos-admin-node-model-calibrate.png)
+
+1. Open the model page.
+2. Select **Calibrate model**.
+3. Wait. The calibration takes several minutes.
+
+The button shows **Calibrating…** while the worker measures the model.
+The page shows the result when the calibration is done. You can calibrate a model
+if its calibration is outdated in the same way.
+
+### Connect a model
+
+1. Expand the worker node.
+2. Select **Connect model**.
+3. Select a model of the Logos catalog.
+4. Select **Connect**.
+
+![Dialog to connect a model to a node](/img/roles/logos-admin-node-connect-model.png)
+
+The model is in the list as **Not calibrated** and **Not configured**.
+The dialog shows only models that the node does not list yet.
+
+### Remove a configuration
+
+1. Open the model page.
+2. Select **Remove configuration**.
+3. Read the dialog and select **Remove configuration**.
+
+The model stays calibrated. All its settings return to the default values.
+The worker unloads the model when it changes the lanes the next time.
+
+### Node settings
+
+The settings of the whole node are on one page. Select **Node settings** in the
+expanded worker node.
+
+![Node settings page](/img/roles/logos-admin-node-settings.png)
+
+| Card | Setting | Meaning |
+|---|---|---|
+| **GPU pool** | `gpu_devices` | The GPUs on which the node can place lanes: all, none or selected GPUs. |
+| **Engine defaults** | `global_extra_args` | The vLLM arguments that Logos adds to every lane. One argument in each line. |
+| **Node care** | `auto_reboot_on_stuck_gpu` | Restarts the host if all lanes failed and a GPU holds unused memory. |
+| **Node care** | `gpu_poll_interval` | The time in seconds between two readings of the GPU memory (1 to 300). |
+
+An empty field keeps the value of the `config.yml` file of the worker.
+If you change the global arguments, then every model of the node is measured again
+in the next calibration window. The worker uses a new GPU poll interval after the next start.
+You can save the settings if the worker is offline. The worker applies them when it connects.
+
 ## Policies
 
 Policies are the rules that decide which models a team or an API key can use.

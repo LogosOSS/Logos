@@ -135,7 +135,7 @@ describe('NodeModel', () => {
     const root = await create();
 
     expect(root.textContent).toContain('Not configured yet');
-    expect(root.textContent).toContain('next calibration window');
+    expect(root.textContent).toContain('no placement until it is calibrated');
     expect(root.textContent).not.toContain('Measured by calibration');
   });
 
