@@ -51,7 +51,7 @@
 @if (showProgress()) {
 @if (activeProgress(); as chart) {
   <section class="benchmark-progress" aria-label="Performance timeline">
-    <div class="results-heading"><h3>Timeline</h3>
+    <div class="results-heading"><h3><i class="pi pi-chart-line" aria-hidden="true"></i> Timeline</h3>
       <div class="timeline-headline"><strong>{{ chart.latest.rate | number:'1.1-1' }} tok/s</strong>
         @if (chart.latest.gain !== null) { <span>{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}% vs. baseline #{{ chart.latest.baselineId }}</span> }
       </div>
@@ -62,14 +62,6 @@
       </select>
     } @else { <p class="results-note timeline-context">{{ datasetLabel(chart.reference) }}</p> }
     <p class="results-note timeline-baseline">Latest round baseline #{{ chart.reference.id }} · {{ chart.baselineRate | number:'1.1-1' }} tok/s</p>
-    <ul class="timeline-legend" aria-label="Timeline legend">
-      <li><span class="timeline-symbol timeline-symbol--baseline" aria-hidden="true"></span>Round baseline</li>
-      <li><span class="timeline-symbol" aria-hidden="true"></span>Measured trial</li>
-      <li><span class="timeline-symbol timeline-symbol--rejected" aria-hidden="true"></span>Not eligible for adoption</li>
-      <li><span class="timeline-symbol timeline-symbol--line" aria-hidden="true"></span>All measured runs</li>
-      <li><span class="timeline-symbol timeline-symbol--reference" aria-hidden="true"></span>Baseline of each round</li>
-    </ul>
-    <p class="results-note timeline-explanation">Each point is a complete benchmark run, not one request. Trials can be slower than their baseline. A filled point does not mean the configuration was deployed.</p>
     <div class="progress-plot" role="group" aria-label="Measured throughput in output tokens per second">
       <span class="progress-axis progress-axis--top">{{ chart.maxRate | number }} tok/s</span>
       <span class="progress-axis progress-axis--zero">0</span>
@@ -92,6 +84,16 @@
       }
     </div>
     <div class="progress-dates"><span>{{ chart.first | date:'dd MMM yyyy' }}</span>@if (chart.first !== chart.last) { <span>{{ chart.last | date:'dd MMM yyyy' }}</span> }</div>
+    <details class="timeline-guide"><summary>How to read this chart</summary>
+    <ul class="timeline-legend" aria-label="Timeline legend">
+      <li><span class="timeline-symbol timeline-symbol--baseline" aria-hidden="true"></span>Round baseline</li>
+      <li><span class="timeline-symbol" aria-hidden="true"></span>Measured trial</li>
+      <li><span class="timeline-symbol timeline-symbol--rejected" aria-hidden="true"></span>Not eligible for adoption</li>
+      <li><span class="timeline-symbol timeline-symbol--line" aria-hidden="true"></span>All measured runs</li>
+      <li><span class="timeline-symbol timeline-symbol--reference" aria-hidden="true"></span>Baseline of each round</li>
+    </ul>
+    <p class="results-note timeline-explanation">Each point is a complete benchmark run, not one request. Trials can be slower than their baseline. A filled point does not mean the configuration was deployed.</p>
+    </details>
     <details class="timeline-records"><summary>Measured configurations · {{ chart.points.length }}</summary>
       <p class="results-note">Complete runs, including slower results and repeated baselines. Select a point for its configuration and results.</p>
       @for (point of chart.points; track point.key) {
@@ -101,11 +103,11 @@
       <p class="results-note">Outlined points failed selection checks. Each comparison uses its captured round baseline. Deployment requires a fresh comparison.</p>
     </details>
   </section>
-} @else { <section class="benchmark-progress"><h3>Timeline</h3><p class="results-note" role="status">No comparable completed rounds yet. A complete baseline and matching workload are required.</p></section> }
+} @else { <section class="benchmark-progress"><h3><i class="pi pi-chart-line" aria-hidden="true"></i> Timeline</h3><p class="results-note" role="status">No comparable completed rounds yet. A complete baseline and matching workload are required.</p></section> }
 }
 @if (showHistory()) {
 <details class="run-history" [open]="selectedRunId() !== null">
-  <summary><h3>Benchmark runs <small>{{ rows().length }} results · output tok/s</small></h3></summary>
+  <summary><h3><i class="pi pi-history" aria-hidden="true"></i> Benchmark runs <small>{{ rows().length }} results · output tok/s</small></h3></summary>
   <p class="results-note">Each run compared with its recorded nightly baseline. Starting measurements show 0% change.</p>
   <table>
     <thead><tr>
