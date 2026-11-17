@@ -533,6 +533,9 @@
           @if (benchmarkStartError(); as error) {
             <p class="benchmark-runner__error" role="alert">{{ error }}</p>
           }
+          @if (benchmarkDeleteError(); as error) {
+            <app-error-message variant="banner" [message]="error" />
+          }
 
           @for (pair of benchmarkPairs(); track pair.model_provider_id) {
             @if (latestBenchmarkRun(pair.model_provider_id); as run) {
@@ -606,10 +609,6 @@
             </div>
 
           } @else {
-
-            @if (benchmarkDeleteError(); as error) {
-              <app-error-message variant="banner" [message]="error" />
-            }
 
             <app-benchmark-results [runs]="performance()" [selectedRunId]="linkedBenchmarkId()" [showProgress]="false" />
 

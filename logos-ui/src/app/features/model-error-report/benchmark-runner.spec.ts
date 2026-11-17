@@ -303,3 +303,37 @@ describe('Benchmark provider picker', () => {
     vi.restoreAllMocks();
   });
 });
+
+describe('Benchmark deletion feedback', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows a rejected deletion outside the hidden overview while analysis stays selected', async () => {
+    const deleteBenchmark = vi.fn().mockRejectedValue(new Error('Service unavailable'));
+    TestBed.configureTestingModule({
+      imports: [ModelErrorReport],
+      providers: [provideRouter([]), provideHttpClient(), {
+        provide: ModelManagementService, useValue: { deleteBenchmark },
+      }],
+    });
+    vi.spyOn(ModelErrorReport.prototype, 'ngOnInit').mockResolvedValue();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const fixture = TestBed.createComponent(ModelErrorReport);
+    const component = fixture.componentInstance;
+    component.model.set({ id: 1, name: 'Test model' } as any);
+    component.loading.set(false);
+    component.activeTab.set('performance');
+    component.performanceView.set('analysis');
+    fixture.detectChanges();
+
+    await component.deleteBenchmark({ id: 7, recorded_at: '2026-11-17T04:00:00Z' } as ModelProviderBenchmark);
+    fixture.detectChanges();
+
+    expect(deleteBenchmark).toHaveBeenCalledWith(7);
+    expect(component.performanceView()).toBe('analysis');
+    const error = fixture.nativeElement.querySelector('app-error-message') as HTMLElement;
+    expect(error.textContent).toContain('Could not delete the selected benchmark run.');
+    expect(error.closest('[hidden]')).toBeNull();
+    expect(component.benchmarkDeletingId()).toBeNull();
+    fixture.destroy();
+  });
+});
