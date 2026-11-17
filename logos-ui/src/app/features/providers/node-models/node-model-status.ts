@@ -21,16 +21,14 @@ export function hasTuning(model: NodeModelInsight): boolean {
   return PLACEMENT_KEYS.some((key) => key in best.settings && String(best.settings[key]) !== String(current[key]));
 }
 
-/** Calibration status; "tuning available" if a benchmark placed it better. */
+/** Calibration status of a model. */
 export function calibrationLabel(model: NodeModelInsight): CalibrationLabel {
   const { status, reason } = model.calibration;
   if (status === 'unsupported') {
     return { text: 'Unsupported', tone: 'err', title: reason };
   }
   if (status === 'calibrated') {
-    return hasTuning(model)
-      ? { text: 'Calibrated · tuning available', tone: 'ok', title: null }
-      : { text: 'Calibrated', tone: 'ok', title: null };
+    return { text: 'Calibrated', tone: 'ok', title: null };
   }
   if (model.calibrating) {
     return { text: 'Calibrating…', tone: 'warn', title: null };

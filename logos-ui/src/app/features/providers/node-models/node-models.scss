@@ -118,16 +118,3 @@
 .required {
   color: rgb(var(--color-error));
 }
-
-// The status columns read right to left, as in the design: values end at the column edge.
-@media (min-width: 769px) {
-  :host ::ng-deep .table-header > div:nth-child(2),
-  :host ::ng-deep .table-header > div:nth-child(3) {
-    text-align: right;
-  }
-
-  :host ::ng-deep a.table-row > div[data-label] {
-    display: flex;
-    justify-content: flex-end;
-  }
-}

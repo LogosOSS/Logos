@@ -2000,6 +2000,15 @@ class DBManager:
         ).fetchall()
         return {str(row.name): int(row.id) for row in rows}
 
+    def get_catalog_model_ids(self, names: List[str]) -> Dict[str, int]:
+        """The catalog ids of the named models; a name the catalog lacks is left out."""
+        if not names:
+            return {}
+        rows = self.session.execute(
+            text("SELECT id, name FROM models WHERE name = ANY(:names)"), {"names": list(names)}
+        ).fetchall()
+        return {row.name: int(row.id) for row in rows}
+
     def get_benchmark_runs(self, run_ids: List[int]) -> Dict[int, Dict[str, Any]]:
         """Serving settings, time and mean latencies (seconds) of the given benchmark runs."""
         if not run_ids:

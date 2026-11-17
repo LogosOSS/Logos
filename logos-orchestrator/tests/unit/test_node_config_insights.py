@@ -80,10 +80,46 @@ def test_the_benchmark_view_names_the_best_runs_and_the_current_settings():
         "recorded_at": "t2",
         "ttft_s": 0.47,
         "latency_s": 5.5,
+        # No baseline was recorded for this run, so there is nothing to compare its throughput with.
+        "baseline_throughput": None,
     }
     assert view["best_observed"]["ttft_s"] is None
     assert view["best_observed"]["benchmark_id"] == 3 and view["eligible_for_comparison"] is True
     assert view["current"] == {"tensor_parallel_size": 2}
+
+
+def test_the_best_eligible_run_carries_the_throughput_of_the_run_it_was_compared_with():
+    summary = {
+        "best_observed": {"benchmark_id": 4, "throughput": 52.3, "baseline_id": 3},
+        "best_eligible": {"benchmark_id": 4, "throughput": 52.3, "baseline_id": 3},
+        "comparisons": [
+            {"benchmark_id": 4, "baseline_id": 3, "throughput": 52.3},
+            {"benchmark_id": 3, "baseline_id": None, "throughput": 48.4},
+        ],
+    }
+
+    view = benchmark_view(summary, {}, {})
+
+    assert view["best_eligible"]["baseline_throughput"] == 48.4
+
+
+def test_each_model_carries_its_catalog_id_when_it_has_one():
+    config = {"revision": 1, "entries": [{"model_name": "org/a", "capability": {}, "overrides": {}}]}
+
+    result = build_insights(
+        provider_id=1,
+        config=config,
+        sources={},
+        profiles={"org/b": {}},
+        calibrated_at={},
+        snapshot=None,
+        supports={},
+        calibrating=False,
+        benchmarks={},
+        model_ids={"org/a": 7},
+    )
+
+    assert {m["model_name"]: m["model_id"] for m in result["models"]} == {"org/a": 7, "org/b": None}
 
 
 def test_no_eligible_run_is_not_comparable_and_no_run_at_all_is_none():

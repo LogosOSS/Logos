@@ -1014,6 +1014,10 @@ def _gather_insights(provider_id: int, config: Dict[str, Any]) -> Dict[str, Any]
         sources = db.get_node_config_sources(provider_id)
         rows = db.get_central_model_profiles(provider_id)
         pairs = db.get_model_provider_pairs(provider_id)
+        known = [entry["model_name"] for entry in config["entries"]] + [row["model_name"] for row in rows]
+        known += list(pairs)
+        snapshot_models = (snapshot or {}).get("capabilities_models") or []
+        model_ids = db.get_catalog_model_ids(sorted(set(known) | set(snapshot_models)))
     profiles = {row["model_name"]: effective_profile(provider_id, row) for row in rows}
     calibrated_at = {row["model_name"]: row.get("cal_calibrated_at") for row in rows}
     benchmarks: Dict[str, Any] = {}
@@ -1034,6 +1038,7 @@ def _gather_insights(provider_id: int, config: Dict[str, Any]) -> Dict[str, Any]
         supports=supports,
         calibrating=calibrating,
         benchmarks=benchmarks,
+        model_ids=model_ids,
     )
 
 

@@ -447,12 +447,53 @@ describe('NodeModel', () => {
         ]),
       );
       const root = await create();
+      expect(root.querySelector('.banner--rec-view button')).toBeNull();
 
-      click(root, '.banner .btn-secondary');
+      click(root, '.head button.btn-primary');
+      fixture.detectChanges();
+      click(root, '.banner--rec button');
       fixture.detectChanges();
 
       expect(page().editing()).toBe(true);
       expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 8192 });
+    });
+
+    it('says how much faster the benchmark was than the run it was compared with, and links to all benchmarks', async () => {
+      const best = {
+        benchmark_id: 7,
+        throughput: 52.3,
+        settings: { kv_cache_memory_bytes: '2G', max_model_len: 8192 },
+        recorded_at: null,
+        baseline_throughput: 48.4,
+      };
+      service['getNodeInsights'].mockResolvedValue(
+        insights([
+          insight({
+            model_id: 9,
+            benchmark: { best_eligible: best, best_observed: best, current: { kv_cache_memory_bytes: '4G' }, eligible_for_comparison: true },
+          }),
+        ]),
+      );
+      const root = await create();
+
+      expect(root.querySelector('.banner--rec-view')!.textContent).toContain('Recommendation not in use');
+      expect(root.querySelector('.banner--rec-view')!.textContent).toContain('8 % faster than the current configuration (52.3 vs 48.4 tok/s).');
+      expect(root.querySelector('.bm-link')!.getAttribute('href')).toBe('/models/9/details?tab=performance');
+    });
+
+    it('names the throughput when no run was compared, and leaves out the link for a model outside the catalog', async () => {
+      const best = { benchmark_id: 7, throughput: 52.3, settings: { kv_cache_memory_bytes: '2G' }, recorded_at: null };
+      service['getNodeInsights'].mockResolvedValue(
+        insights([
+          insight({
+            benchmark: { best_eligible: best, best_observed: best, current: { kv_cache_memory_bytes: '4G' }, eligible_for_comparison: true },
+          }),
+        ]),
+      );
+      const root = await create();
+
+      expect(root.querySelector('.banner--rec-view')!.textContent).toContain('52.3 tok/s, benchmark #7.');
+      expect(root.querySelector('.bm-link')).toBeNull();
     });
   });
 

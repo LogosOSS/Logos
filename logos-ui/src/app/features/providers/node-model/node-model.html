@@ -208,26 +208,20 @@
           <div>
             <small>Recommended by benchmark</small>
             <b>{{ describePlacement(rec.settings) }}</b>
-            <span>{{ rec.throughput.toFixed(1) }} tok/s, benchmark #{{ rec.benchmark_id }}.</span>
+            <span>{{ speedup() ?? rec.throughput.toFixed(1) + ' tok/s, benchmark #' + rec.benchmark_id + '.' }}</span>
           </div>
-          <button class="btn-primary btn-sm" type="button" (click)="applyRecommendation()">
+          <button class="btn-primary" type="button" (click)="applyRecommendation()">
             <i class="pi pi-bolt" aria-hidden="true"></i>
             Use recommendation
           </button>
         </div>
       } @else {
-        <div class="banner banner--warn" role="status">
-          <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+        <div class="banner banner--warn banner--rec-view" role="status">
           <div>
-            <b>Recommendation not in use</b>
-            <span>
-              Benchmark suggests {{ describePlacement(rec.settings) }} ({{ rec.throughput.toFixed(1) }} tok/s,
-              benchmark #{{ rec.benchmark_id }}).
-            </span>
+            <small><i class="pi pi-exclamation-triangle" aria-hidden="true"></i>Recommendation not in use</small>
+            <b>Benchmark suggests {{ describePlacement(rec.settings) }}</b>
+            <span>{{ speedup() ?? rec.throughput.toFixed(1) + ' tok/s, benchmark #' + rec.benchmark_id + '.' }}</span>
           </div>
-          @if (canEdit() && !editing()) {
-            <button class="btn-secondary btn-sm" type="button" (click)="applyRecommendation()">Use recommendation</button>
-          }
         </div>
       }
     }
@@ -594,6 +588,11 @@
                   </div>
                   <span>{{ describePlacement(best.settings) }} · #{{ best.benchmark_id }}</span>
                 </div>
+              }
+              @if (insight()?.model_id; as modelId) {
+                <a class="bm-link" [routerLink]="['/models', modelId, 'details']" [queryParams]="{ tab: 'performance' }">
+                  Open all benchmarks <i class="pi pi-arrow-up-right" aria-hidden="true"></i>
+                </a>
               }
             </section>
           }

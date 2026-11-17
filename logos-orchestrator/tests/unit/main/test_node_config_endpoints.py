@@ -436,6 +436,7 @@ def test_the_insights_gather_profiles_benchmarks_and_the_live_worker(internal, m
         }
     ]
     db.get_model_provider_pairs = lambda pid: {"org/a": 11}
+    db.get_catalog_model_ids = lambda names: {"org/a": 5}
     db.get_benchmark_runs = lambda ids: {2: {"serving": {"tensor_parallel_size": 2}, "recorded_at": "t"}}
     registry.peek_runtime_snapshot = lambda pid: _snapshot()
     monkeypatch.setattr(

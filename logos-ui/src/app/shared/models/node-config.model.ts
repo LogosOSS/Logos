@@ -52,6 +52,8 @@ export interface BenchmarkResult {
   /** Mean time to first token and mean response time, in seconds, when the run measured them. */
   ttft_s?: number | null;
   latency_s?: number | null;
+  /** Throughput of the run this one was compared with: what the model ran with before. */
+  baseline_throughput?: number | null;
 }
 
 export interface BenchmarkInsight {
@@ -64,6 +66,8 @@ export interface BenchmarkInsight {
 
 export interface NodeModelInsight {
   model_name: string;
+  /** Id of the model in the Logos catalog, when it has one. */
+  model_id?: number | null;
   /** The worker announces the model. */
   reported: boolean;
   /** A stored configuration row exists. */

@@ -102,6 +102,16 @@ def test_the_sources_pairs_and_runs_are_read_as_maps():
     }
 
 
+def test_catalog_ids_are_looked_up_by_name_and_an_empty_list_asks_nothing():
+    db = _db()
+    db.session.execute.return_value.fetchall.return_value = [SimpleNamespace(id=7, name="org/a")]
+
+    assert db.get_catalog_model_ids(["org/a", "org/missing"]) == {"org/a": 7}
+    db.session.execute.reset_mock()
+    assert db.get_catalog_model_ids([]) == {}
+    db.session.execute.assert_not_called()
+
+
 def test_no_run_ids_ask_the_database_nothing():
     db = _db()
     assert db.get_benchmark_runs([]) == {}

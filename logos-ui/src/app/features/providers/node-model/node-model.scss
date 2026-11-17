@@ -1253,3 +1253,44 @@ input[type='range'] {
     width: 100%;
   }
 }
+
+// The view shows the recommendation as a notice only; the editor offers to use it.
+.banner--rec-view {
+  display: block;
+
+  div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  small {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: var(--letter-spacing-wider);
+    text-transform: uppercase;
+    color: rgb(var(--chip-warn-fg, var(--color-warning)));
+  }
+
+  b {
+    font-size: var(--font-size-lg);
+  }
+}
+
+.bm-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: rgb(var(--color-text-accent));
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}

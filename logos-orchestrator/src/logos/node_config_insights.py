@@ -112,6 +112,17 @@ def benchmark_view(
         }
 
     eligible = _best(summary.get("best_eligible"))
+    if eligible is not None:
+        # The run it was compared with: what the model ran with before.
+        baseline_id = (summary.get("best_eligible") or {}).get("baseline_id")
+        eligible["baseline_throughput"] = next(
+            (
+                row.get("throughput")
+                for row in summary.get("comparisons") or []
+                if baseline_id is not None and row.get("benchmark_id") == baseline_id
+            ),
+            None,
+        )
     return {
         "best_eligible": eligible,
         "best_observed": _best(summary.get("best_observed")),
@@ -145,6 +156,7 @@ def build_insights(
     supports: Mapping[str, bool],
     calibrating: bool,
     benchmarks: Mapping[str, Any],
+    model_ids: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """The whole answer of ``insights`` for one node."""
     entries = {entry["model_name"]: entry for entry in config["entries"]}
@@ -159,6 +171,7 @@ def build_insights(
         models.append(
             {
                 "model_name": name,
+                "model_id": (model_ids or {}).get(name),
                 "reported": name in reported,
                 "row": entry is not None,
                 "source": sources.get(name),

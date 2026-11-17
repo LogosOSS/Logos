@@ -153,9 +153,9 @@ describe('NodeModels', () => {
           },
         });
 
-      expect(component.calibrationLabel(withBenchmark({ tensor_parallel_size: 4 })).text).toBe(
-        'Calibrated · tuning available',
-      );
+      // A better benchmark placement shows as a notice on the model page, not in the status of the list.
+      expect(component.calibrationLabel(withBenchmark({ tensor_parallel_size: 4 })).text).toBe('Calibrated');
+      expect(component.hasTuning(withBenchmark({ tensor_parallel_size: 4 }))).toBe(true);
       expect(component.hasTuning(withBenchmark({ tensor_parallel_size: 2, max_model_len: 8192 }))).toBe(false);
       expect(component.hasTuning(withBenchmark({ tensor_parallel_size: 4 }, false))).toBe(false);
       expect(component.hasTuning(withBenchmark({ block_size: 16 }))).toBe(false);

@@ -208,6 +208,17 @@ export class NodeModel implements OnInit {
     return out;
   });
 
+  /** "8 % faster than the current configuration (52.3 vs 48.4 tok/s)", when the run had a baseline to compare with. */
+  readonly speedup = computed(() => {
+    const run = this.recommendation();
+    const base = run?.baseline_throughput;
+    if (!run || !base || base <= 0 || run.throughput <= base) {
+      return null;
+    }
+    const pct = Math.round((run.throughput / base - 1) * 100);
+    return `${pct} % faster than the current configuration (${run.throughput.toFixed(1)} vs ${base.toFixed(1)} tok/s).`;
+  });
+
   /** The tensor-parallel size of the best benchmark run. */
   readonly bestRunTp = computed(() => Number(this.bestRun()?.settings['tensor_parallel_size']) || null);
 
