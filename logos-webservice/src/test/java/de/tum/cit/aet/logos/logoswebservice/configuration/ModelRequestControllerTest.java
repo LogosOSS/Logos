@@ -55,16 +55,14 @@ class ModelRequestControllerTest {
     @MockitoBean OrchestratorHfReachabilityClient hfReachabilityClient;
     @MockitoBean OrchestratorHfLicenseClient hfLicenseClient;
 
-    /** The precheck answers "reachable" unless a test says otherwise. */
+    /**
+     * The Hugging Face stubs: the precheck answers "reachable" and the license
+     * fetch answers with a license, unless a test says otherwise.
+     */
     @BeforeEach
-    void stubHfReachabilityReachable() {
+    void stubHfClients() {
         Mockito.lenient().when(hfReachabilityClient.check(ArgumentMatchers.anyString()))
             .thenReturn(new HfReachabilityResult(HfReachabilityResult.STATUS_REACHABLE, null, null));
-    }
-
-    /** The license fetch answers with a license unless a test says otherwise. */
-    @BeforeEach
-    void stubHfLicenseAvailable() {
         Mockito.lenient().when(hfLicenseClient.fetch(ArgumentMatchers.anyString()))
             .thenAnswer(invocation -> new HfLicenseResult(
                 "apache-2.0", "LICENSE.md", "Apache License 2.0 — " + invocation.getArgument(0), null));
