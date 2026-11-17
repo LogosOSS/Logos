@@ -82,8 +82,12 @@ export class NodeModel implements OnInit {
     return insight !== null && hasTuning(insight);
   });
   readonly recommendation = computed(() => this.insight()?.benchmark?.best_eligible ?? null);
-  /** The measured result of the calibrated tensor-parallel size. */
-  readonly result = computed(() => this.insight()?.calibration.results.find((r) => r.active) ?? null);
+  /** The measured result of the tensor-parallel size being edited or placed, else the one the lane uses. */
+  readonly result = computed(() => {
+    const results = this.insight()?.calibration.results ?? [];
+    const tp = this.draft()?.tp ?? this.saved()?.tp;
+    return results.find((r) => r.tp === tp) ?? results.find((r) => r.active) ?? results[0] ?? null;
+  });
 
   readonly kvGb = computed(() => kvToGb(this.settings()['kv_cache_memory_bytes']));
 
@@ -241,11 +245,17 @@ export class NodeModel implements OnInit {
     this.failure.set(null);
   }
 
+  /** Switch to another measured size: the KV cache and context move into what that size measured. */
   setTp(tp: number): void {
     const d = this.draft();
-    if (d && this.result()?.tp === tp) {
-      this.draft.set({ ...d, tp });
+    const target = this.insight()?.calibration.results.find((r) => r.tp === tp);
+    if (!d || !target || d.tp === tp) {
+      return;
     }
+    const window = kvWindowGb(target);
+    const kvGb = window ? Math.min(window.max, Math.max(window.min, d.kvGb)) : d.kvGb;
+    const cap = contextCapacity(target.pairs, kvGb, this.insight()?.calibration.context_limit);
+    this.draft.set({ tp, kvGb, ctx: cap ? Math.min(d.ctx, cap) : d.ctx });
   }
 
   setKv(value: unknown): void {

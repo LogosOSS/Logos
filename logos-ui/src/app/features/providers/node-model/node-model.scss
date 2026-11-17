@@ -630,3 +630,10 @@ input[type='range'] {
   gap: 6px;
   align-items: flex-start;
 }
+
+.hint--note {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}

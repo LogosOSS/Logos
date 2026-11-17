@@ -2359,8 +2359,11 @@ class DBManager:
         expected_revision: int,
         updated_by: Optional[int],
         source: str,
+        source_by_model: Optional[Dict[str, str]] = None,
     ) -> Optional[int]:
         """Replace a node's configured models; returns the new revision.
+
+        ``source`` labels every row, except the models ``source_by_model`` names.
 
         Returns None, and writes nothing, when expected_revision is not the
         stored one. The first save also ends the YAML import for the node.
@@ -2397,7 +2400,7 @@ class DBManager:
                     "position": position,
                     "capability": json.dumps(entry["capability"]),
                     "overrides": json.dumps(entry["overrides"]),
-                    "source": source,
+                    "source": (source_by_model or {}).get(entry["model_name"], source),
                     "updated_by": updated_by,
                 },
             )

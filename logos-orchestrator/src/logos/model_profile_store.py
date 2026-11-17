@@ -41,6 +41,9 @@ CALIBRATION_FIELDS = frozenset(
         "wake_from_sleep_time_s",
         "residency_source",
         "last_measured_epoch",
+        # What the calibration was measured under and found at each size.
+        "config_fingerprint",
+        "calibrations_by_tp",
     }
 )
 

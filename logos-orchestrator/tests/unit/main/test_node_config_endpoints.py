@@ -65,7 +65,7 @@ class _FakeDB:
     def get_node_config(self, provider_id):
         return dict(_STORED)
 
-    def replace_node_config(self, provider_id, entries, expected_revision, updated_by, source):
+    def replace_node_config(self, provider_id, entries, expected_revision, updated_by, source, source_by_model=None):
         self.replaced.append((provider_id, entries, expected_revision, updated_by, source))
         return self.new_revision
 

@@ -249,6 +249,9 @@
             </div>
           } @else if (insight()?.configured) {
             <p class="sub">Current placement on {{ providerName() }}.</p>
+            @if (insight()?.source === 'tuning') {
+              <p class="hint hint--note"><i class="pi pi-moon" aria-hidden="true"></i>Set by the nightly tuning, which found better values than the earlier configuration.</p>
+            }
             <dl class="facts">
               <div><dt>GPUs per instance (tensor parallel)</dt><dd>TP {{ settings()['tensor_parallel_size'] }}</dd></div>
               <div><dt>KV cache memory per GPU</dt><dd>{{ formatGb(kvGb()) }}</dd></div>

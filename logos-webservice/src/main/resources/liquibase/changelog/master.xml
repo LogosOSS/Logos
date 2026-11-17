@@ -84,4 +84,5 @@
     <include file="liquibase/changelog/077_team_public_category.xml"/>
     <include file="liquibase/changelog/078_model_profile_config_fingerprint.xml"/>
     <include file="liquibase/changelog/079_node_settings.xml"/>
+    <include file="liquibase/changelog/080_node_model_config_tuning_source.xml"/>
 </databaseChangeLog>

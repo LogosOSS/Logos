@@ -19,6 +19,53 @@ def is_configured(entry: Mapping[str, Any] | None) -> bool:
     return all(merged.get(key) not in (None, "") for key in REQUIRED_PLACEMENT)
 
 
+def _pairs(raw: Any) -> list[dict[str, Any]]:
+    return [
+        {"kv_mb": p.get("kv_mb"), "max_model_len": p.get("max_model_len"), "measured": True}
+        for p in raw or []
+        if isinstance(p, dict)
+    ]
+
+
+def _active_result(profile: Mapping[str, Any], tp: Any) -> dict[str, Any]:
+    """The size the lane uses, from the profile's own fields."""
+    return {
+        "tp": tp,
+        "active": True,
+        "base_residency_mb": profile.get("base_residency_mb"),
+        "loaded_vram_mb": profile.get("loaded_vram_mb"),
+        "kv_min_mb": profile.get("min_kv_cache_mb"),
+        "kv_max_mb": profile.get("max_kv_cache_mb"),
+        "pairs": _pairs(profile.get("kv_cache_to_max_model_len_pairs")),
+        "cold_load_time_s": profile.get("cold_load_time_s"),
+        "wake_from_sleep_time_s": profile.get("wake_from_sleep_time_s"),
+        "enforce_eager": profile.get("enforce_eager_at_calibration"),
+    }
+
+
+def _results_by_tp(raw: Any, active_tp: Any) -> list[dict[str, Any]]:
+    """Every tensor-parallel size the calibration measured, smallest first."""
+    results = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("tp"), int):
+            continue
+        results.append(
+            {
+                "tp": item["tp"],
+                "active": item["tp"] == active_tp,
+                "base_residency_mb": item.get("base_residency_mb"),
+                "loaded_vram_mb": item.get("loaded_vram_mb"),
+                "kv_min_mb": item.get("min_kv_cache_mb"),
+                "kv_max_mb": item.get("max_kv_cache_mb"),
+                "pairs": _pairs(item.get("kv_cache_to_max_model_len_pairs")),
+                "cold_load_time_s": item.get("cold_load_time_s"),
+                "wake_from_sleep_time_s": item.get("wake_from_sleep_time_s"),
+                "enforce_eager": item.get("enforce_eager"),
+            }
+        )
+    return sorted(results, key=lambda r: r["tp"])
+
+
 def calibration_view(profile: Mapping[str, Any] | None, calibrated_at: Any = None) -> dict[str, Any]:
     """Calibration status and the measured values of one model on this node."""
     if profile is None or profile.get("residency_source") not in ("calibrated", "measured"):
@@ -32,30 +79,15 @@ def calibration_view(profile: Mapping[str, Any] | None, calibrated_at: Any = Non
         status, reason = "outdated", None
     else:
         status, reason = "calibrated", None
-    pairs = [
-        {"kv_mb": p.get("kv_mb"), "max_model_len": p.get("max_model_len"), "measured": True}
-        for p in profile.get("kv_cache_to_max_model_len_pairs") or []
-        if isinstance(p, dict)
-    ]
-    result = {
-        "tp": profile.get("tensor_parallel_size") or 1,
-        "active": True,
-        "base_residency_mb": profile.get("base_residency_mb"),
-        "loaded_vram_mb": profile.get("loaded_vram_mb"),
-        "kv_min_mb": profile.get("min_kv_cache_mb"),
-        "kv_max_mb": profile.get("max_kv_cache_mb"),
-        "pairs": pairs,
-        "cold_load_time_s": profile.get("cold_load_time_s"),
-        "wake_from_sleep_time_s": profile.get("wake_from_sleep_time_s"),
-        "enforce_eager": profile.get("enforce_eager_at_calibration"),
-    }
+    active_tp = profile.get("tensor_parallel_size") or 1
+    results = _results_by_tp(profile.get("calibrations_by_tp"), active_tp) or [_active_result(profile, active_tp)]
     return {
         "status": status,
         "reason": reason,
         "calibrated_at": calibrated_at.isoformat() if hasattr(calibrated_at, "isoformat") else calibrated_at,
         "stale": status == "outdated",
         "context_limit": profile.get("max_context_length"),
-        "results": [result],
+        "results": results,
     }
 
 

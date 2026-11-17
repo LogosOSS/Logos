@@ -110,3 +110,22 @@ def test_a_calibration_covers_a_choice_inside_its_measured_range():
     assert not selection_covered(profile, 16384.0, None)
     assert not selection_covered(profile, 4096.0, 20000)
     assert selection_covered({}, 99999.0, 999999)
+
+
+def test_a_shared_calibration_carries_its_fingerprint_and_every_measured_size():
+    from logos.model_profile_store import CALIBRATION_FIELDS, calibration_snapshot
+
+    assert {"config_fingerprint", "calibrations_by_tp"} <= CALIBRATION_FIELDS
+    profile = {
+        "base_residency_mb": 1.0,
+        "config_fingerprint": "FP",
+        "calibrations_by_tp": [{"tp": 1}],
+        "sync_revision": 3,
+        "calibration_key_hash": "K",
+    }
+
+    assert calibration_snapshot(profile) == {
+        "base_residency_mb": 1.0,
+        "config_fingerprint": "FP",
+        "calibrations_by_tp": [{"tp": 1}],
+    }

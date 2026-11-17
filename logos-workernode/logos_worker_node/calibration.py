@@ -45,7 +45,7 @@ import urllib.error
 import urllib.request
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
@@ -2110,6 +2110,9 @@ class CalibrationResult:
     # ``spawn_vllm``). Reported alongside the result so the orchestrator can
     # persist what was actually run, not just the outcome.
     probe_command: str = ""
+    # The runs at the other tensor-parallel sizes that also worked; the result
+    # itself is the one the lane uses. Filled by the TP search, never by a probe.
+    other_tp_results: list[CalibrationResult] = field(default_factory=list)
 
 
 def _sample_host_ram_available_mb() -> float | None:
@@ -3992,6 +3995,44 @@ def _calibrate_model_probe(
 # ---------------------------------------------------------------------------
 
 
+def _pairs_of(r: CalibrationResult) -> list[dict[str, Any]] | None:
+    """The KV cache to context sweep of a result, as profile entries."""
+    if r.kv_max_model_len_parallelity_pairs:
+        return [
+            {
+                "kv_mb": round(kv_mb, 1),
+                "max_model_len": int(max_model_len),
+                "parallelity": (round(float(parallelity), 3) if parallelity else None),
+            }
+            for kv_mb, max_model_len, parallelity in r.kv_max_model_len_parallelity_pairs
+        ]
+    return [
+        {"kv_mb": round(kv_mb, 1), "max_model_len": int(max_model_len)}
+        for kv_mb, max_model_len in (r.kv_max_model_len_pairs or [])
+    ] or None
+
+
+def calibrations_by_tp(r: CalibrationResult) -> list[dict[str, Any]]:
+    """What each worked tensor-parallel size measured, smallest first."""
+    runs = {run.tensor_parallel_size: run for run in [*r.other_tp_results, r]}
+    return [
+        {
+            "tp": tp,
+            "base_residency_mb": round(run.base_residency_mb, 1),
+            "loaded_vram_mb": round(run.loaded_vram_mb, 1),
+            "min_kv_cache_mb": round(run.min_kv_cache_mb, 1) if run.min_kv_cache_mb > 0 else None,
+            "max_kv_cache_mb": round(run.max_kv_cache_mb, 1) if run.max_kv_cache_mb > 0 else None,
+            "kv_cache_to_max_model_len_pairs": _pairs_of(run),
+            "cold_load_time_s": round(run.cold_load_time_s, 1) if run.cold_load_time_s is not None else None,
+            "wake_from_sleep_time_s": (
+                round(run.wake_from_sleep_time_s, 1) if run.wake_from_sleep_time_s is not None else None
+            ),
+            "enforce_eager": run.enforce_eager,
+        }
+        for tp, run in sorted(runs.items())
+    ]
+
+
 def result_to_profile_dict(r: CalibrationResult) -> dict[str, Any]:
     """Build a profile dict compatible with ``ModelProfileRecord.to_dict()``.
 
@@ -4071,6 +4112,8 @@ def result_to_profile_dict(r: CalibrationResult) -> dict[str, Any]:
         # None/omitted means no cap was needed. The lane spawner reuses it so
         # production runs with the same ceiling the successful probe proved.
         "calibration_max_num_seqs": int(r.max_num_seqs) if r.max_num_seqs else None,
+        # Every tensor-parallel size that worked, for choosing a placement.
+        "calibrations_by_tp": calibrations_by_tp(r),
     }
 
 
@@ -4422,6 +4465,8 @@ def calibrate_with_tp_escalation(
         )
     best_result = result
     best_tp = tp
+    # Every size that works is kept; the smallest one is what the lane uses.
+    worked: dict[int, CalibrationResult] = {tp: result}
 
     # Binary search: try progressively smaller tp values.
     # tp must be a power of 2 in vLLM, so we halve each step.
@@ -4443,6 +4488,7 @@ def calibrate_with_tp_escalation(
         mid_plan = {**plan, "tensor_parallel_size": mid_tp}
         mid_result = _try_calibrate(mid_plan, **cal_kwargs)
         if mid_result.success:
+            worked[mid_tp] = mid_result
             best_result = mid_result
             best_tp = mid_tp
             high_tp = mid_tp
@@ -4458,4 +4504,5 @@ def calibrate_with_tp_escalation(
             max_tp,
         )
 
+    best_result.other_tp_results = [run for size, run in sorted(worked.items()) if run is not best_result]
     return best_result

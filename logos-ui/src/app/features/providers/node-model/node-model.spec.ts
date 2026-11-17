@@ -704,4 +704,70 @@ describe('NodeModel', () => {
       await settle();
     });
   });
+
+  describe('several measured tensor-parallel sizes', () => {
+    const twoSizes = () => {
+      const base = insight();
+      const four = base.calibration.results![0];
+      const two = {
+        ...four,
+        tp: 2,
+        active: false,
+        kv_min_mb: 2048,
+        kv_max_mb: 8192,
+        pairs: [
+          { kv_mb: 2048, max_model_len: 4096, measured: true },
+          { kv_mb: 8192, max_model_len: 65536, measured: true },
+        ],
+      };
+      return insights([{ ...base, calibration: { ...base.calibration, results: [two, four] } }]);
+    };
+
+    it('offers every size and starts on the one that is placed', async () => {
+      service['getNodeInsights'].mockResolvedValue(twoSizes());
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      expect(root.querySelectorAll('[role="radio"]').length).toBe(2);
+      expect(fixture.componentInstance.draft()!.tp).toBe(4);
+    });
+
+    it('moves the KV cache and the context into what the other size measured', async () => {
+      service['getNodeInsights'].mockResolvedValue(twoSizes());
+      await create();
+      const page = fixture.componentInstance;
+      page.startEdit();
+
+      page.setTp(2);
+
+      expect(page.draft()!.tp).toBe(2);
+      expect(page.window()).toEqual({ min: 2, max: 8 });
+      expect(page.draft()!.kvGb).toBe(4);
+      expect(page.draft()!.ctx).toBeLessThanOrEqual(65536);
+      page.setTp(4);
+      expect(page.draft()!.tp).toBe(4);
+      expect(page.window()).toEqual({ min: 1, max: 4 });
+    });
+
+    it('shows the size that is placed when viewing, not the smallest one', async () => {
+      service['getNodeInsights'].mockResolvedValue(twoSizes());
+      await create();
+
+      expect(fixture.componentInstance.result()!.tp).toBe(4);
+    });
+  });
+
+  it('says when the nightly tuning set the configuration', async () => {
+    service['getNodeInsights'].mockResolvedValue(insights([insight({ source: 'tuning' })]));
+    const root = await create();
+
+    expect(root.textContent).toContain('Set by the nightly tuning');
+  });
+
+  it('says nothing about the source of a configuration an admin set', async () => {
+    const root = await create();
+
+    expect(root.textContent).not.toContain('Set by the nightly tuning');
+  });
 });

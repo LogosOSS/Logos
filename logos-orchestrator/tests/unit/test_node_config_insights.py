@@ -127,3 +127,43 @@ def test_an_offline_worker_is_reported_and_the_calibration_flag_follows_the_prov
     result = _insights(None, calibrating=True, profiles={})
     assert result["worker"]["online"] is False and result["gpus"] == []
     assert [m["calibrating"] for m in result["models"]] == [True]
+
+
+def test_every_measured_tensor_parallel_size_is_listed_and_the_lanes_one_is_active():
+    profile = {
+        "residency_source": "calibrated",
+        "tensor_parallel_size": 2,
+        "calibrations_by_tp": [
+            {"tp": 4, "base_residency_mb": 250.0, "min_kv_cache_mb": 512.0, "max_kv_cache_mb": 2048.0},
+            {
+                "tp": 2,
+                "base_residency_mb": 500.0,
+                "min_kv_cache_mb": 1024.0,
+                "max_kv_cache_mb": 4096.0,
+                "kv_cache_to_max_model_len_pairs": [{"kv_mb": 1024.0, "max_model_len": 4096}, "junk"],
+                "cold_load_time_s": 40.0,
+                "enforce_eager": True,
+            },
+            {"tp": "x"},
+            "junk",
+        ],
+    }
+
+    results = calibration_view(profile)["results"]
+
+    assert [(r["tp"], r["active"]) for r in results] == [(2, True), (4, False)]
+    assert results[0]["pairs"] == [{"kv_mb": 1024.0, "max_model_len": 4096, "measured": True}]
+    assert (results[0]["kv_min_mb"], results[0]["kv_max_mb"], results[0]["cold_load_time_s"]) == (1024.0, 4096.0, 40.0)
+    assert results[0]["enforce_eager"] is True
+
+
+def test_a_profile_without_the_list_still_shows_the_size_it_has():
+    profile = {"residency_source": "calibrated", "tensor_parallel_size": 4, "base_residency_mb": 9.0}
+
+    results = calibration_view(profile)["results"]
+
+    assert [(r["tp"], r["active"], r["base_residency_mb"]) for r in results] == [(4, True, 9.0)]
+    assert (
+        calibration_view({"residency_source": "calibrated", "calibrations_by_tp": [{"tp": "x"}]})["results"][0]["tp"]
+        == 1
+    )

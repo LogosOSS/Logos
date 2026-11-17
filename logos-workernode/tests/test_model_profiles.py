@@ -1317,3 +1317,14 @@ def test_profiles_report_the_current_fingerprint_until_a_calibration_carries_its
 
     assert registry.get_all_profiles()["org/m"]["config_fingerprint"] == "fp-now"
     assert registry.config_fingerprints() == {"org/m": "fp-now"}
+
+
+def test_the_list_of_measured_sizes_survives_a_round_trip_and_a_bad_value_is_dropped():
+    sizes = [{"tp": 1, "base_residency_mb": 10.0}, {"tp": 2, "base_residency_mb": 6.0}]
+
+    record = _record_from_dict({"calibrations_by_tp": sizes, "tensor_parallel_size": 1})
+
+    assert record.calibrations_by_tp == sizes
+    assert record.to_dict()["calibrations_by_tp"] == sizes
+    assert _record_from_dict({"calibrations_by_tp": "x"}).calibrations_by_tp is None
+    assert _record_from_dict({}).calibrations_by_tp is None

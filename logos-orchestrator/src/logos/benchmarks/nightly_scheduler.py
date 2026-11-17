@@ -9,6 +9,7 @@ from starlette.requests import Request
 
 from logos.benchmarks import nightly_store as store
 from logos.benchmarks import optimization, recent_requests, workloads
+from logos.benchmarks.adoption_config import record_adoption
 from logos.benchmarks.configuration import ServingOverrides
 from logos.benchmarks.guidellm_runner import apply_serving_overrides, extract_serving_configuration
 from logos.benchmarks.maintenance import AUTOMATIC_CALIBRATION
@@ -286,6 +287,25 @@ class NightlyScheduler:
         else:
             if adoption:
                 report.append({"status": "adopted", **adoption})
+                await self.store_adoption(recovery, adoption)
+
+    @staticmethod
+    async def store_adoption(recovery, adoption):
+        """Keep the adopted values in the node's configuration; the adoption stands either way."""
+        provider_id, model = recovery.get("provider_id"), recovery.get("model")
+        if provider_id is None or not model:
+            return
+        try:
+            reason = await record_adoption(provider_id, model, adoption["parameters"])
+        except Exception as exc:  # noqa: BLE001
+            reason = str(exc)
+        if reason:
+            logger.warning(
+                "Nightly adoption for %s on provider %s runs, but its values are not in the configuration: %s",
+                model,
+                provider_id,
+                reason,
+            )
 
     def target_lane(self, pair_id, *, disable_missing=True):
         """Resolve and validate a currently usable model/worker pair."""

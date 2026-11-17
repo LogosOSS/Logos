@@ -217,6 +217,9 @@ class ModelProfileRecord:
     # Hash of the whole configuration the calibration was measured under, the
     # KV cache and context choice included; used to prefer a matching snapshot.
     config_fingerprint: str | None = None
+    # What each tensor-parallel size that worked measured, smallest first; the
+    # fields above describe the size the lane uses.
+    calibrations_by_tp: list[dict[str, Any]] | None = None
     calibration_duration_s: float | None = None
 
     def known_base_residency_mb(self) -> float | None:
@@ -1223,6 +1226,7 @@ def _record_from_dict(data: dict[str, Any]) -> ModelProfileRecord:
         calibration_max_model_len=_optional_int(data.get("calibration_max_model_len")),
         calibration_max_num_seqs=_optional_int(data.get("calibration_max_num_seqs")),
         kv_cache_to_max_model_len_pairs=pairs if isinstance(pairs, list) else None,
+        calibrations_by_tp=data.get("calibrations_by_tp") if isinstance(data.get("calibrations_by_tp"), list) else None,
         sync_revision=int(data.get("sync_revision", 0) or 0),
         calibration_id=_optional_int(data.get("calibration_id")),
         calibration_key=key if isinstance(key, dict) else None,

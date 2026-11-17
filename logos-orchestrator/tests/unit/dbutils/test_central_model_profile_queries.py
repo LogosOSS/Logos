@@ -321,3 +321,23 @@ def test_the_settings_import_is_claimed_once():
 
     db.session.execute.side_effect = [None, SimpleNamespace(rowcount=0)]
     assert db.claim_settings_import(7) is False
+
+
+def test_a_tuning_winner_labels_its_row_and_the_others_keep_their_source():
+    db = _db()
+    db.session.execute.side_effect = [
+        None,
+        SimpleNamespace(fetchone=lambda: SimpleNamespace(config_revision=5)),
+        None,
+        None,
+        None,
+    ]
+    entries = [
+        {"model_name": "org/a", "capability": {}, "overrides": {}},
+        {"model_name": "org/b", "capability": {}, "overrides": {}},
+    ]
+
+    assert db.replace_node_config(7, entries, 4, None, "tuning", {"org/b": "yaml_import"}) == 5
+
+    inserted = [call.args[1] for call in db.session.execute.call_args_list[-2:]]
+    assert [(row["model_name"], row["source"]) for row in inserted] == [("org/a", "tuning"), ("org/b", "yaml_import")]

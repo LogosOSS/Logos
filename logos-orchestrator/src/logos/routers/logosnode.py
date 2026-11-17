@@ -1059,7 +1059,12 @@ async def logosnode_node_config_get(data: LogosNodeConfigGetRequest):
 
 
 async def save_node_config(
-    provider_id: int, entries: list[Any], expected_revision: int, updated_by: int | None
+    provider_id: int,
+    entries: list[Any],
+    expected_revision: int,
+    updated_by: int | None,
+    source: str = "ui",
+    source_by_model: Dict[str, str] | None = None,
 ) -> Dict[str, Any] | JSONResponse:
     """Check and store a node's whole model list; the one path of every caller.
 
@@ -1083,7 +1088,7 @@ async def save_node_config(
             if db.get_provider(provider_id) is None:
                 return "missing", 0
             author = updated_by if updated_by is not None and db.user_exists(updated_by) else None
-            revision = db.replace_node_config(provider_id, rows, expected_revision, author, "ui")
+            revision = db.replace_node_config(provider_id, rows, expected_revision, author, source, source_by_model)
             if revision is None:
                 db.session.rollback()
                 return "stale", db.get_node_config(provider_id)["revision"]

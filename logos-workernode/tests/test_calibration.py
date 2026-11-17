@@ -39,6 +39,7 @@ from logos_worker_node.calibration import (
     _plan_needs_gpu_pin,
     calibrate_model,
     calibrate_with_tp_escalation,
+    calibrations_by_tp,
     extract_revision_arg,
     pin_plan_gpu_devices,
     plans_from_config,
@@ -4295,3 +4296,90 @@ def test_gpu_error_during_a_probe_aborts_the_calibration_without_blacklisting(tm
     assert result.unsupported_reason is None
     assert managers["spawn"].call_count == 1
     assert "[LOGOS] gpu health: gpu-error: GPU1.power='ERR!'" in log_path.read_text()
+
+
+def _escalate_plan(tmp_path, gpus: int, side_effect, **plan):
+    with patch("logos_worker_node.calibration.calibrate_model", side_effect=side_effect):
+        return calibrate_with_tp_escalation(
+            {"model": "big-model", **plan},
+            vllm_binary="vllm",
+            port=11499,
+            log_dir=tmp_path,
+            sleep_level=0,
+            ready_timeout_s=60.0,
+            available_gpus=gpus,
+        )
+
+
+def test_every_tensor_parallel_size_that_worked_is_kept_and_the_smallest_is_used(tmp_path):
+    def works_everywhere(plan, **kw):
+        tp = plan.get("tensor_parallel_size", 1)
+        return _success_result("big-model", tensor_parallel_size=tp, base_residency_mb=1000.0 / tp)
+
+    result = _escalate_plan(tmp_path, 4, works_everywhere)
+
+    assert result.tensor_parallel_size == 1
+    assert sorted(run.tensor_parallel_size for run in result.other_tp_results) == [2, 4]
+    sizes = calibrations_by_tp(result)
+    assert [entry["tp"] for entry in sizes] == [1, 2, 4]
+    assert [entry["base_residency_mb"] for entry in sizes] == [1000.0, 500.0, 250.0]
+
+
+def test_a_size_that_failed_is_not_listed(tmp_path):
+    def fails_at_one(plan, **kw):
+        tp = plan.get("tensor_parallel_size", 1)
+        if tp == 1:
+            return _fail_result("big-model")
+        return _success_result("big-model", tensor_parallel_size=tp)
+
+    result = _escalate_plan(tmp_path, 4, fails_at_one)
+
+    assert result.tensor_parallel_size == 2
+    assert [entry["tp"] for entry in calibrations_by_tp(result)] == [2, 4]
+
+
+def test_a_model_that_works_at_one_size_lists_only_that_size(tmp_path):
+    result = _escalate_plan(
+        tmp_path,
+        4,
+        lambda plan, **kw: _success_result("big-model", tensor_parallel_size=plan["tensor_parallel_size"]),
+        tensor_parallel_size=4,
+    )
+
+    assert result.other_tp_results == []
+    assert [entry["tp"] for entry in calibrations_by_tp(result)] == [4]
+
+
+def test_the_profile_carries_the_list_of_sizes_next_to_the_size_the_lane_uses(tmp_path):
+    def works_everywhere(plan, **kw):
+        return _success_result(
+            "big-model",
+            tensor_parallel_size=plan.get("tensor_parallel_size", 1),
+            min_kv_cache_mb=1024.0,
+            max_kv_cache_mb=4096.0,
+            kv_max_model_len_pairs=[(1024.0, 4096), (4096.0, 16384)],
+            cold_load_time_s=42.0,
+        )
+
+    profile = result_to_profile_dict(_escalate_plan(tmp_path, 2, works_everywhere))
+
+    assert profile["tensor_parallel_size"] == 1
+    assert [entry["tp"] for entry in profile["calibrations_by_tp"]] == [1, 2]
+    first = profile["calibrations_by_tp"][0]
+    assert first["kv_cache_to_max_model_len_pairs"] == [
+        {"kv_mb": 1024.0, "max_model_len": 4096},
+        {"kv_mb": 4096.0, "max_model_len": 16384},
+    ]
+    assert (first["min_kv_cache_mb"], first["max_kv_cache_mb"], first["cold_load_time_s"]) == (1024.0, 4096.0, 42.0)
+
+
+def test_pairs_with_parallelity_are_kept_per_size():
+    from logos_worker_node.calibration import _pairs_of
+
+    result = _success_result("m", kv_max_model_len_parallelity_pairs=[(1024.0, 4096, 2.5), (2048.0, 8192, None)])
+
+    assert _pairs_of(result) == [
+        {"kv_mb": 1024.0, "max_model_len": 4096, "parallelity": 2.5},
+        {"kv_mb": 2048.0, "max_model_len": 8192, "parallelity": None},
+    ]
+    assert _pairs_of(_success_result("m")) is None
