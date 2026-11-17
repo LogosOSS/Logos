@@ -590,6 +590,35 @@ def test_only_a_success_after_its_checks_removes_the_image_that_an_unchecked_suc
     assert OLD not in own_docker.removed and su_store.load("u1").previous_kept is True
 
 
+def a_verified_update_and_a_newer_one(su_store, own_docker, outcome: Outcome, **fields) -> None:
+    """Request u1 went OLD -> NEW and was verified, but its clean-up has not run. Request u2 went NEW -> NEWER.
+
+    u2 started before the clean-up of u1, so its swap moved the name ``previous`` from OLD to NEW.
+    """
+    own_docker.images = {f"{REPO}:latest": NEWER, f"{REPO}:previous": NEW}
+    own_docker.unnamed = {OLD}
+    own_docker.container_info = replace(own_docker.container_info, image_id=NEWER)
+    ended(su_store, Outcome.SUCCEEDED, update_id="u1", previous_image_id=OLD, target_image_id=NEW)
+    ended(su_store, outcome, update_id="u2", previous_image_id=NEW, target_image_id=NEWER, **fields)
+
+
+def test_the_clean_up_of_an_older_update_leaves_the_backup_of_a_newer_unchecked_one(updater, su_store, own_docker):
+    a_verified_update_and_a_newer_one(su_store, own_docker, Outcome.SUCCEEDED, previous_kept=True)
+
+    work(updater)
+
+    assert OLD in own_docker.removed and NEW not in own_docker.removed
+    assert su_store.load("u2").previous_kept is True
+
+
+def test_the_clean_up_of_an_older_update_leaves_the_images_of_a_newer_failed_rollback(updater, su_store, own_docker):
+    a_verified_update_and_a_newer_one(su_store, own_docker, Outcome.FAILED, failure=Failure.ROLLBACK_FAILED)
+
+    work(updater)
+
+    assert OLD in own_docker.removed and NEW not in own_docker.removed
+
+
 def finished_with_compose_files(su_store, store, **fields) -> None:
     """Twelve finished requests, the oldest first, each with the compose file that it took out of an image."""
     for number in range(12):

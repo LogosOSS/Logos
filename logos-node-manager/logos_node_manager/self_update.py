@@ -844,7 +844,7 @@ class SelfUpdater(Recorder):
             if record.outcome is Outcome.SUCCEEDED and record.previous_kept:
                 logger.info("Self-update %s: the previous image stays: nobody checked the new manager", record.id)
             elif record.outcome is Outcome.SUCCEEDED:
-                removed = self._remove_previous(record) + self._release_kept_backups()
+                removed = self._remove_previous(record) + self._release_kept_backups(record)
             elif record.outcome is Outcome.ROLLED_BACK and record.target_image_id:
                 if self.docker.remove_image(record.target_image_id):
                     removed.append(short_id(record.target_image_id))
@@ -857,16 +857,18 @@ class SelfUpdater(Recorder):
             f"removed {', '.join(removed)}" if removed else "nothing removed",
         )
 
-    def _release_kept_backups(self) -> list[str]:
+    def _release_kept_backups(self, verified: SelfUpdate) -> list[str]:
         """Remove the old images that earlier requests kept because nobody checked the swap that put the new one in.
 
-        It runs after a request that ended well after its checks. The manager that runs now has proven itself, so the
-        way back to a version before it is not needed any more. A request keeps its mark until its image is gone, so a
-        removal that the engine refused is tried again after the next such request.
+        It runs after the clean-up of a request that ended well after its checks (``verified``). That manager has
+        proven itself, so the way back to a version before it is not needed any more. Only older requests count: the
+        clean-up of an older request can run after a newer one, and what the newer one kept is its way back. A request
+        keeps its mark until its image is gone, so a removal that the engine refused is tried again after the next
+        such request.
         """
         removed = []
         for other in self.store.all():
-            if not other.previous_kept:
+            if not other.previous_kept or (other.requested_at, other.id) >= (verified.requested_at, verified.id):
                 continue
             removed += self._remove_previous(other)
             if not other.previous_image_id or self.docker.image_id(other.previous_image_id) is None:
@@ -875,15 +877,18 @@ class SelfUpdater(Recorder):
         return removed
 
     def _remove_previous(self, record: SelfUpdate) -> list[str]:
-        """Remove the name ``<image>:previous`` and the image of the manager that ran before."""
+        """Remove the image of the manager that ran before, and the name ``<image>:previous`` if it still names it."""
         previous = record.previous_image_id
         if not previous or previous == record.target_image_id:
             return []
         existed = self.docker.image_id(previous) is not None
         name, _ = split_image_ref(record.previous_image_ref or "")
         if name and not (record.previous_image_ref or "").startswith("sha256:"):
-            # The last name of the image goes with it, unless a container uses it.
-            self.docker.remove_image(f"{name}:{PREVIOUS_TAG}")
+            # The name moves on with every swap: take it away only while it still names this image. The image goes
+            # with its last name, unless a container uses it.
+            kept = f"{name}:{PREVIOUS_TAG}"
+            if self.docker.image_id(kept) == previous:
+                self.docker.remove_image(kept)
         if self.docker.image_id(previous) is not None:
             self.docker.remove_image(previous)
         gone = existed and self.docker.image_id(previous) is None
