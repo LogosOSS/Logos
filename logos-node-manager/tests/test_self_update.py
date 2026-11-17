@@ -503,6 +503,25 @@ def test_a_success_that_the_manager_found_keeps_the_previous_image(updater, su_s
     assert record.outcome is Outcome.SUCCEEDED and record.previous_kept and record.cleaned_up
     assert "stays on the host" in record.message
     assert own_docker.removed == [] and own_docker.images[f"{REPO}:previous"] == OLD
+    # A container that is never started holds the image, so that no image prune removes it.
+    assert engine.pins == {"nm-self-update-kept-u1"}
+    created = next(command for command in engine.calls if command[1] == "create")
+    assert OLD in created
+
+
+def test_a_success_that_the_manager_found_ends_also_when_the_previous_image_cannot_be_held(
+    updater, su_store, engine, own_docker
+):
+    own_docker.container_info = replace(own_docker.container_info, image_id=NEW)
+    handed_over(su_store, UpdatePhase.VERIFYING)
+    engine.exists, engine.running, engine.exit_code = True, False, 137
+    engine.create_error = "no space left on device"
+
+    work(updater)
+
+    record = su_store.load("u1")
+    assert record.outcome is Outcome.SUCCEEDED and record.previous_kept
+    assert "an image prune can remove it (no space left on device)" in record.message
 
 
 # ---------------------------------------------------------------------- Cleaning up
@@ -562,12 +581,23 @@ def an_unchecked_success_and_a_later_request(su_store, own_docker, outcome: Outc
     ended(su_store, outcome, update_id="u2", previous_image_id=NEW, target_image_id=NEWER, **fields)
 
 
-def test_a_success_after_its_checks_removes_the_image_that_an_unchecked_success_kept(updater, su_store, own_docker):
+def test_a_success_after_its_checks_removes_the_image_that_an_unchecked_success_kept(
+    updater, su_store, engine, own_docker, monkeypatch
+):
     an_unchecked_success_and_a_later_request(su_store, own_docker, Outcome.SUCCEEDED)
+    engine.pins = {"nm-self-update-kept-u1"}
+    removing = own_docker.remove_image
+
+    def refused_while_held(image_id):
+        # The engine keeps an image that a container uses, also a container that never ran.
+        return False if image_id == OLD and engine.pins else removing(image_id)
+
+    monkeypatch.setattr(own_docker, "remove_image", refused_while_held)
 
     work(updater)
 
     assert {OLD, NEW} <= set(own_docker.removed)
+    assert engine.pins == set()
     assert su_store.load("u1").previous_kept is False
 
 

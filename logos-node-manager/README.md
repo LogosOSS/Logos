@@ -297,16 +297,18 @@ How it goes:
    (`rollback_failed`) and every image stays.
 7. **The clean-up.** The new manager removes the stopped helper, and after a success the old image. After a rollback it
    removes the image that did not run. A success that nobody checked (see below) is the exception: the old image stays
-   as the way back, until a later request ends as `succeeded` after its checks and removes it. Then the manager deletes
-   the oldest finished records beyond the 10 newest, with the compose files that they took out of images. A record stays
-   while the running manager was made from a compose file of its directory, because the way back of the next update
-   starts from that file, and while it keeps an old image.
+   as the way back, held by a container that is never started (`nm-self-update-kept-<id>`), until a later request ends
+   as `succeeded` after its checks and removes the container and the image. Then the manager deletes the oldest
+   finished records beyond the 10 newest, with the compose files that they took out of images. A record stays while the
+   running manager was made from a compose file of its directory, because the way back of the next update starts from
+   that file, and while it keeps an old image.
 
 Every step can be repeated, and every step is in the record. If the helper ends without a result, for example because the
 host restarts, the manager that runs then (the old one or the new one) finishes the record from what Docker shows, and
 says so in the record. If it finds the new manager running, the request ends as `succeeded`, but nobody checked the new
-manager for the stability window: the record has `previous_kept: true` and the old image stays on the host. A helper that
-runs longer than an hour is removed and the request ends as `failed` (`timed_out`), so a stuck helper cannot hold the
+manager for the stability window: the record has `previous_kept: true`, and a container that is never started
+(`nm-self-update-kept-<id>`) holds the old image on the host, so that no image prune removes it. A helper that runs
+longer than an hour is removed and the request ends as `failed` (`timed_out`), so a stuck helper cannot hold the
 deployments for ever.
 
 The compose file of the manager's own service comes from the image of the tag, if `NODE_MANAGER_COMPOSE_FROM_TAG` is on:
@@ -333,7 +335,9 @@ The project, the compose file and the service are the ones of the manager's own 
 old image (`previous_image_id`). The name `<image>:previous` points to it until another swap moves the name. Start the
 service as above with `NODE_MANAGER_IMAGE_TAG=previous` in front of the command (it wins over the `.env` file). If the
 name has moved, give the old image a name first (`docker tag <previous_image_id> <image>:rescue`) and use that tag
-instead. Compose does not pull an image that is on the host already.
+instead. Compose does not pull an image that is on the host already. The container `nm-self-update-kept-<id>` holds that
+image against every image prune. A later request that ends as `succeeded` after its checks removes the container and the
+image. Remove the container by hand (`docker rm`) if you do not want to wait for that.
 
 ## Orders from Logos
 
@@ -392,7 +396,8 @@ of a deployment would otherwise restart the manager in the middle of its own dep
   fix forward or restore a backup. The workers of the plan do not start.
 * **After a success** the manager removes the images that no container uses (`docker image prune -af`), and then pulls
   `<REGISTRY>/logos-agent-workspace:<tag>` if the `.env` has the profile `agent`. The order matters: nothing references
-  that image between sessions, so the prune would delete it. After a failure every image stays.
+  that image between sessions, so the prune would delete it. An image that a container holds stays, among them the old
+  manager image that a self-update keeps (see "Self-update"). After a failure every image stays.
 * **The address that must answer** is `<Logos>/api/info` by default (`NODE_MANAGER_LOGOS_URL`). It
   shows that the whole way, from the proxy to the webservice, works. Set `NODE_MANAGER_CORE_HEALTH_URL` to check another
   address, for example if the host cannot reach its own public address. The check cannot be switched off.
@@ -525,8 +530,9 @@ at the start of every deployment, so a change needs no restart: `REGISTRY`, `REG
 * A command that runs out of time is stopped together with every process it started: the group gets SIGTERM, and
   SIGKILL after 10 s. No old command goes on while the manager moves to the next step. What the Docker engine has
   already begun, for example stopping a container, goes on and is not undone. The rollback tries again for this reason.
-* The manager never runs a global image prune. When a deployment has ended it removes only the images listed under
-  "Images on the host", by ID.
+* The manager of a worker host never runs a global image prune. When a deployment has ended it removes only the images
+  listed under "Images on the host", by ID. The core deployer prunes the images that no container uses after a success
+  (see "Core host").
 * The container is replaced only after a fresh answer of the orchestrator that the node has drained. The record is saved
   with that answer before the swap begins.
 * A deployment that held the cordon gives it back on every ending, before the record says it is over. The key of the

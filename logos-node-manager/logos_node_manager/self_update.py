@@ -17,7 +17,7 @@ the way the rollback of a worker does. Every step goes into the record ``<state 
 helper ends without a result, the manager that runs at that moment, the old or the new one, finishes the record from
 what Docker shows. The new manager removes the old image and the stopped helper after the record is finished. If the
 helper ended before it had checked the new manager, the old image stays as the way back, until a later request ends
-well after its checks.
+well after its checks. A container that is never started holds it meanwhile, so that no image prune removes it.
 
 A request comes from the command line (``node-manager self-update``) or, if the host switched it on, from the end of a
 deployment that went well. It is queued as a record, like a deployment, and the daemon runs it when no deployment waits.
@@ -63,6 +63,10 @@ logger = logging.getLogger(__name__)
 SWITCH_NAME = "NODE_MANAGER_SELF_UPDATE"
 # The helper has a fixed name, so that Docker allows one helper at a time.
 HELPER_NAME = "nm-self-update"
+# A container that is never started holds the old image of a request that nobody checked (see ``Helper.pin``), so that
+# no image prune removes it. Its name is this prefix and the id of the request, and its label has the id too.
+PIN_PREFIX = "nm-self-update-kept-"
+PIN_LABEL = "io.logos.self-update-kept"
 # How long a helper may have the swap before the manager takes it for lost. A swap, the checks and a rollback with all
 # its attempts take about half of this.
 HELPER_MAX_S = 3600.0
@@ -299,7 +303,10 @@ class HelperState:
 
 
 class Helper:
-    """The helper container: start it, look at it, read its log and remove it."""
+    """The helper container: start it, look at it, read its log and remove it.
+
+    The containers that hold the old images of requests that nobody checked are made and removed here too.
+    """
 
     def __init__(self, settings: Settings, runner: Runner, environ: Mapping[str, str]) -> None:
         self._settings = settings
@@ -376,6 +383,29 @@ class Helper:
     def remove(self) -> None:
         """Remove the helper, a running one included. A helper that is not there is no problem."""
         self._runner.run(["docker", "rm", "-f", HELPER_NAME], timeout_s=QUERY_TIMEOUT_S)
+
+    @staticmethod
+    def pin_name(update_id: str) -> str:
+        """The name of the container that holds the old image of a request."""
+        return f"{PIN_PREFIX}{update_id}"
+
+    def pin(self, image_id: str, update_id: str) -> str | None:
+        """Hold an image with a container that is never started. Returns None if it is held, or the reason it is not.
+
+        An image prune keeps every image that a container uses, also a container that never ran. A container that an
+        earlier try left behind is removed first, so that the step can be repeated.
+        """
+        name = self.pin_name(update_id)
+        self._runner.run(["docker", "rm", "-f", name], timeout_s=QUERY_TIMEOUT_S)
+        result = self._runner.run(
+            ["docker", "create", "--pull", "never", "--name", name, "--label", f"{PIN_LABEL}={update_id}", image_id],
+            timeout_s=QUERY_TIMEOUT_S,
+        )
+        return None if result.ok else result.tail(4)
+
+    def unpin(self, update_id: str) -> None:
+        """Remove the container that holds the old image of a request. A container that is not there is no problem."""
+        self._runner.run(["docker", "rm", "-f", self.pin_name(update_id)], timeout_s=QUERY_TIMEOUT_S)
 
 
 class SelfUpdater(Recorder):
@@ -756,11 +786,13 @@ class SelfUpdater(Recorder):
                 )
             else:
                 record.previous_kept = True
+                held = self._hold_previous(record)
                 self.finish(
                     record,
                     Outcome.SUCCEEDED,
                     message=f"now running {record.target_image_ref}; {ended} before it noted the result. The new "
-                    f"manager was not checked, so the previous image {record.previous_image_ref} stays on the host",
+                    f"manager was not checked, so the previous image {record.previous_image_ref} stays on the host, "
+                    f"{held}",
                 )
             return
         if info is not None and info.image_id == record.previous_image_id:
@@ -789,6 +821,17 @@ class SelfUpdater(Recorder):
             f"{ended}. Docker shows {found}, which is neither the old nor the new image. A person has to look at "
             "this host.",
         )
+
+    def _hold_previous(self, record: SelfUpdate) -> str:
+        """Hold the previous image with a container, and say how that went, for the message of the record.
+
+        A problem here does not change the result: the image stays on the host, but a prune can remove it.
+        """
+        problem = self.helper.pin(record.previous_image_id, record.id) if record.previous_image_id else "no image ID"
+        if problem is None:
+            return f"held by the container {self.helper.pin_name(record.id)}"
+        logger.warning("Self-update %s: the previous image is not held by a container: %s", record.id, problem)
+        return f"but an image prune can remove it ({problem})"
 
     def _seconds_since(self, stamp: str | None) -> float:
         if not stamp:
@@ -862,14 +905,16 @@ class SelfUpdater(Recorder):
 
         It runs after the clean-up of a request that ended well after its checks (``verified``). That manager has
         proven itself, so the way back to a version before it is not needed any more. Only older requests count: the
-        clean-up of an older request can run after a newer one, and what the newer one kept is its way back. A request
-        keeps its mark until its image is gone, so a removal that the engine refused is tried again after the next
-        such request.
+        clean-up of an older request can run after a newer one, and what the newer one kept is its way back. The
+        container that holds the image goes first, because the engine keeps an image that a container uses. A request
+        keeps its mark until its image is gone, so a removal that the engine refused is tried again after the next such
+        request.
         """
         removed = []
         for other in self.store.all():
             if not other.previous_kept or (other.requested_at, other.id) >= (verified.requested_at, verified.id):
                 continue
+            self.helper.unpin(other.id)
             removed += self._remove_previous(other)
             if not other.previous_image_id or self.docker.image_id(other.previous_image_id) is None:
                 other.previous_kept = False

@@ -44,7 +44,10 @@ class StubRegistry:
 
 
 class FakeHelperEngine:
-    """The docker commands that start and look at the helper container. Every field is a knob a test can turn."""
+    """The docker commands for the helper and for the containers that hold images.
+
+    Every field is a knob a test can turn.
+    """
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
@@ -54,6 +57,9 @@ class FakeHelperEngine:
         self.run_error: str | None = None
         self.inspect_error: str | None = None
         self.log = ""
+        # The containers that hold an image (see ``Helper.pin``), by name, and a reason for ``docker create`` to fail.
+        self.pins: set[str] = set()
+        self.create_error: str | None = None
 
     def run(self, argv, *, timeout_s, env=None, stdin=None) -> CommandResult:
         command = tuple(argv)
@@ -80,7 +86,21 @@ class FakeHelperEngine:
             return CommandResult(command, 0, stdout=json.dumps([{"State": state}]))
         if verb == "logs":
             return CommandResult(command, 0, stdout=self.log)
+        if verb == "create":
+            if self.create_error:
+                return CommandResult(command, 1, stderr=self.create_error)
+            name = command[command.index("--name") + 1]
+            if name in self.pins:
+                return CommandResult(command, 1, stderr="Conflict. The container name is already in use")
+            self.pins.add(name)
+            return CommandResult(command, 0, stdout="pin-container-id\n")
         if verb == "rm":
+            name = command[-1]
+            if name != HELPER_NAME:
+                if name not in self.pins:
+                    return CommandResult(command, 1, stderr=f"Error response from daemon: No such container: {name}")
+                self.pins.discard(name)
+                return CommandResult(command, 0)
             self.exists = self.running = False
             return CommandResult(command, 0)
         raise AssertionError(f"the manager ran a command that this fake does not know: {command}")
