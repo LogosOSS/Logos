@@ -8,10 +8,10 @@ account has been granted access, so callers ask for the license of a
 repository the reachability check has already answered ``reachable`` for.
 """
 
+import asyncio
 import logging
 import os
 import re
-import time
 from dataclasses import dataclass
 
 import httpx
@@ -31,9 +31,15 @@ _DEFAULT_REFS = ("main", "master")
 # the caller's round trip open longer than this.
 OVERALL_DEADLINE_S = 60.0
 
+# The license file is the one response body the repository controls itself:
+# stream it and refuse it, before it is buffered or decoded, once it
+# outgrows this cap. The longest real license texts are far below one
+# megabyte.
+MAX_LICENSE_FILE_BYTES = 1_048_576
 
-class _OverallDeadlineExceeded(Exception):
-    """The whole license fetch outlived its overall deadline."""
+
+class _LicenseFileTooLarge(Exception):
+    """The license file outgrew the streaming byte cap."""
 
 
 @dataclass(frozen=True)
@@ -60,56 +66,68 @@ async def _fetch(hf_repo_id: str, token: str | None) -> tuple[str | None, str | 
         # False, not None: None would fall back to a token cached on disk —
         # the same discipline as the reachability check.
         headers = build_hf_headers(token=token or False)
-        deadline = time.monotonic() + OVERALL_DEADLINE_S
         async with _new_client() as client:
 
             async def get(url: str, follow_redirects: bool = False) -> httpx.Response:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise _OverallDeadlineExceeded()
-                # Each request gets the smaller of its own budget and the
-                # time the overall deadline still allows.
-                return await client.get(
-                    url, headers=headers, timeout=min(_TIMEOUT_S, remaining), follow_redirects=follow_redirects
-                )
+                return await client.get(url, headers=headers, timeout=_TIMEOUT_S, follow_redirects=follow_redirects)
 
-            info = await get(f"{constants.ENDPOINT}/api/models/{hf_repo_id}")
-            hf_raise_for_status(info)
-            card_data = info.json().get("cardData") or {}
-            license_id = card_data.get("license")
-            if isinstance(license_id, list):
-                license_id = " OR ".join(str(entry) for entry in license_id) or None
-            elif not isinstance(license_id, str):
-                license_id = None
+            # The file comes from the canonical resolve URL (not the
+            # /api/... variant, which 404s for these repositories), and LFS
+            # files 302 to CDN storage, so follow the redirect. The body is
+            # streamed chunk by chunk and refused once it outgrows the cap:
+            # the filename matched the license pattern, but the content is
+            # the repository's, and an unbounded buffer would let it exhaust
+            # memory before this function could reject it.
+            async def read_license_file(url: str) -> str:
+                async with client.stream(
+                    "GET", url, headers=headers, timeout=_TIMEOUT_S, follow_redirects=True
+                ) as file:
+                    hf_raise_for_status(file)
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in file.aiter_bytes():
+                        total += len(chunk)
+                        if total > MAX_LICENSE_FILE_BYTES:
+                            raise _LicenseFileTooLarge()
+                        chunks.append(chunk)
+                    return b"".join(chunks).decode("utf-8", errors="replace")
 
-            license_file: str | None = None
-            license_ref: str | None = None
-            for ref in _DEFAULT_REFS:
-                tree = await get(f"{constants.ENDPOINT}/api/models/{hf_repo_id}/tree/{ref}")
-                if tree.status_code == 404:
-                    continue  # not this repository's default branch
-                hf_raise_for_status(tree)
-                candidates = [
-                    entry["path"]
-                    for entry in tree.json()
-                    if entry.get("type") == "file" and _LICENSE_FILE_NAME.match(entry["path"].rsplit("/", 1)[-1])
-                ]
-                if candidates:
-                    license_file = min(candidates, key=_license_file_rank)
-                    license_ref = ref
-                    break
+            # The overall deadline bounds elapsed time across redirects and
+            # streamed chunks, which a per-request inactivity timeout
+            # cannot: it expires the in-flight operation and raises
+            # TimeoutError at the boundary.
+            async with asyncio.timeout(OVERALL_DEADLINE_S):
+                info = await get(f"{constants.ENDPOINT}/api/models/{hf_repo_id}")
+                hf_raise_for_status(info)
+                card_data = info.json().get("cardData") or {}
+                license_id = card_data.get("license")
+                if isinstance(license_id, list):
+                    license_id = " OR ".join(str(entry) for entry in license_id) or None
+                elif not isinstance(license_id, str):
+                    license_id = None
 
-            license_text: str | None = None
-            if license_file is not None and license_ref is not None:
-                # The file comes from the canonical resolve URL (not the
-                # /api/... variant, which 404s for these repositories), and
-                # LFS files 302 to CDN storage, so follow the redirect.
-                file = await get(
-                    f"{constants.ENDPOINT}/{hf_repo_id}/resolve/{license_ref}/{license_file}",
-                    follow_redirects=True,
-                )
-                hf_raise_for_status(file)
-                license_text = file.text
+                license_file: str | None = None
+                license_ref: str | None = None
+                for ref in _DEFAULT_REFS:
+                    tree = await get(f"{constants.ENDPOINT}/api/models/{hf_repo_id}/tree/{ref}")
+                    if tree.status_code == 404:
+                        continue  # not this repository's default branch
+                    hf_raise_for_status(tree)
+                    candidates = [
+                        entry["path"]
+                        for entry in tree.json()
+                        if entry.get("type") == "file" and _LICENSE_FILE_NAME.match(entry["path"].rsplit("/", 1)[-1])
+                    ]
+                    if candidates:
+                        license_file = min(candidates, key=_license_file_rank)
+                        license_ref = ref
+                        break
+
+                license_text: str | None = None
+                if license_file is not None and license_ref is not None:
+                    license_text = await read_license_file(
+                        f"{constants.ENDPOINT}/{hf_repo_id}/resolve/{license_ref}/{license_file}"
+                    )
         return license_id, license_file, license_text, None
     except HFValidationError:
         return None, None, None, "Not a valid Hugging Face repository id."
@@ -124,7 +142,11 @@ async def _fetch(hf_repo_id: str, token: str | None) -> tuple[str | None, str | 
             None,
             "Repository does not exist or is not visible to the configured HF_TOKEN.",
         )
-    except _OverallDeadlineExceeded:
+    except _LicenseFileTooLarge:
+        return None, None, None, (f"License file is larger than {MAX_LICENSE_FILE_BYTES} bytes and was not fetched.")
+    except TimeoutError:
+        # asyncio.timeout expired while a request or a response body was
+        # still in flight: the Hub as a whole was too slow, not one request.
         return None, None, None, f"Hugging Face Hub did not answer within {OVERALL_DEADLINE_S:g}s."
     except httpx.TimeoutException:
         return None, None, None, f"Hugging Face Hub did not answer within {_TIMEOUT_S:g}s."
@@ -150,9 +172,10 @@ def _license_file_rank(path: str) -> tuple[int, str]:
 async def fetch_hf_license(hf_repo_id: str) -> HfLicense:
     """Fetch one repository's license. Never raises.
 
-    A returned ``error`` (network error, Hub outage, timeout, or a repository
-    the token may not read) is not a statement about the repository's
-    licensing — callers must leave the row pending and retry later.
+    A returned ``error`` (network error, Hub outage, timeout, an oversized
+    license file, or a repository the token may not read) is not a statement
+    about the repository's licensing — callers must leave the row pending and
+    retry later.
     """
     repo_id = hf_repo_id.strip()
     token = os.getenv("HF_TOKEN", "").strip() or None

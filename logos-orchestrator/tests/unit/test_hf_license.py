@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 from huggingface_hub.errors import GatedRepoError, HFValidationError, RepositoryNotFoundError
@@ -101,15 +103,43 @@ async def test_lfs_license_file_follows_the_cdn_redirect(hub):
 
 
 async def test_overall_deadline_bounds_the_whole_fetch(hub, monkeypatch):
-    monkeypatch.setattr(hf_license, "OVERALL_DEADLINE_S", 0.0)
-    _hub_with(hub, {"cardData": {}}, {"main": []}, {})
+    # The Hub answers, but the first response body keeps arriving: a
+    # per-request inactivity timeout would keep waiting for the next byte,
+    # so the overall deadline must cut the fetch off mid-body.
+    monkeypatch.setattr(hf_license, "OVERALL_DEADLINE_S", 0.01)
+
+    class _SlowBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            await asyncio.sleep(1.0)
+            yield b"{}"
+
+    hub.handler = staticmethod(lambda request: httpx.Response(200, stream=_SlowBody()))
 
     result = await hf_license.fetch_hf_license("org/model")
 
-    # The deadline is already spent before the first request: nothing is sent.
     assert result.error is not None
     assert "did not answer" in result.error
-    assert hub.requests == []
+    assert result.license_id is None
+    assert result.license_text is None
+
+
+async def test_oversized_license_file_is_refused_before_buffering(hub):
+    # The file's content is the repository's: once it outgrows the streaming
+    # cap the fetch must stop and error, not buffer or decode it.
+    _hub_with(
+        hub,
+        {"cardData": {"license": "mit"}},
+        {"main": [{"type": "file", "path": "LICENSE"}]},
+        {"LICENSE": "x" * (hf_license.MAX_LICENSE_FILE_BYTES + 1)},
+    )
+
+    result = await hf_license.fetch_hf_license("org/model")
+
+    assert result.error is not None
+    assert "larger than" in result.error
+    assert result.license_id is None
+    assert result.license_file is None
+    assert result.license_text is None
 
 
 async def test_provider_specific_license_file_names_are_found(hub):
