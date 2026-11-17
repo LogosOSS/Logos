@@ -26,6 +26,7 @@ import { SearchInputComponent } from '../../shared/components/search-input/searc
 import { DataTableComponent } from '../../shared/components/data-table/data-table';
 import { ErrorMessageComponent } from '../../shared/components/error-message/error-message';
 import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
+import { NodeModels } from './node-models/node-models';
 
 @Component({
   selector: 'app-providers',
@@ -37,6 +38,7 @@ import { SelectComponent, AppSelectOption } from '../../shared/components/select
     DataTableComponent,
     ErrorMessageComponent,
     SelectComponent,
+    NodeModels,
   ],
   templateUrl: './providers.html',
   changeDetection: ChangeDetectionStrategy.Eager,

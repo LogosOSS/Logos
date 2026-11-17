@@ -7,6 +7,7 @@ import {
   AddProviderPayload,
   UpdateProviderPayload,
 } from '../../shared/models/provider.model';
+import { NodeConfig, NodeConfigEntry, NodeInsights } from '../../shared/models/node-config.model';
 
 @Injectable({ providedIn: 'root' })
 export class ProviderManagementService {
@@ -66,6 +67,34 @@ export class ProviderManagementService {
    */
   modelSyncStatus(): Promise<{ running: boolean | null }> {
     return firstValueFrom(this.http.post<{ running: boolean | null }>('/api/logosdb/model_sync_status', {}));
+  }
+
+  /** The stored model list of a logosnode and its revision. */
+  getNodeConfig(providerId: number): Promise<NodeConfig> {
+    return firstValueFrom(this.http.post<NodeConfig>('/api/logosdb/node_config/get', { provider_id: providerId }));
+  }
+
+  /**
+   * Replaces the whole list. `expectedRevision` is the revision that was read:
+   * another save in between answers 409, a worker that refuses the list 400.
+   */
+  replaceNodeConfig(
+    providerId: number,
+    expectedRevision: number,
+    entries: NodeConfigEntry[],
+  ): Promise<{ provider_id: number; config_revision: number }> {
+    return firstValueFrom(
+      this.http.post<{ provider_id: number; config_revision: number }>('/api/logosdb/node_config/replace', {
+        provider_id: providerId,
+        expected_revision: expectedRevision,
+        entries,
+      }),
+    );
+  }
+
+  /** Measured and benchmarked values next to the models of a logosnode. */
+  getNodeInsights(providerId: number): Promise<NodeInsights> {
+    return firstValueFrom(this.http.post<NodeInsights>('/api/logosdb/node_config/insights', { provider_id: providerId }));
   }
 
   getProviderModels(providerId: number): Promise<ModelConnection[]> {

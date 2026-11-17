@@ -121,57 +121,61 @@
       @if (expandedId() === provider.id) {
         <div class="expanded-row" role="row">
           <div class="expanded-content">
-            <section class="connections-section" aria-label="Connected models">
-            <div class="expanded-header">
-              <span class="expanded-title">Connected Models</span>
-              <button class="btn-primary" type="button" (click)="openConnectDialog(provider)">
-                <i class="pi pi-plus" aria-hidden="true"></i>
-                Connect
-              </button>
-            </div>
-
-            @if ((providerModels()[provider.id] || []).length === 0) {
-              <p class="empty-connections">No models connected yet.</p>
+            @if (provider.provider_type === 'logosnode') {
+              <app-node-models [providerId]="provider.id" />
             } @else {
-              <div class="connection-list">
-                @for (conn of providerModels()[provider.id]; track conn.model_id) {
-                  <div class="connection-row">
-                    <span class="conn-model-name">{{ conn.model_name }}</span>
-                    <span class="conn-endpoint">{{ conn.endpoint || '-' }}</span>
-                    <span
-                      class="batch-badge"
-                      [class.batch-badge--supported]="conn.batch_support === 'supported'"
-                      [class.batch-badge--unsupported]="conn.batch_support === 'unsupported'"
-                      [attr.title]="batchTooltip(conn)"
-                      [attr.aria-label]="'Batch: ' + batchLabel(conn) + '. ' + batchTooltip(conn)"
-                      data-testid="batch-support"
-                    >{{ batchLabel(conn) }}</span>
-                    <span class="conn-key">{{
-                      conn.api_key ? conn.api_key.slice(0, 6) + '…' : '-'
-                    }}</span>
-                    <div class="conn-actions">
-                      <button
-                        class="btn-icon"
-                        type="button"
-                        (click)="openEditConnDialog(provider, conn)"
-                        [attr.aria-label]="'Edit connection for ' + conn.model_name"
-                      >
-                        <i class="pi pi-pencil" aria-hidden="true"></i>
-                      </button>
-                      <button
-                        class="btn-icon btn-icon--danger"
-                        type="button"
-                        [attr.aria-label]="'Disconnect ' + conn.model_name"
-                        (click)="openDisconnectDialog(provider, conn)"
-                      >
-                        <i class="pi pi-trash" aria-hidden="true"></i>
-                      </button>
-                    </div>
-                  </div>
-                }
+              <section class="connections-section" aria-label="Connected models">
+              <div class="expanded-header">
+                <span class="expanded-title">Connected Models</span>
+                <button class="btn-primary" type="button" (click)="openConnectDialog(provider)">
+                  <i class="pi pi-plus" aria-hidden="true"></i>
+                  Connect
+                </button>
               </div>
+
+              @if ((providerModels()[provider.id] || []).length === 0) {
+                <p class="empty-connections">No models connected yet.</p>
+              } @else {
+                <div class="connection-list">
+                  @for (conn of providerModels()[provider.id]; track conn.model_id) {
+                    <div class="connection-row">
+                      <span class="conn-model-name">{{ conn.model_name }}</span>
+                      <span class="conn-endpoint">{{ conn.endpoint || '-' }}</span>
+                      <span
+                        class="batch-badge"
+                        [class.batch-badge--supported]="conn.batch_support === 'supported'"
+                        [class.batch-badge--unsupported]="conn.batch_support === 'unsupported'"
+                        [attr.title]="batchTooltip(conn)"
+                        [attr.aria-label]="'Batch: ' + batchLabel(conn) + '. ' + batchTooltip(conn)"
+                        data-testid="batch-support"
+                      >{{ batchLabel(conn) }}</span>
+                      <span class="conn-key">{{
+                        conn.api_key ? conn.api_key.slice(0, 6) + '…' : '-'
+                      }}</span>
+                      <div class="conn-actions">
+                        <button
+                          class="btn-icon"
+                          type="button"
+                          (click)="openEditConnDialog(provider, conn)"
+                          [attr.aria-label]="'Edit connection for ' + conn.model_name"
+                        >
+                          <i class="pi pi-pencil" aria-hidden="true"></i>
+                        </button>
+                        <button
+                          class="btn-icon btn-icon--danger"
+                          type="button"
+                          [attr.aria-label]="'Disconnect ' + conn.model_name"
+                          (click)="openDisconnectDialog(provider, conn)"
+                        >
+                          <i class="pi pi-trash" aria-hidden="true"></i>
+                        </button>
+                      </div>
+                    </div>
+                  }
+                </div>
+              }
+              </section>
             }
-            </section>
           </div>
         </div>
       }

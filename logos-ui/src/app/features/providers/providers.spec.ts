@@ -1,4 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ModelManagementService } from '../../core/services/model-management.service';
@@ -73,11 +74,18 @@ describe('Providers', () => {
       refreshModels,
       modelSyncStatus,
       getProviderModels,
+      getNodeInsights: vi.fn().mockResolvedValue({
+        provider_id: 4,
+        worker: { online: true, supports_actions: {}, config_revision: 1 },
+        gpus: [],
+        models: [],
+      }),
     };
 
     await TestBed.configureTestingModule({
       imports: [Providers],
       providers: [
+        provideRouter([]),
         { provide: ProviderManagementService, useValue: providerService },
         { provide: ModelManagementService, useValue: { getModels } },
       ],
@@ -344,6 +352,36 @@ describe('Providers', () => {
     it('treats a connection without batch information as unchecked', () => {
       expect(component.batchLabel(connection())).toBe('Batch unchecked');
       expect(component.batchLabel(connection({ batch_support: 'logos' }))).toBe('Batch in Logos');
+    });
+  });
+
+  describe('the expanded row of a logosnode', () => {
+    const expand = async (provider: Provider): Promise<HTMLElement> => {
+      // The first change detection starts the component's own fetch; let it finish first.
+      fixture.detectChanges();
+      await fixture.whenStable();
+      component.providers.set([provider]);
+      fixture.detectChanges();
+      component.toggleExpand(provider);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      return fixture.nativeElement as HTMLElement;
+    };
+
+    it('lists the models of the node instead of connected models', async () => {
+      const root = await expand(makeProvider({ id: 4, name: 'hochbruegge', provider_type: 'logosnode' }));
+
+      expect(root.querySelector('app-node-models')).not.toBeNull();
+      expect(root.textContent).toContain('Node models');
+      expect(root.textContent).not.toContain('Connected Models');
+    });
+
+    it('keeps the connected models of a cloud provider', async () => {
+      const root = await expand(makeProvider());
+
+      expect(root.querySelector('app-node-models')).toBeNull();
+      expect(root.textContent).toContain('Connected Models');
     });
   });
 });

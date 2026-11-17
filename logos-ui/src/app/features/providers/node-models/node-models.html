@@ -1,0 +1,57 @@
+<section class="node-models" aria-label="Node models">
+  <div class="expanded-header">
+    <div>
+      <span class="expanded-title">Node models</span>
+      <p class="node-subtitle">
+        Models this worker may serve and how they are placed. Changes reach the worker within seconds; lane settings
+        apply at the next lane start.
+      </p>
+    </div>
+    <span class="worker-chip" [class.worker-chip--offline]="!workerOnline()" role="status">
+      <span class="dot" aria-hidden="true"></span>
+      {{ workerOnline() ? 'Worker online' : 'Worker offline' }}
+    </span>
+  </div>
+
+  @if (error()) {
+    <app-error-message variant="banner" [message]="error()!" />
+    <button class="btn-secondary retry" type="button" (click)="load()">
+      <i class="pi pi-refresh" aria-hidden="true"></i>
+      Try again
+    </button>
+  } @else {
+    <app-data-table
+      [columns]="['Model', 'Calibration', 'Configured', '']"
+      gridCols="minmax(0, 1fr) 230px 200px 44px"
+      [loading]="loading()"
+      [empty]="models().length === 0"
+      emptyMessage="No models yet. They appear here once the worker announces them or you configure them."
+    >
+      @for (model of models(); track model.model_name) {
+        <a
+          class="table-row table-row--clickable"
+          role="row"
+          [routerLink]="['/providers', providerId(), 'models']"
+          [queryParams]="{ model: model.model_name }"
+          [attr.aria-label]="'Open ' + model.model_name"
+        >
+          <div role="cell"><span class="provider-name">{{ model.model_name }}</span></div>
+          <div role="cell" data-label="Calibration">
+            @let label = calibrationLabel(model);
+            <span class="status" [class]="'status status--' + label.tone" [attr.title]="label.title">
+              <span class="dot" aria-hidden="true"></span>{{ label.text }}
+            </span>
+          </div>
+          <div role="cell" data-label="Configured">
+            <span class="status" [class]="'status status--' + (model.configured ? 'ok' : 'gray')">
+              <span class="dot" aria-hidden="true"></span>{{ model.configured ? 'Configured' : 'Not configured' }}
+            </span>
+          </div>
+          <div class="col-actions" role="cell">
+            <i class="pi pi-chevron-right chevron" aria-hidden="true"></i>
+          </div>
+        </a>
+      }
+    </app-data-table>
+  }
+</section>
