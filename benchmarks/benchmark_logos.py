@@ -39,12 +39,13 @@ Supports these scenarios via --scenario:
                  No logos_key header is sent.
 
 Requirements (on this machine):
-    pip install httpx numpy matplotlib
+    pip install --no-deps --require-hashes -r benchmarks/requirements.lock
     # SSH uses the system 'ssh' binary — no extra library needed
 
 Requirements (on each GPU node):
     nvidia-smi is used automatically (always available on NVIDIA systems).
-    Optionally: pip install nvidia-ml-py  (enables hardware energy counter)
+    Optionally nvidia-ml-py (enables hardware energy counter), from the same lock:
+    pip install --no-deps --require-hashes -r benchmarks/requirements.lock
 
 Usage — remote GPU nodes (typical setup):
     python benchmark_logos.py \\
@@ -173,7 +174,7 @@ class GPUTracker:
     def start(self) -> None:
         if not _NVML:
             print("  [gpu] pynvml not installed — energy measurement disabled.")
-            print("        Install with: pip install nvidia-ml-py")
+            print("        Install with: pip install --no-deps --require-hashes -r benchmarks/requirements.lock")
             return
         try:
             _pynvml.nvmlInit()
@@ -2956,7 +2957,7 @@ def _apply_benchmark_workernode_config_via_ssh(
     if not _YAML:
         print(
             "  [config] WARNING: pyyaml not installed — skipping capabilities_models filter.\n"
-            "           Run: pip install pyyaml"
+            "           Run: pip install --no-deps --require-hashes -r benchmarks/requirements.lock"
         )
     sudo = "sudo " if use_sudo else ""
     config_path = f"{workernode_dir}/config.yml"

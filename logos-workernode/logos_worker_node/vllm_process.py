@@ -2337,7 +2337,7 @@ class VllmProcessHandle:
         ]
         raise FileNotFoundError(
             f"[{self.lane_id}] Could not find vLLM executable. Checked: {', '.join(checked)}. "
-            f"Install vLLM in this interpreter: {sys.executable} -m pip install vllm"
+            "Run the worker in its image, which installs vLLM from logos-workernode/requirements.lock."
         )
 
     def _require_c_compiler(self) -> None:

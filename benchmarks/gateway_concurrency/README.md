@@ -101,7 +101,8 @@ export LOGOS_BENCH_GW_URL=http://localhost:18081
 
 # 5. Venv + run
 uv venv benchmarks/gateway_concurrency/.venv
-uv pip install --python benchmarks/gateway_concurrency/.venv/bin/python fastapi 'uvicorn[standard]' httpx
+uv pip install --python benchmarks/gateway_concurrency/.venv/bin/python --no-deps --require-hashes \
+  -r benchmarks/gateway_concurrency/requirements.lock
 benchmarks/gateway_concurrency/.venv/bin/python benchmarks/gateway_concurrency/run_benchmark.py
 ```
 

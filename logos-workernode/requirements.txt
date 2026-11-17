@@ -1,4 +1,4 @@
-# The worker's direct dependencies: the input of scripts/lock-requirements.sh,
+# The worker's direct dependencies: the input of ../scripts/lock-requirements.sh,
 # never installed directly. Every install uses a lock built from it
 # (requirements.lock for the vLLM image, requirements-standalone.lock for the
 # macOS worker and CI, ../e2e/requirements.lock for the e2e suite). The image

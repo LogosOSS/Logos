@@ -12,7 +12,7 @@
 # Build context is the `logos/` directory:
 #   docker build -f e2e/harness/nodesim/Dockerfile logos/
 
-FROM python:3.13-slim
+FROM python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 
 WORKDIR /app
 
@@ -23,8 +23,19 @@ ENV PYTHONUNBUFFERED=1 \
 # host RAM across vLLM TP workers, and the watchdog's diagnostics dump shells
 # out for system state. Leaving them out would test failure paths nobody asked
 # about.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends procps psmisc curl \
+# apt installs exact versions from a fixed Debian archive snapshot, so every
+# build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
+# digest together.
+ARG APT_SNAPSHOT=20261117T000000Z
+RUN sed -i \
+      -e "s#http://deb.debian.org/debian-security#http://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}#" \
+      -e "s#http://deb.debian.org/debian#http://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}#" \
+      /etc/apt/sources.list.d/debian.sources \
+  && ! grep -q deb.debian.org /etc/apt/sources.list.d/debian.sources
+
+RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update \
+  && apt-get install -y --no-install-recommends \
+       procps=2:4.0.4-9 psmisc=23.7-2 curl=8.14.1-2+deb13u7 \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Regenerate (or verify) every lock file derived from the worker's
-# requirements.txt. Each lock pins every package, direct or transitive, to an
-# exact version with hashes; consumers install it with --no-deps and
-# --require-hashes, so nothing is resolved at install time.
+# Regenerate (or verify) every requirements lock in the repository. Each lock
+# pins every package, direct or transitive, to an exact version with hashes;
+# consumers install it with --no-deps and --require-hashes, so nothing is
+# resolved at install time. (The uv projects — logos-orchestrator,
+# logos-agent, logos-node-manager — use their uv.lock and `uv sync --locked`.)
 #
 #   logos-workernode/requirements.lock
 #       The vLLM image (Dockerfile). Resolved from the VLLM_PIP_SPEC default,
@@ -25,6 +26,15 @@
 #       requirements, so the editable install needs no isolated build env)
 #       together with requirements.txt, universally for CPython 3.13+.
 #
+#   tools/pre-commit/requirements.lock
+#       pre-commit itself, for the lint workflow and the agent workspace
+#       image. Universal, CPython 3.13+.
+#
+#   benchmarks/gateway_concurrency/requirements.lock
+#   benchmarks/requirements.lock, benchmarks/requirements-guidellm.lock
+#       The benchmark venvs, each from the requirements file next to it.
+#       Universal, CPython 3.13+.
+#
 # Locks are compiled with the uv release the image installs with (the
 # Dockerfile's uv stage), so their format does not depend on the local uv.
 #
@@ -34,8 +44,9 @@
 #   scripts/lock-requirements.sh --check    fail if any lock is stale for its inputs
 set -euo pipefail
 
-WORKERNODE="$(cd "$(dirname "$0")/.." && pwd)"
-E2E="$(cd "$WORKERNODE/../e2e" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WORKERNODE="$ROOT/logos-workernode"
+E2E="$ROOT/e2e"
 
 MODE=lock
 case "${1:-}" in
@@ -137,7 +148,22 @@ compile "$E2E/requirements.lock" "$dir" \
   --universal --python-version 3.13 --all-extras pyproject.toml worker-requirements.txt build-system.txt
 finish "$E2E/requirements.lock" "$dir"
 
+# ── Plain requirements input → lock pairs ────────────────────────────────────
+for pair in \
+  tools/pre-commit/requirements.txt:tools/pre-commit/requirements.lock \
+  benchmarks/gateway_concurrency/requirements.txt:benchmarks/gateway_concurrency/requirements.lock \
+  benchmarks/requirements.txt:benchmarks/requirements.lock \
+  benchmarks/requirements-guidellm.txt:benchmarks/requirements-guidellm.lock; do
+  input="${pair%%:*}"
+  lock="${pair#*:}"
+  dir="$WORK/pair-$(printf '%s' "$lock" | tr '/' '_')"
+  mkdir -p "$dir"
+  cp "$ROOT/$input" "$dir/$(basename "$input")"
+  compile "$ROOT/$lock" "$dir" --universal --python-version 3.13 "$(basename "$input")"
+  finish "$ROOT/$lock" "$dir"
+done
+
 if [ "$STALE" -ne 0 ]; then
-  echo "Run logos-workernode/scripts/lock-requirements.sh and commit the result." >&2
+  echo "Run scripts/lock-requirements.sh and commit the result." >&2
   exit 1
 fi

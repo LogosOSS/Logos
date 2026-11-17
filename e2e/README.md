@@ -30,7 +30,7 @@ uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e .
 
 # Tier 4 — adds Keycloak, the webservice and the UI
 .venv/bin/python -m harness.stack.compose up --ui
-cd ../logos-ui && npm ci && npx playwright install chromium && npm run e2e
+cd ../logos-ui && npm ci && npm run e2e:install && npm run e2e
 ```
 
 The stack is started separately on purpose. A suite that owns the lifecycle

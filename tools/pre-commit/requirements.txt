@@ -1,0 +1,15 @@
+# pre-commit and every tool its hooks run, for the lint workflow, the agent
+# workspace image and local development. The hooks in .pre-commit-config.yaml
+# are `language: system` and run these executables from PATH, so pre-commit
+# never builds a hook environment of its own (which would resolve the hooks'
+# dependencies and build backends without versions).
+#
+# Input of scripts/lock-requirements.sh, never installed directly: install
+# requirements.lock with --no-deps --require-hashes into the environment you
+# run pre-commit from.
+pre-commit==4.6.2
+pre-commit-hooks==5.0.0
+autoflake==2.3.1
+isort==5.13.2
+black==26.5.1
+flake8==7.1.2

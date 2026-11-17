@@ -7,7 +7,7 @@ Key facts for agents:
 - Nothing in the worker or orchestrator is stubbed; only the layer *below* the worker is simulated (`nvidia-smi`, `nvcc`, the `vllm` binary) via `gpusim`, because every GPU-compatibility decision is read from that text boundary.
 - **The stack is started separately on purpose** (`harness.stack.compose up`) — the tests skip with instructions when it is down; they do not own its lifecycle. Don't add setup/teardown to the suites. Orchestrator restart for lifecycle isolation also stays outside pytest (`harness.stack.run_phased_benchmark` / `bootstrap_benchmark --prepare-lifecycle`).
 - Dual-Ada residency simulation CI must call `python -m harness.stack.run_phased_benchmark` (traffic → external prepare/restart → lifecycle+report + merged JUnit), not a single monolith pytest that restarts compose.
-- The venv is installed only from `requirements.lock` (this suite's `pyproject.toml` resolved together with `../logos-workernode/requirements.txt`, exact versions with hashes). After changing either, run `../logos-workernode/scripts/lock-requirements.sh` and commit the locks.
+- The venv is installed only from `requirements.lock` (this suite's `pyproject.toml` resolved together with `../logos-workernode/requirements.txt`, exact versions with hashes). After changing either, run `../scripts/lock-requirements.sh` and commit the locks.
 - Tier 4 (Playwright) lives in `../logos-ui/e2e` and goes through Traefik rather than straight at the UI container — production serves UI and API on one origin, and separate origins would hide CORS/cookie/same-origin-WebSocket problems.
 
 ```bash

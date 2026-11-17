@@ -65,12 +65,11 @@ def test_worker_image_pins_vllm_with_the_audio_extra() -> None:
     )
 
 
-def test_dev_compose_default_pins_vllm_with_the_audio_extra() -> None:
-    match = re.search(r"^\s*VLLM_PIP_SPEC:\s*\$\{VLLM_PIP_SPEC:-(?P<spec>[^}]+)\}", _read(COMPOSE_DEV), re.M)
-    assert match, "docker-compose.dev.yml no longer defines a VLLM_PIP_SPEC default"
-    assert "[audio]" in match.group("spec"), (
-        f"dev compose default is {match.group('spec')!r} — a dev worker built from it cannot decode "
-        "audio, so transcription bugs stay invisible until production"
+def test_dev_compose_builds_the_locked_vllm() -> None:
+    """A dev build must use the Dockerfile pin (and its lock), not an override without [audio]."""
+    assert not re.search(r"^\s*VLLM_PIP_SPEC:", _read(COMPOSE_DEV), re.M), (
+        "docker-compose.dev.yml overrides VLLM_PIP_SPEC — the image installs only requirements.lock, so an "
+        "override can only fail the build or hide that the dev worker differs from production"
     )
 
 
@@ -151,7 +150,7 @@ def test_image_lock_pins_the_dockerfile_vllm_and_both_audio_backends() -> None:
     assert match
     assert _locked_version("vllm") == match.group("version").lstrip("v"), (
         "requirements.lock pins a different vLLM than VLLM_PIP_SPEC: "
-        "run logos-workernode/scripts/lock-requirements.sh"
+        "run scripts/lock-requirements.sh from the repository root"
     )
     for backend in ("soundfile", "av"):
         assert _locked_version(backend), f"requirements.lock lacks {backend}, so the [audio] extra is not installed"
