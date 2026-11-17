@@ -59,8 +59,9 @@
       @for (item of displayItems(); track trackById($index, item)) {
         <div
           class="rr-card"
-          [style.border-color]="borderColorOf(item)"
-          [style.background-color]="bgTintOf(item)"
+          [class.rr-card--expanded]="expandedRoutingId() === item.request_id"
+          [style.border-color]="expandedRoutingId() === item.request_id ? 'rgb(var(--color-primary-400))' : borderColorOf(item)"
+          [style.background-color]="expandedRoutingId() === item.request_id ? 'rgb(var(--color-surface-0))' : bgTintOf(item)"
         >
           <!-- Left column -->
           <div class="rr-card__left">
@@ -69,7 +70,16 @@
               <span class="rr-card__age">{{ timeAgoOf(item) }}</span>
             </div>
             <div class="rr-card__bottom-row">
-              <span class="rr-card__provider">{{ providerLabelOf(item) }}</span>
+              <button type="button" class="rr-card__provider rr-routing-toggle"
+                [attr.aria-expanded]="expandedRoutingId() === item.request_id"
+                [attr.aria-controls]="'routing-' + item.request_id"
+                [attr.aria-label]="'Routing candidates for ' + providerLabelOf(item)"
+                (click)="toggleRouting(item.request_id)">
+                @if (expandedRoutingId() === item.request_id) { <i class="pi pi-trophy" aria-hidden="true"></i> }
+                {{ providerLabelOf(item) }}
+                <i class="pi" [class.pi-angle-up]="expandedRoutingId() === item.request_id"
+                  [class.pi-angle-down]="expandedRoutingId() !== item.request_id" aria-hidden="true"></i>
+              </button>
               <span
                 class="rr-badge"
                 [class.rr-badge--cloud]="item.is_cloud"
@@ -149,6 +159,11 @@
               </summary>
               <div class="rr-card__error-message">{{ item.error_message }}</div>
             </details>
+          }
+          @if (expandedRoutingId() === item.request_id) {
+            <app-request-routing [id]="'routing-' + item.request_id" [requestId]="item.request_id"
+              [complete]="stageOf(item) === 'complete'" [providerName]="item.provider_name"
+              [scheduledTs]="item.scheduled_ts" />
           }
           @if (expandedRequestId() === item.request_id) {
             <section class="rr-payload" aria-label="Request content">
