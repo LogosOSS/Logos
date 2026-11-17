@@ -139,10 +139,17 @@ ARG VLLM_PIP_SPEC
 ARG TORCH_INDEX_URL
 ARG NCCL_PIP_SPEC
 
+# requirements.txt is resolved in the same operation as vLLM: the worker
+# shares this venv with vLLM, and a separate later install would silently
+# replace any of vLLM's dependencies with a worker pin outside vLLM's range
+# (uv only resolves the packages it is asked to install). Resolving both
+# together turns such a conflict into a build failure.
 RUN --mount=type=bind,from=uv,source=/uv,target=/usr/local/bin/uv \
+    --mount=type=bind,source=requirements.txt,target=/tmp/requirements.txt \
     set -e \
     # 1. Install vLLM (pins torch + the full CUDA 13 toolkit from PyPI)
-    && uv pip install --no-cache "$VLLM_PIP_SPEC" \
+    #    together with the worker's own requirements
+    && uv pip install --no-cache "$VLLM_PIP_SPEC" -r /tmp/requirements.txt \
     # 2. Optional: reinstall torch from a specific CUDA wheel index.
     #    Since vLLM ≥0.20, PyPI torch already includes CUDA support, so
     #    this is normally a no-op (TORCH_INDEX_URL defaults to empty).
@@ -177,12 +184,6 @@ RUN --mount=type=bind,from=uv,source=/uv,target=/usr/local/bin/uv \
     # Strip test/benchmark payloads
     && { find /opt/venv -type d \( -name 'tests' -o -name 'test' -o -name 'benchmarks' \) \
          -path '*/torch/*' -exec rm -rf {} + || true; }
-
-# Requirement changes keep the vLLM layer cached.
-COPY requirements.txt /tmp/requirements.txt
-RUN --mount=type=bind,from=uv,source=/uv,target=/usr/local/bin/uv \
-    uv pip install --no-cache -r /tmp/requirements.txt \
-    && rm /tmp/requirements.txt
 
 # ── CUDA toolkit prefix from the pip wheels ───────────────────────────────────
 # CUDA_HOME/PATH make FlashInfer & friends resolve nvcc/headers/libs from the
