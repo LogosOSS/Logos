@@ -25,7 +25,10 @@ const insight = (overrides: Partial<NodeModelInsight> = {}): NodeModelInsight =>
         loaded_vram_mb: 40000,
         kv_min_mb: 1024,
         kv_max_mb: 4096,
-        pairs: [],
+        pairs: [
+          { kv_mb: 1024, max_model_len: 5440, measured: true },
+          { kv_mb: 4096, max_model_len: 32768, measured: true },
+        ],
         cold_load_time_s: 54.6,
         wake_from_sleep_time_s: 1.3,
         enforce_eager: true,
@@ -94,6 +97,7 @@ describe('NodeModel', () => {
       getNodeConfig: vi.fn().mockResolvedValue(config),
       getNodeInsights: vi.fn().mockResolvedValue(insights([insight()])),
       getProviders: vi.fn().mockResolvedValue([{ id: 4, name: 'hochbruegge' }]),
+      replaceNodeConfig: vi.fn().mockResolvedValue({ provider_id: 4, config_revision: 4 }),
     };
   });
 
@@ -227,5 +231,216 @@ describe('NodeModel', () => {
     const root = await create();
 
     expect(root.textContent).toContain('Node 4');
+  });
+
+  describe('editing', () => {
+    const click = (root: HTMLElement, selector: string): void => root.querySelector<HTMLElement>(selector)!.click();
+    const edit = async (): Promise<HTMLElement> => {
+      const root = await create();
+      click(root, '.head button.btn-primary');
+      fixture.detectChanges();
+      return root;
+    };
+    const page = (): NodeModel => fixture.componentInstance;
+
+    it('starts from the stored placement and keeps Save off until something changes', async () => {
+      const root = await edit();
+
+      expect(page().draft()).toEqual({ tp: 4, kvGb: 4, ctx: 32768 });
+      expect(root.textContent).toContain('Editing');
+      expect(root.querySelector<HTMLButtonElement>('.savebar .btn-primary')!.disabled).toBe(true);
+      expect(root.textContent).toContain('No changes.');
+    });
+
+    it('keeps the KV cache inside the measured window and the context inside what that cache holds', async () => {
+      const root = await edit();
+
+      page().setKv(9);
+      expect(page().draft()!.kvGb).toBe(4);
+      page().setKv(1);
+      fixture.detectChanges();
+
+      expect(page().draft()).toEqual({ tp: 4, kvGb: 1, ctx: 5120 });
+      expect(root.textContent).toContain('Up to about 5,120 tokens');
+      expect(root.textContent).toContain('KV cache 4 → 1 GB per GPU');
+      expect(root.textContent).toContain('Context 32768 → 5120');
+      page().setCtx(999999);
+      expect(page().draft()!.ctx).toBe(5120);
+      page().setCtx(100);
+      expect(page().draft()!.ctx).toBe(1024);
+    });
+
+    it('ignores input that is not a number and a TP that was not calibrated', async () => {
+      await edit();
+
+      page().setKv('abc');
+      page().setCtx('abc');
+      page().setTp(8);
+
+      expect(page().draft()).toEqual({ tp: 4, kvGb: 4, ctx: 32768 });
+    });
+
+    it('saves the whole list with the revision it was read at and shows the result', async () => {
+      const root = await edit();
+      page().setKv(2);
+      fixture.detectChanges();
+
+      click(root, '.savebar .btn-primary');
+      await settle();
+
+      expect(service['replaceNodeConfig']).toHaveBeenCalledWith(4, 3, [
+        {
+          model_name: 'org/a',
+          capability: { tensor_parallel_size: 4, kv_cache_memory_bytes: '2G', min_context_fraction: 1 },
+          overrides: { max_model_len: 14336, quantization: 'awq' },
+        },
+      ]);
+      expect(page().editing()).toBe(false);
+      expect(root.textContent).toContain('Saved');
+      expect(service['getNodeConfig']).toHaveBeenCalledTimes(2);
+    });
+
+    it('shows the checking state while the worker decides and locks the page', async () => {
+      const root = await edit();
+      page().setKv(2);
+      fixture.detectChanges();
+      let finish: (value: unknown) => void = () => undefined;
+      service['replaceNodeConfig'].mockReturnValue(new Promise((resolve) => (finish = resolve)));
+
+      click(root, '.savebar .btn-primary');
+      fixture.detectChanges();
+
+      expect(root.textContent).toContain('Checking the settings');
+      expect(root.querySelector('.grid')!.hasAttribute('inert')).toBe(true);
+      expect(root.querySelector<HTMLButtonElement>('.savebar .btn-secondary')!.disabled).toBe(true);
+      page().cancelEdit();
+      expect(page().editing()).toBe(true);
+
+      finish({ provider_id: 4, config_revision: 4 });
+      await settle();
+      expect(page().editing()).toBe(false);
+    });
+
+    it('shows what the worker rejected, at the field and in the list, and keeps the input', async () => {
+      const root = await edit();
+      page().setCtx(8192);
+      fixture.detectChanges();
+      service['replaceNodeConfig'].mockRejectedValue({
+        status: 400,
+        error: {
+          error: 'org/a: max_model_len: too long',
+          errors: [{ model: 'org/a', key: 'max_model_len', message: 'too long', suggestion: null }],
+        },
+      });
+
+      click(root, '.savebar .btn-primary');
+      await settle();
+
+      expect(root.textContent).toContain('Worker rejected the settings');
+      expect(root.textContent).toContain('1 setting needs a change.');
+      expect(root.querySelector('#ctx')!.getAttribute('aria-invalid')).toBe('true');
+      expect(root.querySelector('.ferr')!.textContent).toContain('too long');
+      expect(page().draft()!.ctx).toBe(8192);
+      expect(page().editing()).toBe(true);
+    });
+
+    it('offers to reload after a conflict and leaves the editor with the newer list', async () => {
+      const root = await edit();
+      page().setKv(2);
+      fixture.detectChanges();
+      service['replaceNodeConfig'].mockRejectedValue({ status: 409, error: { error: 'Configuration changed meanwhile' } });
+
+      click(root, '.savebar .btn-primary');
+      await settle();
+      expect(root.textContent).toContain('Configuration changed');
+
+      click(root, '.banner .btn-secondary');
+      await settle();
+
+      expect(service['getNodeConfig']).toHaveBeenCalledTimes(2);
+      expect(page().editing()).toBe(false);
+      expect(page().failure()).toBeNull();
+    });
+
+    it('offers to try again when the worker cannot be reached', async () => {
+      const root = await edit();
+      page().setKv(2);
+      fixture.detectChanges();
+      service['replaceNodeConfig'].mockRejectedValueOnce({ status: 503, error: { error: 'Worker not connected' } });
+
+      click(root, '.savebar .btn-primary');
+      await settle();
+      expect(root.textContent).toContain('Worker not reachable');
+
+      click(root, '.banner .btn-danger');
+      await settle();
+
+      expect(service['replaceNodeConfig']).toHaveBeenCalledTimes(2);
+      expect(page().editing()).toBe(false);
+    });
+
+    it('drops the draft on cancel', async () => {
+      const root = await edit();
+      page().setKv(2);
+
+      click(root, '.savebar .btn-secondary');
+      fixture.detectChanges();
+
+      expect(page().editing()).toBe(false);
+      expect(page().draft()).toBeNull();
+      expect(service['replaceNodeConfig']).not.toHaveBeenCalled();
+    });
+
+    it('offers no editing while the worker is offline or the model is not calibrated', async () => {
+      service['getNodeInsights'].mockResolvedValue(insights([insight()], false));
+      expect((await create()).querySelector('.head button')).toBeNull();
+
+      TestBed.resetTestingModule();
+      service['getNodeInsights'].mockResolvedValue(
+        insights([insight({ calibration: { status: 'not_calibrated', reason: null, results: [] } })]),
+      );
+      expect((await create()).querySelector('.head button')).toBeNull();
+    });
+
+    it('starts a model without a placement from the best benchmark and calls it Configure', async () => {
+      const best = { benchmark_id: 7, throughput: 52.3, settings: { kv_cache_memory_bytes: '2G', max_model_len: 8192 }, recorded_at: null };
+      service['getNodeConfig'].mockResolvedValue({ ...config, entries: [] });
+      service['getNodeInsights'].mockResolvedValue(
+        insights([
+          insight({
+            row: false,
+            configured: false,
+            benchmark: { best_eligible: best, best_observed: best, current: {}, eligible_for_comparison: true },
+          }),
+        ]),
+      );
+      const root = await create();
+      expect(root.querySelector('.head button')!.textContent).toContain('Configure model');
+
+      click(root, '.head button.btn-primary');
+      fixture.detectChanges();
+
+      expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 8192 });
+      expect(root.textContent).toContain('TP 4');
+      expect(page().dirty()).toBe(true);
+    });
+
+    it('takes the benchmark recommendation into the editor', async () => {
+      const best = { benchmark_id: 7, throughput: 52.3, settings: { kv_cache_memory_bytes: '2G', max_model_len: 8192 }, recorded_at: null };
+      service['getNodeInsights'].mockResolvedValue(
+        insights([
+          insight({
+            benchmark: { best_eligible: best, best_observed: best, current: { kv_cache_memory_bytes: '4G' }, eligible_for_comparison: true },
+          }),
+        ]),
+      );
+      const root = await create();
+
+      click(root, '.banner .btn-secondary');
+      fixture.detectChanges();
+
+      expect(page().editing()).toBe(true);
+      expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 8192 });
+    });
   });
 });

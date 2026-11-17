@@ -42,6 +42,25 @@ def conflicts(capability: Mapping[str, Any], overrides: Mapping[str, Any]) -> di
     }
 
 
+_SUGGESTION = re.compile(r"\s*\(did you mean ([^?]+)\?\)\s*$")
+
+
+def error_items(messages: Iterable[str]) -> list[dict[str, Any]]:
+    """Messages ("model: key: text") as model, key, message and suggestion."""
+    items = []
+    for message in messages:
+        suggestion = None
+        hint = _SUGGESTION.search(message)
+        if hint:
+            suggestion, message = hint.group(1), message[: hint.start()]
+        parts = message.split(": ", 2)
+        model, key, text = (parts[0], parts[1], parts[2]) if len(parts) == 3 else (None, None, message)
+        if len(parts) == 2:
+            model, text = parts
+        items.append({"model": model, "key": key, "message": text, "suggestion": suggestion})
+    return items
+
+
 def name_errors(entries: Iterable[Any]) -> list[str]:
     """Blank or repeated model names, which the table cannot hold."""
     errors: list[str] = []

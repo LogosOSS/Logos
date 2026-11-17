@@ -260,7 +260,29 @@ def test_what_the_worker_refuses_is_not_stored(env):
     status, body = _body(_replace())
     assert status == 400
     assert body["error"] == "org/a: dtype: bad; org/b: x: bad"
+    assert body["errors"] == [
+        {"model": "org/a", "key": "dtype", "message": "bad", "suggestion": None},
+        {"model": "org/b", "key": "x", "message": "bad", "suggestion": None},
+    ]
     assert db.replaced == []
+
+
+def test_a_misspelled_key_comes_back_with_its_suggestion_as_a_field_error(env):
+    _, registry = env()
+    registry.validate_error = LogosNodeCommandRejectedError(
+        "org/a: max_modell_len: unknown setting (did you mean max_model_len?)"
+    )
+    _, body = _body(_replace())
+    assert body["errors"] == [
+        {"model": "org/a", "key": "max_modell_len", "message": "unknown setting", "suggestion": "max_model_len"}
+    ]
+
+
+def test_the_orchestrators_own_rejection_lists_its_problems_too(env):
+    env()
+    status, body = _body(_replace([_entry("org/a", {"tensor_parallel_size": 0})]))
+    assert status == 400
+    assert body["errors"][0]["model"] == "org/a" and "tensor_parallel_size" in body["errors"][0]["message"]
 
 
 def test_an_offline_worker_cannot_validate_so_nothing_is_stored(env):

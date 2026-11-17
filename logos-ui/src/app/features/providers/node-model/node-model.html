@@ -7,7 +7,17 @@
     <span>Models</span>
   </nav>
 
-  <h1 class="page-title">{{ modelName() || 'Model' }}</h1>
+  <div class="head">
+    <h1 class="page-title">{{ modelName() || 'Model' }}</h1>
+    @if (editing()) {
+      <span class="chip">Editing</span>
+    } @else if (!loading() && !error() && canEdit()) {
+      <button class="btn-primary" type="button" (click)="startEdit()">
+        <i class="pi pi-pencil" aria-hidden="true"></i>
+        {{ insight()?.configured ? 'Edit configuration' : 'Configure model' }}
+      </button>
+    }
+  </div>
 
   @if (loading()) {
     <div class="loading" role="status" aria-live="polite">
@@ -43,6 +53,74 @@
       </div>
     </div>
 
+    @if (saving()) {
+      <div class="banner banner--info" role="status">
+        <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+        <div>
+          <b>Checking the settings</b>
+          <span>{{ providerName() }} checks every setting before it is saved. This usually takes a few seconds.</span>
+        </div>
+      </div>
+    }
+
+    @if (failure(); as f) {
+      <div class="banner" [class.banner--err]="f.kind !== 'conflict'" tabindex="-1" #failureBanner [attr.role]="f.kind === 'conflict' ? 'status' : 'alert'">
+        <i class="pi" [class.pi-refresh]="f.kind === 'conflict'" [class.pi-times-circle]="f.kind !== 'conflict'" aria-hidden="true"></i>
+        <div>
+          @switch (f.kind) {
+            @case ('conflict') {
+              <b>Configuration changed</b>
+              <span>Another admin saved this node while you were editing. Your changes were not saved.</span>
+            }
+            @case ('rejected') {
+              <b>Worker rejected the settings</b>
+              <span>
+                {{ f.items.length === 1 ? '1 setting needs a change.' : (f.items.length || 'Some') + ' settings need a change.' }}
+                Nothing was saved.
+              </span>
+              @if (f.items.length === 0) {
+                <span>{{ f.message }}</span>
+              }
+              <ul class="elist">
+                @for (item of f.items; track $index) {
+                  <li><code>{{ item.key || item.model }}</code> {{ item.message }}</li>
+                }
+              </ul>
+            }
+            @case ('unreachable') {
+              <b>Worker not reachable</b>
+              <span>{{ providerName() }} did not answer. Nothing was saved. Check that the worker is running, then save again.</span>
+            }
+            @default {
+              <b>Could not save</b>
+              <span>{{ f.message }}</span>
+            }
+          }
+        </div>
+        @if (f.kind === 'conflict') {
+          <button class="btn-secondary btn-sm" type="button" (click)="reloadAfterConflict()">
+            <i class="pi pi-refresh" aria-hidden="true"></i>
+            Reload
+          </button>
+        } @else if (f.kind === 'unreachable') {
+          <button class="btn-danger btn-sm" type="button" (click)="save()">
+            <i class="pi pi-refresh" aria-hidden="true"></i>
+            Try again
+          </button>
+        }
+      </div>
+    }
+
+    @if (savedNotice() && !editing()) {
+      <div class="banner banner--info" role="status">
+        <i class="pi pi-check-circle" aria-hidden="true"></i>
+        <div>
+          <b>Saved</b>
+          <span>The worker applies the new settings from the next lane start.</span>
+        </div>
+      </div>
+    }
+
     @if (!workerOnline()) {
       <div class="banner banner--warn" role="status">
         <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
@@ -63,14 +141,111 @@
             benchmark #{{ rec.benchmark_id }}).
           </span>
         </div>
+        @if (canEdit() && !editing()) {
+          <button class="btn-secondary btn-sm" type="button" (click)="applyRecommendation()">Use recommendation</button>
+        }
       </div>
     }
 
-    <div class="grid">
+    <div class="grid" [attr.inert]="saving() ? '' : null" [attr.aria-busy]="saving()">
       <div class="stack">
         <section class="card" aria-labelledby="cfg-title">
           <h2 id="cfg-title">Configuration</h2>
-          @if (insight()?.configured) {
+          @if (editing() && draft(); as d) {
+            <p class="sub">
+              How this model is placed on {{ providerName() }}. Only options that calibrated successfully can be chosen.
+            </p>
+
+            <div class="field">
+              <span class="label" id="tp-label">GPUs per instance (tensor parallel)</span>
+              <div class="options" role="radiogroup" aria-labelledby="tp-label">
+                @for (r of insight()!.calibration.results; track r.tp) {
+                  <button
+                    type="button"
+                    role="radio"
+                    class="option"
+                    [class.option--on]="d.tp === r.tp"
+                    [attr.aria-checked]="d.tp === r.tp"
+                    (click)="setTp(r.tp)"
+                  >
+                    <b>TP {{ r.tp }}</b>
+                    <small>{{ r.tp }} {{ r.tp === 1 ? 'GPU' : 'GPUs' }}</small>
+                  </button>
+                }
+              </div>
+              @if (fieldError('tensor_parallel_size'); as e) {
+                <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e.message }}</p>
+              }
+            </div>
+
+            @if (window(); as w) {
+              <div class="field">
+                <label class="label" for="kv">KV cache memory per GPU</label>
+                <div class="control">
+                  <input
+                    id="kv"
+                    type="number"
+                    class="num"
+                    [min]="w.min"
+                    [max]="w.max"
+                    step="1"
+                    [value]="d.kvGb"
+                    [class.invalid]="fieldError('kv_cache_memory_bytes')"
+                    [attr.aria-invalid]="fieldError('kv_cache_memory_bytes') ? 'true' : null"
+                    (input)="setKv($any($event.target).value)"
+                  />
+                  <span class="unit">GB</span>
+                </div>
+                <input
+                  type="range"
+                  aria-label="KV cache memory per GPU"
+                  [min]="w.min"
+                  [max]="w.max"
+                  step="1"
+                  [value]="d.kvGb"
+                  (input)="setKv($any($event.target).value)"
+                />
+                <p class="hint">Measured range: {{ w.min }} to {{ w.max }} GB per GPU, in whole GB.</p>
+                @if (fieldError('kv_cache_memory_bytes'); as e) {
+                  <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e.message }}</p>
+                }
+              </div>
+            }
+
+            <div class="field">
+              <label class="label" for="ctx">Max. context length</label>
+              <div class="control">
+                <input
+                  id="ctx"
+                  type="number"
+                  class="num"
+                  min="1024"
+                  [max]="capacity() ?? null"
+                  step="1024"
+                  [value]="d.ctx"
+                  [class.invalid]="fieldError('max_model_len')"
+                  [attr.aria-invalid]="fieldError('max_model_len') ? 'true' : null"
+                  (change)="setCtx($any($event.target).value)"
+                />
+                <span class="unit">tokens</span>
+              </div>
+              <input
+                type="range"
+                aria-label="Max. context length"
+                min="1024"
+                [max]="capacity() ?? 131072"
+                step="1024"
+                [value]="d.ctx"
+                (input)="setCtx($any($event.target).value)"
+              />
+              @if (capacity(); as cap) {
+                <p class="hint">Up to about {{ formatTokens(cap) }} tokens at this KV cache size.</p>
+              }
+              @if (fieldError('max_model_len'); as e) {
+                <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e.message }}</p>
+              }
+            </div>
+          } @else if (insight()?.configured) {
             <p class="sub">Current placement on {{ providerName() }}.</p>
             <dl class="facts">
               <div><dt>GPUs per instance (tensor parallel)</dt><dd>TP {{ settings()['tensor_parallel_size'] }}</dd></div>
@@ -142,5 +317,34 @@
         }
       </div>
     </div>
+
+    @if (editing()) {
+      <div class="savebar" role="region" aria-label="Save changes">
+        @if (saving()) {
+          <div class="progress" aria-hidden="true"></div>
+        }
+        <p role="status" aria-live="polite">
+          @if (saving()) {
+            Waiting for the worker to check the settings…
+          } @else if (dirty()) {
+            <b>{{ changes().length }} unsaved {{ changes().length === 1 ? 'change' : 'changes' }}:</b>
+            {{ changes().join(' · ') }}
+          } @else {
+            No changes. The worker checks the settings before they are saved.
+          }
+        </p>
+        <div class="actions">
+          <button class="btn-secondary" type="button" [disabled]="saving()" (click)="cancelEdit()">Cancel</button>
+          <button class="btn-primary" type="button" [disabled]="!dirty() || saving()" [attr.aria-busy]="saving()" (click)="save()">
+            @if (saving()) {
+              <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+              Checking…
+            } @else {
+              Save
+            }
+          </button>
+        </div>
+      </div>
+    }
   }
 </div>

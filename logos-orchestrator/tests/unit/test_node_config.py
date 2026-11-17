@@ -54,3 +54,20 @@ def test_capability_values_are_checked_against_their_expected_form():
         }
     )
     assert len(entry_errors([entry])) == 5
+
+
+def test_error_items_split_model_key_message_and_suggestion():
+    from logos.node_config import error_items
+
+    items = error_items(
+        [
+            "org/a: max_modell_len: unknown setting (did you mean max_model_len?)",
+            "org/b: max_model_len: Input should be a valid integer: unable to parse",
+            "org/c: listed twice",
+            "model_name must not be blank",
+        ]
+    )
+    assert items[0] == {"model": "org/a", "key": "max_modell_len", "message": "unknown setting", "suggestion": "max_model_len"}
+    assert items[1]["key"] == "max_model_len" and items[1]["message"].endswith("unable to parse")
+    assert items[2] == {"model": "org/c", "key": None, "message": "listed twice", "suggestion": None}
+    assert items[3] == {"model": None, "key": None, "message": "model_name must not be blank", "suggestion": None}

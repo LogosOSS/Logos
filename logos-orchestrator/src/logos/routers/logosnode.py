@@ -60,6 +60,7 @@ from logos.node_config import (
     VALIDATE_NODE_CONFIG_ACTION,
     conflict_warnings,
     entry_errors,
+    error_items,
     name_errors,
 )
 from logos.notifications import emit_notification
@@ -934,7 +935,7 @@ async def _worker_refusal(provider_id: int, rows: list[Dict[str, Any]]) -> JSONR
         return admin_error_response(503, "Worker not connected")
     except LogosNodeCommandRejectedError as exc:
         # The registry raises a refusal; its message lists the problems.
-        return admin_error_response(400, str(exc))
+        return admin_error_response(400, str(exc), error_items(str(exc).split("; ")))
     except LogosNodeCommandError as exc:
         return admin_error_response(502, f"The worker could not validate the configuration: {exc}")
     return None
@@ -999,7 +1000,7 @@ async def save_node_config(
     """
     errors = entry_errors(entries)
     if errors:
-        return admin_error_response(400, "; ".join(errors))
+        return admin_error_response(400, "; ".join(errors), error_items(errors))
     rows = [{**entry.model_dump(), "model_name": entry.model_name.strip()} for entry in entries]
     if rows:
         if await asyncio.to_thread(_load_node_config, provider_id) is None:
