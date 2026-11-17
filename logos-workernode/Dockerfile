@@ -192,10 +192,16 @@ RUN --mount=type=bind,from=uv,source=/uv,target=/usr/local/bin/uv \
              "torch==${torch_ver}"; \
        fi \
     && if [ -n "$NCCL_PIP_SPEC" ]; then \
+         # Exactly one `name==version` with a concrete version: no wildcard,
+         # range, extra or second specifier.
          case "$NCCL_PIP_SPEC" in \
-           *==*) ;; \
-           *) echo "NCCL_PIP_SPEC must be an exact pin (package==version): $NCCL_PIP_SPEC" >&2; exit 1 ;; \
+           *[!A-Za-z0-9._+=-]*|*===*|*==*==*) nccl_pin= ;; \
+           [A-Za-z0-9]*==[0-9]*) nccl_pin=1 ;; \
+           *) nccl_pin= ;; \
          esac; \
+         if [ -z "$nccl_pin" ]; then \
+           echo "NCCL_PIP_SPEC must be an exact pin (package==version): $NCCL_PIP_SPEC" >&2; exit 1; \
+         fi; \
          uv pip install --no-cache --reinstall --no-deps "$NCCL_PIP_SPEC"; \
        fi \
     # Strip test/benchmark payloads

@@ -9,9 +9,9 @@ WORKDIR /build/logos/logos-orchestrator
 # build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
 # digest together.
 ARG APT_SNAPSHOT=20261117T000000Z
-RUN sed -i \
-      -e "s#http://deb.debian.org/debian-security#http://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}#" \
-      -e "s#http://deb.debian.org/debian#http://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}#" \
+RUN sed -i -E \
+      -e "s#https?://deb\.debian\.org/debian-security/?#https://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}/#g" \
+      -e "s#https?://deb\.debian\.org/debian/?#https://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}/#g" \
       /etc/apt/sources.list.d/debian.sources \
   && ! grep -q deb.debian.org /etc/apt/sources.list.d/debian.sources
 
@@ -76,9 +76,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 # build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
 # digest together.
 ARG APT_SNAPSHOT=20261117T000000Z
-RUN sed -i \
-      -e "s#http://deb.debian.org/debian-security#http://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}#" \
-      -e "s#http://deb.debian.org/debian#http://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}#" \
+RUN sed -i -E \
+      -e "s#https?://deb\.debian\.org/debian-security/?#https://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}/#g" \
+      -e "s#https?://deb\.debian\.org/debian/?#https://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}/#g" \
       /etc/apt/sources.list.d/debian.sources \
   && ! grep -q deb.debian.org /etc/apt/sources.list.d/debian.sources
 

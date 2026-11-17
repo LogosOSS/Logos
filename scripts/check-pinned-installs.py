@@ -6,8 +6,9 @@ Dockerfile, shell script, GitHub workflow, Markdown document and package.json
 script in the repository (tracked files) and rejects:
 
 - Python installs that resolve: `pip install` / `uv pip install` must install a
-  hash-pinned lock (`--require-hashes -r *.lock`), exact `==` pins, or a local
-  project with `--no-deps`; `uv sync` must pass `--locked`.
+  hash-pinned lock (`--require-hashes -r *.lock`), exact `name==1.2.3` pins
+  (no wildcards or ranges), or a local project with `--no-deps`; `uv sync` must
+  pass `--locked`.
 - `uv tool install` / `pipx install` / `uvx` without an exact version.
 - `apt-get install` / `apt install` / `apk add` packages without `=version`.
 - `npm install` / `npm i` (use `npm ci`), and global installs or `npx` calls
@@ -49,6 +50,16 @@ EXEMPT: dict[tuple[str, str], str] = {
 
 SUFFIXES = {".sh", ".yml", ".yaml", ".md", ".mdx"}
 EXACT_VERSION = re.compile(r"^\d+\.\d+\.\d+([.+-][0-9A-Za-z.+-]*)?$")
+# `name==version` (or `name[extra]==version`) with a concrete version: no `*`
+# wildcard, no second specifier. A shell variable stands for a version the
+# script determines itself.
+PINNED_PYTHON_SPEC = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]*\])?" r"==(\d[0-9A-Za-z.+!_-]*|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?)$"
+)
+# `pkg@1.2.3` (npm, also scoped) or a version from a shell variable.
+PINNED_NPM_SPEC = re.compile(r".@(\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?)$")
+# `tool@1.2.3` for uvx, or a version from a shell variable.
+PINNED_UVX_SPEC = re.compile(r".@(\d[0-9A-Za-z.+!_-]*|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?)$")
 # Options of pip / uv pip install that take a value.
 PIP_VALUE_OPTIONS = {
     "-r",
@@ -74,11 +85,11 @@ PIP_VALUE_OPTIONS = {
 VALIDATED_SPEC_VARIABLES = {"$NCCL_PIP_SPEC", "${NCCL_PIP_SPEC}"}
 
 
-def tracked_files() -> list[Path]:
-    out = subprocess.run(["git", "ls-files"], cwd=ROOT, check=True, capture_output=True, text=True).stdout
+def tracked_files(root: Path = ROOT) -> list[Path]:
+    out = subprocess.run(["git", "ls-files"], cwd=root, check=True, capture_output=True, text=True).stdout
     files = []
     for name in out.splitlines():
-        path = ROOT / name
+        path = root / name
         base = path.name
         if "node_modules" in path.parts or not path.is_file():
             continue
@@ -160,7 +171,7 @@ def pip_violation(args: list[str]) -> str | None:
             if "--no-deps" not in args and not spec.endswith(".whl"):
                 return f"pip installs local project {spec!r} without --no-deps (resolves its dependencies)"
             continue
-        if "==" not in spec:
+        if not PINNED_PYTHON_SPEC.match(spec):
             return f"pip installs {spec!r} without an exact == version"
     return None
 
@@ -197,12 +208,12 @@ def check_command(command: str) -> list[str]:
             rest = after(words, *prefix)
             if rest is not None:
                 specs = [w for w in rest if not w.startswith("-")]
-                if not specs or "==" not in specs[0]:
+                if not specs or not PINNED_PYTHON_SPEC.match(specs[0]):
                     problems.append("tool: " + " ".join(prefix) + " without an exact == version")
         if words[0] == "uvx" or after(words, "uv", "tool", "run") is not None:
             rest = words[1:] if words[0] == "uvx" else after(words, "uv", "tool", "run")
             target = next((w for w in rest if not w.startswith("-")), "")
-            if "@" not in target and "==" not in target:
+            if not PINNED_UVX_SPEC.search(target) and not PINNED_PYTHON_SPEC.match(target):
                 problems.append(f"uvx: {target!r} without an exact version (use tool@x.y.z)")
         rest = after(words, "uv", "python", "install")
         if rest is not None:
@@ -225,11 +236,11 @@ def check_command(command: str) -> list[str]:
             if not pkgs:
                 problems.append("npm: `npm install` may rewrite the lockfile; use `npm ci`")
             for pkg in pkgs:
-                if not re.search(r".@(\d|\$\{?[A-Z_]+)", pkg):
+                if not PINNED_NPM_SPEC.search(pkg):
                     problems.append(f"npm: {pkg!r} without an exact @version")
         if words[0] == "npx":
             target = next((w for w in words[1:] if not w.startswith("-")), "")
-            if not re.search(r".@(\d|\$\{?[A-Z_]+)", target) and "--no-install" not in words:
+            if not PINNED_NPM_SPEC.search(target) and "--no-install" not in words:
                 problems.append(f"npx: {target!r} without an exact @version")
         if after(words, "brew", "install") is not None:
             problems.append("brew: Homebrew cannot install exact versions")
@@ -237,6 +248,22 @@ def check_command(command: str) -> list[str]:
             if not re.search(r"(@v?\d|--version|-v\s)", text):
                 problems.append(f"{words[0]}: install without an exact version")
     return problems
+
+
+def shell_command(line: str, *, dockerfile: bool, workflow: bool) -> str:
+    """Return the shell command of a Dockerfile RUN or a workflow `run:` line."""
+    if dockerfile:
+        m = re.match(r"^RUN\s+(--\S+\s+)*", line, re.I)
+        if m:
+            return line[m.end() :]
+    if workflow:
+        m = re.match(r"^(-\s+)?run:\s*", line)
+        if m:
+            command = line[m.end() :].strip()
+            if len(command) > 1 and command[0] == command[-1] and command[0] in "'\"":
+                command = command[1:-1]
+            return command
+    return line
 
 
 def check_from(line: str, args: dict[str, str]) -> str | None:
@@ -285,8 +312,8 @@ def check_workflow_steps(text: str) -> list[tuple[int, str]]:
     return problems
 
 
-def check_file(path: Path) -> list[tuple[int, str]]:
-    rel = path.relative_to(ROOT).as_posix()
+def check_file(path: Path, root: Path = ROOT) -> list[tuple[int, str]]:
+    rel = path.relative_to(root).as_posix()
     text = path.read_text(encoding="utf-8", errors="replace")
     problems: list[tuple[int, str]] = []
     if path.name == "package.json":
@@ -303,6 +330,7 @@ def check_file(path: Path) -> list[tuple[int, str]]:
                 problems.append((0, f"apt: `--with-deps` installs system packages without versions (script {name!r})"))
     else:
         is_dockerfile = path.name.startswith("Dockerfile")
+        is_workflow = path.suffix in (".yml", ".yaml")
         args: dict[str, str] = {"__stages__": ""}
         for number, line in logical_lines(text):
             if line.lstrip().startswith("#") and path.suffix not in (".md", ".mdx"):
@@ -317,19 +345,20 @@ def check_file(path: Path) -> list[tuple[int, str]]:
                     problems.append((number, problem))
                 if sm:
                     args["__stages__"] += " " + sm.group(1)
-            for problem in check_command(line):
+            for problem in check_command(shell_command(line, dockerfile=is_dockerfile, workflow=is_workflow)):
                 problems.append((number, problem))
-        if path.suffix in (".yml", ".yaml") and ".github/workflows/" in f"/{rel}":
+        if is_workflow and ".github/workflows/" in f"/{rel}":
             problems.extend(check_workflow_steps(text))
     return [(n, p) for n, p in problems if (rel, p.split(":", 1)[0]) not in EXEMPT]
 
 
-def main() -> int:
+def main(root: Path = ROOT) -> int:
     failures = 0
-    for path in tracked_files():
-        for number, problem in check_file(path):
+    for path in tracked_files(root):
+        for number, problem in check_file(path, root):
             failures += 1
-            where = f"{path.relative_to(ROOT).as_posix()}:{number}" if number else path.relative_to(ROOT).as_posix()
+            rel = path.relative_to(root).as_posix()
+            where = f"{rel}:{number}" if number else rel
             print(f"{where}: {problem}")
     if failures:
         print(

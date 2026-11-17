@@ -45,11 +45,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # apt installs exact versions from a fixed Debian archive snapshot, so every
 # build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
 # digest together. Snapshot lists are older than their Valid-Until date by
-# design, hence the apt setting.
+# design, hence the apt setting. The snapshot is fetched over HTTPS, and the
+# slim Node.js base has no CA bundle yet (the ca-certificates package below
+# installs the real one), so borrow the bundle of a digest-pinned image; the
+# packages themselves are still verified against Debian's signed InRelease.
+COPY --from=python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 \
+     /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 ARG APT_SNAPSHOT=20261117T000000Z
-RUN sed -i \
-      -e "s#http://deb.debian.org/debian-security#http://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}#" \
-      -e "s#http://deb.debian.org/debian#http://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}#" \
+RUN sed -i -E \
+      -e "s#https?://deb\.debian\.org/debian-security/?#https://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}/#g" \
+      -e "s#https?://deb\.debian\.org/debian/?#https://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}/#g" \
       /etc/apt/sources.list.d/debian.sources \
   && ! grep -q deb.debian.org /etc/apt/sources.list.d/debian.sources \
   && printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/99snapshot
