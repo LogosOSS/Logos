@@ -1,6 +1,7 @@
-# The Docker image resolves this file together with vLLM into one venv, so
-# every pin must satisfy vLLM's own requirements (e.g. its fastapi cap); the
-# image build fails otherwise.
+# The Docker image installs requirements.lock, which scripts/lock-vllm-image.sh
+# resolves from this file together with vLLM into one venv: every pin here
+# must satisfy vLLM's own requirements (e.g. its fastapi cap), and the lock
+# must be regenerated after any change to this file.
 fastapi==0.136.3
 uvicorn==0.54.0
 httpx==0.28.1
