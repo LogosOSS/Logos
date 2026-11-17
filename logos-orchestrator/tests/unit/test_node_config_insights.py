@@ -1,0 +1,123 @@
+"""What the model editor shows next to the settings of a node."""
+
+from __future__ import annotations
+
+import datetime
+
+from logos.node_config_insights import (
+    benchmark_view,
+    build_insights,
+    calibration_view,
+    gpu_view,
+    is_configured,
+)
+
+_PROFILE = {
+    "residency_source": "calibrated",
+    "tensor_parallel_size": 2,
+    "base_residency_mb": 41200.0,
+    "loaded_vram_mb": 40000.0,
+    "min_kv_cache_mb": 1024.0,
+    "max_kv_cache_mb": 4096.0,
+    "max_context_length": 32768,
+    "cold_load_time_s": 54.6,
+    "wake_from_sleep_time_s": 1.3,
+    "enforce_eager_at_calibration": True,
+    "kv_cache_to_max_model_len_pairs": [{"kv_mb": 1024.0, "max_model_len": 5440}, "junk"],
+}
+
+
+def test_a_model_with_tp_kv_and_context_is_configured_wherever_they_are_set():
+    entry = {"capability": {"tensor_parallel_size": 2, "kv_cache_memory_bytes": "4G"}, "overrides": {"max_model_len": 8192}}
+    assert is_configured(entry) is True
+
+
+def test_a_model_without_a_placement_or_a_row_is_not_configured():
+    assert is_configured(None) is False
+    assert is_configured({"capability": {}, "overrides": {"quantization": "awq"}}) is False
+    assert is_configured({"capability": {"tensor_parallel_size": 2, "kv_cache_memory_bytes": ""}, "overrides": {}}) is False
+
+
+def test_a_calibrated_profile_shows_its_measured_values():
+    when = datetime.datetime(2026, 11, 1, 5, 0)
+    view = calibration_view(_PROFILE, when)
+    assert view["status"] == "calibrated" and view["stale"] is False
+    assert view["calibrated_at"] == when.isoformat() and view["context_limit"] == 32768
+    (result,) = view["results"]
+    assert result["tp"] == 2 and result["active"] is True and result["kv_max_mb"] == 4096.0
+    assert result["pairs"] == [{"kv_mb": 1024.0, "max_model_len": 5440, "measured": True}]
+
+
+def test_a_stale_calibration_is_outdated_and_an_unsupported_one_names_its_reason():
+    assert calibration_view({**_PROFILE, "calibration_stale": True})["status"] == "outdated"
+    view = calibration_view({**_PROFILE, "calibration_unsupported": True, "calibration_unsupported_reason": "too-big"})
+    assert (view["status"], view["reason"]) == ("unsupported", "too-big")
+
+
+def test_a_model_without_a_measurement_is_not_calibrated():
+    assert calibration_view(None) == {"status": "not_calibrated", "reason": None, "results": []}
+    assert calibration_view({"residency_source": "hf"})["status"] == "not_calibrated"
+    view = calibration_view({"residency_source": "hf", "calibration_unsupported": True, "calibration_unsupported_reason": "x"})
+    assert (view["status"], view["reason"]) == ("unsupported", "x")
+
+
+def test_the_benchmark_view_names_the_best_runs_and_the_current_settings():
+    summary = {
+        "best_observed": {"benchmark_id": 3, "throughput": 60.0},
+        "best_eligible": {"benchmark_id": 2, "throughput": 52.3},
+    }
+    runs = {2: {"serving": {"tensor_parallel_size": 4}, "recorded_at": "t2"}, 3: {"serving": {}, "recorded_at": "t3"}}
+    view = benchmark_view(summary, runs, {"tensor_parallel_size": 2})
+    assert view["best_eligible"] == {
+        "benchmark_id": 2,
+        "throughput": 52.3,
+        "settings": {"tensor_parallel_size": 4},
+        "recorded_at": "t2",
+    }
+    assert view["best_observed"]["benchmark_id"] == 3 and view["eligible_for_comparison"] is True
+    assert view["current"] == {"tensor_parallel_size": 2}
+
+
+def test_no_eligible_run_is_not_comparable_and_no_run_at_all_is_none():
+    only_observed = {"best_observed": {"benchmark_id": 3, "throughput": 1.0}, "best_eligible": None}
+    assert benchmark_view(only_observed, {}, {})["eligible_for_comparison"] is False
+    assert benchmark_view({"best_observed": None, "best_eligible": None}, {}, {}) is None
+    assert benchmark_view(None, {}, {}) is None
+
+
+def test_gpus_come_from_the_workers_device_summary():
+    runtime = {"devices": {"devices": [{"name": "A", "memory_total_mb": 24000, "memory_used_mb": 10, "extra": {"index": 1}}, "junk"]}}
+    assert gpu_view(runtime) == [{"index": 1, "name": "A", "total_mb": 24000, "used_mb": 10}]
+    assert gpu_view(None) == []
+
+
+def _insights(snapshot, config=None, **kwargs):
+    entries = [{"model_name": "org/a", "capability": {}, "overrides": {"quantization": "awq"}}]
+    return build_insights(
+        provider_id=4,
+        config=config or {"revision": 3, "yaml_imported": True, "entries": entries},
+        sources={"org/a": "yaml_import"},
+        profiles=kwargs.get("profiles", {"org/a": _PROFILE, "org/stray": _PROFILE}),
+        calibrated_at={},
+        snapshot=snapshot,
+        supports={"sync_node_config": True},
+        calibrating=kwargs.get("calibrating", False),
+        benchmarks={},
+    )
+
+
+def test_the_answer_lists_stored_models_first_and_adds_reported_and_profiled_ones():
+    snapshot = {"capabilities_models": ["org/a", "org/b"], "configured_models": [], "runtime": {}}
+    result = _insights(snapshot)
+    assert [m["model_name"] for m in result["models"]] == ["org/a", "org/b", "org/stray"]
+    first, second, third = result["models"]
+    assert (first["row"], first["reported"], first["source"], first["configured"]) == (True, True, "yaml_import", False)
+    assert (second["row"], second["reported"], second["calibration"]["status"]) == (False, True, "not_calibrated")
+    assert (third["row"], third["reported"], third["calibration"]["status"]) == (False, False, "calibrated")
+    assert result["worker"] == {"online": True, "supports_actions": {"sync_node_config": True}, "config_revision": 3}
+
+
+def test_an_offline_worker_is_reported_and_the_calibration_flag_follows_the_provider():
+    result = _insights(None, calibrating=True, profiles={})
+    assert result["worker"]["online"] is False and result["gpus"] == []
+    assert [m["calibrating"] for m in result["models"]] == [True]

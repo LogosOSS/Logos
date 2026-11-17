@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from unittest.mock import MagicMock
 
 import pytest
+from fastapi import HTTPException
 
 from logos.dbutils.dbrequest import (
     LogosNodeConfigGetRequest,
@@ -17,6 +19,8 @@ from logos.dbutils.dbrequest import (
 )
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeCommandRejectedError, LogosNodeOfflineError
 from logos.node_config import SYNC_NODE_CONFIG_ACTION, VALIDATE_NODE_CONFIG_ACTION
+from logos.dbutils.dbrequest import InternalNodeConfigReplaceRequest, InternalNodeConfigRequest
+from logos.routers import internal as internal_mod
 from logos.routers import logosnode as logosnode_mod
 
 _STORED = {
@@ -39,11 +43,12 @@ class _FakeSession:
 
 
 class _FakeDB:
-    def __init__(self, *, provider_exists=True, new_revision=4, claim=True):
+    def __init__(self, *, provider_exists=True, new_revision=4, claim=True, known_users=(42,)):
         self.session = _FakeSession()
         self.provider_exists = provider_exists
         self.new_revision = new_revision
         self.claim = claim
+        self.known_users = set(known_users)
         self.replaced: list = []
         self.checked_keys: list = []
 
@@ -68,6 +73,9 @@ class _FakeDB:
 
     def get_user_by_api_key(self, key):
         return {"id": 42}
+
+    def user_exists(self, user_id):
+        return user_id in self.known_users
 
 
 class _FakeRegistry:
@@ -307,3 +315,119 @@ def test_a_hello_schedules_the_configuration_push(env):
     asyncio.run(_run())
     assert registry.sent == [(7, SYNC_NODE_CONFIG_ACTION, _STORED)]
     assert "_schedule_node_config_push(ticket.provider_id)" in inspect.getsource(logosnode_mod.logosnode_session)
+
+
+@pytest.fixture
+def internal(env, monkeypatch):
+    """The same patches, with the internal secret check passed."""
+    monkeypatch.setattr(internal_mod, "_require_internal_secret", lambda request, **_: None)
+    return env
+
+
+def _internal_replace(entries=None, expected_revision=3, user_id=42):
+    data = InternalNodeConfigReplaceRequest(
+        provider_id=7,
+        user_id=user_id,
+        expected_revision=expected_revision,
+        entries=[_entry()] if entries is None else entries,
+    )
+    return asyncio.run(internal_mod.internal_logosnode_node_config_replace(data, request=None))
+
+
+def test_the_internal_read_answers_what_the_admin_read_does(internal):
+    internal()
+    result = asyncio.run(
+        internal_mod.internal_logosnode_node_config_get(InternalNodeConfigRequest(provider_id=7), request=None)
+    )
+    assert result == {"provider_id": 7, **_STORED}
+
+
+def test_the_internal_read_of_an_unknown_node_answers_404(internal):
+    internal(_FakeDB(provider_exists=False))
+    response = asyncio.run(
+        internal_mod.internal_logosnode_node_config_get(InternalNodeConfigRequest(provider_id=7), request=None)
+    )
+    assert response.status_code == 404
+
+
+def test_the_internal_save_stores_the_user_from_the_token_and_pushes(internal):
+    db, registry = internal()
+    assert _internal_replace(user_id=42) == {"provider_id": 7, "config_revision": 4}
+    assert db.replaced[0][3] == 42
+    assert [action for _, action, _ in registry.sent] == [SYNC_NODE_CONFIG_ACTION]
+    assert len(registry.validated) == 1
+
+
+def test_a_user_the_database_does_not_know_is_stored_as_no_author(internal):
+    db, _ = internal()
+    _internal_replace(user_id=999)
+    assert db.replaced[0][3] is None
+
+
+def test_the_internal_save_without_a_user_stores_no_author(internal):
+    db, _ = internal()
+    _internal_replace(user_id=None)
+    assert db.replaced[0][3] is None
+
+
+def test_the_internal_save_answers_like_the_admin_one(internal):
+    db, registry = internal(_FakeDB(new_revision=None))
+    status, body = _body(_internal_replace())
+    assert status == 409 and "revision 3" in body["error"]
+    registry.validation_error = None
+    status, body = _body(_internal_replace(entries=[_entry("org/a"), _entry("org/a")]))
+    assert status == 400
+    assert db.replaced == [(7, [dict(model_name="org/a", capability={}, overrides={})], 3, 42, "ui")]
+
+
+def test_the_internal_endpoints_need_the_internal_secret(env):
+    env()
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            internal_mod.internal_logosnode_node_config_get(InternalNodeConfigRequest(provider_id=7), request=MagicMock())
+        )
+    assert caught.value.status_code == 403
+
+
+def _snapshot(models=("org/a",)):
+    return {"capabilities_models": list(models), "configured_models": [], "runtime": {"devices": {"devices": []}}}
+
+
+def test_the_insights_gather_profiles_benchmarks_and_the_live_worker(internal, monkeypatch):
+    db, registry = internal()
+    monkeypatch.setattr(internal_mod, "DBManager", lambda: db)
+    db.get_node_config_sources = lambda pid: {"org/a": "ui"}
+    db.get_central_model_profiles = lambda pid: [
+        {"model_name": "org/a", "profile": {"residency_source": "calibrated", "base_residency_mb": 1.0}, "sync_revision": 1,
+         "calibration_key_hash": "k", "cal_id": 9, "cal_key_hash": "k", "cal_source_provider_id": 7,
+         "cal_invalidated_at": None, "cal_calibrated_at": None}
+    ]
+    db.get_model_provider_pairs = lambda pid: {"org/a": 11}
+    db.get_benchmark_runs = lambda ids: {2: {"serving": {"tensor_parallel_size": 2}, "recorded_at": "t"}}
+    registry.peek_runtime_snapshot = lambda pid: _snapshot()
+    monkeypatch.setattr(
+        internal_mod.nightly_store,
+        "selection_summary",
+        lambda pair: {"best_observed": {"benchmark_id": 2, "throughput": 5.0}, "best_eligible": None, "comparisons": []},
+    )
+    monkeypatch.setattr(internal_mod.nightly_store, "calibration_claims", lambda: [{"provider_id": 7}])
+    monkeypatch.setattr(internal_mod, "extract_serving_configuration", lambda snapshot, model: {"max_model_len": 1})
+
+    result = asyncio.run(
+        internal_mod.internal_logosnode_node_config_insights(InternalNodeConfigRequest(provider_id=7), request=None)
+    )
+
+    (model,) = result["models"]
+    assert model["model_name"] == "org/a" and model["source"] == "ui" and model["calibrating"] is True
+    assert model["calibration"]["status"] == "calibrated"
+    assert model["benchmark"]["best_observed"]["settings"] == {"tensor_parallel_size": 2}
+    assert model["benchmark"]["current"] == {"max_model_len": 1}
+    assert result["worker"]["supports_actions"] == {SYNC_NODE_CONFIG_ACTION: True, VALIDATE_NODE_CONFIG_ACTION: True}
+
+
+def test_the_insights_of_an_unknown_node_answer_404(internal):
+    internal(_FakeDB(provider_exists=False))
+    response = asyncio.run(
+        internal_mod.internal_logosnode_node_config_insights(InternalNodeConfigRequest(provider_id=7), request=None)
+    )
+    assert response.status_code == 404

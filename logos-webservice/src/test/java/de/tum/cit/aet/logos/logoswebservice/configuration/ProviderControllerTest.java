@@ -40,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -701,6 +702,133 @@ class ProviderControllerTest {
                 .content("{}"))
            .andExpect(status().isBadRequest())
            .andExpect(jsonPath("$.error").value("provider_id is required"));
+    }
+
+    // ------------------------------------------------------------ node configuration
+
+    @Test
+    void nodeConfigGet_bindsTheProviderAndPassesTheAnswerThrough() throws Exception {
+        when(workerAdminClient.getNodeConfig(6001))
+            .thenReturn(ResponseEntity.ok(Map.of("provider_id", 6001, "revision", 4)));
+
+        mvc.perform(post("/logosdb/node_config/get")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.revision").value(4));
+
+        verify(workerAdminClient).getNodeConfig(eq(6001));
+    }
+
+    @Test
+    void nodeConfigInsights_bindsTheProvider() throws Exception {
+        when(workerAdminClient.nodeConfigInsights(6001))
+            .thenReturn(ResponseEntity.ok(Map.of("provider_id", 6001)));
+
+        mvc.perform(post("/logosdb/node_config/insights")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.provider_id").value(6001));
+    }
+
+    @Test
+    void nodeConfigReplace_sendsTheListTheRevisionAndTheTokensUser() throws Exception {
+        Integer adminId = jdbc.queryForObject("SELECT id FROM users WHERE username = 'logosadmin'", Integer.class);
+        when(workerAdminClient.replaceNodeConfig(anyInt(), any(), anyInt(), any()))
+            .thenReturn(ResponseEntity.ok(Map.of("config_revision", 5)));
+
+        mvc.perform(post("/logosdb/node_config/replace")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"expected_revision\":4,\"entries\":["
+                    + "{\"model_name\":\"org/a\",\"capability\":{\"tensor_parallel_size\":2},\"overrides\":{}}]}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.config_revision").value(5));
+
+        verify(workerAdminClient).replaceNodeConfig(
+            eq(6001), eq(adminId), eq(4),
+            eq(java.util.List.of(Map.of("model_name", "org/a", "capability", Map.of("tensor_parallel_size", 2),
+                "overrides", Map.of()))));
+    }
+
+    @Test
+    void nodeConfigEndpoints_requireTheirFields() throws Exception {
+        for (String path : new String[] {"/logosdb/node_config/get", "/logosdb/node_config/insights"}) {
+            mvc.perform(post(path).with(TestJwt.logosAdmin()).contentType("application/json").content("{}"))
+               .andExpect(status().isBadRequest())
+               .andExpect(jsonPath("$.error").value("provider_id is required"));
+        }
+        mvc.perform(post("/logosdb/node_config/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"expected_revision\":1,\"entries\":[]}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("provider_id is required"));
+        mvc.perform(post("/logosdb/node_config/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001,\"entries\":[]}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("expected_revision is required"));
+        mvc.perform(post("/logosdb/node_config/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001,\"expected_revision\":1}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("entries is required"));
+        verify(workerAdminClient, never()).replaceNodeConfig(anyInt(), any(), anyInt(), any());
+    }
+
+    @Test
+    void nodeConfigEndpoints_requireLogosAdmin() throws Exception {
+        for (String path : new String[] {"/logosdb/node_config/get", "/logosdb/node_config/insights",
+                "/logosdb/node_config/replace"}) {
+            mvc.perform(post(path).with(TestJwt.adminUser()).contentType("application/json")
+                    .content("{\"provider_id\":6001,\"expected_revision\":1,\"entries\":[]}"))
+               .andExpect(status().isForbidden());
+            mvc.perform(post(path).contentType("application/json").content("{}"))
+               .andExpect(status().isUnauthorized());
+        }
+        verify(workerAdminClient, never()).getNodeConfig(anyInt());
+        verify(workerAdminClient, never()).nodeConfigInsights(anyInt());
+        verify(workerAdminClient, never()).replaceNodeConfig(anyInt(), any(), anyInt(), any());
+    }
+
+    @Test
+    void nodeConfigEndpoints_passTheOrchestratorsRefusalThrough() throws Exception {
+        when(workerAdminClient.getNodeConfig(6001)).thenThrow(HttpClientErrorException.create(
+            HttpStatus.NOT_FOUND, "Not Found", HttpHeaders.EMPTY,
+            "{\"error\":\"Provider 6001 not found\"}".getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8));
+        when(workerAdminClient.replaceNodeConfig(anyInt(), any(), anyInt(), any())).thenThrow(
+            HttpClientErrorException.create(HttpStatus.CONFLICT, "Conflict", HttpHeaders.EMPTY,
+                "{\"error\":\"Configuration changed meanwhile (revision 5); reload it\"}"
+                    .getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8));
+
+        mvc.perform(post("/logosdb/node_config/get").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001}"))
+           .andExpect(status().isNotFound())
+           .andExpect(jsonPath("$.error").value("Provider 6001 not found"));
+        mvc.perform(post("/logosdb/node_config/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"expected_revision\":4,\"entries\":[]}"))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.error").value(containsString("revision 5")));
+    }
+
+    @Test
+    void nodeConfigEndpoints_answer503WhenTheOrchestratorIsUnreachable() throws Exception {
+        when(workerAdminClient.nodeConfigInsights(6001)).thenThrow(new IllegalStateException("not configured"));
+        when(workerAdminClient.replaceNodeConfig(anyInt(), any(), anyInt(), any()))
+            .thenThrow(new IllegalStateException("not configured"));
+        when(workerAdminClient.getNodeConfig(6001)).thenThrow(new IllegalStateException("not configured"));
+
+        for (String path : new String[] {"/logosdb/node_config/get", "/logosdb/node_config/insights"}) {
+            mvc.perform(post(path).with(TestJwt.logosAdmin()).contentType("application/json")
+                    .content("{\"provider_id\":6001}"))
+               .andExpect(status().isServiceUnavailable())
+               .andExpect(jsonPath("$.error").value("not configured"));
+        }
+        mvc.perform(post("/logosdb/node_config/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"expected_revision\":4,\"entries\":[]}"))
+           .andExpect(status().isServiceUnavailable());
     }
 
     // ------------------------------------------------------------ maintenance slot

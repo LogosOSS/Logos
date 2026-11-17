@@ -1954,7 +1954,7 @@ class DBManager:
             SELECT mp.model_name, mp.profile, mp.sync_revision, mp.calibration_key_hash,
                    mc.id AS cal_id, mc.calibration_key_hash AS cal_key_hash,
                    mc.source_provider_id AS cal_source_provider_id,
-                   mc.invalidated_at AS cal_invalidated_at
+                   mc.invalidated_at AS cal_invalidated_at, mc.calibrated_at AS cal_calibrated_at
             FROM model_profiles mp
             LEFT JOIN model_calibrations mc ON mc.id = mp.calibration_id
             WHERE mp.provider_id = :provider_id
@@ -1971,6 +1971,43 @@ class DBManager:
                 entry["profile"] = json.loads(entry["profile"])
             results.append(entry)
         return results
+
+    def get_node_config_sources(self, provider_id: int) -> Dict[str, str]:
+        """Where each stored model came from (ui, yaml_import, tuning)."""
+        rows = self.session.execute(
+            text("SELECT model_name, source FROM node_model_config WHERE provider_id = :pid"), {"pid": provider_id}
+        ).fetchall()
+        return {str(row.model_name): str(row.source) for row in rows}
+
+    def get_model_provider_pairs(self, provider_id: int) -> Dict[str, int]:
+        """The benchmark pair id (model_provider) of each linked model."""
+        rows = self.session.execute(
+            text(
+                "SELECT m.name, mp.id FROM model_provider mp JOIN models m ON m.id = mp.model_id "
+                "WHERE mp.provider_id = :pid"
+            ),
+            {"pid": provider_id},
+        ).fetchall()
+        return {str(row.name): int(row.id) for row in rows}
+
+    def get_benchmark_runs(self, run_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """Serving settings and time of the given benchmark runs."""
+        if not run_ids:
+            return {}
+        rows = self.session.execute(
+            text(
+                "SELECT id, configuration->'serving' AS serving, recorded_at "
+                "FROM model_provider_benchmarks WHERE id = ANY(:ids)"
+            ),
+            {"ids": list(run_ids)},
+        ).fetchall()
+        return {
+            int(row.id): {
+                "serving": row.serving if isinstance(row.serving, dict) else {},
+                "recorded_at": row.recorded_at.isoformat() if row.recorded_at else None,
+            }
+            for row in rows
+        }
 
     def update_reported_calibration_keys(
         self,
@@ -5699,6 +5736,10 @@ class DBManager:
         ).fetchone()
         self.session.commit()
         return {"id": row.id, "key_value": row.key_value}
+
+    def user_exists(self, user_id: int) -> bool:
+        row = self.session.execute(text("SELECT 1 FROM users WHERE id = :uid"), {"uid": user_id}).fetchone()
+        return row is not None
 
     def get_user_by_api_key(self, key_value: str):
         row = self.session.execute(

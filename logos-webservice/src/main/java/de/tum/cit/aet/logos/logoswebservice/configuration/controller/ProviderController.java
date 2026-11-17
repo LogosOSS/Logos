@@ -28,6 +28,8 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.dto.DisconnectModelPro
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.DrainLaneRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.LaneLoadStatusRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.LockLaneRequestDTO;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.NodeConfigRequestDTO;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReplaceNodeConfigRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseCalibrationClaimRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseRecoveryRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseNodeMaintenanceRequestDTO;
@@ -184,6 +186,57 @@ public class ProviderController {
             return ResponseEntity.status(e.getStatusCode()).body(parseOrWrap(e.getResponseBodyAsString()));
         } catch (Exception e) {
             return ResponseEntity.status(503).body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /*
+     * The model configuration of a node. These paths stay outside
+     * /providers/logosnode: the proxy routes that prefix to the orchestrator,
+     * and a path listed nowhere would answer 404 there.
+     */
+    @PostMapping("/node_config/get")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> getNodeConfig(@RequestBody NodeConfigRequestDTO req) {
+        if (req.providerId() == null) return ResponseEntity.badRequest().body(Map.of("error", "provider_id is required"));
+        try {
+            return workerAdminClient.getNodeConfig(req.providerId());
+        } catch (RestClientResponseException e) {
+            return ResponseEntity.status(e.getStatusCode()).body(parseOrWrap(e.getResponseBodyAsString()));
+        } catch (Exception e) {
+            return ResponseEntity.status(503).body(errorBody(e));
+        }
+    }
+
+    @PostMapping("/node_config/replace")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> replaceNodeConfig(
+            @RequestBody ReplaceNodeConfigRequestDTO req,
+            @RequestAttribute("authContext") AuthContext auth) {
+        if (req.providerId() == null) return ResponseEntity.badRequest().body(Map.of("error", "provider_id is required"));
+        if (req.expectedRevision() == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "expected_revision is required"));
+        }
+        if (req.entries() == null) return ResponseEntity.badRequest().body(Map.of("error", "entries is required"));
+        try {
+            return workerAdminClient.replaceNodeConfig(
+                req.providerId(), auth.userId(), req.expectedRevision(), req.entries());
+        } catch (RestClientResponseException e) {
+            return ResponseEntity.status(e.getStatusCode()).body(parseOrWrap(e.getResponseBodyAsString()));
+        } catch (Exception e) {
+            return ResponseEntity.status(503).body(errorBody(e));
+        }
+    }
+
+    @PostMapping("/node_config/insights")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> nodeConfigInsights(@RequestBody NodeConfigRequestDTO req) {
+        if (req.providerId() == null) return ResponseEntity.badRequest().body(Map.of("error", "provider_id is required"));
+        try {
+            return workerAdminClient.nodeConfigInsights(req.providerId());
+        } catch (RestClientResponseException e) {
+            return ResponseEntity.status(e.getStatusCode()).body(parseOrWrap(e.getResponseBodyAsString()));
+        } catch (Exception e) {
+            return ResponseEntity.status(503).body(errorBody(e));
         }
     }
 

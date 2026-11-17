@@ -988,41 +988,49 @@ async def logosnode_node_config_get(data: LogosNodeConfigGetRequest):
     return {"provider_id": data.provider_id, **config}
 
 
-@router.post("/logosdb/providers/logosnode/node-config/replace", tags=["logosnode"])
-async def logosnode_node_config_replace(data: LogosNodeConfigReplaceRequest):
-    """Replace a node's configured models.
+async def save_node_config(
+    provider_id: int, entries: list[Any], expected_revision: int, updated_by: int | None
+) -> Dict[str, Any] | JSONResponse:
+    """Check and store a node's whole model list; the one path of every caller.
 
     expected_revision is the revision the admin edited; another save in the
     meantime answers 409 with the current one. The connected worker checks the
     models first, so nothing it would refuse at a lane start is stored.
     """
-    admin_id = await asyncio.to_thread(_require_admin_user, data.logos_key)
-    errors = entry_errors(data.entries)
+    errors = entry_errors(entries)
     if errors:
         return admin_error_response(400, "; ".join(errors))
-    rows = [{**entry.model_dump(), "model_name": entry.model_name.strip()} for entry in data.entries]
+    rows = [{**entry.model_dump(), "model_name": entry.model_name.strip()} for entry in entries]
     if rows:
-        if await asyncio.to_thread(_load_node_config, data.provider_id) is None:
-            return admin_error_response(404, f"Provider {data.provider_id} not found")
-        refusal = await _worker_refusal(data.provider_id, rows)
+        if await asyncio.to_thread(_load_node_config, provider_id) is None:
+            return admin_error_response(404, f"Provider {provider_id} not found")
+        refusal = await _worker_refusal(provider_id, rows)
         if refusal is not None:
             return refusal
 
     def _replace() -> tuple[str, int]:
         with DBManager() as db:
-            if db.get_provider(data.provider_id) is None:
+            if db.get_provider(provider_id) is None:
                 return "missing", 0
-            revision = db.replace_node_config(data.provider_id, rows, data.expected_revision, admin_id, "ui")
+            author = updated_by if updated_by is not None and db.user_exists(updated_by) else None
+            revision = db.replace_node_config(provider_id, rows, expected_revision, author, "ui")
             if revision is None:
                 db.session.rollback()
-                return "stale", db.get_node_config(data.provider_id)["revision"]
+                return "stale", db.get_node_config(provider_id)["revision"]
             db.session.commit()
             return "saved", revision
 
     outcome, revision = await asyncio.to_thread(_replace)
     if outcome == "missing":
-        return admin_error_response(404, f"Provider {data.provider_id} not found")
+        return admin_error_response(404, f"Provider {provider_id} not found")
     if outcome == "stale":
         return admin_error_response(409, f"Configuration changed meanwhile (revision {revision}); reload it")
-    await _push_node_config(data.provider_id)
-    return {"provider_id": data.provider_id, "config_revision": revision}
+    await _push_node_config(provider_id)
+    return {"provider_id": provider_id, "config_revision": revision}
+
+
+@router.post("/logosdb/providers/logosnode/node-config/replace", tags=["logosnode"])
+async def logosnode_node_config_replace(data: LogosNodeConfigReplaceRequest):
+    """Replace a node's configured models (root key); see save_node_config."""
+    admin_id = await asyncio.to_thread(_require_admin_user, data.logos_key)
+    return await save_node_config(data.provider_id, data.entries, data.expected_revision, admin_id)

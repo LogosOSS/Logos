@@ -1,5 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.orchestrator;
 
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.slf4j.Logger;
@@ -34,6 +36,32 @@ public class OrchestratorWorkerAdminClient {
 
     public ResponseEntity<Map> calibrateUncalibrated(int providerId) {
         return post("/internal/logosnode/calibrate_uncalibrated", Map.of("provider_id", providerId));
+    }
+
+    /** The models a node is configured with and the revision of that list. */
+    public ResponseEntity<Map> getNodeConfig(int providerId) {
+        return post("/internal/logosnode/node_config/get", Map.of("provider_id", providerId));
+    }
+
+    /**
+     * Replaces the whole model list of a node. userId is the administrator the
+     * token belongs to; null stores no author.
+     */
+    public ResponseEntity<Map> replaceNodeConfig(int providerId, Integer userId, int expectedRevision,
+                                                 List<Map<String, Object>> entries) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("provider_id", providerId);
+        if (userId != null) {
+            body.put("user_id", userId);
+        }
+        body.put("expected_revision", expectedRevision);
+        body.put("entries", entries);
+        return post("/internal/logosnode/node_config/replace", body);
+    }
+
+    /** Measured and benchmarked values next to the models of a node. */
+    public ResponseEntity<Map> nodeConfigInsights(int providerId) {
+        return post("/internal/logosnode/node_config/insights", Map.of("provider_id", providerId));
     }
 
     public ResponseEntity<Map> stopCalibration(int providerId) {
@@ -114,7 +142,7 @@ public class OrchestratorWorkerAdminClient {
 
     public ResponseEntity<Map> startModelBenchmark(int modelProviderId, int sampleSize, int maxOutputTokens,
                                                    Map<String, Object> settings) {
-        Map<String, Object> body = new java.util.LinkedHashMap<>(settings);
+        Map<String, Object> body = new LinkedHashMap<>(settings);
         body.put("model_provider_id", modelProviderId);
         body.put("samples", sampleSize);
         body.put("max_output_tokens", maxOutputTokens);

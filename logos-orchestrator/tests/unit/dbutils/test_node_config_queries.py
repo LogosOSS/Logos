@@ -72,3 +72,37 @@ def test_a_node_is_read_in_one_statement_in_list_order():
     assert db.session.execute.call_count == 1
     source = inspect.getsource(DBManager.get_node_config)
     assert "ORDER BY position, id" in source and "LEFT JOIN node_config_state" in source
+
+
+def test_a_known_user_id_exists_and_an_unknown_one_does_not():
+    db = _db()
+    db.session.execute.return_value.fetchone.return_value = SimpleNamespace()
+    assert db.user_exists(5) is True
+    assert db.session.execute.call_args.args[1] == {"uid": 5}
+    db.session.execute.return_value.fetchone.return_value = None
+    assert db.user_exists(6) is False
+
+
+def test_the_sources_pairs_and_runs_are_read_as_maps():
+    import datetime
+
+    db = _db()
+    db.session.execute.return_value.fetchall.return_value = [SimpleNamespace(model_name="org/a", source="ui")]
+    assert db.get_node_config_sources(7) == {"org/a": "ui"}
+    db.session.execute.return_value.fetchall.return_value = [SimpleNamespace(name="org/a", id=11)]
+    assert db.get_model_provider_pairs(7) == {"org/a": 11}
+    when = datetime.datetime(2026, 11, 1)
+    db.session.execute.return_value.fetchall.return_value = [
+        SimpleNamespace(id=2, serving={"tensor_parallel_size": 2}, recorded_at=when),
+        SimpleNamespace(id=3, serving=None, recorded_at=None),
+    ]
+    assert db.get_benchmark_runs([2, 3]) == {
+        2: {"serving": {"tensor_parallel_size": 2}, "recorded_at": when.isoformat()},
+        3: {"serving": {}, "recorded_at": None},
+    }
+
+
+def test_no_run_ids_ask_the_database_nothing():
+    db = _db()
+    assert db.get_benchmark_runs([]) == {}
+    db.session.execute.assert_not_called()

@@ -57,6 +57,8 @@ from logos.dbutils.dbrequest import (
     InternalDeleteLaneRequest,
     InternalDrainLaneRequest,
     InternalLaneLoadStatusRequest,
+    InternalNodeConfigReplaceRequest,
+    InternalNodeConfigRequest,
     InternalReleaseCalibrationClaimRequest,
     InternalReleaseRecoveryRequest,
     InternalSleepLaneRequest,
@@ -68,6 +70,9 @@ from logos.dbutils.dbrequest import (
 )
 from logos.dbutils.types import Deployment
 from logos.errors import admin_error_response
+from logos.model_profile_store import effective_profile
+from logos.node_config import SYNC_NODE_CONFIG_ACTION, VALIDATE_NODE_CONFIG_ACTION
+from logos.node_config_insights import benchmark_view, build_insights
 from logos.hf_reachability import check_hf_reachability
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeOfflineError, MaintenanceBusyError
 from logos.logosnode_snapshot import _logosnode_snapshot_is_connected
@@ -92,6 +97,7 @@ from logos.main import (
     refresh_pipeline_runtime_state,
 )
 from logos.request_content import sanitized_payload_for_logging
+from logos.routers.logosnode import _load_node_config, save_node_config
 
 logger = logging.getLogger("LogosLogger")
 
@@ -959,6 +965,68 @@ async def internal_model_benchmark_completion(job_id: int, path: str, request: R
     if headers.get("x-logos-benchmark-phase") == "measurement":
         return observe_response(response, job_id)
     return response
+
+
+@router.post("/internal/logosnode/node_config/get", tags=["admin"])
+async def internal_logosnode_node_config_get(data: InternalNodeConfigRequest, request: Request):
+    """A node's configured models and revision (Spring, after the JWT)."""
+    _require_internal_secret(request)
+    config = await asyncio.to_thread(_load_node_config, data.provider_id)
+    if config is None:
+        return admin_error_response(404, f"Provider {data.provider_id} not found")
+    return {"provider_id": data.provider_id, **config}
+
+
+@router.post("/internal/logosnode/node_config/replace", tags=["admin"])
+async def internal_logosnode_node_config_replace(data: InternalNodeConfigReplaceRequest, request: Request):
+    """Replace a node's configured models (Spring, after the JWT)."""
+    _require_internal_secret(request)
+    return await save_node_config(data.provider_id, data.entries, data.expected_revision, data.user_id)
+
+
+def _gather_insights(provider_id: int, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Collect what the editor shows next to the settings (blocking)."""
+    registry = _main._logosnode_registry
+    snapshot = registry.peek_runtime_snapshot(provider_id)
+    supports = {
+        action: registry.supports_action(provider_id, action)
+        for action in (SYNC_NODE_CONFIG_ACTION, VALIDATE_NODE_CONFIG_ACTION)
+    }
+    with DBManager() as db:
+        sources = db.get_node_config_sources(provider_id)
+        rows = db.get_central_model_profiles(provider_id)
+        pairs = db.get_model_provider_pairs(provider_id)
+    profiles = {row["model_name"]: effective_profile(provider_id, row) for row in rows}
+    calibrated_at = {row["model_name"]: row.get("cal_calibrated_at") for row in rows}
+    benchmarks: Dict[str, Any] = {}
+    for model, pair_id in pairs.items():
+        summary = nightly_store.selection_summary(pair_id)
+        ids = [row["benchmark_id"] for row in (summary["best_eligible"], summary["best_observed"]) if row]
+        with DBManager() as db:
+            runs = db.get_benchmark_runs(ids)
+        benchmarks[model] = benchmark_view(summary, runs, extract_serving_configuration(snapshot, model))
+    calibrating = any(claim["provider_id"] == provider_id for claim in nightly_store.calibration_claims())
+    return build_insights(
+        provider_id=provider_id,
+        config=config,
+        sources=sources,
+        profiles=profiles,
+        calibrated_at=calibrated_at,
+        snapshot=snapshot,
+        supports=supports,
+        calibrating=calibrating,
+        benchmarks=benchmarks,
+    )
+
+
+@router.post("/internal/logosnode/node_config/insights", tags=["admin"])
+async def internal_logosnode_node_config_insights(data: InternalNodeConfigRequest, request: Request):
+    """Measured and benchmarked values of a node's models (Spring)."""
+    _require_internal_secret(request)
+    config = await asyncio.to_thread(_load_node_config, data.provider_id)
+    if config is None:
+        return admin_error_response(404, f"Provider {data.provider_id} not found")
+    return await asyncio.to_thread(_gather_insights, data.provider_id, config)
 
 
 @router.post("/internal/logosnode/calibrate_uncalibrated", tags=["admin"])

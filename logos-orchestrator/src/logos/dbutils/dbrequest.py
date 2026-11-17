@@ -272,6 +272,17 @@ class InternalCalibrateRequest(BaseModel):
     provider_id: int
 
 
+class InternalNodeConfigRequest(BaseModel):
+    provider_id: int
+
+
+class InternalNodeConfigReplaceRequest(InternalNodeConfigRequest):
+    # The admin's user id from the JWT; None stores no author
+    user_id: Optional[int] = None
+    expected_revision: int = Field(ge=0)
+    entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
+
+
 class InternalStopCalibrationRequest(BaseModel):
     provider_id: int
 
