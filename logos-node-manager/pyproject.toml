@@ -1,6 +1,6 @@
 [project]
 name = "logos-node-manager"
-version = "0.1.1"
+version = "0.1.0"
 description = "Replaces the Logos worker node container on a GPU host and rolls back a release that does not start"
 readme = "README.md"
 requires-python = ">=3.13,<4.0"

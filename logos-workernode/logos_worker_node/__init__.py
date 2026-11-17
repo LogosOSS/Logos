@@ -1,1 +1,1 @@
-# LogosWorkerNode runtime package (deploy test)
+# LogosWorkerNode runtime package
