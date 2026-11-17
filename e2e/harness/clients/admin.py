@@ -7,6 +7,7 @@ would actually see — not on orchestrator internals reachable only in-process.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -203,6 +204,49 @@ class AdminClient:
         )
         response.raise_for_status()
         return response.json() if response.content else {"ok": True, "lane_id": lane_id}
+
+    def node_config(self, provider_id: int) -> dict[str, Any]:
+        """The models Logos stores for a node, with their revision."""
+        response = self._client.post(
+            "/logosdb/providers/logosnode/node-config/get",
+            json={"logos_key": self._admin_key, "provider_id": int(provider_id)},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def remove_node_models(self, provider_id: int, models: list[str], timeout_s: float = 60.0) -> None:
+        """Take *models* out of a node's stored configuration.
+
+        A worker announces what Logos stores for it, not what its config.yml
+        lists, so a node stops announcing a model only once it is removed here.
+        The save is checked by the connected worker, so it is retried while the
+        worker reconnects (503) or another save wins (409).
+        """
+        drop = set(models)
+        deadline = time.monotonic() + float(timeout_s)
+        last = "no attempt"
+        while time.monotonic() < deadline:
+            stored = self.node_config(provider_id)
+            entries = stored.get("entries") or []
+            kept = [entry for entry in entries if entry.get("model_name") not in drop]
+            if len(kept) == len(entries):
+                return
+            response = self._client.post(
+                "/logosdb/providers/logosnode/node-config/replace",
+                json={
+                    "logos_key": self._admin_key,
+                    "provider_id": int(provider_id),
+                    "expected_revision": int(stored.get("revision") or 0),
+                    "entries": kept,
+                },
+            )
+            if response.status_code == 200:
+                return
+            last = f"HTTP {response.status_code}: {response.text[:200]}"
+            if response.status_code not in (409, 502, 503):
+                break
+            time.sleep(1.0)
+        raise TimeoutError(f"provider {provider_id}: could not remove {sorted(drop)} from its node config ({last})")
 
     def register_node(
         self,
