@@ -5205,3 +5205,123 @@ def test_a_session_started_for_one_model_lists_only_that_model(tmp_path):
     )
 
     assert client._list_uncalibrated_models() == ["org/b"]  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_hello_offers_node_settings_sync(tmp_path):
+    ws = _CollectWS()
+    await _central_client(tmp_path)._send_hello(ws)  # noqa: SLF001
+
+    assert "sync_node_settings" in ws.frames[0]["actions"]
+
+
+def _settings_client(tmp_path) -> LogosBridgeClient:
+    client = _node_config_client(tmp_path)
+    client._cfg.node_settings_revision = 2  # noqa: SLF001
+    return client
+
+
+def _document(revision: int, **settings) -> dict:
+    return {"revision": revision, "yaml_imported": True, "settings": settings}
+
+
+@pytest.mark.asyncio
+async def test_newer_node_settings_are_applied(tmp_path):
+    client = _settings_client(tmp_path)
+
+    response = await client._execute_command(  # noqa: SLF001
+        "sync_node_settings", _document(3, gpu_devices="0", gpu_poll_interval=9)
+    )
+
+    assert response == {"ok": True, "applied": True, "revision": 3, "restart_needed": ["gpu_poll_interval"]}
+    assert client._app.state.config.worker.gpu_devices == "0"  # noqa: SLF001
+    assert client._cfg.node_settings_revision == 3  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_node_settings_of_the_current_or_an_older_revision_change_nothing(tmp_path):
+    client = _settings_client(tmp_path)
+
+    same = await client._execute_command("sync_node_settings", _document(2, gpu_devices="0"))  # noqa: SLF001
+    older = await client._execute_command("sync_node_settings", _document(1, gpu_devices="0"))  # noqa: SLF001
+
+    assert same == {"ok": True, "applied": False, "revision": 2}
+    assert older["applied"] is False
+    assert client._app.state.config.worker.gpu_devices == "all"  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_broken_settings_push_is_refused(tmp_path):
+    client = _settings_client(tmp_path)
+
+    response = await client._execute_command("sync_node_settings", {"revision": 3})  # noqa: SLF001
+
+    assert response["ok"] is False and "settings mapping" in response["error"]
+
+
+@pytest.mark.asyncio
+async def test_node_settings_wait_for_a_running_calibration_and_apply_after_it(tmp_path):
+    client = _settings_client(tmp_path)
+    client._calibration_session_is_live = lambda: True  # noqa: SLF001
+
+    first = await client._execute_command("sync_node_settings", _document(3, gpu_devices="0"))  # noqa: SLF001
+    second = await client._execute_command("sync_node_settings", _document(4, gpu_devices="1"))  # noqa: SLF001
+    older = await client._execute_command("sync_node_settings", _document(3, gpu_devices="2"))  # noqa: SLF001
+
+    assert first == {"ok": True, "applied": False, "deferred": True, "revision": 2}
+    assert second["deferred"] and older["deferred"]
+    assert client._app.state.config.worker.gpu_devices == "all"  # noqa: SLF001
+
+    client._calibration_session_is_live = lambda: False  # noqa: SLF001
+    await client._apply_pending_node_settings()  # noqa: SLF001
+
+    assert client._app.state.config.worker.gpu_devices == "1"  # noqa: SLF001
+    assert client._cfg.node_settings_revision == 4  # noqa: SLF001
+    await client._apply_pending_node_settings()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_changed_global_flags_refresh_the_calibration_keys(tmp_path):
+    client = _settings_client(tmp_path)
+    refreshed = []
+
+    async def _refresh():
+        refreshed.append(True)
+
+    client._refresh_calibration_keys = _refresh  # noqa: SLF001
+
+    await client._execute_command("sync_node_settings", _document(3, gpu_devices="0"))  # noqa: SLF001
+    assert refreshed == []
+    await client._execute_command("sync_node_settings", _document(4, global_extra_args=["--x"]))  # noqa: SLF001
+    assert refreshed == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status, outcome", [(404, None), (405, None)])
+async def test_a_logos_without_node_settings_answers_none(tmp_path, monkeypatch, status, outcome):
+    _fake_http(monkeypatch, status, None, [])
+
+    assert await _central_client(tmp_path).fetch_node_settings() is outcome
+
+
+@pytest.mark.asyncio
+async def test_node_settings_are_read_and_imported(tmp_path, monkeypatch):
+    posted: list = []
+    _fake_http(monkeypatch, 200, {"revision": 3, "yaml_imported": True, "settings": {"gpu_devices": "0"}}, posted)
+    client = _central_client(tmp_path)
+
+    assert (await client.fetch_node_settings())["revision"] == 3
+    await client.import_node_settings({"gpu_devices": "0"})
+
+    assert posted[0][0].endswith("/logosdb/providers/logosnode/node-settings")
+    assert posted[1][0].endswith("/node-settings/import")
+    assert posted[1][1]["settings"] == {"gpu_devices": "0"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method, args", [("fetch_node_settings", ()), ("import_node_settings", ({},))])
+async def test_a_refused_node_settings_request_raises(tmp_path, monkeypatch, method, args):
+    _fake_http(monkeypatch, 500, None, [])
+
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        await getattr(_central_client(tmp_path), method)(*args)

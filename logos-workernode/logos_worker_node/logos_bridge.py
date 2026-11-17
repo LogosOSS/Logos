@@ -52,6 +52,12 @@ from logos_worker_node.node_config import (
     profile_overrides_of,
     validation_errors,
 )
+from logos_worker_node.node_settings import (
+    RESTART_KEYS,
+    SYNC_NODE_SETTINGS_ACTION,
+    apply_node_settings,
+    normalize_node_settings,
+)
 from logos_worker_node.request_content import (
     MULTIPART_PAYLOAD_KEY,
     MediaReferenceError,
@@ -205,6 +211,7 @@ class LogosBridgeClient:
         self._active_calibration_session: _CalibrationSession | None = None
         # A node configuration that arrived while a calibration was running.
         self._pending_node_config: dict[str, Any] | None = None
+        self._pending_node_settings: dict[str, Any] | None = None
         # Sequence counter for calibration event_id (independent of lane events).
         self._calibration_event_seq: int = 0
         # Lazily built by _get_hf_info_cache(); lives for the client's whole
@@ -438,6 +445,25 @@ class LogosBridgeClient:
         if resp.status_code >= 400:
             raise RuntimeError(f"/node-config rejected with HTTP {resp.status_code}: {resp.text}")
         return normalize_node_config(resp.json() if resp.content else None)
+
+    async def fetch_node_settings(self) -> dict[str, Any] | None:
+        """This node's settings and revision as Logos stores them; None when Logos predates them."""
+        url = f"{self._logos_base_url()}/logosdb/providers/logosnode/node-settings"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json={"shared_key": self._cfg.shared_key})
+        if resp.status_code in (404, 405):
+            return None
+        if resp.status_code >= 400:
+            raise RuntimeError(f"/node-settings rejected with HTTP {resp.status_code}: {resp.text}")
+        return normalize_node_settings(resp.json() if resp.content else None)
+
+    async def import_node_settings(self, settings: dict[str, Any]) -> None:
+        """Hand Logos the node-wide settings of config.yml; it keeps them once."""
+        url = f"{self._logos_base_url()}/logosdb/providers/logosnode/node-settings/import"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json={"shared_key": self._cfg.shared_key, "settings": settings})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"/node-settings/import rejected with HTTP {resp.status_code}: {resp.text}")
 
     async def import_node_config(self, entries: list[dict[str, Any]]) -> list[str]:
         """Hand Logos the models of config.yml; it keeps them once. Returns warnings."""
@@ -689,6 +715,7 @@ class LogosBridgeClient:
                     "get_calibration_status",
                     SYNC_MODEL_PROFILES_ACTION,
                     SYNC_NODE_CONFIG_ACTION,
+                    SYNC_NODE_SETTINGS_ACTION,
                     VALIDATE_NODE_CONFIG_ACTION,
                 ],
             },
@@ -1124,6 +1151,8 @@ class LogosBridgeClient:
             return self._handle_sync_model_profiles(params)
         if action == SYNC_NODE_CONFIG_ACTION:
             return await self._handle_sync_node_config(params)
+        if action == SYNC_NODE_SETTINGS_ACTION:
+            return await self._handle_sync_node_settings(params)
         if action == VALIDATE_NODE_CONFIG_ACTION:
             return self._handle_validate_node_config(params)
         if action == "start_calibration_session":
@@ -1186,6 +1215,51 @@ class LogosBridgeClient:
             return {"ok": True, "applied": False, "deferred": True, "revision": current}
         await self._apply_node_config(config)
         return {"ok": True, "applied": True, "revision": config["revision"]}
+
+    async def _handle_sync_node_settings(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Adopt the node-wide settings Logos stores, unless this worker already has them.
+
+        During a calibration they wait: the global flags reach every plan, and
+        new keys would label the results of the session wrongly.
+        """
+        try:
+            config = normalize_node_settings(params)
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc)}
+        current = self._app.state.config.logos.node_settings_revision
+        if config["revision"] <= current:
+            return {"ok": True, "applied": False, "revision": current}
+        if self._calibration_session_is_live():
+            pending = self._pending_node_settings
+            if pending is None or config["revision"] > pending["revision"]:
+                self._pending_node_settings = config
+            logger.info("[NodeSettings] Revision %d waits for the running calibration", config["revision"])
+            return {"ok": True, "applied": False, "deferred": True, "revision": current}
+        changed = await self._apply_node_settings(config)
+        return {
+            "ok": True,
+            "applied": True,
+            "revision": config["revision"],
+            "restart_needed": sorted(changed & RESTART_KEYS),
+        }
+
+    async def _apply_pending_node_settings(self) -> None:
+        config, self._pending_node_settings = self._pending_node_settings, None
+        if config is not None and config["revision"] > self._app.state.config.logos.node_settings_revision:
+            await self._apply_node_settings(config)
+
+    async def _apply_node_settings(self, config: dict[str, Any]) -> set[str]:
+        changed = set(apply_node_settings(self._app.state.config, config["settings"], config["revision"]))
+        if "global_extra_args" in changed:
+            # They are part of every plan, so every calibration key moves with them.
+            await self._refresh_calibration_keys()
+        lane_manager = getattr(self._app.state, "lane_manager", None)
+        if lane_manager is not None:
+            lane_manager.mark_status_dirty()
+        logger.info(
+            "[NodeSettings] Applied revision %d (changed: %s)", config["revision"], ", ".join(sorted(changed)) or "none"
+        )
+        return changed
 
     async def _apply_pending_node_config(self) -> None:
         config, self._pending_node_config = self._pending_node_config, None
@@ -2508,6 +2582,7 @@ class LogosBridgeClient:
             logger.info("[Calibration] Session ended (%s)", terminal_event)
             try:
                 await self._apply_pending_node_config()
+                await self._apply_pending_node_settings()
             except Exception:  # noqa: BLE001
                 logger.warning("[NodeConfig] The configuration that waited could not be applied", exc_info=True)
 

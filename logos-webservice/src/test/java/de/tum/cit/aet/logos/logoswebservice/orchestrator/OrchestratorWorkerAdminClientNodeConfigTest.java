@@ -97,4 +97,33 @@ class OrchestratorWorkerAdminClientNodeConfigTest {
         assertThat(sentTo("http://orchestrator/internal/logosnode/calibrate_uncalibrated").getBody())
             .isEqualTo(Map.of("provider_id", 7));
     }
+
+    @Test
+    void readingTheSettingsSendsOnlyTheProvider() {
+        client.getNodeSettings(7);
+
+        assertThat(sentTo("http://orchestrator/internal/logosnode/node_settings/get").getBody())
+            .isEqualTo(Map.of("provider_id", 7));
+    }
+
+    @Test
+    void savingTheSettingsSendsThemWithTheRevisionAndTheAuthor() {
+        client.replaceNodeSettings(7, 42, 3, Map.of("gpu_devices", "0"));
+
+        HttpEntity<Map<String, Object>> request = sentTo("http://orchestrator/internal/logosnode/node_settings/replace");
+        assertThat(request.getBody())
+            .containsEntry("provider_id", 7)
+            .containsEntry("user_id", 42)
+            .containsEntry("expected_revision", 3)
+            .containsEntry("settings", Map.of("gpu_devices", "0"));
+        assertThat(request.getHeaders().getFirst("Authorization")).isEqualTo("Bearer secret");
+    }
+
+    @Test
+    void savingTheSettingsWithoutAnAuthorLeavesTheUserOut() {
+        client.replaceNodeSettings(7, null, 0, Map.of());
+
+        assertThat(sentTo("http://orchestrator/internal/logosnode/node_settings/replace").getBody())
+            .doesNotContainKey("user_id");
+    }
 }

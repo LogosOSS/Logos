@@ -199,6 +199,10 @@ class LogosNodeConfigImportRequest(LogosNodeConfigRequest):
     entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
 
 
+class LogosNodeSettingsImportRequest(LogosNodeConfigRequest):
+    settings: dict[str, Any] = Field(default_factory=dict, max_length=32)
+
+
 class LogosNodeConfigGetRequest(LogosKeyModel):
     provider_id: int
 
@@ -285,6 +289,13 @@ class InternalNodeConfigReplaceRequest(InternalNodeConfigRequest):
     user_id: Optional[int] = None
     expected_revision: int = Field(ge=0)
     entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
+
+
+class InternalNodeSettingsReplaceRequest(InternalNodeConfigRequest):
+    # The admin's user id from the JWT; None stores no author
+    user_id: Optional[int] = None
+    expected_revision: int = Field(ge=0)
+    settings: dict[str, Any] = Field(default_factory=dict, max_length=32)
 
 
 class InternalStopCalibrationRequest(BaseModel):

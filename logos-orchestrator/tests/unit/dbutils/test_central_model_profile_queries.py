@@ -280,3 +280,44 @@ def test_the_nodes_choice_is_read_from_its_configuration():
 
     db.session.execute.return_value = SimpleNamespace(fetchone=lambda: None)
     assert db._node_selection(7, "org/m") == (None, None)
+
+
+def test_a_node_without_settings_has_revision_zero_and_nothing_imported():
+    db = _db()
+    db.session.execute.return_value = SimpleNamespace(fetchone=lambda: None)
+
+    assert db.get_node_settings(7) == {"revision": 0, "yaml_imported": False, "settings": {}}
+
+
+def test_stored_settings_come_back_with_their_revision():
+    db = _db()
+    row = SimpleNamespace(settings='{"gpu_devices": "0"}', settings_revision=5, yaml_imported_at="t")
+    db.session.execute.return_value = SimpleNamespace(fetchone=lambda: row)
+
+    assert db.get_node_settings(7) == {"revision": 5, "yaml_imported": True, "settings": {"gpu_devices": "0"}}
+
+    row.settings = {"gpu_devices": "1"}
+    assert db.get_node_settings(7)["settings"] == {"gpu_devices": "1"}
+
+
+def test_saving_settings_writes_only_at_the_expected_revision():
+    db = _db()
+    db.session.execute.side_effect = [None, SimpleNamespace(fetchone=lambda: SimpleNamespace(settings_revision=6))]
+
+    assert db.replace_node_settings(7, {"gpu_devices": "0"}, 5, 42) == 6
+    _sql, params = db.session.execute.call_args.args
+    assert params["expected"] == 5
+    assert json.loads(params["settings"]) == {"gpu_devices": "0"}
+    assert params["updated_by"] == 42
+
+    db.session.execute.side_effect = [None, SimpleNamespace(fetchone=lambda: None)]
+    assert db.replace_node_settings(7, {}, 1, None) is None
+
+
+def test_the_settings_import_is_claimed_once():
+    db = _db()
+    db.session.execute.side_effect = [None, SimpleNamespace(rowcount=1)]
+    assert db.claim_settings_import(7) is True
+
+    db.session.execute.side_effect = [None, SimpleNamespace(rowcount=0)]
+    assert db.claim_settings_import(7) is False

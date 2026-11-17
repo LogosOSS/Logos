@@ -70,6 +70,27 @@ public class OrchestratorWorkerAdminClient {
         return post("/internal/logosnode/node_config/insights", Map.of("provider_id", providerId));
     }
 
+    /** The node-wide settings of a node and the revision of that document. */
+    public ResponseEntity<Map> getNodeSettings(int providerId) {
+        return post("/internal/logosnode/node_settings/get", Map.of("provider_id", providerId));
+    }
+
+    /**
+     * Replaces the node-wide settings of a node. userId is the administrator the
+     * token belongs to; null stores no author.
+     */
+    public ResponseEntity<Map> replaceNodeSettings(int providerId, Integer userId, int expectedRevision,
+                                                   Map<String, Object> settings) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("provider_id", providerId);
+        if (userId != null) {
+            body.put("user_id", userId);
+        }
+        body.put("expected_revision", expectedRevision);
+        body.put("settings", settings);
+        return post("/internal/logosnode/node_settings/replace", body);
+    }
+
     public ResponseEntity<Map> stopCalibration(int providerId) {
         return post("/internal/logosnode/stop_calibration", Map.of("provider_id", providerId));
     }

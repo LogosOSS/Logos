@@ -258,4 +258,14 @@ describe('NodeModels', () => {
       expect(button.getAttribute('title')).toContain('must be online');
     });
   });
+
+  it('links to the node settings of the node', async () => {
+    await create(insights([model()]));
+
+    const link = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('a')).find((a) =>
+      a.textContent?.includes('Node settings'),
+    )!;
+
+    expect(link.getAttribute('href')).toBe('/providers/4/node-settings');
+  });
 });

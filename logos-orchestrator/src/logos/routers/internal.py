@@ -59,6 +59,7 @@ from logos.dbutils.dbrequest import (
     InternalLaneLoadStatusRequest,
     InternalNodeConfigReplaceRequest,
     InternalNodeConfigRequest,
+    InternalNodeSettingsReplaceRequest,
     InternalReleaseCalibrationClaimRequest,
     InternalReleaseRecoveryRequest,
     InternalSleepLaneRequest,
@@ -97,7 +98,7 @@ from logos.model_profile_store import effective_profile
 from logos.node_config import SYNC_NODE_CONFIG_ACTION, VALIDATE_NODE_CONFIG_ACTION
 from logos.node_config_insights import benchmark_view, build_insights
 from logos.request_content import sanitized_payload_for_logging
-from logos.routers.logosnode import _load_node_config, save_node_config
+from logos.routers.logosnode import _load_node_config, _load_node_settings, save_node_config, save_node_settings
 
 logger = logging.getLogger("LogosLogger")
 
@@ -982,6 +983,23 @@ async def internal_logosnode_node_config_replace(data: InternalNodeConfigReplace
     """Replace a node's configured models (Spring, after the JWT)."""
     _require_internal_secret(request)
     return await save_node_config(data.provider_id, data.entries, data.expected_revision, data.user_id)
+
+
+@router.post("/internal/logosnode/node_settings/get", tags=["admin"])
+async def internal_logosnode_node_settings_get(data: InternalNodeConfigRequest, request: Request):
+    """A node's settings and their revision (Spring)."""
+    _require_internal_secret(request)
+    settings = await asyncio.to_thread(_load_node_settings, data.provider_id)
+    if settings is None:
+        return admin_error_response(404, f"Provider {data.provider_id} not found")
+    return {"provider_id": data.provider_id, **settings}
+
+
+@router.post("/internal/logosnode/node_settings/replace", tags=["admin"])
+async def internal_logosnode_node_settings_replace(data: InternalNodeSettingsReplaceRequest, request: Request):
+    """Replace a node's settings (Spring, after the JWT)."""
+    _require_internal_secret(request)
+    return await save_node_settings(data.provider_id, data.settings, data.expected_revision, data.user_id)
 
 
 def _gather_insights(provider_id: int, config: Dict[str, Any]) -> Dict[str, Any]:

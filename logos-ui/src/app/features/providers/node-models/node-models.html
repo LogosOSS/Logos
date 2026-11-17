@@ -12,6 +12,10 @@
         <span class="dot" aria-hidden="true"></span>
         {{ workerOnline() ? 'Worker online' : 'Worker offline' }}
       </span>
+      <a class="btn-secondary btn-sm" [routerLink]="['/providers', providerId(), 'node-settings']">
+        <i class="pi pi-sliders-h" aria-hidden="true"></i>
+        Node settings
+      </a>
       <button
         class="btn-primary btn-sm"
         type="button"

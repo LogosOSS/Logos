@@ -1,0 +1,220 @@
+<div class="node-model">
+  <nav class="crumb" aria-label="Breadcrumb">
+    <a routerLink="/providers">Providers</a>
+    <i class="pi pi-chevron-right" aria-hidden="true"></i>
+    <a routerLink="/providers">{{ providerName() || 'Node' }}</a>
+    <i class="pi pi-chevron-right" aria-hidden="true"></i>
+    <span>Node settings</span>
+  </nav>
+
+  <div class="head">
+    <h1 class="page-title">Node settings</h1>
+  </div>
+
+  @if (loading()) {
+    <div class="loading" role="status" aria-live="polite">
+      <span class="vh">Loading the settings of this node…</span>
+      <span class="skel block"></span>
+      <span class="skel block"></span>
+    </div>
+  } @else if (error()) {
+    <app-error-message variant="banner" [message]="error()!" />
+    <button class="btn-secondary retry" type="button" (click)="load()">
+      <i class="pi pi-refresh" aria-hidden="true"></i>
+      Try again
+    </button>
+  } @else if (draft(); as d) {
+    @if (!workerOnline()) {
+      <div class="banner" role="status">
+        <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+        <div>
+          <b>Worker offline</b>
+          <span>{{ providerName() }} is not connected. Settings you save apply when it connects.</span>
+        </div>
+      </div>
+    }
+
+    @if (saving()) {
+      <div class="banner banner--info" role="status">
+        <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+        <div>
+          <b>Saving the settings</b>
+          <span>Logos checks every value before it stores it.</span>
+        </div>
+      </div>
+    }
+
+    @if (failure(); as f) {
+      <div class="banner" [class.banner--err]="f.kind !== 'conflict'" [attr.role]="f.kind === 'conflict' ? 'status' : 'alert'">
+        <i class="pi" [class.pi-refresh]="f.kind === 'conflict'" [class.pi-times-circle]="f.kind !== 'conflict'" aria-hidden="true"></i>
+        <div>
+          @switch (f.kind) {
+            @case ('conflict') {
+              <b>Settings changed</b>
+              <span>Another admin saved this node while you were editing. Your changes were not saved.</span>
+            }
+            @case ('rejected') {
+              <b>Settings rejected</b>
+              <span>Nothing was saved.</span>
+              <ul class="elist">
+                @for (item of f.items; track $index) {
+                  <li><code>{{ item.key }}</code> {{ item.message }}</li>
+                }
+              </ul>
+            }
+            @case ('unreachable') {
+              <b>Logos not reachable</b>
+              <span>Nothing was saved. Try again in a moment.</span>
+            }
+            @default {
+              <b>Could not save</b>
+              <span>{{ f.message }}</span>
+            }
+          }
+        </div>
+        @if (f.kind === 'conflict') {
+          <button class="btn-secondary btn-sm" type="button" (click)="reloadAfterConflict()">
+            <i class="pi pi-refresh" aria-hidden="true"></i>
+            Reload
+          </button>
+        }
+      </div>
+    }
+
+    @if (notice(); as n) {
+      <div class="banner banner--info" role="status">
+        <i class="pi pi-check-circle" aria-hidden="true"></i>
+        <div>
+          <b>{{ n.title }}</b>
+          <span>{{ n.text }}</span>
+        </div>
+      </div>
+    }
+
+    <fieldset class="settings" [disabled]="saving()">
+      <section class="card" aria-labelledby="pool-title">
+        <h2 id="pool-title">GPU pool</h2>
+        <p class="sub">The GPUs this node may place lanes on. Empty uses the value of config.yml.</p>
+        <div class="field">
+          <label class="label" for="gpu-mode">Pool <code class="key">gpu_devices</code></label>
+          <select
+            id="gpu-mode"
+            class="num sel"
+            [value]="d.gpuMode"
+            (change)="setMode($any($event.target).value)"
+          >
+            <option value="default">Default (config.yml)</option>
+            <option value="all">All GPUs</option>
+            <option value="pick">Selected GPUs</option>
+            <option value="none">No GPU</option>
+          </select>
+          @if (d.gpuMode === 'pick') {
+            <div class="gpus" role="group" aria-label="GPUs of the pool">
+              @for (gpu of gpus(); track gpu.index) {
+                <label class="gpu">
+                  <input type="checkbox" [checked]="d.gpus.includes(gpu.index)" (change)="toggleGpu(gpu.index)" />
+                  <span>GPU {{ gpu.index }}</span>
+                  <small>{{ gpu.name || 'unknown' }}</small>
+                </label>
+              } @empty {
+                <p class="hint">The worker reports no GPUs. It must be online to list them.</p>
+              }
+            </div>
+          }
+          @if (fieldError('gpu_devices'); as e) {
+            <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
+          }
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="engine-title">
+        <h2 id="engine-title">Engine defaults</h2>
+        <p class="sub">Flags added to the command line of every vLLM lane of this node.</p>
+        <div class="field">
+          <label class="label" for="global-args">Global arguments <code class="key">global_extra_args</code></label>
+          <textarea
+            id="global-args"
+            class="area mono"
+            rows="4"
+            placeholder="--safetensors-load-strategy=prefetch"
+            [value]="d.args"
+            [attr.aria-invalid]="fieldError('global_extra_args') ? 'true' : null"
+            (input)="setArgs($any($event.target).value)"
+          ></textarea>
+          <p class="hint">One per line. They follow the arguments of each model.</p>
+          @if (remeasuring()) {
+            <p class="hint hint--warn" role="status">
+              <i class="pi pi-info-circle" aria-hidden="true"></i>
+              Changing these reaches the plan of every model, so every calibration of this node is measured again.
+            </p>
+          }
+          @if (fieldError('global_extra_args'); as e) {
+            <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
+          }
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="care-title">
+        <h2 id="care-title">Node care</h2>
+        <p class="sub">How the worker watches its GPUs.</p>
+        <div class="field">
+          <label class="label" for="reboot">Reboot a stuck host <code class="key">auto_reboot_on_stuck_gpu</code></label>
+          <select id="reboot" class="num sel" [value]="d.reboot" (change)="setReboot($any($event.target).value)">
+            <option value="">Default (config.yml)</option>
+            <option value="true">On</option>
+            <option value="false">Off</option>
+          </select>
+          <p class="hint">Restarts the host when every lane exhausted its restarts and a GPU holds memory nobody uses.</p>
+        </div>
+        <div class="field">
+          <label class="label" for="poll">GPU poll interval <code class="key">gpu_poll_interval</code></label>
+          <div class="control">
+            <input
+              id="poll"
+              class="num"
+              type="text"
+              inputmode="numeric"
+              placeholder="Default"
+              [value]="d.poll"
+              [class.invalid]="fieldError('gpu_poll_interval')"
+              [attr.aria-invalid]="fieldError('gpu_poll_interval') ? 'true' : null"
+              (input)="setPoll($any($event.target).value)"
+            />
+            <span class="unit">seconds</span>
+          </div>
+          <p class="hint">How often the worker reads GPU memory, 1 to {{ maxPoll }}. Applies at the next worker start.</p>
+          @if (fieldError('gpu_poll_interval'); as e) {
+            <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
+          }
+        </div>
+      </section>
+    </fieldset>
+
+    <div class="savebar" role="region" aria-label="Save changes">
+      @if (saving()) {
+        <div class="progress" aria-hidden="true"></div>
+      }
+      <p role="status" aria-live="polite">
+        @if (saving()) {
+          Saving the settings…
+        } @else if (dirty()) {
+          <b>{{ changes().length }} unsaved {{ changes().length === 1 ? 'change' : 'changes' }}:</b>
+          {{ changes().join(' · ') }}
+        } @else {
+          No changes.
+        }
+      </p>
+      <div class="actions">
+        <button class="btn-secondary" type="button" [disabled]="saving() || !dirty()" (click)="reset()">Reset</button>
+        <button class="btn-primary" type="button" [disabled]="!dirty() || saving() || hasErrors()" [attr.aria-busy]="saving()" (click)="save()">
+          @if (saving()) {
+            <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+            Saving…
+          } @else {
+            Save
+          }
+        </button>
+      </div>
+    </div>
+  }
+</div>

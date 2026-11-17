@@ -262,6 +262,7 @@ async def test_lifespan_bootstraps_central_hf_token_before_startup_model_operati
                 "revision": 0,
                 "yaml_imported": True,
                 "entries": [],
+                "settings": {},
             }
 
     class _HttpClient:

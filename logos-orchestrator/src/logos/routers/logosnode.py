@@ -33,6 +33,7 @@ from logos.dbutils.dbrequest import (
     LogosNodeReconfigureLaneRequest,
     LogosNodeRegisterRequest,
     LogosNodeResetProfilesRequest,
+    LogosNodeSettingsImportRequest,
     LogosNodeSleepLaneRequest,
     LogosNodeStatusRequest,
     LogosNodeWakeLaneRequest,
@@ -63,6 +64,9 @@ from logos.node_config import (
     error_items,
     name_errors,
 )
+from logos.node_settings import SETTING_KEYS, SYNC_NODE_SETTINGS_ACTION
+from logos.node_settings import error_items as settings_error_items
+from logos.node_settings import settings_errors
 from logos.notifications import emit_notification
 from logos.notifications.deployment import deployment_notification
 from logos.role_auth import require_logos_admin_key
@@ -537,6 +541,7 @@ async def logosnode_session(websocket: WebSocket, token: str):
                     config_fingerprints=_string_map(payload.get("config_fingerprints")),
                 )
                 _schedule_node_config_push(ticket.provider_id)
+                _schedule_node_settings_push(ticket.provider_id)
             elif msg_type == "status":
                 runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
                 await _main._logosnode_registry.update_runtime(
@@ -895,6 +900,36 @@ def _load_node_config(provider_id: int) -> Dict[str, Any] | None:
         return db.get_node_config(provider_id)
 
 
+def _load_node_settings(provider_id: int) -> Dict[str, Any] | None:
+    """The stored settings of a node, or None when the node is unknown."""
+    with DBManager() as db:
+        if db.get_provider(provider_id) is None:
+            return None
+        return db.get_node_settings(provider_id)
+
+
+async def _push_node_settings(provider_id: int) -> None:
+    """Send a node's stored settings to a worker that applies them."""
+    if not _main._logosnode_registry.supports_action(provider_id, SYNC_NODE_SETTINGS_ACTION):
+        return
+    try:
+        settings = await asyncio.to_thread(_load_node_settings, provider_id)
+        await _main._logosnode_registry.send_command(
+            provider_id, SYNC_NODE_SETTINGS_ACTION, params=settings, timeout_seconds=30
+        )
+    except Exception:
+        # The worker keeps its current settings until the next push.
+        logger.warning(
+            "Failed to push node settings to provider %s", _resolve_provider_name(provider_id), exc_info=True
+        )
+
+
+def _schedule_node_settings_push(provider_id: int) -> None:
+    task = asyncio.create_task(_push_node_settings(provider_id))
+    _main._background_tasks.add(task)
+    task.add_done_callback(_main._background_tasks.discard)
+
+
 def _require_admin_user(logos_key: str) -> int:
     """The id of the Logos admin the key belongs to."""
     with DBManager() as db:
@@ -982,6 +1017,37 @@ async def logosnode_node_config_import(data: LogosNodeConfigImportRequest, reque
     return {"imported": imported, "warnings": warnings}
 
 
+@router.post("/logosdb/providers/logosnode/node-settings", tags=["logosnode"])
+async def logosnode_node_settings(data: LogosNodeConfigRequest, request: Request):
+    """The node-wide settings a worker starts with."""
+    _require_tls_request(request)
+    provider_id = int((await asyncio.to_thread(_logosnode_provider_for_key, data.shared_key))["id"])
+    return await asyncio.to_thread(_load_node_settings, provider_id)
+
+
+@router.post("/logosdb/providers/logosnode/node-settings/import", tags=["logosnode"])
+async def logosnode_node_settings_import(data: LogosNodeSettingsImportRequest, request: Request):
+    """Store a worker's YAML settings once; later calls change nothing.
+
+    Kept as given: a value the checks would refuse today must not keep an
+    existing node from starting.
+    """
+    _require_tls_request(request)
+    provider_id = int((await asyncio.to_thread(_logosnode_provider_for_key, data.shared_key))["id"])
+    known = {key: value for key, value in data.settings.items() if key in SETTING_KEYS}
+
+    def _import() -> bool:
+        with DBManager() as db:
+            if not db.claim_settings_import(provider_id):
+                db.session.rollback()
+                return False
+            db.replace_node_settings(provider_id, known, 0, None)
+            db.session.commit()
+            return True
+
+    return {"imported": await asyncio.to_thread(_import)}
+
+
 @router.post("/logosdb/providers/logosnode/node-config/get", tags=["logosnode"])
 async def logosnode_node_config_get(data: LogosNodeConfigGetRequest):
     """A node's configured models and revision."""
@@ -1031,6 +1097,35 @@ async def save_node_config(
         return admin_error_response(409, f"Configuration changed meanwhile (revision {revision}); reload it")
     await _push_node_config(provider_id)
     return {"provider_id": provider_id, "config_revision": revision}
+
+
+async def save_node_settings(
+    provider_id: int, settings: Dict[str, Any], expected_revision: int, updated_by: int | None
+) -> Dict[str, Any] | JSONResponse:
+    """Check and store a node's settings; expected_revision is the one the admin edited."""
+    errors = settings_errors(settings)
+    if errors:
+        return admin_error_response(400, "; ".join(errors), settings_error_items(errors))
+
+    def _replace() -> tuple[str, int]:
+        with DBManager() as db:
+            if db.get_provider(provider_id) is None:
+                return "missing", 0
+            author = updated_by if updated_by is not None and db.user_exists(updated_by) else None
+            revision = db.replace_node_settings(provider_id, settings, expected_revision, author)
+            if revision is None:
+                db.session.rollback()
+                return "stale", db.get_node_settings(provider_id)["revision"]
+            db.session.commit()
+            return "saved", revision
+
+    outcome, revision = await asyncio.to_thread(_replace)
+    if outcome == "missing":
+        return admin_error_response(404, f"Provider {provider_id} not found")
+    if outcome == "stale":
+        return admin_error_response(409, f"Settings changed meanwhile (revision {revision}); reload them")
+    await _push_node_settings(provider_id)
+    return {"provider_id": provider_id, "settings_revision": revision}
 
 
 @router.post("/logosdb/providers/logosnode/node-config/replace", tags=["logosnode"])

@@ -64,4 +64,22 @@ describe('ProviderManagementService node configuration', () => {
 
     expect(await result).toEqual({ message: 'started', count: 1 });
   });
+
+  it('reads the node-wide settings of a node', async () => {
+    const result = service.getNodeSettings(4);
+    const request = http.expectOne('/api/logosdb/node_settings/get');
+    expect(request.request.body).toEqual({ provider_id: 4 });
+    request.flush({ provider_id: 4, revision: 2, yaml_imported: true, settings: { gpu_devices: 'all' } });
+
+    expect((await result).settings).toEqual({ gpu_devices: 'all' });
+  });
+
+  it('saves the node-wide settings at the revision they were read at', async () => {
+    const result = service.replaceNodeSettings(4, 2, { gpu_poll_interval: 9 });
+    const request = http.expectOne('/api/logosdb/node_settings/replace');
+    expect(request.request.body).toEqual({ provider_id: 4, expected_revision: 2, settings: { gpu_poll_interval: 9 } });
+    request.flush({ provider_id: 4, settings_revision: 3 });
+
+    expect(await result).toEqual({ provider_id: 4, settings_revision: 3 });
+  });
 });

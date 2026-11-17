@@ -7,7 +7,13 @@ import {
   AddProviderPayload,
   UpdateProviderPayload,
 } from '../../shared/models/provider.model';
-import { NodeConfig, NodeConfigEntry, NodeInsights } from '../../shared/models/node-config.model';
+import {
+  NodeConfig,
+  NodeConfigEntry,
+  NodeInsights,
+  NodeSettings,
+  NodeSettingsValues,
+} from '../../shared/models/node-config.model';
 
 @Injectable({ providedIn: 'root' })
 export class ProviderManagementService {
@@ -95,6 +101,25 @@ export class ProviderManagementService {
   /** Measured and benchmarked values next to the models of a logosnode. */
   getNodeInsights(providerId: number): Promise<NodeInsights> {
     return firstValueFrom(this.http.post<NodeInsights>('/api/logosdb/node_config/insights', { provider_id: providerId }));
+  }
+
+  getNodeSettings(providerId: number): Promise<NodeSettings> {
+    return firstValueFrom(this.http.post<NodeSettings>('/api/logosdb/node_settings/get', { provider_id: providerId }));
+  }
+
+  /** Saves the whole settings document; expectedRevision is the one the admin read. */
+  replaceNodeSettings(
+    providerId: number,
+    expectedRevision: number,
+    settings: NodeSettingsValues,
+  ): Promise<{ provider_id: number; settings_revision: number }> {
+    return firstValueFrom(
+      this.http.post<{ provider_id: number; settings_revision: number }>('/api/logosdb/node_settings/replace', {
+        provider_id: providerId,
+        expected_revision: expectedRevision,
+        settings,
+      }),
+    );
   }
 
   /** Starts a calibration of one model; the worker measures it right away. */

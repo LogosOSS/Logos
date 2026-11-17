@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Settings of a whole node that belong to no model: global vLLM flags,
+         the GPU pool and node care. settings holds only what the admin set; a
+         missing key leaves the worker's config.yml value in force.
+         settings_revision is bumped on every change, so a worker ignores older
+         pushes. yaml_imported_at is set once, after the one-time YAML import. -->
+    <changeSet id="079-node-settings" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="node_settings"/></not>
+        </preConditions>
+        <sql><![CDATA[
+            CREATE TABLE node_settings (
+                provider_id INTEGER PRIMARY KEY REFERENCES providers(id) ON DELETE CASCADE,
+                settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+                settings_revision BIGINT NOT NULL DEFAULT 0,
+                yaml_imported_at TIMESTAMPTZ,
+                updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+        ]]></sql>
+        <rollback>
+            <sql>DROP TABLE IF EXISTS node_settings;</sql>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

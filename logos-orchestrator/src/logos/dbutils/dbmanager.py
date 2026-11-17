@@ -2423,6 +2423,70 @@ class DBManager:
         )
         return result.rowcount == 1
 
+    def get_node_settings(self, provider_id: int) -> Dict[str, Any]:
+        """A node's settings with their revision; a node nobody configured has revision 0 and none."""
+        row = self.session.execute(
+            text("""
+                SELECT settings, settings_revision, yaml_imported_at
+                FROM node_settings WHERE provider_id = :pid
+            """),
+            {"pid": provider_id},
+        ).fetchone()
+        if row is None:
+            return {"revision": 0, "yaml_imported": False, "settings": {}}
+        settings = json.loads(row.settings) if isinstance(row.settings, str) else dict(row.settings or {})
+        return {
+            "revision": int(row.settings_revision),
+            "yaml_imported": row.yaml_imported_at is not None,
+            "settings": settings,
+        }
+
+    def replace_node_settings(
+        self, provider_id: int, settings: Dict[str, Any], expected_revision: int, updated_by: Optional[int]
+    ) -> Optional[int]:
+        """Replace a node's settings; returns the new revision, or None when expected_revision is stale.
+
+        The first save also ends the YAML import for the node. The caller commits.
+        """
+        self.session.execute(
+            text("INSERT INTO node_settings (provider_id) VALUES (:pid) ON CONFLICT (provider_id) DO NOTHING"),
+            {"pid": provider_id},
+        )
+        row = self.session.execute(
+            text("""
+                UPDATE node_settings
+                SET settings = CAST(:settings AS jsonb),
+                    settings_revision = settings_revision + 1,
+                    yaml_imported_at = COALESCE(yaml_imported_at, CURRENT_TIMESTAMP),
+                    updated_by = :updated_by,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE provider_id = :pid AND settings_revision = :expected
+                RETURNING settings_revision
+            """),
+            {
+                "pid": provider_id,
+                "settings": json.dumps(settings),
+                "updated_by": updated_by,
+                "expected": expected_revision,
+            },
+        ).fetchone()
+        return int(row.settings_revision) if row is not None else None
+
+    def claim_settings_import(self, provider_id: int) -> bool:
+        """Let one caller import a worker's YAML settings; True when this call got it. The caller commits."""
+        self.session.execute(
+            text("INSERT INTO node_settings (provider_id) VALUES (:pid) ON CONFLICT (provider_id) DO NOTHING"),
+            {"pid": provider_id},
+        )
+        result = self.session.execute(
+            text("""
+                UPDATE node_settings SET yaml_imported_at = CURRENT_TIMESTAMP
+                WHERE provider_id = :pid AND yaml_imported_at IS NULL
+            """),
+            {"pid": provider_id},
+        )
+        return result.rowcount == 1
+
     def invalidate_model_calibration(self, calibration_id: int, reason: str) -> List[Tuple[int, str]]:
         """Stop trusting a calibration and strip it from every node using it.
 

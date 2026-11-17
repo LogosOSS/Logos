@@ -21,6 +21,7 @@ import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.AddProviderRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.AddLaneRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.CalibrateUncalibratedRequestDTO;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReplaceNodeSettingsRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ConnectModelProviderRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.DeleteLaneRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.DeleteProviderRequestDTO;
@@ -220,6 +221,39 @@ public class ProviderController {
         try {
             return workerAdminClient.replaceNodeConfig(
                 req.providerId(), auth.userId(), req.expectedRevision(), req.entries());
+        } catch (RestClientResponseException e) {
+            return ResponseEntity.status(e.getStatusCode()).body(parseOrWrap(e.getResponseBodyAsString()));
+        } catch (Exception e) {
+            return ResponseEntity.status(503).body(errorBody(e));
+        }
+    }
+
+    @PostMapping("/node_settings/get")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> getNodeSettings(@RequestBody NodeConfigRequestDTO req) {
+        if (req.providerId() == null) return ResponseEntity.badRequest().body(Map.of("error", "provider_id is required"));
+        try {
+            return workerAdminClient.getNodeSettings(req.providerId());
+        } catch (RestClientResponseException e) {
+            return ResponseEntity.status(e.getStatusCode()).body(parseOrWrap(e.getResponseBodyAsString()));
+        } catch (Exception e) {
+            return ResponseEntity.status(503).body(errorBody(e));
+        }
+    }
+
+    @PostMapping("/node_settings/replace")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> replaceNodeSettings(
+            @RequestBody ReplaceNodeSettingsRequestDTO req,
+            @RequestAttribute("authContext") AuthContext auth) {
+        if (req.providerId() == null) return ResponseEntity.badRequest().body(Map.of("error", "provider_id is required"));
+        if (req.expectedRevision() == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "expected_revision is required"));
+        }
+        if (req.settings() == null) return ResponseEntity.badRequest().body(Map.of("error", "settings is required"));
+        try {
+            return workerAdminClient.replaceNodeSettings(
+                req.providerId(), auth.userId(), req.expectedRevision(), req.settings());
         } catch (RestClientResponseException e) {
             return ResponseEntity.status(e.getStatusCode()).body(parseOrWrap(e.getResponseBodyAsString()));
         } catch (Exception e) {

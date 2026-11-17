@@ -91,3 +91,18 @@ export interface NodeInsights {
   gpus: NodeGpuInsight[];
   models: NodeModelInsight[];
 }
+
+/** Node-wide settings an admin set; a key that is absent leaves the worker's config.yml value in force. */
+export interface NodeSettingsValues {
+  global_extra_args?: string[];
+  gpu_devices?: string;
+  auto_reboot_on_stuck_gpu?: boolean;
+  gpu_poll_interval?: number;
+}
+
+export interface NodeSettings {
+  provider_id: number;
+  revision: number;
+  yaml_imported: boolean;
+  settings: NodeSettingsValues;
+}

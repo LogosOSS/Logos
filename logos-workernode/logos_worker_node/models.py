@@ -601,6 +601,7 @@ class LogosConfig(BaseModel):
     # keys derive from these, not from the dicts the worker wires up.
     node_entries: list[dict[str, Any]] | None = Field(default=None, exclude=True)
     node_config_revision: int = Field(default=0, exclude=True)
+    node_settings_revision: int = Field(default=0, exclude=True)
     heartbeat_interval_seconds: int = Field(default=5, ge=1)
     reconnect_backoff_seconds: int = Field(default=3, ge=1)
     # Max time between full runtime-status pushes regardless of lane churn.

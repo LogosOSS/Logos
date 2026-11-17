@@ -596,3 +596,37 @@ input[type='range'] {
   gap: 12px;
   margin-top: 12px;
 }
+
+.settings {
+  min-width: 0;
+  padding: 0;
+  margin: 16px 0 0;
+  border: 0;
+}
+
+.gpus {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.gpu {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border: 1px solid rgb(var(--color-outline-200));
+  border-radius: 8px;
+
+  small {
+    color: rgb(var(--color-typography-700));
+  }
+}
+
+.hint--warn {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}

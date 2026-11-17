@@ -782,6 +782,87 @@ class ProviderControllerTest {
                 "overrides", Map.of()))));
     }
 
+    // ------------------------------------------------------------ node settings
+
+    @Test
+    void nodeSettingsGet_bindsTheProviderAndPassesTheAnswerThrough() throws Exception {
+        when(workerAdminClient.getNodeSettings(6001))
+            .thenReturn(ResponseEntity.ok(Map.of("provider_id", 6001, "revision", 2)));
+
+        mvc.perform(post("/logosdb/node_settings/get")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.revision").value(2));
+
+        verify(workerAdminClient).getNodeSettings(eq(6001));
+    }
+
+    @Test
+    void nodeSettingsReplace_sendsTheSettingsTheRevisionAndTheTokensUser() throws Exception {
+        Integer adminId = jdbc.queryForObject("SELECT id FROM users WHERE username = 'logosadmin'", Integer.class);
+        when(workerAdminClient.replaceNodeSettings(anyInt(), any(), anyInt(), any()))
+            .thenReturn(ResponseEntity.ok(Map.of("settings_revision", 3)));
+
+        mvc.perform(post("/logosdb/node_settings/replace")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"expected_revision\":2,\"settings\":{\"gpu_devices\":\"0\"}}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.settings_revision").value(3));
+
+        verify(workerAdminClient).replaceNodeSettings(eq(6001), eq(adminId), eq(2), eq(Map.of("gpu_devices", "0")));
+    }
+
+    @Test
+    void nodeSettingsEndpoints_requireTheirFieldsAndLogosAdmin() throws Exception {
+        mvc.perform(post("/logosdb/node_settings/get").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("provider_id is required"));
+        mvc.perform(post("/logosdb/node_settings/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"expected_revision\":1,\"settings\":{}}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("provider_id is required"));
+        mvc.perform(post("/logosdb/node_settings/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001,\"settings\":{}}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("expected_revision is required"));
+        mvc.perform(post("/logosdb/node_settings/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001,\"expected_revision\":1}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("settings is required"));
+
+        for (String path : new String[] {"/logosdb/node_settings/get", "/logosdb/node_settings/replace"}) {
+            mvc.perform(post(path).with(TestJwt.adminUser()).contentType("application/json")
+                    .content("{\"provider_id\":6001,\"expected_revision\":1,\"settings\":{}}"))
+               .andExpect(status().isForbidden());
+            mvc.perform(post(path).contentType("application/json").content("{}"))
+               .andExpect(status().isUnauthorized());
+        }
+        verify(workerAdminClient, never()).getNodeSettings(anyInt());
+        verify(workerAdminClient, never()).replaceNodeSettings(anyInt(), any(), anyInt(), any());
+    }
+
+    @Test
+    void nodeSettingsEndpoints_passTheOrchestratorsRefusalThroughOrAnswer503() throws Exception {
+        when(workerAdminClient.replaceNodeSettings(anyInt(), any(), anyInt(), any())).thenThrow(
+            HttpClientErrorException.create(HttpStatus.CONFLICT, "Conflict", HttpHeaders.EMPTY,
+                "{\"error\":\"Settings changed meanwhile (revision 5); reload them\"}"
+                    .getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8));
+        when(workerAdminClient.getNodeSettings(6001)).thenThrow(new RuntimeException("connection refused"));
+
+        mvc.perform(post("/logosdb/node_settings/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"expected_revision\":1,\"settings\":{}}"))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.error").value("Settings changed meanwhile (revision 5); reload them"));
+        mvc.perform(post("/logosdb/node_settings/get").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001}"))
+           .andExpect(status().isServiceUnavailable());
+    }
+
     @Test
     void nodeConfigEndpoints_requireTheirFields() throws Exception {
         for (String path : new String[] {"/logosdb/node_config/get", "/logosdb/node_config/insights"}) {
