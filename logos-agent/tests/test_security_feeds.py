@@ -44,6 +44,35 @@ async def test_github_pagination_keeps_credentials_on_github_and_excludes_noncri
     assert ingest.call_args.args[2]["vulnerabilities"][0]["first_patched_version"] is None
 
 
+async def test_long_github_title_does_not_block_following_advisories(monkeypatch):
+    monkeypatch.setattr(feeds.github, "_headers", lambda: {"Authorization": "Bearer test-token"})
+    advisory = {
+        "ghsa_id": "GHSA-2345-6789-abcd",
+        "cve_id": "CVE-2026-12345",
+        "severity": "critical",
+        "summary": "Critical parser vulnerability " * 20,
+        "description": "Untrusted input can execute remote code.",
+        "html_url": "https://github.com/advisories/GHSA-2345-6789-abcd",
+    }
+    following = {**advisory, "cve_id": "CVE-2026-12346", "summary": "Another critical parser vulnerability"}
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        feeds.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[advisory, following])), **kwargs
+        ),
+    )
+    ingest = AsyncMock()
+    monkeypatch.setattr(feeds.security_store, "ingest", ingest)
+    await feeds.github_advisories(datetime.now(timezone.utc))
+    first, second = [call.args[0] for call in ingest.await_args_list]
+    assert first.title == advisory["summary"][:300]
+    assert first.advisory_id == "CVE-2026-12345"
+    assert second.title == following["summary"]
+    assert second.advisory_id == "CVE-2026-12346"
+
+
 class Connection:
     def __init__(self, previous=None):
         self.previous = previous

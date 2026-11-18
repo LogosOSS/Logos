@@ -33,7 +33,7 @@ async def github_advisories(since: datetime) -> None:
                     continue
                 body = IncidentInput(
                     advisory_id=item.get("cve_id") or item["ghsa_id"],
-                    title=item["summary"],
+                    title=item["summary"][:300],
                     severity="critical",
                     source_url=item["html_url"],
                     summary=(item.get("description") or item["summary"])[:16000],
