@@ -38,7 +38,6 @@ async def database(monkeypatch, tmp_path):
     engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
     factory = async_sessionmaker(engine)
     monkeypatch.setattr(store.db, "sessionmaker", lambda: factory)
-    monkeypatch.setattr(incidents, "upstream_snapshots", AsyncMock(return_value=[]))
     monkeypatch.setattr(
         incidents,
         "settings",
@@ -386,3 +385,58 @@ async def test_manual_precedence_migration_backfills_existing_records(database):
                 await conn.execute(text(statement))
         rows = (await conn.execute(text("SELECT created_by, manual_override FROM security_incidents"))).all()
         assert dict(rows) == {"admin": True, "feed:github": False, "scanner:trivy": False}
+
+
+@pytest.mark.parametrize("creator,manual", [("scanner:trivy", False), ("feed:cisa", False), ("admin", True)])
+async def test_later_github_evidence_enriches_incidents_without_replacing_display_fields(database, creator, manual):
+    original = await store.ingest(incident_body(upstream_repositories=["vendor/server"]), creator, manual=manual)
+    github_body = incident_body(title="A different feed title", summary="GitHub lists additional affected releases.")
+    source = {
+        "ghsa_id": "GHSA-2345-6789-abcd",
+        "vulnerabilities": [{"first_patched_version": None}],
+        "references": ["https://example.org/patch"],
+    }
+    merged = await store.ingest(github_body, "feed:github", source)
+    for key in (
+        "title",
+        "summary",
+        "importance",
+        "source_url",
+        "upstream_repositories",
+        "created_by",
+        "manual_override",
+    ):
+        assert merged[key] == original[key]
+    assert merged["source_data"] == source
+    assert merged["revision"] == original["revision"] + 1
+    assert (await store.ingest(github_body, "feed:github", source))["revision"] == merged["revision"]
+    patched = {**source, "vulnerabilities": [{"first_patched_version": "1.0.1"}]}
+    updated = await store.ingest(github_body, "feed:github", patched)
+    assert updated["source_data"]["vulnerabilities"] == patched["vulnerabilities"]
+    assert updated["revision"] == merged["revision"] + 1
+    exploited = await store.ingest(incident_body(known_exploited=True), "feed:cisa")
+    assert exploited["known_exploited"]
+    assert exploited["source_data"]["ghsa_id"] == source["ghsa_id"]
+
+
+async def test_upstream_timeouts_preserve_missing_evidence_and_queue_later_assessments(database, monkeypatch):
+    monkeypatch.setattr(incidents, "settings", replace(incidents.settings, security_feeds_enabled=False))
+    monkeypatch.setattr(incidents.github, "_get", AsyncMock(side_effect=httpx.ReadTimeout("GitHub timeout")))
+    await store.enroll(RepositoryInput(repo_slug="example/app"), "admin")
+    for n in (12345, 12346):
+        await store.ingest(
+            incident_body(advisory_id=f"CVE-2026-{n}", upstream_repositories=["vendor/server"]),
+            "feed:github",
+            {"ghsa_id": "GHSA-2345-6789-abcd"},
+        )
+    await incidents.SecurityPoller().poll_once()
+    async with database.begin() as conn:
+        sessions = (await conn.execute(text("SELECT task, status FROM agent_sessions ORDER BY id"))).mappings().all()
+        assert len(sessions) == 2
+        for row in sessions:
+            assert row["status"] == "queued"
+            snapshot = json.loads(row["task"].split("Evidence snapshot:\n")[1])
+            assert snapshot["upstream"] == [
+                {"repository": "vendor/server", "error": "GitHub timeout"},
+                {"advisory": "GHSA-2345-6789-abcd", "error": "GitHub timeout"},
+            ]

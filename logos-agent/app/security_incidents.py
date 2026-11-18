@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from sqlalchemy import text
 
 from . import db, github, security_feeds, security_store
@@ -83,7 +84,7 @@ async def upstream_snapshots(incident: dict, report: dict) -> list[dict]:
                     "notes": str(release.get("body") or "")[:8000],
                 }
             )
-        except github.GitHubError as exc:
+        except (github.GitHubError, httpx.HTTPError) as exc:
             snapshots.append({"repository": slug, "error": str(exc)[:400]})
     ghsa = incident.get("source_data", {}).get("ghsa_id")
     if ghsa and str(ghsa).startswith("GHSA-"):
@@ -96,7 +97,7 @@ async def upstream_snapshots(incident: dict, report: dict) -> list[dict]:
                     "withdrawn_at": advisory.get("withdrawn_at"),
                 }
             )
-        except github.GitHubError as exc:
+        except (github.GitHubError, httpx.HTTPError) as exc:
             snapshots.append({"advisory": ghsa, "error": str(exc)[:400]})
     return snapshots
 

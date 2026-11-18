@@ -89,6 +89,29 @@ async def ingest(body: IncidentInput, by: str, source_data: dict | None = None, 
             .first()
         )
         if row is None:
+            # Supplemental source evidence is independent of display-field
+            # ownership. A later GitHub advisory must enrich a scanner/manual
+            # incident so subsequent assessments can refresh its patch ranges.
+            row = (
+                (
+                    await conn.execute(
+                        text("""
+                UPDATE security_incidents SET
+                    known_exploited=known_exploited OR :known_exploited,
+                    source_data=source_data || CAST(:source_data AS jsonb),
+                    revision=revision+1, updated_at=now()
+                WHERE advisory_id=:advisory_id AND
+                    (known_exploited, source_data) IS DISTINCT FROM
+                    (known_exploited OR :known_exploited, source_data || CAST(:source_data AS jsonb))
+                RETURNING *
+            """),
+                        values,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
             row = (
                 (await conn.execute(text("SELECT * FROM security_incidents WHERE advisory_id=:advisory_id"), values))
                 .mappings()
