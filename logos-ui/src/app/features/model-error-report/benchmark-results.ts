@@ -41,7 +41,7 @@ export class BenchmarkResults {
     const chart = this.activeProgress();
     if (!chart) return [];
     const start = this.expandedTimeline() === chart.key ? 0 : -this.timelineLimit;
-    return chart.points.slice(start).reverse();
+    return chart.points.slice(start);
   });
   readonly showAll = signal(false);
   readonly sort = signal<{ key: ResultColumn; direction: 'ascending' | 'descending' } | null>(null);

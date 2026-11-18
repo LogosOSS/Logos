@@ -264,8 +264,8 @@ A disabled schedule cancels pending adoption.
 The round report identifies an adopted benchmark or an adoption failure.
 
 The **Performance → Overview** section contains the **Timeline** section.
-Each row shows one complete run. The latest run appears first.
-The bars show output tokens per second (tok/s) on a common scale for the selected workload.
+Each completed run has one dot. Runs appear from left to right in completion order.
+The vertical axis shows output tokens per second (tok/s). Each stem starts at zero. An open circle marks a baseline.
 Trials show their change from the baseline of the same round, if available.
 Slower runs and excluded trials remain visible. Select a run to see its configuration and result.
 Select **Show all** to see more than the latest 6 runs.

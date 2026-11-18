@@ -248,9 +248,9 @@ A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
-The **Timeline** shows the latest 6 complete runs for the selected workload, newest first.
-Each row shows the measurement time and output tokens per second (tok/s).
-All bars for a workload start at zero and use the same scale.
+The **Timeline** shows the latest six complete runs for the selected workload.
+Read the runs from left to right in completion order.
+Each dot shows output tokens per second (tok/s) on the vertical scale. An open circle marks a baseline.
 Each trial shows its change from the baseline of its round, if available.
 Select a run to see its settings and any reason for exclusion.
 Select **Show all** to see older runs.

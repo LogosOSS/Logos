@@ -59,34 +59,46 @@
         </select>
       } @else { <p class="results-note">{{ chart.context }}</p> }
 
-      <div class="timeline-columns" aria-hidden="true">
-        <span>Run · newest first</span><span>Output tokens per second</span><span>Round comparison</span>
-      </div>
-      <ol class="timeline-runs" aria-label="Completed benchmark runs, newest first">
-        @for (point of timelineRuns(); track point.run.id) {
-          <li>
-            <a class="timeline-run" [class.timeline-run--baseline]="point.isBaseline"
-              [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }">
-              <span class="timeline-identity">
-                <strong>{{ point.isBaseline ? 'Baseline' : point.run.configuration['nightly'] ? 'Trial' : 'Manual run' }} #{{ point.run.id }}</strong>
-                <small>{{ point.time | date:'dd MMM yyyy, HH:mm' }}</small>
-              </span>
-              <span class="timeline-throughput">
-                <span class="timeline-track" aria-hidden="true"><span [style.width.%]="100 * (point.rate / chart.maxRate)"></span></span>
-                <strong>{{ point.rate | number:'1.1-1' }} <small>tok/s</small></strong>
-              </span>
-              <span class="timeline-change">
-                @if (point.isBaseline) { Round baseline }
-                @else if (point.gain !== null) {
-                  <strong>{{ point.gain > 0 ? '+' : '' }}{{ point.gain | number:'1.1-1' }}%</strong>
-                  <small>vs. baseline #{{ point.baselineId }}</small>
-                } @else { No linked baseline }
-                @if (point.selectionNote) { <small class="timeline-excluded">Excluded from adoption</small> }
-              </span>
-            </a>
-          </li>
-        }
-      </ol>
+      <figure class="timeline-chart">
+        <figcaption>Output throughput <span>(tok/s)</span></figcaption>
+        <div class="timeline-axes">
+          <div class="timeline-ticks" aria-hidden="true">
+            @for (tick of chart.ticks; track $index) {
+              <span [style.bottom.%]="100 * (tick / chart.axisMax)">{{ tick | number:'1.0-6' }}</span>
+            }
+          </div>
+          <div class="timeline-scroll">
+            <div class="timeline-plot">
+              <div class="timeline-grid" aria-hidden="true">
+                @for (tick of chart.ticks; track $index) { <i [style.bottom.%]="100 * (tick / chart.axisMax)"></i> }
+              </div>
+              <ol class="timeline-runs" aria-label="Benchmark runs in completion order">
+                @for (point of timelineRuns(); track point.run.id) {
+                  @let kind = point.isBaseline ? 'Baseline' : point.run.configuration['nightly'] ? 'Trial' : 'Manual run';
+                  @let change = point.gain === null ? '' : (point.gain > 0 ? '+' : '') + (point.gain | number:'1.1-1') + '%';
+                  @let rate = point.rate | number:'1.1-1';
+                  @let description = kind + ' #' + point.run.id + ' · ' + rate + ' tok/s · ' + (point.time | date:'dd MMM yyyy, HH:mm') +
+                    (point.isBaseline ? '' : point.baselineId && change ? ' · ' + change + ' vs. baseline #' + point.baselineId : ' · No linked baseline') +
+                    (point.selectionNote ? ' · Excluded from adoption' : '');
+                  <li><a class="timeline-run" [class.timeline-run--baseline]="point.isBaseline"
+                    [class.timeline-run--excluded]="!!point.selectionNote" [attr.aria-label]="description" [title]="description"
+                    [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }">
+                    <span class="timeline-measure" aria-hidden="true" [attr.data-rate]="rate">
+                      <span class="timeline-stem" [style.height.%]="100 * (point.rate / chart.axisMax)">
+                        <span class="timeline-dot"></span><strong class="timeline-value">{{ rate }}</strong>
+                      </span>
+                    </span>
+                    <strong class="timeline-id">#{{ point.run.id }}</strong>
+                    <small [title]="point.baselineId ? 'Change vs. baseline #' + point.baselineId : kind">{{ point.isBaseline ? 'Baseline' : change || kind }}</small>
+                    @if (point.selectionNote) { <small>Excluded</small> }
+                  </a></li>
+                }
+              </ol>
+            </div>
+          </div>
+        </div>
+        <p class="timeline-axis-title">Benchmark run <span>· oldest to newest</span></p>
+      </figure>
       @if (chart.points.length > timelineLimit) {
         <button type="button" class="timeline-toggle" [attr.aria-expanded]="expandedTimeline() === chart.key"
           (click)="expandedTimeline.set(expandedTimeline() === chart.key ? null : chart.key)">

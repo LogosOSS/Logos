@@ -180,7 +180,8 @@ describe('Nightly progress', () => {
     expect(chart.points.map(point => point.gain)).toEqual([0, expect.closeTo(-5), 0,
       expect.closeTo(100 * (44 / 42 - 1)), expect.closeTo(100 * (39 / 42 - 1))]);
     expect(chart.points.filter(point => point.isBaseline).map(point => point.run.id)).toEqual([1, 3]);
-    expect(chart.maxRate).toBe(44);
+    expect(chart.ticks).toEqual([0, 10, 20, 30, 40, 50]);
+    expect(chart.axisMax).toBe(50);
     expect(benchmarkProgress([...rows].reverse())[0].runIds).toEqual(chart.runIds);
   });
 
@@ -226,14 +227,15 @@ describe('Nightly progress', () => {
     const timeline = fixture.nativeElement.querySelector('.benchmark-progress');
     const links = () => [...timeline.querySelectorAll('.timeline-run')] as HTMLAnchorElement[];
     expect(links()).toHaveLength(6);
-    expect(links()[0].textContent).toContain('Trial #8');
-    expect(links()[0].getAttribute('href')).toContain('benchmark=8');
-    expect(links()[0].querySelector<HTMLElement>('.timeline-track span')?.style.width).toBe('50%');
+    expect(links().map(link => link.querySelector('.timeline-id')?.textContent)).toEqual(['#3', '#4', '#5', '#6', '#7', '#8']);
+    expect(links()[5].getAttribute('aria-label')).toContain('Trial #8');
+    expect(links()[5].getAttribute('href')).toContain('benchmark=8');
+    expect(links()[0].querySelector<HTMLElement>('.timeline-stem')?.style.height).toBe('50%');
     timeline.querySelector('.timeline-toggle').click();
     fixture.detectChanges();
     expect(links()).toHaveLength(8);
-    expect(links()[7].textContent).toContain('Baseline #1');
-    expect(links()[7].querySelector<HTMLElement>('.timeline-track span')?.style.width).toBe('100%');
+    expect(links()[0].getAttribute('aria-label')).toContain('Baseline #1');
+    expect(links()[0].querySelector<HTMLElement>('.timeline-stem')?.style.height).toBe('100%');
     timeline.querySelector('.timeline-toggle').click();
     fixture.detectChanges();
     expect(links()).toHaveLength(6);
@@ -306,9 +308,9 @@ describe.each(['logos-replay', 'guidellm'])('Fixed request reference (%s)', (too
     const fixture = TestBed.createComponent(BenchmarkResults);
     fixture.componentRef.setInput('runs', groups[0].points.map(point => point.run));
     fixture.detectChanges();
-    const fastest = fixture.nativeElement.querySelector('.timeline-run');
+    const fastest = fixture.nativeElement.querySelector('.timeline-run[href*="benchmark=5"]');
     expect(fastest.textContent).toContain('100.0');
-    expect(fastest.textContent).toContain('Excluded from adoption');
+    expect(fastest.getAttribute('aria-label')).toContain('Excluded from adoption');
   });
 
   it('distinguishes legacy replay from GuideLLM measurements of the same dataset', () => {
@@ -330,11 +332,11 @@ describe.each(['logos-replay', 'guidellm'])('Fixed request reference (%s)', (too
     fixture.componentRef.setInput('runs', rows);
     fixture.detectChanges();
     const links = fixture.nativeElement.querySelectorAll('.timeline-run');
-    expect(links[0].textContent).toContain('-6.8%');
-    expect(links[0].textContent).toContain('vs. baseline #3');
-    expect(links[1].textContent).toContain('Round baseline');
-    expect(links[2].textContent).toContain('vs. baseline #1');
-    expect(links[3].textContent).toContain('Round baseline');
+    expect(links[3].textContent).toContain('-6.8%');
+    expect(links[3].getAttribute('aria-label')).toContain('vs. baseline #3');
+    expect(links[2].textContent).toContain('Baseline');
+    expect(links[1].getAttribute('aria-label')).toContain('vs. baseline #1');
+    expect(links[0].textContent).toContain('Baseline');
   });
 
   it('shows a completed regression instead of hiding it from the timeline', () => {

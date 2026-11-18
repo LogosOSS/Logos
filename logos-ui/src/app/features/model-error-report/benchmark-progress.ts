@@ -60,10 +60,15 @@ export function benchmarkProgress(runs: readonly ModelProviderBenchmark[]) {
       };
     });
     const maxRate = Math.max(...points.map(point => point.rate));
+    const roughStep = maxRate / 5;
+    const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+    const step = ([1, 2, 2.5, 5, 10].find(unit => unit * magnitude >= roughStep) ?? 10) * magnitude;
+    const intervals = Math.ceil(maxRate / step);
+    const ticks = Array.from({ length: intervals + 1 }, (_, i) => i * step);
     const settings = comparisonSettings(reference);
     const context = `${benchmarkDatasetLabel(reference)} · ${reference.provider_name} · ${reference.sample_size} requests · ${settings['max_concurrency']} concurrent`;
     const engine = reference.configuration['tool'] === 'logos-replay' ? 'Legacy replay' : 'GuideLLM';
-    return { key, reference, points, maxRate, last, context,
+    return { key, reference, points, ticks, axisMax: ticks[intervals], last, context,
       label: `${context} · ${engine}`,
       runIds: ordered.map(run => run.id),
     };
