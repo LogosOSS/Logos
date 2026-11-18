@@ -206,7 +206,8 @@ export class SettingsTabComponent implements OnChanges {
   }
 
   selectablePublicCategories(): string[] {
-    return [...new Set([...this.publicCategoryOptions(), this.publicCategory()].filter(Boolean))].sort();
+    return [...new Set([...this.publicCategoryOptions(), this.publicCategory()].filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right));
   }
 
   canCreatePublicCategory(): boolean {
