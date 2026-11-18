@@ -108,6 +108,24 @@ export interface RequestPayloads {
   response_payload: unknown;
 }
 
+/** Values observed at scheduling time; null means the scheduler had no estimate. */
+export interface RoutingCandidate {
+  model_id: number;
+  provider_id: number;
+  model_name: string | null;
+  provider_name: string | null;
+  provider_type: string;
+  state: string;
+  queue_depth: number | null;
+  expected_wait_s: number | null;
+}
+
+export interface RequestRouting {
+  candidates: RoutingCandidate[];
+  selected_model_id: number | null;
+  selected_provider_id: number | null;
+}
+
 /** Narrowing of the request feed. `null` on a field means "do not narrow by it". */
 export interface RequestFilter {
   userId: number | null;
@@ -144,6 +162,12 @@ export class StatisticsService {
 
   getRequestPayloads(requestId: string): Promise<RequestPayloads> {
     return firstValueFrom(this.http.post<RequestPayloads>('/api/logosdb/request_payloads', {
+      request_id: requestId,
+    }));
+  }
+
+  getRequestRouting(requestId: string): Promise<RequestRouting> {
+    return firstValueFrom(this.http.post<RequestRouting>('/api/logosdb/request_routing', {
       request_id: requestId,
     }));
   }

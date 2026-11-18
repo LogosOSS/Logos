@@ -1,17 +1,15 @@
 # docker-compose.dev.yml — Local development (builds worker node from source)
 # Usage: docker compose -f docker-compose.dev.yml up --build
 #
-# vLLM is always installed (CUDA toolkit comes from vLLM's pip wheels —
-# plain Ubuntu base, default BASE_IMAGE=ubuntu:24.04).
+# vLLM is always installed from the Dockerfile's VLLM_PIP_SPEC pin and
+# requirements.lock (CUDA toolkit comes from vLLM's pip wheels — plain Ubuntu
+# base, pinned by digest in the Dockerfile). Neither is overridable here: the
+# image installs exactly the lock.
 services:
   logos-workernode:
     build:
       context: .
       args:
-        BASE_IMAGE: ${BASE_IMAGE:-ubuntu:24.04}
-        # [audio] mirrors the Dockerfile default: without it the speech-to-text
-        # endpoints cannot decode any upload (see the pin comment there).
-        VLLM_PIP_SPEC: ${VLLM_PIP_SPEC:-vllm[audio]}
         NCCL_PIP_SPEC: ${NCCL_PIP_SPEC:-}
         # Shown as the worker's version on the Statistics page; "unknown" unless
         # exported, e.g. GIT_SHA=$(git rev-parse HEAD) docker compose … --build

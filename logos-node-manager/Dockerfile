@@ -7,18 +7,20 @@ FROM python:3.13-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_ROOT_USER_ACTION=ignore
+    PYTHONPATH=/app
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 
 WORKDIR /app
 
-# The package has no runtime dependencies, so installing it is a single layer.
-COPY pyproject.toml README.md ./
+# The package has no runtime dependencies, so nothing is installed: it runs from
+# the source tree on PYTHONPATH (building a wheel would resolve the build
+# backend's own dependencies at build time). The `node-manager` command the
+# deploy workflows `docker exec` is a wrapper around `python -m`.
 COPY logos_node_manager ./logos_node_manager
-RUN pip install --no-cache-dir .
+RUN printf '#!/bin/sh\nexec python -m logos_node_manager "$@"\n' > /usr/local/bin/node-manager \
+  && chmod 0755 /usr/local/bin/node-manager
 
 # Marks every image of the manager. The deploy workflows remove the unused ones by this label after an update: once a
 # newer image is pulled, an older one has no name left, so the label is the only thing that still identifies it.

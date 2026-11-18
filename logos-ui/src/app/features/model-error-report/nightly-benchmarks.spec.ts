@@ -60,7 +60,9 @@ describe('Nightly benchmark confirmation', () => {
   it('requires confirmation to enable and disable', async () => {
     await control.confirm();
     http.expectNone('/api/logosdb/model_benchmarks/nightly/configure');
+    control.managing.set(true);
     control.review();
+    expect(control.managing()).toBe(false);
     expect(control.confirming()).toBe(true);
     http.expectNone('/api/logosdb/model_benchmarks/nightly/configure');
     const first = control.confirm();

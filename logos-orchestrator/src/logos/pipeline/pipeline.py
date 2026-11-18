@@ -388,6 +388,7 @@ class RequestPipeline:
             priority_when_scheduled=scheduling_result.priority_when_scheduled,
             queue_depth_at_schedule=scheduling_result.queue_depth_at_schedule,
             provider_metrics=scheduling_result.provider_metrics,
+            routing_candidates=scheduling_result.routing_candidates,
         )
 
         # Record demand for capacity planner
@@ -586,6 +587,7 @@ class RequestPipeline:
                         priority_when_scheduled=rerouted.priority_when_scheduled,
                         queue_depth_at_schedule=rerouted.queue_depth_at_schedule,
                         provider_metrics=rerouted.provider_metrics,
+                        routing_candidates=rerouted.routing_candidates,
                     )
                     scheduling_result = rerouted
                     if pipeline_request is not None:

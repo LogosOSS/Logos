@@ -517,9 +517,25 @@
           <div class="performance-header">
             <div>
               <h2>Performance</h2>
+              <p>{{ performanceDescription() }}</p>
             </div>
-            <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()" [attr.aria-expanded]="performanceView() === 'run'" aria-controls="benchmark-setup">Run benchmark</button>
+            <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()" [hidden]="performanceView() === 'run'" aria-controls="benchmark-setup"><i class="pi pi-play" aria-hidden="true"></i> Run benchmark</button>
           </div>
+
+          <nav class="performance-nav" aria-label="Performance sections">
+            @for (view of performanceViews; track view.id) {
+              <button type="button" [class.performance-nav__active]="performanceView() === view.id"
+                [attr.aria-pressed]="performanceView() === view.id" [attr.aria-controls]="'performance-' + view.id"
+                (click)="performanceView.set(view.id)"><i [class]="'pi ' + view.icon" aria-hidden="true"></i><span>{{ view.label }}</span></button>
+            }
+          </nav>
+
+          @if (benchmarkStartError(); as error) {
+            <p class="benchmark-runner__error" role="alert">{{ error }}</p>
+          }
+          @if (benchmarkDeleteError(); as error) {
+            <app-error-message variant="banner" [message]="error" />
+          }
 
           @for (pair of benchmarkPairs(); track pair.model_provider_id) {
             @if (latestBenchmarkRun(pair.model_provider_id); as run) {
@@ -560,18 +576,16 @@
             }
           }
 
+          <section id="performance-results" class="performance-view" aria-label="Performance overview" [hidden]="performanceView() !== 'results'">
           <div class="performance-overview">
           <section class="deployment-overview" aria-label="Currently deployed">
-            <h3>Currently deployed</h3>
+            <h3><i class="pi pi-server" aria-hidden="true"></i> Currently deployed</h3>
             @for (pair of deployedPairs(); track pair.model_provider_id) {
               <app-deployed-configuration [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [runs]="performance()" />
             } @empty { <p>No local worker configurations are available for this model.</p> }
           </section>
             <app-benchmark-results [runs]="performance()" [showHistory]="false" />
           </div>
-          @if (benchmarkStartError(); as error) {
-            <p class="benchmark-runner__error" role="alert">{{ error }}</p>
-          }
 
           <div class="performance-results">
           @if (performanceLoading()) {
@@ -596,10 +610,6 @@
 
           } @else {
 
-            @if (benchmarkDeleteError(); as error) {
-              <app-error-message variant="banner" [message]="error" />
-            }
-
             <app-benchmark-results [runs]="performance()" [selectedRunId]="linkedBenchmarkId()" [showProgress]="false" />
 
 
@@ -608,19 +618,16 @@
 
           </div>
 
-          <details id="benchmark-setup" class="performance-detail-section" [hidden]="performanceView() !== 'run'" [open]="performanceView() === 'run'" (toggle)="performanceView.set($any($event.target).open ? 'run' : 'results')">
-          <summary>Benchmark setup &amp; nightly automation</summary>
-          @for (pair of benchmarkPairs(); track pair.model_provider_id) {
-            @if (pair.provider_type === 'logosnode') {
-              <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [modelName]="model.name" />
-            }
-          }
+          </section>
+
+          <section id="performance-run" class="performance-view" aria-label="Benchmarks" [hidden]="performanceView() !== 'run'">
+          <div id="benchmark-setup">
           @if (selectedBenchmarkPair(); as pair) {
             <section class="benchmark-runner" id="benchmark-runner" aria-label="Benchmark setup">
               <header class="benchmark-runner__header">
                 <div>
-                  <h3>Manual benchmark</h3>
-                  <p>Choose where to run and how many requests to measure.</p>
+                  <h3><i class="pi pi-play" aria-hidden="true"></i> Run a benchmark</h3>
+                  <p>{{ benchmarkBatch() ? 'Compare configurations using the same test setup.' : 'Measure this model with a single test run.' }}</p>
                 </div>
               </header>
               <div class="benchmark-basics">
@@ -639,11 +646,17 @@
                 </label>
               </div>
 
-              <details class="benchmark-settings-panel">
-                <summary>
-                  <strong>Dataset and settings</strong>
-                  <span>{{ benchmarkSettings().workload_id ? 'Frozen requests · source output limits' : benchmarkSettings().dataset + ' · ' + benchmarkSettings().max_output_tokens + ' max tokens' }} · {{ benchmarkSettings().profile === 'synchronous' ? 'Sequential' : benchmarkSettings().concurrency + ' concurrent requests' }}</span>
-                </summary>
+              <div class="benchmark-recipe">
+                <div>
+                  <span>Test setup</span>
+                  <p>{{ benchmarkSettings().workload_id ? 'Saved request dataset' : benchmarkSettings().dataset }} · {{ benchmarkSettings().profile === 'synchronous' ? 'Sequential' : benchmarkSettings().concurrency + ' concurrent requests' }}</p>
+                  @if (benchmarkBatch()) { <p>{{ benchmarkTotalRuns() }} runs in this batch</p> }
+                </div>
+                <button type="button" class="benchmark-customize-button" aria-haspopup="dialog" (click)="benchmarkSettingsOpen.set(true)"><i class="pi pi-sliders-h" aria-hidden="true"></i> Customize</button>
+              </div>
+              <app-modal-form [visible]="benchmarkSettingsOpen()" (visibleChange)="benchmarkSettingsOpen.set($event)" title="Customize benchmark" size="lg">
+                <div class="performance-editor">
+<section class="benchmark-customization" aria-label="Dataset and settings">
                 @if (pair.provider_type === 'logosnode' && !benchmarkSettings().workload_id) {
                   <button type="button" class="benchmark-preset" (click)="useComparisonBaseline()"
                     title="Prepare GSM8K main/test, 50 requests, 512 max output tokens, seed 42, TP 1, PP 1 and concurrency 4. Other worker settings stay unchanged.">
@@ -654,7 +667,7 @@
                   [settings]="benchmarkSettings()" (settingsChange)="benchmarkSettings.set($event)"
                   (validChange)="benchmarkSettingsValid.set($event)" (limitsChange)="benchmarkWorkerLimits.set($event)"
                   (sampleSizeChange)="benchmarkSampleSize.set($event)" />
-              </details>
+              </section>
 
               <details class="benchmark-settings-panel">
                 <summary>
@@ -666,16 +679,20 @@
                   (planChange)="benchmarkBatch.set($event)" (validChange)="benchmarkBatchValid.set($event)" />
               </details>
 
+                </div>
+                <div modal-footer><button type="button" class="benchmark-run-button" (click)="benchmarkSettingsOpen.set(false)">Done</button></div>
+              </app-modal-form>
+
               @if (!pair.endpoint_configured) {
                 <p class="benchmark-runner__error">Add an endpoint under Providers before running a benchmark.</p>
               } @else if (benchmarkProviderUnavailable(pair)) {
                 <p class="benchmark-runner__error" role="status">This worker is unavailable. Choose an online worker to run a benchmark.</p>
               }
               @if (!benchmarkSettingsValid()) {
-                <p class="benchmark-runner__error" role="status">Check Dataset and settings before starting.</p>
+                <p class="benchmark-runner__error" role="status">Check the dataset and settings in Customize before starting.</p>
               }
               @if (!benchmarkBatchValid()) {
-                <p class="benchmark-runner__error" role="status">Check Repeat or compare settings before starting.</p>
+                <p class="benchmark-runner__error" role="status">Check the batch in Customize before starting.</p>
               }
               <footer class="benchmark-setup-footer">
                 <p>{{ benchmarkSampleLabel() }} per run · {{ benchmarkTotalRuns() }} {{ benchmarkTotalRuns() === 1 ? 'run' : 'runs' }}</p>
@@ -692,10 +709,18 @@
             <div class="empty-state"><h3>No provider available</h3><p>Add a provider for this model to run a benchmark.</p></div>
           }
 
-          </details>
+          </div>
+          @if (deployedPairs().length) {
+          <section class="nightly-overview" aria-label="Nightly benchmarks">
+            <header><h3><i class="pi pi-moon" aria-hidden="true"></i> Nightly benchmarks</h3><p>Test configurations automatically during the maintenance window.</p></header>
+            @for (pair of deployedPairs(); track pair.model_provider_id) {
+              <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [modelName]="model.name" />
+            }
+          </section>
+          }
+          </section>
 
-          <details class="performance-detail-section" [open]="performanceView() === 'measurements'">
-            <summary>Request measurements</summary>
+          <section id="performance-measurements" class="performance-view performance-request-view" aria-label="Request measurements" [hidden]="performanceView() !== 'measurements'">
           <div class="delays">
             <div class="delays__header">
               <div>
@@ -726,14 +751,13 @@
             }
           </div>
 
-          </details>
+          </section>
 
-          <details class="performance-detail-section performance-advanced">
-            <summary>More analysis &amp; details</summary>
+          <section id="performance-analysis" class="performance-view performance-advanced" aria-label="Benchmark analysis" [hidden]="performanceView() !== 'analysis'">
             <div class="performance-advanced__content">
-<details class="performance-analysis-item" name="performance-analysis"><summary>Charts and comparison</summary>
+<section class="performance-comparison" aria-label="Charts and comparison"><h3><i class="pi pi-chart-bar" aria-hidden="true"></i> Charts and comparison</h3>
               <app-benchmark-comparison [runs]="performance()" />
-            </details>
+            </section>
 <details class="performance-analysis-item" name="performance-analysis"><summary>Run details and saved configurations</summary>
 
             <div class="performance-list">
@@ -925,9 +949,7 @@
             </dl></details>
           </details>
             </div>
-          </details>
-
-
+          </section>
 
           </div>
 

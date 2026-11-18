@@ -61,7 +61,7 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 .progress-zero { stroke: rgb(var(--color-outline-300)); stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
 .progress-line { fill: none; stroke: rgb(var(--color-primary-500)); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .progress-baseline { fill: none; stroke: rgb(var(--color-typography-500)); stroke-width: 2; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
-.progress-axis { position: absolute; right: calc(100% + .75rem); color: rgb(var(--color-typography-500)); font-size: .75rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.progress-axis { position: absolute; right: calc(100% + .75rem); color: rgb(var(--color-typography-500)); font-size: .875rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .progress-axis--top { top: 0; transform: translateY(-50%); }
 .progress-axis--zero { top: 100%; transform: translateY(-50%); }
 .progress-point { position: absolute; width: 28px; height: 28px; transform: translate(-50%, -50%); border-radius: 50%; border: 0; padding: 0; background: transparent; cursor: pointer; }
@@ -75,7 +75,7 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 .progress-point:hover .progress-tooltip, .progress-point:focus .progress-tooltip { display: block; }
 .progress-point--last .progress-tooltip { left: auto; right: 0; transform: none; }
 .progress-point--first .progress-tooltip { left: 0; transform: none; }
-.progress-dates { display: flex; justify-content: space-between; gap: 1rem; margin-left: 70px; color: rgb(var(--color-typography-500)); font-size: .75rem; font-variant-numeric: tabular-nums; }
+.progress-dates { display: flex; justify-content: space-between; gap: 1rem; margin-left: 70px; color: rgb(var(--color-typography-500)); font-size: .875rem; font-variant-numeric: tabular-nums; }
 
 .results-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0; padding: 1rem 0; border-top: 1px solid rgb(var(--color-outline-200)); border-bottom: 1px solid rgb(var(--color-outline-200)); }
 .results-summary dt { color: rgb(var(--color-typography-500)); }
@@ -108,9 +108,9 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 
 .numeric small { white-space: normal; min-width: 0; }
 
-.benchmark-progress { @include panel.surface; height: 100%; }
+.benchmark-progress { @include panel.surface; }
 .timeline-headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem 1rem; color: rgb(var(--color-typography-100)); }
-.timeline-headline > strong { font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+.timeline-headline > strong { font-size: 1.75rem; font-weight: 500; font-variant-numeric: tabular-nums; }
 .timeline-headline > span { color: rgb(var(--color-primary-500)); }
 .timeline-records { @include disclosure.section; margin-top: 8px; > summary { min-height: 40px; padding: 8px 0 0; font-size: var(--model-detail-font-size); } }
 .timeline-records a { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem 1rem; padding: .75rem 0; color: rgb(var(--color-primary-500)); text-decoration: none; }
@@ -124,3 +124,11 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 .top-configurations { @include panel.surface; }
 
 .benchmark-progress .results-heading { min-height: 36px; align-items: center; }
+.timeline-guide { @include disclosure.section; margin-top: 16px; > summary { font-size: var(--model-detail-font-size); font-weight: 500; } }
+.progress-plot { height: 240px; margin: 24px 12px 12px 64px; }
+.progress-dates { margin-left: 64px; margin-right: 12px; }
+@media (max-width: 600px) {
+  .progress-plot { height: 200px; margin-left: 48px; }
+  .progress-dates { margin-left: 48px; font-size: .875rem; }
+  .timeline-headline { gap: 4px 12px; }
+}

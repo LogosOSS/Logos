@@ -10,7 +10,7 @@ Models are assigned round-robin so each LLM receives an equal (±1) share of
 the requests. The assignment is deterministic (same seed → same assignment).
 
 Requirements:
-    pip install datasets
+    pip install --no-deps --require-hashes -r benchmarks/requirements.lock
 
 Usage:
     # All 1319 test examples, 1 req/s arrival rate:
@@ -50,7 +50,8 @@ try:
     from datasets import load_dataset
 except ImportError:
     print(
-        "Error: 'datasets' library not installed.\n" "       Run: pip install datasets",
+        "Error: 'datasets' library not installed.\n"
+        "       Run: pip install --no-deps --require-hashes -r benchmarks/requirements.lock",
         file=sys.stderr,
     )
     sys.exit(1)

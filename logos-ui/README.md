@@ -85,6 +85,11 @@ npm run e2e:install
 npm run e2e
 ```
 
+`e2e:install` downloads only the Chromium build that the locked Playwright
+version pins; it installs no system packages. On a Linux host without a
+desktop, install Chromium's libraries from your distribution with exact
+versions (the list is in `logos-agent/workspace/Dockerfile`).
+
 The Playwright suite requires the running stack. See the [E2E guide](../e2e/README.md).
 
 ## Design System
