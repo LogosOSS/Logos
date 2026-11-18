@@ -248,18 +248,14 @@ A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
-The **Timeline** shows absolute throughput in output tokens per second (tok/s).
-The solid line includes complete slower runs and repeated baselines.
-The dashed line shows the freshly measured production baseline of each round.
-Expand **How to read this chart** for the legend and explanations of automatic selection checks.
-Each point is one complete benchmark run. A filled point does not confirm production deployment.
-Each point keeps its actual measurement date and configuration.
-The percentage change compares each measurement with its captured baseline from the same round.
-The chart separates datasets, providers and captured test settings. Worker releases can share a measurement history.
-Select a point to open its benchmark result.
-Expand **Measured configurations** to read the dates and parameters.
-Outlined points fail automatic selection checks and remain visible to show measurement variation.
-The chart does not establish automatic parameter adoption or statistical significance.
+The **Timeline** shows the latest 6 complete runs for the selected workload, newest first.
+Each row shows the measurement time and output tokens per second (tok/s).
+All bars for a workload start at zero and use the same scale.
+Each trial shows its change from the baseline of its round, if available.
+Select a run to see its settings and any reason for exclusion.
+Select **Show all** to see older runs.
+Read **When settings change** for the nightly adoption rule.
+Expand **What does Logos check?** for the limits on output length and request latency.
 Expand **Benchmark runs** to see the latest 5 results per dataset.
 A baseline shows its own throughput and 0% change. Missing comparisons show why the baseline is unavailable. Select **Show all** to read older results.
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.

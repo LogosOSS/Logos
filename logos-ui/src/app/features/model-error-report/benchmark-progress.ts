@@ -1,4 +1,4 @@
-import { benchmarkDatasetLabel, isSavedRequestBenchmark } from './benchmark-configuration';
+import { benchmarkDatasetLabel } from './benchmark-configuration';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { comparisonValue } from './benchmark-comparison';
 import { batchingSignature, comparisonSettings } from './benchmark-isolation';
@@ -17,7 +17,7 @@ function timelineSignature(run: ModelProviderBenchmark): string | null {
 
 export function recordConfiguration(run: ModelProviderBenchmark): string {
   const settings = comparisonSettings(run);
-  return `Sequences ${settings['max_num_seqs'] ?? 'auto'} · batch tokens ${settings['max_num_batched_tokens'] ?? 'auto'}`;
+  return `Sequences ${settings['max_num_seqs'] ?? 'not recorded'} · batch tokens ${settings['max_num_batched_tokens'] ?? 'not recorded'}`;
 }
 
 /** Plot completed measurements in absolute units with each round's captured baseline. */
@@ -50,30 +50,22 @@ export function benchmarkProgress(runs: readonly ModelProviderBenchmark[]) {
     const ordered = [...group.runs.values()].sort((a, b) => completedAt(a) - completedAt(b) || a.id - b.id);
     const baselines = [...group.baselines.values()].sort((a, b) => completedAt(a) - completedAt(b) || a.id - b.id);
     const reference = baselines[baselines.length - 1];
-    const first = completedAt(ordered[0]), last = completedAt(ordered[ordered.length - 1]);
-    const maxRate = Math.max(1, Math.ceil(Math.max(...ordered.map(run => comparisonValue(run, 'throughput')!)) * 1.1));
+    const last = completedAt(ordered[ordered.length - 1]);
     const points = ordered.map(run => {
       const time = completedAt(run), rate = comparisonValue(run, 'throughput')!;
       const comparison = benchmarkResultRow(run, runs);
-      return { run, time, rate, key: String(run.id), configuration: recordConfiguration(run),
-        gain: comparison.delta, baselineId: comparison.baselineId, baselineRate: comparison.before,
+      return { run, time, rate,
+        gain: comparison.delta, baselineId: comparison.baselineId,
         isBaseline: group.baselines.has(run.id), selectionNote: comparison.selectionNote,
-        x: first === last ? 50 : (time - first) / (last - first) * 100,
-        y: (1 - rate / maxRate) * 100 };
+      };
     });
-    const baselinePoints = points.filter(point => point.isBaseline);
-    const baselineLine = baselinePoints.flatMap((point, index) => index === 0
-      ? [`${point.x},${point.y}`]
-      : [`${point.x},${baselinePoints[index - 1].y}`, `${point.x},${point.y}`]);
-    baselineLine.push(`100,${baselinePoints[baselinePoints.length - 1].y}`);
+    const maxRate = Math.max(...points.map(point => point.rate));
     const settings = comparisonSettings(reference);
-    return { key, reference, latest: points[points.length - 1], first, last, maxRate,
-      baselineRate: comparisonValue(reference, 'throughput')!,
-      points, line: points.map(point => `${point.x},${point.y}`).join(' '),
-      baselineLine: baselineLine.join(' '),
-      label: `${benchmarkDatasetLabel(reference)} · ${reference.provider_name} · ${reference.configuration['tool'] === 'logos-replay' ? 'Legacy replay' : 'GuideLLM'}`,
+    const context = `${benchmarkDatasetLabel(reference)} · ${reference.provider_name} · ${reference.sample_size} requests · ${settings['max_concurrency']} concurrent`;
+    const engine = reference.configuration['tool'] === 'logos-replay' ? 'Legacy replay' : 'GuideLLM';
+    return { key, reference, points, maxRate, last, context,
+      label: `${context} · ${engine}`,
       runIds: ordered.map(run => run.id),
-      context: `${benchmarkDatasetLabel(reference)} · ${reference.provider_name} · ${reference.sample_size} requests · ${settings['max_concurrency']} concurrent`,
     };
   }).sort((a, b) => b.last - a.last);
 }

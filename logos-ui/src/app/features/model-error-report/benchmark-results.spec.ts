@@ -3,7 +3,7 @@ import { provideRouter } from '@angular/router';
 beforeEach(() => TestBed.configureTestingModule({ providers: [provideRouter([])] }));
 import { BenchmarkResults } from './benchmark-results';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
-import { benchmarkProgress } from './benchmark-progress';
+import { benchmarkProgress, recordConfiguration } from './benchmark-progress';
 
 function run(id: number, rate: number, baseline?: number, pair = 1): ModelProviderBenchmark {
   return { id, model_provider_id: pair, model_id: 1, model_name: 'Model', provider_id: pair,
@@ -176,15 +176,12 @@ describe('Nightly progress', () => {
       measured(1, 40, 1, 21), measured(2, 38, 1, 21)];
     const chart = benchmarkProgress(rows)[0];
     expect(chart.reference.id).toBe(3);
-    expect(chart.baselineRate).toBe(42);
     expect(chart.points.map(point => point.run.id)).toEqual([1, 2, 3, 4, 5]);
     expect(chart.points.map(point => point.gain)).toEqual([0, expect.closeTo(-5), 0,
       expect.closeTo(100 * (44 / 42 - 1)), expect.closeTo(100 * (39 / 42 - 1))]);
     expect(chart.points.filter(point => point.isBaseline).map(point => point.run.id)).toEqual([1, 3]);
-    expect(chart.maxRate).toBeGreaterThan(44);
-    expect(chart.points[0].y).toBeCloseTo(100 * (1 - 40 / chart.maxRate));
-    expect(chart.baselineLine).toContain('100,');
-    expect(benchmarkProgress([...rows].reverse())[0].line).toBe(chart.line);
+    expect(chart.maxRate).toBe(44);
+    expect(benchmarkProgress([...rows].reverse())[0].runIds).toEqual(chart.runIds);
   });
 
   it('keeps actual dates and configurations across worker releases and daily baselines', () => {
@@ -196,7 +193,7 @@ describe('Nightly progress', () => {
     expect(chart.points.map(point => [point.run.id, point.rate])).toEqual([[1, 40], [2, 45], [3, 42]]);
     expect(chart.reference.id).toBe(3);
     expect(chart.points[1].time).toBe(Date.parse('2026-10-22T05:10:00Z'));
-    expect(chart.points[1].configuration).toContain('Sequences 8');
+    expect(recordConfiguration(chart.points[1].run)).toContain('Sequences 8');
     expect(chart.last).toBe(Date.parse('2026-10-23T05:10:00Z'));
   });
 
@@ -219,21 +216,32 @@ describe('Nightly progress', () => {
       measured(3, 40, 3, 22, 8), measured(4, 48, 3, 22, 8), changed, missing, failed, run(10, 99, 1)]);
     expect(groups).toHaveLength(2);
     expect(groups.map(group => group.points.map(point => point.run.id))).toEqual([[3, 4], [1, 2]]);
-    expect(groups.every(group => !group.line.includes('NaN'))).toBe(true);
   });
 
-  it('renders absolute throughput with a baseline line and removes deleted comparisons', () => {
+  it('gives simultaneous measurements separate links and keeps the same scale when older runs open', () => {
     const fixture = TestBed.createComponent(BenchmarkResults);
-    fixture.componentRef.setInput('runs', [measured(1, 40, 1, 21), measured(2, 44, 1, 21)]);
+    const runs = Array.from({ length: 8 }, (_, i) => measured(i + 1, i === 0 ? 100 : 50, 1, 21));
+    fixture.componentRef.setInput('runs', runs);
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelectorAll('.progress-point')).toHaveLength(2);
-    expect(fixture.nativeElement.querySelector('.progress-baseline')).not.toBeNull();
-    expect(fixture.nativeElement.querySelector('.progress-axis--zero').textContent).toBe('0');
-    expect(fixture.nativeElement.querySelector('.progress-axis--top').textContent).toContain('tok/s');
-    fixture.componentRef.setInput('runs', [measured(2, 44, 1, 21)]);
+    const timeline = fixture.nativeElement.querySelector('.benchmark-progress');
+    const links = () => [...timeline.querySelectorAll('.timeline-run')] as HTMLAnchorElement[];
+    expect(links()).toHaveLength(6);
+    expect(links()[0].textContent).toContain('Trial #8');
+    expect(links()[0].getAttribute('href')).toContain('benchmark=8');
+    expect(links()[0].querySelector<HTMLElement>('.timeline-track span')?.style.width).toBe('50%');
+    timeline.querySelector('.timeline-toggle').click();
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelectorAll('.progress-point')).toHaveLength(0);
-    expect(fixture.nativeElement.querySelector('.benchmark-progress').textContent).toContain('complete baseline');
+    expect(links()).toHaveLength(8);
+    expect(links()[7].textContent).toContain('Baseline #1');
+    expect(links()[7].querySelector<HTMLElement>('.timeline-track span')?.style.width).toBe('100%');
+    timeline.querySelector('.timeline-toggle').click();
+    fixture.detectChanges();
+    expect(links()).toHaveLength(6);
+    fixture.componentRef.setInput('runs', [runs[1]]);
+    fixture.detectChanges();
+    expect(links()).toHaveLength(0);
+    expect(timeline.textContent).toContain('complete baseline');
+    expect(timeline.textContent).toContain('When settings change');
   });
 });
 
@@ -295,7 +303,12 @@ describe.each(['logos-replay', 'guidellm'])('Fixed request reference (%s)', (too
     expect(groups[0].points.map(point => point.run.id)).toEqual([1, 2, 3, 4, 5]);
     expect(groups[0].points[3].gain).toBe(150);
     expect(groups[0].points[4].selectionNote).toContain('Not eligible');
-    expect(new Set(groups[0].points.map(point => point.key)).size).toBe(5);
+    const fixture = TestBed.createComponent(BenchmarkResults);
+    fixture.componentRef.setInput('runs', groups[0].points.map(point => point.run));
+    fixture.detectChanges();
+    const fastest = fixture.nativeElement.querySelector('.timeline-run');
+    expect(fastest.textContent).toContain('100.0');
+    expect(fastest.textContent).toContain('Excluded from adoption');
   });
 
   it('distinguishes legacy replay from GuideLLM measurements of the same dataset', () => {
@@ -316,23 +329,19 @@ describe.each(['logos-replay', 'guidellm'])('Fixed request reference (%s)', (too
     const fixture = TestBed.createComponent(BenchmarkResults);
     fixture.componentRef.setInput('runs', rows);
     fixture.detectChanges();
-    const points = fixture.nativeElement.querySelectorAll('.progress-point') as NodeListOf<HTMLAnchorElement>;
-    expect(points[3].getAttribute('aria-label')).toContain('-6.8% vs. baseline #3');
-    expect(points[3].textContent).toContain('baseline #3');
-    expect(fixture.nativeElement.querySelector('.timeline-baseline').textContent).toContain('Latest round baseline #3');
-    expect(points[0].textContent).toContain('Round baseline');
-    const legend = fixture.nativeElement.querySelector('[aria-label="Timeline legend"]');
-    expect(legend.textContent).toContain('Round baseline');
-    expect(legend.textContent).toContain('Measured trial');
-    expect(legend.textContent).toContain('Not eligible for adoption');
-    expect(fixture.nativeElement.querySelector('.timeline-explanation').textContent).toContain('not one request');
+    const links = fixture.nativeElement.querySelectorAll('.timeline-run');
+    expect(links[0].textContent).toContain('-6.8%');
+    expect(links[0].textContent).toContain('vs. baseline #3');
+    expect(links[1].textContent).toContain('Round baseline');
+    expect(links[2].textContent).toContain('vs. baseline #1');
+    expect(links[3].textContent).toContain('Round baseline');
   });
 
   it('shows a completed regression instead of hiding it from the timeline', () => {
     const baseline = replay(1, 40), worse = replay(2, 38, 1);
     const chart = benchmarkProgress([worse, baseline])[0];
     expect(chart.points.map(point => point.run.id)).toEqual([1, 2]);
-    expect(chart.latest.gain).toBeCloseTo(-5);
+    expect(chart.points[1].gain).toBeCloseTo(-5);
     expect(chart.points[0].time).toBe(Date.parse('2026-10-21T04:00:00Z'));
   });
 });

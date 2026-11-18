@@ -4,7 +4,7 @@ import { RouterLink } from '@angular/router';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { benchmarkConfigurationItems, benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
 import { comparisonValue } from './benchmark-comparison';
-import { benchmarkProgress } from './benchmark-progress';
+import { benchmarkProgress, recordConfiguration } from './benchmark-progress';
 import { batchingSignature } from './benchmark-isolation';
 import { benchmarkResultRow } from './benchmark-result-row';
 
@@ -19,6 +19,7 @@ type ResultColumn = 'runId' | 'measuredFrom' | 'before' | 'after' | 'delta';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class BenchmarkResults {
+  readonly configuration = recordConfiguration;
   readonly datasetLabel = benchmarkDatasetLabel;
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
   readonly selectedRunId = input<number | null>(null);
@@ -33,6 +34,14 @@ export class BenchmarkResults {
     const selected = this.selectedRunId();
     return this.progress().find(group => group.key === this.progressKey())
       ?? this.progress().find(group => selected !== null && group.runIds.includes(selected)) ?? this.progress()[0];
+  });
+  readonly timelineLimit = 6;
+  readonly expandedTimeline = signal<string | null>(null);
+  readonly timelineRuns = computed(() => {
+    const chart = this.activeProgress();
+    if (!chart) return [];
+    const start = this.expandedTimeline() === chart.key ? 0 : -this.timelineLimit;
+    return chart.points.slice(start).reverse();
   });
   readonly showAll = signal(false);
   readonly sort = signal<{ key: ResultColumn; direction: 'ascending' | 'descending' } | null>(null);
