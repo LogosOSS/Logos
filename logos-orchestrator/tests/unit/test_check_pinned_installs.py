@@ -223,3 +223,15 @@ def test_main_passes_on_pinned_installs(tmp_path: Path, capsys: pytest.CaptureFi
     git_repo(tmp_path, {"setup.sh": "pip install --no-deps --require-hashes -r requirements.lock\n"})
     assert main(tmp_path) == 0
     assert "Every install pins an exact version." in capsys.readouterr().out
+
+
+def test_workflow_image_build_args_need_a_digest(tmp_path: Path) -> None:
+    workflow = write(
+        tmp_path,
+        ".github/workflows/build.yml",
+        "      build-args: |\n"
+        "        BASE_IMAGE=ubuntu:24.04\n"
+        "        RUNTIME_IMAGE=ubuntu:24.04@sha256:" + "0" * 64 + "\n"
+        "        GIT_SHA=abc\n",
+    )
+    assert rules(check_file(workflow, tmp_path)) == [(2, "from")]
