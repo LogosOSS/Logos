@@ -17,6 +17,8 @@ describe('Security incident dashboard', () => {
     TestBed.configureTestingModule({ imports: [SecurityIncidents], providers: [provideRouter([]), provideHttpClient(), provideHttpClientTesting()] });
     const fixture = TestBed.createComponent(SecurityIncidents);
     const http = TestBed.inject(HttpTestingController);
+    http.expectNone('/api/agent/security');
+    fixture.detectChanges();
     http.expectOne('/api/agent/security').flush({ enabled: true, feeds_enabled: true, poll_error: '', feeds: [],
       repositories: [{ id: 1, repo_slug: 'org/repo', branch: 'main' }],
       incidents: [{ id: 1, advisory_id: 'CVE-2026-12345', title: 'An important vulnerability', severity: 'critical', source_url: 'https://example.org', importance: 'Remote exploitation is possible.' }],

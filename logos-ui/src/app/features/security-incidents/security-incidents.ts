@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
@@ -37,7 +37,7 @@ export const STATUS_LABELS: Record<string, string> = {
   templateUrl: './security-incidents.html', styleUrl: './security-incidents.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class SecurityIncidents {
+export class SecurityIncidents implements OnInit {
   private readonly http = inject(HttpClient);
   private readonly destroyRef = inject(DestroyRef);
   readonly data = signal<Overview | null>(null);
@@ -69,7 +69,7 @@ export class SecurityIncidents {
       (this.filter() === 'all' || (this.filter() === 'open' ? !['not_affected', 'resolved'].includes(a.status) : a.status === this.filter()))),
   })).filter(i => i.assessments.length || (this.filter() === 'all' && !this.data()?.repositories.length)));
 
-  constructor() {
+  ngOnInit(): void {
     void this.refresh();
     const timer = setInterval(() => void this.refresh(), 15_000);
     this.destroyRef.onDestroy(() => clearInterval(timer));
