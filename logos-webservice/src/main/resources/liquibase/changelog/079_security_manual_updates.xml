@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="079-security-manual-updates" author="logos">
+        <sql><![CDATA[
+            ALTER TABLE security_incidents ADD COLUMN manual_override BOOLEAN NOT NULL DEFAULT false;
+            UPDATE security_incidents SET manual_override=true
+            WHERE created_by NOT LIKE 'feed:%' AND created_by NOT LIKE 'scanner:%';
+        ]]></sql>
+        <rollback>
+            <dropColumn tableName="security_incidents" columnName="manual_override"/>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

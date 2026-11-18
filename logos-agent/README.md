@@ -745,6 +745,11 @@ the intake/report, and refreshes GitHub advisory patch ranges before each run.
 An upstream API failure is supplied as missing evidence, never as proof of safety.
 The session has no general Internet access; paste vendor facts into manual intake
 when the vendor does not expose a GitHub release or advisory.
+Any Logos Admin can submit the same advisory ID to update its evidence, including
+incidents originally reported by a feed or another admin. Manual incident fields
+then take precedence over feed refreshes; confirmed exploitation and image scans
+can still add evidence. Resolution records the incident revision confirmed by
+the admin, so only evidence received after confirmation reopens that assessment.
 
 A verified patched release queues a separate fix session. The normal isolated
 verification and trusted finalizer produce the PR, without merging or deploying.

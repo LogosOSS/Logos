@@ -147,7 +147,7 @@ async def add_security_repository(
 
 @app.post("/security/incidents", status_code=201, tags=["security"])
 async def add_security_incident(body: IncidentInput, principal: Principal = Depends(require_agent_operator)) -> dict:
-    return await security_store.ingest(body, principal.username)
+    return await security_store.ingest(body, principal.username, manual=True)
 
 
 @app.get("/security/assessments/{assessment_id}/events", tags=["security"])

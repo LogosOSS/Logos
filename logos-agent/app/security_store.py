@@ -40,23 +40,26 @@ async def enroll(body: RepositoryInput, by: str) -> dict:
     return dict(row)
 
 
-async def ingest(body: IncidentInput, by: str, source_data: dict | None = None) -> dict:
+async def ingest(body: IncidentInput, by: str, source_data: dict | None = None, *, manual: bool = False) -> dict:
     values = body.model_dump()
     values.update(
-        by=by, upstream_repositories=json.dumps(body.upstream_repositories), source_data=json.dumps(source_data or {})
+        by=by,
+        manual=manual,
+        upstream_repositories=json.dumps(body.upstream_repositories),
+        source_data=json.dumps(source_data or {}),
     )
     async with db.sessionmaker()() as conn:
-        # Only the same feed may update its own records. Manual updates remain
-        # authoritative and cannot be silently replaced by the next feed poll.
+        # Authenticated manual intake takes precedence regardless of who first
+        # reported the incident. Feeds only replace their own non-manual fields.
         row = (
             (
                 await conn.execute(
                     text("""
             INSERT INTO security_incidents
                 (advisory_id, title, severity, known_exploited, source_url, summary, importance,
-                 upstream_repositories, source_data, created_by)
+                 upstream_repositories, source_data, created_by, manual_override)
             VALUES (:advisory_id, :title, :severity, :known_exploited, :source_url, :summary, :importance,
-                    CAST(:upstream_repositories AS jsonb), CAST(:source_data AS jsonb), :by)
+                    CAST(:upstream_repositories AS jsonb), CAST(:source_data AS jsonb), :by, :manual)
             ON CONFLICT (advisory_id) DO UPDATE SET
                 title = EXCLUDED.title, severity = EXCLUDED.severity,
                 known_exploited = security_incidents.known_exploited OR EXCLUDED.known_exploited,
@@ -64,16 +67,19 @@ async def ingest(body: IncidentInput, by: str, source_data: dict | None = None) 
                 summary = EXCLUDED.summary, importance = EXCLUDED.importance,
                 upstream_repositories = EXCLUDED.upstream_repositories,
                 source_data = security_incidents.source_data || EXCLUDED.source_data,
+                manual_override = security_incidents.manual_override OR EXCLUDED.manual_override,
                 revision = security_incidents.revision + 1, updated_at = now()
-            WHERE security_incidents.created_by = EXCLUDED.created_by
+            WHERE (EXCLUDED.manual_override OR
+                   (NOT security_incidents.manual_override AND security_incidents.created_by = EXCLUDED.created_by))
               AND (security_incidents.summary, security_incidents.source_data,
                    security_incidents.upstream_repositories, security_incidents.severity,
                    security_incidents.known_exploited, security_incidents.importance, security_incidents.title,
-                   security_incidents.source_url)
+                   security_incidents.source_url, security_incidents.manual_override)
                   IS DISTINCT FROM (EXCLUDED.summary, security_incidents.source_data || EXCLUDED.source_data,
                                     EXCLUDED.upstream_repositories, EXCLUDED.severity,
                                     security_incidents.known_exploited OR EXCLUDED.known_exploited,
-                                    EXCLUDED.importance, EXCLUDED.title, EXCLUDED.source_url)
+                                    EXCLUDED.importance, EXCLUDED.title, EXCLUDED.source_url,
+                                    security_incidents.manual_override OR EXCLUDED.manual_override)
             RETURNING *
         """),
                     values,
@@ -144,11 +150,21 @@ async def act(assessment_id: int, action: str, reason: str, by: str) -> bool:
         if row["status"] in {"analyzing", "remediating", "pr_open"}:
             raise ValueError("Wait for the current analysis or pull request to finish")
         target = "queued" if action == "recheck" else "resolved"
+        revision = row["revision"]
+        if target == "resolved":
+            # Keep the incident stable through commit. Evidence updates that
+            # acquire the row afterwards advance beyond this resolved revision.
+            revision = (
+                await conn.execute(
+                    text("SELECT revision FROM security_incidents WHERE id=:id FOR SHARE"),
+                    {"id": row["incident_id"]},
+                )
+            ).scalar_one()
         await conn.execute(
             text("""UPDATE security_assessments SET status=:status, next_check_at=now(),
-            error=NULL, updated_at=now() WHERE id=:id"""),
-            {"id": assessment_id, "status": target},
+            revision=:revision, error=NULL, updated_at=now() WHERE id=:id"""),
+            {"id": assessment_id, "status": target, "revision": revision},
         )
-        await event(conn, assessment_id, target, {"reason": reason}, by)
+        await event(conn, assessment_id, target, {"reason": reason, "revision": revision}, by)
         await conn.commit()
     return True

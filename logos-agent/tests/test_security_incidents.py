@@ -1,5 +1,6 @@
 """Security outcomes fail closed and remediation never implies deployment."""
 
+import asyncio
 import json
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -240,3 +241,109 @@ async def test_general_session_retries_cannot_detach_security_work(monkeypatch, 
     await sessions.manager._watch_the_checks(session, SHA)
     create.assert_not_awaited()
     watch.assert_not_awaited()
+
+
+async def test_upstream_evidence_deduplicates_releases_and_reports_unavailable_sources(monkeypatch):
+    async def get(path):
+        if path == "/repos/vendor/parser/releases/latest":
+            return {
+                "tag_name": "1.0.1",
+                "published_at": "2026-01-01",
+                "html_url": "https://example.org/release",
+                "body": "Patched parser",
+            }
+        if path == "/advisories/GHSA-2345-6789-abcd":
+            return {"vulnerabilities": [{"first_patched_version": "1.0.1"}], "withdrawn_at": None}
+        raise incidents.github.GitHubError("No releases")
+
+    monkeypatch.setattr(incidents.github, "_get", AsyncMock(side_effect=get))
+    snapshot = await incidents.upstream_snapshots(
+        {"upstream_repositories": ["vendor/parser"], "source_data": {"ghsa_id": "GHSA-2345-6789-abcd"}},
+        {"upstream_repositories": ["vendor/parser", "vendor/runtime"]},
+    )
+    assert len(snapshot) == 3
+    assert snapshot[0]["tag"] == "1.0.1"
+    assert snapshot[1]["error"] == "No releases"
+    assert snapshot[2]["vulnerabilities"] == [{"first_patched_version": "1.0.1"}]
+    incidents.github._get.side_effect = incidents.github.GitHubError("Rate limited")
+    assert (await incidents.upstream_snapshots({"source_data": {"ghsa_id": "GHSA-2345-6789-abcd"}}, {}))[0][
+        "error"
+    ] == "Rate limited"
+
+
+async def test_active_session_and_invalid_pr_url_do_not_query_github(monkeypatch):
+    conn = Connection()
+    monkeypatch.setattr(incidents.db, "sessionmaker", lambda: lambda: conn)
+    monkeypatch.setattr(incidents.github, "_get", AsyncMock())
+    monkeypatch.setattr(security_store, "event", AsyncMock())
+    await incidents.reconcile_one({"session_status": "running"})
+    assert not conn.writes
+    await incidents.reconcile_one(
+        {
+            "id": 1,
+            "session_status": "succeeded",
+            "status": "pr_open",
+            "report": {},
+            "pr_url": "https://evil.invalid/pull/3",
+            "repo_slug": "example/app",
+            "session_id": 2,
+        }
+    )
+    assert conn.writes[0][1]["status"] == "failed"
+    incidents.github._get.assert_not_awaited()
+
+
+@pytest.mark.parametrize("feeds_enabled", [False, True])
+async def test_poller_reconciles_before_feed_updates_and_queues_due_work(monkeypatch, feeds_enabled):
+    calls = []
+
+    def step(name, result=None):
+        async def call(*args):
+            calls.append(name)
+            return result
+
+        return call
+
+    monkeypatch.setattr(incidents, "settings", replace(incidents.settings, security_feeds_enabled=feeds_enabled))
+    monkeypatch.setattr(incidents, "reconcile", step("reconcile"))
+    monkeypatch.setattr(incidents.security_feeds, "poll_feeds", step("feeds"))
+    monkeypatch.setattr(incidents, "ensure_assessments", step("ensure"))
+    monkeypatch.setattr(incidents, "due_assessments", step("due", [{"id": 1}]))
+    monkeypatch.setattr(incidents, "queue_assessment", step("queue"))
+    poller = incidents.SecurityPoller()
+    await poller.poll_once()
+    assert calls == ["reconcile", *(["feeds"] if feeds_enabled else []), "ensure", "due", "queue"]
+    monkeypatch.setattr(incidents, "queue_assessment", AsyncMock(side_effect=RuntimeError("database down")))
+    with pytest.raises(RuntimeError, match="database down"):
+        await poller.poll_once()
+
+
+async def test_poller_retries_after_failure_and_stops_cleanly(monkeypatch):
+    monkeypatch.setattr(incidents, "settings", replace(incidents.settings, security_enabled=True))
+    monkeypatch.setattr(incidents, "POLL_SECONDS", 0.001)
+    poller = incidents.SecurityPoller()
+    recovered = asyncio.Event()
+    attempts = 0
+
+    async def poll():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("feed unavailable")
+        assert poller.last_error == "feed unavailable"
+        poller._stopping.set()
+        recovered.set()
+
+    monkeypatch.setattr(poller, "poll_once", poll)
+    await poller.start()
+    try:
+        await asyncio.wait_for(recovered.wait(), timeout=2)
+        await poller._task
+        assert poller.last_error == ""
+        assert attempts == 2
+    finally:
+        await poller.stop()
+    assert poller._task is None
+    monkeypatch.setattr(incidents, "settings", replace(incidents.settings, security_enabled=False))
+    await poller.start()
+    assert poller._task is None
