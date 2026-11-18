@@ -96,6 +96,19 @@
   white-space: nowrap;
 }
 
+// On a narrow screen the title and the actions need their own rows, or the last button leaves the page.
+@media (max-width: 640px) {
+  .expanded-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .head-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
+
 .form-body {
   display: flex;
   flex-direction: column;
