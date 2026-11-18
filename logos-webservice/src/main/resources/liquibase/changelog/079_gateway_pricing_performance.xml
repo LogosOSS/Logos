@@ -90,9 +90,9 @@
                 --   * else, for an anthropic/bedrock provider: a cache-write count
                 --     is present, or prompt_cached_tokens exceeds prompt_tokens.
                 -- The flag also covers native cache-read-only turns (no cache-write
-                -- count, cached need not exceed input): previously a bounded
-                -- undercharge, now decomposed correctly, still never the
-                -- double-charge of issue #892. Pre-flag rows use the count proofs.
+                -- count, cached need not exceed input) so cached tokens are
+                -- decomposed without double-charging. Rows without the flag use
+                -- the count proofs.
                 disjoint := (u ? 'usage_shape_disjoint')
                          OR (v_disjoint_cache_provider
                              AND ((u ? 'prompt_cache_write_tokens')
