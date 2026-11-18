@@ -283,8 +283,7 @@ logos_install() {
           # Fish single quotes interpret escaped backslashes and apostrophes.
           local fish_path
           fish_path="$(dirname "$INSTALL_PATH")"
-          fish_path="${fish_path//\\/\\\\}"
-          fish_path="${fish_path//\'/\\\'}"
+          fish_path="$(printf '%s' "$fish_path" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")"
           printf "  fish_add_path '%s'\n\n" "$fish_path"
           printf 'Then run: claude-logos\n' ;;
         *)

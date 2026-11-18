@@ -123,6 +123,13 @@ class WrapperInstallTests(unittest.TestCase):
         self.assertIn("Then run: claude-logos", output)
         self.assertNotIn("export PATH", output)
 
+    def test_fish_install_quotes_path_without_a_fish_runtime(self):
+        self.install_path = self.root / "bin ' & \\ tools" / "claude-logos"
+        self.env["LOGOS_INSTALL_PATH"] = str(self.install_path)
+        output = self.install()
+        escaped = str(self.install_path.parent).replace("\\", "\\\\").replace("'", "\\'")
+        self.assertIn("  fish_add_path '" + escaped + "'\n", output)
+
     def test_bash_and_zsh_keep_their_profile_instructions(self):
         for shell, profile in [("bash", "~/.bashrc"), ("zsh", "~/.zshrc")]:
             with self.subTest(shell=shell):
