@@ -31,15 +31,15 @@ describe('Nightly benchmark confirmation', () => {
     expect(control.sourceEdited).toBe(false);
   });
 
-  it('freezes a three-day window and keeps the saved dataset available if applying it conflicts', async () => {
+  it('defaults to the latest 100 logged requests and keeps the saved dataset available if applying it conflicts', async () => {
     control.selectedWorkload = 'recent';
     control.sourceEdited = true;
     control.review();
     expect(control.confirming()).toBe(false);
     const operation = control.saveSource();
     const create = http.expectOne('/api/logosdb/model_benchmarks/workloads/create');
-    expect(create.request.body).toEqual({ model_provider_id: 31, lookback_days: 3 });
-    const dataset = { id: 'a'.repeat(64), name: 'Recent requests', request_count: 350, provenance: 'production' };
+    expect(create.request.body).toEqual({ model_provider_id: 31, lookback_days: null });
+    const dataset = { id: 'a'.repeat(64), name: 'Recent requests', request_count: 100, provenance: 'production' };
     create.flush(dataset);
     await Promise.resolve();
     const apply = http.expectOne('/api/logosdb/model_benchmarks/nightly/configure');
@@ -55,8 +55,11 @@ describe('Nightly benchmark confirmation', () => {
   it('preserves the current selection when the window has no replayable requests', async () => {
     control.selectedWorkload = 'recent';
     control.sourceEdited = true;
+    control.lookbackDays = 3;
     const operation = control.saveSource();
-    http.expectOne('/api/logosdb/model_benchmarks/workloads/create').flush({ detail: 'No replayable requests' },
+    const create = http.expectOne('/api/logosdb/model_benchmarks/workloads/create');
+    expect(create.request.body.lookback_days).toBe(3);
+    create.flush({ detail: 'No replayable requests' },
       { status: 400, statusText: 'Bad Request' });
     await operation;
     http.expectNone('/api/logosdb/model_benchmarks/nightly/configure');

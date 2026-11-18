@@ -43,7 +43,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   readonly error = signal<string | null>(null);
   selectedWorkload: string | null = null;
   sourceEdited = false;
-  lookbackDays = 3;
+  lookbackDays: 1 | 3 | 7 | null = null;
   readonly sourceNotice = signal<string | null>(null);
   workloadName = '';
   logIds = '';
@@ -58,7 +58,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     this.state.set(null);
     this.selectedWorkload = null;
     this.sourceEdited = false;
-    this.lookbackDays = 3;
+    this.lookbackDays = null;
     this.sourceNotice.set(null);
     this.saving.set(false);
     this.error.set(null);

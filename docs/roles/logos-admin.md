@@ -334,7 +334,7 @@ The example uses illustrative measurements and an active nightly schedule.
 Use **Run a benchmark** to configure a run during the day.
 These controls do not change the nightly workload.
 Use **Request workload** to select a saved dataset for the nightly schedule.
-Choose **Recent FULL request logs**, select a time window and click **Create and apply dataset**. The default window covers the last three days and saves up to 500 replayable requests, within 5 MB. For a hand-picked dataset, open **Select individual request IDs**.
+Choose **Recent FULL request logs**, keep **Latest 100 requests** and click **Create and apply dataset**. On production, this saves up to 100 replayable requests for the model from the production log. You can also select a time window. Each dataset has a 5 MB limit. For a hand-picked dataset, open **Select individual request IDs**.
 ![Create a fixed request dataset](../static/img/roles/logos-admin-nightly-workload.png)
 
 The dataset keeps its inputs when source logs are deleted.

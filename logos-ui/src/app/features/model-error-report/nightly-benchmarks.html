@@ -54,12 +54,13 @@
       }
     </select>
     @if (selectedWorkload === 'recent') {
-      <label>Time window
+      <label>Requests to include
         <select [(ngModel)]="lookbackDays" [disabled]="sourceLocked">
+          <option [ngValue]="null">Latest 100 requests</option>
           <option [ngValue]="1">Last 24 hours</option><option [ngValue]="3">Last 3 days</option><option [ngValue]="7">Last 7 days</option>
         </select>
       </label>
-      <p>Save up to 500 recent successful requests for this model, within 5 MB. Every run replays the same inputs.</p>
+      <p>Uses up to {{ lookbackDays === null ? 100 : 500 }} successful FULL requests for this model from this installation’s request logs. Every run replays the same saved inputs (up to 5 MB).</p>
     }
     <button type="button" (click)="saveSource()" [disabled]="!sourceEdited || sourceLocked">{{ selectedWorkload === 'recent' ? 'Create and apply dataset' : 'Apply dataset' }}</button>
     @if (sourceNotice()) { <p role="status">{{ sourceNotice() }}</p> }

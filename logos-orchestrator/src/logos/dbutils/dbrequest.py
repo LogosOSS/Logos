@@ -23,7 +23,7 @@ class NightlyUpdateRequest(NightlyStatusRequest):
 
 
 class RecentBenchmarkWorkloadRequest(NightlyStatusRequest):
-    lookback_days: Literal[1, 3, 7]
+    lookback_days: Literal[1, 3, 7] | None = None
 
 
 class BenchmarkWorkloadRequest(BaseModel):

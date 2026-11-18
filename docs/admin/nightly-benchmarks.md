@@ -152,10 +152,10 @@ Use **Request workload** to replace Hugging Face data for a nightly schedule.
 The manual benchmark editor remains independent.
 
 1. Choose **Recent FULL request logs** in the **Dataset** menu.
-2. Choose **Last 24 hours**, **Last 3 days** (default), or **Last 7 days**.
-3. Select **Create and apply dataset**. Logos shows the number of requests saved. The window ends when you create the dataset.
+2. Keep **Latest 100 requests** to use recent traffic regardless of age. For a time window, choose **Last 24 hours**, **Last 3 days** or **Last 7 days**.
+3. Select **Create and apply dataset**. Logos shows the number of requests saved. The selection ends when you create the dataset.
 
-Logos selects the newest successful, replayable FULL requests for this model, up to 500 requests and 5 MB. Benchmark traffic is excluded. Every baseline and candidate uses the same saved inputs until you apply another dataset. An empty window leaves the current selection in place.
+On production, Logos reads the selected model’s most recent successful, replayable FULL requests from the production request log. The default selection takes up to 100 requests. A time window can include up to 500. Both selections stop at 5 MB. Benchmark traffic is excluded. Every baseline and candidate uses the same saved inputs until you apply another dataset. An empty window leaves the current selection in place.
 
 For a hand-picked dataset, open **Select individual request IDs**, enter a name and 1–100 distinct IDs, choose the provenance, then select **Create dataset** and **Apply dataset**.
 

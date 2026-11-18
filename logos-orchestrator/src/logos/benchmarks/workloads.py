@@ -243,12 +243,13 @@ def _persist(db, snapshot):
     return metadata(stored)
 
 
-def create_recent(target, days):
-    """Freeze the newest replayable inputs for this model within a rolling time window."""
+def create_recent(target, days=None):
+    """Freeze the latest 100 replayable inputs, or take a larger sample within a time window."""
     from logos.dbutils.dbmanager import DBManager
 
-    if days not in (1, 3, 7):
+    if days is not None and days not in (1, 3, 7):
         raise ValueError("Choose a window of 1, 3 or 7 days")
+    limit = MAX_REQUESTS if days is None else MAX_WINDOW_REQUESTS
     model_id = target["model_id"]
     requests = []
     size = len(canonical({"model_id": model_id, "provenance": "production", "requests": []}).encode())
@@ -257,7 +258,9 @@ def create_recent(target, days):
             SELECT id, input_payload FROM log_entry
             WHERE model_id = :model_id AND privacy_level = 'FULL' AND result_status = 'success'
               AND environment IS DISTINCT FROM 'model-provider-benchmark'
-              AND timestamp_request BETWEEN CURRENT_TIMESTAMP - :days * INTERVAL '24 hours' AND CURRENT_TIMESTAMP
+              AND timestamp_request BETWEEN
+                  COALESCE(CURRENT_TIMESTAMP - CAST(:days AS integer) * INTERVAL '24 hours', '-infinity'::timestamptz)
+                  AND CURRENT_TIMESTAMP
               AND timestamp_response <= CURRENT_TIMESTAMP AND input_payload IS NOT NULL
               AND octet_length(input_payload::text) <= :max_bytes
             ORDER BY timestamp_request DESC, id DESC
@@ -275,11 +278,16 @@ def create_recent(target, days):
                     continue
                 requests.append(entry)
                 size += entry_size
-                if len(requests) == MAX_WINDOW_REQUESTS:
+                if len(requests) == limit:
                     break
         if not requests:
-            raise ValueError("No replayable successful FULL requests for this model in the selected time window.")
-        name = f"FULL requests · last {days} {'day' if days == 1 else 'days'}"
+            scope = " in the selected time window" if days is not None else ""
+            raise ValueError(f"No replayable successful FULL requests for this model{scope}.")
+        name = (
+            "Latest 100 FULL requests"
+            if days is None
+            else f"FULL requests · last {days} {'day' if days == 1 else 'days'}"
+        )
         return _persist(db, _snapshot(model_id, target["model_name"], requests, name, "production"))
 
 

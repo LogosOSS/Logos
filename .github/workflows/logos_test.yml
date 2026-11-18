@@ -28,6 +28,14 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.11-trixie@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - "127.0.0.1:15432:5432"
+        options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 15
     steps:
       - name: Checkout repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,6 +77,12 @@ jobs:
           coverage run --source=src,../scripts -m pytest
           coverage run --append --source=src,../scripts -m pytest --noconftest tests/integration/benchmarks/test_guidellm_requests.py -q
         working-directory: logos-orchestrator
+
+      - name: Test nightly benchmark persistence
+        working-directory: logos-orchestrator
+        env:
+          NIGHTLY_TEST_DB_URL: postgresql://postgres@127.0.0.1:15432/postgres
+        run: .venv/bin/coverage run --append --source=src,../scripts -m pytest --noconftest tests/integration/benchmarks/test_nightly_store.py -q
 
       - name: Run worker-node Tests
         # The worker-node suite runs on the same runner as the master

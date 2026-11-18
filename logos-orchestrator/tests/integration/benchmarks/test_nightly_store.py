@@ -159,6 +159,22 @@ def test_recent_workload_window_filters_and_freezes_hundreds_of_inputs(database,
     created = workloads.create_recent(target, 3)
     assert created["request_count"] == 500 and "requests" not in created
     assert workloads.create_recent(target, 3) == created
+    # A low-traffic model can need logs older than the longest time window.
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE log_entry SET timestamp_request = timestamp_request - interval '8 days'"))
+        connection.execute(
+            text(
+                "UPDATE log_entry SET timestamp_request = now() - interval '1 hour', "
+                "timestamp_response = now() WHERE id=1"
+            )
+        )
+    latest = workloads.create_recent(target)
+    assert latest["request_count"] == 100 and latest["provenance"] == "production"
+    assert workloads.create_recent(target) == latest
+    selected_ids = [row["source_log_id"] for row in workloads.load(latest["id"], 11)["requests"]]
+    assert selected_ids == [1, *range(504, 405, -1)]
+    partial = workloads.create_recent(target, 7)
+    assert partial["request_count"] == 1
     for settings in [BenchmarkRunSettings, InternalBenchmarkRequest]:
         args = {"model_provider_id": 31} if settings == InternalBenchmarkRequest else {}
         assert settings(samples=500, workload_id=created["id"], **args).samples == 500
@@ -169,6 +185,38 @@ def test_recent_workload_window_filters_and_freezes_hundreds_of_inputs(database,
     saved = workloads.load(created["id"], 11)["requests"]
     assert [row["source_log_id"] for row in saved] == list(range(504, 4, -1))
     assert saved[0]["body"] == {"messages": [{"role": "user", "content": "demo"}]}
+
+
+def test_recent_workload_endpoint_uses_logged_inputs_when_only_the_pair_is_given(database, monkeypatch):
+    from importlib import import_module
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    router = import_module("logos.routers.nightly_benchmarks")
+    engine, database_type = database
+    monkeypatch.setattr(import_module("logos.dbutils.dbmanager"), "DBManager", database_type)
+    monkeypatch.setattr(import_module("logos.routers.internal"), "_INTERNAL_SECRET", "test-only")
+    monkeypatch.setattr(router, "target_for", {31: {"model_id": 11, "model_name": "model-a"}}.__getitem__)
+    app = FastAPI()
+    app.include_router(router.router)
+    path = "/internal/model_benchmarks/nightly/workloads"
+    with TestClient(app) as client:
+        assert client.post(path, json={"model_provider_id": 31}).status_code == 401
+        client.headers["Authorization"] = "Bearer test-only"
+        assert client.post(path, json={"model_provider_id": 31}).status_code == 400
+        with engine.begin() as connection:
+            connection.execute(text("""
+                INSERT INTO log_entry(id, model_id, privacy_level, result_status, input_payload,
+                                      timestamp_request, timestamp_response)
+                VALUES (1, 11, 'FULL', 'success', '{"messages":[{"role":"user","content":"test"}]}',
+                        now() - interval '1 month', now() - interval '1 month')
+            """))
+        result = client.post(path, json={"model_provider_id": 31})
+        assert result.status_code == 200
+        assert result.json()["provenance"] == "production" and result.json()["request_count"] == 1
+        assert "requests" not in result.json()
+        assert client.post(path, json={"model_provider_id": 31, "lookback_days": 3}).status_code == 400
 
 
 async def test_completion_event_survives_failed_delivery_and_deduplicates_finish(database, monkeypatch):

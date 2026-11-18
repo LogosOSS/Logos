@@ -83,4 +83,5 @@
     <include file="liquibase/changelog/076_team_show_on_public_stats.xml"/>
     <include file="liquibase/changelog/077_team_public_category.xml"/>
     <include file="liquibase/changelog/078_benchmark_workload_size.xml"/>
+    <include file="liquibase/changelog/079_recent_model_full_requests.xml"/>
 </databaseChangeLog>
