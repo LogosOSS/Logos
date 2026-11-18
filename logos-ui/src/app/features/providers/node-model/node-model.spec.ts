@@ -983,6 +983,20 @@ describe('NodeModel', () => {
       expect(page().setCount()).toBe(before - 1);
     });
 
+    it('hides the reset link of a row without a value instead of removing it', async () => {
+      const root = await open();
+      const rows = Array.from(root.querySelectorAll('.arow')).filter((r) => r.querySelector('button.link--reset'));
+
+      expect(rows.length).toBeGreaterThan(2);
+      const hidden = rows.filter((r) => r.querySelector('button.link--hidden'));
+      const shown = rows.filter((r) => !r.querySelector('button.link--hidden'));
+      expect(hidden.length).toBeGreaterThan(0);
+      expect(shown.length).toBeGreaterThan(0);
+      // The stylesheet is not applied in the test: `visibility: hidden` and the corner place of a wide row are
+      // checked in the browser. Here the link must exist in every row and carry the class that hides it.
+      expect(rows.every((r) => r.querySelector('button.link--reset'))).toBe(true);
+    });
+
     it('chooses the GPUs of the model with tiles and clears the setting for all of them', async () => {
       const root = await open();
       expect(root.querySelectorAll('.gpus--compact .gpu--on').length).toBe(2);
@@ -1051,6 +1065,86 @@ describe('NodeModel', () => {
       fixture.detectChanges();
 
       expect(root.querySelector('[aria-labelledby="cur-title"]')).toBeNull();
+    });
+  });
+
+  describe('what happens around a save', () => {
+    const page = (): NodeModel => fixture.componentInstance;
+
+    it('does not call a save failed when only the reload afterwards failed', async () => {
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+      page().setAdv('max_num_seqs', '16');
+      service['getNodeConfig'].mockRejectedValue({ status: 502, error: { error: 'bad gateway' } });
+
+      await page().save();
+      fixture.detectChanges();
+
+      expect(service['replaceNodeConfig']).toHaveBeenCalledTimes(1);
+      expect(page().failure()).toBeNull();
+      expect(page().editing()).toBe(false);
+      expect(page().notice()!.title).toBe('Saved');
+      expect(page().notice()!.text).toContain('could not load them again');
+    });
+
+    it('does not call a removal failed when only the reload afterwards failed', async () => {
+      await create();
+      service['getNodeInsights'].mockRejectedValue(new Error('down'));
+
+      page().openRemove();
+      await page().confirmRemove();
+
+      expect(page().removeError()).toBeNull();
+      expect(page().removeOpen()).toBe(false);
+      expect(page().notice()!.text).toContain('could not load the new state');
+    });
+
+    it('does not call a started calibration failed when the status cannot be read again', async () => {
+      service['getNodeInsights'].mockResolvedValue(
+        insights([insight({ calibration: { status: 'not_calibrated', reason: null, results: [] } })]),
+      );
+      await create();
+      service['getNodeInsights'].mockRejectedValue(new Error('down'));
+
+      await page().calibrate();
+
+      expect(page().calibrationError()).toBeNull();
+      expect(page().notice()!.title).toBe('Calibration started');
+    });
+
+    it('drops the editor, its notices and its errors when another model is opened', async () => {
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+      page().setKv(2);
+      page().setAdv('quantization', 'gptq');
+      expect(page().editing()).toBe(true);
+
+      query.next(convertToParamMap({ model: 'org/b' }));
+      await settle();
+
+      expect(page().modelName()).toBe('org/b');
+      expect(page().editing()).toBe(false);
+      expect(page().draft()).toBeNull();
+      expect(page().adv()).toBeNull();
+      expect(page().notice()).toBeNull();
+    });
+
+    it('keeps the answer of the newest load when an earlier one arrives late', async () => {
+      await create();
+      let late: (value: unknown) => void = () => undefined;
+      service['getNodeInsights'].mockReturnValueOnce(new Promise((resolve) => (late = resolve)));
+      service['getNodeInsights'].mockResolvedValueOnce(insights([insight({ model_name: 'org/b' })]));
+
+      query.next(convertToParamMap({ model: 'org/b' }));
+      query.next(convertToParamMap({ model: 'org/b', again: '1' }));
+      await settle();
+      late(insights([insight({ model_name: 'org/old' })]));
+      await settle();
+
+      expect(page().insights()!.models[0].model_name).toBe('org/b');
+      expect(page().loading()).toBe(false);
     });
   });
 });

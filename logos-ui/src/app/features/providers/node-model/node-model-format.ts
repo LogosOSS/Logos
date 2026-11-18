@@ -5,7 +5,8 @@ const UNITS_GB: Record<string, number> = { K: 1 / 1024 / 1024, M: 1 / 1024, G: 1
 /** A KV cache size ("4G", "4096M", bytes) in GB; null if it is no size. */
 export function kvToGb(value: unknown): number | null {
   if (typeof value === 'number') {
-    return value > 0 ? value : null;
+    // A number is bytes, like a bare numeric string and like the field name says.
+    return Number.isFinite(value) && value > 0 ? value / 1024 ** 3 : null;
   }
   const match = /^(\d+(?:\.\d+)?)\s*([KMGT])?B?$/i.exec(String(value ?? '').trim());
   if (!match) {

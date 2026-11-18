@@ -56,7 +56,9 @@ export function contextCapacity(pairs: CalibrationPair[], kvGb: number, limit: n
     len = a.len + ((b.len - a.len) * (kv - a.kv)) / (b.kv - a.kv);
   }
   const capped = limit ? Math.min(len, limit) : len;
-  return Math.max(CONTEXT_STEP, Math.floor(capped / CONTEXT_STEP) * CONTEXT_STEP);
+  // One step is the smallest context to offer, but never more than the model itself allows.
+  const stepped = Math.max(CONTEXT_STEP, Math.floor(capped / CONTEXT_STEP) * CONTEXT_STEP);
+  return limit ? Math.min(stepped, limit) : stepped;
 }
 
 /** The list with one model's placement written as the orchestrator expects. */
@@ -72,10 +74,13 @@ export function withPlacement(
     delete overrides['tensor_parallel_size'];
     delete overrides['kv_cache_memory_bytes'];
     overrides['max_model_len'] = placement.ctx;
+    const capability = { ...entry.capability };
+    // The context length lives in overrides; a copy in capability would win on the next read.
+    delete capability['max_model_len'];
     const result = {
       ...entry,
       capability: {
-        ...entry.capability,
+        ...capability,
         tensor_parallel_size: placement.tp,
         kv_cache_memory_bytes: `${placement.kvGb}G`,
       },

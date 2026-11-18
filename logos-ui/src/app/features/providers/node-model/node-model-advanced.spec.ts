@@ -217,3 +217,17 @@ describe('the groups of the advanced settings', () => {
     expect(result.overrides).toEqual({ dtype: 'bfloat16', cpu_offload_gb: 8, cuda_graph_sizes: '1,2' });
   });
 });
+
+describe('a setting that an imported file stored in capability', () => {
+  it('is replaced, not copied, when the field is changed or reset', () => {
+    const entry = { model_name: 'm', capability: { max_num_seqs: 8, dtype: 'half' }, overrides: {} };
+    const draft = initialAdvanced(entry);
+    draft.values['max_num_seqs'] = '16';
+    draft.values['dtype'] = '';
+
+    const result = applyAdvanced(entry, draft);
+
+    expect(result.capability).toEqual({});
+    expect(result.overrides).toEqual({ max_num_seqs: 16 });
+  });
+});

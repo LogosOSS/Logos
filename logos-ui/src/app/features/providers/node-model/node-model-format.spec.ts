@@ -19,7 +19,9 @@ describe('node model formatting', () => {
     expect(kvToGb('4194304K')).toBe(4);
     expect(kvToGb('1T')).toBe(1024);
     expect(kvToGb('4294967296')).toBe(4);
-    expect(kvToGb(3)).toBe(3);
+    expect(kvToGb(4294967296)).toBe(4);
+    expect(kvToGb(3)).toBeCloseTo(0, 6);
+    expect(kvToGb(Number.NaN)).toBeNull();
   });
 
   it('refuses what is not a size', () => {

@@ -73,6 +73,9 @@ from logos.role_auth import require_logos_admin_key
 
 logger = logging.getLogger("LogosLogger")
 
+# One imported node setting may not be larger than this; a worker could otherwise store any amount of data.
+_MAX_SETTING_BYTES = 64 * 1024
+
 router = APIRouter()
 
 # A worker's merged vLLM /metrics text is otherwise unbounded — several lanes'
@@ -1034,7 +1037,11 @@ async def logosnode_node_settings_import(data: LogosNodeSettingsImportRequest, r
     """
     _require_tls_request(request)
     provider_id = int((await asyncio.to_thread(_logosnode_provider_for_key, data.shared_key))["id"])
-    known = {key: value for key, value in data.settings.items() if key in SETTING_KEYS}
+    known = {
+        key: value
+        for key, value in data.settings.items()
+        if key in SETTING_KEYS and len(json.dumps(value, default=str)) <= _MAX_SETTING_BYTES
+    }
 
     def _import() -> bool:
         with DBManager() as db:

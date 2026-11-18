@@ -1025,7 +1025,9 @@ class ModelProfileRegistry:
         A changed key means the stored calibration no longer describes how the
         node runs the model. So does a choice of KV cache size or context
         length outside the measured range (``selections``: per model the KV
-        size in MB and the context length, ``None`` for not configured).
+        size in MB and the context length, ``None`` for not configured). A
+        calibration measured under the current configuration fingerprint is
+        left alone: a repeat could not cover the choice either.
         """
         from logos_worker_node.profile_fingerprint import key_hash  # noqa: PLC0415
 
@@ -1041,8 +1043,14 @@ class ModelProfileRegistry:
             ]
             for name, (kv_mb, context) in (selections or {}).items():
                 profile = self._profiles.get(name)
-                if name not in changed and profile is not None and not selection_covered(profile, kv_mb, context):
-                    changed.append(name)
+                if name in changed or profile is None or selection_covered(profile, kv_mb, context):
+                    continue
+                # Measured under this very configuration: another run would end the same way, so a choice
+                # the hardware cannot reach does not make it stale again and again.
+                fingerprint = self._config_fingerprints.get(name)
+                if profile.config_fingerprint is not None and profile.config_fingerprint == fingerprint:
+                    continue
+                changed.append(name)
             for name in changed:
                 profile = self._profiles.get(name)
                 if profile is not None and profile.calibration_id is not None:

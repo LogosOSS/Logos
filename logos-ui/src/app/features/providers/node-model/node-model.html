@@ -737,9 +737,14 @@
           </div>
         }
       }
-      @if (isSet(f.key)) {
-        <button class="link" type="button" (click)="setAdv(f.key, '')">Use default</button>
-      }
+      <button
+        class="link link--reset"
+        type="button"
+        [class.link--hidden]="!isSet(f.key)"
+        (click)="setAdv(f.key, '')"
+      >
+        Use default
+      </button>
     </div>
     @if (advFieldError(f.key); as e) {
       <p class="ferr arow-error" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>

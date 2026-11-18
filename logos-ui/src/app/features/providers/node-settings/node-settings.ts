@@ -163,23 +163,32 @@ export class NodeSettingsPage implements OnInit {
     }
     this.saving.set(true);
     this.failure.set(null);
+    const saved = this.current();
+    let revision: number;
     try {
-      await this.service.replaceNodeSettings(id, stored.revision, this.current());
-      const remeasure = this.remeasuring();
-      const fresh = await this.service.getNodeSettings(id);
-      this.stored.set(fresh);
-      this.draft.set(initialDraft(fresh.settings));
-      this.notice.set({
-        title: 'Saved',
-        text:
-          (this.workerOnline() ? 'The worker applies the settings now.' : 'The worker applies them when it connects.') +
-          (remeasure ? ' Every model is measured again in the next calibration window.' : ''),
-      });
+      revision = (await this.service.replaceNodeSettings(id, stored.revision, saved)).settings_revision;
     } catch (e) {
       this.failure.set(saveFailure(e));
-    } finally {
       this.saving.set(false);
+      return;
     }
+    // The document is stored. Read it again for the exact state; if that fails, the saved values stand.
+    let fresh: NodeSettings = { ...stored, revision, settings: saved };
+    try {
+      fresh = await this.service.getNodeSettings(id);
+    } catch {
+      // Keep what was saved; the next save checks the revision again.
+    }
+    const remeasure = remeasures(stored.settings, saved);
+    this.stored.set(fresh);
+    this.draft.set(initialDraft(fresh.settings));
+    this.notice.set({
+      title: 'Saved',
+      text:
+        (this.workerOnline() ? 'The worker applies the settings now.' : 'The worker applies them when it connects.') +
+        (remeasure ? ' Every model is measured again in the next calibration window.' : ''),
+    });
+    this.saving.set(false);
   }
 
   /** After a conflict: take the newer document. */

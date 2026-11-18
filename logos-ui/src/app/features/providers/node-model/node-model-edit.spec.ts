@@ -124,3 +124,38 @@ describe('what a failed save means', () => {
     expect(saveFailure(undefined).message).toBe('The configuration could not be saved.');
   });
 });
+
+describe('settings that an imported file stored under the other name', () => {
+  it('drops the copy in capability when a placement is written', async () => {
+    const { withPlacement } = await import('./node-model-edit');
+    const entries = [
+      { model_name: 'org/a', capability: { max_model_len: 4096, tensor_parallel_size: 1 }, overrides: {} },
+    ];
+
+    const [saved] = withPlacement(entries, 'org/a', { tp: 2, kvGb: 4, ctx: 8192 });
+
+    expect(saved.capability).toEqual({ tensor_parallel_size: 2, kv_cache_memory_bytes: '4G' });
+    expect(saved.overrides['max_model_len']).toBe(8192);
+  });
+
+  it('keeps a capability value that has no name of its own', async () => {
+    const { withPlacement } = await import('./node-model-edit');
+    const [saved] = withPlacement(
+      [{ model_name: 'org/a', capability: { gpu_devices: '0,1', base_residency_mb: 900 }, overrides: {} }],
+      'org/a',
+      { tp: 1, kvGb: 2, ctx: 1024 },
+    );
+
+    expect(saved.capability).toMatchObject({ gpu_devices: '0,1', base_residency_mb: 900 });
+  });
+});
+
+describe('the context a measured curve allows', () => {
+  it('offers one step at least, but never more than the limit of the model', async () => {
+    const { contextCapacity } = await import('./node-model-edit');
+
+    expect(contextCapacity([{ kv_mb: 1024, max_model_len: 512, measured: true }], 1, null)).toBe(1024);
+    expect(contextCapacity([{ kv_mb: 1024, max_model_len: 8192, measured: true }], 1, 300)).toBe(300);
+    expect(contextCapacity([{ kv_mb: 1024, max_model_len: 8192, measured: true }], 1, null)).toBe(8192);
+  });
+});

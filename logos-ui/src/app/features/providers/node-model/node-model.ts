@@ -337,13 +337,34 @@ export class NodeModel implements OnInit {
     combineLatest([this.route.paramMap, this.route.queryParamMap])
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(([params, query]) => {
-        this.providerId.set(Number(params.get('providerId')));
-        this.modelName.set(query.get('model') ?? '');
+        const id = Number(params.get('providerId'));
+        const model = query.get('model') ?? '';
+        if (id !== this.providerId() || model !== this.modelName()) {
+          // Another model: nothing of the editor, its notices or its errors belongs to it.
+          this.resetEditing();
+          this.notice.set(null);
+          this.failure.set(null);
+          this.calibrationError.set(null);
+        }
+        this.providerId.set(id);
+        this.modelName.set(model);
         void this.load();
       });
   }
 
+  private loadToken = 0;
+
+  private resetEditing(): void {
+    this.editing.set(false);
+    this.draft.set(null);
+    this.adv.set(null);
+    this.advStart.set(null);
+    this.filter.set('');
+    this.allOpen.set(false);
+  }
+
   async load(): Promise<void> {
+    const token = ++this.loadToken;
     const id = this.providerId();
     if (id === null || Number.isNaN(id) || !this.modelName()) {
       this.loading.set(false);
@@ -358,13 +379,20 @@ export class NodeModel implements OnInit {
         this.service.getNodeInsights(id),
         this.service.getProviders(),
       ]);
+      if (token !== this.loadToken) {
+        return;
+      }
       this.config.set(config);
       this.insights.set(insights);
       this.providerName.set(providers.find((p) => p.id === id)?.name ?? `Node ${id}`);
     } catch (e) {
-      this.error.set(this.messageOf(e));
+      if (token === this.loadToken) {
+        this.error.set(this.messageOf(e));
+      }
     } finally {
-      this.loading.set(false);
+      if (token === this.loadToken) {
+        this.loading.set(false);
+      }
     }
   }
 
@@ -572,16 +600,33 @@ export class NodeModel implements OnInit {
         cfg.revision,
         d ? withPlacement(cfg.entries, this.modelName(), d, adv ?? undefined) : withSettings(cfg.entries, this.modelName(), adv!),
       );
-      await this.refresh();
-      this.editing.set(false);
-      this.draft.set(null);
-      this.adv.set(null);
-      this.notice.set({ title: 'Saved', text: 'The worker applies the new settings from the next lane start.' });
     } catch (e) {
       this.failure.set(saveFailure(e));
       queueMicrotask(() => this.failureBanner()?.nativeElement.focus());
-    } finally {
       this.saving.set(false);
+      return;
+    }
+    // The change is stored. Whether the page can show it now is a separate question.
+    this.editing.set(false);
+    this.draft.set(null);
+    this.adv.set(null);
+    const reloaded = await this.tryRefresh();
+    this.notice.set({
+      title: 'Saved',
+      text: reloaded
+        ? 'The worker applies the new settings from the next lane start.'
+        : 'The settings are saved, but this page could not load them again. Reload the page to see them.',
+    });
+    this.saving.set(false);
+  }
+
+  /** Loads the page data again; false when that failed, which never undoes what was stored before. */
+  private async tryRefresh(): Promise<boolean> {
+    try {
+      await this.refresh();
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -607,17 +652,20 @@ export class NodeModel implements OnInit {
     this.removeError.set(null);
     try {
       await this.service.replaceNodeConfig(id, cfg.revision, withoutEntry(cfg.entries, this.modelName()));
-      await this.refresh();
-      this.removeOpen.set(false);
-      this.notice.set({
-        title: 'Configuration removed',
-        text: 'The model stays calibrated. The worker unloads it at the next lane change.',
-      });
     } catch (e) {
       this.removeError.set(saveFailure(e).message);
-    } finally {
       this.removing.set(false);
+      return;
     }
+    this.removeOpen.set(false);
+    const reloaded = await this.tryRefresh();
+    this.notice.set({
+      title: 'Configuration removed',
+      text: reloaded
+        ? 'The model stays calibrated. The worker unloads it at the next lane change.'
+        : 'The configuration is removed, but this page could not load the new state. Reload the page to see it.',
+    });
+    this.removing.set(false);
   }
 
   /** Asks the worker to measure this model now. */
@@ -638,7 +686,8 @@ export class NodeModel implements OnInit {
           text: 'The worker measures this model now. This takes several minutes; the page shows the result when it is done.',
         });
       }
-      await this.refresh();
+      // Whether the status can be read again does not change that the calibration started.
+      await this.tryRefresh();
     } catch (e) {
       this.calibrationError.set(saveFailure(e).message.replace('The configuration could not be saved.', 'The calibration could not be started.'));
     } finally {

@@ -256,4 +256,19 @@ describe('NodeSettingsPage', () => {
     page().reset();
     expect(page().dirty()).toBe(false);
   });
+
+  it('does not call a save failed when only the reload afterwards failed', async () => {
+    const root = await create();
+    page().setPoll('9');
+    fixture.detectChanges();
+    service['getNodeSettings'].mockRejectedValue({ status: 502 });
+
+    saveButton(root).click();
+    await settle();
+
+    expect(page().failure()).toBeNull();
+    expect(root.textContent).toContain('Saved');
+    expect(page().stored()).toMatchObject({ revision: 3, settings: { gpu_devices: 'all', gpu_poll_interval: 9 } });
+    expect(page().dirty()).toBe(false);
+  });
 });

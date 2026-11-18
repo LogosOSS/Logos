@@ -210,3 +210,14 @@ def test_the_internal_read_answers_the_settings_or_a_404(env):
 
 def test_a_worker_gets_the_settings_after_every_hello():
     assert "_schedule_node_settings_push(ticket.provider_id)" in inspect.getsource(logosnode_mod.logosnode_session)
+
+
+def test_an_import_leaves_out_a_setting_that_is_too_large(env):
+    db, _ = env()
+    huge = ["--flag"] * 20000
+    data = LogosNodeSettingsImportRequest(shared_key="s", settings={"global_extra_args": huge, "gpu_devices": "all"})
+
+    result = asyncio.run(logosnode_mod.logosnode_node_settings_import(data, request=None))
+
+    assert result == {"imported": True}
+    assert db.replaced == [(5, {"gpu_devices": "all"}, 0, None)]

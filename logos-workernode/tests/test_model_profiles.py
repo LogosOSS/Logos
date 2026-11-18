@@ -1328,3 +1328,46 @@ def test_the_list_of_measured_sizes_survives_a_round_trip_and_a_bad_value_is_dro
     assert record.to_dict()["calibrations_by_tp"] == sizes
     assert _record_from_dict({"calibrations_by_tp": "x"}).calibrations_by_tp is None
     assert _record_from_dict({}).calibrations_by_tp is None
+
+
+def test_a_choice_the_hardware_cannot_reach_does_not_make_a_calibration_of_this_configuration_stale_again():
+    registry = ModelProfileRegistry()
+    registry.replace_from_sync(
+        {
+            "org/m": {
+                "base_residency_mb": 1000.0,
+                "min_kv_cache_mb": 1024.0,
+                "max_kv_cache_mb": 4096.0,
+                "sync_revision": 1,
+                "calibration_id": 11,
+                "config_fingerprint": "fp-now",
+            }
+        }
+    )
+    key = {"org/m": {"plan_hash": "x"}}
+
+    assert registry.set_calibration_keys(key, {"org/m": "fp-now"}, {"org/m": (20480.0, None)}) == []
+    assert registry.get_profile("org/m").calibration_stale is not True
+
+
+def test_a_calibration_measured_under_another_configuration_is_stale_when_the_choice_is_out_of_range():
+    registry = ModelProfileRegistry()
+    registry.replace_from_sync(
+        {
+            "org/m": {
+                "base_residency_mb": 1000.0,
+                "min_kv_cache_mb": 1024.0,
+                "max_kv_cache_mb": 4096.0,
+                "sync_revision": 1,
+                "calibration_id": 11,
+                "config_fingerprint": "fp-other",
+            }
+        }
+    )
+
+    changed = registry.set_calibration_keys(
+        {"org/m": {"plan_hash": "x"}}, {"org/m": "fp-now"}, {"org/m": (20480.0, None)}
+    )
+
+    assert changed == ["org/m"]
+    assert registry.get_profile("org/m").calibration_stale is True

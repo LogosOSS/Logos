@@ -361,6 +361,8 @@ export function applyAdvanced(entry: NodeConfigEntry, draft: AdvancedDraft): Nod
   }
   for (const field of ADVANCED_FIELDS) {
     const target = field.where === 'capability' ? capability : overrides;
+    // A copy under the other name (an imported file may hold one) would win on the next read.
+    delete capability[field.key];
     delete target[field.key];
     const text = (draft.values[field.key] ?? '').trim();
     if (text === '') continue;
