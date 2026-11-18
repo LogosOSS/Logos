@@ -714,7 +714,7 @@
           <section class="nightly-overview" aria-label="Nightly benchmarks">
             <header><h3><i class="pi pi-moon" aria-hidden="true"></i> Nightly benchmarks</h3><p>Test configurations automatically during the maintenance window.</p></header>
             @for (pair of deployedPairs(); track pair.model_provider_id) {
-              <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [modelName]="model.name" />
+              <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" />
             }
           </section>
           }

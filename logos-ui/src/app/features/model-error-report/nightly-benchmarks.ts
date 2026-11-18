@@ -18,6 +18,7 @@ export interface NightlyStatus {
   enabled: boolean;
   status: string;
   recovery_required: boolean;
+  worker_ready?: boolean;
   last_run_date?: string;
   plan?: { serving_overrides: Record<string, number | null> }[];
   report: { configuration?: number; attempt?: number; status: string; reason?: string; benchmark_id?: number; job_id?: number }[];
@@ -34,7 +35,6 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   readonly datasetLabel = requestDatasetLabel;
   @Input({ required: true }) pairId!: number;
   @Input({ required: true }) providerName!: string;
-  @Input({ required: true }) modelName!: string;
   private readonly http = inject(HttpClient);
   readonly state = signal<NightlyStatus | null>(null);
   readonly managing = signal(false);
@@ -48,7 +48,6 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   workloadName = '';
   logIds = '';
   provenance = 'synthetic';
-  private expected = false;
   private version = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private destroyed = false;
@@ -96,22 +95,27 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     }
   }
 
-  get plannedParameters(): { name: string; values: string }[] {
-    const plan = this.state()?.plan ?? [];
-    return ['max_num_seqs', 'max_num_batched_tokens'].flatMap(name => {
-      const values = [...new Set(plan.flatMap(run => {
-        const value = run.serving_overrides[name];
-        return typeof value === 'number' ? [value] : [];
-      }))].sort((a, b) => a - b);
-      return values.length ? [{ name, values: values.join(', ') }] : [];
-    });
+  selectWorkload(id: string | null): void {
+    this.selectedWorkload = id;
+    this.sourceEdited = id !== (this.state()?.workload_id ?? null);
+    this.sourceNotice.set(null);
+    this.error.set(null);
+  }
+
+  get enableBlocker(): string | null {
+    const state = this.state();
+    if (!state || state.enabled) return null;
+    if (state.recovery_required) return 'Wait for worker recovery to finish.';
+    if (!state.worker_ready) return 'Connect a worker that supports nightly benchmarks.';
+    if (!state.window) return 'Waiting for the maintenance window settings.';
+    if (this.sourceEdited) return 'Apply your dataset to enable nightly runs.';
+    return null;
   }
 
   get window() {
     return this.state()?.window;
   }
 
-  get workload() { return this.state()?.workloads?.find(item => item.id === this.state()?.workload_id); }
   get automaticSource(): boolean { return this.state()?.workload_policy?.kind === 'recent_user'; }
   get sourceLocked(): boolean { return this.automaticSource || this.saving() || !!this.state()?.recovery_required || ['running', 'preparing', 'continuing'].includes(this.state()?.status ?? ''); }
 
@@ -190,45 +194,45 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     return labels[value] ?? value;
   }
 
-  review(): void {
-    if (!this.state() || this.saving() || (!this.state()!.enabled && (this.sourceEdited || !this.window))) return;
-    this.managing.set(false);
-    this.expected = this.state()!.enabled;
+  async toggleNightly(): Promise<void> {
+    const state = this.state();
+    if (!this.managing() || !state || this.saving() || this.enableBlocker) return;
     this.error.set(null);
-    this.confirming.set(true);
+    if (state.enabled) {
+      this.managing.set(false);
+      this.confirming.set(true);
+    } else {
+      await this.setEnabled(true);
+    }
   }
 
-  get enabling(): boolean { return !this.expected; }
-
-  get confirmationMessage(): string {
-    const window = this.window;
-    if (this.enabling && !window) return 'The maintenance window is unavailable. Refresh before enabling nightly runs.';
-    return this.enabling
-      ? `Test ${this.modelName} on ${this.providerName} during ${window!.start}–${window!.end} ${window!.timezone}. The whole worker is reserved during testing and cannot serve production requests. Each round measures current settings, the saved candidate and batching variants. Model/worker pairs rotate through further rounds until the window ends. For a saved request dataset, a faster configuration is applied automatically only after complete answers, comparable output lengths, bounded p95 latency and worker readiness are verified. Otherwise, original settings return.`
-      : `Disable nightly benchmarks for this model on ${this.providerName}? Future runs will stop. An active nightly run will be cancelled and its original settings restored before the worker returns to production.`;
+  async confirmDisable(): Promise<void> {
+    if (this.confirming() && !this.saving()) await this.setEnabled(false);
   }
 
-  async confirm(): Promise<void> {
-    if (!this.confirming() || this.saving()) return;
+  private async setEnabled(enabled: boolean): Promise<void> {
     const version = ++this.version;
     this.saving.set(true);
     clearTimeout(this.timer);
     try {
       const state = await firstValueFrom(this.http.post<NightlyStatus>(
         '/api/logosdb/model_benchmarks/nightly/configure', {
-          model_provider_id: this.pairId, enabled: !this.expected, expected_enabled: this.expected,
+          model_provider_id: this.pairId, enabled, expected_enabled: !enabled,
         }));
       if (version !== this.version || this.destroyed) return;
       this.state.set({ ...this.state(), ...state, plan: state.plan ?? this.state()?.plan, window: state.window ?? this.state()?.window, max_maintenance_nodes: state.max_maintenance_nodes ?? this.state()?.max_maintenance_nodes });
       this.confirming.set(false);
+      this.managing.set(false);
       this.error.set(null);
     } catch (error) {
       if (version !== this.version || this.destroyed) return;
       this.error.set(error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
         ? error.error.detail : 'Could not change nightly benchmarks. Refresh and try again.');
     } finally {
-      this.saving.set(false);
-      if (version === this.version && !this.destroyed) this.timer = setTimeout(() => void this.refresh(), 15000);
+      if (version === this.version && !this.destroyed) {
+        this.saving.set(false);
+        this.timer = setTimeout(() => void this.refresh(), 15000);
+      }
     }
   }
 }

@@ -32,6 +32,10 @@ def target_for(pair_id):
     return target
 
 
+def worker_ready(snapshot, online):
+    return online and bool(((snapshot or {}).get("runtime") or {}).get("supports_benchmark_restart"))
+
+
 @router.post("/status")
 async def nightly_status(data: NightlyStatusRequest, request: Request):
     _require_internal_secret(request)
@@ -70,10 +74,12 @@ async def nightly_status(data: NightlyStatusRequest, request: Request):
             ),
             {"provider_id": target["provider_id"]},
         ).scalar()
+    online = main._logosnode_registry.is_provider_online(target["provider_id"])
+    result["worker_ready"] = worker_ready(snapshot, online)
     result["deployment"] = deployment_snapshot(
         snapshot,
         target["model_name"],
-        online=main._logosnode_registry.is_provider_online(target["provider_id"]),
+        online=online,
         series_key=search["series_key"] if search else None,
         maintenance=bool(active_benchmark)
         or result["recovery_required"]
@@ -94,7 +100,7 @@ async def configure_nightly(data: NightlyUpdateRequest, request: Request):
     target = target_for(data.model_provider_id)
     if data.enabled:
         snapshot = main._logosnode_registry.peek_runtime_snapshot(target["provider_id"]) or {}
-        if not (snapshot.get("runtime") or {}).get("supports_benchmark_restart"):
+        if not worker_ready(snapshot, main._logosnode_registry.is_provider_online(target["provider_id"])):
             raise HTTPException(status_code=409, detail="Update and connect this worker before enabling nightly runs")
     try:
         if "workload_id" in data.model_fields_set:

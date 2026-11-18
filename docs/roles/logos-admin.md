@@ -316,14 +316,10 @@ See the [nightly benchmark guide](../admin/nightly-benchmarks.md) for rotation, 
 1. Open a model from **Models**.
 2. Select **Performance**.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Select **Manage**, then expand **Schedule and test plan**.
-5. Select **Enable nightly runs…**.
-6. Read the dialog and select **Enable nightly runs**.
+4. Select **Manage** and check the time window and request workload.
+5. Select **Enable nightly runs**. If the button is unavailable, the dialog shows what needs attention.
 
-Select **Cancel** to keep the current schedule state.
-The confirmation dialog shows the time window and the effect on production traffic.
-
-![Confirmation dialog to enable nightly benchmarks](../static/img/roles/logos-admin-nightly-enable.png)
+![Nightly schedule ready to enable](../static/img/roles/logos-admin-nightly-enable.png)
 
 The card then shows **Enabled · in nightly rotation**.
 The schedule stays active after a page reload.

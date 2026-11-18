@@ -5,7 +5,7 @@ title: Nightly Benchmarks
 # Nightly Benchmarks
 
 Logos admins enable or disable a nightly schedule for each model/worker pair on
-**Model Details → Performance**. Both actions require confirmation. Select **Benchmarks → Manage** to inspect the schedule and parameter values for a worker. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
+**Model Details → Performance**. Select **Benchmarks → Manage** to inspect the schedule and parameter values for a worker. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
 settings; the scheduler builds the plan again when the nightly run starts.
 
 Schedules are off by default and persist in PostgreSQL. The nightly plan is independent
@@ -15,7 +15,7 @@ restores the worker before it returns to production.
 ## Enable, Inspect and Disable a Schedule
 
 See the [illustrated admin walkthrough](../roles/logos-admin.md#nightly-benchmarks)
-for screenshots of the plan and both confirmation dialogs.
+for screenshots of the plan and schedule controls.
 
 ![Run a benchmark and compact nightly status](../static/img/roles/logos-admin-nightly-benchmarks.png)
 
@@ -26,13 +26,13 @@ Select **Manage** beside the intended worker to inspect its workload, schedule a
 1. Sign in as a Logos Admin and open **Models**.
 2. Open the model's **Model Details → Performance** tab.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Select **Manage**, then expand **Schedule and test plan**.
-5. Select **Enable nightly runs…**, then confirm **Enable nightly runs**.
+4. Select **Manage** and review the time window and request workload.
+5. Select **Enable nightly runs**. The dialog explains any missing prerequisite.
 6. Check that the card shows **Enabled · in nightly rotation**.
 
 The schedule persists after a page reload or browser close. To remove the pair
 from rotation, select **Manage → Disable nightly runs…** and confirm **Disable nightly runs**.
-Cancelling either dialog leaves the saved state unchanged. Activation requires
+Activation requires
 an updated, connected worker. Run admission also checks the lane and the other
 available workers.
 
