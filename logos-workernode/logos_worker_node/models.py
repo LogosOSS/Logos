@@ -92,9 +92,9 @@ class VllmConfig(BaseModel):
         "PER_GPU_COLD_START_MB headroom remains the sole safety buffer; "
         "gmu itself stays free of margin to avoid double-counting. Set an "
         "explicit float per model under engines.vllm.model_overrides.<model>"
-        ".gpu_memory_utilization to opt out of auto-derivation; vLLM falls "
-        "back to its own 0.9 default when neither this field nor a profile "
-        "is available.",
+        ".gpu_memory_utilization to opt out of auto-derivation. When neither "
+        "this field nor a profile is available, the worker passes 0.9 "
+        "(FALLBACK_GMU), never vLLM's own whole-GPU default.",
     )
     kv_cache_memory_bytes: str = Field(
         default="",

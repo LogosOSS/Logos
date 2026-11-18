@@ -281,8 +281,9 @@ class CapacityPlanner:
     # deriving from a calibrated footprint locally as a last resort — prefer
     # worker-published startup_gmu_by_model.
     VLLM_GMU_FLOOR = 0.5
-    # vLLM default when --gpu-memory-utilization is omitted (current engines).
-    VLLM_DEFAULT_GMU = 0.9
+    # The worker's FALLBACK_GMU: the --gpu-memory-utilization it passes for a
+    # lane without an override or calibrated profile.
+    FALLBACK_GMU = 0.9
 
     # ─── Host-RAM headroom model ────────────────────────────────────────────
     #
@@ -10133,8 +10134,8 @@ class CapacityPlanner:
         Prefer worker-published ``startup_gmu_by_model`` (configured / derived /
         default — never mislabeled as observed). Fallbacks: explicit
         configured_vllm override, live lane config, profile observed/min
-        fields. When nothing is known, admit against vLLM's omitted-flag
-        default (``VLLM_DEFAULT_GMU`` = 0.9). An empty configured map does
+        fields. When nothing is known, admit against the worker's fallback
+        (``FALLBACK_GMU`` = 0.9), which it passes to vLLM explicitly. An empty configured map does
         **not** imply the auto-derive floor 0.5.
         """
         if provider_id is not None and model_name:
@@ -10179,8 +10180,8 @@ class CapacityPlanner:
             if best is not None:
                 return best
 
-        # No published/override/profile pin: honor vLLM's omitted-flag default.
-        return float(self.VLLM_DEFAULT_GMU)
+        # No published/override/profile pin: the worker starts with its fallback.
+        return float(self.FALLBACK_GMU)
 
     def _cold_start_per_gpu_need_mb(
         self,

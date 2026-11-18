@@ -137,7 +137,7 @@ def _resolve_startup_gmu(argv: list[str]) -> float:
     """GMU for the free≥gmu×total startup gate.
 
     Mirrors real EngineCore ``request_memory``: an explicit
-    ``--gpu-memory-utilization`` wins; otherwise vLLM's default 0.9 applies —
+    ``--gpu-memory-utilization`` wins; otherwise vLLM's default (1.0) applies —
     including when ``--kv-cache-memory-bytes`` is also present (that pin sizes
     the steady-state KV pool and does not skip the gate).
     """

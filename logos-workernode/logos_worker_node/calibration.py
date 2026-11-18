@@ -55,6 +55,7 @@ from logos_worker_node.vllm_compat import (
     _BAKED_QUANT_METHODS_FILENAME,
     _FATAL_LOAD_ERROR_PATTERNS,
     ENGINE_WARMUP_STALLED,
+    FALLBACK_GMU,
     LANE_ENV_MARKER,
     PROBE_ENV_MARKER,
     FatalLoadErrorPattern,
@@ -1162,7 +1163,10 @@ def _build_vllm_cmd(
     speculative_config = str(plan.get("speculative_config") or "").strip()
     kv_bytes = str(plan.get("kv_cache_memory_bytes") or kv_cache_memory_bytes)
     kv_cache_dtype = str(plan.get("kv_cache_dtype") or "")
-    explicit_gmu = plan.get("gpu_memory_utilization")
+    # Probe with the fraction the lane starts with when nothing is calibrated
+    # yet, never vLLM's own whole-GPU default.
+    gmu = plan.get("gpu_memory_utilization")
+    gmu = FALLBACK_GMU if gmu is None else gmu
 
     cmd = [
         vllm_binary,
@@ -1182,8 +1186,7 @@ def _build_vllm_cmd(
     if enable_sleep_mode:
         cmd.append("--enable-sleep-mode")
     cmd.append("--enable-prefix-caching" if enable_prefix_caching else "--no-enable-prefix-caching")
-    if explicit_gmu is not None:
-        cmd.extend(["--gpu-memory-utilization", str(explicit_gmu)])
+    cmd.extend(["--gpu-memory-utilization", str(gmu)])
     if max_model_len:
         cmd.extend(["--max-model-len", str(int(max_model_len))])
     else:

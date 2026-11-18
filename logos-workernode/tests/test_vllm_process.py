@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from logos_worker_node.models import LaneConfig, VllmConfig, VllmEngineConfig, WorkerConfig
-from logos_worker_node.vllm_process import VllmProcessHandle
+from logos_worker_node.vllm_compat import FALLBACK_GMU
+from logos_worker_node.vllm_process import VllmProcessHandle, effective_gmu
 
 
 def _make_executable(path: Path) -> None:
@@ -474,34 +475,24 @@ def test_build_cmd_respects_explicit_compilation_config(monkeypatch) -> None:
     assert "--compilation-config" not in cmd
 
 
-def test_build_cmd_omits_gpu_memory_utilization_with_kv_cache(monkeypatch) -> None:
-    """When kv_cache_memory_bytes is set, --gpu-memory-utilization must NOT be
-    injected.  kv_cache_memory_bytes controls the KV pool size directly; adding
-    gpu_memory_utilization=0.1 would cap total VRAM to 10% and prevent model
-    weights from loading."""
+@pytest.mark.parametrize("kv_cache_memory_bytes", ["4G", ""])
+def test_build_cmd_passes_the_admitted_fallback_gmu_for_unprofiled_lanes(monkeypatch, kv_cache_memory_bytes) -> None:
+    """A lane without override or profile starts with the fraction admission
+    plans with. Omitting the flag would leave vLLM at its own default, the whole
+    GPU, while admission and the published status assume FALLBACK_GMU."""
     handle = VllmProcessHandle("lane-test", 19000, WorkerConfig())
     monkeypatch.setattr(handle, "_resolve_vllm_binary", lambda _configured: "/tmp/vllm")
 
     lane = LaneConfig(
         model="Qwen/Qwen2.5-Coder-7B-Instruct",
         vllm=True,
-        vllm_config=VllmConfig(kv_cache_memory_bytes="4G"),
+        vllm_config=VllmConfig(kv_cache_memory_bytes=kv_cache_memory_bytes),
     )
     cmd = handle._build_cmd(lane)
-    assert "--gpu-memory-utilization" not in cmd
-
-
-def test_build_cmd_omits_gpu_memory_utilization_when_no_kv_cache(monkeypatch) -> None:
-    handle = VllmProcessHandle("lane-test", 19000, WorkerConfig())
-    monkeypatch.setattr(handle, "_resolve_vllm_binary", lambda _configured: "/tmp/vllm")
-
-    lane = LaneConfig(
-        model="Qwen/Qwen2.5-Coder-7B-Instruct",
-        vllm=True,
-        vllm_config=VllmConfig(),
-    )
-    cmd = handle._build_cmd(lane)
-    assert "--gpu-memory-utilization" not in cmd
+    assert cmd.count("--gpu-memory-utilization") == 1
+    launched = float(cmd[cmd.index("--gpu-memory-utilization") + 1])
+    assert launched == FALLBACK_GMU
+    assert launched == effective_gmu(lane.vllm_config)
 
 
 def test_build_cmd_omits_kv_cache_when_empty(monkeypatch) -> None:

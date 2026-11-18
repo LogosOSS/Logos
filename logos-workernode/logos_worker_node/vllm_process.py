@@ -72,6 +72,7 @@ from logos_worker_node.vllm_compat import (
     _VLLM_METRIC_TTFT_BUCKET,
     _VLLM_METRIC_TTFT_COUNT,
     _VLLM_METRIC_TTFT_SUM,
+    FALLBACK_GMU,
     LANE_ENV_MARKER,
     _infer_default_chat_template_kwargs,
     _infer_reasoning_parser,
@@ -86,8 +87,6 @@ logger = logging.getLogger("logos_worker_node.vllm_process")
 # Spawner, placement, and status publication share these via that helper.
 GMU_AUTO_FLOOR = 0.5
 GMU_AUTO_CEILING = 0.95
-# vLLM's default when --gpu-memory-utilization is omitted (current engines).
-VLLM_DEFAULT_GMU = 0.9
 
 # Post-mortem logs of failed vLLM starts. Only ever used through _private_dir,
 # which keeps it a directory this user owns and nobody else can enter.
@@ -118,14 +117,14 @@ def _private_dir(path: Path) -> Path:
 class StartupGmuResolution:
     """Resolved startup gpu_memory_utilization for spawn and admission.
 
-    ``value_for_spawn`` is None when the CLI flag should be omitted (vLLM
-    applies its own default). ``value_for_admission`` is always the fraction
-    that EngineCore's request_memory check will enforce — including
-    ``VLLM_DEFAULT_GMU`` when the flag is omitted. ``source`` is one of
+    ``value_for_spawn`` is always passed as --gpu-memory-utilization, so
+    ``value_for_admission`` (the fraction EngineCore's request_memory check
+    enforces) is the same number, including ``FALLBACK_GMU`` for a lane
+    without an override or profile. ``source`` is one of
     ``configured`` | ``derived`` | ``default`` (never ``observed``).
     """
 
-    value_for_spawn: float | None
+    value_for_spawn: float
     value_for_admission: float
     source: str
 
@@ -145,7 +144,7 @@ def resolve_startup_gmu(
       1. Explicit override wins verbatim.
       2. Calibrated derivation: clamp(reconfigured_loaded / tp / total, floor, ceil)
          using the same KV reconfiguration as spawn.
-      3. Otherwise omit the flag (spawn None) and admit against vLLM's default 0.9.
+      3. Otherwise spawn and admit with FALLBACK_GMU, passed explicitly.
     """
     if explicit_gmu is not None:
         value = float(explicit_gmu)
@@ -158,7 +157,7 @@ def resolve_startup_gmu(
         derived = float(adjusted) / float(tp) / float(total)
         clamped = min(GMU_AUTO_CEILING, max(GMU_AUTO_FLOOR, derived))
         return StartupGmuResolution(clamped, clamped, "derived")
-    return StartupGmuResolution(None, VLLM_DEFAULT_GMU, "default")
+    return StartupGmuResolution(FALLBACK_GMU, FALLBACK_GMU, "default")
 
 
 def effective_gmu(
@@ -1916,12 +1915,11 @@ class VllmProcessHandle:
         self,
         vc: VllmConfig,
         lane_config: LaneConfig,
-    ) -> float | None:
-        """Return the gpu_memory_utilization to pass to vLLM, or None to omit.
+    ) -> float:
+        """Return the gpu_memory_utilization to pass to vLLM.
 
         Delegates to ``resolve_startup_gmu`` (shared with placement and status
-        publication). Returns ``value_for_spawn`` — None omits the flag so
-        vLLM applies its own default.
+        publication), so the engine starts with the fraction admission planned.
         """
         profile = None
         if self._model_profiles is not None:
@@ -1941,7 +1939,7 @@ class VllmProcessHandle:
             profile=profile,
             kv_cache_per_gpu_mb=float(kv_mb or 0.0),
         )
-        if resolution.source == "derived" and resolution.value_for_spawn is not None:
+        if resolution.source == "derived":
             logger.info(
                 "[%s] Auto-derived gpu_memory_utilization=%.3f for %s " "(source=derived; clamped to [%.2f, %.2f])",
                 self.lane_id,
@@ -2138,15 +2136,15 @@ class VllmProcessHandle:
             # orchestrator's lane routing can reach it as usual.
             cmd.extend(["--served-model-name", lane_config.model])
         # Resolve gpu_memory_utilization: explicit per-model override wins;
-        # otherwise auto-derive from the calibrated profile so vLLM's startup
+        # otherwise auto-derive from the calibrated profile, else FALLBACK_GMU.
+        # Always pass it, so the engine never takes more than admission planned
+        # with; the derived value makes vLLM's startup
         # floor check (free_per_gpu >= gmu * total_per_gpu, raised by
         # vllm/v1/worker/utils.py:request_memory) matches the lane's actual
         # measured footprint. The +500 MB cold-start headroom lives only in the
         # planner's PER_GPU_COLD_START_MB; baking it into gmu would
         # double-count and unnecessarily reject co-resident sleeping lanes.
-        resolved_gmu = self._resolve_gmu(vc, lane_config)
-        if resolved_gmu is not None:
-            cmd.extend(["--gpu-memory-utilization", str(resolved_gmu)])
+        cmd.extend(["--gpu-memory-utilization", str(self._resolve_gmu(vc, lane_config))])
         if vc.max_model_len > 0:
             cmd.extend(["--max-model-len", str(vc.max_model_len)])
         # For vLLM lanes, context_length defaults to 4096 from shared lane
