@@ -282,8 +282,9 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
-          # Fail this job, a required check, when the quality gate fails.
+          # Run the scanner engine on the Temurin JDK installed above.
           args: >
+            -Dsonar.scanner.skipJreProvisioning=true
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
 
