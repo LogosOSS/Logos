@@ -90,10 +90,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.13"
+          python-version: "3.13.18"
 
       - name: Install uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # Same uv release as the images (ghcr.io/astral-sh/uv:0.13.6).
+          version: "0.13.6"
 
       - name: Restore HF model cache
         # A cache miss is fine — the Prime step below downloads while the
@@ -116,11 +119,9 @@ jobs:
           # .venv-worker/bin/python for it) so the worker's pinned
           # dependencies cannot replace the orchestrator's locked versions.
           uv venv .venv-worker
-          uv pip install --python .venv-worker/bin/python -r ../logos-workernode/requirements.txt
-          # The checked-in gRPC gencode (src/logos/grpclocal/model_pb2.py) was
-          # generated with protoc 6.30; older protobuf runtimes refuse to
-          # import it.
-          uv pip install "protobuf==6.33.6"
+          uv pip install --python .venv-worker/bin/python --no-deps --require-hashes \
+            -r ../logos-workernode/requirements-standalone.lock
+          uv pip check --python .venv-worker/bin/python
         working-directory: logos-orchestrator
 
       - name: Prime HF model cache

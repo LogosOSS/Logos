@@ -11,7 +11,7 @@ Python 3.13 / FastAPI service that runs coding agents in isolated containers on 
 ## Commands
 
 ```bash
-uv venv .venv && uv pip install --python .venv/bin/python -e ".[dev]"
+uv sync --locked --extra dev --no-install-project --python 3.13   # matches CI
 .venv/bin/python -m pytest            # asyncio_mode = "auto"
 ```
 

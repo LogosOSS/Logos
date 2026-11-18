@@ -2,46 +2,96 @@
 exclude: '^(logos-ui|.*\.venv)/'
 
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+  # Every hook is `language: system`: it runs the executable from PATH, which
+  # comes from tools/pre-commit/requirements.lock (exact versions with hashes;
+  # see tools/pre-commit/requirements.txt). Remote hook repositories would make
+  # pre-commit build hook environments that resolve the hooks' dependencies and
+  # build backends without versions. Entries, types and stages mirror the
+  # upstream hook definitions of the locked releases.
+  - repo: local
     hooks:
       - id: check-added-large-files
+        name: check for added large files
+        entry: check-added-large-files
+        language: system
+        stages: [pre-commit, pre-push, manual]
         # The homepage trailer video and its 2x source screenshots are binary assets.
         exclude: '^docs/(static/video|trailer/shots)/'
       - id: check-ast
+        name: check python ast
+        entry: check-ast
+        language: system
+        types: [python]
       - id: check-case-conflict
+        name: check for case conflicts
+        entry: check-case-conflict
+        language: system
       - id: check-merge-conflict
+        name: check for merge conflicts
+        entry: check-merge-conflict
+        language: system
+        types: [text]
       - id: check-toml
+        name: check toml
+        entry: check-toml
+        language: system
+        types: [toml]
       - id: check-yaml
+        name: check yaml
+        entry: check-yaml
+        language: system
+        types: [yaml]
       - id: check-vcs-permalinks
+        name: check vcs permalinks
+        entry: check-vcs-permalinks
+        language: system
+        types: [text]
       - id: end-of-file-fixer
+        name: fix end of files
+        entry: end-of-file-fixer
+        language: system
+        types: [text]
+        stages: [pre-commit, pre-push, manual]
       - id: trailing-whitespace
+        name: trim trailing whitespace
+        entry: trailing-whitespace-fixer
+        language: system
+        types: [text]
+        stages: [pre-commit, pre-push, manual]
 
-  - repo: https://github.com/PyCQA/autoflake
-    rev: v2.3.1
-    hooks:
       - id: autoflake
+        name: autoflake
+        entry: autoflake
+        language: system
+        types: [python]
+        require_serial: true
         args:
           - --in-place
           - --remove-all-unused-imports
           - --remove-unused-variables
           - --ignore-init-module-imports
 
-  - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
-    hooks:
       - id: isort
+        name: isort
+        entry: isort
+        language: system
+        types_or: [cython, pyi, python]
+        require_serial: true
         args: ["--profile=black", "--settings-path=."]
 
-  - repo: https://github.com/psf/black
-    rev: 26.5.1
-    hooks:
       - id: black
+        name: black
+        entry: black
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
 
-  - repo: https://github.com/pycqa/flake8
-    rev: 7.1.2
-    hooks:
       - id: flake8
+        name: flake8
+        entry: flake8
+        language: system
+        types: [python]
+        require_serial: true
         # pre-commit runs hooks from the repo root, where flake8's
         # auto-discovery cannot find .flake8 — point at it.
         args: [ "--config=logos-orchestrator/.flake8" ]
@@ -55,3 +105,13 @@ repos:
             logos-orchestrator/src/grpclocal/model_pb2(_grpc)?\.py$ |
             logos-workernode/tools/
           )
+
+      - id: check-pinned-installs
+        name: every install pins an exact version
+        # Scans the whole repository (Dockerfiles, shell scripts, workflows,
+        # Markdown, package.json scripts), so it runs once per commit
+        # regardless of which files changed.
+        entry: python scripts/check-pinned-installs.py
+        language: system
+        pass_filenames: false
+        always_run: true

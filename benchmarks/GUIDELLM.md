@@ -25,7 +25,7 @@ GuideLLM requires Python 3.10–3.13. From `benchmarks`:
 ```bash
 uv venv --python 3.13 .venv-guidellm
 source .venv-guidellm/bin/activate
-uv pip install -r requirements-guidellm.txt
+uv pip install --no-deps --require-hashes -r requirements-guidellm.lock
 ```
 
 ## Run and import into Logos

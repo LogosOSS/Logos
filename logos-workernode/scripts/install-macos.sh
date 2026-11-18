@@ -466,8 +466,12 @@ if [ -x "$WORKER_VENV/bin/python" ]; then
     fi
 fi
 "$PYTHON_BIN" -m venv "$WORKER_VENV"
-"$WORKER_VENV/bin/python" -m pip install --quiet --upgrade pip
-"$WORKER_VENV/bin/python" -m pip install --quiet -r "$INSTALL_ROOT/requirements.txt"
+# Exactly the locked set: every package pinned with its hashes, nothing
+# resolved here (requirements.txt is only the input the lock is built from),
+# then a consistency check of the venv.
+"$WORKER_VENV/bin/python" -m pip install --quiet --no-deps --require-hashes \
+    -r "$INSTALL_ROOT/requirements-standalone.lock"
+"$WORKER_VENV/bin/python" -m pip check
 
 # Dependencies are in and importable — the previous venv is now redundant.
 # Until this point the EXIT handler would have put it back.
