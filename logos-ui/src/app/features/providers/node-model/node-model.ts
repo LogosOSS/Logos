@@ -57,7 +57,7 @@ import {
   standalone: true,
   imports: [ErrorMessageComponent, ModalConfirmComponent, NgTemplateOutlet, RouterLink],
   templateUrl: './node-model.html',
-  styleUrl: './node-model.scss',
+  styleUrls: ['./node-model.scss', './node-model-form.scss'],
   changeDetection: ChangeDetectionStrategy.Eager,
 })
 export class NodeModel implements OnInit {

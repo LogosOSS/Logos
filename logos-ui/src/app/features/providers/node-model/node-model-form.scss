@@ -1,0 +1,524 @@
+// The configuration card: tiles, sliders with a scale, figures.
+.req {
+  color: rgb(var(--color-error));
+}
+
+.option {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 220px;
+  text-align: left;
+
+  &:disabled {
+    cursor: default;
+    opacity: 1;
+  }
+
+  .option-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+}
+
+.best-tag {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: rgb(var(--color-text-accent));
+}
+
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+
+  .label {
+    margin: 0;
+  }
+}
+
+.field-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  .big {
+    font-size: var(--font-size-md);
+    font-weight: var(--font-weight-bold);
+  }
+}
+
+.best-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-xs);
+  color: rgb(var(--color-text-accent));
+  background: rgb(var(--color-primary-500) / 0.08);
+  border: 1px solid rgb(var(--color-primary-500) / 0.4);
+  border-radius: 999px;
+
+  .best-dot {
+    width: 8px;
+    height: 8px;
+    border: 2px solid currentcolor;
+    border-radius: 50%;
+  }
+}
+
+.sl {
+  position: relative;
+  height: 50px;
+  margin-top: 6px;
+  user-select: none;
+  touch-action: none;
+}
+
+// The track: the measured window as a band, hatching where nothing was measured, the chosen part in the accent colour.
+.sl-track {
+  position: absolute;
+  top: 13px;
+  right: 0;
+  left: 0;
+  height: 6px;
+  background: rgb(var(--color-typography-700) / 0.16);
+  border-radius: 99px;
+}
+
+.sl-win {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgb(var(--color-typography-700) / 0.3);
+  pointer-events: none;
+}
+
+.sl-off {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(90deg, rgb(var(--color-typography-700) / 0.38) 0 1px, transparent 1px 5px);
+  pointer-events: none;
+}
+
+.sl-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgb(var(--color-primary-500));
+  pointer-events: none;
+}
+
+.sl-best {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  box-sizing: border-box;
+  background: rgb(var(--color-background-0));
+  border: 2px solid rgb(var(--color-primary-500));
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+// The handle exists only while editing. The input above it takes the mouse, the keys and the touch.
+.sl-thumb {
+  position: absolute;
+  top: 8px;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  background: rgb(var(--color-primary-500));
+  border: 3px solid rgb(var(--color-background-0));
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 1.5px rgb(var(--color-primary-500)),
+    0 2px 6px rgb(0 0 0 / 0.3);
+  pointer-events: none;
+}
+
+.sl-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 32px;
+  margin: 0;
+  cursor: pointer;
+  opacity: 0;
+  appearance: none;
+
+  &::-webkit-slider-thumb {
+    width: 1px;
+    height: 24px;
+    appearance: none;
+  }
+
+  &::-moz-range-thumb {
+    width: 1px;
+    height: 24px;
+    border: 0;
+  }
+
+  &:focus-visible ~ .sl-thumb {
+    outline: 2px solid rgb(var(--color-primary-500));
+    outline-offset: 3px;
+  }
+}
+
+.sl-scale {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  left: 0;
+  height: 18px;
+
+  .tick {
+    position: absolute;
+    top: 0;
+    width: 1px;
+    height: 3px;
+    background: rgb(var(--color-typography-700) / 0.45);
+
+    span {
+      position: absolute;
+      top: 6px;
+      left: 50%;
+      font-size: var(--font-size-xs);
+      color: rgb(var(--color-typography-700));
+      white-space: nowrap;
+      transform: translateX(-50%);
+    }
+
+    &.first span {
+      left: -1px;
+      transform: none;
+    }
+
+    &.last span {
+      left: 1px;
+      transform: translateX(-100%);
+    }
+  }
+}
+
+.tiles {
+  margin-top: 8px;
+}
+
+.best .best-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.facts--compact {
+  font-size: var(--font-size-sm);
+
+  div {
+    padding: 4px 0;
+  }
+}
+
+// Advanced settings: a setting per row, grouped; the explanation on the left, the control on the right.
+.filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 320px;
+  margin: 12px 0 4px;
+  padding: 0 10px;
+  border: 1px solid rgb(var(--color-outline-200));
+  border-radius: 8px;
+
+  input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 0;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    outline: 0;
+  }
+}
+
+.arow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 8px 24px;
+  align-items: start;
+  padding: 14px 0;
+
+  .arow-text .label {
+    margin-bottom: 2px;
+  }
+
+  .arow-text .hint {
+    margin: 0;
+  }
+
+  .arow-control {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+
+    .num,
+    .control {
+      width: 100%;
+    }
+
+    .num.wide {
+      max-width: none;
+    }
+  }
+
+  &.arow--wide {
+    grid-template-columns: minmax(0, 1fr);
+
+    .arow-control {
+      align-items: stretch;
+    }
+  }
+
+  .arow-error {
+    grid-column: 1 / -1;
+    margin: 0;
+  }
+}
+
+.set-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 4px 2px;
+  vertical-align: middle;
+  background: rgb(var(--color-primary-500));
+  border-radius: 50%;
+}
+
+.all-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: 12px 0 0;
+  padding: 14px 0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: var(--font-weight-semibold);
+  color: inherit;
+  background: none;
+  border: 0;
+  border-top: 1px solid rgb(var(--color-outline-200));
+}
+
+.summary {
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-700));
+}
+
+.gpus--compact .gpu {
+  min-width: 0;
+
+  .gpu-bar {
+    display: block;
+    width: 100%;
+    height: 4px;
+    background: rgb(var(--color-outline-200));
+    border-radius: 2px;
+
+    span {
+      display: block;
+      height: 100%;
+      background: rgb(var(--color-primary-500));
+      border-radius: 2px;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .arow {
+    grid-template-columns: minmax(0, 1fr);
+
+    .arow-control {
+      align-items: stretch;
+    }
+  }
+}
+
+.banner--rec {
+  align-items: center;
+  border-color: rgb(var(--color-primary-500) / 0.5);
+  background: rgb(var(--color-primary-500) / 0.1);
+
+  // The icons take the colour of their text, not the warning colour of a banner.
+  i {
+    color: inherit;
+  }
+
+  div {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  small {
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: var(--letter-spacing-wider);
+    text-transform: uppercase;
+    color: rgb(var(--color-text-accent));
+  }
+}
+
+// A value field with its unit inside the box: every box has the same size, so the edges line up.
+.unit-in {
+  position: relative;
+  display: inline-block;
+
+  input.num {
+    box-sizing: border-box;
+    width: 136px;
+    height: 34px;
+    padding: 0 48px 0 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+    background: rgb(var(--color-background-50) / 0.06);
+    border-color: rgb(var(--color-outline-200) / 0.7);
+
+    &:focus {
+      outline: 2px solid rgb(var(--color-primary-500) / 0.6);
+      outline-offset: 1px;
+    }
+  }
+
+  .unit {
+    position: absolute;
+    top: 50%;
+    right: 12px;
+    font-size: var(--font-size-sm);
+    color: rgb(var(--color-typography-700));
+    pointer-events: none;
+    transform: translateY(-50%);
+  }
+}
+
+// The size tiles: a clear name, the memory below, "Best" at the edge.
+.option {
+  gap: 4px;
+  padding: 14px 16px;
+
+  .option-top b {
+    font-size: var(--font-size-lg);
+  }
+
+  small {
+    font-size: var(--font-size-sm);
+  }
+}
+
+.field-value {
+  min-height: 34px;
+}
+
+// All value fields of the settings rows share the look of the placement fields.
+.arow,
+.row {
+  .num {
+    height: 34px;
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+    background-color: rgb(var(--color-background-50) / 0.06);
+    border-color: rgb(var(--color-outline-200) / 0.7);
+  }
+
+  .control .num {
+    width: 100%;
+  }
+}
+
+// The view shows the recommendation as a notice only, in the same purple as the editor; the editor offers to use it.
+.banner--rec-view {
+  display: block;
+
+  div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  small {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  b {
+    font-size: var(--font-size-lg);
+  }
+}
+
+.bm-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: rgb(var(--color-text-accent));
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+// The reset link always keeps its place, so rows with and without a value are equally tall.
+.link--reset {
+  height: 18px;
+  margin-top: 2px;
+  line-height: 18px;
+  text-align: right;
+}
+
+.link--hidden {
+  visibility: hidden;
+}
+
+// In a wide row (tiles, a text area) the link sits in the corner of the row, so it never changes the height.
+.arow {
+  position: relative;
+}
+
+.arow--wide .link--reset {
+  position: absolute;
+  top: 14px;
+  right: 0;
+  margin: 0;
+}
+
+// Selects: the system arrow is replaced by a grey chevron 12 px from the edge, as in the design.
+select.num {
+  padding-right: 34px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236B7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  appearance: none;
+
+  // The list of choices is drawn by the browser; give it a colour pair of its own, readable in both themes.
+  option {
+    color: rgb(var(--color-typography-0));
+    background-color: rgb(var(--color-background-0));
+  }
+}
