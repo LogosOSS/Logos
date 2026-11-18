@@ -1,9 +1,18 @@
 <section class="deployed" aria-label="Currently deployed configuration">
-  <header><h4>{{ providerName() }}</h4><span class="worker-state">{{ !state() && !error() ? 'Checking…' : deployment()?.available ? (deployment()?.maintenance ? 'Benchmark in progress' : 'Active') : 'Unavailable' }}</span></header>
+  <header><h4>{{ providerName() }}</h4><span class="worker-state">{{ workerStatus() }}</span></header>
   @if (error()) { <p role="alert">Could not verify the worker configuration.</p> }
   @else if (!state()) { <p role="status">Reading worker configuration…</p> }
-  @else if (!deployment()?.available) { <span class="sr-only" role="status">Worker telemetry unavailable · configuration unverified</span> }
+  @else if (!deployment()?.available) { <p role="status">No active serving configuration confirmed for this model.
+    @if (deployment()?.observed_at; as observed) { Last worker heartbeat {{ observed | date:'dd MMM yyyy, HH:mm:ss Z' }}. }</p>
+    @if (configuredParameters().length) {
+      <details><summary>Configured settings on this worker</summary>
+        <dl class="parameters">@for (item of configuredParameters(); track item.key) { <div><dt>{{ item.label }}</dt><dd>{{ item.value }}</dd></div> }</dl>
+      </details>
+    }
+    @if (adoption(); as adopted) { <p>Last confirmed adoption: benchmark #{{ adopted.benchmark_id }}.</p> }
+  }
   @else if (deployment()?.maintenance) { <p role="status">Temporary benchmark settings · production confirmation pending</p> }
+  @else if (deployment()?.mixed_configuration) { <p>Active replicas report different settings. Throughput is shown per run in Analysis.</p> }
   @else {
     @if (result(); as row) {
       <div class="deployment-metrics">

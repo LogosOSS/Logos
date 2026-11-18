@@ -433,7 +433,7 @@ const SHOTS = [
     full: true,
     go: async (p, ids) => {
       await runView(p, ids, { nightly: false, open: ["Request workload"] });
-      await details(p, "Create a fixed dataset from FULL request logs");
+      await p.getByRole("combobox", { name: "Dataset", exact: true }).selectOption("recent");
     },
   },
   {

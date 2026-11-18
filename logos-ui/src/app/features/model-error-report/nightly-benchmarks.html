@@ -46,16 +46,26 @@
   <details>
     <summary>Request workload</summary>
     <label for="nightly-workload-{{ pairId }}">Dataset</label>
-    <select id="nightly-workload-{{ pairId }}" [(ngModel)]="selectedWorkload" (ngModelChange)="sourceEdited = true" [disabled]="!state() || sourceLocked">
+    <select id="nightly-workload-{{ pairId }}" [(ngModel)]="selectedWorkload" (ngModelChange)="sourceEdited = true; sourceNotice.set(null); error.set(null)" [disabled]="!state() || sourceLocked">
       <option [ngValue]="null">Hugging Face · GSM8K</option>
+      <option value="recent">Recent FULL request logs</option>
       @for (source of state()?.workloads ?? []; track source.id) {
         <option [value]="source.id">{{ datasetLabel(source) }} · {{ source.request_count }} requests · {{ source.provenance }}</option>
       }
     </select>
-    <button type="button" (click)="saveSource()" [disabled]="!sourceEdited || sourceLocked">Apply dataset</button>
+    @if (selectedWorkload === 'recent') {
+      <label>Time window
+        <select [(ngModel)]="lookbackDays" [disabled]="sourceLocked">
+          <option [ngValue]="1">Last 24 hours</option><option [ngValue]="3">Last 3 days</option><option [ngValue]="7">Last 7 days</option>
+        </select>
+      </label>
+      <p>Save up to 500 recent successful requests for this model, within 5 MB. Every run replays the same inputs.</p>
+    }
+    <button type="button" (click)="saveSource()" [disabled]="!sourceEdited || sourceLocked">{{ selectedWorkload === 'recent' ? 'Create and apply dataset' : 'Apply dataset' }}</button>
+    @if (sourceNotice()) { <p role="status">{{ sourceNotice() }}</p> }
     <p>Each configuration uses the same saved inputs. Changing the dataset starts a new reference series. The snapshot survives deletion of source logs.</p>
     <details>
-      <summary>Create a fixed dataset from FULL request logs</summary>
+      <summary>Select individual request IDs</summary>
       <label>Name <input [(ngModel)]="workloadName" maxlength="128" [disabled]="sourceLocked" /></label>
       <label>Request IDs <input [(ngModel)]="logIds" placeholder="3280, 3281, 3282" [disabled]="sourceLocked" /></label>
       <label>Provenance <select [(ngModel)]="provenance" [disabled]="sourceLocked"><option value="synthetic">Synthetic test requests</option><option value="production">Production requests</option></select></label>
@@ -110,7 +120,7 @@
   @if (error()) { <p role="alert">{{ error() }}</p> }
 </div>
 <div modal-footer class="nightly__actions">
-  <button type="button" (click)="review()" [disabled]="!state() || saving() || (!state()!.enabled && (!window || state()!.recovery_required))">
+  <button type="button" (click)="review()" [disabled]="!state() || saving() || (!state()!.enabled && (sourceEdited || !window || state()!.recovery_required))">
     <i [class]="state()?.enabled ? 'pi pi-pause' : 'pi pi-play'" aria-hidden="true"></i> {{ state()?.enabled ? 'Disable nightly runs…' : 'Enable nightly runs…' }}
   </button>
   <button type="button" (click)="managing.set(false)" [disabled]="saving()">Done</button>

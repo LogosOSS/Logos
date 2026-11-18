@@ -6,10 +6,12 @@ import { ModalFormComponent } from '../../shared/components/modal/modal-form/mod
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
 import { requestDatasetLabel } from './benchmark-configuration';
 
+interface SavedWorkload { id: string; name: string; request_count: number; provenance: string; created_at?: string; }
+
 export interface NightlyStatus {
   workload_policy?: { kind: 'selected' | 'recent_user'; username?: string; request_count?: number; ready?: boolean; error?: string | null };
   workload_id?: string | null;
-  workloads?: { id: string; name: string; request_count: number; provenance: string; created_at?: string }[];
+  workloads?: SavedWorkload[];
   optimizer?: { production_adoption?: { benchmark_id: number; baseline_id: number; baseline_throughput: number; throughput: number }; reference_id?: number; best_benchmark_id?: number; iterations?: number; nightly_session?: { date: string; rounds: number; successful_configurations: number } };
   max_maintenance_nodes?: number;
   window?: { start: string; end: string; benchmark_start_cutoff: string; timezone: string };
@@ -41,6 +43,8 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   readonly error = signal<string | null>(null);
   selectedWorkload: string | null = null;
   sourceEdited = false;
+  lookbackDays = 3;
+  readonly sourceNotice = signal<string | null>(null);
   workloadName = '';
   logIds = '';
   provenance = 'synthetic';
@@ -54,6 +58,10 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     this.state.set(null);
     this.selectedWorkload = null;
     this.sourceEdited = false;
+    this.lookbackDays = 3;
+    this.sourceNotice.set(null);
+    this.saving.set(false);
+    this.error.set(null);
     this.workloadName = '';
     this.logIds = '';
     this.confirming.set(false);
@@ -76,7 +84,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
       if (version !== this.version || this.destroyed) return;
       this.state.set(state);
       if (!this.sourceEdited) this.selectedWorkload = state.workload_id ?? null;
-      if (!this.confirming()) this.error.set(null);
+      if (this.error() === 'Could not load nightly benchmark status.') this.error.set(null);
     } catch {
       if (version !== this.version || this.destroyed) return;
       this.error.set('Could not load nightly benchmark status.');
@@ -114,18 +122,29 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     this.saving.set(true);
     clearTimeout(this.timer);
     try {
+      let workloadId = this.selectedWorkload;
+      let created: SavedWorkload | undefined;
+      if (workloadId === 'recent') {
+        created = await firstValueFrom(this.http.post<SavedWorkload>(
+          '/api/logosdb/model_benchmarks/workloads/create', { model_provider_id: this.pairId, lookback_days: this.lookbackDays }));
+        if (version !== this.version || this.destroyed) return;
+        workloadId = created.id;
+        this.selectedWorkload = created.id;
+        this.state.set({ ...current, workloads: [created, ...(current.workloads ?? []).filter(row => row.id !== workloadId)] });
+      }
       const state = await firstValueFrom(this.http.post<NightlyStatus>('/api/logosdb/model_benchmarks/nightly/configure', {
         model_provider_id: this.pairId, enabled: current.enabled, expected_enabled: current.enabled,
-        workload_id: this.selectedWorkload, expected_workload_id: current.workload_id ?? null,
+        workload_id: workloadId, expected_workload_id: current.workload_id ?? null,
       }));
       if (version !== this.version || this.destroyed) return;
-      this.state.set({ ...current, ...state });
+      this.state.set({ ...this.state()!, ...state });
+      this.sourceNotice.set(created ? `Dataset applied · ${created.request_count} requests` : 'Dataset applied.');
       this.sourceEdited = false;
       this.error.set(null);
       await this.refresh();
     } catch (error) {
       if (version === this.version && !this.destroyed) this.showError(error);
-    } finally { this.saving.set(false); }
+    } finally { if (version === this.version) this.saving.set(false); }
   }
 
   async createWorkload(): Promise<void> {
@@ -148,12 +167,12 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
       await this.refresh();
     } catch (error) {
       if (version === this.version && !this.destroyed) this.showError(error);
-    } finally { this.saving.set(false); }
+    } finally { if (version === this.version) this.saving.set(false); }
   }
 
   private showError(error: unknown): void {
-    this.error.set(error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
-      ? error.error.detail : 'Could not update the request workload. Refresh and try again.');
+    this.error.set(error instanceof HttpErrorResponse && (typeof error.error?.detail === 'string' || typeof error.error?.error === 'string')
+      ? (error.error.detail ?? error.error.error) : 'Could not update the request workload. Refresh and try again.');
     clearTimeout(this.timer);
     this.timer = setTimeout(() => void this.refresh(), 15000);
   }
@@ -172,7 +191,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   }
 
   review(): void {
-    if (!this.state() || this.saving() || (!this.state()!.enabled && !this.window)) return;
+    if (!this.state() || this.saving() || (!this.state()!.enabled && (this.sourceEdited || !this.window))) return;
     this.managing.set(false);
     this.expected = this.state()!.enabled;
     this.error.set(null);

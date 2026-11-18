@@ -151,12 +151,13 @@ Hugging Face runs retain the original production settings.
 Use **Request workload** to replace Hugging Face data for a nightly schedule.
 The manual benchmark editor remains independent.
 
-1. Collect successful requests with `FULL` logging.
-2. Open **Create a fixed dataset from FULL request logs**.
-3. Enter a name and 1–100 distinct request IDs for the same model.
-4. Select **Synthetic test requests** or **Production requests**.
-5. Select **Create dataset**.
-6. Check the selected dataset and select **Apply dataset**.
+1. Choose **Recent FULL request logs** in the **Dataset** menu.
+2. Choose **Last 24 hours**, **Last 3 days** (default), or **Last 7 days**.
+3. Select **Create and apply dataset**. Logos shows the number of requests saved. The window ends when you create the dataset.
+
+Logos selects the newest successful, replayable FULL requests for this model, up to 500 requests and 5 MB. Benchmark traffic is excluded. Every baseline and candidate uses the same saved inputs until you apply another dataset. An empty window leaves the current selection in place.
+
+For a hand-picked dataset, open **Select individual request IDs**, enter a name and 1–100 distinct IDs, choose the provenance, then select **Create dataset** and **Apply dataset**.
 
 The database stores an ordered copy of the inputs and inference settings.
 It excludes request headers, API keys, user identities and response bodies.

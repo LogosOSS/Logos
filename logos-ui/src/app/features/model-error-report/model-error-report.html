@@ -639,7 +639,7 @@
                   </select>
                 </label>
                 <label>Sample size
-                  <input #sampleSize aria-label="Sample size" aria-describedby="benchmark-sample-help" type="number" min="1" max="100" step="1" [disabled]="!!benchmarkSettings().workload_id"
+                  <input #sampleSize aria-label="Sample size" aria-describedby="benchmark-sample-help" type="number" min="1" [max]="benchmarkSettings().workload_id ? 500 : 100" step="1" [disabled]="!!benchmarkSettings().workload_id"
                     [value]="benchmarkSampleSize()" (input)="setBenchmarkSampleSize(sampleSize.value)"
                     (change)="sampleSize.value = benchmarkSampleSize().toString()" />
                   <small id="benchmark-sample-help">{{ benchmarkSettings().workload_id ? 'All saved requests per run' : '1–100 requests per run' }}</small>
@@ -664,7 +664,7 @@
                   </button>
                 }
                 <app-benchmark-settings-editor [pair]="pair"
-                  [settings]="benchmarkSettings()" (settingsChange)="benchmarkSettings.set($event)"
+                  [settings]="benchmarkSettings()" (settingsChange)="updateBenchmarkSettings($event)"
                   (validChange)="benchmarkSettingsValid.set($event)" (limitsChange)="benchmarkWorkerLimits.set($event)"
                   (sampleSizeChange)="benchmarkSampleSize.set($event)" />
               </section>
@@ -762,6 +762,18 @@
 
             <div class="performance-list">
 
+              @if (performanceLoading()) {
+                <p class="performance-message" role="status">Loading saved benchmark runs…</p>
+              } @else if (performanceError()) {
+                <div class="performance-message" role="alert"><p>Could not load saved benchmark runs.</p>
+                  <button type="button" class="benchmark-run-button" (click)="loadPerformance()">Retry</button>
+                </div>
+              } @else if (!benchmarkGroups().length) {
+                <div class="performance-message"><h3>No saved benchmark runs yet</h3>
+                  <p>Completed runs for this model appear here with their settings and measurements.</p>
+                  @if (benchmarkPairs().length) { <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()">Configure a benchmark</button> }
+                </div>
+              }
               @for (group of benchmarkGroups(); track group.modelProviderId) {
 
                 @if (group.selected; as benchmark) {

@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import text
+from starlette.concurrency import run_in_threadpool
 
 import logos.main as main
 from logos.benchmarks import nightly_store as store
@@ -11,7 +12,12 @@ from logos.benchmarks.guidellm_runner import extract_serving_configuration
 from logos.benchmarks.nightly import local_now, parameter_plan
 from logos.benchmarks.nightly_overview import overview
 from logos.dbutils.dbmanager import DBManager
-from logos.dbutils.dbrequest import BenchmarkWorkloadRequest, NightlyStatusRequest, NightlyUpdateRequest
+from logos.dbutils.dbrequest import (
+    BenchmarkWorkloadRequest,
+    NightlyStatusRequest,
+    NightlyUpdateRequest,
+    RecentBenchmarkWorkloadRequest,
+)
 from logos.maintenance_window import MaintenanceWindow, maintenance_node_limit
 from logos.routers.internal import _require_internal_secret
 
@@ -73,6 +79,8 @@ async def nightly_status(data: NightlyStatusRequest, request: Request):
         or result["recovery_required"]
         or result["status"] in {"preparing", "running", "recovery_required"},
     )
+    if result["deployment"]["configuration"] != current:
+        result["deployment"]["series_key"] = None
     result["selection"] = store.selection_summary(data.model_provider_id, result.get("workload_id"))
     result["window"] = MaintenanceWindow.from_env().describe()
     result["timezone"] = result["window"]["timezone"]
@@ -108,9 +116,13 @@ async def configure_nightly(data: NightlyUpdateRequest, request: Request):
 
 
 @router.post("/workloads")
-async def create_workload(data: BenchmarkWorkloadRequest, request: Request):
+async def create_workload(data: BenchmarkWorkloadRequest | RecentBenchmarkWorkloadRequest, request: Request):
     _require_internal_secret(request)
     try:
+        if isinstance(data, RecentBenchmarkWorkloadRequest):
+            return await run_in_threadpool(
+                workloads.create_recent, target_for(data.model_provider_id), data.lookback_days
+            )
         return workloads.create(data.log_ids, data.name, data.provenance)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

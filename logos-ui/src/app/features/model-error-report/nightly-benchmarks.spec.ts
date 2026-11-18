@@ -31,6 +31,39 @@ describe('Nightly benchmark confirmation', () => {
     expect(control.sourceEdited).toBe(false);
   });
 
+  it('freezes a three-day window and keeps the saved dataset available if applying it conflicts', async () => {
+    control.selectedWorkload = 'recent';
+    control.sourceEdited = true;
+    control.review();
+    expect(control.confirming()).toBe(false);
+    const operation = control.saveSource();
+    const create = http.expectOne('/api/logosdb/model_benchmarks/workloads/create');
+    expect(create.request.body).toEqual({ model_provider_id: 31, lookback_days: 3 });
+    const dataset = { id: 'a'.repeat(64), name: 'Recent requests', request_count: 350, provenance: 'production' };
+    create.flush(dataset);
+    await Promise.resolve();
+    const apply = http.expectOne('/api/logosdb/model_benchmarks/nightly/configure');
+    expect(apply.request.body).toMatchObject({ workload_id: dataset.id, expected_workload_id: null, enabled: false });
+    apply.flush({ detail: 'State changed' }, { status: 409, statusText: 'Conflict' });
+    await operation;
+    expect(control.error()).toBe('State changed');
+    expect(control.state()?.workloads).toEqual([dataset]);
+    expect(control.selectedWorkload).toBe(dataset.id);
+    expect(control.sourceEdited).toBe(true);
+  });
+
+  it('preserves the current selection when the window has no replayable requests', async () => {
+    control.selectedWorkload = 'recent';
+    control.sourceEdited = true;
+    const operation = control.saveSource();
+    http.expectOne('/api/logosdb/model_benchmarks/workloads/create').flush({ detail: 'No replayable requests' },
+      { status: 400, statusText: 'Bad Request' });
+    await operation;
+    http.expectNone('/api/logosdb/model_benchmarks/nightly/configure');
+    expect(control.error()).toBe('No replayable requests');
+    expect(control.state()?.enabled).toBe(false);
+  });
+
   it('does not replace a workload while worker recovery is pending', async () => {
     control.state.update(value => ({ ...value!, recovery_required: true }));
     await control.saveSource();

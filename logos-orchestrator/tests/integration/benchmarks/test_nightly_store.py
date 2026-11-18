@@ -72,6 +72,10 @@ def database(monkeypatch):
         workloads_migration = migration.with_name("068_benchmark_request_workloads.xml")
         for sql in ElementTree.parse(workloads_migration).findall("{*}changeSet/{*}sql"):
             connection.execute(text(sql.text))
+        for sql in ElementTree.parse(migration.with_name("078_benchmark_workload_size.xml")).findall(
+            "{*}changeSet/{*}sql"
+        ):
+            connection.execute(text(sql.text))
         for sql in ElementTree.parse(migration.with_name("069_nightly_request_sources.xml")).findall(
             "{*}changeSet/{*}sql"
         ):
@@ -123,6 +127,52 @@ def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(dat
     with pytest.raises(ValueError):
         workloads.create([7], "Missing", "synthetic")
     assert store.status(31)["workload_id"] == created["id"]
+
+
+def test_recent_workload_window_filters_and_freezes_hundreds_of_inputs(database, monkeypatch):
+    from importlib import import_module
+
+    from logos.benchmarks import workloads
+    from logos.benchmarks.configuration import BenchmarkRunSettings
+    from logos.dbutils.dbrequest import InternalBenchmarkRequest
+
+    engine, database_type = database
+    monkeypatch.setattr(import_module("logos.dbutils.dbmanager"), "DBManager", database_type)
+    target = {"model_id": 11, "model_name": "model-a"}
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+            INSERT INTO log_entry(id, model_id, privacy_level, result_status, input_payload,
+                                  timestamp_request, timestamp_response)
+            SELECT n, 11, 'FULL', 'success',
+                   '{"messages":[{"role":"user","content":"demo"}],"user":"private","headers":{"x":"private"}}'::jsonb,
+                   now() - interval '2 days', now() - interval '2 days'
+            FROM generate_series(1,510) n
+        """
+            )
+        )
+        connection.execute(text("UPDATE log_entry SET privacy_level='BASIC' WHERE id=510"))
+        connection.execute(text("UPDATE log_entry SET result_status='failure' WHERE id=509"))
+        connection.execute(text("UPDATE log_entry SET environment='model-provider-benchmark' WHERE id=508"))
+        connection.execute(text("UPDATE log_entry SET model_id=12 WHERE id=507"))
+        connection.execute(text("UPDATE log_entry SET input_payload='{}'::jsonb WHERE id=506"))
+        connection.execute(text("UPDATE log_entry SET timestamp_response=now() + interval '1 day' WHERE id=505"))
+    with pytest.raises(ValueError, match="No replayable"):
+        workloads.create_recent(target, 1)
+    created = workloads.create_recent(target, 3)
+    assert created["request_count"] == 500 and "requests" not in created
+    assert workloads.create_recent(target, 3) == created
+    for settings in [BenchmarkRunSettings, InternalBenchmarkRequest]:
+        args = {"model_provider_id": 31} if settings == InternalBenchmarkRequest else {}
+        assert settings(samples=500, workload_id=created["id"], **args).samples == 500
+        with pytest.raises(ValueError):
+            settings(samples=101, **args)
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM log_entry"))
+    saved = workloads.load(created["id"], 11)["requests"]
+    assert [row["source_log_id"] for row in saved] == list(range(504, 4, -1))
+    assert saved[0]["body"] == {"messages": [{"role": "user", "content": "demo"}]}
 
 
 async def test_completion_event_survives_failed_delivery_and_deduplicates_finish(database, monkeypatch):
@@ -386,12 +436,16 @@ def test_execution_lease_survives_maintenance_lock_release(database):
 def test_orphan_fencing_targets_only_its_nightly_jobs_and_preserves_manual_claim(database):
     engine, Database = database
     with engine.begin() as connection:
-        connection.execute(text("""
+        connection.execute(
+            text(
+                """
             INSERT INTO jobs(id, environment, status, request_payload) VALUES
             (7, 'model-provider-benchmark', 'running', '{"nightly": true, "model_provider_id": 31}'),
             (8, 'model-provider-benchmark', 'running', '{"nightly": false, "model_provider_id": 31}'),
             (9, 'model-provider-benchmark', 'running', '{"nightly": true, "model_provider_id": 32}')
-        """))
+        """
+            )
+        )
     assert store.recovery_jobs(31) == [7]
     assert store.has_active_benchmarks(excluding=[7])
     assert store.benchmark_requests_allowed(7)
@@ -639,9 +693,10 @@ def test_selection_diagnostics_keep_workloads_separate_and_explain_rejected_fast
 
 
 async def test_failed_adoption_alert_is_delivered_even_with_pending_worker_recovery(database, monkeypatch):
+    from importlib import import_module
     from unittest.mock import AsyncMock
 
-    from logos import notifications
+    notifications = import_module("logos.notifications")
 
     failure = {
         "status": "adoption_failed",
