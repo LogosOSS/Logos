@@ -497,75 +497,73 @@ describe('NodeModel', () => {
     });
   });
 
-  describe('removing the configuration', () => {
+  describe('answers that arrive late', () => {
     const page = (): NodeModel => fixture.componentInstance;
 
-    it('offers it for a model that has an entry, while the worker can check the list', async () => {
-      const root = await create();
-      expect(root.textContent).toContain('Remove configuration');
-      expect(root.querySelector('.btn-secondary--danger')).not.toBeNull();
-
-      TestBed.resetTestingModule();
-      service['getNodeInsights'].mockResolvedValue(insights([insight()], false));
-      expect((await create()).querySelector('.btn-secondary--danger')).toBeNull();
-
-      TestBed.resetTestingModule();
-      service['getNodeInsights'].mockResolvedValue(insights([insight({ row: false, configured: false })]));
-      service['getNodeConfig'].mockResolvedValue({ ...config, entries: [] });
-      expect((await create()).querySelector('.btn-secondary--danger')).toBeNull();
-    });
-
-    it('opens a confirmation and closes it again without saving', async () => {
-      const root = await create();
-
-      root.querySelector<HTMLButtonElement>('.btn-secondary--danger')!.click();
-      expect(page().removeOpen()).toBe(true);
-      page().closeRemove();
-
-      expect(page().removeOpen()).toBe(false);
-      expect(service['replaceNodeConfig']).not.toHaveBeenCalled();
-    });
-
-    it('saves the list without the model, keeps the calibration and says so', async () => {
-      const root = await create();
-      page().openRemove();
-      service['getNodeConfig'].mockResolvedValue({ ...config, revision: 4, entries: [] });
-
-      await page().confirmRemove();
-      await settle();
-
-      expect(service['replaceNodeConfig']).toHaveBeenCalledWith(4, 3, []);
-      expect(page().removeOpen()).toBe(false);
-      expect(root.textContent).toContain('Configuration removed');
-      expect(root.textContent).toContain('The model stays calibrated');
-    });
-
-    it('keeps the dialog open and shows why when the removal is refused', async () => {
+    it('keeps the newer data when an older request answers last', async () => {
       await create();
-      page().openRemove();
-      service['replaceNodeConfig'].mockRejectedValue({ status: 409, error: { error: 'Configuration changed meanwhile' } });
+      let slow: (value: unknown) => void = () => undefined;
+      service['getNodeConfig'].mockReturnValueOnce(new Promise((resolve) => (slow = resolve)));
+      const first = page().load();
+      service['getNodeConfig'].mockResolvedValueOnce({ ...config, revision: 9 });
+      await page().load();
 
-      await page().confirmRemove();
+      slow({ ...config, revision: 5 });
+      await first;
 
-      expect(page().removeOpen()).toBe(true);
-      expect(page().removeError()).toBe('Configuration changed meanwhile');
-      expect(page().removing()).toBe(false);
+      expect(page().config()?.revision).toBe(9);
+      expect(page().loading()).toBe(false);
     });
 
-    it('cannot be closed or repeated while it is running', async () => {
+    it('does not show the result of a save on the model opened meanwhile', async () => {
       await create();
+      page().startEdit();
       let finish: (value: unknown) => void = () => undefined;
       service['replaceNodeConfig'].mockReturnValue(new Promise((resolve) => (finish = resolve)));
-      page().openRemove();
 
-      const first = page().confirmRemove();
-      page().closeRemove();
-      void page().confirmRemove();
-
-      expect(page().removeOpen()).toBe(true);
-      expect(service['replaceNodeConfig']).toHaveBeenCalledTimes(1);
+      const saving = page().save();
+      query.next(convertToParamMap({ model: 'org/b' }));
+      await settle();
       finish({ provider_id: 4, config_revision: 4 });
-      await first;
+      await saving;
+      await settle();
+
+      expect(page().notice()).toBeNull();
+      expect(page().saving()).toBe(false);
+    });
+
+    it('does not show the failure of a save on the model opened meanwhile', async () => {
+      await create();
+      page().startEdit();
+      let fail: (reason: unknown) => void = () => undefined;
+      service['replaceNodeConfig'].mockReturnValue(new Promise((_, reject) => (fail = reject)));
+
+      const saving = page().save();
+      query.next(convertToParamMap({ model: 'org/b' }));
+      await settle();
+      fail({ status: 409, error: { error: 'Configuration changed meanwhile' } });
+      await saving;
+
+      expect(page().failure()).toBeNull();
+    });
+
+    it('does not say a calibration started on the model opened meanwhile', async () => {
+      await create();
+      page().modelName.set('org/a');
+      let finish: (value: unknown) => void = () => undefined;
+      service['calibrateModel'].mockReturnValue(new Promise((resolve) => (finish = resolve)));
+      service['getNodeInsights'].mockResolvedValue(
+        insights([insight({ calibration: { status: 'not_calibrated', reason: null, results: [] } })]),
+      );
+      await page().load();
+
+      const starting = page().calibrate();
+      query.next(convertToParamMap({ model: 'org/b' }));
+      await settle();
+      finish({ count: 1, message: 'started' });
+      await starting;
+
+      expect(page().notice()).toBeNull();
     });
   });
 
@@ -1086,18 +1084,6 @@ describe('NodeModel', () => {
       expect(page().editing()).toBe(false);
       expect(page().notice()!.title).toBe('Saved');
       expect(page().notice()!.text).toContain('could not load them again');
-    });
-
-    it('does not call a removal failed when only the reload afterwards failed', async () => {
-      await create();
-      service['getNodeInsights'].mockRejectedValue(new Error('down'));
-
-      page().openRemove();
-      await page().confirmRemove();
-
-      expect(page().removeError()).toBeNull();
-      expect(page().removeOpen()).toBe(false);
-      expect(page().notice()!.text).toContain('could not load the new state');
     });
 
     it('does not call a started calibration failed when the status cannot be read again', async () => {

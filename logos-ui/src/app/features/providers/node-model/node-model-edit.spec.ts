@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { CalibrationPair, CalibrationResult } from '../../../shared/models/node-config.model';
-import { contextCapacity, kvWindowGb, saveFailure, withPlacement, withoutEntry } from './node-model-edit';
+import { contextCapacity, kvWindowGb, saveFailure, withPlacement } from './node-model-edit';
 
 const result = (min: number | null, max: number | null): CalibrationResult => ({
   tp: 2,
@@ -87,16 +87,6 @@ describe('writing a placement', () => {
       capability: { tensor_parallel_size: 1, kv_cache_memory_bytes: '3G' },
       overrides: { max_model_len: 4096 },
     });
-  });
-});
-
-describe('removing an entry', () => {
-  it('leaves the others as they are', () => {
-    const a = { model_name: 'org/a', capability: {}, overrides: {} };
-    const b = { model_name: 'org/b', capability: {}, overrides: {} };
-
-    expect(withoutEntry([a, b], 'org/a')).toEqual([b]);
-    expect(withoutEntry([a], 'org/other')).toEqual([a]);
   });
 });
 

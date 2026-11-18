@@ -104,11 +104,6 @@ export function withSettings(entries: NodeConfigEntry[], model: string, advanced
     : [...entries, changed];
 }
 
-/** The list without the entry of one model. */
-export function withoutEntry(entries: NodeConfigEntry[], model: string): NodeConfigEntry[] {
-  return entries.filter((e) => e.model_name !== model);
-}
-
 /** What a failed save means for the editor, from the HTTP answer of Logos. */
 export function saveFailure(e: unknown): SaveFailure {
   const response = (e as { status?: number; error?: { error?: string; errors?: ErrorItem[] }; message?: string }) ?? {};

@@ -53,17 +53,6 @@
   &:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
 }
 
-// The outlined button of a destructive action; combined with .btn-secondary.
-.btn-secondary--danger {
-  border-color: rgb(var(--color-error));
-  color: rgb(var(--color-error));
-
-  &:hover:not(:disabled) {
-    background: rgb(var(--color-error) / var(--opacity-soft));
-    color: rgb(var(--color-error));
-  }
-}
-
 .btn-danger {
   display: inline-flex;
   align-items: center;

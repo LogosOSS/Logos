@@ -8,6 +8,7 @@ start.
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from pathlib import Path
@@ -74,20 +75,28 @@ def usable(key: str, value: Any) -> bool:
 def apply_node_settings(cfg: AppConfig, settings: dict[str, Any], revision: int) -> list[str]:
     """Make ``settings`` the worker's, keeping config.yml's value for any key they lack.
 
-    Returns the keys that changed a value. Values the worker cannot use are
-    logged and left as they are.
+    A key that Logos held before and no longer holds goes back to the value the
+    worker had before Logos set it, which is config.yml's. Returns the keys that
+    changed a value. Values the worker cannot use are logged and left as they are.
     """
+    baseline = cfg.logos.node_settings_baseline
     changed = []
     for key in SETTING_KEYS:
+        target = cfg.engines.vllm if key == "global_extra_args" else cfg.worker
         if key not in settings:
+            if key in baseline:
+                original = baseline.pop(key)
+                if getattr(target, key) != original:
+                    setattr(target, key, original)
+                    changed.append(key)
             continue
         value = settings[key]
         if not usable(key, value):
             logger.warning("[NodeSettings] Ignoring %s=%r: not a usable value", key, value)
             continue
-        target = cfg.engines.vllm if key == "global_extra_args" else cfg.worker
         new = [str(arg) for arg in value] if key == "global_extra_args" else value
         if getattr(target, key) != new:
+            baseline.setdefault(key, copy.deepcopy(getattr(target, key)))
             setattr(target, key, new)
             changed.append(key)
     cfg.logos.node_settings_revision = revision

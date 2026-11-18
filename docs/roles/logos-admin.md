@@ -436,7 +436,6 @@ The page has these parts:
   Select **N set** to open or close the list.
 - **Best benchmark**: the best result of the nightly benchmarks for this model.
   Select **Open all benchmarks** to see them all. The part is not shown if the model has no benchmark.
-- **Remove configuration**: see [Remove a configuration](#remove-a-configuration).
 
 If a comparable benchmark found a better placement, then the page shows the purple banner
 **Recommendation not in use**. It names the placement and how much faster it was.
@@ -511,15 +510,6 @@ if its calibration is outdated in the same way.
 
 The model is in the list as **Not calibrated** and **Not configured**.
 The dialog shows only models that the node does not list yet.
-
-### Remove a configuration
-
-1. Open the model page.
-2. Select **Remove configuration**.
-3. Read the dialog and select **Remove configuration**.
-
-The model stays calibrated. All its settings return to the default values.
-The worker unloads the model when it changes the lanes the next time.
 
 ### Node settings
 

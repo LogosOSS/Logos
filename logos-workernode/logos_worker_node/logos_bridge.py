@@ -1243,6 +1243,15 @@ class LogosBridgeClient:
             "restart_needed": sorted(changed & RESTART_KEYS),
         }
 
+    async def _apply_pending_node_state(self) -> None:
+        """Apply the configuration and settings that waited for a calibration, until none is left."""
+        while self._pending_node_config is not None or self._pending_node_settings is not None:
+            for apply in (self._apply_pending_node_config, self._apply_pending_node_settings):
+                try:
+                    await apply()
+                except Exception:  # noqa: BLE001
+                    logger.warning("[NodeConfig] The configuration that waited could not be applied", exc_info=True)
+
     async def _apply_pending_node_settings(self) -> None:
         config, self._pending_node_settings = self._pending_node_settings, None
         if config is not None and config["revision"] > self._app.state.config.logos.node_settings_revision:
@@ -2577,14 +2586,15 @@ class LogosBridgeClient:
                     lane_manager.mark_status_dirty()
                 except Exception:  # noqa: BLE001
                     pass
-            if self._active_calibration_session is session:
-                self._active_calibration_session = None
             logger.info("[Calibration] Session ended (%s)", terminal_event)
+            # The session counts as running until what waited is applied: a push that
+            # arrives meanwhile waits too and is taken by the loop, and no new session
+            # can start under a configuration that is half applied.
             try:
-                await self._apply_pending_node_config()
-                await self._apply_pending_node_settings()
-            except Exception:  # noqa: BLE001
-                logger.warning("[NodeConfig] The configuration that waited could not be applied", exc_info=True)
+                await self._apply_pending_node_state()
+            finally:
+                if self._active_calibration_session is session:
+                    self._active_calibration_session = None
 
     async def _maybe_convert_sharded_checkpoint(
         self,

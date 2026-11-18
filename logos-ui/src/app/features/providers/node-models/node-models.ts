@@ -54,15 +54,26 @@ export class NodeModels implements OnInit {
     void this.load();
   }
 
+  /** The latest request for the list; an answer to an older one is dropped. */
+  private loadToken = 0;
+
   async load(): Promise<void> {
+    const token = ++this.loadToken;
     this.loading.set(true);
     this.error.set(null);
     try {
-      this.insights.set(await this.service.getNodeInsights(this.providerId()));
+      const insights = await this.service.getNodeInsights(this.providerId());
+      if (token === this.loadToken) {
+        this.insights.set(insights);
+      }
     } catch (e) {
-      this.error.set(loadFailure(e, 'The models of this node could not be loaded.'));
+      if (token === this.loadToken) {
+        this.error.set(loadFailure(e, 'The models of this node could not be loaded.'));
+      }
     } finally {
-      this.loading.set(false);
+      if (token === this.loadToken) {
+        this.loading.set(false);
+      }
     }
   }
 
@@ -92,12 +103,13 @@ export class NodeModels implements OnInit {
     if (!model || this.connecting()) {
       return;
     }
+    const id = this.providerId();
     this.connecting.set(true);
     this.connectError.set(null);
     try {
-      const config = await this.service.getNodeConfig(this.providerId());
+      const config = await this.service.getNodeConfig(id);
       const entries = [...config.entries, { model_name: model, capability: {}, overrides: {} }];
-      await this.service.replaceNodeConfig(this.providerId(), config.revision, entries);
+      await this.service.replaceNodeConfig(id, config.revision, entries);
       this.connectOpen.set(false);
       await this.load();
     } catch (e) {

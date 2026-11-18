@@ -555,22 +555,6 @@
             }
           </section>
         }
-
-        @if (entry() && !editing() && workerOnline()) {
-          <section class="card card--row" aria-labelledby="rm-title">
-            <div>
-              <h2 id="rm-title">Remove configuration</h2>
-              <p class="sub">
-                The model stays calibrated and can be configured again later. The worker unloads it at the next lane
-                change.
-              </p>
-            </div>
-            <button class="btn-secondary btn-secondary--danger" type="button" (click)="openRemove()">
-              <i class="pi pi-trash" aria-hidden="true"></i>
-              Remove configuration
-            </button>
-          </section>
-        }
       </div>
 
       @if (insight()?.benchmark || editing()) {
@@ -643,21 +627,6 @@
     }
   }
 </div>
-
-<app-modal-confirm
-  [visible]="removeOpen()"
-  (visibleChange)="$event || closeRemove()"
-  title="Remove configuration?"
-  [message]="'The configuration of ' + modelName() + ' on ' + providerName() + ' will be removed, and all its settings return to their defaults. The model stays calibrated and can be configured again later.'"
-  confirmLabel="Remove configuration"
-  [loading]="removing()"
-  (confirmed)="confirmRemove()"
->
-  @if (removeError()) {
-    <app-error-message modal-error [message]="removeError()!" />
-  }
-</app-modal-confirm>
-
 <ng-template #row let-f>
   <div class="row" [class.row--wide]="f.kind === 'lines' || f.kind === 'gpus'">
     <div class="row-text">

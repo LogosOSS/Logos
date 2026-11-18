@@ -5281,6 +5281,47 @@ async def test_node_settings_wait_for_a_running_calibration_and_apply_after_it(t
 
 
 @pytest.mark.asyncio
+async def test_what_arrives_while_the_waiting_state_is_applied_is_applied_too(tmp_path):
+    client = _settings_client(tmp_path)
+    client._pending_node_settings = {"revision": 3, "yaml_imported": True, "settings": {"gpu_devices": "0"}}  # noqa: SLF001
+    original = client._apply_node_settings  # noqa: SLF001
+
+    async def _a_newer_push_lands_meanwhile(config):
+        if config["revision"] == 3:
+            client._pending_node_settings = {  # noqa: SLF001
+                "revision": 4,
+                "yaml_imported": True,
+                "settings": {"gpu_devices": "1"},
+            }
+        return await original(config)
+
+    client._apply_node_settings = _a_newer_push_lands_meanwhile  # noqa: SLF001
+
+    await client._apply_pending_node_state()  # noqa: SLF001
+
+    assert client._app.state.config.worker.gpu_devices == "1"  # noqa: SLF001
+    assert client._cfg.node_settings_revision == 4  # noqa: SLF001
+    assert client._pending_node_settings is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_failing_apply_of_waiting_state_does_not_keep_the_session_open_or_loop(tmp_path):
+    client = _settings_client(tmp_path)
+    client._pending_node_config = _central(9, _entry("org/a"))  # noqa: SLF001
+    client._pending_node_settings = {"revision": 3, "yaml_imported": True, "settings": {"gpu_devices": "0"}}  # noqa: SLF001
+
+    async def _boom(_config):
+        raise RuntimeError("no")
+
+    client._apply_node_config = _boom  # noqa: SLF001
+
+    await client._apply_pending_node_state()  # noqa: SLF001
+
+    assert client._pending_node_config is None  # noqa: SLF001
+    assert client._app.state.config.worker.gpu_devices == "0"  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_changed_global_flags_refresh_the_calibration_keys(tmp_path):
     client = _settings_client(tmp_path)
     refreshed = []

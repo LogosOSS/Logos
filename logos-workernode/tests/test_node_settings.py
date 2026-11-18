@@ -97,6 +97,35 @@ def test_a_key_the_document_lacks_keeps_the_yaml_value():
     assert cfg.worker.auto_reboot_on_stuck_gpu is False
 
 
+def test_a_key_removed_from_the_document_goes_back_to_the_yaml_value():
+    cfg = _cfg()
+    cfg.worker.gpu_devices = "0,1"
+    cfg.engines.vllm.global_extra_args = ["--yaml"]
+
+    assert apply_node_settings(cfg, {"gpu_devices": "none", "global_extra_args": ["--a"]}, 1) == [
+        "global_extra_args",
+        "gpu_devices",
+    ]
+    assert apply_node_settings(cfg, {"gpu_devices": "all"}, 2) == ["global_extra_args", "gpu_devices"]
+    assert cfg.engines.vllm.global_extra_args == ["--yaml"]
+    assert cfg.worker.gpu_devices == "all"
+
+    assert apply_node_settings(cfg, {}, 3) == ["gpu_devices"]
+    assert cfg.worker.gpu_devices == "0,1"
+    assert apply_node_settings(cfg, {}, 4) == []
+
+
+def test_the_first_value_logos_sets_is_the_one_that_comes_back():
+    cfg = _cfg()
+    cfg.worker.gpu_poll_interval = 11
+
+    apply_node_settings(cfg, {"gpu_poll_interval": 5}, 1)
+    apply_node_settings(cfg, {"gpu_poll_interval": 7}, 2)
+    apply_node_settings(cfg, {}, 3)
+
+    assert cfg.worker.gpu_poll_interval == 11
+
+
 def test_a_value_the_worker_cannot_use_is_skipped_not_fatal(caplog):
     cfg = _cfg()
 

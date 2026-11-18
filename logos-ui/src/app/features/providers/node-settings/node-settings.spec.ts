@@ -205,6 +205,21 @@ describe('NodeSettingsPage', () => {
     expect(root.textContent).toContain('when it connects');
   });
 
+  it('keeps the newer settings when an older request answers last', async () => {
+    await create();
+    let slow: (value: unknown) => void = () => undefined;
+    service['getNodeSettings'].mockReturnValueOnce(new Promise((resolve) => (slow = resolve)));
+    const first = page().load();
+    service['getNodeSettings'].mockResolvedValueOnce(stored({ gpu_devices: 'none' }, 9));
+    await page().load();
+
+    slow(stored({ gpu_devices: '0' }, 5));
+    await first;
+
+    expect(page().stored()?.revision).toBe(9);
+    expect(page().loading()).toBe(false);
+  });
+
   it('announces the new calibration when the global arguments change', async () => {
     const root = await create();
     page().setArgs('--safetensors-load-strategy=prefetch');

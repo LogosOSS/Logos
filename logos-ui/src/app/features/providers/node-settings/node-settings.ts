@@ -61,12 +61,23 @@ export class NodeSettingsPage implements OnInit {
 
   ngOnInit(): void {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
-      this.providerId.set(Number(params.get('providerId')));
+      const id = Number(params.get('providerId'));
+      if (id !== this.providerId()) {
+        // Another node: what still runs for the node left belongs to it, and so do its notices.
+        this.saving.set(false);
+        this.failure.set(null);
+        this.notice.set(null);
+      }
+      this.providerId.set(id);
       void this.load();
     });
   }
 
+  /** The latest request for the page data; an answer to an older one is dropped. */
+  private loadToken = 0;
+
   async load(): Promise<void> {
+    const token = ++this.loadToken;
     const id = this.providerId();
     if (id === null || Number.isNaN(id)) {
       this.loading.set(false);
@@ -81,15 +92,22 @@ export class NodeSettingsPage implements OnInit {
         this.service.getNodeInsights(id),
         this.service.getProviders(),
       ]);
+      if (token !== this.loadToken) {
+        return;
+      }
       this.stored.set(settings);
       this.gpus.set(insights.gpus);
       this.workerOnline.set(insights.worker.online);
       this.providerName.set(providers.find((p) => p.id === id)?.name ?? `Node ${id}`);
       this.draft.set(initialDraft(settings.settings));
     } catch (e) {
-      this.error.set(loadFailure(e, 'The settings of this node could not be loaded.'));
+      if (token === this.loadToken) {
+        this.error.set(loadFailure(e, 'The settings of this node could not be loaded.'));
+      }
     } finally {
-      this.loading.set(false);
+      if (token === this.loadToken) {
+        this.loading.set(false);
+      }
     }
   }
 
@@ -167,8 +185,13 @@ export class NodeSettingsPage implements OnInit {
     try {
       answer = await this.service.replaceNodeSettings(id, stored.revision, saved);
     } catch (e) {
-      this.failure.set(saveFailure(e));
-      this.saving.set(false);
+      if (id === this.providerId()) {
+        this.failure.set(saveFailure(e));
+        this.saving.set(false);
+      }
+      return;
+    }
+    if (id !== this.providerId()) {
       return;
     }
     // The document is stored. Read it again for the exact state; if that fails, the saved values stand.
@@ -177,6 +200,9 @@ export class NodeSettingsPage implements OnInit {
       fresh = await this.service.getNodeSettings(id);
     } catch {
       // Keep what was saved; the next save checks the revision again.
+    }
+    if (id !== this.providerId()) {
+      return;
     }
     const remeasure = remeasures(stored.settings, saved);
     this.stored.set(fresh);

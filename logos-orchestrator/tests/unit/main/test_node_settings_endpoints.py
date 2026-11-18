@@ -180,6 +180,15 @@ def test_a_setting_kept_as_imported_does_not_block_saving_another(env):
     assert status == 400
 
 
+def test_a_kept_value_is_checked_when_the_admin_edited_another_revision(env):
+    db, _ = env(_DB(new_revision=None))
+    db.stored = {"revision": 5, "yaml_imported": True, "settings": {"gpu_devices": "0, 1"}}
+
+    status, body = _body(_save({"gpu_devices": "0, 1"}, expected_revision=3))
+
+    assert status == 400 and body["errors"][0]["key"] == "gpu_devices"
+
+
 def test_a_refused_value_is_a_400_with_the_problems_by_key(env):
     db, registry = env()
 

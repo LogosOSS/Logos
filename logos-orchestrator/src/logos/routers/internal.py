@@ -7,7 +7,7 @@ import json
 import logging
 import secrets
 from dataclasses import asdict
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
@@ -1052,6 +1052,27 @@ async def internal_logosnode_node_config_insights(data: InternalNodeConfigReques
     return await asyncio.to_thread(_gather_insights, data.provider_id, config)
 
 
+def _why_not_calibrated(model: str, snapshot: Dict[str, Any], needing: List[str], skip_models: List[str]) -> str | None:
+    """Why one model cannot be calibrated now, in words for the admin; None when it can.
+
+    A model the worker would skip must not be reported as started: the session
+    would end at once and nothing would be measured.
+    """
+    configured = snapshot.get("configured_models") or snapshot.get("capabilities_models") or []
+    if model not in configured:
+        return f"{model} is not configured on this worker."
+    profiles = (snapshot.get("runtime") or {}).get("model_profiles")
+    profile = profiles.get(model) if isinstance(profiles, dict) else None
+    if isinstance(profile, dict) and profile.get("calibration_unsupported"):
+        detail = profile.get("calibration_unsupported_reason")
+        return f"Calibration is not supported for {model}" + (f": {detail}" if detail else ".")
+    if model in skip_models:
+        return f"{model} needs more memory than this node is known to have, so it cannot be calibrated here."
+    if model not in needing:
+        return f"{model} does not need calibration."
+    return None
+
+
 @router.post("/internal/logosnode/calibrate_uncalibrated", tags=["admin"])
 async def internal_logosnode_calibrate_uncalibrated(data: InternalCalibrateRequest, request: Request):
     """Calibrate uncalibrated models on a worker, called by Spring after JWT validation."""
@@ -1064,18 +1085,20 @@ async def internal_logosnode_calibrate_uncalibrated(data: InternalCalibrateReque
     if not snap.get("first_status_received"):
         return admin_error_response(503, "Worker has not sent its first status yet")
     models = _find_uncalibrated_models_on_provider(data.provider_id)
-    if data.model:
-        models = [name for name in models if name == data.model]
-    if not models:
-        message = f"{data.model} does not need calibration" if data.model else "No uncalibrated models on this worker"
-        return {"message": message, "count": 0, "models": []}
-    sleep_level = (
-        _main._calibration_orchestrator._config.sleep_level if _main._calibration_orchestrator is not None else 1
-    )
     skip_models = (
         sorted(_main._calibration_orchestrator._capacity_skip_models(data.provider_id))
         if _main._calibration_orchestrator is not None
         else []
+    )
+    if data.model:
+        reason = _why_not_calibrated(data.model, snap, models, skip_models)
+        if reason:
+            return {"message": reason, "count": 0, "models": []}
+        models = [data.model]
+    if not models:
+        return {"message": "No uncalibrated models on this worker", "count": 0, "models": []}
+    sleep_level = (
+        _main._calibration_orchestrator._config.sleep_level if _main._calibration_orchestrator is not None else 1
     )
     pname = _resolve_provider_name(data.provider_id)
     try:

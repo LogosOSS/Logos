@@ -1146,12 +1146,14 @@ async def save_node_settings(
 
     Only a value that differs from the stored one is checked: a value imported
     from config.yml as given must not keep the admin from changing another one.
+    The comparison is made only when the stored revision is the one the admin
+    edited; otherwise every value is checked and the write itself answers 409.
     The answer says which settings need a restart of the worker, once it applied them.
     """
     stored = await asyncio.to_thread(_load_node_settings, provider_id)
     if stored is None:
         return admin_error_response(404, f"Provider {provider_id} not found")
-    kept = stored["settings"]
+    kept = stored["settings"] if stored["revision"] == expected_revision else {}
     changed = {key: value for key, value in settings.items() if key not in kept or kept[key] != value}
     errors = settings_errors(changed)
     if errors:
