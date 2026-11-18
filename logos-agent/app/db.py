@@ -417,14 +417,10 @@ async def get_workspace(workspace_id: int) -> dict[str, Any] | None:
 async def enabled_coding_repositories() -> list[dict[str, Any]]:
     """Linked repositories whose teams opted into coding work."""
     async with sessionmaker()() as db:
-        rows = (
-            await db.execute(
-                text("""
+        rows = (await db.execute(text("""
             SELECT id, repo_url, repo_slug, branch, agent_instructions, verification_command
               FROM team_repositories WHERE agent_enabled = TRUE ORDER BY id
-        """)
-            )
-        ).mappings()
+        """))).mappings()
         return [dict(row) for row in rows]
 
 
@@ -1398,9 +1394,7 @@ async def sessions_awaiting_checks() -> list[dict[str, Any]]:
     and almost always empty.
     """
     async with sessionmaker()() as db:
-        rows = (
-            await db.execute(
-                text("""
+        rows = (await db.execute(text("""
                     SELECT id, workspace_id, task, model, branch_name, checks_sha,
                            trigger_kind, trigger_ref, reply_target, reaction_target,
                            priority, priority_reason, open_pull_request, finished_at,
@@ -1408,9 +1402,7 @@ async def sessions_awaiting_checks() -> list[dict[str, Any]]:
                       FROM agent_sessions
                      WHERE checks_watch = 'pending'
                      ORDER BY id
-                    """)
-            )
-        ).mappings()
+                    """))).mappings()
         return [dict(row) for row in rows]
 
 

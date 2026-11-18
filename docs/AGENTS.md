@@ -339,6 +339,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `team-detail-members.png` | same | `/teams/<id>` — **Members** | same |
 | `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys** | same |
 | `team-detail-repositories.png` | owner or `logos_admin` | `/teams/<id>` — **Repositories** | same |
+| `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled | `roles/app-admin.md#enable-the-coding-agent` |
 | `team-detail-workflows.png` | owner or `logos_admin` | `/teams/<id>` — **Workflows** | same |
 | `team-detail-models.png` | owner or `logos_admin` | `/teams/<id>` — **Models** | same |
 | `team-detail-activity.png` | owner or `logos_admin` | `/teams/<id>` — **Activity** | same |
