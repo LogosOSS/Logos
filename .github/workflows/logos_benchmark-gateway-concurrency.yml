@@ -194,6 +194,17 @@ jobs:
         run: docker compose -f docker-compose.dev.yaml -f benchmarks/gateway_concurrency/docker-compose.ci.yaml logs logos-webservice logos-db traefik logos-rate-gateway
         working-directory: .
 
+      - name: Collect gateway latency diagnostics
+        if: always()
+        run: |
+          mkdir -p benchmarks/gateway_concurrency/reports/ci/diagnostics
+          for cid in $(docker compose -f docker-compose.dev.yaml -f benchmarks/gateway_concurrency/docker-compose.ci.yaml ps -a -q logos-webservice); do
+            docker cp "$cid:/tmp/gateway-benchmark.jfr" "benchmarks/gateway_concurrency/reports/ci/diagnostics/$cid.jfr" || true
+          done
+          docker exec logos-db psql -U postgres -d logosdb -c "COPY (SELECT id,timestamp_request,timestamp_forwarding,timestamp_provider_call,timestamp_provider_response,timestamp_response,result_status FROM log_entry WHERE api_key_id=502 AND timestamp_provider_call IS NOT NULL ORDER BY id) TO STDOUT WITH CSV HEADER" > benchmarks/gateway_concurrency/reports/ci/diagnostics/budget-timestamps.csv
+          lscpu > benchmarks/gateway_concurrency/reports/ci/diagnostics/cpu.txt
+        working-directory: .
+
       - name: Upload benchmark report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
