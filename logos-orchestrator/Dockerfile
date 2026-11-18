@@ -1,13 +1,25 @@
 # ──────────────────────────────────────────────────────────
 # Stage 1: Builder – compile wheels and install dependencies
 # ──────────────────────────────────────────────────────────
-FROM python:3.13-slim AS builder
+FROM python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS builder
 
 WORKDIR /build/logos/logos-orchestrator
 
+# apt installs exact versions from a fixed Debian archive snapshot, so every
+# build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
+# digest together.
+ARG APT_SNAPSHOT=20261117T000000Z
+RUN sed -i -E \
+      -e "s#https?://deb\.debian\.org/debian-security/?#https://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}/#g" \
+      -e "s#https?://deb\.debian\.org/debian/?#https://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}/#g" \
+      /etc/apt/sources.list.d/debian.sources \
+  && ! grep -q deb.debian.org /etc/apt/sources.list.d/debian.sources
+
 # Install system packages needed for compiling C-extension wheels
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends gcc build-essential rustc cargo \
+RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update \
+  && apt-get install -y --no-install-recommends \
+       gcc=4:14.2.0-1 build-essential=12.12 \
+       rustc=1.85.1+dfsg1-1+deb13u1 cargo=1.85.1+dfsg1-1+deb13u1 \
   && rm -rf /var/lib/apt/lists/*
 
 # Install uv – a drop-in pip replacement written in Rust (10-100× faster)
@@ -51,7 +63,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ──────────────────────────────────────────────────────────
 # Stage 2: Runtime – slim image without compilers or build tools
 # ──────────────────────────────────────────────────────────
-FROM python:3.13-slim
+FROM python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 
 WORKDIR /app
 
@@ -60,9 +72,19 @@ ENV PYTHONPATH=/app/src
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# apt installs exact versions from a fixed Debian archive snapshot, so every
+# build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
+# digest together.
+ARG APT_SNAPSHOT=20261117T000000Z
+RUN sed -i -E \
+      -e "s#https?://deb\.debian\.org/debian-security/?#https://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}/#g" \
+      -e "s#https?://deb\.debian\.org/debian/?#https://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}/#g" \
+      /etc/apt/sources.list.d/debian.sources \
+  && ! grep -q deb.debian.org /etc/apt/sources.list.d/debian.sources
+
 # Only install runtime system dependencies (curl for health-checks)
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl \
+RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update \
+  && apt-get install -y --no-install-recommends curl=8.14.1-2+deb13u7 \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-built virtual-env from the builder stage

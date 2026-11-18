@@ -154,6 +154,7 @@ jobs:
             logos-workernode/Dockerfile \
             logos-workernode/.dockerignore \
             logos-workernode/requirements.txt \
+            logos-workernode/requirements.lock \
             logos-workernode/logos_worker_node \
             logos-workernode/tools \
             ':(exclude,glob)logos-workernode/tools/**/*.md' \
@@ -517,7 +518,6 @@ jobs:
       # one can look up. The image itself is the PR merged into main as of the
       # build, so there the version names the PR's commit, not the exact tree.
       build-args: |
-        BASE_IMAGE=ubuntu:24.04
         GIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
       meta-images: |
         ${{ format('{0}/logos/logos-workernode-vllm', vars.LOGOS_HARBOR_REGISTRY) }}
@@ -562,7 +562,6 @@ jobs:
       # one can look up. The image itself is the PR merged into main as of the
       # build, so there the version names the PR's commit, not the exact tree.
       build-args: |
-        BASE_IMAGE=ubuntu:24.04
         GIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
       meta-images: |
         ${{ github.actor == 'dependabot[bot]' && 'ghcr.io/logososs/logos-workernode-vllm' || format('{0}/logos/logos-workernode-vllm', vars.LOGOS_HARBOR_REGISTRY) }}
