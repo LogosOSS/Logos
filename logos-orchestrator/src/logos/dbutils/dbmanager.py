@@ -2069,9 +2069,9 @@ class DBManager:
                 SET calibration_key_hash = EXCLUDED.calibration_key_hash,
                     slice_gpu_count = COALESCE(EXCLUDED.slice_gpu_count, model_profiles.slice_gpu_count),
                     config_fingerprint = CASE WHEN CAST(:reports_fingerprints AS boolean)
-                                              THEN EXCLUDED.config_fingerprint
-                                              ELSE COALESCE(EXCLUDED.config_fingerprint, model_profiles.config_fingerprint)
-                                         END
+                        THEN EXCLUDED.config_fingerprint
+                        ELSE COALESCE(EXCLUDED.config_fingerprint, model_profiles.config_fingerprint)
+                    END
                 WHERE model_profiles.calibration_key_hash IS DISTINCT FROM EXCLUDED.calibration_key_hash
                    OR model_profiles.slice_gpu_count IS DISTINCT FROM
                       COALESCE(EXCLUDED.slice_gpu_count, model_profiles.slice_gpu_count)

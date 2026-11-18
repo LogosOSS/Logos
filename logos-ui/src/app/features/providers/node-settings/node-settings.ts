@@ -5,7 +5,7 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ProviderManagementService } from '../../../core/services/provider-management.service';
 import { ErrorMessageComponent } from '../../../shared/components/error-message/error-message';
 import { NodeGpuInsight, NodeSettings, NodeSettingsSaved, NodeSettingsValues } from '../../../shared/models/node-config.model';
-import { saveFailure, SaveFailure } from '../node-model/node-model-edit';
+import { loadFailure, saveFailure, SaveFailure } from '../node-model/node-model-edit';
 import {
   draftErrors,
   GpuMode,
@@ -24,7 +24,7 @@ import {
   standalone: true,
   imports: [ErrorMessageComponent, RouterLink],
   templateUrl: './node-settings.html',
-  styleUrl: '../node-model/node-model.scss',
+  styleUrl: '../node-page.scss',
   changeDetection: ChangeDetectionStrategy.Eager,
 })
 export class NodeSettingsPage implements OnInit {
@@ -87,8 +87,7 @@ export class NodeSettingsPage implements OnInit {
       this.providerName.set(providers.find((p) => p.id === id)?.name ?? `Node ${id}`);
       this.draft.set(initialDraft(settings.settings));
     } catch (e) {
-      const body = e as { error?: { error?: string }; message?: string } | null;
-      this.error.set(body?.error?.error || body?.message || 'The settings of this node could not be loaded.');
+      this.error.set(loadFailure(e, 'The settings of this node could not be loaded.'));
     } finally {
       this.loading.set(false);
     }

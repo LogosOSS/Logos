@@ -1,4 +1,5 @@
 import { CalibrationPair, CalibrationResult, NodeConfigEntry } from '../../../shared/models/node-config.model';
+import { errorDetail } from '../../../shared/utils/error-detail';
 import { AdvancedDraft, applyAdvanced } from './node-model-advanced';
 
 const CONTEXT_STEP = 1024;
@@ -124,4 +125,9 @@ export function saveFailure(e: unknown): SaveFailure {
     default:
       return { kind: 'other', message: text, items: [] };
   }
+}
+
+/** Why a page could not load: the message of the server, else the transport's, else the page's own wording. */
+export function loadFailure(e: unknown, fallback: string): string {
+  return errorDetail(e) || (e as { message?: string } | null)?.message || fallback;
 }

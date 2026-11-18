@@ -503,22 +503,22 @@ describe('NodeModel', () => {
     it('offers it for a model that has an entry, while the worker can check the list', async () => {
       const root = await create();
       expect(root.textContent).toContain('Remove configuration');
-      expect(root.querySelector('.btn-remove')).not.toBeNull();
+      expect(root.querySelector('.btn-secondary--danger')).not.toBeNull();
 
       TestBed.resetTestingModule();
       service['getNodeInsights'].mockResolvedValue(insights([insight()], false));
-      expect((await create()).querySelector('.btn-remove')).toBeNull();
+      expect((await create()).querySelector('.btn-secondary--danger')).toBeNull();
 
       TestBed.resetTestingModule();
       service['getNodeInsights'].mockResolvedValue(insights([insight({ row: false, configured: false })]));
       service['getNodeConfig'].mockResolvedValue({ ...config, entries: [] });
-      expect((await create()).querySelector('.btn-remove')).toBeNull();
+      expect((await create()).querySelector('.btn-secondary--danger')).toBeNull();
     });
 
     it('opens a confirmation and closes it again without saving', async () => {
       const root = await create();
 
-      root.querySelector<HTMLButtonElement>('.btn-remove')!.click();
+      root.querySelector<HTMLButtonElement>('.btn-secondary--danger')!.click();
       expect(page().removeOpen()).toBe(true);
       page().closeRemove();
 
@@ -964,7 +964,7 @@ describe('NodeModel', () => {
       expect(root.querySelector('#adv-kv_cache_dtype')).not.toBeNull();
       page().filter.set('nothing matches this');
       fixture.detectChanges();
-      expect(root.querySelectorAll('.arow').length).toBe(0);
+      expect(root.querySelectorAll('.row').length).toBe(0);
     });
 
     it('marks a set value and clears it with Use default', async () => {
@@ -973,8 +973,8 @@ describe('NodeModel', () => {
 
       expect(root.querySelectorAll('.set-dot').length).toBeGreaterThan(0);
       expect(page().isSet('min_context_fraction')).toBe(true);
-      (Array.from(root.querySelectorAll('.arow button.link')).find((b) =>
-        b.closest('.arow')!.textContent!.includes('Minimum context share'),
+      (Array.from(root.querySelectorAll('.row button.link')).find((b) =>
+        b.closest('.row')!.textContent!.includes('Minimum context share'),
       ) as HTMLButtonElement).click();
       fixture.detectChanges();
 
@@ -985,7 +985,7 @@ describe('NodeModel', () => {
 
     it('hides the reset link of a row without a value instead of removing it', async () => {
       const root = await open();
-      const rows = Array.from(root.querySelectorAll('.arow')).filter((r) => r.querySelector('button.link--reset'));
+      const rows = Array.from(root.querySelectorAll('.row')).filter((r) => r.querySelector('button.link--reset'));
 
       expect(rows.length).toBeGreaterThan(2);
       const hidden = rows.filter((r) => r.querySelector('button.link--hidden'));

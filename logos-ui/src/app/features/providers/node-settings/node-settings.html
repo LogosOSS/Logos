@@ -10,18 +10,18 @@
   <div class="head">
     <div>
       <h1 class="page-title">{{ providerName() || 'Node settings' }}</h1>
-      <p class="page-sub">Settings for the whole node. Settings of a single model are on its model page.</p>
+      <p class="page-subtitle">Settings for the whole node. Settings of a single model are on its model page.</p>
     </div>
   </div>
 
   @if (!loading() && !error()) {
     <div class="status-row">
       <div class="pill">
-        <span class="dot" [class]="'dot dot--' + (workerOnline() ? 'ok' : 'warn')" aria-hidden="true"></span>
+        <span [class]="'status-dot status-dot--' + (workerOnline() ? 'ok' : 'warn')" aria-hidden="true"></span>
         <div><small>Worker</small><b>{{ workerOnline() ? 'Online' : 'Offline' }}</b></div>
       </div>
       <div class="pill">
-        <span class="dot" [class]="'dot dot--' + (gpus().length > 0 ? 'ok' : 'gray')" aria-hidden="true"></span>
+        <span [class]="'status-dot status-dot--' + (gpus().length > 0 ? 'ok' : 'gray')" aria-hidden="true"></span>
         <div><small>GPUs</small><b>{{ gpuSummary() }}</b></div>
       </div>
     </div>

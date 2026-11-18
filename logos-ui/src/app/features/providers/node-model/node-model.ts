@@ -33,6 +33,7 @@ import {
   contextCapacity,
   ErrorItem,
   kvWindowGb,
+  loadFailure,
   Placement,
   saveFailure,
   SaveFailure,
@@ -57,7 +58,7 @@ import {
   standalone: true,
   imports: [ErrorMessageComponent, ModalConfirmComponent, NgTemplateOutlet, RouterLink],
   templateUrl: './node-model.html',
-  styleUrls: ['./node-model.scss', './node-model-form.scss'],
+  styleUrls: ['../node-page.scss', './node-model.scss'],
   changeDetection: ChangeDetectionStrategy.Eager,
 })
 export class NodeModel implements OnInit {
@@ -388,7 +389,7 @@ export class NodeModel implements OnInit {
       this.providerName.set(providers.find((p) => p.id === id)?.name ?? `Node ${id}`);
     } catch (e) {
       if (token === this.loadToken) {
-        this.error.set(this.messageOf(e));
+        this.error.set(loadFailure(e, 'This model could not be loaded.'));
       }
     } finally {
       if (token === this.loadToken) {
@@ -717,10 +718,5 @@ export class NodeModel implements OnInit {
     const [config, insights] = await Promise.all([this.service.getNodeConfig(id), this.service.getNodeInsights(id)]);
     this.config.set(config);
     this.insights.set(insights);
-  }
-
-  private messageOf(e: unknown): string {
-    const body = (e as { error?: { error?: string }; message?: string } | null) ?? null;
-    return body?.error?.error || body?.message || 'This model could not be loaded.';
   }
 }

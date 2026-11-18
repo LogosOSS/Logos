@@ -911,30 +911,6 @@ def _load_node_settings(provider_id: int) -> Dict[str, Any] | None:
         return db.get_node_settings(provider_id)
 
 
-async def _push_node_settings(provider_id: int) -> Dict[str, Any] | None:
-    """Send a node's stored settings to a worker that applies them; the worker's answer, None without one."""
-    if not _main._logosnode_registry.supports_action(provider_id, SYNC_NODE_SETTINGS_ACTION):
-        return None
-    try:
-        settings = await asyncio.to_thread(_load_node_settings, provider_id)
-        result = await _main._logosnode_registry.send_command(
-            provider_id, SYNC_NODE_SETTINGS_ACTION, params=settings, timeout_seconds=30
-        )
-        return result if isinstance(result, dict) else None
-    except Exception:
-        # The worker keeps its current settings until the next push.
-        logger.warning(
-            "Failed to push node settings to provider %s", _resolve_provider_name(provider_id), exc_info=True
-        )
-        return None
-
-
-def _schedule_node_settings_push(provider_id: int) -> None:
-    task = asyncio.create_task(_push_node_settings(provider_id))
-    _main._background_tasks.add(task)
-    task.add_done_callback(_main._background_tasks.discard)
-
-
 def _require_admin_user(logos_key: str) -> int:
     """The id of the Logos admin the key belongs to."""
     with DBManager() as db:
@@ -942,25 +918,43 @@ def _require_admin_user(logos_key: str) -> int:
         return int(db.get_user_by_api_key(logos_key)["id"])
 
 
-async def _push_node_config(provider_id: int) -> None:
-    """Send a node's stored configuration to a worker that applies it."""
-    if not _main._logosnode_registry.supports_action(provider_id, SYNC_NODE_CONFIG_ACTION):
-        return
+async def _push_stored(provider_id: int, action: str, load: Any, what: str) -> Dict[str, Any] | None:
+    """Send a node's stored ``what`` to a worker that applies it; the worker's answer, None without one."""
+    if not _main._logosnode_registry.supports_action(provider_id, action):
+        return None
     try:
-        config = await asyncio.to_thread(_load_node_config, provider_id)
-        await _main._logosnode_registry.send_command(
-            provider_id, SYNC_NODE_CONFIG_ACTION, params=config, timeout_seconds=30
-        )
+        params = await asyncio.to_thread(load, provider_id)
+        result = await _main._logosnode_registry.send_command(provider_id, action, params=params, timeout_seconds=30)
+        return result if isinstance(result, dict) else None
     except Exception:
-        # The worker keeps its current configuration until the next push.
-        logger.warning("Failed to push node config to provider %s", _resolve_provider_name(provider_id), exc_info=True)
+        # The worker keeps what it has until the next push.
+        logger.warning(
+            "Failed to push node %s to provider %s", what, _resolve_provider_name(provider_id), exc_info=True
+        )
+        return None
+
+
+async def _push_node_config(provider_id: int) -> Dict[str, Any] | None:
+    return await _push_stored(provider_id, SYNC_NODE_CONFIG_ACTION, _load_node_config, "config")
+
+
+async def _push_node_settings(provider_id: int) -> Dict[str, Any] | None:
+    return await _push_stored(provider_id, SYNC_NODE_SETTINGS_ACTION, _load_node_settings, "settings")
+
+
+def _schedule_push(push: Any, provider_id: int) -> None:
+    """Push in the background: the worker's answer arrives on the caller's socket."""
+    task = asyncio.create_task(push(provider_id))
+    _main._background_tasks.add(task)
+    task.add_done_callback(_main._background_tasks.discard)
 
 
 def _schedule_node_config_push(provider_id: int) -> None:
-    """Push in the background: the worker's answer arrives on the caller's socket."""
-    task = asyncio.create_task(_push_node_config(provider_id))
-    _main._background_tasks.add(task)
-    task.add_done_callback(_main._background_tasks.discard)
+    _schedule_push(_push_node_config, provider_id)
+
+
+def _schedule_node_settings_push(provider_id: int) -> None:
+    _schedule_push(_push_node_settings, provider_id)
 
 
 async def _worker_refusal(provider_id: int, rows: list[Dict[str, Any]]) -> JSONResponse | None:
@@ -1076,6 +1070,33 @@ async def logosnode_node_config_get(data: LogosNodeConfigGetRequest):
     return {"provider_id": data.provider_id, **config}
 
 
+def _stored_author(db: DBManager, user_id: int | None) -> int | None:
+    """The admin to store as author; one the database does not know is stored as none."""
+    return user_id if user_id is not None and db.user_exists(user_id) else None
+
+
+async def _replace_stored(provider_id: int, write: Any, current_revision: Any) -> tuple[str, int]:
+    """Run one revision-checked write in a transaction.
+
+    ``write`` returns the new revision, or None when the one the admin edited is
+    stale; ``current_revision`` then reads the revision that is stored. The outcome
+    is "missing", "stale" or "saved", with the revision that applies to it.
+    """
+
+    def _run() -> tuple[str, int]:
+        with DBManager() as db:
+            if db.get_provider(provider_id) is None:
+                return "missing", 0
+            revision = write(db)
+            if revision is None:
+                db.session.rollback()
+                return "stale", current_revision(db)
+            db.session.commit()
+            return "saved", revision
+
+    return await asyncio.to_thread(_run)
+
+
 async def save_node_config(
     provider_id: int,
     entries: list[Any],
@@ -1103,19 +1124,13 @@ async def save_node_config(
         if refusal is not None:
             return refusal
 
-    def _replace() -> tuple[str, int]:
-        with DBManager() as db:
-            if db.get_provider(provider_id) is None:
-                return "missing", 0
-            author = updated_by if updated_by is not None and db.user_exists(updated_by) else None
-            revision = db.replace_node_config(provider_id, rows, expected_revision, author, source, source_by_model)
-            if revision is None:
-                db.session.rollback()
-                return "stale", db.get_node_config(provider_id)["revision"]
-            db.session.commit()
-            return "saved", revision
-
-    outcome, revision = await asyncio.to_thread(_replace)
+    outcome, revision = await _replace_stored(
+        provider_id,
+        lambda db: db.replace_node_config(
+            provider_id, rows, expected_revision, _stored_author(db, updated_by), source, source_by_model
+        ),
+        lambda db: db.get_node_config(provider_id)["revision"],
+    )
     if outcome == "missing":
         return admin_error_response(404, f"Provider {provider_id} not found")
     if outcome == "stale":
@@ -1142,19 +1157,11 @@ async def save_node_settings(
     if errors:
         return admin_error_response(400, "; ".join(errors), settings_error_items(errors))
 
-    def _replace() -> tuple[str, int]:
-        with DBManager() as db:
-            if db.get_provider(provider_id) is None:
-                return "missing", 0
-            author = updated_by if updated_by is not None and db.user_exists(updated_by) else None
-            revision = db.replace_node_settings(provider_id, settings, expected_revision, author)
-            if revision is None:
-                db.session.rollback()
-                return "stale", db.get_node_settings(provider_id)["revision"]
-            db.session.commit()
-            return "saved", revision
-
-    outcome, revision = await asyncio.to_thread(_replace)
+    outcome, revision = await _replace_stored(
+        provider_id,
+        lambda db: db.replace_node_settings(provider_id, settings, expected_revision, _stored_author(db, updated_by)),
+        lambda db: db.get_node_settings(provider_id)["revision"],
+    )
     if outcome == "missing":
         return admin_error_response(404, f"Provider {provider_id} not found")
     if outcome == "stale":

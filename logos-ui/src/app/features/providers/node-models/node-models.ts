@@ -8,7 +8,7 @@ import { NodeInsights, NodeModelInsight } from '../../../shared/models/node-conf
 import { DataTableComponent } from '../../../shared/components/data-table/data-table';
 import { ModalFormComponent } from '../../../shared/components/modal/modal-form/modal-form';
 import { AppSelectOption, SelectComponent } from '../../../shared/components/select/select';
-import { saveFailure } from '../node-model/node-model-edit';
+import { loadFailure, saveFailure } from '../node-model/node-model-edit';
 import { ErrorMessageComponent } from '../../../shared/components/error-message/error-message';
 import { CalibrationLabel, calibrationLabel, hasTuning } from './node-model-status';
 
@@ -60,7 +60,7 @@ export class NodeModels implements OnInit {
     try {
       this.insights.set(await this.service.getNodeInsights(this.providerId()));
     } catch (e) {
-      this.error.set(this.messageOf(e));
+      this.error.set(loadFailure(e, 'The models of this node could not be loaded.'));
     } finally {
       this.loading.set(false);
     }
@@ -113,10 +113,5 @@ export class NodeModels implements OnInit {
 
   hasTuning(model: NodeModelInsight): boolean {
     return hasTuning(model);
-  }
-
-  private messageOf(e: unknown): string {
-    const body = (e as { error?: { error?: string }; message?: string } | null) ?? null;
-    return body?.error?.error || body?.message || 'The models of this node could not be loaded.';
   }
 }

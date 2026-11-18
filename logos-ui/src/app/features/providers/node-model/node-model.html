@@ -66,18 +66,18 @@
     <div class="status-row">
       @if (label(); as l) {
         <div class="pill">
-          <span class="dot" [class]="'dot dot--' + l.tone" aria-hidden="true"></span>
+          <span [class]="'status-dot status-dot--' + l.tone" aria-hidden="true"></span>
           <div><small>Calibration</small><b [attr.title]="l.title">{{ l.text }}</b></div>
         </div>
       }
       @if (measured()) {
         <div class="pill">
-          <span class="dot" [class]="'dot dot--' + (insight()?.configured ? 'ok' : 'gray')" aria-hidden="true"></span>
+          <span [class]="'status-dot status-dot--' + (insight()?.configured ? 'ok' : 'gray')" aria-hidden="true"></span>
           <div><small>Configuration</small><b>{{ insight()?.configured ? 'Configured' : 'Not configured' }}</b></div>
         </div>
       }
       <div class="pill">
-        <span class="dot" [class]="'dot dot--' + (workerOnline() ? 'ok' : 'warn')" aria-hidden="true"></span>
+        <span [class]="'status-dot status-dot--' + (workerOnline() ? 'ok' : 'warn')" aria-hidden="true"></span>
         <div><small>Worker</small><b>{{ workerOnline() ? 'Online' : 'Offline' }}</b></div>
       </div>
     </div>
@@ -153,7 +153,7 @@
     }
 
     @if (!workerOnline()) {
-      <div class="banner banner--warn" role="status">
+      <div class="banner" role="status">
         <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
         <div>
           <b>Worker offline</b>
@@ -163,7 +163,7 @@
     }
 
     @if (outdated() && !editing() && !calibrating()) {
-      <div class="banner banner--warn" role="status">
+      <div class="banner" role="status">
         <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
         <div>
           <b>Calibration outdated</b>
@@ -565,7 +565,7 @@
                 change.
               </p>
             </div>
-            <button class="btn-remove" type="button" (click)="openRemove()">
+            <button class="btn-secondary btn-secondary--danger" type="button" (click)="openRemove()">
               <i class="pi pi-trash" aria-hidden="true"></i>
               Remove configuration
             </button>
@@ -659,8 +659,8 @@
 </app-modal-confirm>
 
 <ng-template #row let-f>
-  <div class="arow" [class.arow--wide]="f.kind === 'lines' || f.kind === 'gpus'">
-    <div class="arow-text">
+  <div class="row" [class.row--wide]="f.kind === 'lines' || f.kind === 'gpus'">
+    <div class="row-text">
       <label class="label" [for]="'adv-' + f.key">
         {{ f.label }}
         @if (isSet(f.key)) {
@@ -670,7 +670,7 @@
       </label>
       <p class="hint">{{ f.help }}</p>
     </div>
-    <div class="arow-control">
+    <div class="row-control">
       @switch (f.kind) {
         @case ('tri') {
           <select class="num sel" [id]="'adv-' + f.key" [value]="adv()!.values[f.key]" (change)="setAdv(f.key, $any($event.target).value)">
@@ -747,7 +747,7 @@
       </button>
     </div>
     @if (advFieldError(f.key); as e) {
-      <p class="ferr arow-error" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
+      <p class="ferr row-error" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
     }
   </div>
 </ng-template>

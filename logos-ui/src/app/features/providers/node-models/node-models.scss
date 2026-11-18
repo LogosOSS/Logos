@@ -22,15 +22,6 @@
   font-weight: var(--font-weight-semibold);
 }
 
-.dot {
-  display: inline-block;
-  width: 9px;
-  height: 9px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: rgb(var(--color-success));
-}
-
 .worker-chip {
   display: inline-flex;
   align-items: center;
@@ -46,10 +37,6 @@
 
 .worker-chip--offline {
   background: rgb(var(--color-warning) / 0.16);
-
-  .dot {
-    background: rgb(var(--color-warning));
-  }
 }
 
 .status {
@@ -58,18 +45,6 @@
   gap: 8px;
   font-size: var(--font-size-md);
   color: rgb(var(--color-typography-0));
-}
-
-.status--gray .dot {
-  background: rgb(var(--color-typography-900));
-}
-
-.status--warn .dot {
-  background: rgb(var(--color-warning));
-}
-
-.status--err .dot {
-  background: rgb(var(--color-error));
 }
 
 .chevron {

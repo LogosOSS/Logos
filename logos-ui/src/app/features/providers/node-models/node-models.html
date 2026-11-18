@@ -8,7 +8,7 @@
     </span>
     <div class="head-actions">
       <span class="worker-chip" [class.worker-chip--offline]="!workerOnline()" role="status">
-        <span class="dot" aria-hidden="true"></span>
+        <span class="status-dot" [class.status-dot--warn]="!workerOnline()" aria-hidden="true"></span>
         {{ workerOnline() ? 'Worker online' : 'Worker offline' }}
       </span>
       <a class="btn-secondary btn-sm" [routerLink]="['/providers', providerId(), 'node-settings']">
@@ -53,13 +53,13 @@
           <div role="cell"><span class="provider-name">{{ model.model_name }}</span></div>
           <div role="cell" data-label="Calibration">
             @let label = calibrationLabel(model);
-            <span class="status" [class]="'status status--' + label.tone" [attr.title]="label.title">
-              <span class="dot" aria-hidden="true"></span>{{ label.text }}
+            <span class="status" [attr.title]="label.title">
+              <span [class]="'status-dot status-dot--' + label.tone" aria-hidden="true"></span>{{ label.text }}
             </span>
           </div>
           <div role="cell" data-label="Configured">
-            <span class="status" [class]="'status status--' + (model.configured ? 'ok' : 'gray')">
-              <span class="dot" aria-hidden="true"></span>{{ model.configured ? 'Configured' : 'Not configured' }}
+            <span class="status">
+              <span [class]="'status-dot status-dot--' + (model.configured ? 'ok' : 'gray')" aria-hidden="true"></span>{{ model.configured ? 'Configured' : 'Not configured' }}
             </span>
           </div>
           <div class="col-actions" role="cell">
