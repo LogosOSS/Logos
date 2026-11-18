@@ -419,14 +419,19 @@ The model page shows the configuration of one model on one worker node.
 
 The page has these parts:
 
-- **Configuration**: the number of GPUs for each instance (tensor parallel, TP),
-  the KV cache memory for each GPU and the maximum context length.
-- **Measured by calibration**: the base memory, the KV cache range, the context
-  limit and the load times that the last calibration found.
+- **Configuration**: the tile of the tensor parallel size (TP), the KV cache memory for each GPU
+  and the maximum context length. Each slider shows the measured range. A grey band marks what the
+  calibration measured. Hatching marks what it did not measure.
+- **Figures**: the GPU memory in use, the context capacity, the load times and, if a benchmark ran
+  this placement, its throughput and latencies.
 - **Advanced settings**: the settings of the model that are not part of the placement.
+  Select **N set** to open or close the list.
 - **Best benchmark**: the best result of the nightly benchmarks for this model.
-  The part is not shown if the model has no benchmark.
+  Select **Open all benchmarks** to see them all. The part is not shown if the model has no benchmark.
+- **Remove configuration**: see [Remove a configuration](#remove-a-configuration).
 
+If a comparable benchmark found a better placement, then the page shows the purple banner
+**Recommendation not in use**. It names the placement and how much faster it was.
 If the nightly tuning set the configuration, the page shows **Set by the nightly tuning**.
 If the worker is offline, the page shows a banner and you cannot edit the model.
 
@@ -437,12 +442,25 @@ You can edit a model that has a calibration. The worker must be online.
 1. Open the model page.
 2. Select **Edit configuration**. For a model without a placement, select **Configure model**.
 3. Select the number of GPUs. Only sizes that the calibration measured are available.
-4. Set the KV cache memory. You can use whole GB inside the measured range.
+4. Set the KV cache memory. Use whole GB inside the measured range.
 5. Set the maximum context length. The limit follows the chosen KV cache size.
 6. Change the fields in **Advanced settings** if necessary.
 7. Select **Save**.
 
 ![Editor of a model configuration](/img/roles/logos-admin-node-model-edit.png)
+
+The **Current configuration** card shows the stored values. It changes only after you save.
+The figures below the sliders follow your changes.
+
+If a comparable benchmark found a better placement, then the purple banner
+**Recommended by benchmark** shows it. Select **Use recommendation** to set the size, the
+KV cache memory and the context length. You can change them afterwards.
+
+**Advanced settings** has groups: **Placement**, **Engine** and, under **All engine settings**,
+**Memory and precision**, **Performance and stability**, **Serving** and **Arguments**.
+Type in **Filter settings** to find a setting by name or key. A dot marks a setting that has a value.
+Select **Use default** to remove the value of a setting. In **GPU devices**, select the GPUs that
+the model may use. If all GPUs are selected, then the model may use all of them.
 
 The save bar lists your changes. The worker checks all settings before Logos stores them.
 This takes a few seconds. The worker uses the new settings when it starts the lane the next time.

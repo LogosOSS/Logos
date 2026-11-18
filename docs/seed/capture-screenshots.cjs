@@ -16,6 +16,7 @@
  * Without arguments, shots marked `needs` are left out: the seed does not
  * create their example state, and the committed PNG stays in place.
  * OUT_DIR writes the PNGs to another folder instead of overwriting static/img/.
+ * CHROMIUM_PATH names a browser to use when Playwright does not find its own build.
  * LOGOS_SCREENSHOT_WIDTH overrides the viewport width for mobile PR screenshots.
  * The nightly shots change the schedule of llama-3.1-8b-instruct on Docs Local
  * Worker. Use only the isolated documentation stack.
@@ -372,7 +373,7 @@ const SHOTS = [
     full: true,
     go: async (p, ids) => {
       await p.goto(`${BASE}/providers/${ids.worker}/node-settings`);
-      await p.locator("#gpu-mode").waitFor();
+      await p.locator(".seg").waitFor();
       await p.addStyleTag({ content: ".savebar { position: static !important; }" });
     },
   },
@@ -642,7 +643,7 @@ const SHOTS = [
   // they run only when named on the command line.
   const selected = SHOTS.filter((s) => (ONLY.length ? ONLY.includes(s.file) : !s.needs));
   for (const s of SHOTS) if (!ONLY.length && s.needs) console.log("not selected", s.file, "- needs", s.needs);
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   let session = null;
   const failed = [];
   for (const shot of selected) {

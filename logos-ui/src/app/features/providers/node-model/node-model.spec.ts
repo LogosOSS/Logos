@@ -1147,4 +1147,15 @@ describe('NodeModel', () => {
       expect(page().loading()).toBe(false);
     });
   });
+
+  it('keeps a right column while editing even for a model without a benchmark', async () => {
+    const root = await create();
+    expect(root.querySelector('.grid--single')).not.toBeNull();
+
+    root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+    fixture.detectChanges();
+
+    expect(root.querySelector('.grid--single')).toBeNull();
+    expect(root.querySelector('[aria-labelledby="cur-title"]')).not.toBeNull();
+  });
 });
