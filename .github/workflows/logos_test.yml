@@ -35,19 +35,26 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.13"
+          python-version: "3.13.18"
 
       - name: Install uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # Same uv release as the images (ghcr.io/astral-sh/uv:0.13.6).
+          version: "0.13.6"
+
+      - name: Check the dependency locks
+        # Every lock derived from logos-workernode/requirements.txt (vLLM
+        # image, standalone worker, e2e) must match its inputs, including the
+        # vLLM pin in the Dockerfile; a stale lock fails here.
+        run: scripts/lock-requirements.sh --check
 
       - name: Install Dependencies
-        # Install the master logos package plus pytest-timeout, which the
-        # worker-node tests use via --timeout=30 below.
-        run: |
-          uv venv .venv
-          source .venv/bin/activate
-          uv pip install .
-          uv pip install "coverage[toml]==7.17.2" "pytest-timeout==2.4.0"
+        # Exactly the locked versions (uv.lock), including the dev extra with
+        # coverage and pytest-timeout, which the worker-node tests use via
+        # --timeout=30 below. pytest imports the orchestrator from src/
+        # (pythonpath in pyproject.toml), so the project is not installed.
+        run: uv sync --locked --extra dev --no-install-project --python 3.13
         working-directory: logos-orchestrator
 
       - name: Clean old coverage data
@@ -114,16 +121,17 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.13"
+          python-version: "3.13.18"
 
       - name: Install uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # Same uv release as the images (ghcr.io/astral-sh/uv:0.13.6).
+          version: "0.13.6"
 
       - name: Install dependencies
         run: |
-          uv venv .venv
-          uv pip install --python .venv/bin/python -e ".[dev]"
-          uv pip install --python .venv/bin/python "coverage[toml]==7.17.2"
+          uv sync --locked --extra dev --no-install-project --python 3.13
         working-directory: logos-node-manager
 
       - name: Run tests
@@ -150,15 +158,18 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.13"
+          python-version: "3.13.18"
 
       - name: Install uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # Same uv release as the images (ghcr.io/astral-sh/uv:0.13.6).
+          version: "0.13.6"
 
       - name: Install dependencies
         # Exactly the locked versions, from wheels only; the tests import the
         # application from the source tree, so the project is not installed.
-        run: uv sync --frozen --extra dev --no-install-project --no-build --python 3.13
+        run: uv sync --locked --extra dev --no-install-project --no-build --python 3.13
         working-directory: logos-agent
 
       - name: Run tests
@@ -182,9 +193,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Java
-        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
-          java-version: "25"
+          java-version: "25.0.5+8"
           distribution: "temurin"
           cache: "maven"
           cache-dependency-path: logos-webservice/pom.xml
@@ -254,9 +265,9 @@ jobs:
           path: logos-ui/coverage/logos-ui
 
       - name: Set up Java
-        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
-          java-version: "25"
+          java-version: "25.0.5+8"
           distribution: "temurin"
           cache: "maven"
           cache-dependency-path: logos-webservice/pom.xml
@@ -267,7 +278,7 @@ jobs:
         working-directory: logos-webservice
 
       - name: Run analysis
-        uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65 # v8.4.1
+        uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4 # v8.5.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:

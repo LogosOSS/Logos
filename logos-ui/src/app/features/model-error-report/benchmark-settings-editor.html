@@ -1,5 +1,5 @@
 <div class="settings-editor">
-  <h4>Next benchmark</h4>
+  <h4>Dataset and settings</h4>
   @if (pair()?.provider_type === 'logosnode') {
     <label>Input dataset
       <select aria-label="Input dataset" [ngModel]="settings().workload_id ?? ''" (ngModelChange)="selectWorkload($event)" [disabled]="workloadsLoading()">

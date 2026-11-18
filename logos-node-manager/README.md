@@ -337,7 +337,7 @@ For people who change the code:
 
 ```bash
 cd logos-node-manager
-uv venv .venv && uv pip install --python .venv/bin/python -e ".[dev]"
+uv sync --locked --extra dev --no-install-project --python 3.13
 .venv/bin/python -m pytest
 ```
 

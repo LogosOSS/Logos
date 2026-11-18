@@ -6,6 +6,7 @@ import re
 from typing import Any, Callable, Iterable, Mapping
 
 SYNC_NODE_CONFIG_ACTION = "sync_node_config"
+VALIDATE_NODE_CONFIG_ACTION = "validate_node_config"
 
 _KV_SIZE = re.compile(r"^\d+(\.\d+)?[KMG]?$", re.IGNORECASE)
 _GPU_DEVICES = re.compile(r"^(all|\d+(\s*,\s*\d+)*)?$", re.IGNORECASE)

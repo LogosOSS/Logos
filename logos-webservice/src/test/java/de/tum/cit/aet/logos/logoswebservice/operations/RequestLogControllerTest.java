@@ -40,6 +40,45 @@ class RequestLogControllerTest {
     @MockitoBean JwtDecoder jwtDecoder;
 
     @Test
+    void requestRouting_keepsRecordedValuesAndUsesActualDispatch() throws Exception {
+        jdbc.update("UPDATE log_entry SET classification_statistics = CAST(? AS jsonb) WHERE request_id = ?", """
+            {"routing_decision":{"candidates":[
+              {"model_id":5001,"provider_id":999999,"provider_type":"logosnode","state":"cold","queue_depth":2,"expected_wait_s":45},
+              {"model_id":5001,"provider_id":6001,"provider_type":"logosnode","state":"warm","queue_depth":2,"expected_wait_s":0.2}
+            ]}}
+            """, "req-aaa-111");
+        mvc.perform(post("/logosdb/request_routing").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"request_id\":\"req-aaa-111\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.selected_provider_id").value(6001))
+            .andExpect(jsonPath("$.candidates[0].provider_id").value(999999))
+            .andExpect(jsonPath("$.candidates[0].provider_name").value(org.hamcrest.Matchers.nullValue()))
+            .andExpect(jsonPath("$.candidates[0].state").value("cold"))
+            .andExpect(jsonPath("$.candidates[1].queue_depth").value(2))
+            .andExpect(jsonPath("$.candidates[1].expected_wait_s").value(0.2))
+            .andExpect(jsonPath("$.candidates[1].provider_name").isString());
+    }
+
+    @Test
+    void requestRouting_handlesLegacyRowsAndRequiresAdmin() throws Exception {
+        mvc.perform(post("/logosdb/request_routing").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"request_id\":\"req-aaa-111\"}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.candidates").isEmpty());
+        mvc.perform(post("/logosdb/request_routing").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"request_id\":\"unknown\"}"))
+            .andExpect(status().isNotFound());
+        mvc.perform(post("/logosdb/request_routing").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+            .andExpect(status().isBadRequest());
+        mvc.perform(post("/logosdb/request_routing").with(TestJwt.testUser())
+                .contentType("application/json").content("{\"request_id\":\"req-aaa-111\"}"))
+            .andExpect(status().isForbidden());
+        mvc.perform(post("/logosdb/request_routing")
+                .contentType("application/json").content("{\"request_id\":\"req-aaa-111\"}"))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void requestPayloads_returnsStoredJsonOnlyOnDemand() throws Exception {
         jdbc.update("UPDATE log_entry SET input_payload = CAST(? AS jsonb), response_payload = CAST(? AS jsonb) WHERE request_id = ?",
             "{\"messages\":[{\"content\":\"Hello\"}]}", "{\"answer\":\"Hi\"}", "req-aaa-111");

@@ -1,18 +1,18 @@
 @use './performance-disclosure' as disclosure;
-:host { display: block; width: 100%; margin-bottom: 1.5rem; }
+:host { display: block; width: 100%; }
 .nightly {
-  border-bottom: 1px solid rgb(var(--color-outline-200)); padding: 1.25rem 0;
-  color: rgb(var(--color-typography-700)); font-size: var(--model-detail-font-size, .875rem);
+  border-top: 1px solid rgb(var(--color-typography-100) / .12); padding: 20px 0;
+  color: rgb(var(--color-typography-700)); font-size: var(--model-detail-font-size, 1rem);
 }
 .nightly__heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .nightly__heading strong { color: rgb(var(--color-typography-0)); font-size: var(--model-detail-heading-size, 1rem); }
 .nightly__heading i { margin-right: .35rem; }
 .nightly__title { display: flex; flex-direction: column; align-items: flex-start; gap: .4rem; }
-.nightly__preview { margin: 1rem 0; padding: 1rem 0; border-top: 1px solid rgb(var(--color-outline-200)); border-bottom: 1px solid rgb(var(--color-outline-200)); }
+.nightly__preview { margin: 1rem 0; padding: 1rem 0; border-top: 1px solid rgb(var(--color-typography-100) / .12); border-bottom: 1px solid rgb(var(--color-typography-100) / .12); }
 .nightly__parameters { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; }
 .nightly__parameters b { margin-left: .4rem; font-weight: 500; color: rgb(var(--color-typography-0)); }
 p { margin: .4rem 0; line-height: 1.5; }
-button { padding: .6rem .85rem; border-radius: .5rem; border: 1px solid rgb(var(--color-outline-300)); background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-0)); font: inherit; font-weight: 600; cursor: pointer; }
+button { padding: .6rem .85rem; border-radius: .5rem; border: 1px solid rgb(var(--color-outline-300)); background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-0)); font: inherit; font-weight: 500; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
 [role="alert"] { color: rgb(var(--color-error)); }
 small { display: block; margin-top: .75rem; overflow-wrap: anywhere; }
@@ -24,8 +24,8 @@ li { margin: .5rem 0; overflow-wrap: anywhere; }
 
 .nightly__status {
   display: inline-flex; align-items: center; gap: .5rem;
-  padding: .35rem .65rem; border-radius: .5rem;
-  background: rgb(var(--color-surface-100)); color: rgb(var(--color-typography-500)); font-weight: 600;
+  padding: 0;
+  background: transparent; color: rgb(var(--color-typography-500)); font-weight: 500;
   i { margin: 0; }
   &.nightly__status--enabled { color: rgb(var(--color-typography-100)); background: transparent; }
   &.nightly__status--blocked { color: rgb(var(--color-warning)); background: rgb(var(--color-warning) / .12); }
@@ -38,12 +38,12 @@ li { margin: .5rem 0; overflow-wrap: anywhere; }
 .nightly__schedule dd { margin: 0; color: rgb(var(--color-typography-100)); }
 .nightly__steps { padding-left: 1.5rem; }
 .nightly__steps li { padding: .35rem 0; }
-.nightly__steps strong { color: rgb(var(--color-typography-100)); font-weight: 600; }
+.nightly__steps strong { color: rgb(var(--color-typography-100)); font-weight: 500; }
 .nightly__steps p { color: rgb(var(--color-typography-500)); }
-.nightly__initial { margin: 1rem 0; border-top: 1px solid rgb(var(--color-outline-200)); border-bottom: 1px solid rgb(var(--color-outline-200)); }
+.nightly__initial { margin: 1rem 0; border-top: 1px solid rgb(var(--color-typography-100) / .12); border-bottom: 1px solid rgb(var(--color-typography-100) / .12); }
 .nightly__table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; color: rgb(var(--color-typography-100)); font-variant-numeric: tabular-nums; }
-th, td { padding: .65rem .5rem; border-bottom: 1px solid rgb(var(--color-outline-200)); text-align: left; }
+th, td { padding: .65rem .5rem; border-bottom: 1px solid rgb(var(--color-typography-100) / .12); text-align: left; }
 th { font-weight: 500; }
 thead { color: rgb(var(--color-typography-500)); }
 summary { min-height: 44px; align-content: center; }
@@ -51,3 +51,12 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 @media (max-width: 600px) { .nightly__schedule > div { grid-template-columns: 1fr; gap: .25rem; } }
 
 .nightly details { @include disclosure.section; }
+
+.nightly__summary { margin: 8px 0 0; font-size: .875rem; color: rgb(var(--color-typography-500)); }
+.nightly__heading strong { font-size: 1rem; }
+.nightly__heading button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; }
+.nightly__heading button i { margin: 0; }
+.nightly-management { --model-detail-font-size: 1rem; --model-detail-heading-size: 1.25rem; font-size: 1rem; line-height: 1.5; }
+.nightly-management .nightly__preview { margin-top: 0; border-top: 0; padding-top: 0; }
+.nightly-management details { @include disclosure.section; }
+.nightly__actions { display: flex; flex-wrap: wrap; justify-content: space-between; width: 100%; gap: 12px; }

@@ -5,8 +5,8 @@
   min-width: 0;
   margin: 0;
   padding: var(--performance-panel-padding, 20px);
-  border: 1px solid rgb(var(--color-outline-200));
-  border-radius: 10px;
+  border: 1px solid rgb(var(--color-typography-100) / .12);
+  border-radius: 12px;
   background: rgb(var(--color-surface-0));
   color: rgb(var(--color-typography-100));
 }
