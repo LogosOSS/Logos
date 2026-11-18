@@ -9,7 +9,7 @@
     "test": "ng test",
     "e2e": "playwright test --config e2e/playwright.config.ts",
     "e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",
-    "e2e:install": "playwright install --with-deps chromium"
+    "e2e:install": "playwright install chromium"
   },
   "private": true,
   "packageManager": "npm@11.21.1",

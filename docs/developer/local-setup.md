@@ -81,14 +81,7 @@ letter in upper case. Thus `logos-dev` gives the team **Logos** and
 The orchestrator is the main Python service. It is an installable package in
 `logos-orchestrator/`. Use Python 3.13 and `uv`:
 
-```bash
-cd logos-orchestrator
-uv venv .venv --python 3.13
-source .venv/bin/activate
-uv pip install .
-```
-
-To install the exact versions from `uv.lock`, use this command:
+It installs the exact versions from `uv.lock`:
 
 ```bash
 cd logos-orchestrator
@@ -120,12 +113,20 @@ On Linux, `npm` can show `EACCES` permission errors. If this occurs, read the
 ## Pre-commit Hooks
 
 The pre-commit hooks do the same checks as the lint job in CI
-(`.github/workflows/logos_lint.yml`). Install the hooks once in each clone:
+(`.github/workflows/logos_lint.yml`). Every hook runs a tool from `PATH`, and
+`tools/pre-commit/requirements.lock` pins pre-commit and all of these tools to
+exact versions with hashes. Install them into a venv and the hooks once in
+each clone:
 
 ```bash
-pip install pre-commit
+uv venv .venv-pre-commit --python 3.13
+uv pip install --python .venv-pre-commit/bin/python --no-deps --require-hashes \
+  -r tools/pre-commit/requirements.lock
+source .venv-pre-commit/bin/activate
 pre-commit install
 ```
+
+Activate that venv before you commit, so Git's hook finds the tools.
 
 Git then runs the hooks before each commit. Before you submit changes, run
 all hooks on all files:

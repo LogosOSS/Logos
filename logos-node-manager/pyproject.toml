@@ -12,6 +12,8 @@ dependencies = []
 dev = [
     "pytest==9.1.1",
     "pytest-timeout==2.4.0",
+    # Coverage of the test run, imported by the SonarQube Cloud analysis.
+    "coverage[toml]==7.17.2",
 ]
 
 [project.scripts]
@@ -25,6 +27,9 @@ build-backend = "hatchling.build"
 packages = ["logos_node_manager"]
 
 [tool.pytest.ini_options]
+# The package is imported from the source tree; CI installs only the locked
+# dependencies, not the project itself.
+pythonpath = ["."]
 testpaths = ["tests"]
 timeout = 30
 

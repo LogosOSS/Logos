@@ -119,7 +119,7 @@ def _download_one_model(model_name: str, hf_home: str) -> None:
     Uses huggingface_hub.snapshot_download with HF_TOKEN from the environment.
     Imported lazily to keep worker startup cheap; huggingface_hub is a
     declared dependency (requirements.txt) because the isolated macOS worker
-    venv installs nothing beyond that file.
+    venv installs nothing beyond its lock (requirements-standalone.lock).
     """
     from huggingface_hub import snapshot_download
 

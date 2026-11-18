@@ -1,4 +1,11 @@
-fastapi==0.162.0
+# The worker's direct dependencies: the input of ../scripts/lock-requirements.sh,
+# never installed directly. Every install uses a lock built from it
+# (requirements.lock for the vLLM image, requirements-standalone.lock for the
+# macOS worker and CI, ../e2e/requirements.lock for the e2e suite). The image
+# lock resolves this file together with vLLM into one venv, so every pin must
+# satisfy vLLM's own requirements (e.g. its fastapi cap). Re-run the script
+# and commit the locks after any change here.
+fastapi==0.136.3
 uvicorn==0.54.0
 httpx==0.28.1
 pyyaml==6.0.3

@@ -265,7 +265,7 @@ $LAYERS
 EOF
 
 [ -d "$LOWER/payload" ] || die "The image contains no /payload directory — is $IMAGE the MLX worker image?"
-[ -f "$LOWER/payload/requirements.txt" ] || die "Extracted payload looks incomplete (requirements.txt missing)."
+[ -f "$LOWER/payload/requirements-standalone.lock" ] || die "Extracted payload looks incomplete (requirements-standalone.lock missing)."
 mv "$LOWER/payload/." "$STAGING/" 2>/dev/null || cp -R "$LOWER/payload/." "$STAGING/"
 log "Payload staged in $STAGING"
 
