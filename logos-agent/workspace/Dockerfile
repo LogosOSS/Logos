@@ -94,15 +94,26 @@ RUN curl --proto =https -fsSL https://packages.adoptium.net/artifactory/api/gpg/
   && apt-get install -y --no-install-recommends "temurin-${JDK_VERSION}-jdk=${JDK_PACKAGE_VERSION}" \
   && rm -rf /var/lib/apt/lists/*
 
-# GitHub CLI, from the official apt repository (which keeps old releases).
+# GitHub CLI, the release package of an exact version verified against its
+# SHA-256. The official apt repository only serves the newest release, so a
+# version pinned there stops resolving with the next gh release. Its only
+# dependency, git, is installed above. Bump GH_VERSION and both hashes together
+# (from the release's gh_<version>_checksums.txt).
 ARG GH_VERSION=2.104.0
-RUN curl --proto =https -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
-  && chmod a+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
-  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-      > /etc/apt/sources.list.d/github-cli.list \
-  && apt-get update && apt-get install -y --no-install-recommends "gh=${GH_VERSION}" \
-  && rm -rf /var/lib/apt/lists/*
+ARG GH_SHA256_AMD64=f90d578cbc4c3b067dfc4a1a540cef41faef64eebfb280b548ab32455977a21f
+ARG GH_SHA256_ARM64=95b0632a7e1b12761248b7266825b0eab0853cefb84a1e272d905acb6e436f6c
+RUN arch="$(dpkg --print-architecture)" \
+  && case "$arch" in \
+       amd64) sha256="$GH_SHA256_AMD64" ;; \
+       arm64) sha256="$GH_SHA256_ARM64" ;; \
+       *) echo "no pinned gh package for $arch" >&2; exit 1 ;; \
+     esac \
+  && curl --proto =https -fsSL -o /tmp/gh.deb \
+       "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.deb" \
+  && echo "${sha256}  /tmp/gh.deb" | sha256sum -c - \
+  && dpkg -i /tmp/gh.deb \
+  && rm /tmp/gh.deb \
+  && gh --version | grep -q "gh version ${GH_VERSION} "
 
 # uv, matching the pin used by the other Logos images.
 COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv
