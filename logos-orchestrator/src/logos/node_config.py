@@ -43,7 +43,20 @@ def conflicts(capability: Mapping[str, Any], overrides: Mapping[str, Any]) -> di
 
 
 _KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-\[\]]*$")
-_SUGGESTION = re.compile(r"\s*\(did you mean ([^?]+)\?\)\s*$")
+_HINT_START = "(did you mean "
+_HINT_END = "?)"
+
+
+def _split_suggestion(message: str) -> tuple[str, str | None]:
+    """The message without a closing "(did you mean x?)", and x; the message itself when it has none."""
+    text = message.rstrip()
+    start = text.rfind(_HINT_START)
+    if start == -1 or not text.endswith(_HINT_END):
+        return message, None
+    suggestion = text[start + len(_HINT_START) : -len(_HINT_END)]
+    if not suggestion or "?" in suggestion:
+        return message, None
+    return text[:start].rstrip(), suggestion
 
 
 def error_items(messages: Iterable[str], models: Iterable[str] = ()) -> list[dict[str, Any]]:
@@ -56,10 +69,7 @@ def error_items(messages: Iterable[str], models: Iterable[str] = ()) -> list[dic
     names = sorted({name for name in models if name}, key=len, reverse=True)
     items = []
     for message in messages:
-        suggestion = None
-        hint = _SUGGESTION.search(message)
-        if hint:
-            suggestion, message = hint.group(1), message[: hint.start()]
+        message, suggestion = _split_suggestion(message)
         model = next((name for name in names if message.startswith(f"{name}: ")), None)
         rest = message[len(model) + 2 :] if model is not None else message
         key = None

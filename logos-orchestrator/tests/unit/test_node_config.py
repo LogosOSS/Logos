@@ -79,6 +79,20 @@ def test_error_items_split_model_key_message_and_suggestion():
     assert items[3] == {"model": None, "key": None, "message": "model_name must not be blank", "suggestion": None}
 
 
+def test_a_closing_suggestion_is_split_off_only_when_it_is_well_formed():
+    from logos.node_config import _split_suggestion
+
+    assert _split_suggestion("a: b: unknown setting (did you mean max_model_len?)  ") == (
+        "a: b: unknown setting",
+        "max_model_len",
+    )
+    assert _split_suggestion("no hint here") == ("no hint here", None)
+    assert _split_suggestion("(did you mean ?)") == ("(did you mean ?)", None)
+    assert _split_suggestion("(did you mean a?b?)") == ("(did you mean a?b?)", None)
+    assert _split_suggestion("(did you mean x) and more") == ("(did you mean x) and more", None)
+    assert _split_suggestion(" " * 5000 + "(did you mean x") == (" " * 5000 + "(did you mean x", None)
+
+
 def test_error_items_take_only_a_submitted_name_for_the_model():
     from logos.node_config import error_items
 
