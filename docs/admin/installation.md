@@ -49,8 +49,8 @@ their roles. Do not use them in a production deployment.
 
 ## Production Deployment
 
-For production, use `docker-compose.yaml`. Every image is on the public mirror
-at `ghcr.io/logososs`. The compose file pulls from this mirror
+For production, use `docker-compose.yaml`. Logos publishes its images to
+public GHCR at `ghcr.io/logososs`. The compose file uses this registry
 by default. You do not need registry configuration or a login.
 Set `LOGOS_DB_PASSWORD` and `LOGOS_REDIS_PASSWORD` in `.env` first.
 Use separate random values.
@@ -60,10 +60,11 @@ Then start the services:
 docker compose --env-file .env up -d
 ```
 
-The mirror receives images from `main`, so it has one tag: `latest`. Version
-tags go to the deployment registry of the project, which is team-internal. To
-pull from that registry, or from your own mirror, set both variables in
-`.env` and log in one time:
+The `latest` tag follows `main`. Releases use version tags, and pull requests
+use `pr-<number>`. Set `IMAGE_TAG` in `.env` to select a published tag.
+PR images can be removed when the PR closes.
+To use your own registry, set both variables in `.env`.
+Log in if that registry requires credentials:
 
 ```bash
 REGISTRY=<registry-host>/<namespace>

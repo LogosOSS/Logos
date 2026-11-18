@@ -1,13 +1,13 @@
 # Logos Deployment
 
-Logos deployments use pull. The project publishes prebuilt images to its Harbor
-registry (`${LOGOS_HARBOR_REGISTRY}/logos`). The tag `latest` follows `main`.
-A pinned tag selects one specific build. Logos also mirrors builds of `main` to
-public GHCR. A self-hosted installation can therefore pull images without
-credentials (see the [installation guide](admin/installation.md)). Deployments
-use Harbor. A deployment is the compose file plus a `.env` file on each node. To
-update, run `docker compose pull` and `docker compose up -d`. The deploy workflows copy the compose file and `.env` to each selected node. A worker node needs no inbound port (see the
-[architecture overview](developer/architecture) for the subsystem breakdown).
+Logos publishes prebuilt images to public GitHub Container Registry (GHCR) at `ghcr.io/logososs`.
+The tag `latest` follows `main`. Releases use version tags.
+A deployment consists of a compose file and a `.env` file on each node.
+All deployment workflows use GHCR. No registry login is required.
+See the [installation guide](admin/installation.md) for a self-hosted installation.
+To update, run `docker compose pull` and `docker compose up -d`.
+The deploy workflows copy the compose file and `.env` to each selected node.
+A worker node needs no inbound port (see the [architecture overview](developer/architecture)).
 
 A deployment consists of:
 
@@ -79,28 +79,36 @@ PostgreSQL, Redis, nginx, and GPU worker images retain their existing startup us
 
 | Image | Contents |
 |---|---|
-| `logos` | orchestrator |
+| `logos-orchestrator` | orchestrator |
 | `logos-webservice` | Spring admin/statistics service and public inference gateway (`/v1`, `/openai`, `/jobs`) |
-| `logos-ui` | Angular frontend |
+| `logos-ui` | Angular web application |
 | `logos-db` | PostgreSQL 17 plus `pg_cron` |
 | `logos-rate-gateway` | per-IP rate limiting (nginx) |
 | `logos-agent`, `logos-agent-gateway`, `logos-agent-workspace` | the agent stack (only with the `agent` profile) |
 | `logos-workernode-vllm` | the worker node runtime (on the GPU host) |
-| `logos-workernode-mlx` | the Apple Silicon worker. Logos does not push this image to Harbor, and nobody runs it as a container (see the MLX section below) |
+| `logos-workernode-mlx` | files for the native Apple Silicon worker (see the MLX section below) |
+| `logos-node-manager` | worker deployment control plane |
 
-`REGISTRY` (default `ghcr.io/logososs`, the public mirror) and
-`IMAGE_TAG` (default `latest`) in the `.env` select the source. The deploy
-workflows write `${LOGOS_HARBOR_REGISTRY}/logos` and the deployed tag into the
-`.env` that they send. Every node therefore pulls from Harbor, and you log in
-once (`docker login`). The default is for installations that have no Harbor
-account.
+`REGISTRY` defaults to `ghcr.io/logososs`, and `IMAGE_TAG` defaults to `latest`.
+Deployment workflows write this registry and the selected tag into each node's `.env`.
+They ignore legacy registry variables. Remove unused `LOGOS_HARBOR_*` variables and secrets from GitHub environments after the migration.
 
-Only pushes to `main` write to the mirror. A pull request builds to Harbor only.
-There, the cleanup workflow prunes its `pr-<number>` tag. A release also
-publishes its version tag to Harbor. Nothing prunes a public package, so PR
-builds and release builds do not go to the mirror. When a package appears for the
-first time, check that it is public. A private package gives a 403 to a
-self-hosted installation. To fix this, use Package settings → Change visibility.
+All images use these tags in GHCR:
+
+- Pushes to `main` update `latest`.
+- Releases publish their version tag without changing `latest`.
+- Same-repository pull requests publish `pr-<number>`. Dependabot builds without publishing.
+
+When a PR closes, cleanup deletes versions whose only tag is that PR's tag.
+Versions with other tags remain available. Untagged manifests also remain because live image indexes can reference them.
+Cleanup uses trusted default-branch code and the workflow's `GITHUB_TOKEN`.
+The repository needs admin access to each package for version deletion.
+See [GitHub's container registry permissions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+When a package first appears, set **Package settings → Change visibility → Public**.
+New GHCR packages start private. Deployments cannot pull a private package without credentials.
+Check that every image required by a deployment has the selected tag before deploying.
+Existing tags in another registry are not copied automatically.
 
 ## Local development ports
 

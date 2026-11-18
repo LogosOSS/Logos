@@ -44,6 +44,10 @@ jobs:
           pip install --no-deps --require-hashes -r tools/pre-commit/requirements.lock
           pip check
 
+      - name: Test registry deployment configuration
+        run: |
+          python3 .github/scripts/tests/test_registry_workflows.py
+
       - name: Run pre-commit on logos
         # Top-level `files: '^logos/'` in .pre-commit-config.yaml
         # scopes every hook to the logos tree, so --all-files is safe.
