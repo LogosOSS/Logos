@@ -154,6 +154,7 @@ jobs:
             logos-workernode/Dockerfile \
             logos-workernode/.dockerignore \
             logos-workernode/requirements.txt \
+            logos-workernode/requirements.lock \
             logos-workernode/logos_worker_node \
             logos-workernode/tools \
             ':(exclude,glob)logos-workernode/tools/**/*.md' \

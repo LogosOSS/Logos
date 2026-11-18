@@ -598,8 +598,8 @@ sessions, live transcripts, screenshots, and pull-request links.
 ### Local development
 
 ```bash
-uv venv .venv && source .venv/bin/activate
-uv pip install -e '.[dev]'
+uv sync --locked --extra dev --no-install-project --python 3.13
+source .venv/bin/activate
 LOGOS_AGENT_DEV_MODE=1 LOGOS_AGENT_AUTH_DISABLED=1 \
   uvicorn app.main:app --reload --port 8082
 ```

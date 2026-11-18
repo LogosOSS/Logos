@@ -35,18 +35,14 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.13"
+          python-version: "3.13.18"
 
-      - name: Cache pre-commit envs
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-logos-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-          restore-keys: |
-            pre-commit-logos-${{ runner.os }}-
-
-      - name: Install pre-commit
-        run: pip install pre-commit==4.6.2
+      - name: Install pre-commit and the hook tools
+        # Every hook is `language: system`, so this locked set is all the
+        # hooks run; pre-commit builds no hook environments of its own.
+        run: |
+          pip install --no-deps --require-hashes -r tools/pre-commit/requirements.lock
+          pip check
 
       - name: Run pre-commit on logos
         # Top-level `files: '^logos/'` in .pre-commit-config.yaml

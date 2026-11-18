@@ -1,11 +1,16 @@
+# Input of scripts/lock-requirements.sh, never installed directly: install
+# requirements.lock with --no-deps --require-hashes.
 # benchmark_logos.py (Logos host)
 # SSH uses the system ssh binary — no Python SSH library.
 httpx==0.28.1
+# --logos-config capabilities filter
+pyyaml==6.0.3
 numpy==2.5.4
 matplotlib==3.11.2
 
 # prepare_benchmark.py only
 datasets==5.1.0
 
-# GPU nodes only (install there with: pip install nvidia-ml-py)
-# nvidia-ml-py>=12.0
+# Hardware energy counter on the GPU nodes (the remote poller falls back to
+# nvidia-smi without it). Pure Python, so it installs anywhere.
+nvidia-ml-py==13.615.71

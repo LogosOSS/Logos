@@ -52,7 +52,7 @@ WORKDIR /payload
 COPY logos_worker_node/ ./logos_worker_node/
 COPY tools/ ./tools/
 COPY scripts/ ./scripts/
-COPY requirements.txt ./requirements.txt
+COPY requirements-standalone.lock ./requirements-standalone.lock
 COPY config.example.mlx.yml ./config.example.mlx.yml
 COPY chat-templates/ ./chat-templates/
 
@@ -62,7 +62,7 @@ RUN chmod +x ./scripts/*.sh
 # COPY that silently matched nothing cannot ship a broken artifact.
 RUN test -f ./logos_worker_node/main.py \
     && test -f ./scripts/install-macos.sh \
-    && test -f ./requirements.txt
+    && test -f ./requirements-standalone.lock
 
 # The commit this payload was built from. bootstrap-macos.sh syncs the payload
 # into the install directory, so this travels with the code; an ENV would never
