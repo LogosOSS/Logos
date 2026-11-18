@@ -253,8 +253,7 @@ def create_recent(target, days):
     requests = []
     size = len(canonical({"model_id": model_id, "provenance": "production", "requests": []}).encode())
     with DBManager() as db:
-        query = text(
-            """
+        query = text("""
             SELECT id, input_payload FROM log_entry
             WHERE model_id = :model_id AND privacy_level = 'FULL' AND result_status = 'success'
               AND environment IS DISTINCT FROM 'model-provider-benchmark'
@@ -262,8 +261,7 @@ def create_recent(target, days):
               AND timestamp_response <= CURRENT_TIMESTAMP AND input_payload IS NOT NULL
               AND octet_length(input_payload::text) <= :max_bytes
             ORDER BY timestamp_request DESC, id DESC
-        """
-        ).execution_options(yield_per=10)
+        """).execution_options(yield_per=10)
         with db.session.execute(query, {"model_id": model_id, "days": days, "max_bytes": MAX_BYTES}) as rows:
             for row in rows.mappings():
                 try:

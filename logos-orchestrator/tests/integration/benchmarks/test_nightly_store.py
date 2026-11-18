@@ -140,18 +140,14 @@ def test_recent_workload_window_filters_and_freezes_hundreds_of_inputs(database,
     monkeypatch.setattr(import_module("logos.dbutils.dbmanager"), "DBManager", database_type)
     target = {"model_id": 11, "model_name": "model-a"}
     with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
+        connection.execute(text("""
             INSERT INTO log_entry(id, model_id, privacy_level, result_status, input_payload,
                                   timestamp_request, timestamp_response)
             SELECT n, 11, 'FULL', 'success',
                    '{"messages":[{"role":"user","content":"demo"}],"user":"private","headers":{"x":"private"}}'::jsonb,
                    now() - interval '2 days', now() - interval '2 days'
             FROM generate_series(1,510) n
-        """
-            )
-        )
+        """))
         connection.execute(text("UPDATE log_entry SET privacy_level='BASIC' WHERE id=510"))
         connection.execute(text("UPDATE log_entry SET result_status='failure' WHERE id=509"))
         connection.execute(text("UPDATE log_entry SET environment='model-provider-benchmark' WHERE id=508"))
@@ -436,16 +432,12 @@ def test_execution_lease_survives_maintenance_lock_release(database):
 def test_orphan_fencing_targets_only_its_nightly_jobs_and_preserves_manual_claim(database):
     engine, Database = database
     with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
+        connection.execute(text("""
             INSERT INTO jobs(id, environment, status, request_payload) VALUES
             (7, 'model-provider-benchmark', 'running', '{"nightly": true, "model_provider_id": 31}'),
             (8, 'model-provider-benchmark', 'running', '{"nightly": false, "model_provider_id": 31}'),
             (9, 'model-provider-benchmark', 'running', '{"nightly": true, "model_provider_id": 32}')
-        """
-            )
-        )
+        """))
     assert store.recovery_jobs(31) == [7]
     assert store.has_active_benchmarks(excluding=[7])
     assert store.benchmark_requests_allowed(7)
