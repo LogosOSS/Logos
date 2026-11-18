@@ -134,7 +134,15 @@ def test_reported_key_hashes_are_updated_in_one_statement():
         "key_hashes": ["H1", "H2"],
         "slice_counts": [2, None],
         "fingerprints": [None, "F2"],
+        "reports_fingerprints": True,
     }
+
+
+def test_a_worker_without_fingerprints_leaves_the_stored_ones_alone():
+    db = _db()
+    db.update_reported_calibration_keys(7, {"a": "H1"}, None, None)
+    _sql, params = db.session.execute.call_args.args
+    assert params["reports_fingerprints"] is False
 
 
 def test_no_reported_key_hashes_cost_no_round_trip():

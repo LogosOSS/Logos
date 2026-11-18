@@ -113,3 +113,14 @@ export interface NodeSettings {
   yaml_imported: boolean;
   settings: NodeSettingsValues;
 }
+
+/** The answer to saving settings: whether the worker took them and which ones need a restart. */
+export interface NodeSettingsSaved {
+  provider_id: number;
+  settings_revision: number;
+  /** False when the worker is offline or too old; it takes the settings when it connects. */
+  applied?: boolean;
+  /** The worker keeps them until its running calibration ends. */
+  deferred?: boolean;
+  restart_needed?: string[];
+}

@@ -4,7 +4,7 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { ProviderManagementService } from '../../../core/services/provider-management.service';
 import { ErrorMessageComponent } from '../../../shared/components/error-message/error-message';
-import { NodeGpuInsight, NodeSettings, NodeSettingsValues } from '../../../shared/models/node-config.model';
+import { NodeGpuInsight, NodeSettings, NodeSettingsSaved, NodeSettingsValues } from '../../../shared/models/node-config.model';
 import { saveFailure, SaveFailure } from '../node-model/node-model-edit';
 import {
   draftErrors,
@@ -164,16 +164,16 @@ export class NodeSettingsPage implements OnInit {
     this.saving.set(true);
     this.failure.set(null);
     const saved = this.current();
-    let revision: number;
+    let answer: NodeSettingsSaved;
     try {
-      revision = (await this.service.replaceNodeSettings(id, stored.revision, saved)).settings_revision;
+      answer = await this.service.replaceNodeSettings(id, stored.revision, saved);
     } catch (e) {
       this.failure.set(saveFailure(e));
       this.saving.set(false);
       return;
     }
     // The document is stored. Read it again for the exact state; if that fails, the saved values stand.
-    let fresh: NodeSettings = { ...stored, revision, settings: saved };
+    let fresh: NodeSettings = { ...stored, revision: answer.settings_revision, settings: saved };
     try {
       fresh = await this.service.getNodeSettings(id);
     } catch {
@@ -184,11 +184,23 @@ export class NodeSettingsPage implements OnInit {
     this.draft.set(initialDraft(fresh.settings));
     this.notice.set({
       title: 'Saved',
-      text:
-        (this.workerOnline() ? 'The worker applies the settings now.' : 'The worker applies them when it connects.') +
-        (remeasure ? ' Every model is measured again in the next calibration window.' : ''),
+      text: this.appliedText(answer) + (remeasure ? ' Every model is measured again in the next calibration window.' : ''),
     });
     this.saving.set(false);
+  }
+
+  /** What happened to the settings on the worker, as the answer of the save reports it. */
+  private appliedText(answer: NodeSettingsSaved): string {
+    if (answer.deferred) {
+      return 'The worker applies the settings when its running calibration ends.';
+    }
+    if (!answer.applied) {
+      return 'The worker applies the settings when it connects.';
+    }
+    const restart = answer.restart_needed ?? [];
+    return restart.length > 0
+      ? `The worker applies the settings now. ${restart.join(', ')} take effect at the next start of the worker.`
+      : 'The worker applies the settings now.';
   }
 
   /** After a conflict: take the newer document. */

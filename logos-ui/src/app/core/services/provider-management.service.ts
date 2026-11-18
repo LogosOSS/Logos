@@ -12,6 +12,7 @@ import {
   NodeConfigEntry,
   NodeInsights,
   NodeSettings,
+  NodeSettingsSaved,
   NodeSettingsValues,
 } from '../../shared/models/node-config.model';
 
@@ -112,9 +113,9 @@ export class ProviderManagementService {
     providerId: number,
     expectedRevision: number,
     settings: NodeSettingsValues,
-  ): Promise<{ provider_id: number; settings_revision: number }> {
+  ): Promise<NodeSettingsSaved> {
     return firstValueFrom(
-      this.http.post<{ provider_id: number; settings_revision: number }>('/api/logosdb/node_settings/replace', {
+      this.http.post<NodeSettingsSaved>('/api/logosdb/node_settings/replace', {
         provider_id: providerId,
         expected_revision: expectedRevision,
         settings,

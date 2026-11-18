@@ -51,8 +51,10 @@ class _DB:
     def get_provider(self, provider_id):
         return {"id": provider_id} if self.provider_exists else None
 
+    stored = _STORED
+
     def get_node_settings(self, provider_id):
-        return dict(_STORED)
+        return dict(self.stored)
 
     def replace_node_settings(self, provider_id, settings, expected_revision, updated_by):
         self.replaced.append((provider_id, settings, expected_revision, updated_by))
@@ -69,6 +71,7 @@ class _Registry:
     def __init__(self, supported=True, fail=False):
         self.supported = supported
         self.fail = fail
+        self.answer = {"ok": True}
         self.sent = []
 
     def supports_action(self, provider_id, action):
@@ -78,7 +81,7 @@ class _Registry:
         if self.fail:
             raise RuntimeError("socket closed")
         self.sent.append((provider_id, action, params))
-        return {"ok": True}
+        return self.answer
 
 
 @pytest.fixture
@@ -146,9 +149,35 @@ def test_a_valid_save_stores_the_settings_and_pushes_them(env):
 
     result = _save({"gpu_devices": "0", "gpu_poll_interval": 10})
 
-    assert result == {"provider_id": 7, "settings_revision": 4}
+    assert result == {
+        "provider_id": 7,
+        "settings_revision": 4,
+        "applied": False,
+        "deferred": False,
+        "restart_needed": [],
+    }
     assert db.replaced == [(7, {"gpu_devices": "0", "gpu_poll_interval": 10}, 3, 42)]
     assert registry.sent == [(7, SYNC_NODE_SETTINGS_ACTION, _STORED)]
+
+
+def test_the_answer_names_the_settings_that_need_a_restart(env):
+    _, registry = env()
+    registry.answer = {"ok": True, "applied": True, "revision": 4, "restart_needed": ["gpu_devices"]}
+
+    result = _save({"gpu_devices": "0"})
+
+    assert result["applied"] is True and result["restart_needed"] == ["gpu_devices"]
+
+
+def test_a_setting_kept_as_imported_does_not_block_saving_another(env):
+    db, _ = env()
+    db.stored = {"revision": 3, "yaml_imported": True, "settings": {"gpu_devices": "0, 1"}}
+
+    result = _save({"gpu_devices": "0, 1", "gpu_poll_interval": 10})
+
+    assert result["settings_revision"] == 4
+    status, _ = _body(_save({"gpu_devices": "0, 2", "gpu_poll_interval": 10}))
+    assert status == 400
 
 
 def test_a_refused_value_is_a_400_with_the_problems_by_key(env):
@@ -188,10 +217,11 @@ def test_an_author_the_database_does_not_know_is_not_stored(env):
 
 def test_the_worker_keeps_its_settings_when_the_push_fails_or_is_unsupported(env):
     _, failing = env(registry=_Registry(fail=True))
-    assert _save({"gpu_devices": "all"}) == {"provider_id": 7, "settings_revision": 4}
+    assert _save({"gpu_devices": "all"})["settings_revision"] == 4
+    assert _save({"gpu_devices": "all"})["applied"] is False
 
     _, old = env(registry=_Registry(supported=False))
-    assert _save({"gpu_devices": "all"}) == {"provider_id": 7, "settings_revision": 4}
+    assert _save({"gpu_devices": "all"})["settings_revision"] == 4
     assert old.sent == []
 
 

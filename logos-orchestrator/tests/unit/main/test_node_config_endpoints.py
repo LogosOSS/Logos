@@ -257,8 +257,10 @@ def test_the_worker_validates_the_models_before_they_are_stored(env):
 def test_what_the_worker_refuses_is_not_stored(env):
     # The registry raises a refusal instead of returning ok=False.
     db, registry = env()
-    registry.validate_error = LogosNodeCommandRejectedError("org/a: dtype: bad; org/b: x: bad")
-    status, body = _body(_replace())
+    registry.validate_error = LogosNodeCommandRejectedError(
+        "org/a: dtype: bad; org/b: x: bad", ["org/a: dtype: bad", "org/b: x: bad"]
+    )
+    status, body = _body(_replace([_entry("org/a"), _entry("org/b")]))
     assert status == 400
     assert body["error"] == "org/a: dtype: bad; org/b: x: bad"
     assert body["errors"] == [
@@ -266,6 +268,14 @@ def test_what_the_worker_refuses_is_not_stored(env):
         {"model": "org/b", "key": "x", "message": "bad", "suggestion": None},
     ]
     assert db.replaced == []
+
+
+def test_a_worker_that_sends_its_refusal_joined_is_still_split(env):
+    _, registry = env()
+    registry.validate_error = LogosNodeCommandRejectedError("org/a: dtype: bad; org/a: x: bad")
+    status, body = _body(_replace([_entry("org/a")]))
+    assert status == 400
+    assert [item["key"] for item in body["errors"]] == ["dtype", "x"]
 
 
 def test_a_misspelled_key_comes_back_with_its_suggestion_as_a_field_error(env):

@@ -237,7 +237,8 @@ export class NodeModel implements OnInit {
     const tp = Number(settings['tensor_parallel_size']);
     const kv = kvToGb(settings['kv_cache_memory_bytes']);
     const ctx = Number(settings['max_model_len']);
-    return tp === p.tp && kv === p.kvGb && (!ctx || ctx === p.ctx);
+    // Sizes come from text like "8G" and from a slider; compare to the precision either shows.
+    return tp === p.tp && kv !== null && Math.abs(kv - p.kvGb) < 0.05 && (!ctx || ctx === p.ctx);
   }
 
   // Editing

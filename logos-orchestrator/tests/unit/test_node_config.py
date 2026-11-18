@@ -65,7 +65,8 @@ def test_error_items_split_model_key_message_and_suggestion():
             "org/b: max_model_len: Input should be a valid integer: unable to parse",
             "org/c: listed twice",
             "model_name must not be blank",
-        ]
+        ],
+        ["org/a", "org/b", "org/c"],
     )
     assert items[0] == {
         "model": "org/a",
@@ -76,6 +77,14 @@ def test_error_items_split_model_key_message_and_suggestion():
     assert items[1]["key"] == "max_model_len" and items[1]["message"].endswith("unable to parse")
     assert items[2] == {"model": "org/c", "key": None, "message": "listed twice", "suggestion": None}
     assert items[3] == {"model": None, "key": None, "message": "model_name must not be blank", "suggestion": None}
+
+
+def test_error_items_take_only_a_submitted_name_for_the_model():
+    from logos.node_config import error_items
+
+    items = error_items(["Something broke: badly", "my: model: max_model_len: must be positive"], ["my: model"])
+    assert items[0] == {"model": None, "key": None, "message": "Something broke: badly", "suggestion": None}
+    assert items[1]["model"] == "my: model" and items[1]["key"] == "max_model_len"
 
 
 def test_kv_sizes_are_read_in_megabytes():
@@ -110,6 +119,16 @@ def test_a_calibration_covers_a_choice_inside_its_measured_range():
     assert not selection_covered(profile, 16384.0, None)
     assert not selection_covered(profile, 4096.0, 20000)
     assert selection_covered({}, 99999.0, 999999)
+
+
+def test_a_sweep_that_starts_above_the_chosen_cache_does_not_cover_a_context():
+    from logos.node_config import selection_covered
+
+    profile = {"kv_cache_to_max_model_len_pairs": [{"kv_mb": 4096.0, "max_model_len": 16384}]}
+
+    assert not selection_covered(profile, 2048.0, 4096)
+    assert selection_covered(profile, 2048.0, None)
+    assert selection_covered({"kv_cache_to_max_model_len_pairs": [{"kv_mb": 1.0, "max_model_len": 0}]}, 1.0, 4096)
 
 
 def test_a_shared_calibration_carries_its_fingerprint_and_every_measured_size():

@@ -42,22 +42,31 @@ def conflicts(capability: Mapping[str, Any], overrides: Mapping[str, Any]) -> di
     }
 
 
+_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-\[\]]*$")
 _SUGGESTION = re.compile(r"\s*\(did you mean ([^?]+)\?\)\s*$")
 
 
-def error_items(messages: Iterable[str]) -> list[dict[str, Any]]:
-    """Messages ("model: key: text") as model, key, message and suggestion."""
+def error_items(messages: Iterable[str], models: Iterable[str] = ()) -> list[dict[str, Any]]:
+    """Messages ("model: key: text") as model, key, message and suggestion.
+
+    ``models`` are the names of the submitted entries. A message starts with one
+    of them as its model, even when the name contains ": "; without a match the
+    text before the first ": " is not taken for a model.
+    """
+    names = sorted({name for name in models if name}, key=len, reverse=True)
     items = []
     for message in messages:
         suggestion = None
         hint = _SUGGESTION.search(message)
         if hint:
             suggestion, message = hint.group(1), message[: hint.start()]
-        parts = message.split(": ", 2)
-        model, key, text = (parts[0], parts[1], parts[2]) if len(parts) == 3 else (None, None, message)
-        if len(parts) == 2:
-            model, text = parts
-        items.append({"model": model, "key": key, "message": text, "suggestion": suggestion})
+        model = next((name for name in names if message.startswith(f"{name}: ")), None)
+        rest = message[len(model) + 2 :] if model is not None else message
+        key = None
+        parts = rest.split(": ", 1)
+        if len(parts) == 2 and model is not None and _KEY.match(parts[0]):
+            key, rest = parts
+        items.append({"model": model, "key": key, "message": rest, "suggestion": suggestion})
     return items
 
 
@@ -130,11 +139,14 @@ def selection_covered(profile: dict[str, Any], kv_mb: float | None, context: int
             return False
     pairs = profile.get("kv_cache_to_max_model_len_pairs")
     if context is not None and isinstance(pairs, list) and pairs:
+        sweep = [pair for pair in pairs if isinstance(pair, dict) and int(pair.get("max_model_len") or 0) > 0]
+        if not sweep:
+            return True
         reachable = [
-            int(pair.get("max_model_len") or 0)
-            for pair in pairs
-            if isinstance(pair, dict) and (kv_mb is None or float(pair.get("kv_mb") or 0) <= kv_mb + 1e-6)
+            int(pair["max_model_len"])
+            for pair in sweep
+            if kv_mb is None or float(pair.get("kv_mb") or 0) <= kv_mb + 1e-6
         ]
-        best = max(reachable, default=0)
-        return context <= best if best > 0 else True
+        # A KV cache below the smallest measured size reaches no measured context: the sweep cannot vouch for it.
+        return bool(reachable) and context <= max(reachable)
     return True

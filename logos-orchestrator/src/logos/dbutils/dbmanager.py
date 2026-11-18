@@ -2049,6 +2049,8 @@ class DBManager:
     ) -> None:
         """Record the calibration key, GPU count and configuration fingerprint of each model on the node.
 
+        A worker that reports fingerprints at all also clears the one of a model it
+        no longer has one for; a worker that predates them leaves them as they are.
         A model without a row gets an empty one, so a node that never ran the
         model can still be offered a shared calibration. The caller commits.
         """
@@ -2066,12 +2068,18 @@ class DBManager:
                 ON CONFLICT (provider_id, model_name) DO UPDATE
                 SET calibration_key_hash = EXCLUDED.calibration_key_hash,
                     slice_gpu_count = COALESCE(EXCLUDED.slice_gpu_count, model_profiles.slice_gpu_count),
-                    config_fingerprint = COALESCE(EXCLUDED.config_fingerprint, model_profiles.config_fingerprint)
+                    config_fingerprint = CASE WHEN CAST(:reports_fingerprints AS boolean)
+                                              THEN EXCLUDED.config_fingerprint
+                                              ELSE COALESCE(EXCLUDED.config_fingerprint, model_profiles.config_fingerprint)
+                                         END
                 WHERE model_profiles.calibration_key_hash IS DISTINCT FROM EXCLUDED.calibration_key_hash
                    OR model_profiles.slice_gpu_count IS DISTINCT FROM
                       COALESCE(EXCLUDED.slice_gpu_count, model_profiles.slice_gpu_count)
                    OR model_profiles.config_fingerprint IS DISTINCT FROM
-                      COALESCE(EXCLUDED.config_fingerprint, model_profiles.config_fingerprint)
+                      CASE WHEN CAST(:reports_fingerprints AS boolean)
+                           THEN EXCLUDED.config_fingerprint
+                           ELSE COALESCE(EXCLUDED.config_fingerprint, model_profiles.config_fingerprint)
+                      END
             """),
             {
                 "provider_id": provider_id,
@@ -2079,6 +2087,7 @@ class DBManager:
                 "key_hashes": list(key_hashes.values()),
                 "slice_counts": [_slice_gpu_count(counts.get(name)) for name in key_hashes],
                 "fingerprints": [(config_fingerprints or {}).get(name) for name in key_hashes],
+                "reports_fingerprints": bool(config_fingerprints),
             },
         )
 
@@ -2180,7 +2189,9 @@ class DBManager:
         A snapshot measured under the node's own configuration fingerprint comes
         first, then the newest. One whose measured range lies outside the KV
         cache size or context length the node is configured with is skipped.
-        The chosen snapshot is locked, so one invalidated meanwhile is never linked.
+        Every snapshot of the validity key is considered, not only the newest few: a
+        covering one further back must still be found. The chosen snapshot is locked,
+        so one invalidated meanwhile is never linked.
         """
         candidates = self.session.execute(
             text("""
@@ -2196,7 +2207,7 @@ class DBManager:
                 ORDER BY (CAST(:fingerprint AS text) IS NOT NULL
                           AND profile->>'config_fingerprint' = CAST(:fingerprint AS text)) DESC,
                          calibrated_at DESC
-                LIMIT 20
+                LIMIT 500
             """),
             {
                 "model_name": model_name,

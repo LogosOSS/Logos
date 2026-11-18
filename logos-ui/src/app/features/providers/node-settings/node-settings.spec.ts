@@ -56,7 +56,7 @@ describe('NodeSettingsPage', () => {
         models: [],
       }),
       getProviders: vi.fn().mockResolvedValue([{ id: 4, name: 'hochbruegge' }]),
-      replaceNodeSettings: vi.fn().mockResolvedValue({ provider_id: 4, settings_revision: 3 }),
+      replaceNodeSettings: vi.fn().mockResolvedValue({ provider_id: 4, settings_revision: 3, applied: true, restart_needed: [] }),
     };
   });
 
@@ -174,6 +174,35 @@ describe('NodeSettingsPage', () => {
     expect(root.textContent).not.toContain('measured again');
     expect(page().stored()?.revision).toBe(3);
     expect(page().dirty()).toBe(false);
+  });
+
+  it('says which settings wait for a restart, a running calibration or a connecting worker', async () => {
+    const root = await create();
+    page().setPoll('9');
+    fixture.detectChanges();
+    service['replaceNodeSettings'].mockResolvedValueOnce({
+      provider_id: 4,
+      settings_revision: 3,
+      applied: true,
+      restart_needed: ['gpu_poll_interval'],
+    });
+    saveButton(root).click();
+    await settle();
+    expect(root.textContent).toContain('gpu_poll_interval take effect at the next start');
+
+    page().setPoll('10');
+    fixture.detectChanges();
+    service['replaceNodeSettings'].mockResolvedValueOnce({ provider_id: 4, settings_revision: 4, deferred: true });
+    saveButton(root).click();
+    await settle();
+    expect(root.textContent).toContain('when its running calibration ends');
+
+    page().setPoll('11');
+    fixture.detectChanges();
+    service['replaceNodeSettings'].mockResolvedValueOnce({ provider_id: 4, settings_revision: 5, applied: false });
+    saveButton(root).click();
+    await settle();
+    expect(root.textContent).toContain('when it connects');
   });
 
   it('announces the new calibration when the global arguments change', async () => {
