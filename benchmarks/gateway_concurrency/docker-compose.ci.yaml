@@ -2,11 +2,6 @@
 # Keep PostgreSQL transaction and WAL settings intact while excluding the
 # hosted runner's shared block-device latency from the gateway regression gate.
 services:
-  logos-webservice:
-    environment:
-      JDK_JAVA_OPTIONS: "-XX:MaxRAMPercentage=80.0 -XX:StartFlightRecording=filename=/tmp/gateway-benchmark.jfr,settings=/app/gateway-benchmark.jfc,delay=6m,duration=6m,dumponexit=true"
-    volumes:
-      - ./benchmarks/gateway_concurrency/gateway-benchmark.jfc:/app/gateway-benchmark.jfc:ro
   logos-db:
     environment:
       PGDATA: /var/lib/postgresql/data/pgdata
