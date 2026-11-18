@@ -223,6 +223,8 @@ services:
       LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS: "${LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
       LOGOS_DOMAIN: "${LOGOS_DOMAIN:-localhost}"
       LOGOS_CAPACITY_PLANNER_ENABLED: "${LOGOS_CAPACITY_PLANNER_ENABLED:-true}"
+      # Read at startup; recreate the orchestrator after changing this value.
+      LOGOS_RESIDENCY_POLICY: "${LOGOS_RESIDENCY_POLICY:-simple}"
       # Seconds a vLLM lane may stay idle before the capacity planner puts it to
       # sleep (level 1). Waking a sleeping lane costs seconds on the next
       # request, so the default keeps lanes warm through ordinary pauses.

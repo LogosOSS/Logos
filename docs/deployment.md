@@ -62,6 +62,50 @@ Do not delete the volume to change its password.
 Redis uses `requirepass`. The web service and Redis health check use the same `LOGOS_REDIS_PASSWORD`.
 To change the Redis password, update `.env`, then recreate Redis and the web service together.
 
+## Residency policy
+
+`LOGOS_RESIDENCY_POLICY` selects the orchestrator policy. The default is `simple`.
+Missing, empty, and invalid values select `simple`. Invalid values produce a warning.
+
+| Value | Routing and residency |
+|---|---|
+| `simple` | Stable selection of ready deployments; oldest waiting request first for residency activation; idle lanes released by LRU. |
+| `demand` | ETTFT routing; demand-based residency, victim selection, and competitive activation gates; automatic drains of busy lanes. |
+| `lru` | ETTFT routing and demand-based residency; LRU victims; no competitive activation gates; automatic drains of busy lanes. |
+
+Simple prefers sleep to stop. It does not create speculative demand replicas or displace busy lanes.
+FIFO applies to residency activations. Existing request priorities within each model still apply.
+All policies retain GPU and host-RAM limits, locks, checks for active requests, minimum hold times, and failure cooldowns.
+
+The production and local development Compose files pass this variable to the orchestrator.
+Check host environment variables and additional Compose files for overrides before a policy change.
+The benchmark topology retains its explicit `E2E_RESIDENCY_POLICY` default of `demand`.
+The simulation workflow selects each policy explicitly.
+Deploy workflows copy GitHub configuration variables into `.env`.
+For these workflows, set `LOGOS_RESIDENCY_POLICY` in the matching GitHub environment to retain an explicit selection across deployments.
+
+The orchestrator reads the policy at startup. It does not reload the policy during operation.
+To return to Demand with production Compose:
+
+1. Set `LOGOS_RESIDENCY_POLICY=demand` in the core host's `.env` file.
+2. Remove or update any conflicting shell environment or Compose override.
+3. Recreate the orchestrator with the command below.
+4. Check the startup log for `residency_policy=demand` and complete a test inference request.
+
+```bash
+docker compose --env-file .env -f docker-compose.yaml up -d --no-deps --force-recreate logos-orchestrator
+docker compose -f docker-compose.yaml logs --since=5m logos-orchestrator
+```
+
+Use `lru` or `simple` instead of `demand` to select another policy.
+For local development, use `-f docker-compose.dev.yaml` in both commands.
+A plain `docker compose restart` does not apply changes to the container environment.
+When the planner is enabled, its startup log reports the selected policy.
+The internal `/logosdb/scheduler_state` response also reports `residency_policy`.
+
+The inspected benchmark favored Simple. This result does not establish that Simple performs best for all production workloads.
+The deployed production policy requires a separate check on the target host.
+
 ## Container privileges
 
 The orchestrator and web service images run as UID `10001`.
