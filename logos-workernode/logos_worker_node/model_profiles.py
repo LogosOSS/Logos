@@ -23,6 +23,7 @@ change back in its runtime status.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, fields
@@ -273,6 +274,78 @@ class ModelProfileRecord:
         return self.estimate_host_ram_mb()
 
 
+# Keys _apply_manual_overrides reads; a test keeps this set in step with it.
+PROFILE_OVERRIDE_KEYS = frozenset(
+    {
+        "base_residency_mb",
+        "sleeping_residual_mb",
+        "loaded_vram_mb",
+        "kv_budget_mb",
+        "min_kv_cache_mb",
+        "max_kv_cache_mb",
+        "kv_per_token_bytes",
+        "max_context_length",
+        "calibration_max_model_len",
+        "calibration_max_num_seqs",
+        "kv_cache_to_max_model_len_pairs",
+        "min_context_fraction",
+        "engine",
+        "tensor_parallel_size",
+        "host_ram_mb",
+        "host_ram_residual_mb",
+        "metal_capacity_floor_mb",
+    }
+)
+
+
+_FLOAT_OVERRIDES = (
+    "base_residency_mb",
+    "sleeping_residual_mb",
+    "loaded_vram_mb",
+    "kv_budget_mb",
+    "min_kv_cache_mb",
+    "max_kv_cache_mb",
+    "host_ram_mb",
+    "host_ram_residual_mb",
+    "min_context_fraction",
+)
+_INT_OVERRIDES = (
+    "kv_per_token_bytes",
+    "max_context_length",
+    "calibration_max_model_len",
+    "calibration_max_num_seqs",
+    "tensor_parallel_size",
+)
+
+
+def _convertible(convert: Any, value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(convert(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def profile_override_errors(overrides: dict[str, Any]) -> list[str]:
+    """Why a profile override value would fail where it is applied.
+
+    ``_apply_manual_overrides`` converts these at a lane start, and a value it
+    cannot convert stops that start, so it must not be stored.
+    """
+    errors = []
+    for key, value in overrides.items():
+        if key in _FLOAT_OVERRIDES and not _convertible(float, value):
+            errors.append(f"{key}: must be a number")
+        elif key in _INT_OVERRIDES and not _convertible(int, value):
+            errors.append(f"{key}: must be an integer")
+        elif key == "metal_capacity_floor_mb" and value is not None and not _convertible(float, value):
+            errors.append(f"{key}: must be a number or null")
+        elif key == "kv_cache_to_max_model_len_pairs" and not isinstance(value, list):
+            errors.append(f"{key}: must be a list")
+    return errors
+
+
 class ModelProfileRegistry:
     """Model VRAM profiles, held in memory and synced with Logos."""
 
@@ -285,7 +358,10 @@ class ModelProfileRegistry:
         # model -> (calibration key this node computes for it now, its hash)
         self._calibration_keys: dict[str, tuple[dict[str, Any], str]] = {}
         self._slice_gpu_counts: dict[str, int] = {}
+        # config.yml's model_profile_overrides never change; the ones Logos'
+        # node configuration owns are replaced as a whole when it changes.
         self._manual_overrides: dict[str, dict[str, Any]] = {}
+        self._config_overrides: dict[str, dict[str, Any]] = {}
         if model_profile_overrides:
             for model_name, ov in model_profile_overrides.items():
                 if isinstance(ov, dict):
@@ -353,11 +429,11 @@ class ModelProfileRegistry:
             for model_name, ov in overrides.items():
                 if not isinstance(ov, dict) or not ov:
                     continue
-                existing = self._manual_overrides.get(model_name)
+                existing = self._config_overrides.get(model_name)
                 if existing is not None:
                     existing.update(ov)
                 else:
-                    self._manual_overrides[model_name] = dict(ov)
+                    self._config_overrides[model_name] = dict(ov)
             for model_name in overrides:
                 profile = self._profiles.get(model_name)
                 if profile is not None:
@@ -368,10 +444,53 @@ class ModelProfileRegistry:
             ", ".join(sorted(overrides)),
         )
 
+    def _overrides_for(self, model_name: str) -> dict[str, Any]:
+        return {**self._manual_overrides.get(model_name, {}), **self._config_overrides.get(model_name, {})}
+
+    def overrides_removed_by(self, overrides: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+        """Profile keys that stop applying when ``overrides`` replace the config-owned set."""
+        with self._lock:
+            return self._removed_by(overrides)
+
+    def _removed_by(self, overrides: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+        removed = {}
+        for model_name, old in self._config_overrides.items():
+            gone = sorted(
+                set(old) - set(overrides.get(model_name, {})) - set(self._manual_overrides.get(model_name, {}))
+            )
+            if gone and model_name in self._profiles:
+                removed[model_name] = gone
+        return removed
+
+    def replace_config_overrides(
+        self, overrides: dict[str, dict[str, Any]], central: dict[str, Any] | None = None
+    ) -> None:
+        """Make ``overrides`` all that Logos' node configuration owns.
+
+        A key that disappeared stops applying, and its field takes the value
+        Logos stores beneath the override (``central``), or none when Logos has
+        none or could not be asked.
+        """
+        with self._lock:
+            removed = self._removed_by(overrides)
+            self._config_overrides = {str(m): dict(ov) for m, ov in overrides.items() if isinstance(ov, dict) and ov}
+            for model_name, keys in removed.items():
+                profile = self._profiles[model_name]
+                stored = (central or {}).get(model_name)
+                for key in keys:
+                    if key not in _RECORD_FIELDS:
+                        continue
+                    underlying = stored if isinstance(stored, dict) and key in stored else None
+                    setattr(profile, key, underlying[key] if underlying else None)
+                    if key == "base_residency_mb":
+                        profile.residency_source = underlying.get("residency_source") if underlying else None
+            for model_name, profile in self._profiles.items():
+                self._apply_manual_overrides(model_name, profile)
+
     def _apply_manual_overrides(self, model_name: str, profile: ModelProfileRecord) -> bool:
         """Apply operator-provided overrides from config.yml."""
-        overrides = self._manual_overrides.get(model_name)
-        if overrides is None:
+        overrides = self._overrides_for(model_name)
+        if not overrides:
             return False
 
         applied = []
@@ -817,7 +936,7 @@ class ModelProfileRegistry:
             # Read under the lock too — add_overrides also runs under it, and
             # reading this beforehand risks a stale empty dict racing a
             # just-added override, letting the HF value overwrite it below.
-            overrides = self._manual_overrides.get(model_name) or {}
+            overrides = self._overrides_for(model_name)
             profile = self._profiles.setdefault(model_name, ModelProfileRecord())
             changed = False
 
@@ -883,7 +1002,7 @@ class ModelProfileRegistry:
             return result
 
     def _overridden_fields(self, model_name: str) -> list[str]:
-        overrides = self._manual_overrides.get(model_name) or {}
+        overrides = self._overrides_for(model_name)
         return sorted(key for key in overrides if key in _RECORD_FIELDS)
 
     def set_calibration_keys(self, keys: dict[str, dict[str, Any]]) -> list[str]:

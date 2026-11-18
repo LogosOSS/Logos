@@ -21,7 +21,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from logos_worker_node.cache_planner import CacheCandidate, CachePlan, plan_cache_order
-from logos_worker_node.calibration import plans_from_config
 from logos_worker_node.config import get_state_dir, load_config
 from logos_worker_node.gpu import GpuMetricsCollector
 from logos_worker_node.gpu_watchdog import GpuWatchdog
@@ -31,6 +30,7 @@ from logos_worker_node.metal import MetalMetricsCollector, is_metal_backend
 from logos_worker_node.model_cache import ModelRamCache, _DisabledModelRamCache, create_model_cache
 from logos_worker_node.model_profiles import ModelProfileRegistry
 from logos_worker_node.models import HF_REDUNDANT_WEIGHT_PATTERNS, ProcessState, model_can_sleep
+from logos_worker_node.node_config import apply_node_config, entries_from_yaml_file, plans_from_app_config, yaml_drift
 from logos_worker_node.profile_fingerprint import node_calibration_keys, node_slice_gpu_counts
 from logos_worker_node.runtime import SERVICE_VERSION, _build_host_memory_summary, existing_volume_path
 
@@ -214,6 +214,51 @@ async def _prefetch_missing_models(missing: list[str], hf_home: str) -> None:
             logger.warning("Prefetch: failed to download %s", model_name, exc_info=True)
 
 
+async def _load_central_node_config(cfg: AppConfig, logos_bridge: LogosBridgeClient) -> None:
+    """Take the node's models from Logos instead of config.yml.
+
+    On the first start Logos holds nothing yet, so the worker hands it the
+    models of config.yml once and reads them back. It waits for Logos rather
+    than starting with models Logos may have changed.
+    """
+    config_path = LogosBridgeClient.resolve_config_path()
+    from_yaml = entries_from_yaml_file(config_path) if config_path.exists() else []
+    if not (cfg.logos and cfg.logos.enabled):
+        cfg.logos.node_entries = from_yaml
+        return
+
+    delay = 5.0
+    while True:
+        try:
+            central = await logos_bridge.fetch_node_config()
+            if not central["yaml_imported"] and not central["entries"]:
+                for warning in await logos_bridge.import_node_config(from_yaml):
+                    logger.warning("Importing config.yml: %s", warning)
+                central = await logos_bridge.fetch_node_config()
+            break
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Waiting for the model configuration from Logos (%s); retrying in %.0fs", exc, delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60.0)
+    apply_node_config(cfg, central["entries"], central["revision"])
+    logger.info("Loaded %d model(s) from Logos (revision %d)", len(central["entries"]), central["revision"])
+    drift = yaml_drift(from_yaml, central["entries"])
+    if drift:
+        logger.warning("config.yml differs from what Logos stores; Logos wins: %s", "; ".join(drift))
+
+
+def _prepare_added_models(app: FastAPI, models: list[str]) -> None:
+    """Do for models added while running what the start does for all of them.
+
+    Weights missing on this node are downloaded in the background, so the
+    first request does not wait for them.
+    """
+    cfg = app.state.config
+    missing = app.state.lane_manager.validate_capabilities(models, app.state.hf_home, app.state.cache_root)
+    if missing and cfg.worker.prefetch_missing_models:
+        _run_in_background(_prefetch_missing_models(missing, app.state.hf_home))
+
+
 async def _load_central_profiles(
     cfg: AppConfig,
     logos_bridge: LogosBridgeClient,
@@ -226,8 +271,7 @@ async def _load_central_profiles(
     instead of guessing; with the bridge disabled it starts empty.
     """
     snapshot = await gpu_collector.get_snapshot()
-    config_path = LogosBridgeClient.resolve_config_path()
-    plans = plans_from_config(config_path) if config_path.exists() else []
+    plans = plans_from_app_config(cfg)
     model_profiles.set_calibration_keys(node_calibration_keys(cfg, plans, list(snapshot.devices)))
     model_profiles.set_slice_gpu_counts(node_slice_gpu_counts(cfg, plans, list(snapshot.devices)))
     if not (cfg.logos and cfg.logos.enabled):
@@ -1039,6 +1083,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _log_storage_layout(cfg)
 
     logos_bridge = LogosBridgeClient(app, cfg.logos)
+    await _load_central_node_config(cfg, logos_bridge)
     await logos_bridge.bootstrap_hf_token()
 
     # Device telemetry. Both collectors expose the same surface, so everything
@@ -1103,6 +1148,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     hf_home = os.environ.get("HF_HOME", "").strip() or os.path.join(cache_root, ".hf_cache")
     # The heartbeat reports free space on this volume (statistics page).
     app.state.hf_home = hf_home
+    app.state.cache_root = cache_root
+    app.state.prepare_added_models = lambda models: _prepare_added_models(app, models)
     model_cache = create_model_cache(
         tmpfs_path=os.environ.get("LOGOS_TMPFS_CACHE_PATH", "").strip() or None,
         hf_home=hf_home,

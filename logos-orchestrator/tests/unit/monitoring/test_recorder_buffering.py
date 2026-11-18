@@ -68,6 +68,16 @@ def test_completion_write_carries_the_buffered_union(monkeypatch):
     assert call["result_status"] == "success"
 
 
+def test_routing_snapshot_is_written_live_and_kept_on_completion(monkeypatch):
+    recorder, calls = _make_recorder(monkeypatch, {27: "m"}, {13: "p"})
+    _patch_prom(monkeypatch)
+    candidates = [{"model_id": 27, "provider_id": 13, "state": "cold", "expected_wait_s": 45}]
+    recorder.record_scheduled("routing", 27, 13, "normal", 0, routing_candidates=candidates)
+    assert calls[-1]["routing_decision"] == {"candidates": candidates}
+    recorder.record_complete("routing", "success")
+    assert calls[-1]["routing_decision"] == {"candidates": candidates}
+
+
 def test_taking_the_buffer_drains_it_for_the_failure_write(monkeypatch):
     """_record_log_failure drains before discard and folds the fields into
     its own metrics UPDATE — the row must keep every buffered field."""

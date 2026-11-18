@@ -584,11 +584,19 @@ class DBManager:
                 delta_ms = (scheduled_ts - timestamp_request).total_seconds() * 1000
                 update_data["queue_wait_ms"] = max(0.0, delta_ms)
 
-        if not update_data:
+        routing_decision = fields.get("routing_decision")
+        if not update_data and routing_decision is None:
             return
 
-        assignments = ", ".join(f"{col} = :{col}" for col in update_data.keys())
+        assignments = [f"{col} = :{col}" for col in update_data]
         params = dict(update_data)
+        if routing_decision is not None:
+            # Keep the snapshot alongside classification metadata without a schema change.
+            assignments.append(
+                "classification_statistics = COALESCE(classification_statistics, '{}'::jsonb) "
+                "|| jsonb_build_object('routing_decision', CAST(:routing_decision AS jsonb))"
+            )
+            params["routing_decision"] = _json_for_jsonb(routing_decision)
         if log_id is not None:
             params["log_id"] = log_id
             where_clause = "id = :log_id"
@@ -596,7 +604,7 @@ class DBManager:
             params["lookup_request_id"] = request_id
             where_clause = "request_id = :lookup_request_id"
 
-        sql = text(f"UPDATE log_entry SET {assignments} WHERE {where_clause}")
+        sql = text(f"UPDATE log_entry SET {', '.join(assignments)} WHERE {where_clause}")
         self.session.execute(sql, params)
         self.session.commit()
 
@@ -2242,23 +2250,28 @@ class DBManager:
 
         A node nobody configured yet has revision 0 and no entries.
         """
-        state = self.session.execute(
-            text("SELECT config_revision, yaml_imported_at FROM node_config_state WHERE provider_id = :pid"),
-            {"pid": provider_id},
-        ).fetchone()
-        rows = self.session.execute(
+        # One statement, so the revision and the models are the same snapshot.
+        row = self.session.execute(
             text("""
-                SELECT model_name, capability, overrides FROM node_model_config
-                WHERE provider_id = :pid ORDER BY position, id
+                SELECT s.config_revision, s.yaml_imported_at,
+                       COALESCE((
+                           SELECT jsonb_agg(
+                               jsonb_build_object(
+                                   'model_name', model_name,
+                                   'capability', capability,
+                                   'overrides', overrides
+                               ) ORDER BY position, id
+                           ) FROM node_model_config WHERE provider_id = :pid
+                       ), '[]'::jsonb) AS entries
+                FROM (SELECT 1) AS one
+                LEFT JOIN node_config_state s ON s.provider_id = :pid
             """),
             {"pid": provider_id},
-        ).fetchall()
+        ).fetchone()
         return {
-            "revision": int(state.config_revision) if state is not None else 0,
-            "yaml_imported": state is not None and state.yaml_imported_at is not None,
-            "entries": [
-                {"model_name": r.model_name, "capability": r.capability, "overrides": r.overrides} for r in rows
-            ],
+            "revision": int(row.config_revision) if row.config_revision is not None else 0,
+            "yaml_imported": row.yaml_imported_at is not None,
+            "entries": list(row.entries),
         }
 
     def replace_node_config(
@@ -5173,7 +5186,8 @@ class DBManager:
                    UPDATE log_entry
                    SET response_payload          = :payload,
                        policy_id                 = COALESCE(:policy_id, policy_id),
-                       classification_statistics = :classification_statistics,
+                       classification_statistics = COALESCE(classification_statistics, '{}'::jsonb)
+                           || CAST(:classification_statistics AS jsonb),
                        queue_depth_at_arrival    = COALESCE(:queue_depth, queue_depth_at_arrival),
                        utilization_at_arrival    = COALESCE(:utilization, utilization_at_arrival)
                    WHERE id = :log_id
@@ -5233,7 +5247,8 @@ class DBManager:
                        model_id         = COALESCE(:model_id, model_id),
                        timestamp_response = :timestamp,
                        policy_id        = COALESCE(:policy_id, policy_id),
-                       classification_statistics = :classification_statistics,
+                       classification_statistics = COALESCE(classification_statistics, '{}'::jsonb)
+                           || CAST(:classification_statistics AS jsonb),
                        request_id = COALESCE(:request_id, request_id),
                        queue_depth_at_arrival = COALESCE(:queue_depth, queue_depth_at_arrival),
                        utilization_at_arrival = COALESCE(:utilization, utilization_at_arrival),

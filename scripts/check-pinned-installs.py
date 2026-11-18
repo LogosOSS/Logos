@@ -16,6 +16,7 @@ script in the repository (tracked files) and rejects:
 - `brew install` (Homebrew cannot pin versions) and `curl … | sh` installers.
 - `uv python install` without an exact x.y.z version.
 - Dockerfile `FROM` images without a version tag (or with `latest`).
+- Workflow build args that set an image (`BASE_IMAGE=…`) without a digest.
 - `astral-sh/setup-uv` without `version:`, and setup-python / setup-java /
   setup-node without an exact version.
 
@@ -289,6 +290,11 @@ def check_workflow_steps(text: str) -> list[tuple[int, str]]:
     problems = []
     lines = text.splitlines()
     for i, line in enumerate(lines):
+        # A build arg that sets an image (BASE_IMAGE=…) replaces the Dockerfile's
+        # digest-pinned default, so it must carry a digest itself.
+        bm = re.match(r"^\s*(?:-\s+)?([A-Z][A-Z0-9_]*IMAGE)=(\S+)\s*$", line)
+        if bm and "@sha256:" not in bm.group(2):
+            problems.append((i + 1, f"from: build arg {bm.group(1)}={bm.group(2)} overrides an image without a digest"))
         m = re.search(r"uses:\s*(astral-sh/setup-uv|actions/setup-(python|java|node))@", line)
         if not m:
             continue

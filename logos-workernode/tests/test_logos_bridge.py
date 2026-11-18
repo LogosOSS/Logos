@@ -2847,7 +2847,7 @@ async def test_run_compatibility_precheck_model_kind_defaults_generative_on_fetc
 @pytest.mark.asyncio
 async def test_run_compatibility_precheck_rpc_uses_configured_gpu_devices(tmp_path, monkeypatch):
     """The standalone RPC has no session plan to read gpu_devices or
-    kv_cache_dtype from — it must look the model up in config.yml itself.
+    kv_cache_dtype from — it must look the model up in the configured models itself.
     Without that, a pinned model is evaluated against the wrong (default)
     slice and can be falsely blacklisted from a leftover GPU its pin was
     meant to avoid, and a configured fp8 KV cache looks twice its size."""
@@ -2859,21 +2859,18 @@ async def test_run_compatibility_precheck_rpc_uses_configured_gpu_devices(tmp_pa
     cfg = LogosConfig(enabled=True, logos_url="https://logos.example", shared_key="secret", configured_models=[])
     client = LogosBridgeClient(app, cfg)
 
-    config_path = tmp_path / "config.yml"
-    config_path.touch()
-    monkeypatch.setenv("LOGOS_WORKER_NODE_CONFIG", str(config_path))
-    monkeypatch.setattr(
-        "logos_worker_node.calibration.plans_from_config",
-        lambda _p: [
-            {
-                "model": "org/model",
+    app.state.config.logos.node_entries = [
+        {
+            "model_name": "org/model",
+            "capability": {
                 "gpu_devices": "1,2,3",
                 "kv_cache_dtype": "fp8",
                 "extra_args": ["--revision", "abc123"],
                 "tensor_parallel_size": 3,
-            }
-        ],
-    )
+            },
+            "overrides": {},
+        }
+    ]
     monkeypatch.setattr(
         "logos_worker_node.hf_model_info.fetch_hf_model_metadata",
         lambda *a, **k: HfModelMetadata(
@@ -4723,6 +4720,379 @@ async def test_cancel_command_tasks_stops_every_command_and_logs_failures(caplog
     assert failing.done() and isinstance(failing.exception(), RuntimeError)
     assert client._command_tasks == {}  # noqa: SLF001
     assert "Bridge background command task failed during shutdown" in caplog.text
+
+
+def _fake_http(monkeypatch, status: int, body: dict | None, posted: list) -> None:
+    class _Resp:
+        status_code = status
+        content = b"x"
+        text = "refused"
+
+        @staticmethod
+        def json():
+            return body
+
+    class _Http:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def post(self, url, json=None):
+            posted.append((url, json))
+            return _Resp()
+
+    monkeypatch.setattr("logos_worker_node.logos_bridge.httpx.AsyncClient", lambda timeout=15.0: _Http())
+
+
+@pytest.mark.asyncio
+async def test_the_node_config_is_fetched_with_the_shared_key(tmp_path, monkeypatch):
+    posted: list = []
+    entry = {"model_name": "org/a", "capability": {"tensor_parallel_size": 2}, "overrides": None}
+    _fake_http(monkeypatch, 200, {"revision": 3, "yaml_imported": True, "entries": [entry]}, posted)
+
+    config = await _central_client(tmp_path).fetch_node_config()
+
+    assert posted == [("https://logos.example/logosdb/providers/logosnode/node-config", {"shared_key": "secret"})]
+    assert config == {
+        "revision": 3,
+        "yaml_imported": True,
+        "entries": [{"model_name": "org/a", "capability": {"tensor_parallel_size": 2}, "overrides": {}}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_yaml_import_sends_the_entries_and_returns_the_warnings(tmp_path, monkeypatch):
+    posted: list = []
+    _fake_http(monkeypatch, 200, {"imported": True, "warnings": ["org/a: 'k' differs"]}, posted)
+    entries = [{"model_name": "org/a", "capability": {}, "overrides": {}}]
+
+    warnings = await _central_client(tmp_path).import_node_config(entries)
+
+    assert warnings == ["org/a: 'k' differs"]
+    url, body = posted[0]
+    assert url == "https://logos.example/logosdb/providers/logosnode/node-config/import"
+    assert body == {"shared_key": "secret", "entries": entries}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method, args", [("fetch_node_config", ()), ("import_node_config", ([],))])
+async def test_a_refused_node_config_request_raises(tmp_path, monkeypatch, method, args):
+    _fake_http(monkeypatch, 404, None, [])
+
+    with pytest.raises(RuntimeError, match="HTTP 404"):
+        await getattr(_central_client(tmp_path), method)(*args)
+
+
+def _node_config_client(tmp_path) -> LogosBridgeClient:
+    """A worker that started with org/ready (announced) and org/pending."""
+    client = _central_client(tmp_path)
+    cfg = client._app.state.config  # noqa: SLF001
+    cfg.logos = client._cfg  # noqa: SLF001
+    client._cfg.configured_models = ["org/ready", "org/pending"]  # noqa: SLF001
+    client._cfg.node_config_revision = 2  # noqa: SLF001
+    return client
+
+
+def _central(revision: int, *entries: dict) -> dict:
+    return {"revision": revision, "yaml_imported": True, "entries": list(entries)}
+
+
+def _entry(name: str, capability: dict | None = None, overrides: dict | None = None) -> dict:
+    return {"model_name": name, "capability": capability or {}, "overrides": overrides or {}}
+
+
+@pytest.mark.asyncio
+async def test_hello_offers_node_config_sync_and_validation(tmp_path):
+    ws = _CollectWS()
+    await _central_client(tmp_path)._send_hello(ws)  # noqa: SLF001
+
+    assert {"sync_node_config", "validate_node_config"} <= set(ws.frames[0]["actions"])
+
+
+@pytest.mark.asyncio
+async def test_a_newer_node_config_replaces_the_models_and_overrides(tmp_path):
+    client = _node_config_client(tmp_path)
+    cfg = client._app.state.config  # noqa: SLF001
+    push = _central(3, _entry("org/ready", {"base_residency_mb": 900}, {"quantization": "awq"}), _entry("org/new"))
+
+    response = await client._execute_command("sync_node_config", push)  # noqa: SLF001
+
+    assert response == {"ok": True, "applied": True, "revision": 3}
+    assert cfg.logos.configured_models == ["org/ready", "org/new"]
+    # org/pending is gone, org/ready keeps being announced, org/new waits for a profile.
+    assert cfg.logos.capabilities_models == ["org/ready"]
+    assert cfg.engines.vllm.model_overrides["org/ready"] == {"quantization": "awq"}
+    assert cfg.logos.node_config_revision == 3
+    assert client._app.state.model_profiles.get_profile("org/new") is not None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_new_model_with_a_profile_is_announced_at_once(tmp_path):
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    registry.apply_calibration_result("org/new", {"base_residency_mb": 5000.0, "residency_source": "calibrated"})
+
+    await client._execute_command("sync_node_config", _central(3, _entry("org/new")))  # noqa: SLF001
+
+    assert client._cfg.capabilities_models == ["org/new"]  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revision", [2, 1])
+async def test_an_older_or_equal_node_config_changes_nothing(tmp_path, revision):
+    client = _node_config_client(tmp_path)
+
+    response = await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(revision, _entry("org/other"))
+    )
+
+    assert response == {"ok": True, "applied": False, "revision": 2}
+    assert client._cfg.configured_models == ["org/ready", "org/pending"]  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_models_a_push_adds_are_prepared_and_the_known_ones_are_not(tmp_path):
+    client = _node_config_client(tmp_path)
+    prepared: list = []
+    client._app.state.prepare_added_models = prepared.append  # noqa: SLF001
+
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(3, _entry("org/ready"), _entry("org/new"), _entry("org/newer"))
+    )
+
+    assert prepared == [["org/new", "org/newer"]]
+
+
+@pytest.mark.asyncio
+async def test_a_push_without_new_models_prepares_nothing(tmp_path):
+    client = _node_config_client(tmp_path)
+    prepared: list = []
+    client._app.state.prepare_added_models = prepared.append  # noqa: SLF001
+
+    await client._execute_command("sync_node_config", _central(3, _entry("org/ready")))  # noqa: SLF001
+
+    assert prepared == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_preparation_does_not_undo_the_applied_configuration(tmp_path):
+    client = _node_config_client(tmp_path)
+
+    def _boom(_models):
+        raise OSError("disk")
+
+    client._app.state.prepare_added_models = _boom  # noqa: SLF001
+
+    response = await client._execute_command("sync_node_config", _central(3, _entry("org/new")))  # noqa: SLF001
+
+    assert response["applied"] is True
+    assert client._cfg.node_config_revision == 3  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_removed_profile_override_takes_the_measured_value_from_logos(tmp_path):
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(3, _entry("org/ready", {"base_residency_mb": 500}))
+    )
+    assert registry.get_profile("org/ready").base_residency_mb == 500.0
+    fetched: list = []
+
+    async def _fetch(hashes, counts):
+        fetched.append((hashes, counts))
+        return {"org/ready": {"base_residency_mb": 9000.0, "residency_source": "calibrated"}}
+
+    client.fetch_model_profiles = _fetch  # noqa: SLF001
+
+    await client._execute_command("sync_node_config", _central(4, _entry("org/ready")))  # noqa: SLF001
+
+    profile = registry.get_profile("org/ready")
+    assert len(fetched) == 1
+    assert (profile.base_residency_mb, profile.residency_source) == (9000.0, "calibrated")
+
+
+@pytest.mark.asyncio
+async def test_a_removed_override_is_cleared_when_logos_cannot_be_asked(tmp_path):
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(3, _entry("org/ready", {"base_residency_mb": 500}))
+    )
+
+    async def _fetch(*_args):
+        raise RuntimeError("Logos unreachable")
+
+    client.fetch_model_profiles = _fetch  # noqa: SLF001
+
+    response = await client._execute_command("sync_node_config", _central(4, _entry("org/ready")))  # noqa: SLF001
+
+    assert response["applied"] is True
+    assert registry.get_profile("org/ready").base_residency_mb is None
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_push_does_not_undo_the_overrides_of_a_newer_one(tmp_path):
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    prepared: list = []
+    client._app.state.prepare_added_models = prepared.append  # noqa: SLF001
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(3, _entry("org/ready", {"base_residency_mb": 500}))
+    )
+    started, gate = asyncio.Event(), asyncio.Event()
+
+    async def _slow_fetch(*_args):
+        started.set()
+        await gate.wait()
+        return {"org/ready": {"base_residency_mb": 9000.0, "residency_source": "calibrated"}}
+
+    client.fetch_model_profiles = _slow_fetch  # noqa: SLF001
+    # Revision 4 drops the override and waits for Logos' profiles.
+    drop = _central(4, _entry("org/ready"), _entry("org/added"))
+    older = asyncio.create_task(client._execute_command("sync_node_config", drop))  # noqa: SLF001
+    await started.wait()
+    # Revision 5 sets it again and finishes first.
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(5, _entry("org/ready", {"base_residency_mb": 700}), _entry("org/added"))
+    )
+    gate.set()
+    await older
+
+    assert registry.get_profile("org/ready").base_residency_mb == 700.0
+    assert client._cfg.node_config_revision == 5  # noqa: SLF001
+    # The model revision 4 added is still prepared, once, by the push that was overtaken.
+    assert prepared == [["org/added"]]
+
+
+@pytest.mark.asyncio
+async def test_a_push_without_removed_overrides_does_not_ask_logos_for_profiles(tmp_path):
+    client = _node_config_client(tmp_path)
+
+    async def _fetch(*_args):
+        raise AssertionError("not needed")
+
+    client.fetch_model_profiles = _fetch  # noqa: SLF001
+
+    response = await client._execute_command("sync_node_config", _central(3, _entry("org/ready")))  # noqa: SLF001
+
+    assert response["applied"] is True
+
+
+@pytest.mark.asyncio
+async def test_keys_calculated_for_a_superseded_revision_are_discarded(tmp_path, monkeypatch):
+    client = _node_config_client(tmp_path)
+    client._app.state.gpu_collector = MagicMock(
+        get_snapshot=AsyncMock(return_value=MagicMock(devices=[]))
+    )  # noqa: SLF001
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    published: list = []
+    registry.set_calibration_keys = lambda keys: published.append(keys) or []
+
+    def _keys_while_a_newer_push_lands(*_args):
+        client._cfg.node_config_revision += 1  # noqa: SLF001
+        return {"org/ready": {"schema": 2}}
+
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_calibration_keys", _keys_while_a_newer_push_lands)
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_slice_gpu_counts", lambda *_a: {})
+
+    await client._refresh_calibration_keys()  # noqa: SLF001
+
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_a_node_config_waits_for_a_running_calibration_and_applies_afterwards(tmp_path):
+    client = _node_config_client(tmp_path)
+    client._calibration_session_is_live = lambda: True  # noqa: SLF001
+
+    first = await client._execute_command("sync_node_config", _central(3, _entry("org/a")))  # noqa: SLF001
+    second = await client._execute_command("sync_node_config", _central(5, _entry("org/b")))  # noqa: SLF001
+    older = await client._execute_command("sync_node_config", _central(4, _entry("org/c")))  # noqa: SLF001
+
+    assert first == {"ok": True, "applied": False, "deferred": True, "revision": 2}
+    assert second["deferred"] and older["deferred"]
+    assert client._cfg.configured_models == ["org/ready", "org/pending"]  # noqa: SLF001
+
+    client._calibration_session_is_live = lambda: False  # noqa: SLF001
+    await client._apply_pending_node_config()  # noqa: SLF001
+
+    assert client._cfg.configured_models == ["org/b"]  # noqa: SLF001
+    assert client._cfg.node_config_revision == 5  # noqa: SLF001
+    assert client._pending_node_config is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_node_config_that_was_overtaken_is_dropped(tmp_path):
+    client = _node_config_client(tmp_path)
+    client._pending_node_config = _central(3, _entry("org/a"))  # noqa: SLF001
+    client._cfg.node_config_revision = 4  # noqa: SLF001
+
+    await client._apply_pending_node_config()  # noqa: SLF001
+
+    assert client._cfg.configured_models == ["org/ready", "org/pending"]  # noqa: SLF001
+    assert client._pending_node_config is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_removed_capability_override_stops_applying(tmp_path):
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    await client._execute_command(  # noqa: SLF001
+        "sync_node_config", _central(3, _entry("org/ready", {"min_context_fraction": 0.5}))
+    )
+    assert registry.get_profile("org/ready").min_context_fraction == 0.5
+
+    await client._execute_command("sync_node_config", _central(4, _entry("org/ready")))  # noqa: SLF001
+
+    assert registry.get_profile("org/ready").min_context_fraction is None
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_node_config_push_is_refused(tmp_path):
+    client = _node_config_client(tmp_path)
+
+    response = await client._execute_command("sync_node_config", {"revision": 5})  # noqa: SLF001
+
+    assert response["ok"] is False and "entries" in response["error"]
+    assert client._cfg.node_config_revision == 2  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_validation_accepts_what_a_lane_start_accepts(tmp_path):
+    client = _central_client(tmp_path)
+    entries = [_entry("org/a", {"tensor_parallel_size": 2, "base_residency_mb": 9}, {"quantization": "awq"})]
+
+    response = await client._execute_command("validate_node_config", {"entries": entries})  # noqa: SLF001
+
+    assert response == {"ok": True, "errors": []}
+
+
+@pytest.mark.asyncio
+async def test_validation_names_the_model_and_the_setting_it_refuses(tmp_path):
+    client = _central_client(tmp_path)
+    entries = [_entry("org/a", overrides={"tensor_parallel_size": 0}), _entry("org/b", overrides={"dtype": "half"})]
+
+    response = await client._execute_command("validate_node_config", {"entries": entries})  # noqa: SLF001
+
+    assert response["ok"] is False
+    assert len(response["errors"]) == 1 and response["errors"][0].startswith("org/a: tensor_parallel_size")
+    assert response["error"] == response["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_validation_needs_a_list_of_entries(tmp_path):
+    client = _central_client(tmp_path)
+
+    response = await client._execute_command("validate_node_config", {})  # noqa: SLF001
+
+    assert response == {
+        "ok": False,
+        "errors": ["'entries' must be a list"],
+        "error": "'entries' must be a list",
+    }
 
 
 @pytest.mark.asyncio
