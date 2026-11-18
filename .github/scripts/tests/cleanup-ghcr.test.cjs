@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { cleanup, packages } = require('./cleanup-ghcr.cjs');
+const { cleanup, packages } = require('../cleanup-ghcr.cjs');
 
 function version(id, ...tags) {
   return { id, metadata: { container: { tags } } };

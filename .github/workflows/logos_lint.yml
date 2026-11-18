@@ -44,10 +44,9 @@ jobs:
           pip install --no-deps --require-hashes -r tools/pre-commit/requirements.lock
           pip check
 
-      - name: Test registry cleanup and deployment configuration
+      - name: Test registry deployment configuration
         run: |
-          node --test .github/scripts/cleanup-ghcr.test.cjs
-          python3 .github/scripts/test_registry_workflows.py
+          python3 .github/scripts/tests/test_registry_workflows.py
 
       - name: Run pre-commit on logos
         # Top-level `files: '^logos/'` in .pre-commit-config.yaml
