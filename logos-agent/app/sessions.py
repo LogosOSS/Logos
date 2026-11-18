@@ -1322,7 +1322,7 @@ class SessionManager:
             # screenshot is unreadable to the sandbox otherwise. Analysis
             # tasks embed owner-controlled path text and must not trigger
             # authenticated fetches against the shared bot identity.
-            if str(session.get("trigger_kind") or "") == "analysis":
+            if str(session.get("trigger_kind") or "") in {"analysis", "security-analysis", "security-fix"}:
                 images: list[str] = []
             else:
                 images = await self._collect_attachments(sid, str(session.get("task") or ""))
@@ -2302,6 +2302,8 @@ class SessionManager:
         request has had its three goes": the first is worth waiting for, the
         second would keep a settled session owing an answer forever.
         """
+        if session.get("trigger_kind") in {"security-analysis", "security-fix"}:
+            return False
         ref = str(session.get("trigger_ref") or "")
         if not ref:
             return False
@@ -2329,6 +2331,10 @@ class SessionManager:
         minutes would otherwise forget the pull request entirely; the row
         says the follow-up is owed, and any later pass can pick it up.
         """
+        # Security work can target other repositories and owns its assessment
+        # lifecycle. The general watcher uses the runner's default repository.
+        if session.get("trigger_kind") in {"security-analysis", "security-fix"}:
+            return
         branch = str(session.get("branch_name") or "")
         if not branch or not session.get("trigger_ref"):
             # A session queued by a person is that person's to follow up.
@@ -2458,6 +2464,8 @@ class SessionManager:
 
         Returns the new session's id, or None when it was not taken up.
         """
+        if session.get("trigger_kind") in {"security-analysis", "security-fix"}:
+            return None
         ref = str(session.get("trigger_ref") or "")
         if ref:
             try:

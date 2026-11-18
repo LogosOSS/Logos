@@ -700,3 +700,104 @@ an `Authorization` header, and the token is what authorises the read.
   the environment serve again — the runner captures the pages in one-shot
   containers, so the photos show the revision the session just deployed, not
   the one that was live while the session ran.
+
+## Important security incidents
+
+Logos Admins open **Agent Sessions → Security incidents**. Register the GitHub
+repositories that LogosOSSAgent may assess and patch. Enrollment authorizes
+credentialed checkout and verified fix PRs on that repository; team repository
+links do not grant this authority. The bot needs read and push access. All
+security endpoints use the same Keycloak Logos Admin check as agent controls.
+
+The runner checks the queue every 5 minutes and ingests these feeds hourly:
+
+- GitHub-reviewed **critical** advisories, with pagination and a durable cursor.
+- CISA Known Exploited Vulnerabilities (KEV), including vulnerabilities without a fix.
+- Manual high/critical incidents with a source, advisory details, and an explanation
+  of material impact. This covers early vendor notices and infrastructure outside
+  package catalogs, such as BMC, BIOS, or PVE advisories.
+
+On first start, feeds cover the previous 7 days. Feed outages are visible in the
+dashboard and do not advance the cursor. Advisory IDs deduplicate intake.
+Registering a repository queues existing incidents for that repository. Reports
+of ordinary low/medium findings are rejected. High findings need manual impact
+triage or confirmation of exploitation from KEV.
+
+Each repository has its own assessment, evidence, checked commit, next check,
+linked session, PR and status history. Analysis checks lockfiles, transitive
+packages, base images, bundled servers, enabled modules, configuration and
+protocols across proxy hops. A patched outer nginx does not establish that an
+inner nginx is safe. A source-only assessment cannot prove the deployed image or
+runtime configuration: supply image digests, scan timestamps and `nginx -T`
+evidence where relevant. `not_affected` needs file evidence and a reason.
+
+The isolated analyst writes `security-assessment.json`. The runner checks the
+schema and binds its commit SHA to the trusted checkout baseline. A report cannot
+claim `resolved`. Outcomes are `not_affected`, `awaiting_upstream`, `fix_available`
+or `action_required`. No patch does **not** mean no incident. The report may
+recommend mitigation, disabling a component or shutting down a system, with scope,
+impact and recovery conditions. These are operator recommendations only.
+
+Waiting and action-required assessments run again every 6 hours. Not-affected
+assessments run daily. Changed advisories invalidate completed assessments. The
+runner fetches current GitHub release metadata for the upstream repositories in
+the intake/report, and refreshes GitHub advisory patch ranges before each run.
+An upstream API failure is supplied as missing evidence, never as proof of safety.
+The session has no general Internet access; paste vendor facts into manual intake
+when the vendor does not expose a GitHub release or advisory.
+
+A verified patched release queues a separate fix session. The normal isolated
+verification and trusted finalizer produce the PR, without merging or deploying.
+A failed verifier can produce a draft, which remains a failed assessment with its
+PR link. A merged PR moves to `awaiting_deployment`; an admin must confirm the
+actual deployment or completed mitigation and record evidence to resolve it.
+A closed, unmerged PR requires action. Failed/cancelled assessments stay visible
+until an admin requests a recheck or new advisory evidence arrives.
+
+Configuration (also passed through `docker-compose.yaml`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LOGOS_AGENT_SECURITY_ENABLED` | `true` | Run incident assessment and reconciliation. |
+| `LOGOS_AGENT_SECURITY_FEEDS_ENABLED` | `true` | Poll GitHub and CISA. Manual intake still works when disabled. |
+
+The existing runner pause/drain controls and capacity limits govern security
+sessions. Turning off the security poller does not cancel sessions already queued;
+use the runner controls to stop execution. The API records incoming incidents
+while polling is disabled. The dashboard displays the latest 500 incidents.
+
+### Scanner evidence
+
+`POST /api/agent/security/scans/trivy` accepts a Logos Admin bearer token and:
+
+```json
+{
+  "repository_id": 1,
+  "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "scanned_at": "2026-11-18T10:00:00Z",
+  "report": { "Results": [] }
+}
+```
+
+`report` is the JSON from `trivy image --format json <image@sha256:digest>`.
+Run the scanner in your own CI or inventory service. No scanner is installed by
+Logos. Only critical findings are imported automatically; lower-severity findings
+need a manually justified incident. Empty `FixedVersion` is retained. Findings
+remain tied to the repository, digest and scan time, and fresh evidence causes a
+new assessment. A scan is an observation, not a claim about the deployed image.
+Do not use `--ignore-unfixed`: that removes the incidents that need containment.
+A scan with no findings does not automatically close previous incidents.
+
+Apt update lists can supply patch availability, but cannot cover every unfixed
+issue. debsecan/Trivy, Trivy Operator, OpenCVE and Dependency-Track can feed
+manually normalized incidents through `/security/incidents`. Native adapters,
+SBOM generation, VEX import/export, host inventories, scanner deployment and
+Renovate configuration are outside this service. Do not treat an unverified VEX
+statement or a missing package name as sufficient `not_affected` evidence.
+
+The PostgreSQL lifecycle test uses a temporary schema:
+
+```bash
+SECURITY_TEST_DATABASE_URL=postgresql+asyncpg://postgres:root@localhost:15432/logosdb \
+  .venv/bin/python -m pytest tests/test_security_database.py
+```

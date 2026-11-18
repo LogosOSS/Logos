@@ -1394,6 +1394,7 @@ async def sessions_owing_a_replacement(*, max_attempts: int, since: datetime) ->
                       FROM agent_sessions s
                      WHERE s.status = 'failed'
                        AND COALESCE(s.trigger_ref, '') <> ''
+                       AND COALESCE(s.trigger_kind, '') NOT IN ('security-analysis', 'security-fix')
                        AND s.finished_at IS NOT NULL
                        AND s.finished_at > :since
                        AND NOT EXISTS (

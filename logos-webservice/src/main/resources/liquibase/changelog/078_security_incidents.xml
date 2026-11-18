@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="078-security-incidents" author="logos">
+        <sql><![CDATA[
+            CREATE TABLE security_repositories (
+                id BIGSERIAL PRIMARY KEY,
+                repo_slug TEXT NOT NULL UNIQUE,
+                branch TEXT NOT NULL DEFAULT 'main',
+                created_by TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            CREATE TABLE security_incidents (
+                id BIGSERIAL PRIMARY KEY,
+                advisory_id TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                severity TEXT NOT NULL CHECK (severity IN ('high', 'critical')),
+                known_exploited BOOLEAN NOT NULL DEFAULT false,
+                source_url TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                importance TEXT NOT NULL,
+                upstream_repositories JSONB NOT NULL DEFAULT '[]',
+                source_data JSONB NOT NULL DEFAULT '{}',
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            CREATE TABLE security_assessments (
+                id BIGSERIAL PRIMARY KEY,
+                incident_id BIGINT NOT NULL REFERENCES security_incidents(id) ON DELETE CASCADE,
+                repository_id BIGINT NOT NULL REFERENCES security_repositories(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN (
+                    'queued', 'analyzing', 'not_affected', 'awaiting_upstream', 'fix_available',
+                    'remediating', 'action_required', 'pr_open', 'awaiting_deployment', 'resolved', 'failed')),
+                session_id BIGINT REFERENCES agent_sessions(id) ON DELETE SET NULL,
+                revision INTEGER NOT NULL DEFAULT 0,
+                report JSONB NOT NULL DEFAULT '{}',
+                pr_url TEXT,
+                error TEXT,
+                next_check_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (incident_id, repository_id)
+            );
+            CREATE INDEX idx_security_assessments_due ON security_assessments(next_check_at);
+            CREATE TABLE security_assessment_events (
+                id BIGSERIAL PRIMARY KEY,
+                assessment_id BIGINT NOT NULL REFERENCES security_assessments(id) ON DELETE CASCADE,
+                status TEXT NOT NULL,
+                detail JSONB NOT NULL,
+                created_by TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            CREATE TABLE security_scan_observations (
+                id BIGSERIAL PRIMARY KEY,
+                incident_id BIGINT NOT NULL REFERENCES security_incidents(id) ON DELETE CASCADE,
+                repository_id BIGINT NOT NULL REFERENCES security_repositories(id) ON DELETE CASCADE,
+                image_digest TEXT NOT NULL,
+                scanned_at TIMESTAMPTZ NOT NULL,
+                findings JSONB NOT NULL,
+                created_by TEXT NOT NULL,
+                UNIQUE (incident_id, repository_id, image_digest)
+            );
+            CREATE TABLE security_feed_state (
+                name TEXT PRIMARY KEY,
+                last_success TIMESTAMPTZ,
+                error TEXT
+            );
+        ]]></sql>
+        <rollback>
+            <dropTable tableName="security_feed_state"/>
+            <dropTable tableName="security_scan_observations"/>
+            <dropTable tableName="security_assessment_events"/>
+            <dropTable tableName="security_assessments"/>
+            <dropTable tableName="security_incidents"/>
+            <dropTable tableName="security_repositories"/>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>
