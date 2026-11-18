@@ -277,45 +277,13 @@ jobs:
         run: mvn -B -q dependency:copy-dependencies -DincludeScope=test -DoutputDirectory=target/dependency
         working-directory: logos-webservice
 
-      - name: Diagnose SonarCloud access
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        shell: python
-        run: |
-          import json
-          import os
-          from urllib.error import HTTPError
-          from urllib.request import Request, urlopen
-
-          for authenticated in (False, True):
-              headers = {"Authorization": "Bearer " + os.environ["SONAR_TOKEN"]} if authenticated else {}
-              label = "Repository token" if authenticated else "Anonymous"
-              for url in (
-                  "https://api.sonarcloud.io/analysis/engine",
-                  "https://sonarcloud.io/api/authentication/validate",
-              ):
-                  try:
-                      response = urlopen(Request(url, headers=headers), timeout=15)
-                  except HTTPError as error:
-                      response = error
-                  with response:
-                      content = response.read(4096)
-                      print(label, url, "HTTP", response.status, response.headers.get_content_type())
-                      if url.endswith("/validate") and response.status == 200:
-                          print("Credential valid:", json.loads(content).get("valid") is True)
-                      if response.status == 403:
-                          for term in (b"cloudfront", b"cloudflare", b"expired", b"revoked", b"permission", b"subscription"):
-                              if term in content.lower():
-                                  print("Response classification:", term.decode())
-
       - name: Run analysis
         uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4 # v8.5.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
-          # Run the scanner engine on the Temurin JDK installed above.
+          # Fail this job, a required check, when the quality gate fails.
           args: >
-            -Dsonar.scanner.skipJreProvisioning=true
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
 
