@@ -145,7 +145,7 @@ classification, scheduling, context-resolution, forwarding and completion bounda
 
 | Compose file | Purpose |
 | --- | --- |
-| `docker-compose.yaml` | Production: pulls pre-built images from Harbor |
+| `docker-compose.yaml` | Production: pulls pre-built images from GHCR |
 | `docker-compose.dev.yaml` | Development: builds all images from source |
 | `docker-compose.screenshots.yaml` | Isolated stack for documentation screenshots (see [`docs/AGENTS.md`](docs/AGENTS.md)) |
 
