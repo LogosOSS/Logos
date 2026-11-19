@@ -232,7 +232,9 @@ def test_adoption_prefers_the_snapshot_of_the_nodes_configuration_in_the_query()
     _sql, params = db.session.execute.call_args.args
     # Checked against the source: the unit-test conftest stubs sqlalchemy.
     source = inspect.getsource(DBManager._pick_shared_snapshot)
-    assert "profile->>'config_fingerprint' = CAST(:fingerprint AS text)) DESC" in source
+    # A calibration without a fingerprint makes the expression NULL, which PostgreSQL sorts first for DESC:
+    # it must come after an exact match, not before.
+    assert "profile->>'config_fingerprint' = CAST(:fingerprint AS text)) DESC NULLS LAST" in source
     assert params["fingerprint"] == "FP"
     assert params["key_hash"] == "K"
 

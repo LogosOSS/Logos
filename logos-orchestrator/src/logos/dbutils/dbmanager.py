@@ -2210,7 +2210,7 @@ class DBManager:
                   AND CASE WHEN profile->>'tensor_parallel_size' ~ '^[0-9]+$'
                            THEN (profile->>'tensor_parallel_size')::int ELSE 1 END <= :slice_gpu_count
                 ORDER BY (CAST(:fingerprint AS text) IS NOT NULL
-                          AND profile->>'config_fingerprint' = CAST(:fingerprint AS text)) DESC,
+                          AND profile->>'config_fingerprint' = CAST(:fingerprint AS text)) DESC NULLS LAST,
                          calibrated_at DESC
                 LIMIT 500
             """),

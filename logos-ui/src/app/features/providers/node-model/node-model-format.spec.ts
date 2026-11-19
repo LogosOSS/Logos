@@ -77,6 +77,10 @@ describe('the batch flags of an entry', () => {
     expect(flagValueOf(['--foo', '--max-num-seqs', '8'], '--max-num-seqs')).toBe('8');
     expect(flagValueOf(['--foo'], '--max-num-seqs')).toBeNull();
     expect(flagValueOf(undefined, '--max-num-seqs')).toBeNull();
+    // The launch command gives the last occurrence precedence.
+    expect(flagValueOf(['--max-num-seqs=64', '--max-num-seqs=8'], '--max-num-seqs')).toBe('8');
+    expect(flagValueOf(['--max-num-seqs', '64', '--max-num-seqs', '8'], '--max-num-seqs')).toBe('8');
+    expect(flagValueOf(['--max-num-seqs=64', '--max-num-seqs', '8'], '--max-num-seqs')).toBe('8');
   });
 
   it('are part of the stored settings, and a flag in the extra arguments is the value in force', () => {

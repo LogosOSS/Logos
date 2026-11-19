@@ -1028,6 +1028,42 @@ describe('NodeModel', () => {
       return insights([{ ...base, calibration: { ...base.calibration, results: [two, four] } }]);
     };
 
+    const withRecommendation = (settings: Record<string, unknown>) => {
+      const model = twoSizes().models[0];
+      const best = { benchmark_id: 7, throughput: 52.3, settings, recorded_at: null };
+      return insights([
+        {
+          ...model,
+          configured: false,
+          benchmark: { best_eligible: best, best_observed: best, current: {}, eligible_for_comparison: true },
+        },
+      ]);
+    };
+
+    it('starts a model without a placement on the recommended size, with the limits that size measured', async () => {
+      // The size in use measured 1 to 4 GB; the recommended one measured 2 to 8 GB.
+      service['getNodeInsights'].mockResolvedValue(
+        withRecommendation({ tensor_parallel_size: 2, kv_cache_memory_bytes: '8G', max_model_len: 16384 }),
+      );
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      expect(fixture.componentInstance.draft()).toEqual({ tp: 2, kvGb: 8, ctx: 16384 });
+    });
+
+    it('starts on the size in use when the recommendation names a size that was not measured', async () => {
+      service['getNodeInsights'].mockResolvedValue(
+        withRecommendation({ tensor_parallel_size: 8, kv_cache_memory_bytes: '8G', max_model_len: 16384 }),
+      );
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      // Its window ends at 4 GB, and the context follows the curve of that size.
+      expect(fixture.componentInstance.draft()).toEqual({ tp: 4, kvGb: 4, ctx: 16384 });
+    });
+
     it('offers every size and starts on the one that is placed', async () => {
       service['getNodeInsights'].mockResolvedValue(twoSizes());
       const root = await create();

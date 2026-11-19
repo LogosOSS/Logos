@@ -4433,3 +4433,58 @@ def test_every_attempt_of_the_tp_search_probes_the_size_it_was_given(tmp_path):
     assert result.success
     assert probed[0] == 4
     assert set(probed) <= {1, 2, 4}
+
+
+def test_a_failure_at_the_largest_size_falls_back_through_the_sizes_in_between(tmp_path):
+    """TP 4 does not divide the attention heads and TP 1 does not fit: TP 2 is the only size that works."""
+    seen: list[int] = []
+
+    def side_effect(plan, **kw):
+        tp = plan["tensor_parallel_size"]
+        seen.append(tp)
+        if tp == 2:
+            return _success_result("big-model", tensor_parallel_size=2)
+        if tp == 1:
+            return CalibrationResult(
+                model="big-model",
+                tensor_parallel_size=1,
+                gpu_devices="",
+                kv_cache_sent_mb=0.0,
+                success=False,
+                error="No working KV cache size found on tp=1.",
+                capacity_oom=True,
+            )
+        return _fail_result("big-model", "Total number of attention heads must be divisible by tensor parallel size")
+
+    result = _escalate_plan(tmp_path, 4, side_effect)
+
+    assert result.success
+    assert result.tensor_parallel_size == 2
+    assert seen[:2] == [4, 2]  # the size in between comes before the smallest one
+    assert 1 in seen  # the search below the working size still runs
+
+
+def test_the_walk_down_ends_at_a_genuine_shortfall(tmp_path):
+    seen: list[int] = []
+
+    def side_effect(plan, **kw):
+        tp = plan["tensor_parallel_size"]
+        seen.append(tp)
+        if tp == 4:
+            return _fail_result(
+                "big-model", "Total number of attention heads must be divisible by tensor parallel size"
+            )
+        return CalibrationResult(
+            model="big-model",
+            tensor_parallel_size=tp,
+            gpu_devices="",
+            kv_cache_sent_mb=0.0,
+            success=False,
+            error="No working KV cache size found.",
+            capacity_oom=True,
+        )
+
+    result = _escalate_plan(tmp_path, 4, side_effect)
+
+    assert not result.success
+    assert seen == [4, 2]  # a lower size needs more memory per GPU, so TP 1 is not tried

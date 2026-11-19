@@ -70,18 +70,21 @@ export const BATCHING_FLAGS: Record<(typeof BATCHING_KEYS)[number], string> = {
   max_num_batched_tokens: '--max-num-batched-tokens',
 };
 
-/** The value of a flag in a list of extra arguments, in either spelling; null when absent. */
+/**
+ * The value of a flag in a list of extra arguments, in either spelling; null when absent.
+ * The launch command gives the last occurrence precedence, so the last one is read.
+ */
 export function flagValueOf(args: readonly unknown[] | null | undefined, flag: string): string | null {
   const list = (args ?? []).map(String);
+  let value: string | null = null;
   for (let i = 0; i < list.length; i++) {
     if (list[i] === flag) {
-      return list[i + 1]?.trim() || null;
-    }
-    if (list[i].startsWith(flag + '=')) {
-      return list[i].slice(flag.length + 1).trim() || null;
+      value = list[i + 1]?.trim() || null;
+    } else if (list[i].startsWith(flag + '=')) {
+      value = list[i].slice(flag.length + 1).trim() || null;
     }
   }
-  return null;
+  return value;
 }
 
 /** The extra arguments as lines of text, with the flag set to the value last and no other copy of it. */

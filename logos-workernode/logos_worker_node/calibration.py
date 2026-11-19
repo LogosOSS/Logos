@@ -4431,23 +4431,23 @@ def calibrate_with_tp_escalation(
         plan, result = _retry_with_trust_remote_code_if_needed(plan, tp, result)
         _fatal = _is_fatal(result)
 
-    # If max tp fails, try the configured (original) tp before giving up —
-    # handles head-count divisibility quirks. Skip it on a genuine capacity
-    # shortfall (lower tp needs *more* VRAM/GPU, not less) unless the
+    # If max tp fails, walk down the smaller sizes before giving up — a failure
+    # that belongs to one size (head-count divisibility) leaves a smaller size
+    # that works, and the size in between may be the only one. Stop at a genuine
+    # capacity shortfall (lower tp needs *more* VRAM/GPU, not less) unless the
     # operator/orchestrator explicitly pinned that lower tp themselves.
     _skip_capacity_fallback = _is_capacity_exhausted(result) and not explicit_tp
     if not result.success and not _fatal and tp > original_tp and not _skip_capacity_fallback:
-        logger.info(
-            "  %s failed at max tp=%d — falling back to configured tp=%d",
-            model_name,
-            tp,
-            original_tp,
-        )
-        tp = original_tp
-        current_plan = {**plan, "tensor_parallel_size": tp}
-        result = _try_calibrate(current_plan, **cal_kwargs)
-        plan, result = _retry_with_trust_remote_code_if_needed(plan, tp, result)
-        _fatal = _is_fatal(result)
+        while tp > original_tp:
+            failed_tp = tp
+            tp = max(tp // 2, original_tp)
+            logger.info("  %s failed at tp=%d — falling back to tp=%d", model_name, failed_tp, tp)
+            current_plan = {**plan, "tensor_parallel_size": tp}
+            result = _try_calibrate(current_plan, **cal_kwargs)
+            plan, result = _retry_with_trust_remote_code_if_needed(plan, tp, result)
+            _fatal = _is_fatal(result)
+            if result.success or _fatal or (_is_capacity_exhausted(result) and not explicit_tp):
+                break
     elif _skip_capacity_fallback and tp > original_tp:
         logger.info(
             "  %s failed at tp=%d with a genuine VRAM shortfall — skipping "

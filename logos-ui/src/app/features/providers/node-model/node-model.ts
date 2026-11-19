@@ -511,12 +511,17 @@ export class NodeModel implements OnInit {
       return stored;
     }
     const best = this.recommendation()?.settings ?? {};
-    const tp = Number(best['tensor_parallel_size']) || result.tp;
-    const kv = kvToGb(best['kv_cache_memory_bytes']) ?? window.max;
-    const kvGb = Math.min(window.max, Math.max(window.min, Math.round(kv)));
-    const cap = contextCapacity(result.pairs, kvGb, this.insight()?.calibration.context_limit);
+    // The recommended size gives the window and the context curve, so it must be a size that was measured;
+    // an older recommendation may name one that is not, then the size the lane uses stands in.
+    const wanted = Number(best['tensor_parallel_size']);
+    const target =
+      (this.insight()?.calibration.results ?? []).find((r) => r.tp === wanted && kvWindowGb(r) !== null) ?? result;
+    const targetWindow = kvWindowGb(target) ?? window;
+    const kv = kvToGb(best['kv_cache_memory_bytes']) ?? targetWindow.max;
+    const kvGb = Math.min(targetWindow.max, Math.max(targetWindow.min, Math.round(kv)));
+    const cap = contextCapacity(target.pairs, kvGb, this.insight()?.calibration.context_limit);
     const ctx = Number(best['max_model_len']) || cap || 1024;
-    return { tp, kvGb, ctx: cap ? Math.min(ctx, cap) : ctx };
+    return { tp: target.tp, kvGb, ctx: cap ? Math.min(ctx, cap) : ctx };
   }
 
   startEdit(): void {
