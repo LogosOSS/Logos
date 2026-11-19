@@ -161,6 +161,7 @@ class MonitoringRecorder:
         priority_when_scheduled: Optional[str],
         queue_depth_at_schedule: Optional[int],
         provider_metrics: Dict[str, Any] = None,
+        routing_candidates: Optional[list[dict]] = None,
     ) -> None:
         """
         Record when a request is scheduled.
@@ -191,6 +192,8 @@ class MonitoringRecorder:
             "queue_depth_at_schedule": queue_depth_at_schedule,
             "scheduled_ts": scheduled_ts,
         }
+        if routing_candidates is not None:
+            payload["routing_decision"] = {"candidates": routing_candidates}
 
         # Flatten provider metrics for DB columns
         if provider_metrics:
@@ -210,6 +213,7 @@ class MonitoringRecorder:
             model_id=model_id,
             provider_id=provider_id,
             scheduled_ts=scheduled_ts,
+            routing_decision=payload.get("routing_decision"),
         )
 
     def _settle(

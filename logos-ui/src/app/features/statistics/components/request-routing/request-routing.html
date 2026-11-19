@@ -1,0 +1,55 @@
+<section aria-label="Routing candidates" [attr.aria-busy]="loading()">
+  @if (loading()) {
+    <p class="routing-message" role="status">Loading routing decision…</p>
+  } @else if (error()) {
+    <p class="routing-message" role="alert">
+      Could not load the routing decision.
+      <button type="button" (click)="load()">Retry</button>
+    </p>
+  } @else if (!routing()?.candidates?.length) {
+    <p class="routing-message">No routing decision recorded for this request.</p>
+  } @else {
+    <div class="routing-table">
+      <table>
+        <caption class="sr-only">Candidates at scheduling time</caption>
+        <thead>
+          <tr>
+            <th scope="col">Candidate</th>
+            <th scope="col">State</th>
+            <th scope="col" class="numeric">Requests in Queue</th>
+            <th scope="col" class="numeric">Est. Wait</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (candidate of routing()!.candidates; track candidate.model_id + ':' + candidate.provider_id) {
+            <tr [class.selected]="selected(candidate)">
+              <td data-label="Candidate">
+                <div class="candidate">
+                  <strong>{{ candidate.provider_name || 'Provider #' + candidate.provider_id }}</strong>
+                  @if (selected(candidate)) { <span class="selected-badge">Selected</span> }
+                </div>
+                @if (multipleModels()) {
+                  <span class="model-name">{{ candidate.model_name || 'Model #' + candidate.model_id }}</span>
+                }
+              </td>
+              <td data-label="State">
+                <span class="candidate-state" [class.warm]="candidate.state === 'warm' || candidate.state === 'busy'"
+                  [class.cloud]="candidate.provider_type === 'cloud'"
+                  [class.unavailable]="candidate.state === 'unavailable'">
+                  <span class="state-dot" aria-hidden="true"></span>{{ stateLabel(candidate) }}
+                </span>
+              </td>
+              <td data-label="Requests in Queue" class="numeric">{{ candidate.queue_depth ?? '—' }}</td>
+              <td data-label="Est. Wait" class="numeric wait">
+                @if (candidate.expected_wait_s !== null) {
+                  {{ candidate.expected_wait_s | number:'1.1-1' }} s
+                } @else { — }
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+      <p class="routing-note">Values at scheduling time. Nodes serving the same model share its queue.</p>
+    </div>
+  }
+</section>

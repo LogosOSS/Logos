@@ -180,23 +180,15 @@ public class GatewayCloudRateLimiter {
             genericRpm = intOrNull(settings.get("rpm_limit"));
             genericTpm = intOrNull(settings.get("tpm_limit"));
         }
-        Integer teamCloudRpm = null;
-        Integer teamCloudTpm = null;
-        if (key.teamId() != null) {
+        GatewayKey.TeamCloudLimits teamLimits = key.teamCloudLimits();
+        if (teamLimits == null && key.teamId() != null) {
             int[] team = deploymentRepository.findTeamCloudRateLimits(key.teamId());
             if (team != null) {
-                teamCloudRpm = team[0] > 0 ? team[0] : null;
-                teamCloudTpm = team[1] > 0 ? team[1] : null;
-                if (team[0] < 0) {
-                    teamCloudRpm = null;
-                }
-                if (team[1] < 0) {
-                    teamCloudTpm = null;
-                }
+                teamLimits = new GatewayKey.TeamCloudLimits(team[0], team[1]);
             }
         }
-        Integer rpm = firstNonNull(cloudRpm, genericRpm, teamCloudRpm);
-        Integer tpm = firstNonNull(cloudTpm, genericTpm, teamCloudTpm);
+        Integer rpm = firstNonNull(cloudRpm, genericRpm, teamLimits == null ? null : teamLimits.rpm());
+        Integer tpm = firstNonNull(cloudTpm, genericTpm, teamLimits == null ? null : teamLimits.tpm());
         return new Limits(rpm, tpm);
     }
 

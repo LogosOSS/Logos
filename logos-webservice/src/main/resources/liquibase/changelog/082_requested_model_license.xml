@@ -23,7 +23,7 @@
          The fetch runs through the orchestrator with the central HF_TOKEN,
          so gated repositories are readable as soon as the token's account
          has been granted access. -->
-    <changeSet id="078-requested-model-license" author="maltebai">
+    <changeSet id="082-requested-model-license" author="maltebai">
         <preConditions onFail="MARK_RAN">
             <not><columnExists tableName="requested_models" columnName="license_text"/></not>
         </preConditions>
@@ -58,7 +58,7 @@
          they accepted; together they are the audit record. team_id has no
          foreign key — team_id columns in this schema are application-managed,
          like everywhere else. -->
-    <changeSet id="078-model-license-approvals" author="maltebai">
+    <changeSet id="082-model-license-approvals" author="maltebai">
         <preConditions onFail="MARK_RAN">
             <not><tableExists tableName="model_license_approvals"/></not>
         </preConditions>

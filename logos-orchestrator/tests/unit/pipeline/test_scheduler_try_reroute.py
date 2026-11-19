@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from logos.pipeline.correcting_scheduler import ClassificationCorrectingScheduler
 from logos.pipeline.ettft_estimator import ReadinessTier
 from logos.pipeline.scheduler_interface import SchedulingRequest, SchedulingResult
+from logos.queue.priority_queue import PriorityQueueManager
 
 MODEL_ID = 31
 STUCK = 1
@@ -27,6 +28,7 @@ def _ettft(tier):
 def _scheduler(scored):
     scheduler = ClassificationCorrectingScheduler.__new__(ClassificationCorrectingScheduler)
     scheduler._logosnode = _Facade()
+    scheduler._queue_mgr = PriorityQueueManager()
     scheduler.calls = {"scores": [], "released": [], "selected": []}
 
     def compute(candidates, deployments, affinity=None, input_tokens=0, request_id=None):  # noqa: ARG001
@@ -77,6 +79,7 @@ def test_moves_to_a_warm_deployment_and_releases_the_stuck_one():
     result = scheduler.try_reroute(_request([STUCK, SLEEPING_ELSEWHERE, WARM]), MODEL_ID, STUCK)
 
     assert result is not None and result.provider_id == WARM
+    assert [row["provider_id"] for row in result.routing_candidates] == [SLEEPING_ELSEWHERE, WARM]
     # The stuck provider is never a candidate, and a sleeping one is skipped.
     assert scheduler.calls["scores"] == [[SLEEPING_ELSEWHERE, WARM]]
     assert scheduler.calls["selected"] == [[WARM]]

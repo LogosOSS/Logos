@@ -1,2 +1,4 @@
+# Input of scripts/lock-requirements.sh, never installed directly: install
+# requirements-guidellm.lock with --no-deps --require-hashes.
 # Pinned because GuideLLM's CLI and report schema are still evolving.
 guidellm[recommended]==0.8.1

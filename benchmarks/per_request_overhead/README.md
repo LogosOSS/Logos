@@ -65,15 +65,13 @@ docker exec -i logos-bench-db psql -U postgres -d logosdb \
 
 # 4. Venvs (once)
 cd logos-orchestrator
-uv venv .venv && uv pip install -q .
+uv sync --locked
 # The worker under test runs in its own venv (the director launches
 # .venv-worker/bin/python for it) so the worker's pinned dependencies
 # cannot replace the orchestrator's locked versions.
 uv venv .venv-worker
-uv pip install -q --python .venv-worker/bin/python -r ../logos-workernode/requirements.txt
-# The checked-in gRPC gencode (src/logos/grpclocal/model_pb2.py) was
-# generated with protoc 6.30; older protobuf runtimes refuse to import it.
-uv pip install -q "protobuf==6.33.6"
+uv pip install -q --python .venv-worker/bin/python --no-deps --require-hashes \
+  -r ../logos-workernode/requirements-standalone.lock
 
 # 5. Run (ports 8090/11436/50051/5433 must be free — the dev stack may hold some)
 .venv/bin/python ../benchmarks/per_request_overhead/run_benchmark.py

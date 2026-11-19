@@ -25,9 +25,8 @@
 #                                the payload to /opt/logos-workernode-mlx, then
 #                                runs install-macos.sh and (re)starts launchd.
 #
-# Registry: ghcr.io (public), NOT Harbor. The Mac must be able to pull without
-# holding Harbor credentials, so this is the one image Harbor never sees; it
-# shares the public GHCR namespace with the mirrors of the others. Check the
+# Registry: ghcr.io/logososs, public like all Logos images. No registry
+# credentials are needed to bootstrap a Mac. Check the
 # package's visibility the first time it appears: a private one cannot be
 # pulled by a bootstrapping Mac (Package settings → Change visibility).
 #
@@ -52,7 +51,7 @@ WORKDIR /payload
 COPY logos_worker_node/ ./logos_worker_node/
 COPY tools/ ./tools/
 COPY scripts/ ./scripts/
-COPY requirements.txt ./requirements.txt
+COPY requirements-standalone.lock ./requirements-standalone.lock
 COPY config.example.mlx.yml ./config.example.mlx.yml
 COPY chat-templates/ ./chat-templates/
 
@@ -62,7 +61,7 @@ RUN chmod +x ./scripts/*.sh
 # COPY that silently matched nothing cannot ship a broken artifact.
 RUN test -f ./logos_worker_node/main.py \
     && test -f ./scripts/install-macos.sh \
-    && test -f ./requirements.txt
+    && test -f ./requirements-standalone.lock
 
 # The commit this payload was built from. bootstrap-macos.sh syncs the payload
 # into the install directory, so this travels with the code; an ENV would never

@@ -64,7 +64,9 @@ async def test_registry_selects_least_active_lane():
 
 
 @pytest.mark.asyncio
-async def test_registry_prefers_lane_with_lower_vllm_queue_pressure():
+@pytest.mark.parametrize("policy", ["demand", "lru"])
+async def test_registry_prefers_lane_with_lower_vllm_queue_pressure(monkeypatch, policy):
+    monkeypatch.setenv("LOGOS_RESIDENCY_POLICY", policy)
     registry = LogosNodeRuntimeRegistry()
     ticket = await registry.consume_ticket(await registry.issue_ticket(16, "worker-qwen", ["model-a"]))
     assert ticket is not None

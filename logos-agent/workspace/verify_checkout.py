@@ -188,6 +188,30 @@ def verify_service(service: str, checkout: Path, cache: Path, tree: str) -> None
             _run([*angular, "test", "--watch=false"], working, environment)
 
 
+def verify_repository(command: str, checkout: Path, tree: str) -> None:
+    """Run a team's build/test command only on an exported candidate without credentials."""
+    if not command.strip() or "\0" in command or len(command) > 4000:
+        raise ValueError("repository verification requires a build and test command")
+    with tempfile.TemporaryDirectory(prefix="logos-verify-repository-") as directory:
+        scratch = Path(directory)
+        home = scratch / "home"
+        home.mkdir()
+        exported = scratch / "repo"
+        export_candidate(checkout, exported, tree, scratch)
+        environment = _environment(home)
+        # Reuse installed offline caches, with private writable copies per check.
+        npm_cache = CACHE / "npm-cache"
+        if npm_cache.is_dir():
+            shutil.copytree(npm_cache, scratch / "npm-cache")
+            environment["npm_config_cache"] = str(scratch / "npm-cache")
+        maven_cache = CACHE / "maven-repository"
+        if maven_cache.is_dir():
+            local_maven = home / ".m2" / "repository"
+            local_maven.parent.mkdir()
+            shutil.copytree(maven_cache, local_maven)
+        _run(["/bin/sh", "-ec", command], exported, environment)
+
+
 def main(arguments: list[str] | None = None) -> int:
     try:
         require_credential_free()
@@ -202,6 +226,13 @@ def main(arguments: list[str] | None = None) -> int:
                 raise ValueError("LOGOS_VERIFICATION_PATHS must be a JSON array from the runner")
         services = selected_services(paths)
         tree = candidate_tree(CHECKOUT)
+        mode = os.environ.get("LOGOS_VERIFICATION_MODE", "logos")
+        if mode == "repository":
+            verify_repository(os.environ.get("LOGOS_VERIFICATION_COMMAND", ""), CHECKOUT, tree)
+            print("[verify] PASSED repository build and test command", flush=True)
+            return 0
+        if mode != "logos":
+            raise ValueError("unknown verification mode")
         if not services:
             print("[verify] No changed Java or Angular service; no compile check selected.", flush=True)
         failed = False

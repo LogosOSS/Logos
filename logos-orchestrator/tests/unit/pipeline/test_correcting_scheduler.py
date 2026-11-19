@@ -180,12 +180,15 @@ class MockAzureFacade:
 
 def _make_scheduler(logosnode=None, azure=None, ettft_enabled=True):
     queue_mgr = PriorityQueueManager()
-    return ClassificationCorrectingScheduler(
+    scheduler = ClassificationCorrectingScheduler(
         queue_manager=queue_mgr,
         logosnode_facade=logosnode or MockLogosNodeFacade(),
         azure_facade=azure or MockAzureFacade(),
         ettft_enabled=ettft_enabled,
     )
+    # This fixture exercises ETTFT ranking and its optional affinity bonus.
+    scheduler._residency_policy = "demand"
+    return scheduler
 
 
 def _make_request(candidates, deployments, request_id="req-1"):

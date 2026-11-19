@@ -43,7 +43,7 @@ Jedes Szenario wird in zwei Konfigurationen getestet:
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip3 install -r requirements.txt
+pip3 install --no-deps --require-hashes -r requirements.lock
 ```
 
 Run with:
@@ -56,13 +56,13 @@ python3 benchmark_logos.py --run-all-scenarios --logos-url https://<logos-url> -
 # Alte pynvml entfernen falls vorhanden
 pip uninstall pynvml -y
 
-pip install httpx numpy matplotlib
+pip install --no-deps --require-hashes -r requirements.lock
 ```
 
 ### GPU-Nodes (einmalig mit Root-Zugriff einrichten)
 
 ```bash
-pip install nvidia-ml-py
+pip install --no-deps --require-hashes -r requirements.lock  # enthält nvidia-ml-py
 ```
 
 Der Remote-Poller (`_REMOTE_POLLER` im Script eingebettet) nutzt dann `nvidia-ml-py` auf den Nodes. Falls `nvidia-ml-py` nicht installiert ist, fällt der Poller automatisch auf `nvidia-smi` zurück — allerdings ohne Hardware-Energiezähler (nur Power-Polling).
@@ -70,7 +70,7 @@ Der Remote-Poller (`_REMOTE_POLLER` im Script eingebettet) nutzt dann `nvidia-ml
 ### Vorbereitung der Workloads
 
 ```bash
-pip install datasets  # nur für prepare_benchmark.py benötigt
+pip install --no-deps --require-hashes -r requirements.lock  # enthält datasets für prepare_benchmark.py
 ```
 
 ---
@@ -455,7 +455,7 @@ python benchmark_logos.py \
 ```bash
 pip show pynvml          # sollte leer sein
 pip uninstall pynvml -y
-pip install nvidia-ml-py
+pip install --no-deps --require-hashes -r requirements.lock  # enthält nvidia-ml-py
 ```
 
 **SSH-Verbindung zu GPU-Node schlägt fehl:**
