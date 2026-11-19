@@ -10,7 +10,7 @@
          invalidates a calibration; it only ranks the shared calibrations a node
          may adopt, so one measured under the same configuration comes first.
          A snapshot carries its own fingerprint inside its profile. -->
-    <changeSet id="078-model-profile-config-fingerprint" author="logos">
+    <changeSet id="082-model-profile-config-fingerprint" author="logos">
         <preConditions onFail="MARK_RAN">
             <not><columnExists tableName="model_profiles" columnName="config_fingerprint"/></not>
         </preConditions>

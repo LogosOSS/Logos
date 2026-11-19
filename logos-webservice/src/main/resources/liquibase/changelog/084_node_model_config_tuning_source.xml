@@ -8,7 +8,7 @@
     <!-- A model configuration can also come from the nightly tuning: when the
          scheduler adopts a winner, the orchestrator writes its values here, so
          a later sync does not overwrite them. -->
-    <changeSet id="080-node-model-config-tuning-source" author="logos">
+    <changeSet id="084-node-model-config-tuning-source" author="logos">
         <sql><![CDATA[
             ALTER TABLE node_model_config DROP CONSTRAINT IF EXISTS node_model_config_source_check;
             ALTER TABLE node_model_config

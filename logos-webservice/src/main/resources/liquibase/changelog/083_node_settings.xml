@@ -10,7 +10,7 @@
          missing key leaves the worker's config.yml value in force.
          settings_revision is bumped on every change, so a worker ignores older
          pushes. yaml_imported_at is set once, after the one-time YAML import. -->
-    <changeSet id="079-node-settings" author="logos">
+    <changeSet id="083-node-settings" author="logos">
         <preConditions onFail="MARK_RAN">
             <not><tableExists tableName="node_settings"/></not>
         </preConditions>

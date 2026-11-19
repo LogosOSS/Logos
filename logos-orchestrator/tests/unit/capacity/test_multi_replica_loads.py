@@ -407,6 +407,7 @@ def _planner(provider: _MockProvider, *, score: float = 2.0, replicate: bool = F
     demand.get_score.return_value = score
 
     planner = CapacityPlanner.__new__(CapacityPlanner)
+    planner._residency_policy = "demand"
     planner._facade = facade
     planner._registry = registry
     planner._demand = demand

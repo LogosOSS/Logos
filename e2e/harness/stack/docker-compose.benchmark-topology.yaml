@@ -82,6 +82,9 @@ services:
   logos-orchestrator:
     environment:
       LOGOS_IDLE_SLEEP_L1_S: "60"
+      # The fleet uses seeded profiles. Automatic maintenance calibration would
+      # delete its lanes during the sleep/wake scenario when CI runs at night.
+      LOGOS_CALIB_ENABLED: "false"
       LOGOS_CAPACITY_PLANNER_ENABLED: "true"
       LOGOS_SCHEDULER_ETTFT_ENABLED: "true"
       # Matrix / local: demand (default) or lru via E2E_RESIDENCY_POLICY.

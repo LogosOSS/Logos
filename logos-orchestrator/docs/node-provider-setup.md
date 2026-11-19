@@ -112,10 +112,11 @@ engines:
 
 (From the worker directory entered in step 3.) The production Compose file
 pulls `${REGISTRY}/logos-workernode-vllm` from
-the project's registry (Harbor for team deployments — set `REGISTRY` and
-`IMAGE_TAG` in `.env` and log in). Without registry access, build the image
-first (this directory is the build context). Put the values in `.env` and
-export them in the shell as well — the Docker CLI does not read `.env`:
+public GHCR at `ghcr.io/logososs`. No registry login is needed.
+Set `IMAGE_TAG` in `.env` to select a published version or PR build.
+To use a local build instead, set `REGISTRY` and `IMAGE_TAG` in `.env`.
+Export them in the shell too: the Docker CLI does not read `.env`.
+Then build from the worker directory:
 
 ```bash
 export REGISTRY=<your-registry> IMAGE_TAG=<tag>

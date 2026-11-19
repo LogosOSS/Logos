@@ -12,9 +12,14 @@ from logos.queue import PriorityQueueManager
 from .test_correcting_scheduler import MockLogosNodeFacade, _make_view
 
 
-@pytest.mark.parametrize("policy,expected", [("demand", 20), ("lru", 20), ("simple", 10)])
+@pytest.mark.parametrize(
+    "policy,expected", [(None, 10), ("", 10), ("invalid", 10), ("demand", 20), ("lru", 20), ("simple", 10)]
+)
 def test_named_model_routing_uses_fixed_ready_order_only_for_simple(monkeypatch, policy, expected):
-    monkeypatch.setenv("LOGOS_RESIDENCY_POLICY", policy)
+    if policy is None:
+        monkeypatch.delenv("LOGOS_RESIDENCY_POLICY", raising=False)
+    else:
+        monkeypatch.setenv("LOGOS_RESIDENCY_POLICY", policy)
     facade = MockLogosNodeFacade()
     for pid in [10, 20, 5]:
         facade.set_view(1, pid, _make_view(provider_id=pid))
@@ -30,7 +35,7 @@ def test_named_model_routing_uses_fixed_ready_order_only_for_simple(monkeypatch,
         [(1, 1.0, 5)], [{"model_id": 1, "provider_id": pid, "type": "logosnode"} for pid in [20, 10, 5]]
     )
     # Under demand/lru the sleeping candidate would legitimately win by its estimate.
-    if policy != "simple":
+    if policy in {"demand", "lru"}:
         scored = [item for item in scored if item[1] != 5]
     assert scheduler._try_immediate_select(scored, "request")[1] == expected
 

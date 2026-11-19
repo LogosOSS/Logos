@@ -50,6 +50,7 @@ def _scheduler(monkeypatch, lanes_by_provider, configured=20, model_ids=None):
     scheduler = ClassificationCorrectingScheduler(
         queue_manager=queue, logosnode_facade=facade, azure_facade=MagicMock()
     )
+    scheduler._residency_policy = "demand"
     return scheduler, facade, queue
 
 

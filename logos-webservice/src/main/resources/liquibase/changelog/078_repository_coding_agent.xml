@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="078-repository-coding-agent" author="LogosOSS">
+        <sql>
+            ALTER TABLE team_repositories
+                ADD COLUMN agent_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN agent_instructions TEXT,
+                ADD COLUMN verification_command TEXT,
+                ADD COLUMN agent_comments_scanned_at TIMESTAMPTZ;
+            ALTER TABLE agent_sessions
+                ADD COLUMN verification_command TEXT,
+                ADD COLUMN repo_base_branch TEXT;
+        </sql>
+        <rollback>
+            <sql>
+                ALTER TABLE agent_sessions DROP COLUMN verification_command, DROP COLUMN repo_base_branch;
+                ALTER TABLE team_repositories
+                    DROP COLUMN agent_comments_scanned_at,
+                    DROP COLUMN verification_command,
+                    DROP COLUMN agent_instructions,
+                    DROP COLUMN agent_enabled;
+            </sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

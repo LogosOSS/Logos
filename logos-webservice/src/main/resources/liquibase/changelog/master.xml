@@ -82,7 +82,11 @@
     <include file="liquibase/changelog/075_answer_cache.xml"/>
     <include file="liquibase/changelog/076_team_show_on_public_stats.xml"/>
     <include file="liquibase/changelog/077_team_public_category.xml"/>
-    <include file="liquibase/changelog/078_model_profile_config_fingerprint.xml"/>
-    <include file="liquibase/changelog/079_node_settings.xml"/>
-    <include file="liquibase/changelog/080_node_model_config_tuning_source.xml"/>
+    <include file="liquibase/changelog/078_repository_coding_agent.xml"/>
+    <include file="liquibase/changelog/079_gateway_pricing_performance.xml"/>
+    <include file="liquibase/changelog/080_security_incidents.xml"/>
+    <include file="liquibase/changelog/081_security_manual_updates.xml"/>
+    <include file="liquibase/changelog/082_model_profile_config_fingerprint.xml"/>
+    <include file="liquibase/changelog/083_node_settings.xml"/>
+    <include file="liquibase/changelog/084_node_model_config_tuning_source.xml"/>
 </databaseChangeLog>

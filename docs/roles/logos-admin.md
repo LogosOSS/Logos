@@ -672,3 +672,81 @@ The page does not change with the role. For the step-by-step procedure, see
 
 This is the same Batch UI as for the App Admin. Upload a `.jsonl` file, look at
 the progress and download the results. See [App Admin → Batches](app-admin.md#batches).
+
+## Security incidents
+
+Open **Agents**, then select **Security incidents**. Only Logos Admins can open
+this page or use its API. The examples below are illustrative. They do not show
+the security state of a production system.
+
+The dashboard shows important vulnerabilities and a separate status for each
+repository. The totals count repository assessments. Select **All statuses** to
+include **Not affected** and **Resolved** results.
+
+![Security incidents with a separate status for each repository](/img/roles/logos-admin-security-incidents.png)
+
+The automatic sources are GitHub critical advisories and the CISA list of known
+exploited vulnerabilities. Each source shows its last successful update. A source
+error remains visible. Low and medium findings do not enter this workflow.
+
+### Register a repository
+
+Expand **Monitored repositories**. Enter `owner/repository`, its base branch, and a **Build and test command**.
+The command runs from the repository root before a fix PR opens. It uses installed tools without credentials or network access.
+Select **Register repository**. This gives LogosOSSAgent permission to analyze
+the repository and propose fix PRs. The bot account must have repository access.
+Team repository links do not automatically grant this permission.
+
+![Repository registration for security assessments](/img/roles/logos-admin-security-repositories.png)
+
+### Report an incident
+
+Expand **Report an important incident**. Enter the advisory ID, severity, title,
+source URL and advisory details. Explain the material impact in **Why this is
+important**. Mark exploitation only when a source confirms it. Optional upstream
+GitHub repositories let the agent check for new releases.
+
+![Manual incident report with source and impact fields](/img/roles/logos-admin-security-intake.png)
+
+Select **Record incident**. The runner creates an assessment for each registered
+repository within 5 minutes. It checks dependencies, images and configuration.
+This includes servers that an application image contains, such as an nginx server
+behind another proxy. Repository files do not prove the current deployment state.
+
+### Read the evidence and next action
+
+Select **Evidence & history** on a repository result. Review the checked commit,
+file evidence, reason and status history. **Not affected** requires an explanation
+of why the vulnerable dependency, version or code path does not apply.
+
+![Repository evidence and security status history](/img/roles/logos-admin-security-evidence.png)
+
+| Status | Meaning and next action |
+|---|---|
+| Queued / Analyzing | Wait for capacity and the analysis result. |
+| Not affected | Read the evidence. The agent checks again each day. |
+| Awaiting upstream | No suitable patch is available. Review the temporary mitigation. The agent checks again after 6 hours. |
+| Fix available / Preparing fix | The agent prepares a change from the verified patch information. |
+| PR open | Review the PR and its checks. The agent does not merge it. |
+| Action required | Review missing evidence or the recommended containment action. |
+| Awaiting deployment | The PR is merged. Confirm that the affected systems received the fix. |
+| Analysis failed | Inspect the linked session. Correct the problem, then select Recheck. |
+| Resolved | An admin recorded completed remediation and its evidence. |
+
+An incident without a patch stays open. A recommendation can include a partial
+shutdown or a complete shutdown. The operator must decide and perform that
+change. The recommendation states the affected service and recovery conditions.
+
+### Confirm remediation
+
+After deployment or mitigation, select **Confirm resolved**. Enter the actual
+remediation evidence, then select **Confirm**. A merged PR alone does not prove
+that the running service is fixed. **Recheck** requests another assessment and
+also requires a reason. New advisory evidence reopens a completed assessment.
+
+![Confirmation with deployment or mitigation evidence](/img/roles/logos-admin-security-confirm.png)
+
+Image scanners can send critical Trivy findings through the admin API. The import
+retains the image digest, scan time and findings without a fix. See the
+[agent service guide](https://github.com/LogosOSS/Logos/tree/main/logos-agent#scanner-evidence)
+for the request format and other source options.
