@@ -296,6 +296,13 @@ table {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   overflow: auto;
+
+  // The use policy box shares the dialog with the 40vh license box: it gets
+  // the smaller budget, so the whole content — and the acceptance checkbox —
+  // fits the dialog's visible window instead of pushing below the scroll.
+  &--policy {
+    max-height: 15vh;
+  }
 }
 
 // The "I accept this model's license agreement." checkbox row.

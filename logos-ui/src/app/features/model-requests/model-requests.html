@@ -243,7 +243,7 @@
           }
           @if (license()!.use_policy_text) {
             <p class="license-note">Use policy — {{ license()!.use_policy_file }}</p>
-            <pre class="license-text">{{ license()!.use_policy_text }}</pre>
+            <pre class="license-text license-text--policy">{{ license()!.use_policy_text }}</pre>
           }
           @if (license()!.approved) {
             <p class="license-note license-approved">

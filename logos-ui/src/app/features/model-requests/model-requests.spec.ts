@@ -584,6 +584,11 @@ describe('the license agreement column', () => {
 
     expect(document.body.textContent).toContain('Use policy — USE_POLICY.md');
     expect(document.body.textContent).toContain('Community Use Policy — full text');
+    // The policy box gets the reduced height budget next to the full-height
+    // license box, so the acceptance checkbox stays above the scroll.
+    const policyBox = document.querySelector('pre.license-text--policy');
+    expect(policyBox?.textContent).toContain('Community Use Policy — full text');
+    expect(document.querySelectorAll('pre.license-text--policy').length).toBe(1);
     // Accepting covers both documents, so the wording says so.
     expect(document.querySelector('.license-accept')?.textContent).toContain('and use policy');
     fx.destroy();
@@ -598,6 +603,7 @@ describe('the license agreement column', () => {
 
     expect(document.body.textContent).toContain('MIT License');
     expect(document.body.textContent).not.toContain('Use policy');
+    expect(document.querySelector('pre.license-text--policy')).toBeNull();
     fx.destroy();
   });
 
