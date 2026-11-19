@@ -177,6 +177,7 @@ def _planner(
     registry.peek_runtime_snapshot.return_value = snapshot or _two_gpu_snapshot(free0=48_000.0, free1=48_000.0)
 
     planner = CapacityPlanner.__new__(CapacityPlanner)
+    planner._residency_policy = "demand"
     planner._facade = facade
     planner._registry = registry
     planner._demand = demand if demand is not None else _seed_demand(scores)
