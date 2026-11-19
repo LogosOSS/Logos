@@ -700,3 +700,36 @@ an `Authorization` header, and the token is what authorises the read.
   the environment serve again — the runner captures the pages in one-shot
   containers, so the photos show the revision the session just deployed, not
   the one that was live while the session ran.
+
+### Coding in linked team repositories
+
+On **Team → Repositories**, edit or link a GitHub repository and select
+**Enable LogosOSSAgent for this repository**. Links default to analysis only.
+Enter a **Build and test command** that runs from the repository root, and
+optionally add repository instructions for tooling and coding conventions.
+For example, a Make-based project can use `make check && make build`.
+The configured branch is the base for new issue work and review comparisons.
+
+Give the configured agent account access to the repository on GitHub; private
+repositories need access for both the runner and session tokens. Read-only
+deploy keys used for analysis do not grant coding access. Assign an issue or
+pull request, request a review, or mention the account in a comment to ask it
+for work. Enabling the link does not start work on every issue.
+
+The runner polls enabled repositories every two minutes. Trigger history,
+comment cursors, workspaces, replies and CI follow-ups stay with their GitHub
+repository. If several teams enable the same repository, it is polled once,
+using the settings of the oldest enabled link. The globally configured Logos
+repository keeps its existing behavior independently of linked-repository opt-ins.
+
+Build and test commands run against a disposable copy of the candidate in the
+existing verification container without credentials or internet access. The
+image provides its installed tools and offline Maven/npm caches; other language
+tools or dependencies must already be available in the image. Missing tools or
+dependencies fail verification and allow only a draft PR. Repository instructions
+do not change the container image or install software on the runner. Linked
+coding sessions never invoke Logos image-build or deployment workflows.
+
+Disabling the link stops polling for new requests. Sessions already queued or
+running, their retries and pending replies retain their original repository and
+verification command. Changes to repository settings apply to newly queued work.
