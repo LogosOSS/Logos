@@ -2,7 +2,7 @@
 <databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
-    <changeSet id="078-benchmark-workload-size" author="logos">
+    <changeSet id="082-benchmark-workload-size" author="logos">
         <sql>ALTER TABLE benchmark_workloads DROP CONSTRAINT benchmark_workloads_request_count_check,
             ADD CONSTRAINT benchmark_workloads_request_count_check CHECK (request_count BETWEEN 1 AND 500)</sql>
         <rollback><sql>ALTER TABLE benchmark_workloads DROP CONSTRAINT benchmark_workloads_request_count_check,

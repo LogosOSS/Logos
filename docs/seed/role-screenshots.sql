@@ -662,6 +662,23 @@ WHERE t.name = 'Logos'
       WHERE tr.team_id = t.id AND tr.repo_slug = 'LogosOSS/Logos'
   );
 
+-- Fictional application link for the coding-agent editor. No GitHub work runs here.
+INSERT INTO team_repositories (
+    team_id, repo_url, repo_slug, branch, paths,
+    agent_enabled, verification_command, agent_instructions
+)
+SELECT t.id, 'https://github.com/docs-example/sample-app.git', 'docs-example/sample-app',
+       'develop', '["src"]'::jsonb, TRUE, 'make check && make build',
+       'Use the project Makefile. Keep API behavior compatible.'
+FROM teams t
+WHERE t.name = 'Logos'
+ON CONFLICT (team_id, repo_slug) DO UPDATE SET
+    branch = EXCLUDED.branch,
+    paths = EXCLUDED.paths,
+    agent_enabled = EXCLUDED.agent_enabled,
+    verification_command = EXCLUDED.verification_command,
+    agent_instructions = EXCLUDED.agent_instructions;
+
 INSERT INTO ai_workflow_analyses (
     team_id, team_repository_id, commit_sha, status, source, finished_at
 )

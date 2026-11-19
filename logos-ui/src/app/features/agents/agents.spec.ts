@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 
 import { TeamManagementService } from '../../core/services/team-management.service';
 import { AgentService } from '../../core/services/agent.service';
@@ -156,6 +157,7 @@ describe('Agents', () => {
     await TestBed.configureTestingModule({
       imports: [Agents],
       providers: [
+        provideRouter([]),
         { provide: AgentService, useValue: agentService },
         { provide: TeamManagementService, useValue: teamService },
       ],

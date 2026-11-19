@@ -7,6 +7,7 @@ import {
   inject,
   signal,
 } from '@angular/core';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AgentService } from '../../core/services/agent.service';
@@ -71,13 +72,14 @@ export function scaleSlotCounts(parts: number[], limit: number): number[] {
 @Component({
   selector: 'app-agents',
   standalone: true,
-  imports: [CommonModule, FormsModule, SelectComponent],
+  imports: [CommonModule, FormsModule, SelectComponent, RouterLink],
   templateUrl: './agents.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './agents.scss',
 })
 export class Agents implements OnInit {
   private agentService = inject(AgentService);
+  private route = inject(ActivatedRoute);
   private teamService = inject(TeamManagementService);
   private destroyRef = inject(DestroyRef);
   /** Local clock: elapsed timings keep moving even when session polling stops. */
@@ -261,6 +263,14 @@ export class Agents implements OnInit {
       this.resetScreenshots();
     });
     await this.refresh();
+    const sessionId = Number(this.route.snapshot.queryParamMap.get('session'));
+    if (Number.isSafeInteger(sessionId) && sessionId > 0) {
+      try {
+        const session = this.sessions().find(s => s.id === sessionId) ?? await this.agentService.getSession(sessionId);
+        if (!this.sessions().some(s => s.id === sessionId)) this.sessions.update(rows => [...rows, session]);
+        await this.select(session);
+      } catch { this.error.set('The linked agent session could not be loaded.'); }
+    }
   }
 
   private async tick(): Promise<void> {

@@ -103,7 +103,7 @@ export function keyTypeSlices(stats: PublicStats): ChartSlice[] {
       // answers what that type is for (automated jobs, not a person or app env).
       key: 'service',
       label: 'Service keys',
-      caption: 'Keys for automated backend jobs. Not tied to a person or an app environment.',
+      caption: 'Keys for automated jobs and services. Not tied to a person or an app environment.',
       value: kt.service ?? 0,
       color: 'var(--duo-3)',
       hidden: false,

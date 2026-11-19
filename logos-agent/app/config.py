@@ -85,6 +85,9 @@ COMMIT_FILE = "commit.txt"
 
 @dataclass(frozen=True)
 class Settings:
+    security_enabled: bool = _bool("LOGOS_AGENT_SECURITY_ENABLED", True)
+    security_feeds_enabled: bool = _bool("LOGOS_AGENT_SECURITY_FEEDS_ENABLED", True)
+
     # --- database ---------------------------------------------------------
     db_host: str = os.getenv("DB_HOST", "logos-db")
     db_port: int = _int("DB_PORT", 5432)

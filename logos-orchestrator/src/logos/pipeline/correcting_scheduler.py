@@ -36,7 +36,7 @@ from logos.benchmarks.reservations import benchmark_reservations
 from logos.context_budget import estimate_prompt_tokens
 from logos.monitoring import prometheus_metrics as prom
 from logos.queue.priority_queue import Priority
-from logos.residency_policy import configured_residency_policy
+from logos.residency_policy import DEFAULT_RESIDENCY_POLICY, configured_residency_policy
 from logos.terminal_logging import style_model, style_provider
 from logos.timeouts import global_timeout_s
 
@@ -135,7 +135,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 logger.warning("Invalid ECCS_WEIGHT_OVERRIDE, ignoring: %s", _override_raw)
 
     def _uses_ettft_routing(self) -> bool:
-        return getattr(self, "_residency_policy", "demand") != "simple"
+        return getattr(self, "_residency_policy", DEFAULT_RESIDENCY_POLICY) != "simple"
 
     @staticmethod
     def _simple_candidate_key(candidate: tuple) -> tuple:

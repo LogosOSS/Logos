@@ -165,6 +165,20 @@ jobs:
   test-agent:
     name: Test Agent
     runs-on: ubuntu-latest
+    services:
+      security-postgres:
+        image: postgres:17.11
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: security_tests
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      SECURITY_TEST_DATABASE_URL: postgresql+asyncpg://postgres:test-password@localhost:5432/security_tests
     steps:
       - name: Checkout repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -230,9 +244,42 @@ jobs:
             logos-webservice/target/site/jacoco/jacoco.xml
           retention-days: 1
 
+  test-posix-wrapper:
+    name: Test POSIX wrapper (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test installer with the system Bash
+        run: |
+          python3 -m unittest discover -s logos-orchestrator/tests/unit -p test_claude_logos_wrappers.py -v
+          /bin/bash -n logos-ui/public/claude-logos.sh
+
+  test-windows-wrapper:
+    name: Test Windows wrapper
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test installation with Windows PowerShell 5.1
+        shell: powershell
+        run: ./logos-orchestrator/tests/wrappers/test_windows_install.ps1
+
+      - name: Upload wrapper coverage
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wrapper-coverage
+          path: logos-ui/coverage/wrappers.xml
+          retention-days: 1
+
   quality:
     name: SonarQube Cloud Analysis
-    needs: [test, test-node-manager, test-agent, test-webservice, test-ui-export]
+    needs: [test, test-node-manager, test-agent, test-webservice, test-ui-export, test-posix-wrapper, test-windows-wrapper]
     # Pull requests from forks and from Dependabot get no repository secrets,
     # so the analysis cannot authenticate there. Dependency updates change no
     # analysed source; the push to main after the merge is analysed as usual.
@@ -278,6 +325,12 @@ jobs:
           name: ui-coverage
           path: logos-ui/coverage/logos-ui
 
+      - name: Download wrapper coverage report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wrapper-coverage
+          path: logos-ui/coverage
+
       - name: Set up Java
         uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
@@ -290,6 +343,20 @@ jobs:
         # Lets the Java analysis resolve the types the web service imports.
         run: mvn -B -q dependency:copy-dependencies -DincludeScope=test -DoutputDirectory=target/dependency
         working-directory: logos-webservice
+
+      - name: Set up Node.js for registry tests
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: logos-ui/.nvmrc
+
+      - name: Test registry cleanup with coverage
+        run: |
+          mkdir -p .github/scripts/coverage
+          node --test --experimental-test-coverage \
+            --test-coverage-include='.github/scripts/cleanup-ghcr.cjs' \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=lcov --test-reporter-destination=.github/scripts/coverage/lcov.info \
+            .github/scripts/tests/cleanup-ghcr.test.cjs
 
       - name: Run analysis
         uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4 # v8.5.0

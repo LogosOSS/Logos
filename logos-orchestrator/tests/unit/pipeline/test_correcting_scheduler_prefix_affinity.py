@@ -31,12 +31,15 @@ MULTI_MODEL_CANDIDATES = [(MODEL_ID, 10.0, 1), (OTHER_MODEL_ID, 9.0, 1)]
 
 
 def _scheduler(logosnode, router=None):
-    return ClassificationCorrectingScheduler(
+    scheduler = ClassificationCorrectingScheduler(
         queue_manager=PriorityQueueManager(),
         logosnode_facade=logosnode,
         azure_facade=MockAzureFacade(),
         prefix_router=router if router is not None else PrefixAffinityRouter(ttl_s=600, max_entries=100),
     )
+    # This fixture exercises ETTFT ranking and its optional affinity bonus.
+    scheduler._residency_policy = "demand"
+    return scheduler
 
 
 def _two_warm_workers(queue_waiting_a=0.0, queue_waiting_b=0.0):

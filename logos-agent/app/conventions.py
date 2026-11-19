@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from . import db
+from . import db, repository_context
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +214,28 @@ def forget() -> None:
     _cached, _read_at = DEFAULTS, 0.0
 
 
+GENERIC_ENVIRONMENT_NOTES = """
+You are running unattended in an isolated container in this repository's checkout.
+Work only here. The runner commits, pushes and opens pull requests after you finish;
+you have no GitHub credentials and no internet beyond the model gateway.
+Read this repository's documentation and instructions for its conventions and tools.
+Run its configured build and test command. Dependencies must be available offline;
+report unavailable tools or dependencies accurately. The runner repeats verification
+in a disposable copy without credentials. A failed check permits only a draft PR.
+Do not deploy. Write a concise English summary and the commit subject to
+$LOGOS_ARTIFACT_DIR/commit.txt (one imperative line, under sixty characters).
+""".strip()
+
+
 async def for_task(task: str) -> str:
     """One task, followed by the conventions it has to hold to."""
+    target = repository_context.current()
+    if target:
+        return (
+            f"{task.strip()}\n\n{GENERIC_ENVIRONMENT_NOTES}\n\n"
+            f"Repository: {target['repo_slug']}\nBase branch: {target.get('branch') or 'main'}\n"
+            f"Build and test command: {target.get('verification_command') or '(not configured)'}\n\n"
+            f"Repository instructions:\n{target.get('agent_instructions') or '(follow the repository documentation)'}"
+        )
     rules = (await current()).house_rules.strip()
     return f"{task.strip()}\n\n{rules}" if rules else task.strip()
