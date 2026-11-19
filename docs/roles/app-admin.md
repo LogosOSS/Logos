@@ -107,6 +107,35 @@ commits. It does not analyze a repository that has no change.
 
 ![Team detail — Repositories](/img/roles/team-detail-repositories.png)
 
+#### Enable the coding agent
+
+Repository analysis uses read-only access. The coding agent can also change
+files and create pull requests after a repository owner requests work on GitHub.
+
+1. Give the configured agent account access to the repository on GitHub.
+2. Select **Edit repository link** for the repository.
+3. Select **Enable LogosOSSAgent for this repository**.
+4. Enter the **Build and test command** that the agent must run from the repository root.
+5. Optionally enter **Repository instructions** for the tools and conventions of the project.
+6. Select **Save**.
+
+![Team detail — Repository coding agent settings](/img/roles/team-detail-repository-agent.png)
+
+The **Branch** is the base for new issue work. The command runs without
+credentials or internet access. The required tools and dependencies must exist
+in the agent image. A failed command permits only a draft pull request.
+
+Assign an issue or pull request to the agent on GitHub to request work.
+You can also request a review or mention the agent in a comment.
+The agent checks enabled repositories every 2 minutes. Analysis deploy keys
+remain read-only and do not give the coding agent access.
+
+The list shows **Coding agent: Enabled** when the option is active.
+Clear the option and select **Save** to stop new requests.
+Queued work and retries keep their saved repository and command.
+If several teams enable the same repository, the oldest enabled link supplies
+the settings. Linked repositories do not use Logos deployment workflows.
+
 ### Workflows
 
 This tab shows the latest AI-workflow analyses for the linked repositories of

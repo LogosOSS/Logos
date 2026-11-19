@@ -32,7 +32,19 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import attachments, capacity, controls, conventions, db, docker_engine, github, model_policy, triggers, upstream
+from . import (
+    attachments,
+    capacity,
+    controls,
+    conventions,
+    db,
+    docker_engine,
+    github,
+    model_policy,
+    repository_context,
+    triggers,
+    upstream,
+)
 from .artifacts import read_artifact_text
 from .asyncio_tasks import cancel_and_wait
 from .config import INTERRUPTION_FILE, REPLY_DIR, REPLY_FILE, REVIEW_COMMENTS_FILE, REVIEWED_SHA_FILE, settings
@@ -190,7 +202,7 @@ def _fallback_subject(session: dict[str, Any]) -> str:
     better and is preferred, but a commit should never be titled after the
     first line of the task it was handed.
     """
-    ref = str(session.get("trigger_ref") or "")
+    ref = repository_context.local_ref(str(session.get("trigger_ref") or ""))
     match = re.match(r"^(issue|pr|thread)-(\d+)", ref)
     if not match:
         return ""
@@ -1363,7 +1375,11 @@ class SessionManager:
             # Kept on the row as well as handed over: these are editable,
             # so "the exact prompt this session was given" stops being true
             # the moment somebody edits them. The page reads it from here.
-            notes = (await conventions.current()).environment_notes
+            notes = (
+                conventions.GENERIC_ENVIRONMENT_NOTES
+                if session.get("repo_slug") and session.get("trigger_kind") != "analysis"
+                else (await conventions.current()).environment_notes
+            )
             try:
                 await db.update_session(sid, environment_notes=notes)
             except Exception as exc:
@@ -1777,6 +1793,7 @@ class SessionManager:
             "LOGOS_SESSION_BRANCH": branch,
             "LOGOS_SESSION_BASE_BRANCH": workspace["base_branch"],
             "LOGOS_SESSION_PR_BASE_BRANCH": pr_base,
+            "LOGOS_SESSION_REPOSITORY_BRANCH": session.get("repo_base_branch") or "",
             "LOGOS_REPO_URL": session.get("repo_url") or settings.repo_url,
             "LOGOS_REPO_SLUG": session.get("repo_slug") or settings.repo_slug,
             "LOGOS_ARTIFACT_DIR": "/artifacts",
@@ -1814,7 +1831,7 @@ class SessionManager:
                 )
             else:
                 logger.info(
-                    "session %s linked analysis has no active deploy key; " "anonymous public checkout only",
+                    "session %s linked analysis has no active deploy key; anonymous public checkout only",
                     session["id"],
                 )
         elif is_analysis:
@@ -1936,6 +1953,14 @@ class SessionManager:
                 "LOGOS_SESSION_PHASE": "verify",
                 "LOGOS_VERIFICATION_PATHS": json.dumps(paths),
                 "LOGOS_VERIFICATION_TREE": tree,
+                **(
+                    {
+                        "LOGOS_VERIFICATION_MODE": "repository",
+                        "LOGOS_VERIFICATION_COMMAND": env.get("LOGOS_VERIFICATION_COMMAND", ""),
+                    }
+                    if env.get("LOGOS_VERIFICATION_MODE") == "repository"
+                    else {}
+                ),
             },
             workspace_volume=workspace["volume_name"],
             artifact_host_path=artifact_host_path,
@@ -2001,7 +2026,7 @@ class SessionManager:
         # number to give; anything else leaves the body empty.
         closes = ""
         if session.get("open_pull_request") and session.get("trigger_kind") == "issue":
-            number = str(session.get("trigger_ref") or "").removeprefix("issue-")
+            number = repository_context.local_ref(str(session.get("trigger_ref") or "")).removeprefix("issue-")
             if number.isdigit():
                 closes = number
         env = {
@@ -2018,7 +2043,7 @@ class SessionManager:
             "LOGOS_SESSION_CLOSES": closes,
             # Who to ask for a review when this session opens (or reuses) a
             # pull request. Empty means nobody beyond CODEOWNERS.
-            "LOGOS_SESSION_PR_REVIEWERS": ",".join(settings.pr_reviewers),
+            "LOGOS_SESSION_PR_REVIEWERS": "" if session.get("repo_slug") else ",".join(settings.pr_reviewers),
             "LOGOS_REPO_URL": session.get("repo_url") or settings.repo_url,
             "LOGOS_REPO_SLUG": session.get("repo_slug") or settings.repo_slug,
             "LOGOS_ARTIFACT_DIR": "/artifacts",
@@ -2035,6 +2060,9 @@ class SessionManager:
             # first line of its task.
             "LOGOS_SESSION_SUBJECT": _fallback_subject(session),
         }
+        if session.get("repo_slug"):
+            env["LOGOS_VERIFICATION_MODE"] = "repository"
+            env["LOGOS_VERIFICATION_COMMAND"] = session.get("verification_command") or ""
         if settings.session_github_token:
             env["GITHUB_TOKEN"] = settings.session_github_token
             env["GH_TOKEN"] = settings.session_github_token
@@ -2419,7 +2447,8 @@ class SessionManager:
             logger.info("could not close the check watch of session %s: %s", session_id, exc)
 
     async def _take_up_a_red_build(self, session: dict[str, Any], branch: str, pushed_sha: str) -> None:
-        status, detail = await github.wait_for_checks(pushed_sha)
+        with repository_context.scope(session):
+            status, detail = await github.wait_for_checks(pushed_sha)
         if status == "timeout":
             # Not an answer. The checks may still be running, or may never
             # have been queued; either way there is no failure to fix, and
@@ -2492,6 +2521,8 @@ class SessionManager:
                 repo_url=session.get("repo_url"),
                 repo_slug=session.get("repo_slug"),
                 team_repository_id=session.get("team_repository_id"),
+                verification_command=session.get("verification_command"),
+                repo_base_branch=session.get("repo_base_branch"),
             )
         except Exception as exc:
             logger.warning("could not take session %s up again: %s", session.get("id"), exc)
@@ -2709,7 +2740,8 @@ class SessionManager:
         if not branch or branch in settings.protected_branches:
             return False
         try:
-            pull = await github.open_pull_request_for(branch)
+            with repository_context.scope(workspace):
+                pull = await github.open_pull_request_for(branch)
         except Exception:
             logger.info("keeping workspace '%s': its pull request could not be looked up", workspace.get("name"))
             return True
@@ -2789,8 +2821,12 @@ class SessionManager:
             await self._post_reply_once(session_id)
 
     async def _post_reply_once(self, session_id: int) -> None:
-        """The body of :meth:`_post_reply`, run with the reply lock held."""
         session = await db.get_session(session_id)
+        with repository_context.scope(session):
+            await self._post_repository_reply(session_id, session)
+
+    async def _post_repository_reply(self, session_id: int, session: dict[str, Any] | None) -> None:
+        """The body of :meth:`_post_reply`, run with the reply lock held."""
         target = str((session or {}).get("reply_target") or "")
         if not target:
             return
@@ -3135,7 +3171,9 @@ class SessionManager:
         goes, so an attempt that dies halfway resumes instead of answering
         a thread twice.
         """
-        reference = re.fullmatch(r"pr-(\d+)-review-(\d+)", str(session.get("trigger_ref") or ""))
+        reference = re.fullmatch(
+            r"pr-(\d+)-review-(\d+)", repository_context.local_ref(str(session.get("trigger_ref") or ""))
+        )
         ask = re.fullmatch(r"issue:(\d+)", target)
         if reference is None or ask is None or reference.group(1) != ask.group(1):
             # A review session whose row does not name the review it
@@ -3417,6 +3455,8 @@ class SessionManager:
         session's.
         """
         session = await db.get_session(session_id)
+        if session and session.get("repo_slug"):
+            return None, None
         if not session or not session.get("deploy_to_dev"):
             return None, None
         if not settings.deploy_enabled:

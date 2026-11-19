@@ -229,6 +229,11 @@ class FakeDb:
         self.comment_mark = None
 
     def install(self, monkeypatch):
+        async def enabled_coding_repositories():
+            return []
+
+        monkeypatch.setattr(triggers.db, "enabled_coding_repositories", enabled_coding_repositories)
+
         async def count_active_trigger_sessions():
             return self.active_triggers
 
@@ -545,8 +550,8 @@ class TestConversation:
         # A rate limit or a dead credential is not the 404 of a plain issue.
         # Reading it that way would queue a reply from the default branch and
         # record a ref that never retries — the failure would become a
-        # decision. It propagates instead: the pass fails, the next pass asks
-        # again.
+        # decision. This repository's pass fails without advancing its
+        # comment cursor, and the next pass asks again.
         repo = FakeRepo(issue_comments=[comment(9002, 864, f"@{AGENT} pls fix linting")])
         repo.writers = {"wasnertobias"}
         repo.install(monkeypatch)
@@ -561,9 +566,10 @@ class TestConversation:
         fake_db.install(monkeypatch)
         allow_models(monkeypatch)
 
-        with pytest.raises(GitHubError):
-            await triggers.TriggerPoller().poll_once()
-
+        poller = triggers.TriggerPoller()
+        assert await poller.poll_once() == []
+        assert "429" in poller.status()["last_error"]
+        assert fake_db.comment_mark is None
         assert fake_db.created == []
 
     async def test_a_question_on_a_plain_issue_is_answered_in_words(self, monkeypatch):
@@ -2580,3 +2586,100 @@ class TestAHeadThePassCouldNotRead:
 
         assert len(queued) == 1
         assert fake_db.created[0]["branch"] == "logos/agent/x/session-1"
+
+
+async def test_linked_repositories_queue_the_same_issue_number_independently(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app import repository_context
+
+    repo = FakeRepo(assigned_issues=[issue(1)])
+    repo.install(monkeypatch)
+    fake_db = FakeDb()
+    fake_db.install(monkeypatch)
+    allow_models(monkeypatch)
+    ceiling(monkeypatch, 10)
+    links = [
+        {
+            "id": index,
+            "repo_slug": f"team/project-{index}",
+            "repo_url": f"https://github.com/team/project-{index}.git",
+            "branch": "develop",
+            "verification_command": "make check",
+            "agent_instructions": "Use the project's Makefile.",
+        }
+        for index in (11, 12)
+    ]
+    monkeypatch.setattr(triggers.db, "enabled_coding_repositories", AsyncMock(return_value=links))
+    monkeypatch.setattr(triggers.db, "repository_comments_scanned_at", AsyncMock(return_value=None))
+    mark = AsyncMock()
+    monkeypatch.setattr(triggers.db, "mark_repository_comments_scanned", mark)
+
+    poller = triggers.TriggerPoller()
+    admission_targets = []
+
+    async def admit():
+        admission_targets.append(repository_context.current())
+
+    poller.on_queued = admit
+    assert len(await poller.poll_once()) == 3
+    assert admission_targets == [None, None, None]
+    assert [row["trigger_ref"] for row in fake_db.created] == [
+        "issue-1",
+        "repo:team/project-11:issue-1",
+        "repo:team/project-12:issue-1",
+    ]
+    assert len({row["workspace_id"] for row in fake_db.created}) == 3
+    for row, link in zip(fake_db.created[1:], links):
+        assert row["repo_slug"] == link["repo_slug"]
+        assert row["repo_url"] == link["repo_url"]
+        assert row["verification_command"] == "make check"
+        assert row["repo_base_branch"] == "develop"
+        assert row["team_repository_id"] == link["id"]
+        assert row["reaction_target"] == f"/repos/{link['repo_slug']}/issues/1"
+        assert row["deploy_to_dev"] is False
+        assert "logos-webservice" not in row["task"]
+        assert "Use the project's Makefile." in row["task"]
+    assert all(w["base_branch"] == "develop" for w in fake_db.workspaces if w["name"].startswith("repo-"))
+    assert mark.await_count == 2
+    assert repository_context.current() is None
+    assert await poller.poll_once() == []
+
+
+async def test_duplicate_enabled_links_poll_one_github_repository(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    repo = FakeRepo(assigned_issues=[issue(2)])
+    repo.install(monkeypatch)
+    fake_db = FakeDb()
+    fake_db.install(monkeypatch)
+    allow_models(monkeypatch)
+    ceiling(monkeypatch, 10)
+    link = {"id": 11, "repo_slug": "team/project", "repo_url": "https://github.com/team/project.git"}
+    monkeypatch.setattr(triggers.db, "enabled_coding_repositories", AsyncMock(return_value=[link, {**link, "id": 12}]))
+    monkeypatch.setattr(triggers.db, "repository_comments_scanned_at", AsyncMock(return_value=None))
+    monkeypatch.setattr(triggers.db, "mark_repository_comments_scanned", AsyncMock())
+    assert len(await triggers.TriggerPoller().poll_once()) == 2
+    assert fake_db.created[-1]["team_repository_id"] == 11
+
+
+async def test_unavailable_default_repository_does_not_stop_linked_repository_polling(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app import repository_context
+
+    link = {"id": 11, "repo_slug": "team/project"}
+    monkeypatch.setattr(triggers.db, "enabled_coding_repositories", AsyncMock(return_value=[link]))
+    visited = []
+
+    async def poll_repository():
+        target = repository_context.current()
+        if target is None:
+            raise RuntimeError("repository unavailable")
+        visited.append(target["repo_slug"])
+        return [101]
+
+    poller = triggers.TriggerPoller()
+    monkeypatch.setattr(poller, "_poll_repository", poll_repository)
+    assert await poller.poll_once() == [101]
+    assert visited == ["team/project"]

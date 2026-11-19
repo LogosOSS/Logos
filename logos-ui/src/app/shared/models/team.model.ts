@@ -165,7 +165,13 @@ export interface TeamProviderBudget {
 }
 
 /** GitHub repository linked to a team for later AI-workflow / SLO analysis. */
-export interface TeamRepository {
+export interface RepositoryAgentSettings {
+  agent_enabled?: boolean;
+  agent_instructions?: string | null;
+  verification_command?: string | null;
+}
+
+export interface TeamRepository extends RepositoryAgentSettings {
   id: number;
   team_id: number;
   repo_url: string;
@@ -180,7 +186,7 @@ export interface TeamRepository {
   latest_analysis?: WorkflowAnalysisSummary | null;
 }
 
-export interface TeamRepositoryPayload {
+export interface TeamRepositoryPayload extends RepositoryAgentSettings {
   repo_url: string;
   branch?: string;
   paths?: string[] | null;
