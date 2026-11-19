@@ -14,35 +14,35 @@
   overflow-x: clip;
 }
 
-.crumb {
-  display: flex;
+// The way back to the provider list, as on the team and model error report pages.
+.breadcrumb {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 6px;
+  margin-bottom: 16px;
   font-size: var(--font-size-sm);
-  color: rgb(var(--color-typography-700));
+  font-weight: var(--font-weight-medium);
+  color: rgb(var(--nav-item-text) / var(--nav-item-text-opacity));
+  text-decoration: none;
+  opacity: var(--opacity-link);
+  transition: opacity 0.15s;
 
-  a {
-    color: inherit;
-    text-decoration: none;
-
-    &:hover {
-      text-decoration: underline;
-    }
-  }
-
-  i {
-    font-size: 10px;
+  &:hover {
+    opacity: 1;
   }
 }
 
 .head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px 16px;
 
+  // A long model name takes the line it needs and pushes the actions below it
+  // instead of being squeezed into a column one letter wide.
   .page-title {
+    flex: 1 1 16rem;
     min-width: 0;
     overflow-wrap: anywhere;
   }
@@ -161,9 +161,14 @@
 }
 
 .sub {
-  margin: 4px 0 16px;
+  margin: 4px 0 8px;
   font-size: var(--font-size-sm);
   color: rgb(var(--color-typography-700));
+}
+
+// The row right below the card intro and the tiles right below a row need no space of their own.
+.sub + .row {
+  padding-top: 6px;
 }
 
 .group {
@@ -248,6 +253,20 @@
 
 .field {
   margin: 0 0 22px;
+
+  // The last field ends the card; the card's own padding is the space below it.
+  &:last-child {
+    margin-bottom: 0;
+  }
+
+  // Name, explanation and input follow each other at one distance.
+  > .label + .hint {
+    margin-top: -4px;
+  }
+
+  > .hint + .area {
+    margin-top: 8px;
+  }
 }
 
 .label {
@@ -276,10 +295,17 @@
 
 .ferr {
   display: flex;
+  align-items: baseline;
   gap: 6px;
   margin: 6px 0 0;
   font-size: var(--font-size-sm);
   color: rgb(var(--color-error));
+
+  // The mark follows the first line of the text, also when the text wraps.
+  i {
+    font-size: inherit;
+    line-height: inherit;
+  }
 }
 
 .control {
@@ -367,6 +393,13 @@ select.num {
     flex-direction: column;
     align-items: flex-end;
     gap: 4px;
+
+    // A message about the field sits right under it, not under the whole row.
+    .ferr {
+      justify-content: flex-end;
+      margin: 0;
+      text-align: right;
+    }
 
     .num,
     .control {
@@ -457,11 +490,12 @@ select.num {
 
 // ── GPU tiles ─────────────────────────────────────────────────────────────────
 
+// Tiles keep their own width: a single GPU must not stretch over the whole card.
 .gpus {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 190px));
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 0;
 }
 
 .gpu {
@@ -487,15 +521,64 @@ select.num {
     border-color: rgb(var(--color-text-accent));
   }
 
-  &--dim {
-    opacity: 0.6;
-  }
-
   .gpu-check {
     position: absolute;
     top: 8px;
     right: 10px;
     color: rgb(var(--color-text-accent));
+  }
+
+  // One line: a mark, the name and the memory. For a choice among few GPUs, as on the node settings page.
+  &--chip {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 0 14px 0 12px;
+    border-radius: 10px;
+    transition: border-color 0.15s, background 0.15s;
+
+    &:hover {
+      border-color: rgb(var(--color-text-accent) / 0.6);
+    }
+
+    .gpu-check {
+      position: static;
+      font-size: var(--font-size-md);
+      color: rgb(var(--color-typography-700));
+    }
+
+    &.gpu--on {
+      background: rgb(var(--color-primary-500) / 0.1);
+
+      .gpu-check {
+        color: rgb(var(--color-text-accent));
+      }
+    }
+  }
+}
+
+// What applies to every GPU at once, beside the name of the setting.
+.pool-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0 8px;
+
+  .label {
+    margin: 0;
+  }
+}
+
+.pool-actions {
+  display: flex;
+  gap: 16px;
+
+  .link:disabled {
+    cursor: default;
+    opacity: 0.45;
   }
 }
 
@@ -604,11 +687,28 @@ select.num {
 }
 
 @media (max-width: 768px) {
+  // The two actions of the GPU pool are as high as a finger needs.
+  .pool-head {
+    row-gap: 0;
+  }
+
+  .pool-actions .link,
+  .link--reset {
+    min-height: 40px;
+    line-height: 40px;
+  }
+
   .row {
     grid-template-columns: minmax(0, 1fr);
 
     .row-control {
       align-items: stretch;
+
+      // Under a full-width field the message reads from the left.
+      .ferr {
+        justify-content: flex-start;
+        text-align: left;
+      }
     }
   }
 }

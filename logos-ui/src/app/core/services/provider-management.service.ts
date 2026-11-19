@@ -133,6 +133,16 @@ export class ProviderManagementService {
     );
   }
 
+  /** Stops the calibration session of the node; the model in progress stays uncalibrated. */
+  stopCalibration(providerId: number): Promise<{ message?: string; was_active?: boolean; current_model?: string }> {
+    return firstValueFrom(
+      this.http.post<{ message?: string; was_active?: boolean; current_model?: string }>(
+        '/api/logosdb/providers/logosnode/stop_calibration',
+        { provider_id: providerId },
+      ),
+    );
+  }
+
   getProviderModels(providerId: number): Promise<ModelConnection[]> {
     return firstValueFrom(this.http.post<ModelConnection[]>('/api/logosdb/get_provider_models', { provider_id: providerId }));
   }

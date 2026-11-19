@@ -88,6 +88,20 @@ def test_the_benchmark_view_names_the_best_runs_and_the_current_settings():
     assert view["current"] == {"tensor_parallel_size": 2}
 
 
+def test_the_benchmark_view_gives_the_recorded_cache_size_the_key_of_the_configuration():
+    summary = {"best_observed": {"benchmark_id": 3, "throughput": 60.0}, "best_eligible": None}
+    runs = {3: {"serving": {"tensor_parallel_size": 2, "kv_cache_memory": "8G", "max_model_len": 4096}}}
+
+    view = benchmark_view(summary, runs, {"kv_cache_memory": "4G"})
+
+    assert view["best_observed"]["settings"] == {
+        "tensor_parallel_size": 2,
+        "kv_cache_memory_bytes": "8G",
+        "max_model_len": 4096,
+    }
+    assert view["current"] == {"kv_cache_memory_bytes": "4G"}
+
+
 def test_the_best_eligible_run_carries_the_throughput_of_the_run_it_was_compared_with():
     summary = {
         "best_observed": {"benchmark_id": 4, "throughput": 52.3, "baseline_id": 3},

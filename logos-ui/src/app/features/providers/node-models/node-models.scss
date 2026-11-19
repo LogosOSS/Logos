@@ -82,6 +82,11 @@
     flex-wrap: wrap;
     justify-content: flex-start;
   }
+
+  // The rows are cards here; the table's rule for the last row would leave the last card without its bottom edge.
+  :host ::ng-deep a.table-row:last-child {
+    border-bottom: 1px solid rgb(var(--color-outline-200) / var(--opacity-border));
+  }
 }
 
 .form-body {

@@ -40,6 +40,8 @@ describe('NodeSettingsPage', () => {
   };
 
   const page = (): NodeSettingsPage => fixture.componentInstance;
+  const poolAction = (root: HTMLElement, label: string): HTMLButtonElement =>
+    Array.from(root.querySelectorAll<HTMLButtonElement>('.pool-actions button')).find((b) => b.textContent?.includes(label))!;
   const saveButton = (root: HTMLElement): HTMLButtonElement => root.querySelector('.savebar .btn-primary') as HTMLButtonElement;
 
   beforeEach(() => {
@@ -65,7 +67,7 @@ describe('NodeSettingsPage', () => {
 
     expect(root.querySelector('h1')?.textContent).toContain('hochbruegge');
     expect(root.textContent).toContain('Settings for the whole node');
-    expect(root.querySelector('.seg--on')?.textContent).toContain('All');
+    expect(poolAction(root, 'Select all').disabled).toBe(true);
     expect(root.textContent).toContain('2 × 39 GB');
     expect(root.querySelectorAll('.gpu--on').length).toBe(2);
     expect(root.textContent).toContain('No changes.');
@@ -80,7 +82,7 @@ describe('NodeSettingsPage', () => {
     (root.querySelector('.retry') as HTMLButtonElement).click();
     await settle();
 
-    expect(root.querySelector('.seg')).not.toBeNull();
+    expect(root.querySelector('.pool-actions')).not.toBeNull();
   });
 
   it('needs a node', async () => {
@@ -126,18 +128,24 @@ describe('NodeSettingsPage', () => {
     expect(saveButton(root).disabled).toBe(false);
   });
 
-  it('sets the pool with All and None and goes back to the default', async () => {
+  it('sets the pool with Select all and Select none; an unset pool reads as all', async () => {
+    service['getNodeSettings']!.mockResolvedValue(stored({}));
     const root = await create();
 
-    page().setMode('none');
+    expect(page().draft()!.gpuMode).toBe('default');
+    expect(poolAction(root, 'Select all').disabled).toBe(true);
+    expect(root.querySelectorAll('.gpu--on').length).toBe(2);
+
+    poolAction(root, 'Select none').click();
     fixture.detectChanges();
-    expect(root.querySelector('.seg--on')?.textContent).toContain('None');
+    expect(page().draft()!.gpuMode).toBe('none');
+    expect(poolAction(root, 'Select none').disabled).toBe(true);
     expect(root.querySelectorAll('.gpu--on').length).toBe(0);
 
-    (Array.from(root.querySelectorAll('button')).find((b) => b.textContent?.includes('Use default')) as HTMLButtonElement).click();
+    poolAction(root, 'Select all').click();
     fixture.detectChanges();
-    expect(page().draft()!.gpuMode).toBe('default');
-    expect(root.querySelectorAll('.gpu--dim').length).toBe(2);
+    expect(page().draft()!.gpuMode).toBe('all');
+    expect(root.querySelectorAll('.gpu--on').length).toBe(2);
   });
 
   it('blocks Save with a message at the field while a value cannot be right', async () => {
@@ -173,6 +181,30 @@ describe('NodeSettingsPage', () => {
     expect(root.textContent).toContain('applies the settings now');
     expect(root.textContent).not.toContain('measured again');
     expect(page().stored()?.revision).toBe(3);
+    expect(page().dirty()).toBe(false);
+  });
+
+  it('shows the reboot as On until it is set to Off', async () => {
+    const root = await create();
+    const on = (): string => root.querySelector('#reboot-label')?.closest('.row')?.querySelector('.seg--on')?.textContent?.trim() ?? '';
+
+    expect(on()).toBe('On');
+    expect(page().dirty()).toBe(false);
+
+    const off = Array.from(root.querySelectorAll<HTMLButtonElement>('.seg button')).find((b) => b.textContent?.trim() === 'Off')!;
+    off.click();
+    fixture.detectChanges();
+
+    expect(on()).toBe('Off');
+    expect(page().draft()!.reboot).toBe('false');
+    expect(page().dirty()).toBe(true);
+
+    const onButton = Array.from(root.querySelectorAll<HTMLButtonElement>('.seg button')).find((b) => b.textContent?.trim() === 'On')!;
+    onButton.click();
+    fixture.detectChanges();
+
+    expect(on()).toBe('On');
+    expect(page().draft()!.reboot).toBe('');
     expect(page().dirty()).toBe(false);
   });
 

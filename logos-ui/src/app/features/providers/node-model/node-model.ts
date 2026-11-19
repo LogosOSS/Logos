@@ -13,6 +13,7 @@ import {
 import { NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ModalConfirmComponent } from '../../../shared/components/modal/modal-confirm/modal-confirm';
 import { combineLatest } from 'rxjs';
 
 import { ProviderManagementService } from '../../../core/services/provider-management.service';
@@ -53,12 +54,13 @@ import {
 
 /** How often the page reads the state again while a calibration runs. It ends without an event for this page. */
 export const CALIBRATION_POLL_MS = 10000;
+const CONTEXT_MIN = 1024;
 
 /** One model on one logosnode: its configuration and what Logos measured. */
 @Component({
   selector: 'app-node-model',
   standalone: true,
-  imports: [ErrorMessageComponent, NgTemplateOutlet, RouterLink],
+  imports: [ErrorMessageComponent, ModalConfirmComponent, NgTemplateOutlet, RouterLink],
   templateUrl: './node-model.html',
   styleUrls: ['../node-page.scss', './node-model.scss'],
   changeDetection: ChangeDetectionStrategy.Eager,
@@ -140,11 +142,18 @@ export class NodeModel implements OnInit {
     ticks.push({ label: `${w.max} GB`, pct: 100 });
     return ticks;
   });
+  /** The smallest context the sliders and the field take; the scale starts here, not at 0. */
+  readonly ctxMin = CONTEXT_MIN;
+  /** Where a context length lies on the slider, in percent of the track. */
+  ctxPct(tokens: number): number {
+    const span = Math.max(1, this.ctxMax() - CONTEXT_MIN);
+    return Math.min(100, Math.max(0, ((tokens - CONTEXT_MIN) / span) * 100));
+  }
   readonly ctxTicks = computed(() => {
     const max = this.ctxMax();
-    const ticks: { label: string; pct: number }[] = [{ label: '0', pct: 0 }];
+    const ticks: { label: string; pct: number }[] = [{ label: `${CONTEXT_MIN / 1024}k`, pct: 0 }];
     for (let v = 32768; v < max * 0.92; v += 32768) {
-      ticks.push({ label: `${v / 1024}k`, pct: (v / max) * 100 });
+      ticks.push({ label: `${v / 1024}k`, pct: this.ctxPct(v) });
     }
     ticks.push({ label: `${Math.round(max / 1024)}k`, pct: 100 });
     return ticks;
@@ -164,7 +173,7 @@ export class NodeModel implements OnInit {
   /** How far the context can go at the chosen KV cache size, in percent of the slider. */
   readonly ctxBand = computed(() => {
     const cap = this.capacity() ?? this.capacityAtPlacement();
-    return cap ? Math.min(100, (cap / this.ctxMax()) * 100) : 100;
+    return cap ? this.ctxPct(cap) : 100;
   });
   readonly capacityAtPlacement = computed(() => {
     const p = this.placement();
@@ -214,7 +223,6 @@ export class NodeModel implements OnInit {
     }
     const run = this.bestRun();
     if (run && this.matches(run.settings, p)) {
-      out.push({ value: `${run.throughput.toFixed(1)} tok/s`, caption: 'Throughput · benchmark' });
       if (run.ttft_s) {
         out.push({ value: `${run.ttft_s.toFixed(2)} s`, caption: 'Time to first token · benchmark' });
       }
@@ -280,7 +288,14 @@ export class NodeModel implements OnInit {
   readonly failure = signal<SaveFailure | null>(null);
   readonly notice = signal<{ title: string; text: string } | null>(null);
   readonly calibrationStarting = signal(false);
+  /** The question "Calibrate this model?" is open. */
+  readonly calibrateAsk = signal(false);
+  /** The question "Stop the calibration?" is open. */
+  readonly stopAsk = signal(false);
+  readonly calibrationStopping = signal(false);
   readonly calibrationError = signal<string | null>(null);
+  /** Which request the error belongs to: the start or the stop of a calibration. */
+  readonly calibrationErrorOf = signal<'start' | 'stop'>('start');
   /** A model that is not calibrated or whose calibration is outdated can be measured now. */
   readonly canCalibrate = computed(() => {
     const status = this.insight()?.calibration.status;
@@ -296,9 +311,6 @@ export class NodeModel implements OnInit {
   readonly canEditSettings = computed(() => this.workerOnline() && this.insight() !== null);
   /** A model with no measurement has no placement to show. */
   readonly measured = computed(() => this.result() !== null);
-  readonly advOpen = signal<boolean | null>(null);
-  /** The advanced settings are open unless the model has no calibration yet. */
-  readonly advExpanded = computed(() => this.advOpen() ?? this.measured());
   readonly window = computed(() => kvWindowGb(this.result()));
   readonly saved = computed<Placement | null>(() => {
     const s = this.settings();
@@ -513,13 +525,30 @@ export class NodeModel implements OnInit {
 
   setCtx(value: unknown): void {
     const d = this.draft();
-    const n = Math.round(Number(value) / 1024) * 1024;
+    const n = Math.round(Number(value) / CONTEXT_MIN) * CONTEXT_MIN;
     if (!d || !Number.isFinite(n)) {
       return;
     }
     const cap = this.capacity();
-    this.draft.set({ ...d, ctx: Math.max(1024, cap ? Math.min(n, cap) : n) });
+    this.draft.set({ ...d, ctx: Math.max(CONTEXT_MIN, cap ? Math.min(n, cap) : n) });
   }
+
+  /** Whether the placement being edited is the one the benchmark recommends, in every value the run recorded. */
+  readonly recommendationApplied = computed(() => {
+    const d = this.draft();
+    const best = this.recommendation()?.settings ?? {};
+    if (!d) {
+      return false;
+    }
+    const tp = Number(best['tensor_parallel_size']) || null;
+    const kv = kvToGb(best['kv_cache_memory_bytes']);
+    const ctx = Number(best['max_model_len']) || null;
+    return (
+      (tp === null || tp === d.tp) &&
+      (kv === null || Math.abs(kv - d.kvGb) < 0.05) &&
+      (ctx === null || ctx === d.ctx)
+    );
+  });
 
   applyRecommendation(): void {
     if (!this.editing()) {
@@ -687,8 +716,43 @@ export class NodeModel implements OnInit {
     }
   }
 
-  /** Asks the worker to measure this model now. */
+  /** Stops the calibration of the node. The admin confirmed first. */
+  async stopCalibration(): Promise<void> {
+    this.stopAsk.set(false);
+    const id = this.providerId();
+    if (id === null || this.calibrationStopping()) {
+      return;
+    }
+    const page = this.pageKey();
+    this.calibrationStopping.set(true);
+    this.calibrationError.set(null);
+    try {
+      const result = await this.service.stopCalibration(id);
+      if (page !== this.pageKey()) {
+        return;
+      }
+      this.notice.set({
+        title: result.was_active ? 'Calibration stopped' : 'Nothing to stop',
+        text: result.was_active
+          ? 'The model in progress stays uncalibrated. Nothing partial is saved.'
+          : 'No calibration was running on this node.',
+      });
+      await this.tryRefresh();
+    } catch (e) {
+      if (page === this.pageKey()) {
+        this.calibrationErrorOf.set('stop');
+        this.calibrationError.set(saveFailure(e).message.replace('The configuration could not be saved.', 'The calibration could not be stopped.'));
+      }
+    } finally {
+      if (page === this.pageKey()) {
+        this.calibrationStopping.set(false);
+      }
+    }
+  }
+
+  /** Asks the worker to measure this model now. The admin confirmed first. */
   async calibrate(): Promise<void> {
+    this.calibrateAsk.set(false);
     const id = this.providerId();
     if (id === null || this.calibrationStarting() || !this.canCalibrate()) {
       return;
@@ -702,6 +766,7 @@ export class NodeModel implements OnInit {
         return;
       }
       if (result.count === 0) {
+        this.calibrationErrorOf.set('start');
         this.calibrationError.set(result.message || 'This model does not need calibration.');
       } else {
         this.notice.set({
@@ -713,6 +778,7 @@ export class NodeModel implements OnInit {
       await this.tryRefresh();
     } catch (e) {
       if (page === this.pageKey()) {
+        this.calibrationErrorOf.set('start');
         this.calibrationError.set(saveFailure(e).message.replace('The configuration could not be saved.', 'The calibration could not be started.'));
       }
     } finally {

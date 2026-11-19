@@ -100,6 +100,7 @@ describe('NodeModel', () => {
       getProviders: vi.fn().mockResolvedValue([{ id: 4, name: 'hochbruegge' }]),
       replaceNodeConfig: vi.fn().mockResolvedValue({ provider_id: 4, config_revision: 4 }),
       calibrateModel: vi.fn().mockResolvedValue({ count: 1, message: 'started' }),
+      stopCalibration: vi.fn().mockResolvedValue({ was_active: true, current_model: 'org/a' }),
     };
   });
 
@@ -767,11 +768,61 @@ describe('NodeModel', () => {
 
       expect(root.textContent).toContain('Calibration settings');
       expect(button(root)!.textContent).toContain('Calibrate model');
+      // The button only asks; the calibration starts when the admin confirms.
       button(root)!.click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.calibrateAsk()).toBe(true);
+      expect(service['calibrateModel']).not.toHaveBeenCalled();
+
+      await fixture.componentInstance.calibrate();
       await settle();
 
+      expect(fixture.componentInstance.calibrateAsk()).toBe(false);
       expect(service['calibrateModel']).toHaveBeenCalledWith(4, 'org/a');
       expect(root.textContent).toContain('Calibration started');
+    });
+
+    it('stops a running calibration after the admin confirms', async () => {
+      service['getNodeInsights'].mockResolvedValue(uncalibrated({ calibrating: true }));
+      const root = await create();
+      const stop = (): HTMLButtonElement | undefined =>
+        Array.from(root.querySelectorAll('button')).find((b) => b.textContent?.includes('Stop calibration')) as
+          | HTMLButtonElement
+          | undefined;
+
+      expect(stop()).toBeDefined();
+      stop()!.click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.stopAsk()).toBe(true);
+      expect(service['stopCalibration']).not.toHaveBeenCalled();
+
+      await fixture.componentInstance.stopCalibration();
+      await settle();
+
+      expect(fixture.componentInstance.stopAsk()).toBe(false);
+      expect(service['stopCalibration']).toHaveBeenCalledWith(4);
+      expect(root.textContent).toContain('Calibration stopped');
+    });
+
+    it('says that the stop failed, not that the start did', async () => {
+      service['getNodeInsights'].mockResolvedValue(uncalibrated({ calibrating: true }));
+      service['stopCalibration'].mockRejectedValue({ status: 409, error: { error: 'Worker commands are disabled' } });
+      const root = await create();
+
+      await fixture.componentInstance.stopCalibration();
+      await settle();
+
+      const banner = root.querySelector('.banner--err')!.textContent!;
+      expect(banner).toContain('Calibration not stopped');
+      expect(banner).toContain('Worker commands are disabled');
+      expect(banner).not.toContain('not started');
+    });
+
+    it('offers no stop while nothing is calibrating', async () => {
+      service['getNodeInsights'].mockResolvedValue(uncalibrated());
+      const root = await create();
+
+      expect(root.textContent).not.toContain('Stop calibration');
     });
 
     it('offers it again for an outdated calibration and says why', async () => {
@@ -808,12 +859,12 @@ describe('NodeModel', () => {
       const root = await create();
       service['calibrateModel'].mockResolvedValue({ count: 0, message: 'org/a does not need calibration' });
 
-      button(root)!.click();
+      await fixture.componentInstance.calibrate();
       await settle();
       expect(root.textContent).toContain('org/a does not need calibration');
 
       service['calibrateModel'].mockRejectedValue({ status: 409, error: { error: 'Worker is reserved for nightly benchmarks' } });
-      button(root)!.click();
+      await fixture.componentInstance.calibrate();
       await settle();
       expect(root.textContent).toContain('Worker is reserved for nightly benchmarks');
     });
@@ -824,7 +875,7 @@ describe('NodeModel', () => {
       let finish: (value: unknown) => void = () => undefined;
       service['calibrateModel'].mockReturnValue(new Promise((resolve) => (finish = resolve)));
 
-      button(root)!.click();
+      void fixture.componentInstance.calibrate();
       void fixture.componentInstance.calibrate();
       await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -961,7 +1012,8 @@ describe('NodeModel', () => {
       expect(root.textContent).toContain('52.3 tok/s');
       expect(root.textContent).toContain('0.47 s');
       expect(root.textContent).toContain('5.5 s');
-      expect(root.textContent).toContain('Throughput · benchmark');
+      // The throughput is on the benchmark card; the figures of the placement do not repeat it.
+      expect(root.textContent).not.toContain('Throughput · benchmark');
     });
 
     it('leaves out the benchmark figures when the benchmark ran another placement', async () => {
@@ -970,7 +1022,6 @@ describe('NodeModel', () => {
       );
       const root = await create();
 
-      expect(root.textContent).not.toContain('Throughput · benchmark');
       expect(root.textContent).not.toContain('Time to first token');
     });
 
@@ -981,7 +1032,11 @@ describe('NodeModel', () => {
       expect(page.kvTicks().map((t) => t.label)).toEqual(['0 GB', '1', '2', '3', '4 GB']);
       expect(page.kvTicks().at(-1)!.pct).toBe(100);
       expect(page.ctxMax()).toBe(32768);
-      expect(page.ctxTicks().map((t) => t.label)).toEqual(['0', '32k']);
+      expect(page.ctxTicks().map((t) => t.label)).toEqual(['1k', '32k']);
+      // The scale starts at the smallest context a value can take, so the thumb reaches both ends.
+      expect(page.ctxPct(1024)).toBe(0);
+      expect(page.ctxPct(32768)).toBe(100);
+      expect(page.ctxPct(16896)).toBeCloseTo(50, 5);
       expect(page.kvBand()).toEqual({ left: 25, width: 75 });
     });
 
@@ -1133,10 +1188,21 @@ describe('NodeModel', () => {
       fixture.detectChanges();
 
       expect(root.querySelector('.banner--rec')!.textContent).toContain('Recommended by benchmark');
-      root.querySelector<HTMLButtonElement>('.banner--rec button')!.click();
+      const button = (): HTMLButtonElement => root.querySelector<HTMLButtonElement>('.banner--rec button')!;
+      expect(button().disabled).toBe(false);
+      expect(button().textContent).toContain('Use recommendation');
+      button().click();
       fixture.detectChanges();
 
       expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 5120 });
+      expect(button().disabled).toBe(true);
+      expect(button().textContent).toContain('Recommendation in use');
+      expect(button().querySelector('.pi-check')).not.toBeNull();
+
+      page().setKv(1);
+      fixture.detectChanges();
+      expect(button().disabled).toBe(false);
+      expect(button().textContent).toContain('Use recommendation');
     });
   });
 

@@ -185,7 +185,7 @@ export class Providers implements OnInit, OnDestroy {
   refreshError = signal(false);
 
   // ── Expand state ─────────────────────────────────────────────────────────
-  expandedId = signal<number | null>(null);
+  expandedIds = signal<ReadonlySet<number>>(new Set());
   providerModels = signal<Record<number, ModelConnection[]>>({});
 
   // ── All models (for connect picker) ──────────────────────────────────────
@@ -369,18 +369,16 @@ export class Providers implements OnInit, OnDestroy {
 
   /**
    * Refetch the model lists this page shows — the global model catalogue and,
-   * for an expanded row, that provider's connections. Both move
+   * for each expanded row, that provider's connections. Both move
    * independently: the sync writes per provider, preserving the links the
    * operator configured by hand.
    */
   private async refetchModelLists(): Promise<void> {
     const models = await this.modelService.getModels();
     this.allModels.set(models);
-    const expanded = this.expandedId();
-    if (expanded !== null) {
-      const conns = await this.providerService.getProviderModels(expanded);
-      this.providerModels.update((m) => ({ ...m, [expanded]: conns }));
-    }
+    const expanded = [...this.expandedIds()];
+    const lists = await Promise.all(expanded.map((id) => this.providerService.getProviderModels(id)));
+    this.providerModels.update((m) => ({ ...m, ...Object.fromEntries(expanded.map((id, i) => [id, lists[i]])) }));
   }
 
   formatPrivacy(level: PrivacyLevel): string {
@@ -400,12 +398,17 @@ export class Providers implements OnInit, OnDestroy {
     this.toggleExpand(provider);
   }
 
+  isExpanded(providerId: number): boolean {
+    return this.expandedIds().has(providerId);
+  }
+
+  /** Any number of rows may be open at once; a click opens a closed row and closes an open one. */
   toggleExpand(provider: Provider): void {
-    if (this.expandedId() === provider.id) {
-      this.expandedId.set(null);
+    if (this.isExpanded(provider.id)) {
+      this.expandedIds.update((ids) => new Set([...ids].filter((id) => id !== provider.id)));
       return;
     }
-    this.expandedId.set(provider.id);
+    this.expandedIds.update((ids) => new Set(ids).add(provider.id));
     if (!this.providerModels()[provider.id]) {
       void this.loadProviderModels(provider.id);
     }

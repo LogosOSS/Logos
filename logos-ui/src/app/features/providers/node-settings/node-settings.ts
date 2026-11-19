@@ -15,7 +15,6 @@ import {
   SettingsDraft,
   settingsChanges,
   toSettings,
-  Toggle,
 } from './node-settings-edit';
 
 /** The settings of a whole logosnode that belong to no model. */
@@ -159,8 +158,10 @@ export class NodeSettingsPage implements OnInit {
     this.patch({ args: value });
   }
 
-  setReboot(value: string): void {
-    this.patch({ reboot: value as Toggle });
+  /** On is the value of a node without one, so choosing it again after Off leaves nothing changed. */
+  setReboot(value: 'true' | 'false'): void {
+    const unset = this.stored()?.settings.auto_reboot_on_stuck_gpu === undefined;
+    this.patch({ reboot: value === 'true' && unset ? '' : value });
   }
 
   setPoll(value: string): void {

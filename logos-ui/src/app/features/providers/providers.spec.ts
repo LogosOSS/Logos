@@ -377,6 +377,26 @@ describe('Providers', () => {
       expect(root.textContent).not.toContain('Connected Models');
     });
 
+    it('keeps two providers open at once', async () => {
+      const node = makeProvider({ id: 4, name: 'hochbruegge', provider_type: 'logosnode' });
+      const cloud = makeProvider({ id: 5, name: 'azure' });
+      const root = await expand(node);
+      component.providers.set([node, cloud]);
+      component.toggleExpand(cloud);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      expect(root.querySelector('app-node-models')).not.toBeNull();
+      expect(root.textContent).toContain('Connected Models');
+
+      component.toggleExpand(node);
+      fixture.detectChanges();
+
+      expect(root.querySelector('app-node-models')).toBeNull();
+      expect(root.textContent).toContain('Connected Models');
+    });
+
     it('keeps the connected models of a cloud provider', async () => {
       const root = await expand(makeProvider());
 

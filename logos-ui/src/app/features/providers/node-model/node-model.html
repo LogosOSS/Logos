@@ -1,11 +1,5 @@
 <div class="node-model">
-  <nav class="crumb" aria-label="Breadcrumb">
-    <a routerLink="/providers">Providers</a>
-    <i class="pi pi-chevron-right" aria-hidden="true"></i>
-    <a routerLink="/providers">{{ providerName() || 'Node' }}</a>
-    <i class="pi pi-chevron-right" aria-hidden="true"></i>
-    <span>Models</span>
-  </nav>
+  <a class="breadcrumb" routerLink="/providers"><i class="pi pi-chevron-left" aria-hidden="true"></i> Provider Management</a>
 
   <div class="head">
     <h1 class="page-title">{{ modelName() || 'Model' }}</h1>
@@ -32,7 +26,7 @@
             [disabled]="!workerOnline() || calibrating() || calibrationStarting()"
             [attr.aria-busy]="calibrationStarting()"
             [attr.title]="workerOnline() ? null : 'The worker must be online to calibrate.'"
-            (click)="calibrate()"
+            (click)="calibrateAsk.set(true)"
           >
             @if (calibrationStarting() || calibrating()) {
               <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
@@ -41,6 +35,18 @@
             }
             {{ calibrating() ? 'Calibrating…' : 'Calibrate model' }}
           </button>
+          @if (calibrating()) {
+            <button
+              type="button"
+              class="btn-secondary"
+              [disabled]="!workerOnline() || calibrationStopping()"
+              [attr.aria-busy]="calibrationStopping()"
+              (click)="stopAsk.set(true)"
+            >
+              <i class="pi pi-stop-circle" aria-hidden="true"></i>
+              Stop calibration
+            </button>
+          }
         }
       </div>
     }
@@ -196,7 +202,7 @@
       <div class="banner banner--err" role="alert">
         <i class="pi pi-times-circle" aria-hidden="true"></i>
         <div>
-          <b>Calibration not started</b>
+          <b>{{ calibrationErrorOf() === 'stop' ? 'Calibration not stopped' : 'Calibration not started' }}</b>
           <span>{{ e }}</span>
         </div>
       </div>
@@ -210,9 +216,14 @@
             <b>{{ describePlacement(rec.settings) }}</b>
             <span>{{ speedup() ?? rec.throughput.toFixed(1) + ' tok/s, benchmark #' + rec.benchmark_id + '.' }}</span>
           </div>
-          <button class="btn-primary" type="button" (click)="applyRecommendation()">
-            <i class="pi pi-bolt" aria-hidden="true"></i>
-            Use recommendation
+          <button class="btn-primary" type="button" [disabled]="recommendationApplied()" (click)="applyRecommendation()">
+            @if (recommendationApplied()) {
+              <i class="pi pi-check" aria-hidden="true"></i>
+              Recommendation in use
+            } @else {
+              <i class="pi pi-bolt" aria-hidden="true"></i>
+              Use recommendation
+            }
           </button>
         </div>
       } @else {
@@ -353,7 +364,7 @@
                           id="ctx"
                           type="number"
                           class="num"
-                          min="1024"
+                          [min]="ctxMin"
                           [max]="capacity() ?? null"
                           step="1024"
                           [value]="p.ctx"
@@ -373,18 +384,18 @@
                   <div class="sl-track">
                     <div class="sl-win" [style.left.%]="0" [style.width.%]="ctxBand()" style="border-radius: 99px 0 0 99px"></div>
                     <div class="sl-off" [style.left.%]="ctxBand()" [style.width.%]="100 - ctxBand()" style="border-radius: 0 99px 99px 0"></div>
-                    <div class="sl-fill" [style.left.%]="0" [style.width.%]="(p.ctx / ctxMax()) * 100" style="border-radius: 99px 0 0 99px"></div>
+                    <div class="sl-fill" [style.left.%]="0" [style.width.%]="ctxPct(p.ctx)" style="border-radius: 99px 0 0 99px"></div>
                     @if (bestCtx() !== null && bestCtx()! <= ctxMax()) {
-                      <i class="sl-best" [style.left.%]="(bestCtx()! / ctxMax()) * 100" aria-hidden="true"></i>
+                      <i class="sl-best" [style.left.%]="ctxPct(bestCtx()!)" aria-hidden="true"></i>
                     }
                   </div>
                   @if (editing()) {
-                    <div class="sl-thumb" [style.left.%]="(p.ctx / ctxMax()) * 100" aria-hidden="true"></div>
+                    <div class="sl-thumb" [style.left.%]="ctxPct(p.ctx)" aria-hidden="true"></div>
                     <input
                       class="sl-input"
                       type="range"
                       aria-label="Max. context length"
-                      min="0"
+                      [min]="ctxMin"
                       [max]="ctxMax()"
                       step="1024"
                       [value]="p.ctx"
@@ -517,7 +528,7 @@
                 </p>
               }
             }
-            <button class="btn-secondary btn-sm" type="button" (click)="addCustom()">
+            <button class="btn-secondary btn-sm add-setting" type="button" (click)="addCustom()">
               <i class="pi pi-plus" aria-hidden="true"></i>
               Add setting
             </button>
@@ -526,32 +537,19 @@
           <section class="card" aria-labelledby="adv-title">
             <div class="card-head">
               <h2 id="adv-title">{{ measured() ? 'Advanced settings' : 'Calibration settings' }}</h2>
-              <button
-                class="toggle"
-                type="button"
-                [attr.aria-expanded]="advExpanded()"
-                [attr.aria-controls]="'adv-body'"
-                (click)="advOpen.set(!advExpanded())"
-              >
-                {{ advanced().length === 0 ? 'All default' : advanced().length + ' set' }}
-                <i class="pi" [class.pi-chevron-up]="advExpanded()" [class.pi-chevron-down]="!advExpanded()" aria-hidden="true"></i>
-              </button>
+              <span class="count">{{ advanced().length === 0 ? 'All default' : advanced().length + ' set' }}</span>
             </div>
-            @if (advExpanded()) {
-              <div id="adv-body">
-                @if (advanced().length === 0) {
-                  <p class="sub">No settings yet. Logos calibrates this model with the defaults.</p>
-                } @else {
-                  <p class="sub">
-                    {{ measured() ? 'Settings this model is configured with besides placement.' : 'Logos uses these settings when it calibrates this model.' }}
-                  </p>
-                  <dl class="facts">
-                    @for (a of advanced(); track a.key) {
-                      <div><dt class="mono">{{ a.key }}</dt><dd class="mono">{{ a.value }}</dd></div>
-                    }
-                  </dl>
+            @if (advanced().length === 0) {
+              <p class="sub">No settings yet. Logos calibrates this model with the defaults.</p>
+            } @else {
+              <p class="sub">
+                {{ measured() ? 'Settings this model is configured with besides placement.' : 'Logos uses these settings when it calibrates this model.' }}
+              </p>
+              <dl class="facts">
+                @for (a of advanced(); track a.key) {
+                  <div><dt class="mono">{{ a.key }}</dt><dd class="mono">{{ a.value }}</dd></div>
                 }
-              </div>
+              </dl>
             }
           </section>
         }
@@ -720,3 +718,24 @@
     }
   </div>
 </ng-template>
+
+<app-modal-confirm
+  [visible]="calibrateAsk()"
+  (visibleChange)="calibrateAsk.set($event)"
+  title="Calibrate this model?"
+  message="The worker will measure {{ modelName() }}. This will take several minutes and will use the GPUs of the node."
+  icon="pi-play"
+  confirmLabel="Calibrate"
+  [danger]="false"
+  (confirmed)="calibrate()"
+/>
+
+<app-modal-confirm
+  [visible]="stopAsk()"
+  (visibleChange)="stopAsk.set($event)"
+  title="Stop the calibration?"
+  message="The worker will stop measuring on this node. The model in progress will stay uncalibrated, and nothing partial will be saved."
+  icon="pi-stop-circle"
+  confirmLabel="Stop calibration"
+  (confirmed)="stopCalibration()"
+/>

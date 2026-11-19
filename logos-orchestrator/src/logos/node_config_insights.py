@@ -102,6 +102,17 @@ def calibration_view(
     }
 
 
+def _configuration_keys(serving: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Serving settings of a run under the keys of the node configuration.
+
+    A run records the cache size as ``kv_cache_memory``; the editor reads it as ``kv_cache_memory_bytes``.
+    """
+    settings = dict(serving or {})
+    if "kv_cache_memory" in settings:
+        settings.setdefault("kv_cache_memory_bytes", settings.pop("kv_cache_memory"))
+    return settings
+
+
 def benchmark_view(
     summary: Mapping[str, Any] | None, runs: Mapping[int, Mapping[str, Any]], current: Mapping[str, Any]
 ):
@@ -113,10 +124,11 @@ def benchmark_view(
         if not row:
             return None
         run = runs.get(row["benchmark_id"], {})
+        settings = _configuration_keys(run.get("serving"))
         return {
             "benchmark_id": row["benchmark_id"],
             "throughput": row["throughput"],
-            "settings": run.get("serving") or {},
+            "settings": settings,
             "recorded_at": run.get("recorded_at"),
             "ttft_s": run.get("ttft_s"),
             "latency_s": run.get("latency_s"),
@@ -137,7 +149,7 @@ def benchmark_view(
     return {
         "best_eligible": eligible,
         "best_observed": _best(summary.get("best_observed")),
-        "current": dict(current),
+        "current": _configuration_keys(current),
         "eligible_for_comparison": eligible is not None,
     }
 

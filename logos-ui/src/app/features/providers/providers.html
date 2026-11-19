@@ -39,7 +39,7 @@
     @for (provider of filteredProviders(); track provider.id) {
       <div
         class="table-row table-row--clickable"
-        [class.table-row--expanded]="expandedId() === provider.id"
+        [class.table-row--expanded]="isExpanded(provider.id)"
         role="row"
         (click)="onRowClick($event, provider)"
       >
@@ -49,7 +49,7 @@
             type="button"
             (click)="toggleExpand(provider)"
             [attr.aria-label]="'Expand ' + provider.name"
-            [class.btn-chevron--open]="expandedId() === provider.id"
+            [class.btn-chevron--open]="isExpanded(provider.id)"
           >
             <i class="pi pi-chevron-right" aria-hidden="true"></i>
           </button>
@@ -61,7 +61,7 @@
             type="button"
             (click)="toggleExpand(provider)"
             [attr.aria-label]="'Expand ' + provider.name"
-            [class.btn-chevron--open]="expandedId() === provider.id"
+            [class.btn-chevron--open]="isExpanded(provider.id)"
           >
             <i class="pi pi-chevron-right" aria-hidden="true"></i>
           </button>
@@ -118,7 +118,7 @@
         </div>
       </div>
 
-      @if (expandedId() === provider.id) {
+      @if (isExpanded(provider.id)) {
         <div class="expanded-row" role="row">
           <div class="expanded-content">
             @if (provider.provider_type === 'logosnode') {
