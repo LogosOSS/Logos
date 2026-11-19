@@ -709,6 +709,11 @@ select.num {
         justify-content: flex-start;
         text-align: left;
       }
+
+      // A choice between a few words keeps its own width instead of spanning the row.
+      > .seg {
+        align-self: flex-start;
+      }
     }
   }
 }

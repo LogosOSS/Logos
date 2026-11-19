@@ -818,6 +818,36 @@ describe('NodeModel', () => {
       expect(banner).not.toContain('not started');
     });
 
+    it('says how a calibration ended and drops the notice of its start', async () => {
+      service['getNodeInsights'].mockResolvedValue(uncalibrated());
+      const root = await create();
+      await fixture.componentInstance.calibrate();
+      await settle();
+      expect(root.textContent).toContain('Calibration started');
+
+      // The node reports the calibration: the notice of the start gives way to the banner.
+      fixture.componentInstance.insights.set(uncalibrated({ calibrating: true }));
+      fixture.detectChanges();
+      expect(root.textContent).not.toContain('Calibration started');
+      expect(root.textContent).toContain('The worker is measuring this model.');
+
+      // It ends with a result.
+      fixture.componentInstance.insights.set(insights([insight({ calibrating: false })]));
+      fixture.detectChanges();
+      expect(root.textContent).not.toContain('The worker is measuring this model.');
+      expect(root.textContent).toContain('Calibration finished');
+    });
+
+    it('says so when a calibration ended without a result', async () => {
+      service['getNodeInsights'].mockResolvedValue(uncalibrated({ calibrating: true }));
+      const root = await create();
+
+      fixture.componentInstance.insights.set(uncalibrated());
+      fixture.detectChanges();
+
+      expect(root.textContent).toContain('Calibration ended without a result');
+    });
+
     it('offers no stop while nothing is calibrating', async () => {
       service['getNodeInsights'].mockResolvedValue(uncalibrated());
       const root = await create();

@@ -188,7 +188,15 @@ def build_insights(
         (snapshot or {}).get("configured_models") or []
     )
     names = [entry["model_name"] for entry in config["entries"]]
-    names += sorted((reported | set(profiles)) - set(names))
+    # A stored profile of a model that the node neither reports nor has a configuration for is listed only
+    # while it holds a calibration. Without one, it is a remnant of a model the node had once.
+    holds_calibration = {
+        name
+        for name, profile in profiles.items()
+        if calibration_view(profile, calibrated_at.get(name), (gpu_slices or {}).get(name))["status"]
+        != "not_calibrated"
+    }
+    names += sorted((reported | holds_calibration) - set(names))
     models = []
     for name in names:
         entry = entries.get(name)

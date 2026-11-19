@@ -124,7 +124,7 @@ def test_each_model_carries_its_catalog_id_when_it_has_one():
         provider_id=1,
         config=config,
         sources={},
-        profiles={"org/b": {}},
+        profiles={"org/b": {"residency_source": "calibrated", "tensor_parallel_size": 1, "base_residency_mb": 9.0}},
         calibrated_at={},
         snapshot=None,
         supports={},
@@ -134,6 +134,25 @@ def test_each_model_carries_its_catalog_id_when_it_has_one():
     )
 
     assert {m["model_name"]: m["model_id"] for m in result["models"]} == {"org/a": 7, "org/b": None}
+
+
+def test_a_stored_profile_without_a_calibration_of_a_model_the_node_no_longer_has_is_not_listed():
+    config = {"revision": 1, "entries": [{"model_name": "org/a", "capability": {}, "overrides": {}}]}
+    snapshot = {"capabilities_models": ["org/a"], "configured_models": [], "runtime": {}}
+
+    result = build_insights(
+        provider_id=1,
+        config=config,
+        sources={},
+        profiles={"org/old": {"loaded_vram_mb": 9000.0}, "org/empty": {}},
+        calibrated_at={},
+        snapshot=snapshot,
+        supports={},
+        calibrating=False,
+        benchmarks={},
+    )
+
+    assert [m["model_name"] for m in result["models"]] == ["org/a"]
 
 
 def test_no_eligible_run_is_not_comparable_and_no_run_at_all_is_none():

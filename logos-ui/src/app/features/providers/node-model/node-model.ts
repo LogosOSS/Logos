@@ -8,6 +8,7 @@ import {
   inject,
   OnInit,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
@@ -362,7 +363,24 @@ export class NodeModel implements OnInit {
   readonly describePlacement = describePlacement;
   readonly mbToGb = mbToGb;
 
+  /** Whether the node was calibrating when the page last looked, to see when a calibration ends. */
+  private wasCalibrating = false;
+
   constructor() {
+    // The page says how a calibration ended, instead of leaving the notice of its start on the page.
+    effect(() => {
+      const now = this.calibrating();
+      const was = this.wasCalibrating;
+      this.wasCalibrating = now;
+      untracked(() => {
+        if (now && this.notice()?.title === 'Calibration started') {
+          // The banner "Calibrating" says it from here on.
+          this.notice.set(null);
+        } else if (was && !now) {
+          this.noteCalibrationEnd();
+        }
+      });
+    });
     effect((onCleanup) => {
       if (!this.calibrating()) {
         return;
@@ -713,6 +731,32 @@ export class NodeModel implements OnInit {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** The notice for a calibration that has just ended: what the model has now. */
+  private noteCalibrationEnd(): void {
+    const title = this.notice()?.title;
+    if (title === 'Calibration stopped' || title === 'Nothing to stop') {
+      return;
+    }
+    const calibration = this.insight()?.calibration;
+    const name = this.modelName();
+    if (calibration?.status === 'calibrated') {
+      this.notice.set({
+        title: 'Calibration finished',
+        text: `${name} is calibrated. Choose TP, KV cache and context under Edit configuration.`,
+      });
+    } else if (calibration?.status === 'unsupported') {
+      this.notice.set({
+        title: 'Calibration finished without a result',
+        text: calibration.reason || `${name} cannot be calibrated on this node.`,
+      });
+    } else {
+      this.notice.set({
+        title: 'Calibration ended without a result',
+        text: `${name} has no new measurement. The calibration was stopped or failed; the log of the worker has the reason.`,
+      });
     }
   }
 
