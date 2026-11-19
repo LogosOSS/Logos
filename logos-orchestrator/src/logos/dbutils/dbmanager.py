@@ -27,7 +27,7 @@ from logos.dbutils.types import (
 )
 from logos.model_names import is_safe_model_name
 from logos.model_profile_store import CALIBRATION_FIELDS, base_residency_agrees
-from logos.node_config import kv_size_mb, selection_covered
+from logos.node_config import selection_covered, selection_of
 
 # Backwards-compatible re-export (temporary; remove once all imports are migrated)
 __all__ = [
@@ -1972,9 +1972,12 @@ class DBManager:
             SELECT mp.model_name, mp.profile, mp.sync_revision, mp.calibration_key_hash,
                    mc.id AS cal_id, mc.calibration_key_hash AS cal_key_hash,
                    mc.source_provider_id AS cal_source_provider_id,
-                   mc.invalidated_at AS cal_invalidated_at, mc.calibrated_at AS cal_calibrated_at
+                   mc.invalidated_at AS cal_invalidated_at, mc.calibrated_at AS cal_calibrated_at,
+                   mp.config_fingerprint, mp.slice_gpu_count,
+                   nc.capability AS cfg_capability, nc.overrides AS cfg_overrides
             FROM model_profiles mp
             LEFT JOIN model_calibrations mc ON mc.id = mp.calibration_id
+            LEFT JOIN node_model_config nc ON nc.provider_id = mp.provider_id AND nc.model_name = mp.model_name
             WHERE mp.provider_id = :provider_id
               AND """ + _CENTRAL_PROFILE_ROW
         params: Dict[str, Any] = {"provider_id": provider_id}
@@ -1987,6 +1990,8 @@ class DBManager:
             entry = dict(row._mapping)
             if isinstance(entry.get("profile"), str):
                 entry["profile"] = json.loads(entry["profile"])
+            entry["cfg_capability"] = _json_object(entry.get("cfg_capability")) or {}
+            entry["cfg_overrides"] = _json_object(entry.get("cfg_overrides")) or {}
             results.append(entry)
         return results
 
@@ -2240,7 +2245,7 @@ class DBManager:
         """The KV cache size (MB) and context length configured for a model on a node."""
         row = self.session.execute(
             text("""
-                SELECT capability->>'kv_cache_memory_bytes' AS kv, overrides->>'max_model_len' AS context
+                SELECT capability, overrides
                 FROM node_model_config
                 WHERE provider_id = :provider_id AND model_name = :model_name
             """),
@@ -2248,8 +2253,7 @@ class DBManager:
         ).fetchone()
         if row is None:
             return None, None
-        context = int(row.context) if row.context and str(row.context).isdigit() else None
-        return kv_size_mb(row.kv), context
+        return selection_of(_json_object(row.capability) or {}, _json_object(row.overrides) or {})
 
     def _adopt_shared_calibration(
         self, provider_id: int, model_name: str, adopt: bool = True

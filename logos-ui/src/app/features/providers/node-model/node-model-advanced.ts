@@ -149,6 +149,18 @@ export const ADVANCED_FIELDS: AdvancedField[] = [
       help: 'Cache for image and audio inputs. 0 turns it off.',
     },
   ]),
+  // Not an engine option: the profile of the model keeps it, like the GPU choice, under capability.
+  ...fieldsOf('memory', 'capability', [
+    {
+      key: 'base_residency_mb',
+      label: 'Base residency',
+      kind: 'num',
+      min: 1,
+      unit: 'MB',
+      placeholder: 'Measured by calibration',
+      help: 'Replaces the memory that the calibration measured for the weights. Use it only if the calibration cannot measure it.',
+    },
+  ]),
   ...fieldsOf('performance', 'overrides', [
     {
       key: 'enforce_eager',
@@ -259,8 +271,12 @@ export function advancedErrors(draft: AdvancedDraft): Record<string, string> {
     const n = Number(text);
     if (field.kind === 'int' && !(/^\d+$/.test(text) && n >= (field.min ?? 0))) {
       errors[field.key] = `Use a whole number of ${field.min ?? 0} or more.`;
-    } else if ((field.kind === 'num' || field.kind === 'percent') && !(Number.isFinite(n) && n >= field.min! && n <= field.max!)) {
-      errors[field.key] = `Use a value from ${field.min} to ${field.max}.`;
+    } else if (
+      (field.kind === 'num' || field.kind === 'percent') &&
+      !(Number.isFinite(n) && n >= field.min! && (field.max === undefined || n <= field.max))
+    ) {
+      errors[field.key] =
+        field.max === undefined ? `Use a value of ${field.min} or more.` : `Use a value from ${field.min} to ${field.max}.`;
     } else if (['quantization', 'tool_call_parser', 'reasoning_parser'].includes(field.key) && !/^[a-zA-Z0-9_.-]*$/.test(text)) {
       errors[field.key] = 'Use letters, digits, dots, dashes and underscores only.';
     } else if (field.key === 'cuda_graph_sizes' && !/^\d+(,\d+)*$/.test(text)) {

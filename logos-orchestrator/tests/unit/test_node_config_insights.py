@@ -199,6 +199,43 @@ def test_every_measured_tensor_parallel_size_is_listed_and_the_lanes_one_is_acti
     assert results[0]["enforce_eager"] is True
 
 
+def test_sizes_the_node_has_no_gpus_for_are_not_offered():
+    profile = {
+        "residency_source": "calibrated",
+        "tensor_parallel_size": 1,
+        "calibrations_by_tp": [{"tp": 1}, {"tp": 2}, {"tp": 4}],
+    }
+
+    assert [r["tp"] for r in calibration_view(profile, gpu_slice=2)["results"]] == [1, 2]
+    assert [r["tp"] for r in calibration_view(profile)["results"]] == [1, 2, 4]
+    # The size the lane uses stays, whatever the slice says.
+    assert [r["tp"] for r in calibration_view(profile, gpu_slice=0)["results"]] == [1, 2, 4]
+
+
+def test_a_node_with_two_gpus_does_not_get_the_sizes_of_a_four_gpu_snapshot():
+    config = {"revision": 1, "entries": []}
+    profile = {
+        "residency_source": "calibrated",
+        "tensor_parallel_size": 1,
+        "calibrations_by_tp": [{"tp": 1}, {"tp": 2}, {"tp": 4}],
+    }
+
+    result = build_insights(
+        provider_id=1,
+        config=config,
+        sources={},
+        profiles={"org/a": profile},
+        calibrated_at={},
+        snapshot=None,
+        supports={},
+        calibrating=False,
+        benchmarks={},
+        gpu_slices={"org/a": 2},
+    )
+
+    assert [r["tp"] for r in result["models"][0]["calibration"]["results"]] == [1, 2]
+
+
 def test_a_profile_without_the_list_still_shows_the_size_it_has():
     profile = {"residency_source": "calibrated", "tensor_parallel_size": 4, "base_residency_mb": 9.0}
 

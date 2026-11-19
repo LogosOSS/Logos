@@ -1,11 +1,11 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { BehaviorSubject } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProviderManagementService } from '../../../core/services/provider-management.service';
 import { NodeConfig, NodeInsights, NodeModelInsight } from '../../../shared/models/node-config.model';
-import { NodeModel } from './node-model';
+import { CALIBRATION_POLL_MS, NodeModel } from './node-model';
 
 const insight = (overrides: Partial<NodeModelInsight> = {}): NodeModelInsight => ({
   model_name: 'org/a',
@@ -494,6 +494,65 @@ describe('NodeModel', () => {
 
       expect(root.querySelector('.banner--rec-view')!.textContent).toContain('52.3 tok/s, benchmark #7.');
       expect(root.querySelector('.bm-link')).toBeNull();
+    });
+  });
+
+  describe('while a calibration runs', () => {
+    const page = (): NodeModel => fixture.componentInstance;
+    const running = () => insights([insight({ calibrating: true })]);
+
+    beforeEach(() => vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }));
+    afterEach(() => vi.useRealTimers());
+
+    it('reads the state again until the calibration is done, then stops', async () => {
+      service['getNodeInsights'].mockResolvedValue(running());
+      await create();
+      const before = service['getNodeInsights'].mock.calls.length;
+      expect(page().calibrating()).toBe(true);
+
+      service['getNodeInsights'].mockResolvedValue(insights([insight({ calibrating: false })]));
+      vi.advanceTimersByTime(CALIBRATION_POLL_MS);
+      await settle();
+
+      expect(service['getNodeInsights'].mock.calls.length).toBe(before + 1);
+      expect(page().calibrating()).toBe(false);
+
+      vi.advanceTimersByTime(CALIBRATION_POLL_MS * 4);
+      await settle();
+      expect(service['getNodeInsights'].mock.calls.length).toBe(before + 1);
+    });
+
+    it('does not read it again when nothing is calibrating', async () => {
+      await create();
+      const before = service['getNodeInsights'].mock.calls.length;
+
+      vi.advanceTimersByTime(CALIBRATION_POLL_MS * 4);
+      await settle();
+
+      expect(service['getNodeInsights'].mock.calls.length).toBe(before);
+    });
+
+    it('leaves the configuration alone while the admin edits it', async () => {
+      service['getNodeInsights'].mockResolvedValue(running());
+      await create();
+      page().startEdit();
+      const before = service['getNodeConfig'].mock.calls.length;
+
+      vi.advanceTimersByTime(CALIBRATION_POLL_MS * 2);
+      await settle();
+
+      expect(service['getNodeConfig'].mock.calls.length).toBe(before);
+    });
+
+    it('stops when the page is closed', async () => {
+      service['getNodeInsights'].mockResolvedValue(running());
+      await create();
+      const before = service['getNodeInsights'].mock.calls.length;
+
+      fixture.destroy();
+      vi.advanceTimersByTime(CALIBRATION_POLL_MS * 4);
+
+      expect(service['getNodeInsights'].mock.calls.length).toBe(before);
     });
   });
 

@@ -2,8 +2,8 @@
 
 A settings document holds only the keys an admin set; a key it lacks leaves the
 value of config.yml in force. Of these, the global vLLM flags reach every
-plan, the GPU pool the next lane placement, and the GPU poll interval the next
-start.
+plan, the GPU pool the next lane placement, and the GPU poll interval and the
+reboot on a stuck GPU the next start.
 """
 
 from __future__ import annotations
@@ -22,8 +22,9 @@ logger = logging.getLogger(__name__)
 
 SYNC_NODE_SETTINGS_ACTION = "sync_node_settings"
 SETTING_KEYS = ("global_extra_args", "gpu_devices", "auto_reboot_on_stuck_gpu", "gpu_poll_interval")
-# Settings that only the next worker start puts into effect.
-RESTART_KEYS = frozenset({"gpu_poll_interval"})
+# Settings that only the next worker start puts into effect: the GPU collector and the
+# lane manager take them over once, when they are created.
+RESTART_KEYS = frozenset({"gpu_poll_interval", "auto_reboot_on_stuck_gpu"})
 
 _GPU_POOL = re.compile(r"^(all|none|\d+(,\d+)*)$")
 _MAX_POLL_SECONDS = 300

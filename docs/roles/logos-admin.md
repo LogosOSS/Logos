@@ -465,6 +465,9 @@ KV cache memory and the context length. You can change them afterwards.
 
 **Advanced settings** has groups: **Placement**, **Engine** and, under **All engine settings**,
 **Memory and precision**, **Performance and stability**, **Serving** and **Arguments**.
+In **Memory and precision**, the field **Base residency** replaces the memory that the calibration
+measured for the weights. Use it only if the calibration cannot measure the model.
+A new value marks the calibration as outdated.
 Type in **Filter settings** to find a setting by name or key. A dot marks a setting that has a value.
 Select **Use default** to remove the value of a setting. In **GPU devices**, select the GPUs that
 the model may use. If all GPUs are selected, then the model may use all of them.
@@ -522,7 +525,7 @@ expanded worker node.
 |---|---|---|
 | **GPU pool** | `gpu_devices` | The GPUs on which the node can place lanes: all, none or selected GPUs. |
 | **Engine defaults** | `global_extra_args` | The vLLM arguments that Logos adds to every lane. One argument in each line. |
-| **Node care** | `auto_reboot_on_stuck_gpu` | Restarts the host if all lanes failed and a GPU holds unused memory. |
+| **Node care** | `auto_reboot_on_stuck_gpu` | Restarts the host if all lanes failed and a GPU holds unused memory. The worker uses a new value after the next start. |
 | **Node care** | `gpu_poll_interval` | The time in seconds between two readings of the GPU memory (1 to 300). |
 
 An empty field keeps the value of the `config.yml` file of the worker.

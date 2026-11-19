@@ -3,6 +3,7 @@ import {
   Component,
   computed,
   DestroyRef,
+  effect,
   ElementRef,
   inject,
   OnInit,
@@ -49,6 +50,9 @@ import {
   kvToGb,
   mbToGb,
 } from './node-model-format';
+
+/** How often the page reads the state again while a calibration runs. It ends without an event for this page. */
+export const CALIBRATION_POLL_MS = 5000;
 
 /** One model on one logosnode: its configuration and what Logos measured. */
 @Component({
@@ -329,6 +333,21 @@ export class NodeModel implements OnInit {
   readonly formatTokens = formatTokens;
   readonly describePlacement = describePlacement;
   readonly mbToGb = mbToGb;
+
+  constructor() {
+    effect((onCleanup) => {
+      if (!this.calibrating()) {
+        return;
+      }
+      // A change the admin is typing, or saving, must not meet a configuration that moved under it.
+      const timer = setInterval(() => {
+        if (!this.editing() && !this.saving()) {
+          void this.tryRefresh();
+        }
+      }, CALIBRATION_POLL_MS);
+      onCleanup(() => clearInterval(timer));
+    });
+  }
 
   ngOnInit(): void {
     combineLatest([this.route.paramMap, this.route.queryParamMap])

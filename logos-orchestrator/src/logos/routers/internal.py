@@ -1020,6 +1020,7 @@ def _gather_insights(provider_id: int, config: Dict[str, Any]) -> Dict[str, Any]
         model_ids = db.get_catalog_model_ids(sorted(set(known) | set(snapshot_models)))
     profiles = {row["model_name"]: effective_profile(provider_id, row) for row in rows}
     calibrated_at = {row["model_name"]: row.get("cal_calibrated_at") for row in rows}
+    gpu_slices = {row["model_name"]: row.get("slice_gpu_count") for row in rows}
     benchmarks: Dict[str, Any] = {}
     for model, pair_id in pairs.items():
         summary = nightly_store.selection_summary(pair_id)
@@ -1039,6 +1040,7 @@ def _gather_insights(provider_id: int, config: Dict[str, Any]) -> Dict[str, Any]
         calibrating=calibrating,
         benchmarks=benchmarks,
         model_ids=model_ids,
+        gpu_slices=gpu_slices,
     )
 
 

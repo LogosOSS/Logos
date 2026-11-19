@@ -137,6 +137,26 @@ def kv_size_mb(text: Any) -> float | None:
     return float(value) / (1024.0 * 1024.0)
 
 
+def selection_of(
+    capability: Mapping[str, Any] | None, overrides: Mapping[str, Any] | None
+) -> tuple[float | None, int | None]:
+    """The KV cache size (MB) and context length chosen for a model.
+
+    Each value may sit under capability or under overrides, and a plan takes
+    capability first, so the same order applies here.
+    """
+    capability, overrides = capability or {}, overrides or {}
+
+    def chosen(key: str) -> Any:
+        return capability[key] if key in capability else overrides.get(key)
+
+    context = chosen("max_model_len")
+    if isinstance(context, str) and context.strip().isdigit():
+        context = int(context)
+    context = context if isinstance(context, int) and not isinstance(context, bool) and context > 0 else None
+    return kv_size_mb(chosen("kv_cache_memory_bytes")), context
+
+
 def selection_covered(profile: dict[str, Any], kv_mb: float | None, context: int | None) -> bool:
     """Whether a calibration covers the KV cache size and context length chosen for a node.
 

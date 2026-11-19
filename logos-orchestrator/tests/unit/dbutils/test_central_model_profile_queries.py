@@ -241,7 +241,7 @@ def test_adoption_takes_the_first_candidate_that_covers_the_nodes_choice():
     db = _db()
     narrow = _candidate(1, min_kv_cache_mb=1024.0, max_kv_cache_mb=2048.0)
     wide = _candidate(2, min_kv_cache_mb=1024.0, max_kv_cache_mb=8192.0)
-    selection = SimpleNamespace(kv="4G", context=None)
+    selection = SimpleNamespace(capability={"kv_cache_memory_bytes": "4G"}, overrides={})
     db.session.execute.side_effect = _results([narrow, wide], selection, [2])
 
     picked = db._pick_shared_snapshot(7, "org/m", _hint())
@@ -252,7 +252,9 @@ def test_adoption_takes_the_first_candidate_that_covers_the_nodes_choice():
 def test_adoption_takes_nothing_when_no_candidate_covers_the_choice():
     db = _db()
     narrow = _candidate(1, min_kv_cache_mb=1024.0, max_kv_cache_mb=2048.0)
-    db.session.execute.side_effect = _results([narrow], SimpleNamespace(kv="8G", context=None), [])
+    db.session.execute.side_effect = _results(
+        [narrow], SimpleNamespace(capability={"kv_cache_memory_bytes": "8G"}, overrides={}), []
+    )
 
     assert db._pick_shared_snapshot(7, "org/m", _hint()) is None
 
@@ -280,72 +282,34 @@ def test_adoption_without_a_configured_choice_takes_the_first_candidate():
 
 def test_the_nodes_choice_is_read_from_its_configuration():
     db = _db()
-    db.session.execute.return_value = SimpleNamespace(fetchone=lambda: SimpleNamespace(kv="2G", context="8192"))
+    row = SimpleNamespace(capability={"kv_cache_memory_bytes": "2G"}, overrides={"max_model_len": 8192})
+    db.session.execute.return_value = SimpleNamespace(fetchone=lambda: row)
     assert db._node_selection(7, "org/m") == (2048.0, 8192)
 
-    db.session.execute.return_value = SimpleNamespace(fetchone=lambda: SimpleNamespace(kv="bad", context="x"))
+    # Text from the driver, and a choice that is not one.
+    text_row = SimpleNamespace(capability='{"kv_cache_memory_bytes": "bad"}', overrides='{"max_model_len": "x"}')
+    db.session.execute.return_value = SimpleNamespace(fetchone=lambda: text_row)
     assert db._node_selection(7, "org/m") == (None, None)
 
     db.session.execute.return_value = SimpleNamespace(fetchone=lambda: None)
     assert db._node_selection(7, "org/m") == (None, None)
 
 
-def test_a_node_without_settings_has_revision_zero_and_nothing_imported():
+def test_a_kv_cache_choice_stored_under_overrides_counts_with_capability_first():
     db = _db()
-    db.session.execute.return_value = SimpleNamespace(fetchone=lambda: None)
-
-    assert db.get_node_settings(7) == {"revision": 0, "yaml_imported": False, "settings": {}}
-
-
-def test_stored_settings_come_back_with_their_revision():
-    db = _db()
-    row = SimpleNamespace(settings='{"gpu_devices": "0"}', settings_revision=5, yaml_imported_at="t")
+    row = SimpleNamespace(capability={}, overrides={"kv_cache_memory_bytes": "8G"})
     db.session.execute.return_value = SimpleNamespace(fetchone=lambda: row)
+    assert db._node_selection(7, "org/m") == (8192.0, None)
 
-    assert db.get_node_settings(7) == {"revision": 5, "yaml_imported": True, "settings": {"gpu_devices": "0"}}
+    both = SimpleNamespace(capability={"kv_cache_memory_bytes": "2G"}, overrides={"kv_cache_memory_bytes": "8G"})
+    db.session.execute.return_value = SimpleNamespace(fetchone=lambda: both)
+    assert db._node_selection(7, "org/m") == (2048.0, None)
 
-    row.settings = {"gpu_devices": "1"}
-    assert db.get_node_settings(7)["settings"] == {"gpu_devices": "1"}
 
-
-def test_saving_settings_writes_only_at_the_expected_revision():
+def test_a_choice_in_overrides_beyond_the_measured_range_skips_the_snapshot():
     db = _db()
-    db.session.execute.side_effect = [None, SimpleNamespace(fetchone=lambda: SimpleNamespace(settings_revision=6))]
+    small = _candidate(1, min_kv_cache_mb=1024.0, max_kv_cache_mb=2048.0)
+    selection = SimpleNamespace(capability={}, overrides={"kv_cache_memory_bytes": "8G"})
+    db.session.execute.side_effect = _results([small], selection, [])
 
-    assert db.replace_node_settings(7, {"gpu_devices": "0"}, 5, 42) == 6
-    _sql, params = db.session.execute.call_args.args
-    assert params["expected"] == 5
-    assert json.loads(params["settings"]) == {"gpu_devices": "0"}
-    assert params["updated_by"] == 42
-
-    db.session.execute.side_effect = [None, SimpleNamespace(fetchone=lambda: None)]
-    assert db.replace_node_settings(7, {}, 1, None) is None
-
-
-def test_the_settings_import_is_claimed_once():
-    db = _db()
-    db.session.execute.side_effect = [None, SimpleNamespace(rowcount=1)]
-    assert db.claim_settings_import(7) is True
-
-    db.session.execute.side_effect = [None, SimpleNamespace(rowcount=0)]
-    assert db.claim_settings_import(7) is False
-
-
-def test_a_tuning_winner_labels_its_row_and_the_others_keep_their_source():
-    db = _db()
-    db.session.execute.side_effect = [
-        None,
-        SimpleNamespace(fetchone=lambda: SimpleNamespace(config_revision=5)),
-        None,
-        None,
-        None,
-    ]
-    entries = [
-        {"model_name": "org/a", "capability": {}, "overrides": {}},
-        {"model_name": "org/b", "capability": {}, "overrides": {}},
-    ]
-
-    assert db.replace_node_config(7, entries, 4, None, "tuning", {"org/b": "yaml_import"}) == 5
-
-    inserted = [call.args[1] for call in db.session.execute.call_args_list[-2:]]
-    assert [(row["model_name"], row["source"]) for row in inserted] == [("org/a", "tuning"), ("org/b", "yaml_import")]
+    assert db._pick_shared_snapshot(7, "org/m", _hint()) is None

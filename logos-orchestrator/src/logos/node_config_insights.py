@@ -66,8 +66,14 @@ def _results_by_tp(raw: Any, active_tp: Any) -> list[dict[str, Any]]:
     return sorted(results, key=lambda r: r["tp"])
 
 
-def calibration_view(profile: Mapping[str, Any] | None, calibrated_at: Any = None) -> dict[str, Any]:
-    """Calibration status and the measured values of one model on this node."""
+def calibration_view(
+    profile: Mapping[str, Any] | None, calibrated_at: Any = None, gpu_slice: int | None = None
+) -> dict[str, Any]:
+    """Calibration status and the measured values of one model on this node.
+
+    ``gpu_slice`` is the number of GPUs the node can serve the model on. A shared calibration
+    may carry results for larger tensor-parallel sizes, which this node cannot run.
+    """
     if profile is None or profile.get("residency_source") not in ("calibrated", "measured"):
         view: dict[str, Any] = {"status": "not_calibrated", "reason": None, "results": []}
         if profile and profile.get("calibration_unsupported"):
@@ -80,7 +86,10 @@ def calibration_view(profile: Mapping[str, Any] | None, calibrated_at: Any = Non
     else:
         status, reason = "calibrated", None
     active_tp = profile.get("tensor_parallel_size") or 1
-    results = _results_by_tp(profile.get("calibrations_by_tp"), active_tp) or [_active_result(profile, active_tp)]
+    results = _results_by_tp(profile.get("calibrations_by_tp"), active_tp)
+    if gpu_slice:
+        results = [result for result in results if result["tp"] <= gpu_slice or result["active"]]
+    results = results or [_active_result(profile, active_tp)]
     return {
         "status": status,
         "reason": reason,
@@ -157,6 +166,7 @@ def build_insights(
     calibrating: bool,
     benchmarks: Mapping[str, Any],
     model_ids: Mapping[str, int] | None = None,
+    gpu_slices: Mapping[str, int | None] | None = None,
 ) -> dict[str, Any]:
     """The whole answer of ``insights`` for one node."""
     entries = {entry["model_name"]: entry for entry in config["entries"]}
@@ -176,7 +186,9 @@ def build_insights(
                 "row": entry is not None,
                 "source": sources.get(name),
                 "configured": is_configured(entry),
-                "calibration": calibration_view(profiles.get(name), calibrated_at.get(name)),
+                "calibration": calibration_view(
+                    profiles.get(name), calibrated_at.get(name), (gpu_slices or {}).get(name)
+                ),
                 "benchmark": benchmarks.get(name),
                 "calibrating": calibrating,
             }

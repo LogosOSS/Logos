@@ -76,6 +76,20 @@ describe('checking the settings', () => {
     expect(advancedErrors(draft({ max_num_seqs: '2.5' }))['max_num_seqs']).toBeDefined();
   });
 
+  it('has a field for the base residency, under capability, and asks for a positive number', () => {
+    const d = initialAdvanced(entry);
+
+    expect(d.values['base_residency_mb']).toBe('900');
+    d.values['base_residency_mb'] = '1200';
+    expect(applyAdvanced(entry, d).capability['base_residency_mb']).toBe(1200);
+
+    d.values['base_residency_mb'] = '0';
+    expect(advancedErrors(d)['base_residency_mb']).toContain('1 or more');
+    d.values['base_residency_mb'] = 'many';
+    expect(advancedErrors(d)['base_residency_mb']).toBeDefined();
+    expect(advancedErrors(draft({ base_residency_mb: '42000' }))).toEqual({});
+  });
+
   it('refuses custom names that are malformed, that have a field of their own or that repeat', () => {
     const errors = advancedErrors(
       draft({}, [
@@ -130,7 +144,7 @@ describe('writing the settings', () => {
     const result = applyAdvanced(entry, draft);
 
     expect(result.overrides).toEqual({ max_model_len: 32768 });
-    expect(result.capability).toEqual({ tensor_parallel_size: 4, kv_cache_memory_bytes: '4G', base_residency_mb: 900 });
+    expect(result.capability).toEqual({ tensor_parallel_size: 4, kv_cache_memory_bytes: '4G' });
   });
 
   it('writes on and off for the two-way fields and reads JSON values of custom rows', () => {

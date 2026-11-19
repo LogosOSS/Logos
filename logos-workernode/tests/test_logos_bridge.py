@@ -5239,6 +5239,19 @@ async def test_newer_node_settings_are_applied(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_reboot_setting_that_only_the_next_start_takes_over_is_reported_as_such(tmp_path):
+    client = _settings_client(tmp_path)
+
+    response = await client._execute_command(  # noqa: SLF001
+        "sync_node_settings", _document(3, auto_reboot_on_stuck_gpu=False, gpu_devices="0")
+    )
+
+    assert response["applied"] is True
+    assert response["restart_needed"] == ["auto_reboot_on_stuck_gpu"]
+    assert client._app.state.config.worker.auto_reboot_on_stuck_gpu is False  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_node_settings_of_the_current_or_an_older_revision_change_nothing(tmp_path):
     client = _settings_client(tmp_path)
 

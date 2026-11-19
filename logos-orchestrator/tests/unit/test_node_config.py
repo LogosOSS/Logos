@@ -135,6 +135,17 @@ def test_a_calibration_covers_a_choice_inside_its_measured_range():
     assert selection_covered({}, 99999.0, 999999)
 
 
+def test_the_choice_is_read_from_either_mapping_with_capability_first():
+    from logos.node_config import selection_of
+
+    assert selection_of({"kv_cache_memory_bytes": "4G"}, {"max_model_len": 8192}) == (4096.0, 8192)
+    assert selection_of({}, {"kv_cache_memory_bytes": "8G", "max_model_len": "4096"}) == (8192.0, 4096)
+    assert selection_of({"kv_cache_memory_bytes": "2G"}, {"kv_cache_memory_bytes": "8G"}) == (2048.0, None)
+    assert selection_of({"max_model_len": 16384}, {"max_model_len": 4096}) == (None, 16384)
+    assert selection_of(None, None) == (None, None)
+    assert selection_of({}, {"max_model_len": True, "kv_cache_memory_bytes": "lots"}) == (None, None)
+
+
 def test_a_sweep_that_starts_above_the_chosen_cache_does_not_cover_a_context():
     from logos.node_config import selection_covered
 

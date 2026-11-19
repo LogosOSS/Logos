@@ -210,7 +210,7 @@
         <div class="row">
           <div class="row-text">
             <label class="label" for="reboot">Reboot on stuck GPU <code class="key">auto_reboot_on_stuck_gpu</code></label>
-            <p class="hint">Restart the host when lanes keep crashing and a GPU is stuck.</p>
+            <p class="hint">Restart the host when lanes keep crashing and a GPU is stuck. Applies at the next worker start.</p>
           </div>
           <div class="row-control">
             <select id="reboot" class="num sel" [value]="d.reboot" (change)="setReboot($any($event.target).value)">
