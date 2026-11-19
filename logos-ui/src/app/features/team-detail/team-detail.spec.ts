@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthService } from '../../core/auth/services/auth.service';
 import { TeamManagementService } from '../../core/services/team-management.service';
+import { TeamDetail as TeamDetailModel } from '../../shared/models/team.model';
 import { TeamDetail } from './team-detail';
 
 describe('TeamDetail', () => {
@@ -30,6 +31,17 @@ describe('TeamDetail', () => {
   it('loads the team named in the route on start', async () => {
     component.ngOnInit();
     await vi.waitFor(() => expect(getTeamWithMembers).toHaveBeenCalledWith(5));
+  });
+
+  it('keeps saved public stats choices in the team model for later tab visits', () => {
+    component.team.set({
+      id: 5, name: 'Research team', show_on_public_stats: false, public_category: null,
+    } as TeamDetailModel);
+    component.applyPublicStats({ show_on_public_stats: true, public_category: 'Research' });
+    expect(component.team()).toMatchObject({
+      id: 5, name: 'Research team', show_on_public_stats: true, public_category: 'Research',
+    });
+    expect(getTeamWithMembers).not.toHaveBeenCalled();
   });
 
   it('reloads the same team on refresh', async () => {
