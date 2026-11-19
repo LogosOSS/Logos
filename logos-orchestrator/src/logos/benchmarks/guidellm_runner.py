@@ -42,6 +42,8 @@ _SERVING_KEYS = {
     "hf_overrides",
 }
 
+SERVING_KEYS = _SERVING_KEYS
+
 BENCHMARK_JOB_HEADER = "x-logos-benchmark-job-id"
 BENCHMARK_PROVIDER_HEADER = "x-logos-benchmark-provider-id"
 BENCHMARK_TOKEN_HEADER = "x-logos-benchmark-token"

@@ -27,22 +27,39 @@ def placement_of(entry: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return {key: merged[key] for key in REQUIRED_PLACEMENT}
 
 
-def running_placement(snapshot: Mapping[str, Any] | None, model: str) -> dict[str, Any] | None:
-    """TP, KV cache and context a lane of the model runs with now, or None while no lane holds the model.
-
-    For a model without a placement of its own, these are the values the planner of the worker chose.
-    """
+def _running_vllm_config(snapshot: Mapping[str, Any] | None, model: str) -> Mapping[str, Any] | None:
+    """The vLLM settings of the lane that holds the model, or None while no lane does."""
     lanes = (((snapshot or {}).get("runtime") or {}).get("lanes")) or []
     for lane in lanes:
         if not isinstance(lane, dict) or lane.get("model") != model:
             continue
         if lane.get("runtime_state") not in ("loaded", "running", "sleeping"):
             continue
-        vllm = ((lane.get("lane_config") or {}).get("vllm_config")) or {}
-        found = {key: vllm[key] for key in REQUIRED_PLACEMENT if vllm.get(key) not in (None, "")}
-        if found:
-            return found
+        return ((lane.get("lane_config") or {}).get("vllm_config")) or {}
     return None
+
+
+def running_settings(snapshot: Mapping[str, Any] | None, model: str) -> dict[str, Any] | None:
+    """The settings besides the placement that a lane of the model runs with now, or None."""
+    from logos.benchmarks.guidellm_runner import SERVING_KEYS
+
+    vllm = _running_vllm_config(snapshot, model)
+    if vllm is None:
+        return None
+    found = {
+        key: vllm[key] for key in sorted(SERVING_KEYS - set(REQUIRED_PLACEMENT)) if vllm.get(key) not in (None, "")
+    }
+    return found or None
+
+
+def running_placement(snapshot: Mapping[str, Any] | None, model: str) -> dict[str, Any] | None:
+    """TP, KV cache and context a lane of the model runs with now, or None while no lane holds the model.
+
+    For a model without a placement of its own, these are the values the planner of the worker chose.
+    """
+    vllm = _running_vllm_config(snapshot, model) or {}
+    found = {key: vllm[key] for key in REQUIRED_PLACEMENT if vllm.get(key) not in (None, "")}
+    return found or None
 
 
 def _pairs(raw: Any) -> list[dict[str, Any]]:
@@ -236,6 +253,7 @@ def build_insights(
                 "configured": is_configured(entry),
                 "placement": placement_of(entry),
                 "running": running_placement(snapshot, name),
+                "running_settings": running_settings(snapshot, name),
                 "calibration": calibration_view(
                     profiles.get(name), calibrated_at.get(name), (gpu_slices or {}).get(name)
                 ),

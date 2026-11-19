@@ -426,15 +426,32 @@
             } @else {
               <div class="empty">
                 <b>Automatic placement</b>
-                <span>
-                  The worker chooses TP, KV cache and context itself.
-                  @if (insight()?.running; as run) {
-                    It runs this model with {{ describePlacement(run) }} now.
-                  }
-                  Set them here to choose them yourself.
-                </span>
+                <span>The worker chooses TP, KV cache and context itself. Set them here to choose them yourself.</span>
               </div>
+              @if (runningFigures().length > 0) {
+                <h3 class="running-title">Running now</h3>
+                <div class="tiles">
+                  @for (f of runningFigures(); track f.caption) {
+                    <div class="tile"><b>{{ f.value }}</b><span>{{ f.caption }}</span></div>
+                  }
+                </div>
+              }
             }
+          </section>
+        }
+
+        @if (!editing() && !insight()?.configured && runningSettings().length > 0) {
+          <section class="card" aria-labelledby="run-title">
+            <div class="card-head">
+              <h2 id="run-title">Running settings</h2>
+              <span class="count">{{ runningSettings().length }} in use</span>
+            </div>
+            <p class="sub">The settings besides the placement that the worker runs this model with now.</p>
+            <dl class="facts facts--quiet">
+              @for (a of runningSettings(); track a.key) {
+                <div><dt class="mono">{{ a.key }}</dt><dd class="mono">{{ a.value }}</dd></div>
+              }
+            </dl>
           </section>
         }
 

@@ -169,6 +169,46 @@ def test_a_model_in_a_lane_carries_what_it_runs_with():
     first, second = result["models"]
     assert first["running"] == {"tensor_parallel_size": 1, "kv_cache_memory_bytes": "3G", "max_model_len": 16368}
     assert second["running"] is None
+    assert first["running_settings"] is None
+    assert second["running_settings"] is None
+
+
+def test_the_settings_a_lane_runs_with_besides_the_placement_are_listed():
+    lane = {
+        "model": "org/a",
+        "runtime_state": "loaded",
+        "lane_config": {
+            "vllm_config": {
+                "tensor_parallel_size": 1,
+                "max_model_len": 8192,
+                "max_num_seqs": 20,
+                "quantization": "awq",
+                "enforce_eager": False,
+                "unrelated_flag": "x",
+                "dtype": None,
+            }
+        },
+    }
+    snapshot = {"capabilities_models": ["org/a"], "configured_models": [], "runtime": {"lanes": [lane]}}
+
+    result = build_insights(
+        provider_id=1,
+        config={"revision": 1, "entries": []},
+        sources={},
+        profiles={},
+        calibrated_at={},
+        snapshot=snapshot,
+        supports={},
+        calibrating=False,
+        benchmarks={},
+    )
+
+    # Placement keys stay in "running"; a flag set to false still counts; unknown flags and empty ones do not.
+    assert result["models"][0]["running_settings"] == {
+        "enforce_eager": False,
+        "max_num_seqs": 20,
+        "quantization": "awq",
+    }
 
 
 def test_each_model_carries_its_catalog_id_when_it_has_one():

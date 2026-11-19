@@ -80,12 +80,12 @@ describe('NodeModels', () => {
     expect(rows[1].textContent).not.toContain('TP');
   });
 
-  it('shows what a lane runs with for a model without a placement', async () => {
+  it('keeps the list short for a model without a placement that a lane runs', async () => {
     const running = { tensor_parallel_size: 1, kv_cache_memory_bytes: '3G', max_model_len: 16368 };
     await create(insights([model({ configured: false, placement: null, running })]));
 
     expect(text()).toContain('Automatic');
-    expect(text()).toContain('runs with TP 1 · KV 3 GB per GPU · context 16368');
+    expect(text()).not.toContain('runs with');
   });
 
   it('shows whether the worker is online', async () => {

@@ -161,12 +161,41 @@ describe('NodeModel', () => {
     service['getNodeInsights'].mockResolvedValue(insights([insight({ configured: false, running })]));
     const root = await create();
 
-    expect(root.textContent).toContain('It runs this model with TP 1 · KV 3 GB per GPU · context 16368 now.');
+    const tiles = Array.from(root.querySelectorAll('.running-title ~ .tiles .tile')).map((t) => t.textContent);
+    expect(root.textContent).toContain('Running now');
+    expect(root.textContent).not.toContain('Running settings');
+    expect(tiles).toEqual([
+      expect.stringContaining('TP 1'),
+      expect.stringContaining('3 GB'),
+      expect.stringContaining('16,368 tokens'),
+    ]);
 
     service['getNodeInsights'].mockResolvedValue(insights([insight({ configured: false, running: null })]));
     TestBed.resetTestingModule();
     const without = await create();
-    expect(without.textContent).not.toContain('It runs this model with');
+    expect(without.textContent).not.toContain('Running now');
+  });
+
+  it('lists the settings besides the placement that a lane runs a model with', async () => {
+    service['getNodeInsights'].mockResolvedValue(
+      insights([
+        insight({
+          configured: false,
+          running: { tensor_parallel_size: 1, kv_cache_memory_bytes: '3G', max_model_len: 16368 },
+          running_settings: { max_num_seqs: 20, quantization: 'awq' },
+        }),
+      ]),
+    );
+    const root = await create();
+
+    const card = root.querySelector('[aria-labelledby="run-title"]')!;
+    expect(card.querySelector('h2')!.textContent).toContain('Running settings');
+    expect(card.textContent).toContain('2 in use');
+    const rows = Array.from(card.querySelectorAll('.facts > div')).map((r) => [r.querySelector('dt')?.textContent, r.querySelector('dd')?.textContent]);
+    expect(rows).toEqual([
+      ['max_num_seqs', '20'],
+      ['quantization', 'awq'],
+    ]);
   });
 
   it('warns when the worker is offline', async () => {

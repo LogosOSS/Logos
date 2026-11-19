@@ -63,8 +63,6 @@
               {{ model.configured ? 'Set' : 'Automatic' }}
               @if (model.configured && model.placement) {
                 <span class="muted">{{ describePlacement(model.placement) }}</span>
-              } @else if (!model.configured && model.running) {
-                <span class="muted">runs with {{ describePlacement(model.running) }}</span>
               }
             </span>
           </div>

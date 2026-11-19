@@ -81,12 +81,38 @@
   }
 }
 
+// A list without horizontal rules, in as many columns as fit. One vertical rule runs through the gap of two
+// columns over all rows. The entries read down a column first, then on in the next.
+.facts--quiet {
+  display: block;
+  columns: 280px;
+  column-gap: 48px;
+  column-rule: 1px solid rgb(var(--color-outline-200) / var(--opacity-muted));
+  margin-top: 4px;
+
+  > div {
+    break-inside: avoid;
+    padding: 6px 0;
+    border-top: 0;
+  }
+}
+
 .facts--compact {
   font-size: var(--font-size-sm);
 
   div {
     padding: 4px 0;
   }
+}
+
+// A small heading above figures inside a card.
+.running-title {
+  margin: 20px 0 0;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-wider);
+  text-transform: uppercase;
+  color: rgb(var(--color-typography-700));
 }
 
 .tiles {

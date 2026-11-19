@@ -249,6 +249,34 @@ export class NodeModel implements OnInit {
     return `${pct} % faster than the current configuration (${run.throughput.toFixed(1)} vs ${base.toFixed(1)} tok/s).`;
   });
 
+  /** What a lane runs with now, as figures; for a model without a placement of its own. */
+  readonly runningFigures = computed(() => {
+    const run = this.insight()?.running;
+    if (!run) {
+      return [];
+    }
+    const out: { value: string; caption: string }[] = [];
+    const tp = Number(run['tensor_parallel_size']);
+    if (tp > 0) {
+      out.push({ value: `TP ${tp}`, caption: tp === 1 ? 'Tensor parallel · 1 GPU' : `Tensor parallel · ${tp} GPUs` });
+    }
+    const kv = kvToGb(run['kv_cache_memory_bytes']);
+    if (kv !== null) {
+      out.push({ value: formatGb(kv), caption: 'KV cache per GPU' });
+    }
+    const ctx = Number(run['max_model_len']);
+    if (ctx > 0) {
+      out.push({ value: `${formatTokens(ctx)} tokens`, caption: 'Max. context length' });
+    }
+    return out;
+  });
+
+  /** The settings besides the placement that a lane runs with now, as text per key. */
+  readonly runningSettings = computed(() => {
+    const run = this.insight()?.running_settings;
+    return run ? advancedSettings({ model_name: '', capability: {}, overrides: run }) : [];
+  });
+
   /** The tensor-parallel size of the best benchmark run. */
   readonly bestRunTp = computed(() => Number(this.bestRun()?.settings['tensor_parallel_size']) || null);
 
