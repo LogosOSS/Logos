@@ -363,15 +363,16 @@ export class NodeModel implements OnInit {
   readonly describePlacement = describePlacement;
   readonly mbToGb = mbToGb;
 
-  /** Whether the node was calibrating when the page last looked, to see when a calibration ends. */
-  private wasCalibrating = false;
+  /** The model page that last saw a calibration running; another model's page never sees its end. */
+  private calibratingKey: string | null = null;
 
   constructor() {
     // The page says how a calibration ended, instead of leaving the notice of its start on the page.
     effect(() => {
       const now = this.calibrating();
-      const was = this.wasCalibrating;
-      this.wasCalibrating = now;
+      const key = this.pageKey();
+      const was = this.calibratingKey === key;
+      this.calibratingKey = now ? key : null;
       untracked(() => {
         if (now && this.notice()?.title === 'Calibration started') {
           // The banner "Calibrating" says it from here on.
@@ -410,6 +411,9 @@ export class NodeModel implements OnInit {
           // What still runs for the model left belongs to it; it must not keep this page busy.
           this.saving.set(false);
           this.calibrationStarting.set(false);
+          this.calibrationStopping.set(false);
+          this.calibrateAsk.set(false);
+          this.stopAsk.set(false);
         }
         this.providerId.set(id);
         this.modelName.set(model);

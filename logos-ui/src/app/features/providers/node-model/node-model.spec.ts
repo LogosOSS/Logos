@@ -1335,6 +1335,28 @@ describe('NodeModel', () => {
       expect(page().notice()).toBeNull();
     });
 
+    it('does not keep another model waiting for a stop that is still pending', async () => {
+      service['getNodeInsights'].mockResolvedValue(insights([insight({ calibrating: true })]));
+      await create();
+      let late: (value: unknown) => void = () => undefined;
+      service['stopCalibration'].mockReturnValue(new Promise((resolve) => (late = resolve)));
+
+      void page().stopCalibration();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(page().calibrationStopping()).toBe(true);
+
+      query.next(convertToParamMap({ model: 'org/b' }));
+      await settle();
+      expect(page().calibrationStopping()).toBe(false);
+      expect(page().stopAsk()).toBe(false);
+
+      // The answer for the model left comes late and leaves the new page as it is.
+      late({ was_active: true });
+      await settle();
+      expect(page().calibrationStopping()).toBe(false);
+      expect(page().notice()).toBeNull();
+    });
+
     it('keeps the answer of the newest load when an earlier one arrives late', async () => {
       await create();
       let late: (value: unknown) => void = () => undefined;
