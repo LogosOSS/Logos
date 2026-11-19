@@ -16,6 +16,7 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ModelLicenseRespon
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.RemoveModelRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.RequestedModelResponse;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.SubmitModelRequestDTO;
+import de.tum.cit.aet.logos.logoswebservice.configuration.service.RequestedModelHfRechecker;
 import de.tum.cit.aet.logos.logoswebservice.configuration.service.RequestedModelService;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 
@@ -34,9 +35,12 @@ import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 public class ModelRequestController {
 
     private final RequestedModelService requestedModelService;
+    private final RequestedModelHfRechecker hfStatusRechecker;
 
-    public ModelRequestController(RequestedModelService requestedModelService) {
+    public ModelRequestController(RequestedModelService requestedModelService,
+                                  RequestedModelHfRechecker hfStatusRechecker) {
         this.requestedModelService = requestedModelService;
+        this.hfStatusRechecker = hfStatusRechecker;
     }
 
     /** The requested models, most-voted first, with the caller's vote state. */
@@ -47,17 +51,21 @@ public class ModelRequestController {
     }
 
     /**
-     * Re-run the Hugging Face precheck for every flagged model and clear the
-     * flag from the ones the license for has been accepted, and fetch the
-     * license for every readable model that does not carry one yet. The Model
-     * requests' refresh button calls this before re-reading the list, so a
-     * freshly accepted license unflags the row — and its license becomes
-     * visible — without anyone voting again.
+     * Run the full Hugging Face recheck — the same pass the hourly schedule
+     * runs: the unverified rows get a verdict, the flagged models are cleared
+     * where the license for has been accepted, and the readable models
+     * without a license get one fetched. The Model requests' refresh button
+     * calls this before re-reading the list, so a freshly accepted license
+     * unflags the row — and its license becomes visible — without anyone
+     * voting again.
+     *
+     * Refreshes and the schedule share one pass: a refresh that lands while a
+     * pass is already in flight reuses it (waiting for it to finish) instead
+     * of running a second one alongside it.
      */
     @PostMapping("/recheck_model_requests")
     public ResponseEntity<Void> recheckModelRequests() {
-        requestedModelService.recheckGatedModels();
-        requestedModelService.fetchMissingLicenses();
+        hfStatusRechecker.recheck();
         return ResponseEntity.ok().build();
     }
 

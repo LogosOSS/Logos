@@ -1,6 +1,12 @@
 package de.tum.cit.aet.logos.logoswebservice.configuration;
 
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -760,6 +766,98 @@ class ModelRequestControllerTest {
         assertThat(jdbc.queryForObject(
             "SELECT user_id FROM model_license_approvals WHERE requested_model_id = ? AND team_id IS NULL",
             Integer.class, id)).isEqualTo(1003);
+    }
+
+    @Test
+    void vote_clearingTheFlagRecordsTheGlobalAcceptance() throws Exception {
+        // The vote's fresh precheck finds the repository reachable: access
+        // was granted on Hugging Face, which is the license acceptance. The
+        // vote moves the row out of the recheck's flagged set, so it must
+        // record the global acceptance itself — otherwise the row would
+        // never get one and the tick would stay red.
+        jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/vote-unflag', true)");
+
+        mvc.perform(post("/logosdb/add_model_request")
+                .with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"name\": \"acme/vote-unflag\", \"team_id\": 2001}"))
+           .andExpect(status().isOk());
+
+        int id = jdbc.queryForObject(
+            "SELECT id FROM requested_models WHERE name = 'acme/vote-unflag'", Integer.class);
+        assertThat(isGated("acme/vote-unflag")).isFalse();
+        // The system-recorded row: no team, no user, the database's timestamp.
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM model_license_approvals WHERE requested_model_id = ?",
+            Integer.class, id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+            "SELECT user_id IS NULL FROM model_license_approvals WHERE requested_model_id = ? AND team_id IS NULL",
+            Boolean.class, id)).isTrue();
+        assertThat(jdbc.queryForObject(
+            "SELECT approved_at IS NOT NULL FROM model_license_approvals WHERE requested_model_id = ?",
+            Boolean.class, id)).isTrue();
+        // The license the precheck fetched is stored with the vote.
+        assertThat(jdbc.queryForObject(
+            "SELECT license_fetched_date IS NOT NULL FROM requested_models WHERE id = ?",
+            Boolean.class, id)).isTrue();
+
+        mvc.perform(post("/logosdb/get_model_requests")
+                .with(TestJwt.testUser())
+                .contentType("application/json").content("{}"))
+           .andExpect(jsonPath("$[0].license_approved").value(true));
+    }
+
+    @Test
+    void recheck_concurrentCallersReuseTheInFlightPass() throws Exception {
+        // The hourly schedule and a manual refresh enter the same
+        // coordinator: the second caller must reuse the in-flight pass, not
+        // run a second one alongside it — so while the first pass is still
+        // blocked on the Hub, the second caller may not ask the Hub itself.
+        jdbc.update("INSERT INTO requested_models (name, is_gated) VALUES ('acme/slow-recheck', true)");
+        AtomicInteger checkCalls = new AtomicInteger();
+        CountDownLatch firstCheckEntered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Mockito.when(hfReachabilityClient.check("acme/slow-recheck"))
+            .thenAnswer(invocation -> {
+                checkCalls.incrementAndGet();
+                firstCheckEntered.countDown();
+                release.await(10, TimeUnit.SECONDS);
+                return new HfReachabilityResult(HfReachabilityResult.STATUS_REACHABLE, null, null);
+            });
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<Void> firstPass = executor.submit(() -> {
+                hfStatusRechecker.recheck();
+                return null;
+            });
+            // The first pass is in flight, blocked on the Hub answer.
+            assertThat(firstCheckEntered.await(10, TimeUnit.SECONDS)).isTrue();
+            // A second caller (the manual refresh) arrives during the pass.
+            Future<Void> secondPass = executor.submit(() -> {
+                hfStatusRechecker.recheck();
+                return null;
+            });
+            release.countDown();
+            // Both callers come back — the second one only after the pass
+            // it reused has finished.
+            firstPass.get(15, TimeUnit.SECONDS);
+            secondPass.get(15, TimeUnit.SECONDS);
+            // Exactly one pass ran: the flagged model's repository was asked
+            // once, not once per caller.
+            assertThat(checkCalls.get()).isEqualTo(1);
+            // The pass is fully done, so the slot must be free again: the
+            // next caller starts its own pass. If a reusing caller had left
+            // a never-completed future in the slot, this call would hang —
+            // the timeout turns that hang into a fast test failure.
+            Future<Void> nextPass = executor.submit(() -> {
+                hfStatusRechecker.recheck();
+                return null;
+            });
+            nextPass.get(10, TimeUnit.SECONDS);
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     @Test

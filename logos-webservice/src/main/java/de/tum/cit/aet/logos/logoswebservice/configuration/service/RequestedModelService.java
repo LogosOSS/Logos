@@ -89,10 +89,12 @@ import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabil
  * something to show or not show in the acceptance dialog.
  * Accepting the agreement — the Logos admin globally, a team's app admin per
  * team — is recorded in {@code model_license_approvals}; a gated row's global
- * acceptance is recorded automatically (without a user) the moment a recheck
- * unflags it, because accepting the repository's terms on Hugging Face is
- * what granted the central HF_TOKEN access in the first place. Revoking the
- * global acceptance removes the team acceptances that depend on it.
+ * acceptance is recorded automatically (without a user) the moment the row
+ * unflags — by the recheck, or by a vote whose fresh precheck finds the
+ * repository reachable — because accepting the repository's terms on Hugging
+ * Face is what granted the central HF_TOKEN access in the first place.
+ * Revoking the global acceptance removes the team acceptances that depend on
+ * it.
  */
 @Service
 public class RequestedModelService {
@@ -334,6 +336,17 @@ public class RequestedModelService {
                 }
             }
 
+            if (Boolean.TRUE.equals(previousGated) && !gated) {
+                // This vote's fresh precheck is what unflags the row: the
+                // terms on Hugging Face were accepted, which granted the
+                // central HF_TOKEN access — the license acceptance. Record
+                // the global acceptance here, the way the recheck does for
+                // its own unflag: the vote has just moved the row out of the
+                // recheck's flagged set, so the recheck would never see this
+                // transition.
+                licenseApprovalRepository.recordGlobalApprovalIfAbsent(model.getId());
+            }
+
             if (gated && !Boolean.TRUE.equals(previousGated)) {
                 // This vote is the one that flags the row gated: the Logos
                 // admins accept the license, so they are the ones who need to
@@ -459,7 +472,9 @@ public class RequestedModelService {
      * (without a user): accepting the repository's terms on Hugging Face is
      * what granted the central HF_TOKEN access, so the Logos admin would only
      * accept the same agreement a second time in Logos otherwise. The row
-     * then shows a tick like a manually accepted one.
+     * then shows a tick like a manually accepted one. A vote records the
+     * acceptance the same way when its own fresh precheck unflags the row —
+     * that transition never reaches this method.
      *
      * Deliberately not transactional around the loop: the prechecks are
      * remote round trips and must not hold a pooled database connection while

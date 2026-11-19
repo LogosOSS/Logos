@@ -1,5 +1,8 @@
 package de.tum.cit.aet.logos.logoswebservice.configuration.service;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -15,7 +18,10 @@ import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabil
  *
  * <p>Runs at application start and then hourly — on its own single-thread
  * scheduler, so the blocking remote scans never hold up the other scheduled
- * jobs, and at most one pass is in flight — in three passes:
+ * jobs — and the manual refresh (the Model requests' refresh button) enters
+ * the same pass, so at most one pass is in flight no matter who triggered
+ * it: a caller that finds one running reuses it instead of starting a second
+ * (see {@link #inFlightPass}). In three passes:
  *
  * <ul>
  *   <li>rows whose {@code is_gated} is still null (they predate the precheck
@@ -47,6 +53,19 @@ public class RequestedModelHfRechecker {
     private final OrchestratorHfReachabilityClient hfReachabilityClient;
     private final RequestedModelService requestedModelService;
 
+    /**
+     * The in-flight pass, or null when none is running. The first caller to
+     * claim it (an atomic null-to-future flip, so two callers can never
+     * claim it) runs the pass; a caller that finds one already running
+     * reuses it — it waits for that pass to finish and does none of the work
+     * itself. A future is only ever placed here by the caller that will run
+     * and complete it, so anything parked on it is guaranteed to wake up.
+     * This is what keeps the hourly schedule and a manual refresh from
+     * running two global passes at once (double remote calls, interleaved
+     * conditional updates).
+     */
+    private final AtomicReference<CompletableFuture<Void>> inFlightPass = new AtomicReference<>();
+
     public RequestedModelHfRechecker(RequestedModelRepository requestedModelRepository,
                                      OrchestratorHfReachabilityClient hfReachabilityClient,
                                      RequestedModelService requestedModelService) {
@@ -60,10 +79,42 @@ public class RequestedModelHfRechecker {
      * cleared where the license was accepted in the meantime, and the rows
      * without a license yet get one fetched. The prechecks are remote round
      * trips, but they only cover the (small) set of pending, flagged and
-     * unlicensed rows, at most once an hour.
+     * unlicensed rows, at most once an hour — a manual refresh that lands
+     * while a pass is in flight reuses that pass instead of running a second
+     * one.
      */
     @Scheduled(initialDelay = 0, fixedDelay = 3_600_000, scheduler = "hfRecheckScheduler")
     public void recheck() {
+        while (true) {
+            CompletableFuture<Void> running = inFlightPass.get();
+            if (running != null) {
+                // A pass is already in flight (the schedule, or an earlier
+                // refresh): reuse it — wait for it to finish, run nothing of
+                // our own.
+                running.join();
+                return;
+            }
+            CompletableFuture<Void> own = new CompletableFuture<>();
+            if (!inFlightPass.compareAndSet(null, own)) {
+                // Lost the race: a caller claimed the pass between the get()
+                // and the compareAndSet — loop and reuse its pass.
+                continue;
+            }
+            try {
+                runPass();
+                own.complete(null);
+            } catch (RuntimeException e) {
+                own.completeExceptionally(e);
+                throw e;
+            } finally {
+                inFlightPass.compareAndSet(own, null);
+            }
+            return;
+        }
+    }
+
+    /** The three passes of one recheck (see the class javadoc). */
+    private void runPass() {
         recheckUnverified();
         int cleared = requestedModelService.recheckGatedModels();
         if (cleared > 0) {
