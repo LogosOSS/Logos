@@ -3,7 +3,6 @@ package de.tum.cit.aet.logos.logoswebservice.identity.controller;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -99,21 +98,17 @@ public class UserController {
             .orElse(ResponseEntity.status(404).body(null));
     }
 
+    /**
+     * Only accounts not yet linked to Keycloak are editable, and the first
+     * Keycloak login with a matching email adopts such an account with its
+     * memberships and keys. Changing that email decides who can take the
+     * account over, so it is reserved to logos admins.
+     */
     @PatchMapping("/{userId}")
-    @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> patchUserInfo(
-            @RequestAttribute("authContext") AuthContext auth,
             @PathVariable Integer userId,
             @RequestBody UpdateUserInfoRequestDTO body) {
-        if (Role.APP_ADMIN.matches(auth.role()) && !userId.equals(auth.userId())) {
-            Optional<String> targetRole = userService.findRole(userId);
-            if (targetRole.isEmpty()) {
-                return ResponseEntity.status(404).body(null);
-            }
-            if (Role.APP_ADMIN.matches(targetRole.get()) || Role.LOGOS_ADMIN.matches(targetRole.get())) {
-                return ResponseEntity.status(403).body(Map.of("detail", "App admins cannot edit other administrators"));
-            }
-        }
         return userService.updateInfo(userId, body)
             .<ResponseEntity<?>>map(ResponseEntity::ok)
             .orElse(ResponseEntity.status(404).body(null));

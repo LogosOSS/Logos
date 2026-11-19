@@ -82,6 +82,14 @@ describe('TeamManagement', () => {
     TestBed.resetTestingModule();
   });
 
+  for (const role of ['logos_admin', 'app_admin'] as const) {
+    it(`shows team history actions only when ${role} is a Logos admin`, async () => {
+      await createFor(role);
+      const actions = fixture.nativeElement.querySelectorAll('[aria-label="View permission history for test-team"]');
+      expect(actions.length > 0).toBe(role === 'logos_admin');
+    });
+  }
+
   it('labels the priority values, with Default for unset teams', async () => {
     await createFor('logos_admin');
     expect(component.priorityLabel(team({ priority: null }))).toBe('Default');
@@ -343,5 +351,20 @@ describe('TeamManagement', () => {
     await saveA;
     fixture.detectChanges();
     expect(selects()[0].disabled).toBe(false);
+  });
+});
+
+
+describe('Team permission history navigation', () => {
+  it('opens the global audit page with the selected team', () => {
+    const navigate = vi.fn();
+    TestBed.configureTestingModule({ providers: [
+      { provide: Router, useValue: { navigate } },
+      { provide: TeamManagementService, useValue: {} },
+      { provide: AuthService, useValue: { currentUser: signal(null) } },
+    ] });
+    const component = TestBed.runInInjectionContext(() => new TeamManagement());
+    component.viewPermissionHistory(42);
+    expect(navigate).toHaveBeenCalledWith(['/permission-audit-log'], { queryParams: { team_id: 42 } });
   });
 });

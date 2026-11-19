@@ -20,6 +20,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import de.tum.cit.aet.logos.logoswebservice.notifications.repository.NotificationRepository;
+import de.tum.cit.aet.logos.logoswebservice.websocket.WebSocketSessionAuth;
 
 /**
  * {@code /ws/notifications}: the push half of the inbox.
@@ -39,14 +40,18 @@ public class NotificationSocketHandler extends TextWebSocketHandler {
     private final Map<String, ConnectedInbox> inboxes = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
     private final NotificationRepository notifications;
+    private final WebSocketSessionAuth sessionAuth;
 
-    public NotificationSocketHandler(ObjectMapper objectMapper, NotificationRepository notifications) {
+    public NotificationSocketHandler(ObjectMapper objectMapper, NotificationRepository notifications,
+                                     WebSocketSessionAuth sessionAuth) {
         this.objectMapper = objectMapper;
         this.notifications = notifications;
+        this.sessionAuth = sessionAuth;
     }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
+        if (!sessionAuth.register(session, false)) return;
         Map<String, Object> attributes = session.getAttributes();
         // Pushes come from channel and Redis threads; the decorator serializes
         // concurrent sends to one session.
@@ -58,12 +63,19 @@ public class NotificationSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        sessionAuth.unregister(session);
         inboxes.remove(session.getId());
     }
 
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
+        sessionAuth.unregister(session);
         inboxes.remove(session.getId());
+    }
+
+    @Override
+    protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        sessionAuth.isAuthorized(session, true);
     }
 
     /**
@@ -98,7 +110,7 @@ public class NotificationSocketHandler extends TextWebSocketHandler {
         }
         TextMessage message = new TextMessage(frame);
         for (ConnectedInbox inbox : inboxes.values()) {
-            if (!addressed.contains(inbox.userId())) {
+            if (!sessionAuth.isAuthorized(inbox.session(), false) || !addressed.contains(inbox.userId())) {
                 continue;
             }
             try {

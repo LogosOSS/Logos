@@ -76,6 +76,16 @@ describe('maintenance API', () => {
     expect(await result).toEqual({ released: true, forced: false });
   });
 
+  it('releases the selected node deployment through the admin maintenance route', async () => {
+    const http = TestBed.inject(HttpTestingController);
+    const result = TestBed.inject(StatisticsService).releaseNodeMaintenance(12, 'deploy-1');
+    const request = http.expectOne('/api/logosdb/maintenance/release_node');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual({ provider_id: 12, deployment_id: 'deploy-1' });
+    request.flush({ released: true });
+    expect(await result).toEqual({ released: true });
+  });
+
   it.each([false, true])('posts the deployment and force=%s', async (force) => {
     const http = TestBed.inject(HttpTestingController);
     const result = TestBed.inject(StatisticsService).releaseRecovery(31, force);

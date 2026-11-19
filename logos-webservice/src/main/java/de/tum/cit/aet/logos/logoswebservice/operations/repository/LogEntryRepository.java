@@ -43,6 +43,104 @@ public interface LogEntryRepository extends JpaRepository<LogEntry, Integer> {
     java.util.Optional<RequestPayloadProjection> findRequestPayloads(@Param("requestId") String requestId);
 
     /**
+     * Successful usage on opted-in teams, one row per UTC day, team, user, key
+     * type, serving lane and model, flagged whether it falls inside the
+     * selected window. Every request figure of the public stats page — the
+     * headline totals and splits, the distributions and the monthly series —
+     * is derived from this one row set, so they all count the same requests
+     * at the same freshness.
+     *
+     * <p>Read live from log_entry, not from the hourly rollup: the rollup
+     * buckets on forwarding time, carries no key type and lags behind late
+     * successes. Days and the window both follow {@code timestamp_request};
+     * {@code since} is exact, null meaning all time.
+     *
+     * <p>Shaped for one pass over the successes (about a million rows on
+     * production, ~1 s): an index-only scan of
+     * {@code idx_log_entry_public_stats} (071), tokens through a hash join on
+     * usage_tokens rather than a per-row lookup, and the inner aggregate groups
+     * on raw ids only. Names, roles, key types and lanes are joined onto the
+     * few thousand groups afterwards. {@code user_id} is null for application
+     * and service keys and for inactive users; {@code student} is true for
+     * active users with role {@code app_developer}. A deleted key or provider
+     * keeps its requests under {@code unknown}.
+     */
+    @Transactional(readOnly = true)
+    @Query(value = """
+        WITH agg AS (
+            SELECT (le.timestamp_request AT TIME ZONE 'UTC')::date                      AS day,
+                   (CAST(:since AS TIMESTAMPTZ) IS NULL
+                    OR le.timestamp_request >= CAST(:since AS TIMESTAMPTZ))              AS in_window,
+                   le.team_id, le.user_id, le.api_key_id, le.provider_id, le.model_id, le.model_name,
+                   COUNT(*)                                                              AS requests,
+                   SUM(ut.token_count)                                                   AS tokens
+            FROM log_entry le
+            INNER JOIN teams t ON t.id = le.team_id AND t.show_on_public_stats = TRUE
+            LEFT JOIN usage_tokens ut ON ut.log_entry_id = le.id
+                 AND ut.type_id IN (SELECT id FROM token_types WHERE name = 'total_tokens')
+            WHERE le.result_status = 'success'
+            GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+        )
+        SELECT to_char(a.day, 'YYYY-MM-DD')                                   AS day,
+               a.in_window                                                    AS inWindow,
+               a.team_id                                                      AS teamId,
+               t.name                                                         AS teamName,
+               t.public_category                                              AS category,
+               u.id                                                           AS userId,
+               COALESCE(u.role = 'app_developer', FALSE)                      AS student,
+               COALESCE(ak.key_type::text, 'unknown')                         AS keyType,
+               CASE WHEN p.provider_type IS NULL THEN 'unknown'
+                    WHEN p.provider_type = 'logosnode' THEN 'local'
+                    ELSE 'cloud' END                                          AS lane,
+               COALESCE(m.name, a.model_name)                                 AS model,
+               SUM(a.requests)::bigint                                        AS requests,
+               COALESCE(SUM(a.tokens), 0)::bigint                             AS tokens
+        FROM agg a
+        INNER JOIN teams t ON t.id = a.team_id
+        LEFT JOIN users u ON u.id = a.user_id AND u.is_active = TRUE
+        LEFT JOIN api_keys ak ON ak.id = a.api_key_id
+        LEFT JOIN providers p ON p.id = a.provider_id
+        LEFT JOIN models m ON m.id = a.model_id
+        GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+        """, nativeQuery = true)
+    List<PublicUsageRowProjection> findPublicUsageRows(@Param("since") Timestamp since);
+
+    /**
+     * Logos Agent sessions per UTC day and starter: how many were started, how
+     * many succeeded and how many opened a pull request, from {@code since} on
+     * ({@code null} = all time, exact timestamp, not rounded to the day).
+     *
+     * <p>Only sessions of an opted-in team count: a session belongs to a team
+     * through its repository, and a session with no team repository (or one of
+     * a private team) is never published. The starter leaves this query only
+     * as a hash, enough to count distinct people. Every identity the platform
+     * itself writes — the GitHub trigger and analysis passes
+     * ({@code logos-agent (trigger)}, {@code logos-agent (analysis)}), the
+     * runner's re-queued attempts ({@code the runner}) and the workflow-analysis
+     * sessions ({@code team-<id>}) — comes back with a null starter, so its
+     * sessions still count but it is never counted as a person; a real starter
+     * is anyone else's name. No task text, names or repositories are read.
+     */
+    @Transactional(readOnly = true)
+    @Query(value = """
+        SELECT to_char(a.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+               COUNT(*)::bigint                                       AS sessions,
+               COUNT(*) FILTER (WHERE a.status = 'succeeded')::bigint  AS succeeded,
+               COUNT(a.pr_url)::bigint                                AS pullRequests,
+               CASE WHEN a.created_by LIKE 'logos-agent (%)'
+                        OR a.created_by = 'the runner'
+                        OR a.created_by ~ '^team-[0-9]+$' THEN NULL
+                    ELSE md5(a.created_by) END                        AS starter
+        FROM agent_sessions a
+        INNER JOIN team_repositories tr ON tr.id = a.team_repository_id
+        INNER JOIN teams t ON t.id = tr.team_id AND t.show_on_public_stats = TRUE
+        WHERE (CAST(:since AS TIMESTAMPTZ) IS NULL
+               OR a.created_at >= CAST(:since AS TIMESTAMPTZ))
+        GROUP BY 1, 5
+        """, nativeQuery = true)
+    List<AgentSessionDayProjection> findAgentSessionDays(@Param("since") Timestamp since);
+
+    /**
      * One team's requests by stage, right now.
      *
      * Stage is read off the timestamps rather than a status column, because

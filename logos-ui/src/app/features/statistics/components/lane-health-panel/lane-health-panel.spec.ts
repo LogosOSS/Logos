@@ -410,6 +410,20 @@ describe('LaneHealthPanel pending-note baseline', () => {
     fixture.detectChanges();
   });
 
+  it('shows measured VRAM progress and keeps unsampled operations indeterminate', () => {
+    fixture.componentRef.setInput('laneTransfers', [
+      { lane_id: 'new', model: 'foo', operation: 'loading', resident_vram_mb: 4096, reference_vram_mb: 8192 },
+      { lane_id: 'old', model: 'bar', operation: 'unloading', resident_vram_mb: 2048, reference_vram_mb: 8192 },
+      { lane_id: 'waiting', model: 'baz', operation: 'loading', resident_vram_mb: null, reference_vram_mb: null },
+    ]);
+    fixture.detectChanges();
+
+    const bars = fixture.nativeElement.querySelectorAll('progress');
+    expect([...bars].map((bar) => bar.getAttribute('value'))).toEqual(['0.5', '0.75', null]);
+    expect(fixture.nativeElement.textContent).toContain('4.0 GiB');
+    expect(fixture.nativeElement.textContent).toContain('Waiting for VRAM data');
+  });
+
   /** One status-stream push: swap the input and deliver ngOnChanges, as the
    *  framework does — the test reads the signals afterwards, no re-render. */
   function pushLanes(next: Record<string, LaneSignalData>): void {

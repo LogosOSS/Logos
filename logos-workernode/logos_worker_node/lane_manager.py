@@ -9,9 +9,10 @@ import os
 import socket
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import combinations
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any, Awaitable, Callable, Iterable, Literal
 
 from logos_worker_node import prometheus_metrics as prom
 from logos_worker_node.calibration import select_calibration_gpus
@@ -26,6 +27,7 @@ from logos_worker_node.models import (
     LaneConfig,
     LaneEvent,
     LaneStatus,
+    LaneTransferStatus,
     LoadedModel,
     MetalConfig,
     ProcessState,
@@ -40,6 +42,13 @@ logger = logging.getLogger("logos_worker_node.lane_manager")
 
 # Type for the application server process handle (vLLM is the only engine)
 ProcessHandle = VllmProcessHandle
+
+
+@dataclass
+class LaneTransfer:
+    status: LaneTransferStatus
+    handle: ProcessHandle | None = None
+
 
 _DEFAULT_PORT_START = 11436
 _DEFAULT_PORT_END = 11499
@@ -321,6 +330,11 @@ async def _destroy_quietly(handle: ProcessHandle) -> None:
         logger.debug("Closing an unregistered lane handle failed", exc_info=True)
 
 
+def _parallel_layout(lane_config: LaneConfig) -> tuple[int, int] | None:
+    vc = lane_config.vllm_config
+    return (vc.tensor_parallel_size, vc.parallel_gpu_count) if vc is not None else None
+
+
 class LaneManager:
     """Manages a pool of vLLM process handles, one per model lane."""
 
@@ -452,6 +466,18 @@ class LaneManager:
         self._lane_status_ttl_seconds = _lane_status_ttl
         # lane_id -> (built_at monotonic, LaneStatus)
         self._lane_status_cache: dict[str, tuple[float, LaneStatus]] = {}
+        # Last known sleep_state per lane, updated by lifecycle (sleep/wake) and
+        # by background status builds that still probe /is_sleeping. The infer
+        # hot path (acquire_lane_for_infer) must NOT await /is_sleeping — that
+        # EngineCore round-trip added ~0.5–0.6 s TTFT (issue #165). Missing
+        # entries default to "awake" for a live sleep-capable lane: only
+        # sleep_lane marks sleeping, and a stale-awake race fails cleanly at
+        # stream_start (pretoken retry) rather than blocking every request.
+        self._known_sleep_state: dict[str, str] = {}
+        # Bumped on every lifecycle sleep-state write so a delayed background
+        # /is_sleeping response cannot overwrite a newer sleep/wake result
+        # (get_all_statuses probes without holding the lane lock).
+        self._sleep_state_generation: dict[str, int] = {}
         self._model_profiles = model_profiles
         self._last_profile_state: dict[str, str] = {}
         # Stuck-inference detection: track BOTH prompt_tokens_total and
@@ -488,6 +514,11 @@ class LaneManager:
         self._served_models: dict[str, int | None] = {}
         self._crash_restart_counts: dict[str, int] = {}
         self._static_lane_ids: set[str] = set()
+        # lane -> what the node's overrides replaced in its launch config, so a
+        # removed override gives the original back; explicit lanes keep theirs.
+        self._override_baselines: dict[str, dict[str, Any]] = {}
+        self._staged_baselines: dict[str, dict[str, Any]] = {}
+        self._explicit_lanes: set[str] = set()
         # GPUs held by a running calibration session. Non-None while
         # a session is live: auto-placement must not put new lanes on these GPUs
         # and an explicit lane targeting them is refused, so the calibration's
@@ -507,6 +538,7 @@ class LaneManager:
         # spawn succeeds, so the RAM-cache re-plan reads them here to reserve
         # their sleeping footprint BEFORE their cache copy is admitted.
         self._pending_lane_configs: dict[str, LaneConfig] = {}
+        self._lane_transfers: dict[str, LaneTransfer] = {}
 
     @property
     def pending_lanes(self) -> list[tuple[str, LaneConfig]]:
@@ -745,6 +777,7 @@ class LaneManager:
             snapshot: dict[str, tuple[ProcessHandle, LaneConfig | None, int | None]] = {
                 lid: (h, h.lane_config, self._port_alloc.get_port(lid)) for lid, h in self._handles.items()
             }
+            overrides_before = (set(self._explicit_lanes), {k: dict(v) for k, v in self._override_baselines.items()})
             # Track completed operations for rollback
             removed_snapshots: dict[str, tuple[ProcessHandle, LaneConfig | None, int]] = {}
             added_ids: list[str] = []
@@ -793,6 +826,7 @@ class LaneManager:
                     if current_lc is not None and _lane_needs_restart(current_lc, desired_lc):
                         try:
                             await self._restart_lane_unlocked(lid, desired_lc)
+                            self._explicit_lanes.add(lid)
                             restarted_ids.append(lid)
                             details = f"restart: backend=vllm, ctx={desired_lc.context_length}"
                             actions.append(
@@ -950,6 +984,8 @@ class LaneManager:
                     restarted_ids,
                     snapshot,
                 )
+                # The restored lanes run what they ran before the batch.
+                self._explicit_lanes, self._override_baselines = overrides_before
 
             lane_statuses = await self._collect_statuses_unlocked()
             prom.LANE_TRANSITIONS_TOTAL.labels(action="apply").inc()
@@ -1009,11 +1045,18 @@ class LaneManager:
         """
         if lane_id in self._static_lane_ids:
             raise ValueError(f"Cannot remove static lane '{lane_id}'")
+        handle = self._handles.get(lane_id)
+        transfer = None
+        if handle is not None:
+            config = handle.lane_config
+            transfer = self._begin_lane_transfer(lane_id, config.model if config else "", "unloading", handle)
         self._set_transition(lane_id, "stopping")
         try:
             await self._remove_lane_drained(lane_id)
         finally:
             self._clear_transition(lane_id)
+            if transfer is not None:
+                self._end_lane_transfer(lane_id, transfer)
 
     async def _remove_lane_drained(self, lane_id: str) -> None:
         loop = asyncio.get_running_loop()
@@ -1060,6 +1103,8 @@ class LaneManager:
         return self._launch_gpu_set(lane_config) if lane_config is not None else None
 
     async def _finalize_unloaded(self, lane_id: str, handle: ProcessHandle, port: int | None) -> None:
+        self._forget_sleep_state(lane_id)
+        self._forget_lane_overrides(lane_id)
         finalized = self._finalizing[lane_id] = asyncio.Event()
         self._finalizing_gpus[lane_id] = self._launch_gpu_set(handle.lane_config) if handle.lane_config else None
         try:
@@ -1090,6 +1135,8 @@ class LaneManager:
         port = self._port_alloc.get_port(lane_id)
         self._active_requests.pop(lane_id, None)
         self._starting_deadlines.pop(lane_id, None)
+        self._forget_sleep_state(lane_id)
+        self._forget_lane_overrides(lane_id)
         return handle, port
 
     async def reconfigure_lane(
@@ -1156,6 +1203,11 @@ class LaneManager:
         if not changed and not force_restart:
             return await self._get_status_unlocked(lane_id)
 
+        if not changed:
+            # A forced restart without new values runs under today's overrides,
+            # even if they change the layout; benchmark candidates keep theirs.
+            current_data = self._refresh_node_overrides(lane_id, current, topology=True).model_dump()
+
         parallel_changed = False
         if current.vllm_config is not None and current_data.get("vllm_config"):
             requested_vllm = VllmConfig(**current_data["vllm_config"])
@@ -1199,6 +1251,11 @@ class LaneManager:
                     "Wait for them to finish, or run the benchmark with the current settings."
                 )
             await self._restart_lane_unlocked(lane_id, new_lc, scoped=held_gpus is not None)
+            if not changed:
+                self._settle_node_overrides(lane_id)
+            if changed:
+                # Applied: its values now win over the node's overrides.
+                self._explicit_lanes.add(lane_id)
         prom.LANE_TRANSITIONS_TOTAL.labels(action="reconfigure").inc()
 
         return await self._get_status_unlocked(lane_id)
@@ -1360,6 +1417,9 @@ class LaneManager:
                     self._clear_transition(lane_id)
                     return await self._get_status_unlocked(lane_id)
             await handle.sleep(level=level, mode=mode)
+            # Authoritative for acquire: set before any status rebuild so a
+            # concurrent infer cannot race past a stale "awake" known state.
+            self._remember_sleep_state(lane_id, "sleeping")
             self._clear_transition(lane_id)
             # Refresh GPU snapshot BEFORE _record_event so that the status-push
             # triggered by mark_status_dirty carries post-sleep GPU numbers.
@@ -1407,6 +1467,9 @@ class LaneManager:
                 raise ValueError(f"Lane '{lane_id}' has no lane config")
             try:
                 await handle.wake_up()
+                # Lane is serveable again; acquire may admit before the
+                # background /is_sleeping probe refreshes the TTL cache.
+                self._remember_sleep_state(lane_id, "awake")
                 self._clear_transition(lane_id)
             except Exception as exc:
                 if not self._is_probable_cuda_oom(exc):
@@ -1541,6 +1604,37 @@ class LaneManager:
         await self._check_stuck_lanes(statuses)
         await self._recover_dead_lanes(statuses)
         return statuses
+
+    def _begin_lane_transfer(
+        self, lane_id: str, model: str, operation: Literal["loading", "unloading"], handle: ProcessHandle | None = None
+    ) -> LaneTransfer:
+        transfer = LaneTransfer(LaneTransferStatus(lane_id=lane_id, model=model, operation=operation), handle)
+        self._lane_transfers[lane_id] = transfer
+        self.mark_status_dirty()
+        return transfer
+
+    def _end_lane_transfer(self, lane_id: str, transfer: LaneTransfer) -> None:
+        if self._lane_transfers.get(lane_id) is transfer:
+            del self._lane_transfers[lane_id]
+            self.mark_status_dirty()
+
+    async def lane_transfer_statuses(self) -> list[LaneTransferStatus]:
+        """Sample only the process trees involved in a load or unload."""
+        transfers = list(self._lane_transfers.items())
+        if not transfers:
+            return []
+        pids = {lid: transfer.handle.status().pid for lid, transfer in transfers if transfer.handle is not None}
+        memory = await self._query_process_vram_map([pid for pid in pids.values() if pid is not None])
+        result = []
+        for lane_id, transfer in transfers:
+            if self._lane_transfers.get(lane_id) is not transfer:
+                continue
+            status = transfer.status
+            resident = memory.get(pids.get(lane_id))
+            if status.operation == "unloading" and resident is not None:
+                status.reference_vram_mb = max(status.reference_vram_mb or 0, resident)
+            result.append(status.model_copy(update={"resident_vram_mb": resident}))
+        return result
 
     async def _query_process_host_ram_map(
         self,
@@ -1698,8 +1792,9 @@ class LaneManager:
                     current = handle.status()
                     if current.state not in {ProcessState.STOPPED, ProcessState.ERROR}:
                         continue
-                    current_lc = handle.lane_config or lane_config
+                    current_lc = self._refresh_node_overrides(lid, handle.lane_config or lane_config)
                     await self._restart_lane_unlocked(lid, current_lc)
+                    self._settle_node_overrides(lid)
                 # Successful restart: reset the counter
                 self._crash_restart_counts[lid] = 0
                 self._record_event(lid, "crash_restart_ok", model=current_lc.model, port=status.port)
@@ -1837,6 +1932,71 @@ class LaneManager:
             self._count_revision += 1
             self._status_event.set()
 
+    def _remember_sleep_state(self, lane_id: str, sleep_state: str) -> None:
+        """Record the lifecycle-authoritative sleep_state for the infer hot path."""
+        self._known_sleep_state[lane_id] = sleep_state
+        self._sleep_state_generation[lane_id] = self._sleep_state_generation.get(lane_id, 0) + 1
+
+    def _refresh_node_overrides(self, lane_id: str, lane_config: LaneConfig, *, topology: bool = False) -> LaneConfig:
+        """The config of a restart without new values, under today's overrides.
+
+        The baseline it would leave is only staged: a restart that is rejected
+        or fails must leave the lane's record as it was. An automatic restart
+        keeps the parallel layout it has; only a planned one may change it.
+        """
+        if lane_id in self._explicit_lanes:
+            return lane_config
+        config, baseline = self._resolve_model_vllm_overrides(lane_config, lane_id)
+        if not topology and _parallel_layout(config) != _parallel_layout(lane_config):
+            logger.info("Lane '%s': an override changes its parallel layout; it waits for a planned start", lane_id)
+            return lane_config
+        self._staged_baselines[lane_id] = baseline
+        return config
+
+    def _settle_node_overrides(self, lane_id: str) -> None:
+        """The restart used the staged config; its baseline is the lane's."""
+        baseline = self._staged_baselines.pop(lane_id, None)
+        if baseline is None:
+            return
+        if baseline:
+            self._override_baselines[lane_id] = baseline
+        else:
+            self._override_baselines.pop(lane_id, None)
+
+    def _forget_lane_overrides(self, lane_id: str) -> None:
+        self._override_baselines.pop(lane_id, None)
+        self._staged_baselines.pop(lane_id, None)
+        self._explicit_lanes.discard(lane_id)
+
+    def _forget_sleep_state(self, lane_id: str) -> None:
+        self._known_sleep_state.pop(lane_id, None)
+        self._sleep_state_generation.pop(lane_id, None)
+
+    def _publish_probed_sleep_state(
+        self,
+        lane_id: str,
+        handle: ProcessHandle,
+        sleep_state: str,
+        *,
+        handle_at_probe: ProcessHandle,
+        generation_at_probe: int,
+    ) -> None:
+        """Apply a background /is_sleeping result only if still current.
+
+        ``get_all_statuses`` / status refresh probe without holding the lane
+        lock. A probe that sampled ``sleeping`` before a wake must not land
+        after the wake and flip known state back to sleeping (and vice versa).
+        """
+        if sleep_state not in {"sleeping", "awake", "unsupported"}:
+            return
+        if self._handles.get(lane_id) is not handle_at_probe:
+            return
+        if handle is not handle_at_probe:
+            return
+        if self._sleep_state_generation.get(lane_id, 0) != generation_at_probe:
+            return
+        self._remember_sleep_state(lane_id, sleep_state)
+
     async def acquire_lane_for_infer(self, lane_id: str) -> LaneStatus:
         """Atomically verify the lane is routable AND count the request under a
         SINGLE lock acquisition (of this lane), returning its status.
@@ -1848,6 +2008,11 @@ class LaneManager:
         re-check ``_active_requests`` under this same lock, counting here makes the
         request visible to them before they can sleep/evict the lane.
 
+        Sleep readiness uses the lifecycle-tracked ``_known_sleep_state`` (and
+        the status TTL cache) — it does **not** await vLLM ``/is_sleeping``.
+        That probe stays on the background status path; awaiting it here cost
+        hundreds of milliseconds per request (issue #165).
+
         Raises LaneNotServingError if the lane is missing or not routable (e.g.
         already sleeping) so the bridge can fail cleanly and the orchestrator
         reroutes — rather than streaming to a lane that is going away.
@@ -1857,7 +2022,13 @@ class LaneManager:
         async with self._lock.scoped([lane_id], queue=False):
             if lane_id not in self._handles:
                 raise LaneNotServingError(f"Lane '{lane_id}' not found")
-            status = await self._get_status_unlocked(lane_id)
+            # A wake in flight is not yet serveable; reject so the orchestrator
+            # can wait/retry instead of POSTing into a half-woken engine.
+            if self._transitions.get(lane_id) == "waking":
+                raise LaneNotServingError(
+                    f"Lane '{lane_id}' is not routable (runtime_state=starting, sleep_state=sleeping)"
+                )
+            status = await self._get_status_unlocked(lane_id, probe_sleep=False)
             # Mirror _resolve_lane_for_infer's routable set; additionally reject a
             # lane that is sleeping (the race we are closing).
             if (
@@ -2002,7 +2173,19 @@ class LaneManager:
     # CPU offload is controlled per-lane via vllm_config.cpu_offload_gb.
     # No auto-injection — only applied when explicitly set on a lane's config.
 
-    def _apply_model_vllm_overrides(self, lane_config: LaneConfig) -> LaneConfig:
+    def _apply_model_vllm_overrides(self, lane_config: LaneConfig, lane_id: str | None = None) -> LaneConfig:
+        """Merge the node's overrides into a lane that starts now."""
+        config, baseline = self._resolve_model_vllm_overrides(lane_config, lane_id)
+        if lane_id is not None:
+            if baseline:
+                self._override_baselines[lane_id] = baseline
+            else:
+                self._override_baselines.pop(lane_id, None)
+        return config
+
+    def _resolve_model_vllm_overrides(
+        self, lane_config: LaneConfig, lane_id: str | None
+    ) -> tuple[LaneConfig, dict[str, Any]]:
         """Merge worker-local per-model vLLM overrides into an incoming lane config.
 
         Reads engines.vllm.model_overrides from config.yml and merges matching
@@ -2023,11 +2206,12 @@ class LaneManager:
         Logos server sends.
         """
         if lane_config.vllm_config is None:
-            return lane_config
+            return lane_config, {}
         overrides = self._vllm_engine_config.model_overrides.get(lane_config.model) or {}
         disable_sleep = self._vllm_engine_config.disable_sleep_mode
-        if not overrides and not disable_sleep:
-            return lane_config
+        baseline = dict(self._override_baselines.get(lane_id, {})) if lane_id else {}
+        if not overrides and not disable_sleep and not baseline:
+            return lane_config, baseline
         engine_fields = VllmConfig.model_fields
         engine_overrides = {k: v for k, v in overrides.items() if k in engine_fields}
         profile_overrides = {k: v for k, v in overrides.items() if k not in engine_fields}
@@ -2041,7 +2225,12 @@ class LaneManager:
             )
             if self._model_profiles is not None:
                 self._model_profiles.add_overrides({lane_config.model: profile_overrides})
-        merged = {**lane_config.vllm_config.model_dump(), **engine_overrides}
+        current = lane_config.vllm_config.model_dump()
+        for key in set(baseline) - set(engine_overrides):
+            current[key] = baseline.pop(key)  # the override is gone: the original returns
+        for key in engine_overrides:
+            baseline.setdefault(key, current[key])
+        merged = {**current, **engine_overrides}
         if disable_sleep:
             merged["enable_sleep_mode"] = False
         new_vc = VllmConfig.model_validate(merged)
@@ -2055,7 +2244,7 @@ class LaneManager:
             lane_config.model,
             applied,
         )
-        return lane_config.model_copy(update={"vllm_config": new_vc})
+        return lane_config.model_copy(update={"vllm_config": new_vc}), baseline
 
     def _auto_tensor_parallel(self, lane_config: LaneConfig) -> LaneConfig:
         """Validate and optionally escalate tensor_parallel_size for vLLM lanes.
@@ -3039,6 +3228,7 @@ class LaneManager:
         # post-registration live-handle protection makes the allocation
         # unreclaimable and the lane's first sleep lacks host RAM.
         self._pending_lane_configs[lane_id] = lane_config
+        transfer = self._begin_lane_transfer(lane_id, lane_config.model, "loading")
         try:
             # A process of the same lane id still exiting holds the port and
             # the memory placement and the headroom check would count.
@@ -3082,7 +3272,8 @@ class LaneManager:
                         effective,
                         "tmpfs RAM cache" if is_tmpfs else "source filesystem",
                     )
-            lane_config = self._apply_model_vllm_overrides(lane_config)
+            self._forget_lane_overrides(lane_id)
+            lane_config = self._apply_model_vllm_overrides(lane_config, lane_id)
             lane_config = self._auto_tensor_parallel(lane_config)
             lane_config = await self._place_for_spawn(lane_id, lane_config, claim)
             # Last line of defence at the resource itself: an operator-explicit
@@ -3100,6 +3291,7 @@ class LaneManager:
                     "Placement is refused until the session ends; leftover GPU(s) remain available."
                 )
             await self._wait_for_vram_headroom(lane_id, lane_config)
+            transfer.status.reference_vram_mb = self._estimate_lane_vram_mb(lane_config) or None
             port = self._port_alloc.allocate(lane_id)
             self._note_lane_spawn(lane_id, lane_config.model)
             handle = _create_handle(
@@ -3117,6 +3309,7 @@ class LaneManager:
                 handle.launched_from_ram_cache = launched_from_ram_cache
             try:
                 await handle.init()
+                transfer.handle = handle
                 status = await handle.spawn(lane_config)
                 if status.state != ProcessState.RUNNING:
                     raise RuntimeError(
@@ -3143,6 +3336,12 @@ class LaneManager:
             self._handles[lane_id] = handle
             self._active_requests[lane_id] = 0
             self._starting_deadlines[lane_id] = asyncio.get_running_loop().time() + _RESTART_TIMEOUT
+            # Fresh spawn is awake (or unsupported when sleep mode is off).
+            # acquire must not wait for the first /is_sleeping probe.
+            if lane_config.vllm_config and lane_config.vllm_config.enable_sleep_mode:
+                self._remember_sleep_state(lane_id, "awake")
+            else:
+                self._remember_sleep_state(lane_id, "unsupported")
             self._record_event(lane_id, "spawned", model=lane_config.model, port=port)
             logger.info(
                 "Lane '%s' added (vllm=%s, model=%s, port=%d)",
@@ -3159,6 +3358,7 @@ class LaneManager:
             # failed startup must not leave the reservation or the pending
             # entry behind.
             self._pending_lane_configs.pop(lane_id, None)
+            self._end_lane_transfer(lane_id, transfer)
             self.release_model_startup(starting_model, lane_id)
             self._finish_loading(lane_id)
 
@@ -3251,11 +3451,15 @@ class LaneManager:
         # lock-free re-plan cannot evict it in between.
         starting_model = new_config.model
         self.reserve_model_startup(starting_model, lane_id)
+        transfer = None
         try:
             new_config = self._auto_tensor_parallel(new_config)
             old_handle = self._handles[lane_id]
             port = self._port_alloc.get_port(lane_id)
             old_config = old_handle.lane_config
+            transfer = self._begin_lane_transfer(
+                lane_id, old_config.model if old_config else new_config.model, "unloading", old_handle
+            )
 
             self._record_event(
                 lane_id,
@@ -3276,6 +3480,7 @@ class LaneManager:
                 logger.warning("Restart '%s': failed to destroy old handle", lane_id, exc_info=True)
             await old_handle.close()
 
+            transfer = self._begin_lane_transfer(lane_id, new_config.model, "loading")
             new_handle = None
             try:
                 # The collector still contains the old process's allocation after
@@ -3284,6 +3489,7 @@ class LaneManager:
                     await self._gpu_force_poll()
                 await self._wait_for_vram_headroom(lane_id, new_config)
                 new_config = await self._auto_place_gpu_devices(lane_id, new_config)
+                transfer.status.reference_vram_mb = self._estimate_lane_vram_mb(new_config) or None
                 # A calibration slice is picked without the lock: it must see
                 # where the replacement starts, not where the old process ran.
                 self._loading_gpus[lane_id] = self._launch_gpu_set(new_config)
@@ -3301,6 +3507,7 @@ class LaneManager:
                     metal_config=self._metal_config,
                 )
                 await new_handle.init()
+                transfer.handle = new_handle
 
                 self._record_event(
                     lane_id,
@@ -3386,6 +3593,8 @@ class LaneManager:
             # The success path above already released the reservation before
             # its re-plan; this keeps the release for the spawn-failure
             # branch (idempotent — see _add_lane_unlocked).
+            if transfer is not None:
+                self._end_lane_transfer(lane_id, transfer)
             self.release_model_startup(starting_model, lane_id)
             self._finish_loading(lane_id)
 
@@ -3699,13 +3908,42 @@ class LaneManager:
         # in-memory patch of the last payload (no status rebuild).
         self._lane_status_cache.clear()
 
-    async def _get_status_unlocked(self, lane_id: str) -> LaneStatus:
+    def _status_with_known_sleep(self, lane_id: str, status: LaneStatus) -> LaneStatus:
+        """Overlay lifecycle sleep_state onto a cached LaneStatus for infer.
+
+        Infer may reuse a status cached while the lane was sleeping. After a
+        wake / recovery probe updates ``_known_sleep_state`` to awake, the
+        cache is not rewritten by background collection — so this overlay must
+        also clear a stale ``runtime_state=sleeping`` or acquire keeps rejecting.
+        """
+        known = self._known_sleep_state.get(lane_id)
+        if not known:
+            return status
+        updates: dict[str, str] = {}
+        if known != status.sleep_state:
+            updates["sleep_state"] = known
+        if known == "sleeping":
+            if status.runtime_state in {"loaded", "running", "sleeping"}:
+                updates["runtime_state"] = "sleeping"
+        elif known == "awake" and status.runtime_state == "sleeping":
+            active = self._active_requests.get(lane_id, 0)
+            updates["runtime_state"] = "running" if active > 0 else "loaded"
+        if not updates:
+            return status
+        return status.model_copy(update=updates)
+
+    async def _get_status_unlocked(self, lane_id: str, *, probe_sleep: bool = True) -> LaneStatus:
         handle = self._handles.get(lane_id)
         if handle is None:
             raise KeyError(f"Lane '{lane_id}' not found")
         ps = handle.status()
+        cached = self._lane_status_cache.get(lane_id)
+        # Infer hot path: reuse ANY cached status (even past TTL) so sequential
+        # acquires with TTL=0 do not pay /v1/models + /metrics every request.
+        # Sleep readiness comes from _known_sleep_state, not those probes.
+        if not probe_sleep and cached is not None and ps.state == ProcessState.RUNNING:
+            return self._status_with_known_sleep(lane_id, cached[1])
         if self._lane_status_ttl_seconds > 0:
-            cached = self._lane_status_cache.get(lane_id)
             # The cheap synchronous process check is ALWAYS consulted fresh:
             # a dead process must never be masked by a cached status. While
             # the process is alive, a steady-state re-acquire within the TTL
@@ -3713,12 +3951,21 @@ class LaneManager:
             if cached is not None and ps.state == ProcessState.RUNNING:
                 built_at, status = cached
                 if time.monotonic() - built_at < self._lane_status_ttl_seconds:
+                    if not probe_sleep:
+                        return self._status_with_known_sleep(lane_id, status)
                     return status
-        pid_vram_map = await self._query_process_vram_map(
-            [ps.pid] if ps.state == ProcessState.RUNNING and ps.pid is not None else []
-        )
-        status = await self._build_lane_status(handle, pid_vram_map)
-        if self._lane_status_ttl_seconds > 0:
+        # Infer rebuilds skip nvidia-smi / host-RAM; background status keeps them.
+        if probe_sleep:
+            pid_vram_map = await self._query_process_vram_map(
+                [ps.pid] if ps.state == ProcessState.RUNNING and ps.pid is not None else []
+            )
+        else:
+            pid_vram_map = {}
+        status = await self._build_lane_status(handle, pid_vram_map, probe_sleep=probe_sleep)
+        # Always cache infer builds too so the next acquire is free even when
+        # LOGOS_LANE_STATUS_TTL_S=0 (TTL 0 only disables time-based reuse for
+        # background telemetry builds).
+        if self._lane_status_ttl_seconds > 0 or not probe_sleep:
             self._lane_status_cache[lane_id] = (time.monotonic(), status)
         return status
 
@@ -3968,6 +4215,8 @@ class LaneManager:
     async def _restart_stuck_lane(self, lane_id: str, lane_config: LaneConfig) -> None:
         """Attempt to restart a lane that was killed by stuck detection."""
         logger.info("Lane '%s': attempting automatic restart after stuck detection", lane_id)
+        # The saved config predates changes to the node's overrides.
+        lane_config = self._refresh_node_overrides(lane_id, lane_config)
         self._record_event(lane_id, "stuck_restart_attempt", model=lane_config.model)
         try:
             async with self._lock:
@@ -3978,6 +4227,7 @@ class LaneManager:
                     )
                     return
                 await self._restart_lane_unlocked(lane_id, lane_config)
+                self._settle_node_overrides(lane_id)
             logger.info("Lane '%s': automatic restart after stuck detection succeeded", lane_id)
             self._record_event(lane_id, "stuck_restart_ok", model=lane_config.model)
         except Exception:
@@ -4069,6 +4319,8 @@ class LaneManager:
         handle: ProcessHandle,
         pid_vram_map: dict[int, float] | None = None,
         pid_host_ram_map: dict[int, tuple[float, str]] | None = None,
+        *,
+        probe_sleep: bool = True,
     ) -> LaneStatus:
         ps = handle.status()
         lc = handle.lane_config
@@ -4078,7 +4330,12 @@ class LaneManager:
         host_ram_mb = 0.0
         host_ram_source = "unknown"
 
-        if ps.state == ProcessState.RUNNING:
+        # Infer acquire (probe_sleep=False) must not await lane HTTP probes —
+        # /v1/models, /metrics, and /is_sleeping are background telemetry only
+        # (issue #165). Port + known sleep_state are enough to route.
+        collect_telemetry = probe_sleep
+
+        if ps.state == ProcessState.RUNNING and collect_telemetry:
             try:
                 raw_models = await handle.get_loaded_models()
                 for m in raw_models:
@@ -4102,7 +4359,7 @@ class LaneManager:
             except Exception:
                 logger.debug("Could not query loaded models for lane '%s'", handle.lane_id)
 
-        if ps.state == ProcessState.RUNNING and ps.pid is not None:
+        if ps.state == ProcessState.RUNNING and ps.pid is not None and collect_telemetry:
             if pid_vram_map is None:
                 pid_vram_map = await self._query_process_vram_map([ps.pid])
             vram_by_pid_mb = float(pid_vram_map.get(ps.pid, 0.0))
@@ -4144,14 +4401,17 @@ class LaneManager:
                 if lc.vllm_config
                 else 1
             )
-            occupied_gpu_devices = await self._lane_occupied_gpu_devices(lc, effective_gpu_devices, gpu_count)
+            if collect_telemetry:
+                occupied_gpu_devices = await self._lane_occupied_gpu_devices(lc, effective_gpu_devices, gpu_count)
+            else:
+                occupied_gpu_devices = effective_gpu_devices
             if lc.vllm_config:
                 sleep_mode_enabled = bool(lc.vllm_config.enable_sleep_mode)
                 backend_metrics = lc.vllm_config.model_dump(mode="json")
                 parallel_sizes = self._launch_parallel_sizes(lc.vllm_config, self._vllm_engine_config.global_extra_args)
                 if parallel_sizes:
                     backend_metrics["pipeline_parallel_size"] = parallel_sizes["pp"]
-        if hasattr(handle, "get_backend_metrics"):
+        if collect_telemetry and hasattr(handle, "get_backend_metrics"):
             try:
                 backend_metrics.update(await handle.get_backend_metrics())
             except Exception:
@@ -4164,19 +4424,42 @@ class LaneManager:
         if lc is not None:
             if not sleep_mode_enabled:
                 sleep_state = "unsupported"
+                # get_all_statuses snapshots handles; an obsolete sleep-disabled
+                # handle must not overwrite a replacement lane's known state.
+                if self._handles.get(handle.lane_id) is handle:
+                    self._remember_sleep_state(handle.lane_id, "unsupported")
             elif ps.state != ProcessState.RUNNING:
                 sleep_state = "unknown"
+            elif not probe_sleep:
+                # Infer hot path: never await /is_sleeping (issue #165). Use
+                # the lifecycle-tracked state; default awake for a live lane
+                # that has not been slept through sleep_lane.
+                sleep_state = self._known_sleep_state.get(handle.lane_id, "awake")
             else:
+                generation_at_probe = self._sleep_state_generation.get(handle.lane_id, 0)
+                handle_at_probe = handle
                 try:
                     sleeping = await handle.is_sleeping()
                 except Exception:
                     sleeping = None
                 if sleeping is True:
-                    sleep_state = "sleeping"
+                    probed = "sleeping"
                 elif sleeping is False:
-                    sleep_state = "awake"
+                    probed = "awake"
                 else:
-                    sleep_state = "unknown"
+                    probed = None
+                # Prefer the live known state when the probe is inconclusive or
+                # stale relative to a sleep/wake that finished during the await.
+                sleep_state = self._known_sleep_state.get(handle.lane_id, "unknown")
+                if probed is not None:
+                    self._publish_probed_sleep_state(
+                        handle.lane_id,
+                        handle,
+                        probed,
+                        handle_at_probe=handle_at_probe,
+                        generation_at_probe=generation_at_probe,
+                    )
+                    sleep_state = self._known_sleep_state.get(handle.lane_id, probed)
 
         active_requests = self._active_requests.get(handle.lane_id, 0)
         runtime_state: str = "stopped"

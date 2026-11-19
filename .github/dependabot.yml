@@ -1,8 +1,17 @@
 version: 2
+
+# Every ecosystem follows the same grouping: minor and patch updates arrive as
+# one pull request per ecosystem, each major update as its own pull request. A
+# breaking major then fails alone instead of blocking the routine updates
+# grouped with it.
 updates:
   # The logos services are uv projects. The ecosystem is "uv" rather than "pip"
   # deliberately: these images install with `uv sync --locked`, so a bump that
   # edited pyproject.toml without updating uv.lock would fail the build.
+  #
+  # Dependabot bumps one requirement at a time and re-locks after each, so
+  # packages that pin each other exactly must not both be declared in
+  # pyproject.toml: declare the top-most one and let uv.lock carry the rest.
   - package-ecosystem: "uv"
     directory: "logos-agent"
     schedule:
@@ -12,15 +21,28 @@ updates:
         applies-to: version-updates
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: "uv"
     directory: "logos-orchestrator"
     schedule:
       interval: "weekly"
+    ignore:
+      # SQLAlchemy 2.1 changes the default driver for `postgresql://` URLs; the
+      # pin in pyproject.toml explains what moving off 2.0 requires.
+      - dependency-name: "sqlalchemy"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
     groups:
       logos-orchestrator-python-dependencies:
         applies-to: version-updates
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: "npm"
     directories:
       - "logos-ui"
@@ -36,7 +58,18 @@ updates:
         applies-to: version-updates
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

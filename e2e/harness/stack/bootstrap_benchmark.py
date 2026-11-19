@@ -282,10 +282,14 @@ def prepare_lifecycle_isolation(
     # The planner ranks over worker capabilities, not the catalogue: a foreign
     # worker that still announces a restricted model would be planned onto while
     # the scheduler can only queue on the keep provider. Recreate each foreign
-    # node (container only) without those models in its announced capabilities.
+    # node (container only) without those models in its announced capabilities,
+    # then drop them from the node's stored configuration as well.
     foreign_services = [str(n.name) for n in admin.connected_nodes() if int(n.provider_id) in others]
     for service in foreign_services:
         compose.recreate_node_without_models(service, models)
+    # The recreated worker reads its models from Logos, not from its config.yml.
+    for provider_id in others:
+        admin.remove_node_models(provider_id, models)
     _wait_capabilities_exclude(admin, others, models)
 
     deleted: list[tuple[int, str]] = []

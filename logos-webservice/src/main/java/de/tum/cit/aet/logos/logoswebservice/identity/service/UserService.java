@@ -112,10 +112,6 @@ public class UserService {
         });
     }
 
-    public Optional<String> findRole(Integer userId) {
-        return userRepository.findById(userId).map(User::getRole);
-    }
-
     public Optional<UserResponseDTO> updateInfo(Integer userId, UpdateUserInfoRequestDTO body) {
         return userRepository.findById(userId).map(user -> {
             requireUnmanaged(user, "edited");

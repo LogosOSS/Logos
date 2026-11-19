@@ -5,6 +5,7 @@ import { provideRouter } from '@angular/router';
 
 import { Statistics } from './statistics';
 import { StatsWebsocketService } from './services/stats-websocket.service';
+import { StatsClockService } from './services/stats-clock.service';
 import { StatisticsService } from './services/statistics.service';
 
 import type { FeedFilterOption, TimelineRequestConfig } from './statistics.models';
@@ -529,7 +530,10 @@ describe('selector placement on the requests tab', () => {
 
 describe('local providers: failed GPUs and offline workers', () => {
   let fixture: ComponentFixture<Statistics>;
-  afterEach(() => fixture?.destroy());
+  afterEach(() => {
+    fixture?.destroy();
+    vi.useRealTimers();
+  });
 
   const sample = (gpuFaults: string[] = []) => ({
     timestamp: '2026-10-12T07:49:00Z',
@@ -543,6 +547,27 @@ describe('local providers: failed GPUs and offline workers', () => {
     page.fx.detectChanges();
     return { component: page.component, el: page.fx.nativeElement as HTMLElement };
   }
+
+  it('updates last-seen ages every second without pushes using server time despite a browser clock change', async () => {
+    vi.useFakeTimers();
+    const epoch = Date.parse('2026-11-13T12:00:00Z');
+    vi.setSystemTime(epoch);
+    const { component, el } = await pageWith([{
+      provider_id: 1, name: 'worker', connected: false, connection_state: 'offline',
+      data: [{ ...sample(), timestamp: new Date(epoch - 10_000).toISOString() }],
+    }]);
+    component.activeTab.set('local-providers');
+    TestBed.inject(StatsClockService).synchronize(new Date(epoch).toISOString());
+    fixture.detectChanges();
+    expect(el.textContent).toContain('last seen 10s ago');
+    vi.setSystemTime(epoch + 300_000);
+    vi.advanceTimersByTime(1000);
+    fixture.detectChanges();
+    expect(el.textContent).toContain('last seen 11s ago');
+    vi.advanceTimersByTime(1000);
+    fixture.detectChanges();
+    expect(el.textContent).toContain('last seen 12s ago');
+  });
 
   it('raises a failed GPU above the tabs, on the tab and on the worker row', async () => {
     const { component, el } = await pageWith([

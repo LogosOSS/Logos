@@ -255,6 +255,22 @@ class VllmConfig(BaseModel):
 class VllmEngineConfig(BaseModel):
     """Worker-wide vLLM defaults and telemetry settings."""
 
+    allowed_media_domains: list[str] = Field(
+        default_factory=list,
+        description="Exact HTTP(S) media hostnames allowed by the bridge and vLLM. Empty permits only embedded media.",
+    )
+
+    @field_validator("allowed_media_domains")
+    @classmethod
+    def _validate_media_domains(cls, domains: list[str]) -> list[str]:
+        """Accept bare ASCII hostnames, without wildcards, ports, paths or credentials."""
+        for domain in domains:
+            if len(domain) > 253 or any(
+                not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label) for label in domain.split(".")
+            ):
+                raise ValueError("allowed_media_domains entries must be bare ASCII hostnames")
+        return list(dict.fromkeys(domain.lower() for domain in domains))
+
     metrics_path: str = "/metrics"
     metrics_timeout_seconds: int = Field(default=5, ge=1)
     flashinfer_loglevel: int = Field(
@@ -581,6 +597,10 @@ class LogosConfig(BaseModel):
     # server-side calibration orchestrator can still discover and target them.
     configured_models: list[str] = Field(default_factory=list)
     capabilities_overrides: dict[str, dict] = Field(default_factory=dict)
+    # Models as Logos stores them (None: not fetched). Plans and calibration
+    # keys derive from these, not from the dicts the worker wires up.
+    node_entries: list[dict[str, Any]] | None = Field(default=None, exclude=True)
+    node_config_revision: int = Field(default=0, exclude=True)
     heartbeat_interval_seconds: int = Field(default=5, ge=1)
     reconnect_backoff_seconds: int = Field(default=3, ge=1)
     # Max time between full runtime-status pushes regardless of lane churn.
@@ -987,6 +1007,14 @@ class LaneStatus(BaseModel):
     last_wake_from_sleep_s: float | None = None
 
 
+class LaneTransferStatus(BaseModel):
+    lane_id: str
+    model: str
+    operation: Literal["loading", "unloading"]
+    resident_vram_mb: float | None = None
+    reference_vram_mb: float | None = None
+
+
 class WorkerRuntimeStatus(BaseModel):
     supports_benchmark_restart: bool = True
     worker_name: str
@@ -1012,6 +1040,7 @@ class WorkerRuntimeStatus(BaseModel):
     disk: DiskSummary | None = None
     capacity: CapacitySummary
     lanes: list[LaneStatus] = Field(default_factory=list)
+    lane_transfers: list[LaneTransferStatus] = Field(default_factory=list)
     model_profiles: dict[str, dict[str, Any]] | None = None
     max_lanes: int = 0  # 0 = unlimited
     # Operator-declared GPU capability weight (default 100). Used by the

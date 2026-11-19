@@ -70,6 +70,14 @@ export interface MaintenanceRecovery {
   age_s: number | null;
 }
 
+export interface MaintenanceNode {
+  provider_id: number;
+  provider_name: string;
+  deployment_id: string;
+  age_s: number;
+  remaining_s: number;
+}
+
 /** What holds the maintenance slot, as `GET /api/logosdb/maintenance` returns it. */
 export interface MaintenanceStatus {
   limit: number;
@@ -77,6 +85,7 @@ export interface MaintenanceStatus {
   calibrations: MaintenanceCalibration[];
   benchmarks: MaintenanceBenchmark[];
   recoveries: MaintenanceRecovery[];
+  node_maintenance?: MaintenanceNode[];
 }
 
 /** Position to continue a request-feed page from, as the server hands it back. */
@@ -375,6 +384,13 @@ export class StatisticsService {
     return firstValueFrom(this.http.post<{ released: boolean; forced: boolean; message?: string }>(
       '/api/logosdb/maintenance/release_recovery',
       { model_provider_id: modelProviderId, force },
+    ));
+  }
+
+  releaseNodeMaintenance(providerId: number, deploymentId: string): Promise<{ released: boolean }> {
+    return firstValueFrom(this.http.post<{ released: boolean }>(
+      '/api/logosdb/maintenance/release_node',
+      { provider_id: providerId, deployment_id: deploymentId },
     ));
   }
 

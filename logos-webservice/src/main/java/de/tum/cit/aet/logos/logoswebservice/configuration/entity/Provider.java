@@ -54,7 +54,8 @@ public class Provider {
 
     private Integer totalVramMb;
 
-    private Integer parallelCapacity = 20;
+    // Optional configured capacity; logosnode admission uses live lane signals.
+    private Integer parallelCapacity;
 
     private Integer keepAliveSeconds = 300;
 

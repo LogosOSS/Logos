@@ -115,6 +115,15 @@ class GatewayRouteResolverTest {
             .isEqualTo("/v1/embeddings");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+        "/v1/chat/completions/", "/openai/chat/completions/", "/v1//chat/completions",
+        "/v1/./chat/completions", "/v1/other/../chat/completions", "/v1/%2e/chat/completions"
+    })
+    void nonCanonicalPathsAreNotForwardedDirectly(String path) {
+        assertThat(GatewayRouteResolver.isDirectCloudEligible(path, "POST")).isFalse();
+    }
+
     private static GatewayDeployment cloud(String cloudType, String baseUrl, String endpoint) {
         return new GatewayDeployment(
             1, "gpt-4o", 10, "Cloud", "cloud", cloudType, baseUrl, endpoint, "Authorization", "Bearer {}", "sk",

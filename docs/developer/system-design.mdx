@@ -120,7 +120,9 @@ Read the diagram from left to right:
 3. Logos offers **Models** to clients. A **Provider** is the place where a model
    runs (`cloud` or `logosnode`).
 4. The team-level and key-level **permissions** decide which models a caller
-   can use. **Policies** also limit privacy, priority, and topic.
+   can use. The team permissions are the default for keys without custom
+   permissions. Custom key permissions replace them and can include more
+   models. **Policies** also limit privacy, priority, and topic.
 5. Each inference attempt creates a **LogEntry** (usage tokens and settled
    cost). **BatchObject** rows track OpenAI-compatible batch jobs.
 

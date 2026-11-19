@@ -52,6 +52,13 @@ public class ApiKeyAdminController {
                 return ResponseEntity.status(403).body(Map.of("detail", "Team owner access required to delete this key"));
             }
         }
+        if ("developer".equals(keyInfo.get().get("key_type"))) {
+            // A developer key exists exactly as long as its holder's membership:
+            // membership sync would bring a deactivated one straight back.
+            return ResponseEntity.status(409).body(Map.of("detail",
+                "Developer keys cannot be deleted on their own. Rotate the key to invalidate its value, "
+                    + "or remove the member from the team to revoke their access."));
+        }
         service.deactivateKey(keyId);
         return ResponseEntity.ok(Map.of("result", "API Key deleted successfully"));
     }
@@ -69,7 +76,7 @@ public class ApiKeyAdminController {
                 return ResponseEntity.status(403).body(Map.of("detail", "Team owner access required"));
             }
         }
-        return service.rotateKey(keyId)
+        return service.rotateKey(keyId, auth.userId())
             .<ResponseEntity<?>>map(ResponseEntity::ok)
             .orElseGet(() -> ResponseEntity.status(404).body(Map.of("detail", "API Key not found")));
     }
@@ -99,6 +106,6 @@ public class ApiKeyAdminController {
         if (Role.APP_ADMIN.matches(auth.role()) && !service.isTeamOwner(teamId, auth.userId())) {
             return ResponseEntity.status(403).body(Map.of("detail", "Team owner access required"));
         }
-        return ResponseEntity.ok(service.getKeysForTeam(teamId));
+        return ResponseEntity.ok(service.getKeysForTeam(teamId, auth.userId()));
     }
 }

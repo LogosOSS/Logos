@@ -30,6 +30,7 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.dto.LaneLoadStatusRequ
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.LockLaneRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseCalibrationClaimRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseRecoveryRequestDTO;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseNodeMaintenanceRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.UnlockLaneRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.service.LaneLockService;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.GetProviderModelsRequestDTO;
@@ -269,6 +270,29 @@ public class ProviderController {
             after.put("forced", Boolean.TRUE.equals(body.get("forced")));
             auditLog.record("provider.nightly_recovery_released", "model_provider", req.modelProviderId(), null,
                 Map.of("nightly_recovery", "pending"), after);
+        }
+        return response;
+    }
+
+    /** Revoke a node deployment lease and record the operator action in the audit trail. */
+    @PostMapping("/maintenance/release_node")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> releaseNodeMaintenance(@RequestBody ReleaseNodeMaintenanceRequestDTO req) {
+        if (req == null || req.providerId() == null || req.providerId() <= 0
+                || req.deploymentId() == null || !req.deploymentId().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}"))
+            return ResponseEntity.badRequest().body(Map.of("error", "provider_id and a valid deployment_id are required"));
+        ResponseEntity<Map> response;
+        try {
+            response = workerAdminClient.releaseNodeMaintenance(req.providerId(), req.deploymentId());
+        } catch (RestClientResponseException e) {
+            return ResponseEntity.status(e.getStatusCode()).body(parseOrWrap(e.getResponseBodyAsString()));
+        } catch (Exception e) {
+            return ResponseEntity.status(503).body(errorBody(e));
+        }
+        Map<?, ?> body = response.getBody();
+        if (response.getStatusCode().is2xxSuccessful() && body != null && Boolean.TRUE.equals(body.get("released"))) {
+            auditLog.record("provider.node_maintenance_released", "provider", req.providerId(), null,
+                Map.of("deployment_id", req.deploymentId()), Map.of("released", true));
         }
         return response;
     }

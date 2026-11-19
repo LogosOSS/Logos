@@ -20,6 +20,7 @@ BODY_FIELDS = {
     "min_p",
     "seed",
     "stop",
+    "ignore_eos",
     "max_tokens",
     "max_completion_tokens",
     "frequency_penalty",
@@ -185,6 +186,17 @@ def metadata(snapshot):
     return result
 
 
+def save_snapshot(db, snapshot):
+    db.session.execute(
+        text(
+            "INSERT INTO benchmark_workloads (id, name, model_id, model_name, provenance, requests, request_count) "
+            "VALUES (:id, :name, :model_id, :model_name, :provenance, CAST(:requests AS jsonb), :request_count) "
+            "ON CONFLICT (id) DO NOTHING"
+        ),
+        {**metadata(snapshot), "requests": canonical(snapshot["requests"])},
+    )
+
+
 def create(log_ids, name, provenance):
     """Freeze an ordered, explicit selection. No source headers or response bodies are copied."""
     from logos.dbutils.dbmanager import DBManager
@@ -206,14 +218,7 @@ def create(log_ids, name, provenance):
         if len(rows) != len(log_ids):
             raise ValueError("A selected source request no longer exists")
         snapshot = build_snapshot(rows, name, provenance)
-        db.session.execute(
-            text(
-                "INSERT INTO benchmark_workloads (id, name, model_id, model_name, provenance, requests, request_count) "
-                "VALUES (:id, :name, :model_id, :model_name, :provenance, CAST(:requests AS jsonb), :request_count) "
-                "ON CONFLICT (id) DO NOTHING"
-            ),
-            {**metadata(snapshot), "requests": canonical(snapshot["requests"])},
-        )
+        save_snapshot(db, snapshot)
         db.session.commit()
         stored = (
             db.session.execute(

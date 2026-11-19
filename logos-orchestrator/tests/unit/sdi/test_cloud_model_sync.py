@@ -601,3 +601,26 @@ async def test_a_queued_follow_up_keeps_the_sync_busy(monkeypatch):
     await service._refresh_task
 
     assert service.is_busy() is False
+
+
+@pytest.mark.parametrize("control", [chr(i) for i in [*range(32), *range(127, 160)]])
+async def test_sync_skips_control_characters_before_trimming(monkeypatch, caplog, control):
+    bad_names = [control + "model", "model" + control, "model" + control + "suffix"]
+    listing = {"data": [{"id": name, "max_model_len": 8192} for name in [*bad_names, "valid/模型"]]}
+    service = _run(monkeypatch, [_provider()], lambda url, headers: listing)
+
+    await service.run_once()
+
+    db = DummyDB.instances[-1]
+    assert db.synced[4] == ["valid/模型"]
+    assert set(db.contexts[4]) == {"valid/模型"}
+    warnings = [record for record in caplog.records if "control characters" in record.message]
+    assert len(warnings) == 3
+    assert all(record.levelname == "WARNING" for record in warnings)
+    assert all(control not in record.message for record in warnings)
+
+
+async def test_sync_preserves_catalogue_when_all_names_are_invalid(monkeypatch):
+    service = _run(monkeypatch, [_provider()], lambda url, headers: {"data": [{"id": "bad\nLOGOS\ncommand"}]})
+    await service.run_once()
+    assert all(not db.synced for db in DummyDB.instances)

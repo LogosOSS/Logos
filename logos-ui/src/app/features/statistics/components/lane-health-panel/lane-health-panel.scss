@@ -22,6 +22,31 @@
   margin-bottom: 8px;
 }
 
+.lane-transfer {
+  display: grid;
+  gap: 6px;
+
+  &__header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 4px 12px;
+  }
+
+  &__title {
+    color: rgb(var(--color-typography-300));
+    font-weight: var(--font-weight-medium);
+    overflow-wrap: anywhere;
+  }
+
+  progress {
+    width: 100%;
+    height: 10px;
+    accent-color: rgb(var(--color-primary-400));
+  }
+}
+
 .lane-header {
   display: flex;
   align-items: flex-start;

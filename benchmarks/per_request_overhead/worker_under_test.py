@@ -96,6 +96,9 @@ async def main() -> int:
     lane_config = LaneConfig(model=model, vllm=True, vllm_config=VllmConfig(enable_sleep_mode=True))
     handle = FakeLaneHandle(lane_id=lane_id, port=lane_port, lane_config=lane_config)
     lane_manager._handles[lane_id] = handle  # noqa: SLF001 (benchmark injection, same pattern as worker unit tests)
+    # Mirror a successful spawn: acquire must not await /is_sleeping for a
+    # warm injected lane (issue #165).
+    lane_manager._remember_sleep_state(lane_id, "awake")  # noqa: SLF001
 
     # The bridge reads app.state.{config, lane_manager, gpu_collector, logos_bridge}
     # (build_runtime_status) — a plain namespace object is enough.

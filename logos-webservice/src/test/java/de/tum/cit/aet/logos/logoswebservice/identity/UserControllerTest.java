@@ -112,10 +112,20 @@ class UserControllerTest {
     }
 
     @Test
-    void patchUserInfo_succeeds_for_app_admin() throws Exception {
-        // 1005 is a manually created (non-Keycloak) user, so its info is editable.
+    void patchUserInfo_forbidden_for_app_admin() throws Exception {
+        // The email of an unlinked account decides which Keycloak login adopts it.
         mvc.perform(patch("/users/1005")
                 .with(TestJwt.adminUser())
+                .contentType("application/json")
+                .content("{\"email\":\"takeover@test.com\"}"))
+        .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void patchUserInfo_succeeds_for_logos_admin() throws Exception {
+        // 1005 is a manually created (non-Keycloak) user, so its info is editable.
+        mvc.perform(patch("/users/1005")
+                .with(TestJwt.logosAdmin())
                 .contentType("application/json")
                 .content("{\"prename\":\"Updated\",\"name\":\"Name\",\"email\":\"upd@test.com\"}"))
         .andExpect(status().isOk())

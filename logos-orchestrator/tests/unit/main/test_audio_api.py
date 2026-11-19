@@ -170,7 +170,7 @@ async def test_audio_translation_job_does_not_add_stream_field(monkeypatch):
         {},
         payload,
         "127.0.0.1",
-        SimpleNamespace(api_key_id=7),
+        SimpleNamespace(api_key_id=7, team_id=None, settings={}),
         None,
     )
 

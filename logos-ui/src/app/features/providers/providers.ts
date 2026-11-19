@@ -409,6 +409,40 @@ export class Providers implements OnInit, OnDestroy {
     }
   }
 
+  /** Short label of a connection's Batch support, shown next to its endpoint. */
+  batchLabel(conn: ModelConnection): string {
+    switch (conn.batch_support) {
+      case 'supported':
+        return 'Batch';
+      case 'unsupported':
+        return 'No batch';
+      case 'logos':
+        return 'Batch in Logos';
+      default:
+        return 'Batch unchecked';
+    }
+  }
+
+  /** What the Batch label means for this connection, and where the answer came from. */
+  batchTooltip(conn: ModelConnection): string {
+    const checked = conn.batch_checked_at
+      ? ` Checked ${new Date(conn.batch_checked_at).toLocaleString()}${conn.batch_source === 'refusal' ? ' (refused batch)' : ''}.`
+      : '';
+    switch (conn.batch_support) {
+      case 'supported':
+        return `Batches are sent to the provider's Batch API on deployment ${conn.batch_deployment ?? '-'}.${checked}`;
+      case 'unsupported':
+        return `The provider's Batch API refuses this model; Logos runs its batches itself.${checked}${conn.batch_detail ? ' ' + conn.batch_detail : ''}`;
+      case 'logos':
+        return 'Worker nodes have no Batch API; Logos runs batches for this model itself.';
+      default:
+        return (
+          'Not probed yet. On Azure, Logos runs this model\'s batches itself until a Batch deployment is confirmed; ' +
+          'other providers receive the batch and a refusal is remembered.'
+        );
+    }
+  }
+
   async loadProviderModels(providerId: number): Promise<void> {
     try {
       const conns = await this.providerService.getProviderModels(providerId);

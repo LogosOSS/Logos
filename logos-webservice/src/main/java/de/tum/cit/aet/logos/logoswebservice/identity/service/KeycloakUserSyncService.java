@@ -212,14 +212,8 @@ public class KeycloakUserSyncService {
             }
         }
 
-        String prename = claims.prename() != null ? claims.prename() : "";
-        String name = claims.name() != null ? claims.name() : "";
-        if (!prename.isBlank() && !name.isBlank()) {
-            List<User> byName = userRepository
-                .findByPrenameIgnoreCaseAndNameIgnoreCaseAndKeycloakIdIsNull(prename, name);
-            if (byName.size() == 1) return byName.get(0);
-        }
-
+        // A matching name is no proof of identity: two people can share one, so an
+        // unlinked account is adopted by email only.
         return new User();
     }
 

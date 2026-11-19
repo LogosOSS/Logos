@@ -44,7 +44,20 @@ from logos_worker_node.models import (
     model_can_sleep,
     model_uses_sharded_checkpoint,
 )
-from logos_worker_node.request_content import MULTIPART_PAYLOAD_KEY, httpx_request_parts
+from logos_worker_node.node_config import (
+    SYNC_NODE_CONFIG_ACTION,
+    VALIDATE_NODE_CONFIG_ACTION,
+    apply_node_config,
+    normalize_node_config,
+    profile_overrides_of,
+    validation_errors,
+)
+from logos_worker_node.request_content import (
+    MULTIPART_PAYLOAD_KEY,
+    MediaReferenceError,
+    httpx_request_parts,
+    validate_media_references,
+)
 from logos_worker_node.runtime import build_runtime_status
 from logos_worker_node.vllm_compat import DEFAULT_VLLM
 from logos_worker_node.vllm_metrics_export import collect_vllm_metrics_text
@@ -183,6 +196,8 @@ class LogosBridgeClient:
         # so a stop_calibration_session RPC kills the in-progress vLLM probe
         # within ~2s (wait_ready polls cancel_event).
         self._active_calibration_session: _CalibrationSession | None = None
+        # A node configuration that arrived while a calibration was running.
+        self._pending_node_config: dict[str, Any] | None = None
         # Sequence counter for calibration event_id (independent of lane events).
         self._calibration_event_seq: int = 0
         # Lazily built by _get_hf_info_cache(); lives for the client's whole
@@ -404,6 +419,25 @@ class LogosBridgeClient:
         if not isinstance(profiles, dict):
             raise RuntimeError("Logos model-profiles response has no profiles mapping")
         return profiles
+
+    async def fetch_node_config(self) -> dict[str, Any]:
+        """This node's models and revision, as Logos stores them."""
+        url = f"{self._logos_base_url()}/logosdb/providers/logosnode/node-config"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json={"shared_key": self._cfg.shared_key})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"/node-config rejected with HTTP {resp.status_code}: {resp.text}")
+        return normalize_node_config(resp.json() if resp.content else None)
+
+    async def import_node_config(self, entries: list[dict[str, Any]]) -> list[str]:
+        """Hand Logos the models of config.yml; it keeps them once. Returns warnings."""
+        url = f"{self._logos_base_url()}/logosdb/providers/logosnode/node-config/import"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json={"shared_key": self._cfg.shared_key, "entries": entries})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"/node-config/import rejected with HTTP {resp.status_code}: {resp.text}")
+        body = resp.json() if resp.content else {}
+        return [str(w) for w in body.get("warnings") or []]
 
     async def _authenticate(self) -> dict[str, Any]:
         logos_url = self._logos_base_url()
@@ -641,11 +675,15 @@ class LogosBridgeClient:
                     "stop_calibration_session",
                     "get_calibration_status",
                     SYNC_MODEL_PROFILES_ACTION,
+                    SYNC_NODE_CONFIG_ACTION,
+                    VALIDATE_NODE_CONFIG_ACTION,
                 ],
             },
         )
 
     def _runtime_has_transient_lanes(self) -> bool:
+        if self._last_runtime_payload.get("lane_transfers"):
+            return True
         lanes = self._last_runtime_payload.get("lanes") or []
         if not isinstance(lanes, list):
             return False
@@ -1071,6 +1109,10 @@ class LogosBridgeClient:
 
         if action == SYNC_MODEL_PROFILES_ACTION:
             return self._handle_sync_model_profiles(params)
+        if action == SYNC_NODE_CONFIG_ACTION:
+            return await self._handle_sync_node_config(params)
+        if action == VALIDATE_NODE_CONFIG_ACTION:
+            return self._handle_validate_node_config(params)
         if action == "start_calibration_session":
             return await self._handle_start_calibration_session(params)
         if action == "stop_calibration_session":
@@ -1107,6 +1149,89 @@ class LogosBridgeClient:
         if lane_manager is not None:
             lane_manager.mark_status_dirty()
         return {"ok": True, "replaced": replaced}
+
+    async def _handle_sync_node_config(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Adopt the models Logos stores, unless this worker already has them.
+
+        The push after every hello usually carries the revision the worker
+        started with. Models apply at once; overrides from the next lane start.
+        During a calibration it waits: the session measures under the plans it
+        started with, and new keys would label its results wrongly.
+        """
+        try:
+            config = normalize_node_config(params)
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc)}
+        current = self._app.state.config.logos.node_config_revision
+        if config["revision"] <= current:
+            return {"ok": True, "applied": False, "revision": current}
+        if self._calibration_session_is_live():
+            pending = self._pending_node_config
+            if pending is None or config["revision"] > pending["revision"]:
+                self._pending_node_config = config
+            logger.info("[NodeConfig] Revision %d waits for the running calibration", config["revision"])
+            return {"ok": True, "applied": False, "deferred": True, "revision": current}
+        await self._apply_node_config(config)
+        return {"ok": True, "applied": True, "revision": config["revision"]}
+
+    async def _apply_pending_node_config(self) -> None:
+        config, self._pending_node_config = self._pending_node_config, None
+        if config is not None and config["revision"] > self._app.state.config.logos.node_config_revision:
+            await self._apply_node_config(config)
+
+    async def _apply_node_config(self, config: dict[str, Any]) -> None:
+        cfg = self._app.state.config
+        serving = set(cfg.logos.capabilities_models)
+        known = set(cfg.logos.configured_models)
+        added = [e["model_name"] for e in config["entries"] if e["model_name"] not in known]
+        apply_node_config(cfg, config["entries"], config["revision"])
+        # Only models that were announced stay so; new ones follow with a profile.
+        cfg.logos.capabilities_models = [m for m in cfg.logos.configured_models if m in serving]
+        model_profiles = self._app.state.model_profiles
+        new_overrides = profile_overrides_of(cfg)
+        central = None
+        if model_profiles.overrides_removed_by(new_overrides):
+            # Logos keeps the measured values beneath an override.
+            try:
+                central = await self.fetch_model_profiles(
+                    model_profiles.calibration_key_hashes(), model_profiles.slice_gpu_counts()
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("[NodeConfig] Removed overrides are cleared; Logos' values return at the next start")
+            if cfg.logos.node_config_revision != config["revision"]:
+                # A newer push applied meanwhile; keep its overrides.
+                logger.info("[NodeConfig] Revision %d was superseded while its profiles loaded", config["revision"])
+                self._prepare_added_models(added)
+                return
+        model_profiles.replace_config_overrides(new_overrides, central)
+        model_profiles.seed_capabilities(cfg.logos.configured_models, engine="vllm")
+        self._announce_calibrated_capabilities()
+        await self._refresh_calibration_keys()
+        lane_manager = getattr(self._app.state, "lane_manager", None)
+        if lane_manager is not None:
+            lane_manager.mark_status_dirty()
+        logger.info("[NodeConfig] Applied revision %d (%d model(s))", config["revision"], len(config["entries"]))
+        self._prepare_added_models(added)
+
+    def _prepare_added_models(self, added: list[str]) -> None:
+        """Weights of models a push added, unless a newer push dropped them again."""
+        cfg = self._app.state.config
+        models = [m for m in added if m in cfg.logos.configured_models]
+        prepare = getattr(self._app.state, "prepare_added_models", None)
+        if models and prepare is not None:
+            try:
+                prepare(models)
+            except Exception:  # noqa: BLE001
+                logger.warning("[NodeConfig] Could not prepare %s", models, exc_info=True)
+
+    def _handle_validate_node_config(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Check models before Logos stores them, the way a lane start would."""
+        entries = params.get("entries")
+        errors = validation_errors(entries) if isinstance(entries, list) else ["'entries' must be a list"]
+        if not errors:
+            return {"ok": True, "errors": []}
+        # Logos raises a refusal from "error", so the problems travel there too.
+        return {"ok": False, "errors": errors, "error": "; ".join(errors)}
 
     def _announce_calibrated_capabilities(self) -> None:
         """Add configured models that now have a profile to the capabilities.
@@ -1515,20 +1640,19 @@ class LogosBridgeClient:
         return Path("config.yml")
 
     def _resolve_configured_plan(self, model_name: str) -> dict[str, Any]:
-        """The model's plan from config.yml (gpu_devices, kv_cache_dtype,
+        """The model's configured plan (gpu_devices, kv_cache_dtype,
         ...), or {} if unconfigured/unreadable. The standalone RPC has no
         session plan to read these from, unlike the session loop — without
         it, a model pinned or given a --kv-cache-dtype gets the defaults."""
         try:
-            from logos_worker_node.calibration import plans_from_config  # noqa: PLC0415
+            from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
 
-            config_path = self.resolve_config_path()
-            if not config_path.exists():
-                return {}
-            plan = next((p for p in plans_from_config(config_path) if p.get("model") == model_name), None)
+            plan = next(
+                (p for p in plans_from_app_config(self._app.state.config) if p.get("model") == model_name), None
+            )
             return plan or {}
         except Exception:  # noqa: BLE001
-            logger.debug("[Precheck] config.yml plan lookup failed for %s", model_name, exc_info=True)
+            logger.debug("[Precheck] configured plan lookup failed for %s", model_name, exc_info=True)
             return {}
 
     async def _handle_run_compatibility_precheck(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1913,29 +2037,33 @@ class LogosBridgeClient:
         return ordered
 
     async def _refresh_calibration_keys(self) -> None:
-        """Re-fingerprint from config.yml as this session will run it.
+        """Re-fingerprint from the models as this session will run it.
 
-        config.yml can change without a restart; the startup keys would then
-        stamp snapshots with a plan that was never measured.
+        A pushed configuration can change them without a restart; the startup
+        keys would then stamp snapshots with a plan that was never measured.
         """
         gpu_collector = getattr(self._app.state, "gpu_collector", None)
         if gpu_collector is None:
             return
+        # Pushes can overlap while the keys are calculated.
+        revision = self._app.state.config.logos.node_config_revision
         try:
-            from logos_worker_node.calibration import plans_from_config  # noqa: PLC0415
+            from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
             from logos_worker_node.profile_fingerprint import (  # noqa: PLC0415
                 node_calibration_keys,
                 node_slice_gpu_counts,
             )
 
             snapshot = await gpu_collector.get_snapshot()
-            config_path = self.resolve_config_path()
-            plans = plans_from_config(config_path) if config_path.exists() else []
+            plans = plans_from_app_config(self._app.state.config)
             # Resolving an unknown vLLM version may fork a subprocess.
             keys = await asyncio.to_thread(node_calibration_keys, self._app.state.config, plans, list(snapshot.devices))
             counts = node_slice_gpu_counts(self._app.state.config, plans, list(snapshot.devices))
         except Exception:  # noqa: BLE001
             logger.warning("[Calibration] Could not refresh calibration keys; keeping the previous ones", exc_info=True)
+            return
+        if self._app.state.config.logos.node_config_revision != revision:
+            logger.info("[Calibration] Discarding keys of revision %d: a newer configuration was applied", revision)
             return
         self._app.state.model_profiles.set_slice_gpu_counts(counts)
         changed = self._app.state.model_profiles.set_calibration_keys(keys)
@@ -1978,11 +2106,11 @@ class LogosBridgeClient:
                 _plan_needs_gpu_pin,
                 calibrate_with_tp_escalation,
                 extract_revision_arg,
-                plans_from_config,
                 result_to_profile_dict,
             )
             from logos_worker_node.calibration_metal import calibrate_model_metal  # noqa: PLC0415
             from logos_worker_node.config import get_state_dir  # noqa: PLC0415
+            from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
 
             cfg = self._app.state.config
             model_profiles = self._app.state.model_profiles
@@ -1997,9 +2125,8 @@ class LogosBridgeClient:
             nccl_p2p = cfg.engines.vllm.nccl_p2p_available if cfg.engines else False
             _mc = model_cache if (model_cache is not None and getattr(model_cache, "enabled", False)) else None
 
-            # Resolve plans once — the kv-cache ceilings come from config.yml.
-            config_path = self.resolve_config_path()
-            all_plans = plans_from_config(config_path) if config_path.exists() else []
+            # Resolve plans once — the kv-cache ceilings come from the config.
+            all_plans = plans_from_app_config(cfg)
             plan_by_model = {p["model"]: p for p in all_plans}
 
             # Free the calibration's GPU slice up front — but only that slice
@@ -2351,6 +2478,10 @@ class LogosBridgeClient:
             if self._active_calibration_session is session:
                 self._active_calibration_session = None
             logger.info("[Calibration] Session ended (%s)", terminal_event)
+            try:
+                await self._apply_pending_node_config()
+            except Exception:  # noqa: BLE001
+                logger.warning("[NodeConfig] The configuration that waited could not be applied", exc_info=True)
 
     async def _maybe_convert_sharded_checkpoint(
         self,
@@ -2453,26 +2584,31 @@ class LogosBridgeClient:
         except Exception:  # noqa: BLE001
             logger.exception("[Calibration] Sharded conversion errored for %s", model_name)
 
-    # vLLM endpoints that must never be reachable through proxied inference
-    # requests.  These are internal management endpoints (sleep/wake, cache
-    # reset, weight updates, etc.) that should only be triggered by the
-    # lane manager or capacity planner, not by external API clients.
-    _BLOCKED_REQUEST_PATHS: ClassVar[frozenset[str]] = frozenset(
+    # Only inference operations may be relayed to a lane. Management endpoints
+    # remain accessible exclusively through the worker's control plane.
+    _ALLOWED_REQUEST_PATHS: ClassVar[frozenset[str]] = frozenset(
         {
-            "sleep",
-            "wake_up",
-            "is_sleeping",
-            "pause",
-            "resume",
-            "is_paused",
-            "reset_prefix_cache",
-            "reset_mm_cache",
-            "reset_encoder_cache",
-            "update_weights",
-            "init_weight_transfer_engine",
-            "scale_elastic_ep",
-            "is_scaling_elastic_ep",
-            "collective_rpc",
+            "v1/chat/completions",
+            "v1/completions",
+            "v1/embeddings",
+            "v1/responses",
+            "v1/messages",
+            "v1/audio/transcriptions",
+            "v1/audio/translations",
+            "v1/audio/speech",
+            "v1/models",
+            # Decision readouts for models without a decision profile (orchestrator system_one route).
+            "v1/systemone",
+            "v1/rerank",
+            "v1/score",
+            "v2/embed",
+            "v2/rerank",
+            "pooling",
+            "score",
+            "rerank",
+            "classify",
+            "tokenize",
+            "detokenize",
         }
     )
 
@@ -2482,17 +2618,23 @@ class LogosBridgeClient:
         payload: dict[str, Any] | None = None,
         request_path: str | None = None,
     ) -> str:
-        # If the caller forwarded the original API path (e.g. "v1/embeddings",
-        # "v2/embed", "tokenize"), use it directly so vLLM decides what it supports.
-        if request_path:
-            endpoint = request_path.strip("/")
-            # Block internal vLLM management endpoints from being reached
-            # through proxied inference requests.
-            if endpoint in LogosBridgeClient._BLOCKED_REQUEST_PATHS:
-                raise ValueError(f"Request path '/{endpoint}' is not allowed through the inference proxy")
-        else:
-            endpoint = str(lane_status.get("inference_endpoint") or "/v1/chat/completions").lstrip("/")
+        if not request_path:
+            request_path = str(lane_status.get("inference_endpoint") or "/v1/chat/completions")
+        # Accept one leading path separator, but reject ambiguous paths before
+        # httpx or the lane server can normalize or decode them.
+        endpoint = request_path.removeprefix("/")
+        if (
+            any(segment in {"", ".", ".."} for segment in endpoint.split("/"))
+            or any(char in "\\%" or ord(char) < 32 or 127 <= ord(char) <= 159 for char in endpoint)
+            or endpoint not in LogosBridgeClient._ALLOWED_REQUEST_PATHS
+        ):
+            raise ValueError(f"Request path '/{endpoint}' is not allowed through the inference proxy")
         return f"http://127.0.0.1:{lane_status['port']}/{endpoint}"
+
+    def _validate_media(self, payload: dict[str, Any]) -> None:
+        config = getattr(self._app.state, "config", None)
+        domains = config.engines.vllm.allowed_media_domains if config is not None else ()
+        validate_media_references(payload, domains)
 
     async def _execute_infer_command(self, params: dict[str, Any]) -> dict[str, Any]:
         lane_manager = self._app.state.lane_manager
@@ -2500,6 +2642,11 @@ class LogosBridgeClient:
         payload = params.get("payload") or {}
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
+
+        try:
+            self._validate_media(payload)
+        except MediaReferenceError as exc:
+            return {"status_code": 400, "body": exc.error_body(), "headers": {"content-type": "application/json"}}
 
         tracer = worker_perf.begin()
 
@@ -2580,6 +2727,22 @@ class LogosBridgeClient:
                     "cmd_id": cmd_id,
                     "success": False,
                     "error": "payload must be an object",
+                },
+            )
+            return
+
+        try:
+            self._validate_media(payload)
+        except MediaReferenceError as exc:
+            await self._send_json(
+                ws,
+                {
+                    "type": "stream_end",
+                    "cmd_id": cmd_id,
+                    "success": False,
+                    "status_code": 400,
+                    "body": exc.error_body(),
+                    "error": str(exc),
                 },
             )
             return

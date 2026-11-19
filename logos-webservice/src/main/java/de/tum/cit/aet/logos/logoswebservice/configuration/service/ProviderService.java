@@ -251,6 +251,11 @@ public class ProviderService {
                 m.put("model_id", p.getModelId());
                 m.put("model_name", p.getModelName());
                 m.put("endpoint", p.getEndpoint() != null ? p.getEndpoint() : "");
+                m.put("batch_support", p.getBatchSupport() != null ? p.getBatchSupport() : "unknown");
+                m.put("batch_deployment", p.getBatchDeployment());
+                m.put("batch_detail", p.getBatchDetail());
+                m.put("batch_source", p.getBatchSource());
+                m.put("batch_checked_at", p.getBatchCheckedAt() != null ? p.getBatchCheckedAt().toString() : null);
                 if (admin) {
                     m.put("api_key", p.getApiKey() != null ? p.getApiKey() : "");
                 }

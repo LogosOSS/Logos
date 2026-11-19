@@ -919,3 +919,55 @@ async def test_attach_session_fires_capabilities_changed_with_sorted_names():
     await registry.attach_session(ticket, _FakeWebSocket())
 
     assert calls == [(42, ["model-a", "model-b"])]
+
+
+@pytest.mark.parametrize(
+    "peer,proto,expected",
+    [
+        ("192.0.2.1", "https", False),
+        ("172.16.0.2", "https", True),
+        ("172.16.0.2", "https, http", False),
+        ("172.16.0.2", "http", False),
+    ],
+)
+def test_tls_signal_requires_trusted_peer(monkeypatch, peer, proto, expected):
+    monkeypatch.delenv("LOGOS_NODE_DEV_ALLOW_INSECURE_HTTP", raising=False)
+    monkeypatch.setenv("LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS", "172.16.0.0/12")
+    request = Request(
+        {
+            "type": "http",
+            "scheme": "http",
+            "path": "/",
+            "client": (peer, 1234),
+            "headers": [(b"x-forwarded-proto", proto.encode())],
+        }
+    )
+    assert logosnode_mod._is_tls_request(request) is expected
+
+
+@pytest.mark.parametrize(
+    "peer,proto,expected",
+    [
+        ("192.0.2.1", "https", False),
+        ("172.16.0.2", "wss", True),
+        ("172.16.0.2", "https", True),
+        ("172.16.0.2", "https, http", False),
+    ],
+)
+def test_websocket_tls_signal_requires_trusted_peer(monkeypatch, peer, proto, expected):
+    from starlette.websockets import WebSocket
+
+    monkeypatch.delenv("LOGOS_NODE_DEV_ALLOW_INSECURE_HTTP", raising=False)
+    monkeypatch.setenv("LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS", "172.16.0.0/12")
+    websocket = WebSocket(
+        {
+            "type": "websocket",
+            "scheme": "ws",
+            "path": "/",
+            "client": (peer, 1234),
+            "headers": [(b"x-forwarded-proto", proto.encode())],
+        },
+        None,
+        None,
+    )
+    assert logosnode_mod._is_tls_websocket(websocket) is expected

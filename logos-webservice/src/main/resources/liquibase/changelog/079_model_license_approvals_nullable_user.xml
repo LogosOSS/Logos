@@ -15,7 +15,7 @@
          time. That system-recorded row has no user, which a nullable
          user_id expresses directly — a named user stays the audit record
          for an acceptance made in the dialog. -->
-    <changeSet id="073-model-license-approvals-nullable-user" author="maltebai">
+    <changeSet id="079-model-license-approvals-nullable-user" author="maltebai">
         <dropNotNullConstraint tableName="model_license_approvals"
                                columnName="user_id"
                                columnDataType="INTEGER"/>

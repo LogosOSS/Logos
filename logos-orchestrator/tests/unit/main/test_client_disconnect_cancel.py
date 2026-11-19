@@ -166,7 +166,7 @@ async def test_streaming_requests_take_the_keepalive_path(monkeypatch):
     monkeypatch.setattr(main, "_filter_logosnode_deployments", fake_filter)
     monkeypatch.setattr(main, "_keepalive_streaming_response", fake_keepalive)
 
-    result = await main.handle_sync_request("chat/completions", _Client(leaves=False))
+    result = await main.handle_sync_request("v1/chat/completions", _Client(leaves=False))
 
     assert result == "keepalive-guarded"
     assert len(keepalive) == 1
@@ -194,7 +194,7 @@ async def test_whisper_stream_requests_keep_the_sync_guard(monkeypatch):
     monkeypatch.setattr(main, "_filter_logosnode_deployments", fake_filter)
     monkeypatch.setattr(main, "_execute_cancelling_on_disconnect", fake_guard)
 
-    result = await main.handle_sync_request("chat/completions", _Client(leaves=False))
+    result = await main.handle_sync_request("v1/chat/completions", _Client(leaves=False))
 
     assert result == "guarded"
     assert len(guarded) == 1
@@ -223,7 +223,7 @@ async def test_whisper_alias_stream_requests_keep_the_sync_guard(monkeypatch):
     monkeypatch.setattr(main, "_filter_logosnode_deployments", fake_filter)
     monkeypatch.setattr(main, "_execute_cancelling_on_disconnect", fake_guard)
 
-    result = await main.handle_sync_request("chat/completions", _Client(leaves=False))
+    result = await main.handle_sync_request("v1/chat/completions", _Client(leaves=False))
 
     assert result == "guarded"
     assert len(guarded) == 1
@@ -252,7 +252,7 @@ async def test_audio_upload_stream_requests_keep_the_sync_guard(monkeypatch):
     monkeypatch.setattr(main, "_execute_cancelling_on_disconnect", fake_guard)
 
     # The audio upload path, not the chat path.
-    result = await main.handle_sync_request("audio/transcriptions", _Client(leaves=False))
+    result = await main.handle_sync_request("v1/audio/transcriptions", _Client(leaves=False))
 
     assert result == "guarded"
     assert len(guarded) == 1
@@ -285,7 +285,7 @@ async def test_model_free_stream_requests_keep_the_sync_guard(monkeypatch):
     monkeypatch.setattr(main, "_execute_cancelling_on_disconnect", fake_guard)
     monkeypatch.setattr(main, "_keepalive_streaming_response", fail_keepalive)
 
-    result = await main.handle_sync_request("chat/completions", _Client(leaves=False))
+    result = await main.handle_sync_request("v1/chat/completions", _Client(leaves=False))
 
     assert result == "guarded"
     assert len(guarded) == 1
@@ -324,7 +324,7 @@ async def test_local_stream_requests_keep_the_sync_guard(monkeypatch):
     monkeypatch.setattr(main, "_execute_cancelling_on_disconnect", fake_guard)
     monkeypatch.setattr(main, "_keepalive_streaming_response", fail_keepalive)
 
-    result = await main.handle_sync_request("chat/completions", _Client(leaves=False))
+    result = await main.handle_sync_request("v1/chat/completions", _Client(leaves=False))
 
     assert result == "guarded"
     assert len(guarded) == 1
@@ -363,7 +363,7 @@ async def test_unrelated_local_deployment_does_not_block_keepalive(monkeypatch):
     monkeypatch.setattr(main, "_filter_logosnode_deployments", fake_filter)
     monkeypatch.setattr(main, "_keepalive_streaming_response", fake_keepalive)
 
-    result = await main.handle_sync_request("chat/completions", _Client(leaves=False))
+    result = await main.handle_sync_request("v1/chat/completions", _Client(leaves=False))
 
     assert result == "keepalive-guarded"
     assert len(keepalive) == 1

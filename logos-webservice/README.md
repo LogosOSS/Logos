@@ -12,6 +12,8 @@ Browser / logos-ui / API clients
       │                                            cloud named-model → Azure/OpenAI directly
       │                                            local / mixed → reverse-proxy to orchestrator
       ├── /api/me, /api/users, /api/teams      → logos-webservice (priority 200, strip /api)
+      ├── /api/public/stats?days=…              → logos-webservice (priority 200, strip /api;
+      │                                            opted-in teams only; default days=30)
       ├── /api/logosdb/*                        → logos-webservice (priority 200, strip /api)
       ├── /api/admin/*                          → logos-webservice (priority 200, strip /api)
       ├── /api/ws/stats, /api/ws/stats/v2       → logos-webservice (priority 200, strip /api)
@@ -38,6 +40,10 @@ docker compose -f docker-compose.dev.yaml up --build
 ```
 
 The service starts on port `18082` (direct) and is reachable through Traefik on port `18081` at `/api/*`.
+
+The amd64 runtime image installs Git and SSH through the kernel.org mirror of
+Ubuntu's signed release and security archives. Ubuntu signature verification
+remains enabled. ARM64 retains the Ubuntu ports repositories.
 
 ## Running locally (outside Docker)
 
@@ -158,6 +164,39 @@ Example changeset:
 </databaseChangeLog>
 ```
 
+## Public stats (`GET /public/stats`)
+
+Unauthenticated aggregates for the `/stats` page. Rate-limited per source IP, and
+cached per window for `logos.public-stats.cache-ttl` (default `PT5M`, `0s` turns
+the cache off), so figures can be a few minutes old.
+
+Query parameter `days` (default `30`): `7`, `30`, `90`, `365`, or `all`. Applied to
+every request-derived figure (per-team, key type, lane, active students, average).
+
+**Totals stay consistent with what is shown:** only teams with
+`teams.show_on_public_stats = true` (set in team settings) appear by name, and
+their traffic alone feeds `successful_requests`, the key-type and lane splits,
+and the active-student count. Non-selected teams are never named and never
+folded into those totals. `teams` is the count of opted-in teams (including
+those with no traffic in the window). `students` are distinct active users with
+role `app_developer` (admins count as staff) who made at least one successful
+request on an opted-in team inside the window.
+
+Every request figure — the totals above and the usage figures below — comes
+from one pass over the successful `log_entry` rows of the opted-in teams, ranged
+on `timestamp_request`, so they all count the same requests:
+
+| Field | Window | Meaning |
+|-------|--------|---------|
+| `tokens`, `local_cloud_tokens` | `days` | Tokens of successful requests, total and by lane. |
+| `active_persons`, `active_teams` | `days` | People (any role) and teams with a successful request. |
+| `usage_per_person`, `usage_per_team` | `days` | Median and 90th percentile of requests, tokens and active days. Per-person values are `null` (`suppressed: true`) below five active people. |
+| `categories` | `days` | Requests, tokens and active teams per `teams.public_category` (free text set in team settings; `null` = uncategorized). |
+| `models` | `days` | Top models (`all`, `local`, `cloud`) by requests, with tokens; the tail is one `other` row. |
+| `regular_activity` | last 4 complete weeks | People and teams active in at least 3 / all 4 weeks. |
+| `monthly` | all time | Active teams, people, students, requests, tokens and Logos Agent sessions per UTC month. |
+| `agent` | `days` | Logos Agent sessions, distinct starters, successes and pull requests. |
+
 ## Adding a new endpoint
 
 1. **Add a controller** in the appropriate domain's `controller/` package — annotate with `@RestController`, inject `AuthContext` via `@RequestAttribute`.
@@ -165,3 +204,57 @@ Example changeset:
 3. **Add a Traefik route** in `docker-compose.dev.yaml` if the path prefix isn't already covered (check the `logos-webservice` labels block).
 4. **Add a test** — `@SpringBootTest @Import(TestContainersConfig.class)` for integration tests with a real DB; `@WebMvcTest` for controller-layer tests with a mocked service.
 5. **Add SQL seed/cleanup** in `src/test/resources/sql/` if the test needs data.
+
+## Permission audit history
+
+Logos admins can open **Permission Audit** in the navigation or use a team’s
+**View permission history** action on the Teams page. Both open the same history
+page; the team action selects its team filter.
+
+`GET /api/admin/permission-audit-log` returns model/provider grant and revoke
+history, newest ID first. Only Logos admins can query this history, including
+deleted teams and keys. This is a read-only API; no endpoint can edit or delete entries. The audit
+table is also excluded from configuration import/export replacement.
+
+| Query parameter | Meaning |
+| --- | --- |
+| `team_id` | Team whose grants and key grants to include |
+| `api_key_id` | Only this key's explicit grants |
+| `model_id` / `provider_id` | Only changes to that target type and ID |
+| `from` / `to` | ISO-8601 timestamps with offsets; inclusive start, exclusive end |
+| `before_id` | Exclusive cursor: use the last ID from the previous page |
+| `limit` | Page size, 1–200; default 50 |
+
+For example, query
+`/api/admin/permission-audit-log?team_id=42&api_key_id=123&model_id=7&from=2026-11-01T00:00:00Z`.
+Authenticate with the same Keycloak bearer token as other management APIs.
+Each entry includes `occurred_at`, actor user ID and role, team ID/name, scope
+(`team` or `api_key`) ID/name, target (`model` or `provider`) ID/name, `action`
+(`grant` or `revoke`), and `cause` (`direct`, `cascade`, `migration`, or `repair`).
+IDs and names are snapshots without foreign keys, so deleting a resource does
+not erase its history. API-key secrets are never recorded. Team inheritance is
+represented by changes to team grants, rather than fabricated per-key changes.
+
+The history begins when changelog 074 is installed. It cannot reconstruct rows
+removed by older migrations. To restore access, use the recorded IDs with the
+existing permission endpoints; current authorization rules still apply.
+Custom key grants stay independent of team defaults. Changing team defaults
+does not remove or record revocations for those key grants.
+
+### Permission changes in data migrations
+
+Postgres triggers record `INSERT`, `DELETE`, `UPDATE` (revoke old, grant new),
+and `TRUNCATE` on all four permission tables in the same transaction as the
+change. No-op updates and unchanged permission saves produce no entries.
+Application mutations set trusted transaction-local actor/cause metadata and
+flush Hibernate before changing it. Cascades record `system` with cause
+`cascade`; the initiating direct edit retains its user ID and role. The atomic
+provider-add endpoint records `repair`.
+
+Future migrations using ordinary permission-table DML need no extra audit
+inserts: absent application context, triggers record `system` / `migration`.
+Do not disable these triggers or replace/drop the permission tables to rewrite
+permissions. Use DML so the old and new grants are recorded. Database cascades
+from deleting teams, keys, models or providers preserve their names before the
+parent row disappears. Configuration imports also preserve the audit history
+and attribute their replacement grants to the importing admin.

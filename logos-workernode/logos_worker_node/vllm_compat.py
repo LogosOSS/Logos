@@ -22,6 +22,7 @@ here instead.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -37,6 +38,25 @@ from typing import Any
 # calibration probe. Calibration cleanup kills probe processes only.
 LANE_ENV_MARKER = "LOGOS_LANE_ID"
 PROBE_ENV_MARKER = "LOGOS_CALIBRATION_PROBE"
+
+
+def strip_host_args(args: list[str]) -> list[str]:
+    """Remove bind-host overrides, including vLLM's single-dash aliases and abbreviations."""
+    filtered: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = str(args[index])
+        option, separator, _ = arg.partition("=")
+        if option.startswith("-") and option.lstrip("-") in {"host", "hos", "ho"}:
+            logging.getLogger(__name__).warning(
+                "Ignoring %s in extra_args: model servers must bind to 127.0.0.1", option
+            )
+            if not separator and index + 1 < len(args) and not str(args[index + 1]).startswith("-"):
+                index += 1
+        else:
+            filtered.append(arg)
+        index += 1
+    return filtered
 
 
 # -----------------------------------------------------------------------------

@@ -26,6 +26,9 @@ class _LaneManager:
     async def get_all_statuses(self):
         return self._lanes
 
+    async def lane_transfer_statuses(self):
+        return []
+
 
 class _GpuCollector:
     async def get_snapshot(self):

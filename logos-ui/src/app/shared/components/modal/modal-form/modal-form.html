@@ -3,6 +3,8 @@
   (visibleChange)="visibleChange.emit($event)"
   [header]="title"
   [size]="tumUiSize"
+  [closable]="dismissible"
+  [closeOnEscape]="dismissible"
 >
   <ng-content />
   <ng-template #footer>

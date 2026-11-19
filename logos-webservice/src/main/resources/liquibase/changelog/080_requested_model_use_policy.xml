@@ -17,7 +17,7 @@
          publishes no use policy file — unlike the license, whose absence is
          a state to flag, an absent use policy is simply nothing to show. The
          team's app admin accepts it together with the license agreement. -->
-    <changeSet id="074-requested-model-use-policy" author="maltebai">
+    <changeSet id="080-requested-model-use-policy" author="maltebai">
         <preConditions onFail="MARK_RAN">
             <not><columnExists tableName="requested_models" columnName="use_policy_text"/></not>
         </preConditions>
