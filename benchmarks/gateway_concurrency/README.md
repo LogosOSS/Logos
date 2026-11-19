@@ -182,6 +182,16 @@ cd benchmarks/gateway_concurrency
 
 ## Environment
 
+The failover leg records requests before the kill, requests interrupted by the
+kill, requests during the routing update, and requests sent after recovery.
+`LOGOS_BENCH_GW_FAILOVER_RECOVERY_S` fixes the routing allowance before the run
+(default 5 seconds). CI sets `LOGOS_BENCH_GW_FAILOVER_REQUIRE_RECOVERY=1`:
+traffic must succeed before the kill and after that allowance, and those phases
+must contain requests. Authorization, routing and rate-limit errors fail the gate
+in every phase. A missing or skipped measurement also fails. Requests are never
+retried to make the gate pass. Interrupted streams remain failures in the total;
+successful recovery does not mean seamless stream failover.
+
 See the module docstrings in `run_benchmark.py`, `gateway_client.py`,
 `load_generator.py`, `latency_diff.py`, `failover_under_load.py`, and
 `budget_admission.py` for the full list of tunables (concurrency steps, sample counts, durations, the

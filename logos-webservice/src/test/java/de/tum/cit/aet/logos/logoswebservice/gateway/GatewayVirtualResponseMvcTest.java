@@ -420,11 +420,22 @@ class GatewayVirtualResponseMvcTest {
         if (cloud) useCloud();
         headersReached = new CountDownLatch(held);
         var waiting = new ArrayList<java.util.concurrent.CompletableFuture<HttpResponse<String>>>();
+        long arrivalDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
         try {
             for (int i = 0; i < held; i++) {
                 waiting.add(client.sendAsync(headerRequest(), HttpResponse.BodyHandlers.ofString()));
+                // Keep connection bursts below small OS listen backlogs. Every admitted
+                // request stays held, so the final simultaneous load is still 1024.
+                if ((i + 1) % 32 == 0) {
+                    long expectedRemaining = held - i - 1L;
+                    long remainingNanos = arrivalDeadline - System.nanoTime();
+                    assertThat(remainingNanos).as("provider admission deadline").isPositive();
+                    org.awaitility.Awaitility.await().pollInterval(Duration.ofMillis(10))
+                        .atMost(Duration.ofNanos(remainingNanos))
+                        .until(() -> headersReached.getCount() <= expectedRemaining);
+                }
             }
-            boolean allArrived = headersReached.await(20, TimeUnit.SECONDS);
+            boolean allArrived = headersReached.getCount() == 0;
             System.out.printf("GATEWAY_HEADER_WAIT target=%d arrived=%d cloud=%s bounded_control=%s%n",
                 held, held - headersReached.getCount(), cloud, Boolean.getBoolean("logos.test.bounded-servlet"));
             assertThat(allArrived).as("all requests must reach the fake provider before headers are released").isTrue();

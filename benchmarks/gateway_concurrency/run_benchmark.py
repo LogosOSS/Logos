@@ -27,6 +27,8 @@ failover_under_load.py, budget_admission.py for the full list. Additionally:
                                  run against a single instance)
   LOGOS_BENCH_GW_SKIP_BUDGET    (set to "1" to skip the budget-admission leg,
                                  e.g. when seed_budget.sql was not applied)
+  LOGOS_BENCH_GW_FAILOVER_REQUIRE_RECOVERY (1 in CI: fail unless the failover
+                                 leg verifies successful traffic after recovery)
 """
 
 from __future__ import annotations
@@ -216,6 +218,11 @@ def run() -> int:
         }
         paths = write_reports(result, str(out_dir))
         print(f"\n  report: {paths['md']}")
+        if os.environ.get("LOGOS_BENCH_GW_FAILOVER_REQUIRE_RECOVERY") == "1" and not (
+            failover_result and failover_result.get("recovery", {}).get("passed")
+        ):
+            print("  failover recovery gate failed or was not measured", file=sys.stderr)
+            return 1
         if fail_on_threshold and budget_result.get("threshold", {}).get("exceeded"):
             reason = budget_result["threshold"].get("reason")
             print(

@@ -24,6 +24,7 @@ Environment (all optional, defaults in parentheses):
   LOGOS_BENCH_GW_FAILOVER_CONCURRENCY  (32)
   LOGOS_BENCH_GW_FAILOVER_DURATION_S   (30)
   LOGOS_BENCH_GW_FAILOVER_KILL_AFTER_S (10)
+  LOGOS_BENCH_GW_FAILOVER_RECOVERY_S   (5) routing recovery allowance after the kill
   LOGOS_BENCH_COMPOSE_FILE             (docker-compose.dev.yaml, relative to
                                          the logos/ repo root)
 """
@@ -66,9 +67,44 @@ def _classify(results: List[gw.RequestResult]) -> Dict[str, Any]:
     }
 
 
-async def _worker(client: httpx.AsyncClient, url: str, headers: Dict[str, str], deadline: float, out: List) -> None:
+def _recovery(results: List, killed_at_s: float, recovery_s: float) -> Dict[str, Any]:
+    """Separate interrupted requests from new traffic after a fixed recovery allowance."""
+    deadline_s = killed_at_s + recovery_s
+    phases: Dict[str, List[gw.RequestResult]] = {
+        "before_kill": [],
+        "interrupted": [],
+        "routing_update": [],
+        "after_recovery": [],
+    }
+    for sent, finished, result in results:
+        if finished < killed_at_s:
+            phase = "before_kill"
+        elif sent < killed_at_s:
+            phase = "interrupted"
+        elif sent < deadline_s:
+            phase = "routing_update"
+        else:
+            phase = "after_recovery"
+        phases[phase].append(result)
+    counts = {name: _classify(rows) for name, rows in phases.items()}
+    before, after = counts["before_kill"], counts["after_recovery"]
+    passed = (
+        before["ok"] > 0
+        and before["ok"] == before["total"]
+        and after["ok"] > 0
+        and after["ok"] == after["total"]
+        and not any(count["other_failures"] for count in counts.values())
+    )
+    return {"allowance_s": recovery_s, "deadline_s": deadline_s, "phases": counts, "passed": passed}
+
+
+async def _worker(
+    client: httpx.AsyncClient, url: str, headers: Dict[str, str], start: float, deadline: float, out: List
+) -> None:
     while time.monotonic() < deadline:
-        out.append(await gw.stream_chat_completion(client, url, headers))
+        sent_at_s = time.monotonic() - start
+        result = await gw.stream_chat_completion(client, url, headers)
+        out.append((sent_at_s, time.monotonic() - start, result))
 
 
 async def run() -> Dict[str, Any]:
@@ -84,10 +120,14 @@ async def run() -> Dict[str, Any]:
     concurrency = _env_int("LOGOS_BENCH_GW_FAILOVER_CONCURRENCY", 32)
     duration_s = _env_int("LOGOS_BENCH_GW_FAILOVER_DURATION_S", 30)
     kill_after_s = _env_int("LOGOS_BENCH_GW_FAILOVER_KILL_AFTER_S", 10)
+    recovery_s = _env_int("LOGOS_BENCH_GW_FAILOVER_RECOVERY_S", 5)
+    if concurrency <= 0 or kill_after_s <= 0 or recovery_s < 0 or kill_after_s + recovery_s >= duration_s:
+        raise ValueError("Failover requires positive load and time before the kill and after the recovery allowance")
 
     url = f"{gw.gateway_url()}/v1/chat/completions"
     headers = gw.gateway_headers()
-    results: List[gw.RequestResult] = []
+    results: List = []
+    killed_at_s = None
 
     print(
         f"  [failover] {concurrency} concurrent streams for {duration_s}s; "
@@ -99,20 +139,26 @@ async def run() -> Dict[str, Any]:
     start = time.monotonic()
     deadline = start + duration_s
     async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
-        workers = [asyncio.create_task(_worker(client, url, headers, deadline, results)) for _ in range(concurrency)]
+        workers = [
+            asyncio.create_task(_worker(client, url, headers, start, deadline, results)) for _ in range(concurrency)
+        ]
 
         async def _kill_at(delay: float) -> None:
+            nonlocal killed_at_s
             await asyncio.sleep(delay)
             print(f"  [failover] killing {kill_target[:12]} ...")
             subprocess.run(["docker", "kill", kill_target], check=True, capture_output=True)
+            killed_at_s = time.monotonic() - start
 
         await asyncio.gather(*workers, _kill_at(kill_after_s))
 
-    summary = _classify(results)
+    summary = _classify([result for _, _, result in results])
     summary["killed_container"] = kill_target[:12]
     summary["concurrency"] = concurrency
     summary["duration_s"] = duration_s
     summary["kill_after_s"] = kill_after_s
+    summary["killed_at_s"] = killed_at_s
+    summary["recovery"] = _recovery(results, killed_at_s, recovery_s)
     # Both counts, not just connectivity: this leg calls any non-2xx a failed
     # client request, and a 4xx under a seeded, valid key is a real bug rather
     # than a failover artefact — reporting "no visible impact" while the run
@@ -121,7 +167,8 @@ async def run() -> Dict[str, Any]:
     summary["no_visible_impact"] = summary["connectivity_failures"] == 0 and summary["other_failures"] == 0
     print(
         f"  [failover] total={summary['total']} ok={summary['ok']} "
-        f"connectivity_failures={summary['connectivity_failures']} other_failures={summary['other_failures']}"
+        f"connectivity_failures={summary['connectivity_failures']} other_failures={summary['other_failures']} "
+        f"recovery_passed={summary['recovery']['passed']}"
     )
     return summary
 
