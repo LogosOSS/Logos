@@ -2793,7 +2793,8 @@ class LaneManager:
         if self._automatic_pin_outside_selection(lane_id, lane_config):
             # Chosen before the pool or the model's GPU choice changed: place afresh.
             logger.info(
-                "Lane '%s': automatic pin gpu_devices=%s lies outside the worker's GPU pool or the model's GPU choice; placing again",
+                "Lane '%s': automatic pin gpu_devices=%s lies outside the worker's GPU pool "
+                "or the model's GPU choice; placing again",
                 lane_id,
                 lane_config.gpu_devices,
             )
