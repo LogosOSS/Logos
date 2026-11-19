@@ -356,7 +356,12 @@ const SHOTS = [
   },
   { file: "roles/logos-admin-my-workspace.png", user: ADMIN, go: (p) => p.goto(BASE + "/my-workspace") },
   { file: "roles/team-detail-providers.png", user: ADMIN, go: (p, ids) => teamTab(p, ids, "Providers") },
-  { file: "roles/team-detail-repositories.png", user: ADMIN, go: (p, ids) => teamTab(p, ids, "Repositories") },
+  { file: "roles/team-detail-repositories.png", user: ADMIN, full: true, go: (p, ids) => teamTab(p, ids, "Repositories") },
+  { file: "roles/team-detail-repository-agent.png", user: ADMIN, full: true, go: async (p, ids) => {
+    await teamTab(p, ids, "Repositories");
+    await p.locator('.table-row').filter({ hasText: 'docs-example/sample-app' }).getByRole('button', { name: 'Edit repository link' }).click();
+    await p.locator('.tumaet-ui-dialog-title').filter({ hasText: 'Edit repository link' }).waitFor();
+  } },
   { file: "roles/team-detail-settings.png", user: ADMIN, full: true, go: (p, ids) => teamTab(p, ids, "Settings") },
   {
     file: "roles/team-detail-workflows.png",
