@@ -46,7 +46,7 @@ class MeasurementOrderTest(unittest.TestCase):
                 (benchmark.latency_diff, "latency", {}),
                 (benchmark.budget_admission, "budget", {"threshold": {"exceeded": True}}),
                 (benchmark.load_generator, "overload", {}),
-                (benchmark.failover_under_load, "failover", {}),
+                (benchmark.failover_under_load, "failover", {"recovery": {"passed": True}}),
             ):
                 stack.enter_context(patch.object(module, "run", AsyncMock(side_effect=phase(name, result))))
             self.assertEqual(benchmark.run(), 1)
