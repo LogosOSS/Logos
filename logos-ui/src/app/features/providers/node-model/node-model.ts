@@ -513,7 +513,7 @@ export class NodeModel implements OnInit {
   }
 
   startEdit(): void {
-    if (!this.canEditSettings()) {
+    if (!this.canEditSettings() || this.calibrating() || this.calibrationStarting()) {
       return;
     }
     // A model without a calibration has no placement: only its settings are edited.

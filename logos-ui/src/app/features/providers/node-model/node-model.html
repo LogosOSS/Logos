@@ -12,6 +12,8 @@
             type="button"
             [class.btn-primary]="measured()"
             [class.btn-secondary]="!measured()"
+            [disabled]="calibrating() || calibrationStarting()"
+            [attr.title]="calibrating() ? 'The settings cannot be changed while the model is being calibrated.' : null"
             (click)="startEdit()"
           >
             <i class="pi pi-pencil" aria-hidden="true"></i>

@@ -602,10 +602,18 @@ describe('NodeModel', () => {
       expect(service['getNodeInsights'].mock.calls.length).toBe(before);
     });
 
+    /** The editor is locked while a calibration runs, so it is open only when the run began after it opened. */
+    const openEditorAsStartedBeforeTheRun = (): void => {
+      page().editing.set(true);
+      page().draft.set(page()['initialPlacement']());
+      page()['editRevision'] = page().config()?.revision ?? null;
+      page()['loadToken']++;
+    };
+
     it('leaves the configuration alone while the admin edits it', async () => {
       service['getNodeInsights'].mockResolvedValue(running());
       await create();
-      page().startEdit();
+      openEditorAsStartedBeforeTheRun();
       const before = service['getNodeConfig'].mock.calls.length;
 
       vi.advanceTimersByTime(CALIBRATION_POLL_MS * 2);
@@ -621,7 +629,7 @@ describe('NodeModel', () => {
       service['getNodeConfig'].mockReturnValueOnce(new Promise((resolve) => (late = resolve)));
 
       vi.advanceTimersByTime(CALIBRATION_POLL_MS);
-      page().startEdit();
+      openEditorAsStartedBeforeTheRun();
       // Another admin saved meanwhile: the answer of the read already carries the newer revision.
       late({ ...config, revision: 9 });
       await settle();
