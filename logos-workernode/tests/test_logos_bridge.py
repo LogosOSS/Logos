@@ -5029,6 +5029,80 @@ async def test_keys_calculated_for_older_node_settings_are_discarded(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_a_refresh_that_a_settings_push_overtakes_is_calculated_again(tmp_path, monkeypatch):
+    """Revision N changes the arguments and its keys are still being calculated when N+1 changes the poll
+    interval only. N+1 schedules no refresh of its own, so the overtaken one has to start over."""
+    client = _node_config_client(tmp_path)
+    client._app.state.gpu_collector = MagicMock(
+        get_snapshot=AsyncMock(return_value=MagicMock(devices=[]))
+    )  # noqa: SLF001
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    published: list = []
+    registry.set_calibration_keys = lambda keys, *_rest: published.append(keys) or []
+    calls: list[int] = []
+
+    def _keys(*_args):
+        calls.append(1)
+        if len(calls) == 1:
+            client._cfg.node_settings_revision += 1  # noqa: SLF001
+        return {"org/ready": {"schema": len(calls)}}
+
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_calibration_keys", _keys)
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_slice_gpu_counts", lambda *_a: {})
+
+    await client._refresh_calibration_keys()  # noqa: SLF001
+
+    assert len(calls) == 2
+    assert published == [{"org/ready": {"schema": 2}}]
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_that_keeps_being_overtaken_gives_up_and_keeps_the_old_keys(tmp_path, monkeypatch):
+    client = _node_config_client(tmp_path)
+    client._app.state.gpu_collector = MagicMock(
+        get_snapshot=AsyncMock(return_value=MagicMock(devices=[]))
+    )  # noqa: SLF001
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    published: list = []
+    registry.set_calibration_keys = lambda keys, *_rest: published.append(keys) or []
+
+    def _keys(*_args):
+        client._cfg.node_settings_revision += 1  # noqa: SLF001
+        return {"org/ready": {"schema": 1}}
+
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_calibration_keys", _keys)
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_slice_gpu_counts", lambda *_a: {})
+
+    await client._refresh_calibration_keys()  # noqa: SLF001
+
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_new_keys_and_fingerprints_reach_logos_with_the_next_status_and_only_once(tmp_path):
+    """A live edit changes them without a reconnect; hello told Logos the old ones."""
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    registry.set_calibration_keys({"org/ready": {"plan_hash": "a"}}, {"org/ready": "F-2G"})
+    sends: list[dict] = []
+
+    async def _send(_ws, payload):
+        sends.append(payload)
+
+    client._send_json = _send  # type: ignore[method-assign]  # noqa: SLF001
+    await client._send_hello(object())  # noqa: SLF001
+    assert sends[0]["config_fingerprints"] == {"org/ready": "F-2G"}
+    sends.clear()
+
+    registry.set_calibration_keys({"org/ready": {"plan_hash": "a"}}, {"org/ready": "F-8G"})
+    await client._send_runtime_payload(object(), {"lanes": []})  # noqa: SLF001
+    await client._send_runtime_payload(object(), {"lanes": [{"lane_id": "x"}]})  # noqa: SLF001
+
+    assert sends[0]["key_report"]["config_fingerprints"] == {"org/ready": "F-8G"}
+    assert "key_report" not in sends[1]
+
+
+@pytest.mark.asyncio
 async def test_a_node_config_waits_for_a_running_calibration_and_applies_afterwards(tmp_path):
     client = _node_config_client(tmp_path)
     client._calibration_session_is_live = lambda: True  # noqa: SLF001

@@ -70,6 +70,9 @@ from logos_worker_node.vllm_metrics_export import collect_vllm_metrics_text
 
 logger = logging.getLogger("logos_worker_node.logos_bridge")
 
+# How often a refresh of the calibration keys starts over when a push overtakes it.
+_KEY_REFRESH_ATTEMPTS = 3
+
 _INFERENCE_RELAY_TIMEOUT = httpx.Timeout(
     connect=10.0,
     read=3600.0,
@@ -212,6 +215,8 @@ class LogosBridgeClient:
         # A node configuration that arrived while a calibration was running.
         self._pending_node_config: dict[str, Any] | None = None
         self._pending_node_settings: dict[str, Any] | None = None
+        # The keys, slices and fingerprints Logos was last told; a status carries them again only when they change.
+        self._last_key_report: dict[str, Any] | None = None
         # Sequence counter for calibration event_id (independent of lane events).
         self._calibration_event_seq: int = 0
         # Lazily built by _get_hf_info_cache(); lives for the client's whole
@@ -670,6 +675,7 @@ class LogosBridgeClient:
             config_fingerprints = self._app.state.model_profiles.config_fingerprints()
             slice_gpu_counts = self._app.state.model_profiles.slice_gpu_counts()
             pending_snapshots = self._app.state.model_profiles.awaiting_snapshot_models()
+        self._last_key_report = self._key_report()
         await self._send_json(
             ws,
             {
@@ -770,6 +776,17 @@ class LogosBridgeClient:
         # new status push, so a count-triggered update must always reach it.
         return await self._send_runtime_payload(ws, payload, force=True)
 
+    def _key_report(self) -> dict[str, Any]:
+        """What Logos keeps about the calibration of each model here: keys, GPU slices, fingerprints."""
+        profiles = getattr(getattr(self._app, "state", None), "model_profiles", None)
+        if profiles is None:
+            return {}
+        return {
+            "calibration_key_hashes": profiles.calibration_key_hashes(),
+            "slice_gpu_counts": profiles.slice_gpu_counts(),
+            "config_fingerprints": profiles.config_fingerprints(),
+        }
+
     async def _send_runtime_payload(self, ws, payload: dict[str, Any], force: bool = False) -> bool:
         # Every status repeats the live calibration state, so the server can
         # settle it without depending on a lifecycle event arriving. An event
@@ -780,8 +797,9 @@ class LogosBridgeClient:
         # session that starts and ends while the lanes are untouched changes
         # nothing else in the payload, and the status would not be sent at all.
         calibrating = self._calibration_session_is_live()
+        report = self._key_report()
         signature = json.dumps(
-            {"runtime": payload, "calibrating": calibrating},
+            {"runtime": payload, "calibrating": calibrating, "keys": report},
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -790,17 +808,19 @@ class LogosBridgeClient:
         self._last_runtime_signature = signature
         self._last_runtime_payload = payload
         self._last_status_sent_at = datetime.now(timezone.utc)
-        await self._send_json(
-            ws,
-            {
-                "type": "status",
-                "worker_id": self.worker_id,
-                "capabilities_models": self._cfg.capabilities_models,
-                "configured_models": self._cfg.configured_models,
-                "calibrating": calibrating,
-                "runtime": payload,
-            },
-        )
+        message: dict[str, Any] = {
+            "type": "status",
+            "worker_id": self.worker_id,
+            "capabilities_models": self._cfg.capabilities_models,
+            "configured_models": self._cfg.configured_models,
+            "calibrating": calibrating,
+            "runtime": payload,
+        }
+        # A live edit changes the keys and fingerprints without a reconnect; Logos learns of it here.
+        if report and report != self._last_key_report:
+            message["key_report"] = report
+        await self._send_json(ws, message)
+        self._last_key_report = report
         return True
 
     async def _send_heartbeat(self, ws) -> None:
@@ -2153,39 +2173,54 @@ class LogosBridgeClient:
 
         A pushed configuration can change them without a restart; the startup
         keys would then stamp snapshots with a plan that was never measured.
+        A result a newer push overtook is calculated again: that push may not have changed
+        anything the keys depend on, and so would schedule no refresh of its own.
         """
         gpu_collector = getattr(self._app.state, "gpu_collector", None)
         if gpu_collector is None:
             return
-        # Pushes can overlap while the keys are calculated: the models and the node settings
-        # (the global arguments) both go into them, and each has its own revision.
-        revision = self._current_revisions()
-        try:
-            from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
-            from logos_worker_node.profile_fingerprint import (  # noqa: PLC0415
-                node_calibration_keys,
-                node_config_fingerprints,
-                node_selections,
-                node_slice_gpu_counts,
-            )
+        for _attempt in range(_KEY_REFRESH_ATTEMPTS):
+            # Pushes can overlap while the keys are calculated: the models and the node settings
+            # (the global arguments) both go into them, and each has its own revision.
+            revision = self._current_revisions()
+            try:
+                from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
+                from logos_worker_node.profile_fingerprint import (  # noqa: PLC0415
+                    node_calibration_keys,
+                    node_config_fingerprints,
+                    node_selections,
+                    node_slice_gpu_counts,
+                )
 
-            snapshot = await gpu_collector.get_snapshot()
-            plans = plans_from_app_config(self._app.state.config)
-            # Resolving an unknown vLLM version may fork a subprocess.
-            keys = await asyncio.to_thread(node_calibration_keys, self._app.state.config, plans, list(snapshot.devices))
-            counts = node_slice_gpu_counts(self._app.state.config, plans, list(snapshot.devices))
-            fingerprints = node_config_fingerprints(self._app.state.config, plans)
-            selections = node_selections(self._app.state.config, plans)
-        except Exception:  # noqa: BLE001
-            logger.warning("[Calibration] Could not refresh calibration keys; keeping the previous ones", exc_info=True)
+                snapshot = await gpu_collector.get_snapshot()
+                plans = plans_from_app_config(self._app.state.config)
+                # Resolving an unknown vLLM version may fork a subprocess.
+                keys = await asyncio.to_thread(
+                    node_calibration_keys, self._app.state.config, plans, list(snapshot.devices)
+                )
+                counts = node_slice_gpu_counts(self._app.state.config, plans, list(snapshot.devices))
+                fingerprints = node_config_fingerprints(self._app.state.config, plans)
+                selections = node_selections(self._app.state.config, plans)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[Calibration] Could not refresh calibration keys; keeping the previous ones", exc_info=True
+                )
+                return
+            if self._current_revisions() != revision:
+                logger.info(
+                    "[Calibration] Calibration keys of revisions %s are out of date: calculating them again", revision
+                )
+                continue
+            self._app.state.model_profiles.set_slice_gpu_counts(counts)
+            changed = self._app.state.model_profiles.set_calibration_keys(keys, fingerprints, selections)
+            if changed:
+                logger.info("[Calibration] Calibration no longer fits %s — re-measuring", ", ".join(sorted(changed)))
+            # The next status reports the new keys and fingerprints, so Logos judges the calibration by them.
+            lane_manager = getattr(self._app.state, "lane_manager", None)
+            if lane_manager is not None:
+                lane_manager.mark_status_dirty()
             return
-        if self._current_revisions() != revision:
-            logger.info("[Calibration] Discarding keys of revisions %s: a newer configuration was applied", revision)
-            return
-        self._app.state.model_profiles.set_slice_gpu_counts(counts)
-        changed = self._app.state.model_profiles.set_calibration_keys(keys, fingerprints, selections)
-        if changed:
-            logger.info("[Calibration] Calibration no longer fits %s — re-measuring", ", ".join(sorted(changed)))
+        logger.warning("[Calibration] Calibration keys kept changing while they were calculated; keeping the old ones")
 
     async def _run_calibration_session(self, session: _CalibrationSession) -> None:
         """Async driver that walks uncalibrated models one at a time.

@@ -48,6 +48,7 @@ CALIBRATION_FIELDS = frozenset(
         "calibrations_by_tp",
         # The cache each GPU had when the total was measured; what the total includes.
         "calibrated_kv_mb",
+        "calibrated_footprint_mb",
     }
 )
 

@@ -338,6 +338,26 @@ def test_clearing_a_nodes_models_needs_no_worker(env):
     assert db.replaced[0][1] == []
 
 
+def test_a_status_after_a_live_edit_hands_the_new_keys_to_the_profile_sync():
+    report = {
+        "calibration_key_hashes": {"org/a": "K2", "bad": 3},
+        "slice_gpu_counts": {"org/a": 2},
+        "config_fingerprints": {"org/a": "F-8G"},
+    }
+
+    assert logosnode_mod._key_report_of({"key_report": report}) == {  # noqa: SLF001
+        "calibration_key_hashes": {"org/a": "K2"},
+        "slice_gpu_counts": {"org/a": 2},
+        "config_fingerprints": {"org/a": "F-8G"},
+    }
+    assert logosnode_mod._key_report_of({"runtime": {}}) is None  # noqa: SLF001
+    assert logosnode_mod._key_report_of({"key_report": "x"}) is None  # noqa: SLF001
+    source = inspect.getsource(logosnode_mod.logosnode_session)
+    assert (
+        "_key_report_of(payload)" in source and "profile_sync.schedule_push(ticket.provider_id, **reported)" in source
+    )
+
+
 def test_a_hello_schedules_the_configuration_push(env):
     _, registry = env()
 

@@ -43,11 +43,26 @@ def reconfigured_vram_mb(profile: Any, measured_mb: float, gpu_count: int, cache
 
     Keep measured weights and overhead; replace only the known KV allocation.
     Unknown or inconsistent metadata retains the conservative measured total.
+
+    A calibration records its footprint together with the cache that footprint holds
+    (``calibrated_footprint_mb`` and ``calibrated_kv_mb``). That pair is the only one that
+    belongs together: ``measured_mb`` is a live total, observed under whatever cache the lane
+    ran with, and taking the measured cache out of it would take out too much. The pair
+    is used unless an operator replaced ``base_residency_mb``; profiles measured before the pair
+    existed keep the old arithmetic.
     """
     old_count = getattr(profile, "tensor_parallel_size", None)
-    # The cache the measured total includes. kv_budget_mb follows the configured and the observed
-    # cache, so it only stands in for profiles measured before the calibration kept its own.
-    old_cache = getattr(profile, "calibrated_kv_mb", None) or getattr(profile, "kv_budget_mb", None)
+    footprint = getattr(profile, "calibrated_footprint_mb", None)
+    calibrated_cache = getattr(profile, "calibrated_kv_mb", None)
+    paired = bool(
+        footprint
+        and calibrated_cache
+        and abs(float(getattr(profile, "base_residency_mb", None) or 0.0) - float(footprint)) <= 0.5
+    )
+    total = float(footprint) if paired else measured_mb
+    # kv_budget_mb follows the configured and the observed cache, so it only stands in
+    # for profiles measured before the calibration kept its own.
+    old_cache = calibrated_cache if paired else getattr(profile, "kv_budget_mb", None)
     if (
         getattr(profile, "residency_source", None) != "calibrated"
         or not old_count
@@ -56,10 +71,10 @@ def reconfigured_vram_mb(profile: Any, measured_mb: float, gpu_count: int, cache
         or old_cache <= 0
         or cache_per_gpu_mb <= 0
         or gpu_count <= 0
-        or measured_mb <= old_count * old_cache
+        or total <= old_count * old_cache
     ):
         return measured_mb
-    return measured_mb - old_count * old_cache + gpu_count * cache_per_gpu_mb
+    return total - old_count * old_cache + gpu_count * cache_per_gpu_mb
 
 
 def _ema(previous: float | None, current: float) -> float:
@@ -79,6 +94,9 @@ class ModelProfileRecord:
     # Only a calibration sets it: a configured or observed cache never changes it, so the footprint
     # of another cache size can be worked out from the measured total.
     calibrated_kv_mb: float | None = None
+    # The footprint that cache belongs to: base_residency_mb as the calibration measured it. Live
+    # observations never change it, so the pair stays usable after the lane ran with another cache.
+    calibrated_footprint_mb: float | None = None
     # KV cache envelope discovered by calibration on this hardware. The planner
     # picks a runtime kv_cache_memory_bytes value inside [min, max] based on
     # how much VRAM is free at load time — small enough to coexist with other

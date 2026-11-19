@@ -964,19 +964,49 @@ def test_reconfigured_vram_replaces_only_known_per_rank_cache(tp, cache, expecte
     assert reconfigured_vram_mb(profile, 15988, tp, cache) == 15988
 
 
+def _calibrated_with_cache(**extra):
+    """A model of 8 GiB measured at 32 GiB with 24 GiB of cache; the lane ran with 2 GiB since."""
+    values = dict(
+        residency_source="calibrated",
+        tensor_parallel_size=1,
+        base_residency_mb=32768,
+        calibrated_footprint_mb=32768,
+        calibrated_kv_mb=24576,
+        kv_budget_mb=2048,
+    )
+    values.update(extra)
+    return ModelProfileRecord(**values)
+
+
 def test_the_cache_a_calibration_measured_with_outlives_a_configured_cache():
     """A configured or observed cache overwrites kv_budget_mb; the measured total still names its own cache."""
     from logos_worker_node.model_profiles import reconfigured_vram_mb
 
-    profile = ModelProfileRecord(
-        residency_source="calibrated", tensor_parallel_size=1, kv_budget_mb=2048, calibrated_kv_mb=24576
-    )
-
     # An 8 GiB model measured with 24 GiB of cache needs 10 GiB with 2 GiB of cache.
-    assert reconfigured_vram_mb(profile, 32768, 1, 2048) == 10240
+    assert reconfigured_vram_mb(_calibrated_with_cache(), 32768, 1, 2048) == 10240
     # A profile measured before the calibration kept its own cache falls back to the old field.
     legacy = ModelProfileRecord(residency_source="calibrated", tensor_parallel_size=1, kv_budget_mb=24576)
     assert reconfigured_vram_mb(legacy, 32768, 1, 2048) == 10240
+
+
+def test_a_live_total_observed_under_a_smaller_cache_does_not_lose_the_measured_cache_twice():
+    """The live total already holds only 2 GiB of cache; taking 24 GiB out of it leaves too little."""
+    from logos_worker_node.model_profiles import reconfigured_vram_mb
+
+    profile = _calibrated_with_cache()
+    live_total = 25.4 * 1024
+
+    assert reconfigured_vram_mb(profile, live_total, 1, 2048) == 10240
+    assert reconfigured_vram_mb(profile, live_total, 1, 4096) == 12288
+
+
+def test_an_operator_replacing_the_base_residency_is_not_overruled_by_the_calibrated_pair():
+    from logos_worker_node.model_profiles import reconfigured_vram_mb
+
+    profile = _calibrated_with_cache(base_residency_mb=20000)
+
+    # The pair no longer describes this profile; the total the caller passes is the one to adjust.
+    assert reconfigured_vram_mb(profile, 20000, 1, 2048) == 20000 - 2048 + 2048
 
 
 # ---------------------------------------------------------------------------

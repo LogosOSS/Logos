@@ -252,3 +252,16 @@ def test_a_calibration_measured_under_the_current_configuration_is_not_made_stal
     row = _measured_row(cfg_capability={"kv_cache_memory_bytes": "8G"}, cfg_overrides={}, config_fingerprint="F1")
 
     assert effective_profile(1, row)["calibration_stale"] is False
+
+
+def test_a_live_edit_to_an_out_of_range_cache_is_seen_once_the_worker_reports_its_new_fingerprint():
+    """The 2 GB the calibration was measured under, then 8 GB against a calibrated maximum of 4 GB."""
+    config = {"cfg_capability": {"kv_cache_memory_bytes": "8G"}, "cfg_overrides": {}}
+
+    before_report = _measured_row(config_fingerprint="F1", **config)
+    after_report = _measured_row(config_fingerprint="F2", **config)
+
+    # Logos still holds the fingerprint of the configuration the calibration was measured under.
+    assert effective_profile(1, before_report)["calibration_stale"] is False
+    # The next status of the worker carries the fingerprint of the edited configuration.
+    assert effective_profile(1, after_report)["calibration_stale"] is True

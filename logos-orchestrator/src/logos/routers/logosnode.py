@@ -159,6 +159,18 @@ async def _republish_latest_runtime(provider_id: int) -> None:
     await profile_sync.capture_status(provider_id, runtime, cold_mark_changed=True)
 
 
+def _key_report_of(payload: Dict[str, Any]) -> Dict[str, Any] | None:
+    """The keys, GPU slices and fingerprints a status carries after they changed; None when it has none."""
+    report = payload.get("key_report")
+    if not isinstance(report, dict):
+        return None
+    return {
+        "calibration_key_hashes": _string_map(report.get("calibration_key_hashes")),
+        "slice_gpu_counts": _int_map(report.get("slice_gpu_counts")),
+        "config_fingerprints": _string_map(report.get("config_fingerprints")),
+    }
+
+
 def _int_map(value: Any) -> Dict[str, int]:
     if not isinstance(value, dict):
         return {}
@@ -563,6 +575,10 @@ async def logosnode_session(websocket: WebSocket, token: str):
                     ),
                 )
                 await profile_sync.capture_status(ticket.provider_id, runtime)
+                reported = _key_report_of(payload)
+                if reported is not None:
+                    # A live edit changed what the node knows about its calibrations; judge them by it.
+                    profile_sync.schedule_push(ticket.provider_id, **reported)
             elif msg_type == "event":
                 event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
                 await _main._logosnode_registry.append_event(
