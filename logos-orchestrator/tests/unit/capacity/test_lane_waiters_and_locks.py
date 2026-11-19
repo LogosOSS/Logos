@@ -506,7 +506,8 @@ class _DrainFacade(_Facade):
         return {}
 
 
-def test_demand_drain_skips_a_locked_busy_lane_and_takes_the_next_one():
+def test_demand_drain_skips_a_locked_busy_lane_and_takes_the_next_one(monkeypatch):
+    monkeypatch.setenv("LOGOS_RESIDENCY_POLICY", "demand")
     third_lane = "planner-third_model"
     lanes = [
         _signal(LANE, MODEL, active=2),
