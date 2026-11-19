@@ -1009,6 +1009,44 @@ def test_an_operator_replacing_the_base_residency_is_not_overruled_by_the_calibr
     assert reconfigured_vram_mb(profile, 20000, 1, 2048) == 20000 - 2048 + 2048
 
 
+def _measured_at_two_sizes(**extra):
+    """TP 1 measured 20 GiB with 8 GiB of cache; TP 2 measured 28 GiB with 8 GiB of cache per GPU."""
+    values = dict(
+        residency_source="calibrated",
+        tensor_parallel_size=1,
+        base_residency_mb=20480,
+        calibrated_footprint_mb=20480,
+        calibrated_kv_mb=8192,
+        calibrations_by_tp=[
+            {"tp": 1, "base_residency_mb": 20480, "calibrated_kv_mb": 8192},
+            {"tp": 2, "base_residency_mb": 28672, "calibrated_kv_mb": 8192},
+        ],
+    )
+    values.update(extra)
+    return ModelProfileRecord(**values)
+
+
+def test_a_tp_change_before_recalibration_uses_the_result_measured_at_that_size():
+    from logos_worker_node.model_profiles import reconfigured_vram_mb
+
+    # The editor already set TP 2 on the profile; the stored pair still describes TP 1.
+    profile = _measured_at_two_sizes(tensor_parallel_size=2)
+
+    assert reconfigured_vram_mb(profile, 20480, 2, 2048) == 28672 - 2 * 8192 + 2 * 2048
+    assert reconfigured_vram_mb(profile, 20480, 1, 2048) == 20480 - 8192 + 2048
+
+
+def test_a_tp_without_a_result_scales_the_pair_by_the_size_it_was_measured_at():
+    from logos_worker_node.model_profiles import reconfigured_vram_mb
+
+    profile = _measured_at_two_sizes(
+        tensor_parallel_size=2, calibrations_by_tp=[{"tp": 1, "base_residency_mb": 20480, "calibrated_kv_mb": 8192}]
+    )
+
+    # 12 GiB of weights and overhead stay; two ranks hold 2 GiB of cache each.
+    assert reconfigured_vram_mb(profile, 20480, 2, 2048) == 16384
+
+
 # ---------------------------------------------------------------------------
 # mark_capacity_floor
 # ---------------------------------------------------------------------------

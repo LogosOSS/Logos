@@ -38,31 +38,58 @@ ORIGIN_SHARED = "shared"
 _EMA_ALPHA = 0.3  # weight for new measurement vs historical average
 
 
+def _calibrated_measurement(profile: Any, gpu_count: int) -> tuple[float, float, int] | None:
+    """The footprint, the cache per GPU and the GPU count of one calibration measurement.
+
+    A calibration records its footprint together with the cache that footprint holds
+    (``calibrated_footprint_mb`` and ``calibrated_kv_mb``) for the tensor-parallel size it ran
+    with. Only values from one measurement belong together. The result for ``gpu_count`` wins when
+    the calibration measured that size. Otherwise the stored pair counts, with the GPU count it
+    was measured at. ``None`` when an operator replaced ``base_residency_mb`` or the profile has
+    no pair: the caller keeps the live total then.
+    """
+    footprint = getattr(profile, "calibrated_footprint_mb", None)
+    cache = getattr(profile, "calibrated_kv_mb", None)
+    base = float(getattr(profile, "base_residency_mb", None) or 0.0)
+    if not footprint or not cache or abs(base - float(footprint)) > 0.5:
+        return None
+    runs = [r for r in (getattr(profile, "calibrations_by_tp", None) or []) if isinstance(r, dict)]
+    for run in runs:
+        if run.get("tp") == gpu_count and run.get("base_residency_mb") and run.get("calibrated_kv_mb"):
+            return float(run["base_residency_mb"]), float(run["calibrated_kv_mb"]), gpu_count
+    measured_at = next(
+        (
+            run.get("tp")
+            for run in runs
+            if run.get("base_residency_mb") and abs(float(run["base_residency_mb"]) - float(footprint)) <= 0.5
+        ),
+        None,
+    )
+    # The configured size can differ from the measured one (an operator override replaces it).
+    count = measured_at or getattr(profile, "tensor_parallel_size", None)
+    return (float(footprint), float(cache), int(count)) if count else None
+
+
 def reconfigured_vram_mb(profile: Any, measured_mb: float, gpu_count: int, cache_per_gpu_mb: float) -> float:
     """Adjust a calibrated total for a different number/size of per-rank KV caches.
 
     Keep measured weights and overhead; replace only the known KV allocation.
     Unknown or inconsistent metadata retains the conservative measured total.
 
-    A calibration records its footprint together with the cache that footprint holds
-    (``calibrated_footprint_mb`` and ``calibrated_kv_mb``). That pair is the only one that
-    belongs together: ``measured_mb`` is a live total, observed under whatever cache the lane
-    ran with, and taking the measured cache out of it would take out too much. The pair
-    is used unless an operator replaced ``base_residency_mb``; profiles measured before the pair
-    existed keep the old arithmetic.
+    ``measured_mb`` is a live total, observed under whatever cache the lane ran with, and
+    taking a calibrated cache out of it would take out too much. The calibration's own
+    measurement (see ``_calibrated_measurement``) is used when the profile has one; profiles
+    measured before it existed keep the old arithmetic.
     """
-    old_count = getattr(profile, "tensor_parallel_size", None)
-    footprint = getattr(profile, "calibrated_footprint_mb", None)
-    calibrated_cache = getattr(profile, "calibrated_kv_mb", None)
-    paired = bool(
-        footprint
-        and calibrated_cache
-        and abs(float(getattr(profile, "base_residency_mb", None) or 0.0) - float(footprint)) <= 0.5
-    )
-    total = float(footprint) if paired else measured_mb
-    # kv_budget_mb follows the configured and the observed cache, so it only stands in
-    # for profiles measured before the calibration kept its own.
-    old_cache = calibrated_cache if paired else getattr(profile, "kv_budget_mb", None)
+    pair = _calibrated_measurement(profile, gpu_count)
+    if pair:
+        total, old_cache, old_count = pair
+    else:
+        total = measured_mb
+        # kv_budget_mb follows the configured and the observed cache, so it only stands in
+        # for profiles measured before the calibration kept its own.
+        old_cache = getattr(profile, "kv_budget_mb", None)
+        old_count = getattr(profile, "tensor_parallel_size", None)
     if (
         getattr(profile, "residency_source", None) != "calibrated"
         or not old_count
