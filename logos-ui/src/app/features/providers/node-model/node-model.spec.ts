@@ -1063,19 +1063,6 @@ describe('NodeModel', () => {
     });
   });
 
-  it('says when the nightly tuning set the configuration', async () => {
-    service['getNodeInsights'].mockResolvedValue(insights([insight({ source: 'tuning' })]));
-    const root = await create();
-
-    expect(root.textContent).toContain('Set by the nightly tuning');
-  });
-
-  it('says nothing about the source of a configuration an admin set', async () => {
-    const root = await create();
-
-    expect(root.textContent).not.toContain('Set by the nightly tuning');
-  });
-
   describe('the configuration card', () => {
     const gpus = [0, 1, 2, 3].map((index) => ({ index, name: 'A100', total_mb: 40960, used_mb: 100 }));
     const withBenchmark = (settings: Record<string, unknown>) => {
@@ -1328,6 +1315,32 @@ describe('NodeModel', () => {
       fixture.detectChanges();
       expect(button().disabled).toBe(false);
       expect(button().textContent).toContain('Use recommendation');
+    });
+
+    it('offers batch values of a benchmark that the stored entry does not set, and puts them in the editor', async () => {
+      const best = { benchmark_id: 7, throughput: 52.3, settings: { max_num_seqs: 64, max_num_batched_tokens: 4096 }, recorded_at: null };
+      service['getNodeInsights'].mockResolvedValue({
+        ...insights([
+          insight({ benchmark: { best_eligible: best, best_observed: best, current: { max_num_seqs: 64, max_num_batched_tokens: 4096 }, eligible_for_comparison: true } }),
+        ]),
+        gpus,
+      });
+      const root = await create();
+
+      // The lane runs the winner already; the stored entry does not, so the page still recommends it.
+      expect(root.querySelector('.banner--rec-view')!.textContent).toContain('64 parallel requests · 4096 batched tokens');
+
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+      page().adv.set({ ...page().adv()!, values: { ...page().adv()!.values, extra_args: '--foo\n--max-num-batched-tokens=2048' } });
+      const button = (): HTMLButtonElement => root.querySelector<HTMLButtonElement>('.banner--rec button')!;
+      expect(button().disabled).toBe(false);
+      button().click();
+      fixture.detectChanges();
+
+      expect(page().adv()!.values['max_num_seqs']).toBe('64');
+      expect(page().adv()!.values['extra_args']).toBe('--foo\n--max-num-batched-tokens=4096');
+      expect(button().disabled).toBe(true);
     });
   });
 

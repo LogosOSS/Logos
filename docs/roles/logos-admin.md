@@ -440,9 +440,13 @@ The page has these parts:
 - **Best benchmark**: the best result of the nightly benchmarks for this model.
   Select **Open all benchmarks** to see them all. The part is not shown if the model has no benchmark.
 
-If a comparable benchmark found a better placement, then the page shows the purple banner
-**Recommendation not in use**. It names the placement and how much faster it was.
-If the nightly tuning set the configuration, the page shows **Set by the nightly tuning**.
+If a comparable benchmark found better values, then the page shows the purple banner
+**Recommendation not in use**. It names the placement, the number of parallel requests and the batch size,
+and how much faster the run was. The page compares the run with the stored configuration of the model.
+The nightly benchmark changes only the running lane and never the stored configuration.
+Select **Edit configuration** and then **Use recommendation** to store the values.
+The button sets the placement, **Max. parallel requests** and `--max-num-batched-tokens` in **Extra arguments**.
+A change of these batch values makes the calibration outdated.
 If the worker is offline, the page shows a banner and you cannot edit the model.
 
 ### Edit the configuration of a model

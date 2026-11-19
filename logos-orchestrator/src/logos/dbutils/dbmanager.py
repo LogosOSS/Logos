@@ -1996,7 +1996,7 @@ class DBManager:
         return results
 
     def get_node_config_sources(self, provider_id: int) -> Dict[str, str]:
-        """Where each stored model came from (ui, yaml_import, tuning)."""
+        """Where each stored model came from (ui, yaml_import)."""
         rows = self.session.execute(
             text("SELECT model_name, source FROM node_model_config WHERE provider_id = :pid"), {"pid": provider_id}
         ).fetchall()
@@ -2406,11 +2406,10 @@ class DBManager:
         expected_revision: int,
         updated_by: Optional[int],
         source: str,
-        source_by_model: Optional[Dict[str, str]] = None,
     ) -> Optional[int]:
         """Replace a node's configured models; returns the new revision.
 
-        ``source`` labels every row, except the models ``source_by_model`` names.
+        ``source`` labels every row.
 
         Returns None, and writes nothing, when expected_revision is not the
         stored one. The first save also ends the YAML import for the node.
@@ -2447,7 +2446,7 @@ class DBManager:
                     "position": position,
                     "capability": json.dumps(entry["capability"]),
                     "overrides": json.dumps(entry["overrides"]),
-                    "source": (source_by_model or {}).get(entry["model_name"], source),
+                    "source": source,
                     "updated_by": updated_by,
                 },
             )

@@ -44,7 +44,9 @@ import {
 } from './node-model-edit';
 import {
   advancedSettings,
+  batchedTokensOf,
   describePlacement,
+  describeRecommendation,
   entrySettings,
   formatGb,
   formatSeconds,
@@ -52,6 +54,8 @@ import {
   kvToGb,
   mbToGb,
   placementFigures,
+  storedSettings,
+  withBatchedTokens,
 } from './node-model-format';
 
 /** How often the page reads the state again while a calibration runs. It ends without an event for this page. */
@@ -91,7 +95,7 @@ export class NodeModel implements OnInit {
   });
   readonly tuning = computed(() => {
     const insight = this.insight();
-    return insight !== null && hasTuning(insight);
+    return insight !== null && hasTuning(insight, storedSettings(this.entry()));
   });
   readonly recommendation = computed(() => this.insight()?.benchmark?.best_eligible ?? null);
   /** The measured result of the tensor-parallel size being edited or placed, else the one the lane uses. */
@@ -381,6 +385,7 @@ export class NodeModel implements OnInit {
   readonly formatSeconds = formatSeconds;
   readonly formatTokens = formatTokens;
   readonly describePlacement = describePlacement;
+  readonly describeRecommendation = describeRecommendation;
   readonly mbToGb = mbToGb;
 
   /** The model page that last saw a calibration running; another model's page never sees its end. */
@@ -585,10 +590,15 @@ export class NodeModel implements OnInit {
     const tp = Number(best['tensor_parallel_size']) || null;
     const kv = kvToGb(best['kv_cache_memory_bytes']);
     const ctx = Number(best['max_model_len']) || null;
+    const values = this.adv()?.values ?? {};
+    const seqs = best['max_num_seqs'] != null ? String(best['max_num_seqs']) : null;
+    const tokens = best['max_num_batched_tokens'] != null ? String(best['max_num_batched_tokens']) : null;
     return (
       (tp === null || tp === d.tp) &&
       (kv === null || Math.abs(kv - d.kvGb) < 0.05) &&
-      (ctx === null || ctx === d.ctx)
+      (ctx === null || ctx === d.ctx) &&
+      (seqs === null || (values['max_num_seqs'] ?? '').trim() === seqs) &&
+      (tokens === null || batchedTokensOf((values['extra_args'] ?? '').split('\n').map((l) => l.trim())) === tokens)
     );
   });
 
@@ -600,6 +610,13 @@ export class NodeModel implements OnInit {
     const best = this.recommendation()?.settings ?? {};
     if (!d) {
       return;
+    }
+    // The batch values do not depend on a measurement; the placement does.
+    if (best['max_num_seqs'] != null) {
+      this.setAdv('max_num_seqs', String(best['max_num_seqs']));
+    }
+    if (best['max_num_batched_tokens'] != null) {
+      this.setAdv('extra_args', withBatchedTokens(this.adv()?.values['extra_args'] ?? '', String(best['max_num_batched_tokens'])));
     }
     const tp = Number(best['tensor_parallel_size']);
     if (tp && this.insight()?.calibration.results.some((r) => r.tp === tp)) {

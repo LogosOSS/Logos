@@ -170,32 +170,6 @@ describe('NodeModels', () => {
       expect(component.calibrationLabel(model({ calibration: pending, calibrating: true })).text).toBe('Calibrating…');
       expect(component.calibrationLabel(model({ calibrating: true })).text).toBe('Calibrated');
     });
-
-    it('offers tuning only for a comparable benchmark that placed the model differently', () => {
-      const run = (settings: Record<string, unknown>) => ({
-        benchmark_id: 2,
-        throughput: 50,
-        settings,
-        recorded_at: null,
-      });
-      const withBenchmark = (settings: Record<string, unknown>, comparable = true): NodeModelInsight =>
-        model({
-          benchmark: {
-            best_eligible: run(settings),
-            best_observed: run(settings),
-            current: { tensor_parallel_size: 2, max_model_len: 8192 },
-            eligible_for_comparison: comparable,
-          },
-        });
-
-      // A better benchmark placement shows as a notice on the model page, not in the status of the list.
-      expect(component.calibrationLabel(withBenchmark({ tensor_parallel_size: 4 })).text).toBe('Calibrated');
-      expect(component.hasTuning(withBenchmark({ tensor_parallel_size: 4 }))).toBe(true);
-      expect(component.hasTuning(withBenchmark({ tensor_parallel_size: 2, max_model_len: 8192 }))).toBe(false);
-      expect(component.hasTuning(withBenchmark({ tensor_parallel_size: 4 }, false))).toBe(false);
-      expect(component.hasTuning(withBenchmark({ block_size: 16 }))).toBe(false);
-      expect(component.hasTuning(model())).toBe(false);
-    });
   });
 
   describe('connecting a model', () => {

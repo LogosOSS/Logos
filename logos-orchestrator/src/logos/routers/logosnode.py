@@ -1119,7 +1119,6 @@ async def save_node_config(
     expected_revision: int,
     updated_by: int | None,
     source: str = "ui",
-    source_by_model: Dict[str, str] | None = None,
 ) -> Dict[str, Any] | JSONResponse:
     """Check and store a node's whole model list; the one path of every caller.
 
@@ -1142,9 +1141,7 @@ async def save_node_config(
 
     outcome, revision = await _replace_stored(
         provider_id,
-        lambda db: db.replace_node_config(
-            provider_id, rows, expected_revision, _stored_author(db, updated_by), source, source_by_model
-        ),
+        lambda db: db.replace_node_config(provider_id, rows, expected_revision, _stored_author(db, updated_by), source),
         lambda db: db.get_node_config(provider_id)["revision"],
     )
     if outcome == "missing":

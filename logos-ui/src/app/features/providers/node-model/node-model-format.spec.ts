@@ -2,13 +2,17 @@ import { describe, expect, it } from 'vitest';
 
 import {
   advancedSettings,
+  batchedTokensOf,
   describePlacement,
+  describeRecommendation,
   entrySettings,
   formatGb,
   formatSeconds,
   formatTokens,
   kvToGb,
   mbToGb,
+  storedSettings,
+  withBatchedTokens,
 } from './node-model-format';
 
 describe('node model formatting', () => {
@@ -63,5 +67,34 @@ describe('node model formatting', () => {
       { key: 'min_context_fraction', value: '0.5' },
       { key: 'quantization', value: 'awq' },
     ]);
+  });
+});
+
+describe('the batched-token limit of an entry', () => {
+  it('reads either spelling of the flag from the extra arguments', () => {
+    expect(batchedTokensOf(['--max-num-batched-tokens=2048', '--foo'])).toBe('2048');
+    expect(batchedTokensOf(['--foo', '--max-num-batched-tokens', '4096'])).toBe('4096');
+    expect(batchedTokensOf(['--foo'])).toBeNull();
+    expect(batchedTokensOf(undefined)).toBeNull();
+  });
+
+  it('is part of the stored settings of an entry', () => {
+    const entry = { model_name: 'm', capability: {}, overrides: { max_num_seqs: 8, extra_args: ['--max-num-batched-tokens=2048'] } };
+
+    expect(storedSettings(entry as never)).toMatchObject({ max_num_seqs: 8, max_num_batched_tokens: '2048' });
+    expect(storedSettings({ model_name: 'm', capability: {}, overrides: {} } as never)['max_num_batched_tokens']).toBeUndefined();
+  });
+
+  it('is set once in the lines of the extra arguments, whatever spelling was there', () => {
+    expect(withBatchedTokens('--foo\n--max-num-batched-tokens=2048', 4096)).toBe('--foo\n--max-num-batched-tokens=4096');
+    expect(withBatchedTokens('--max-num-batched-tokens\n2048\n--foo', '4096')).toBe('--foo\n--max-num-batched-tokens=4096');
+    expect(withBatchedTokens('', 4096)).toBe('--max-num-batched-tokens=4096');
+  });
+
+  it('is named with the placement of a recommendation', () => {
+    expect(describeRecommendation({ tensor_parallel_size: 1, max_num_seqs: 64, max_num_batched_tokens: 4096 })).toBe(
+      'TP 1 · 64 parallel requests · 4096 batched tokens',
+    );
+    expect(describeRecommendation({ max_num_seqs: 64 })).toBe('64 parallel requests');
   });
 });

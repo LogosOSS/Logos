@@ -88,5 +88,4 @@
     <include file="liquibase/changelog/081_security_manual_updates.xml"/>
     <include file="liquibase/changelog/082_model_profile_config_fingerprint.xml"/>
     <include file="liquibase/changelog/083_node_settings.xml"/>
-    <include file="liquibase/changelog/084_node_model_config_tuning_source.xml"/>
 </databaseChangeLog>

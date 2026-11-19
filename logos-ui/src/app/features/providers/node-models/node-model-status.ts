@@ -1,4 +1,5 @@
 import { NodeModelInsight } from '../../../shared/models/node-config.model';
+import { BATCHING_KEYS, kvToGb } from '../node-model/node-model-format';
 
 export type StatusTone = 'ok' | 'gray' | 'warn' | 'err';
 
@@ -11,14 +12,33 @@ export interface CalibrationLabel {
 /** Settings of a lane or a benchmark run that decide where a model sits. */
 export const PLACEMENT_KEYS = ['tensor_parallel_size', 'kv_cache_memory_bytes', 'max_model_len'] as const;
 
-/** A comparable benchmark run placed the model differently from now. */
-export function hasTuning(model: NodeModelInsight): boolean {
+/** A recommendation and a configuration agree on a key; a cache size is compared as a size. */
+function sameValue(key: string, a: unknown, b: unknown): boolean {
+  if (key === 'kv_cache_memory_bytes') {
+    const x = kvToGb(a);
+    const y = kvToGb(b);
+    return x !== null && y !== null ? Math.abs(x - y) < 0.05 : String(a) === String(b);
+  }
+  return String(a) === String(b);
+}
+
+/**
+ * A comparable benchmark run recommends other values than the stored configuration sets.
+ *
+ * `stored` is what the stored entry sets (`storedSettings`). A placement value the entry leaves open is the
+ * worker's choice, so it is compared with what the lane runs. A batch value the entry leaves open counts as different.
+ */
+export function hasTuning(model: NodeModelInsight, stored: Record<string, unknown> = {}): boolean {
   const best = model.benchmark?.best_eligible;
   if (!best || !model.benchmark?.eligible_for_comparison) {
     return false;
   }
   const current = model.benchmark.current;
-  return PLACEMENT_KEYS.some((key) => key in best.settings && String(best.settings[key]) !== String(current[key]));
+  const differs = (key: string, now: unknown) => key in best.settings && !sameValue(key, best.settings[key], now);
+  return (
+    PLACEMENT_KEYS.some((key) => differs(key, key in stored ? stored[key] : current[key])) ||
+    BATCHING_KEYS.some((key) => differs(key, stored[key]))
+  );
 }
 
 /** Calibration status of a model. */

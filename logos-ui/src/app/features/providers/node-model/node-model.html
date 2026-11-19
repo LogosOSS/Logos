@@ -228,7 +228,7 @@
         <div class="banner banner--rec" role="status">
           <div>
             <small>Recommended by benchmark</small>
-            <b>{{ describePlacement(rec.settings) }}</b>
+            <b>{{ describeRecommendation(rec.settings) }}</b>
             <span>{{ speedup() ?? rec.throughput.toFixed(1) + ' tok/s, benchmark #' + rec.benchmark_id + '.' }}</span>
           </div>
           <button class="btn-primary" type="button" [disabled]="recommendationApplied()" (click)="applyRecommendation()">
@@ -245,7 +245,7 @@
         <div class="banner banner--rec banner--rec-view" role="status">
           <div>
             <small><i class="pi pi-bolt" aria-hidden="true"></i>Recommendation not in use</small>
-            <b>Benchmark suggests {{ describePlacement(rec.settings) }}</b>
+            <b>Benchmark suggests {{ describeRecommendation(rec.settings) }}</b>
             <span>{{ speedup() ?? rec.throughput.toFixed(1) + ' tok/s, benchmark #' + rec.benchmark_id + '.' }}</span>
           </div>
         </div>
@@ -265,9 +265,6 @@
                   Current placement on {{ providerName() }}.
                 }
               </p>
-              @if (!editing() && insight()?.source === 'tuning') {
-                <p class="hint hint--note"><i class="pi pi-moon" aria-hidden="true"></i>Set by the nightly tuning, which found better values than the earlier configuration.</p>
-              }
 
               <div class="field">
                 <span class="label" id="tp-label">GPUs per instance (tensor parallel) @if (editing()) {<span class="req">*</span>}</span>
@@ -617,7 +614,7 @@
                       <span class="best-tag">Best</span>
                     }
                   </div>
-                  <span>{{ describePlacement(best.settings) }} · #{{ best.benchmark_id }}</span>
+                  <span>{{ describeRecommendation(best.settings) }} · #{{ best.benchmark_id }}</span>
                 </div>
               }
               @if (insight()?.model_id; as modelId) {

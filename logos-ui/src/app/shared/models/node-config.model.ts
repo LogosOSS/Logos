@@ -74,7 +74,7 @@ export interface NodeModelInsight {
   reported: boolean;
   /** A stored configuration row exists. */
   row: boolean;
-  source: 'ui' | 'yaml_import' | 'tuning' | null;
+  source: 'ui' | 'yaml_import' | null;
   /** The row places the model: TP, KV cache and context are set. */
   configured: boolean;
   /** TP, KV cache and context of that placement; null while the worker places the model itself. */
