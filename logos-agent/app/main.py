@@ -25,6 +25,9 @@ from . import (
     github,
     model_policy,
     pulse,
+    security_incidents,
+    security_scans,
+    security_store,
     triggers,
 )
 from .artifacts import read_artifact
@@ -46,6 +49,7 @@ from .schemas import (
     Workspace,
     WorkspaceCreate,
 )
+from .security_models import AssessmentAction, IncidentInput, RepositoryInput
 from .sessions import artifact_dir, manager
 
 logging.basicConfig(
@@ -89,6 +93,7 @@ async def lifespan(_app: FastAPI):
     await triggers.poller.start()
     analysis_triggers.poller.on_queued = manager.scheduler_pass
     await analysis_triggers.poller.start()
+    await security_incidents.poller.start()
     logger.info(
         "agent runner ready: max %s parallel sessions, start below %.0f%% load, " "pause above %.0f%%",
         settings.max_parallel_sessions,
@@ -98,6 +103,7 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        await security_incidents.poller.stop()
         await analysis_triggers.poller.stop()
         await triggers.poller.stop()
         await manager.stop()
@@ -115,6 +121,51 @@ app = FastAPI(
 
 
 # --- health ---------------------------------------------------------------
+
+
+@app.get("/security", tags=["security"])
+async def get_security(_: Principal = Depends(require_agent_operator)) -> dict:
+    return {
+        **await security_store.overview(),
+        "enabled": settings.security_enabled,
+        "feeds_enabled": settings.security_feeds_enabled,
+        "poll_error": security_incidents.poller.last_error,
+    }
+
+
+@app.post("/security/repositories", status_code=201, tags=["security"])
+async def add_security_repository(
+    body: RepositoryInput, principal: Principal = Depends(require_agent_operator)
+) -> dict:
+    # Explicit admin enrollment is the repository authorization boundary.
+    # Team-controlled clone URLs never enter credentialed security sessions.
+    try:
+        return await security_store.enroll(body, principal.username)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/security/incidents", status_code=201, tags=["security"])
+async def add_security_incident(body: IncidentInput, principal: Principal = Depends(require_agent_operator)) -> dict:
+    return await security_store.ingest(body, principal.username, manual=True)
+
+
+@app.get("/security/assessments/{assessment_id}/events", tags=["security"])
+async def security_history(assessment_id: int, _: Principal = Depends(require_agent_operator)) -> list[dict]:
+    return await security_store.history(assessment_id)
+
+
+@app.post("/security/assessments/{assessment_id}/actions", tags=["security"])
+async def security_action(
+    assessment_id: int, body: AssessmentAction, principal: Principal = Depends(require_agent_operator)
+) -> dict:
+    try:
+        found = await security_store.act(assessment_id, body.action, body.reason, principal.username)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not found:
+        raise HTTPException(404, "Assessment not found")
+    return {"ok": True}
 
 
 @app.get("/health", tags=["monitoring"])
@@ -645,3 +696,13 @@ def _summary_fields(row: dict) -> dict:
     """Project a database row onto the response model's fields."""
     keys = set(SessionSummary.model_fields)
     return {k: v for k, v in row.items() if k in keys}
+
+
+@app.post("/security/scans/trivy", tags=["security"])
+async def import_security_scan(
+    body: security_scans.ScanInput, principal: Principal = Depends(require_agent_operator)
+) -> dict:
+    try:
+        return await security_scans.ingest_scan(body, principal.username)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc

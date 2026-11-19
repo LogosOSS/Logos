@@ -1,0 +1,114 @@
+<div class="security-page">
+  <a routerLink="/agents" class="back">← Agent Sessions</a>
+  <header class="page-header">
+    <div><p class="eyebrow">LOGOS ADMIN · SECURITY OPERATIONS</p><h1>Security incidents</h1>
+      <p class="subtitle">Important vulnerabilities. Evidence for each repository. A clear next step.</p></div>
+    <button class="btn" (click)="refresh()" [disabled]="loading()">Refresh</button>
+  </header>
+  @if (error()) { <p role="alert" class="notice danger">{{ error() }}</p> }
+  @if (loading()) { <p role="status">Loading security incidents…</p> }
+  @if (data(); as overview) {
+    @if (!overview.enabled) { <p class="notice" role="status">Automatic assessment is disabled. Incidents remain recorded.</p> }
+    @if (overview.poll_error) { <p class="notice danger" role="alert">Assessment processing failed: {{ overview.poll_error }}</p> }
+    <section class="metrics" aria-label="Repository assessment totals">
+      <div class="metric urgent"><span>Needs attention</span><strong>{{ counts().action }}</strong><small>Action, deployment or failed analysis</small></div>
+      <div class="metric"><span>Awaiting upstream</span><strong>{{ counts().waiting }}</strong><small>Rechecked every 6 hours</small></div>
+      <div class="metric"><span>Remediation</span><strong>{{ counts().prs }}</strong><small>Fix in progress or PR open</small></div>
+      <div class="metric"><span>Not affected</span><strong>{{ counts().unaffected }}</strong><small>Supported by repository evidence</small></div>
+    </section>
+    <div class="monitoring"><i class="pi pi-shield" aria-hidden="true"></i><div>
+      <strong>Critical advisories and known exploited vulnerabilities</strong>
+      <p>LogosOSSAgent assesses registered repositories and proposes fixes. Service interruptions require an operator.</p>
+      <p class="muted">{{ overview.repositories.length }} monitored repositories · Updates every 15 seconds · Latest 500 incidents</p>
+      @if (!overview.feeds_enabled) { <p>Automatic feeds are disabled; manual intake remains available.</p> }
+      @for (feed of overview.feeds; track feed.name) {
+        <span class="feed">{{ feed.name === 'github' ? 'GitHub critical' : 'CISA KEV' }} ·
+          {{ feed.last_success ? (feed.last_success | date:'MMM d, HH:mm') : 'Not yet synchronized' }}</span>
+        @if (feed.error) { <p class="error-text" role="alert">{{ feed.name }}: {{ feed.error }}</p> }
+      }
+    </div></div>
+    <div class="toolbar"><h2>Repository assessments</h2><label>Show
+      <select [ngModel]="filter()" (ngModelChange)="filter.set($event)">
+        <option value="open">Open</option><option value="all">All statuses</option>
+        <option value="action_required">Action required</option><option value="awaiting_upstream">Awaiting upstream</option>
+        <option value="not_affected">Not affected</option><option value="pr_open">PR open</option><option value="resolved">Resolved</option>
+      </select></label></div>
+    @for (item of visible(); track item.id) {
+      <article class="incident">
+        <header class="incident-header"><div class="tags"><span class="severity">{{ item.severity }}</span>
+          @if (item.known_exploited) { <span class="exploited">Exploited in the wild</span> }
+          <a [href]="item.source_url" target="_blank" rel="noopener noreferrer">{{ item.advisory_id }} ↗</a></div>
+          <h3>{{ item.title }}</h3><p>{{ item.importance }}</p></header>
+        @for (a of item.assessments; track a.id) {
+          <section class="assessment" [class.attention]="needsAction(a)">
+            <div class="repo-heading"><div><strong>{{ a.repo_slug }}</strong><span class="branch">{{ a.branch }}</span></div>
+              <span class="status" [class.status-danger]="needsAction(a)" [class.status-good]="a.status === 'not_affected' || a.status === 'resolved'">{{ label(a.status) }}</span></div>
+            @if (a.session_status && ['analyzing', 'remediating'].includes(a.status)) { <p class="muted">Agent session #{{ a.session_id }} · {{ a.session_status }}</p> }
+            @if (a.report.recommended_action) {
+              <div class="recommendation"><span class="eyebrow">RECOMMENDED ACTION</span>
+                @if (a.report.action === 'disable_component' || a.report.action === 'shutdown_system') { <strong class="error-text">Operator decision · Service interruption</strong> }
+                <p>{{ a.report.recommended_action }}</p></div>
+            }
+            @if (a.error) { <p class="error-text">{{ a.error }}</p> }
+            <div class="assessment-footer"><span class="muted">Updated {{ a.updated_at | date:'MMM d, HH:mm' }}
+              @if (['awaiting_upstream', 'action_required', 'not_affected'].includes(a.status)) { · Next check {{ a.next_check_at | date:'MMM d, HH:mm' }} }</span>
+              <div class="actions">
+                @if (a.session_id) { <a routerLink="/agents" [queryParams]="{ session: a.session_id }">Session #{{ a.session_id }}</a> }
+                @if (a.pr_url) { <a [href]="a.pr_url" target="_blank" rel="noopener noreferrer">View PR ↗</a> }
+                <button class="text-btn" (click)="toggleEvidence(a)" [attr.aria-expanded]="expanded() === a.id">Evidence & history</button>
+                @if (canAct(a)) {
+                  <button class="text-btn" (click)="prepareAction(a, 'recheck')">Recheck</button>
+                  @if (a.status !== 'resolved' && a.status !== 'not_affected') { <button class="text-btn" (click)="prepareAction(a, 'resolve')">Confirm resolved</button> }
+                }
+              </div></div>
+            @if (expanded() === a.id) {
+              <div class="evidence"><h4>Assessment evidence</h4><p>{{ a.report.rationale || 'No completed assessment yet.' }}</p>
+                @if (a.report.commit_sha) { <p class="muted">Assessed commit <code>{{ a.report.commit_sha }}</code></p> }
+                @for (e of a.report.evidence ?? []; track $index) { <p><code>{{ e.path }}</code> — {{ e.finding }}</p> }
+                <h4>Status history</h4>
+                @if (historyError()) { <p role="alert">{{ historyError() }}</p> }
+                @for (entry of history(); track entry.id) { <p>{{ entry.created_at | date:'MMM d, HH:mm' }} · <strong>{{ label(entry.status) }}</strong> · {{ entry.created_by }}
+                  @if (entry.detail.reason || entry.detail.error) { <span> — {{ entry.detail.reason || entry.detail.error }}</span> }</p> }
+              </div>
+            }
+            @if (actionTarget()?.id === a.id) {
+              <form class="action-form" (ngSubmit)="applyAction()"><h4>{{ actionKind === 'resolve' ? 'Confirm remediation is complete' : 'Request a new assessment' }}</h4>
+                <p>{{ actionKind === 'resolve' ? 'Record deployment or mitigation evidence. A merged PR alone does not confirm the running system is fixed.' : 'Record what changed or which evidence needs another check.' }}</p>
+                <label>Reason and evidence<textarea name="reason" [(ngModel)]="actionReason" required minlength="20" maxlength="2000"></textarea></label>
+                <div class="actions"><button class="btn" [disabled]="busy() || actionReason.trim().length < 20">Confirm</button>
+                  <button type="button" class="text-btn" (click)="actionTarget.set(null)">Cancel</button></div>
+              </form>
+            }
+          </section>
+        }
+      </article>
+    } @empty {
+      <div class="empty"><i class="pi pi-shield" aria-hidden="true"></i><h3>No assessments in this view</h3>
+        <p>{{ overview.repositories.length ? 'Try All statuses, or add an important incident below. New assessments are queued within five minutes.' : 'Register a repository below to start automatic assessment.' }}</p></div>
+    }
+    <section class="setup">
+      <details><summary>Monitored repositories <span>{{ overview.repositories.length }}</span></summary>
+        <p>Register a GitHub repository to authorize analysis and fix PRs by LogosOSSAgent. The bot needs access to clone and push.</p>
+        @for (repo of overview.repositories; track repo.id) { <p><strong>{{ repo.repo_slug }}</strong> · {{ repo.branch }}<br><code>{{ repo.verification_command }}</code></p> }
+        <form (ngSubmit)="enroll()"><label>Repository<input name="repo" [(ngModel)]="repoSlug" placeholder="owner/repository" required></label>
+          <label>Base branch<input name="branch" [(ngModel)]="branch" required></label>
+          <label>Build and test command<textarea name="verification" [(ngModel)]="verificationCommand" required maxlength="4000" placeholder="make check" aria-describedby="verification-help"></textarea></label>
+          <p id="verification-help">Runs from the repository root before a fix PR opens, without credentials or network access. Use tools available in the agent image.</p>
+          <button class="btn" [disabled]="busy() || !repoSlug.trim() || !branch.trim() || !verificationCommand.trim()">Register repository</button></form>
+      </details>
+      <details><summary>Report an important incident</summary><p>Use a vendor advisory or a verified report. Explain the material impact; ordinary dependency updates belong in the update workflow.</p>
+        <form (ngSubmit)="reportIncident()"><div class="form-grid">
+          <label>Advisory ID<input name="advisory" [(ngModel)]="incident.advisory_id" placeholder="CVE-2026-…" required minlength="5"></label>
+          <label>Severity<select name="severity" [(ngModel)]="incident.severity"><option value="critical">Critical</option><option value="high">High · material impact</option></select></label>
+        </div><label>Title<input name="title" [(ngModel)]="incident.title" required minlength="8" maxlength="300"></label>
+          <label>Source URL<input name="source" type="url" [(ngModel)]="incident.source_url" placeholder="https://…" required></label>
+          <label class="checkbox"><input type="checkbox" name="exploited" [(ngModel)]="incident.known_exploited">Confirmed exploitation in the wild</label>
+          <label>Advisory details<textarea name="summary" [(ngModel)]="incident.summary" required minlength="20" maxlength="16000"></textarea></label>
+          <label>Why this is important<textarea name="importance" [(ngModel)]="incident.importance" required minlength="20" maxlength="2000"></textarea></label>
+          <label>Upstream GitHub repositories (optional)<input name="upstream" [(ngModel)]="incident.upstream" placeholder="owner/project, owner/runtime"></label>
+          <button class="btn" [disabled]="busy()">Record incident</button>
+        </form>
+      </details>
+    </section>
+  }
+</div>
