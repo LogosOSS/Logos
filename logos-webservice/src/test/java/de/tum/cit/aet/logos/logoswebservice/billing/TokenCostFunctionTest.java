@@ -968,30 +968,48 @@ class TokenCostFunctionTest {
 
     @Test
     void pricingMigrationUpgradesExistingFunctionsAndRetainsSearchPath(@TempDir Path directory) throws Exception {
+        verifyPricingUpgrade(directory, List.of(
+            "liquibase/changelog/079_gateway_pricing_performance.xml",
+            "liquibase/changelog/080_gateway_pricing_performance.xml"));
+    }
+
+    @Test
+    void pricingMigrationPreservesPreviouslyAppliedPricingHistory(@TempDir Path directory) throws Exception {
+        verifyPricingUpgrade(directory, List.of("liquibase/changelog/080_gateway_pricing_performance.xml"));
+    }
+
+    private void verifyPricingUpgrade(Path directory, List<String> pendingMigrations) throws Exception {
         String database = "pricing_upgrade_" + SEQ.getAndIncrement();
         jdbc.execute("CREATE DATABASE " + database);
         String url = postgres.getJdbcUrl().replace("/logosdb", "/" + database);
         try {
             Path oldMaster = directory.resolve("liquibase/changelog/master-before-pricing.xml");
             Files.createDirectories(oldMaster.getParent());
-            String master = pricingResource("master.xml").replace(
-                "    <include file=\"liquibase/changelog/080_gateway_pricing_performance.xml\"/>\n", "");
-            assertThat(master).doesNotContain("080_gateway_pricing_performance");
+            String master = pricingResource("master.xml");
+            for (String migration : pendingMigrations) {
+                master = master.replace("    <include file=\"" + migration + "\"/>\n", "");
+                assertThat(master).doesNotContain(migration);
+            }
             Files.writeString(oldMaster, master);
             migratePricingDatabase(url, "liquibase/changelog/master-before-pricing.xml", directory);
             List<String> previousHistory;
             try (Connection connection = DriverManager.getConnection(url, postgres.getUsername(), postgres.getPassword())) {
                 assertPricingSearchPath(connection);
-                previousHistory = previousMigrationHistory(connection);
+                previousHistory = previousMigrationHistory(connection, pendingMigrations);
             }
             migratePricingDatabase(url, "liquibase/changelog/master.xml", directory);
             try (Connection connection = DriverManager.getConnection(url, postgres.getUsername(), postgres.getPassword())) {
                 assertPricingSearchPath(connection);
                 assertPreparedPricingResolver(connection);
-                assertThat(previousMigrationHistory(connection)).containsExactlyElementsOf(previousHistory);
-                try (var rows = connection.createStatement().executeQuery("SELECT COUNT(*) FROM databasechangelog WHERE id LIKE '080-%'")) {
-                    assertThat(rows.next()).isTrue();
-                    assertThat(rows.getInt(1)).isEqualTo(2);
+                assertThat(previousMigrationHistory(connection, pendingMigrations)).containsExactlyElementsOf(previousHistory);
+                for (String migration : pendingMigrations) {
+                    try (var statement = connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog WHERE filename = ?")) {
+                        statement.setString(1, migration);
+                        try (var rows = statement.executeQuery()) {
+                            assertThat(rows.next()).isTrue();
+                            assertThat(rows.getInt(1)).as(migration).isEqualTo(2);
+                        }
+                    }
                 }
                 try (var rows = connection.createStatement().executeQuery("SELECT prosrc FROM pg_proc "
                         + "WHERE oid='public.logos_price_usage(integer,integer,timestamptz,text,jsonb)'::regprocedure")) {
@@ -1004,11 +1022,12 @@ class TokenCostFunctionTest {
         }
     }
 
-    private static List<String> previousMigrationHistory(Connection connection) throws SQLException {
+    private static List<String> previousMigrationHistory(Connection connection, List<String> pendingMigrations) throws SQLException {
         List<String> history = new ArrayList<>();
-        try (var rows = connection.createStatement().executeQuery("SELECT row_to_json(d)::text FROM databasechangelog d "
-                + "WHERE id NOT LIKE '080-%' ORDER BY orderexecuted")) {
-            while (rows.next()) history.add(rows.getString(1));
+        try (var rows = connection.createStatement().executeQuery("SELECT filename, row_to_json(d)::text FROM databasechangelog d ORDER BY orderexecuted")) {
+            while (rows.next()) {
+                if (!pendingMigrations.contains(rows.getString(1))) history.add(rows.getString(2));
+            }
         }
         return history;
     }
