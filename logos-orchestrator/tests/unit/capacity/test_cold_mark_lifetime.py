@@ -132,6 +132,7 @@ class _Worker:
 def _planner(worker: _Worker) -> CapacityPlanner:
     """A planner running the real executor against the real registry."""
     planner = CapacityPlanner.__new__(CapacityPlanner)
+    planner._residency_policy = "demand"
     planner._registry = worker.registry
     planner._facade = MagicMock()
     planner._facade.get_provider_name.return_value = "worker-a"
@@ -173,7 +174,9 @@ def _fast_confirmation_poll(monkeypatch):
 
 
 @pytest.fixture
-async def worker() -> _Worker:
+async def worker(monkeypatch) -> _Worker:
+    # These scenarios exercise the demand policy's drain-before-sleep path.
+    monkeypatch.setenv("LOGOS_RESIDENCY_POLICY", "demand")
     worker = _Worker()
     await worker.connect()
     return worker

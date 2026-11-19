@@ -30,10 +30,8 @@
 # dialog on first launch — off a machine that is meant to run headless in a
 # server room.
 #
-# Registry note: ghcr.io, public, and never Harbor — a Mac worker should not
-# need Harbor credentials just to bootstrap. The other Logos images are on
-# Harbor and mirrored to the same public GHCR namespace; this one is published
-# there alone.
+# Registry: ghcr.io/logososs, public like all Logos images. A Mac worker
+# needs no registry credentials to bootstrap.
 # =============================================================================
 set -euo pipefail
 

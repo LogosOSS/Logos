@@ -44,6 +44,7 @@
                 {{ repo.repo_slug }}
               </a>
               <span class="repo-url">{{ repo.repo_url }}</span>
+              <span class="repo-url">Coding agent: {{ repo.agent_enabled ? 'Enabled' : 'Off' }}</span>
             </div>
           </div>
           <div class="cell-branch" role="cell" data-label="Branch">
@@ -170,6 +171,43 @@
       />
       <p class="field-hint">Comma-separated subtrees that contain LLM calls. Leave blank for the whole repository.</p>
     </div>
+    <div class="form-field">
+      <label class="field-label" for="repo-agent-enabled">
+        <input id="repo-agent-enabled" type="checkbox"
+          [checked]="formAgentEnabled()"
+          (change)="formAgentEnabled.set($any($event.target).checked)"
+          [disabled]="formLoading()" />
+        Enable LogosOSSAgent for this repository
+      </label>
+      <p class="field-hint">
+        Give LogosOSSAgent access on GitHub, then assign issues or pull requests,
+        request reviews, or mention it in comments. Analysis deploy keys are read-only;
+        coding uses the agent's GitHub account. Disabling stops new requests from being picked up;
+        work already queued continues.
+      </p>
+    </div>
+    @if (formAgentEnabled()) {
+      <div class="form-field">
+        <label class="field-label" for="repo-verification">Build and test command <span class="required">*</span></label>
+        <textarea id="repo-verification" class="field-input field-textarea" rows="3" maxlength="4000"
+          placeholder="e.g. npm ci --offline &amp;&amp; npm test &amp;&amp; npm run build"
+          [value]="formVerificationCommand()"
+          (input)="formVerificationCommand.set($any($event.target).value)"
+          [disabled]="formLoading()"></textarea>
+        <p class="field-hint">
+          Runs from the repository root in an isolated container without credentials or internet access.
+          Dependencies must be available offline. A failed command produces a draft pull request.
+        </p>
+      </div>
+      <div class="form-field">
+        <label class="field-label" for="repo-agent-instructions">Repository instructions (optional)</label>
+        <textarea id="repo-agent-instructions" class="field-input field-textarea" rows="4" maxlength="12000"
+          placeholder="Build setup, test selection, coding conventions, and tools this repository needs"
+          [value]="formAgentInstructions()"
+          (input)="formAgentInstructions.set($any($event.target).value)"
+          [disabled]="formLoading()"></textarea>
+      </div>
+    }
     @if (formError()) {
       <app-error-message [message]="formError()" />
     }
