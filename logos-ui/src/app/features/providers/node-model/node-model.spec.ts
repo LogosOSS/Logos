@@ -23,6 +23,7 @@ const insight = (overrides: Partial<NodeModelInsight> = {}): NodeModelInsight =>
         active: true,
         base_residency_mb: 41200,
         loaded_vram_mb: 40000,
+        measured_kv_mb: 4096,
         kv_min_mb: 1024,
         kv_max_mb: 4096,
         pairs: [
@@ -112,8 +113,8 @@ describe('NodeModel', () => {
     expect(root.textContent).toContain('32768');
     expect(root.textContent).toContain('tokens');
     expect(root.textContent).not.toContain('Measured by calibration');
-    // Base residency 41.2 GB and 4 GB of KV cache on each of 4 GPUs.
-    expect(root.textContent).toContain('56.2 GB');
+    // The measured 41.2 GB include 4 GB of KV cache on each of 4 GPUs, the same as chosen: nothing changes.
+    expect(root.textContent).toContain('40.2 GB');
     expect(root.textContent).toContain('GPU memory');
     expect(root.textContent).toContain('~33k tokens');
     expect(root.textContent).toContain('55 s');
@@ -299,7 +300,7 @@ describe('NodeModel', () => {
         {
           model_name: 'org/a',
           capability: { tensor_parallel_size: 4, kv_cache_memory_bytes: '2G', min_context_fraction: 1 },
-          overrides: { max_model_len: 14336, quantization: 'awq' },
+          overrides: { max_model_len: 5120, quantization: 'awq' },
         },
       ]);
       expect(page().editing()).toBe(false);
@@ -415,7 +416,7 @@ describe('NodeModel', () => {
     });
 
     it('starts a model without a placement from the best benchmark and calls it Configure', async () => {
-      const best = { benchmark_id: 7, throughput: 52.3, settings: { kv_cache_memory_bytes: '2G', max_model_len: 8192 }, recorded_at: null };
+      const best = { benchmark_id: 7, throughput: 52.3, settings: { kv_cache_memory_bytes: '2G', max_model_len: 5120 }, recorded_at: null };
       service['getNodeConfig'].mockResolvedValue({ ...config, entries: [] });
       service['getNodeInsights'].mockResolvedValue(
         insights([
@@ -432,13 +433,13 @@ describe('NodeModel', () => {
       click(root, '.head button.btn-primary');
       fixture.detectChanges();
 
-      expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 8192 });
+      expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 5120 });
       expect(root.textContent).toContain('TP 4');
       expect(page().dirty()).toBe(true);
     });
 
     it('takes the benchmark recommendation into the editor', async () => {
-      const best = { benchmark_id: 7, throughput: 52.3, settings: { kv_cache_memory_bytes: '2G', max_model_len: 8192 }, recorded_at: null };
+      const best = { benchmark_id: 7, throughput: 52.3, settings: { kv_cache_memory_bytes: '2G', max_model_len: 5120 }, recorded_at: null };
       service['getNodeInsights'].mockResolvedValue(
         insights([
           insight({
@@ -455,14 +456,14 @@ describe('NodeModel', () => {
       fixture.detectChanges();
 
       expect(page().editing()).toBe(true);
-      expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 8192 });
+      expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 5120 });
     });
 
     it('says how much faster the benchmark was than the run it was compared with, and links to all benchmarks', async () => {
       const best = {
         benchmark_id: 7,
         throughput: 52.3,
-        settings: { kv_cache_memory_bytes: '2G', max_model_len: 8192 },
+        settings: { kv_cache_memory_bytes: '2G', max_model_len: 5120 },
         recorded_at: null,
         baseline_throughput: 48.4,
       };
@@ -542,6 +543,23 @@ describe('NodeModel', () => {
       await settle();
 
       expect(service['getNodeConfig'].mock.calls.length).toBe(before);
+    });
+
+    it('does not let a read still on its way replace the configuration under an open editor', async () => {
+      service['getNodeInsights'].mockResolvedValue(running());
+      await create();
+      let late: (value: unknown) => void = () => undefined;
+      service['getNodeConfig'].mockReturnValueOnce(new Promise((resolve) => (late = resolve)));
+
+      vi.advanceTimersByTime(CALIBRATION_POLL_MS);
+      page().startEdit();
+      // Another admin saved meanwhile: the answer of the read already carries the newer revision.
+      late({ ...config, revision: 9 });
+      await settle();
+
+      expect(page().config()?.revision).toBe(3);
+      await page().save();
+      expect(service['replaceNodeConfig']).toHaveBeenCalledWith(4, 3, expect.anything());
     });
 
     it('stops when the page is closed', async () => {
@@ -897,10 +915,41 @@ describe('NodeModel', () => {
       service['getNodeInsights'].mockResolvedValue({ ...insights([insight()]), gpus });
       const root = await create();
 
-      // 41.2 GB of weights plus 4 GB of KV cache on each of 4 GPUs of 40 GB.
-      expect(root.textContent).toContain('56.2 of 160 GB');
-      expect(root.textContent).toContain('103.8 GB free');
+      // The measured 41.2 GB already hold 4 GB of KV cache on each of 4 GPUs of 40 GB, the cache chosen too.
+      expect(root.textContent).toContain('40.2 of 160 GB');
+      expect(root.textContent).toContain('119.8 GB free');
       expect(root.textContent).toContain('4 GPUs · 160 GB');
+    });
+
+    it('replaces the cache of the measurement by the chosen one instead of adding it', async () => {
+      service['getNodeInsights'].mockResolvedValue({ ...insights([insight()]), gpus });
+      const root = await create();
+
+      fixture.componentInstance.startEdit();
+      fixture.componentInstance.setKv(2);
+      fixture.detectChanges();
+
+      // 41.2 GB, less 4 GB on each of 4 GPUs, plus 2 GB on each of 4 GPUs.
+      expect(root.textContent).toContain('32.2 of 160 GB');
+    });
+
+    it('keeps the measured total when it is not known which cache it holds', async () => {
+      const calibrated = insight();
+      const older = {
+        ...calibrated,
+        calibration: {
+          ...calibrated.calibration,
+          results: calibrated.calibration.results.map(({ measured_kv_mb: _unknown, ...rest }) => rest),
+        },
+      };
+      service['getNodeInsights'].mockResolvedValue({ ...insights([older]), gpus });
+      const root = await create();
+
+      fixture.componentInstance.startEdit();
+      fixture.componentInstance.setKv(2);
+      fixture.detectChanges();
+
+      expect(root.textContent).toContain('40.2 of 160 GB');
     });
 
     it('shows the time to first token and the response time of a benchmark that ran this placement', async () => {
@@ -1072,7 +1121,7 @@ describe('NodeModel', () => {
     });
 
     it('shows the recommendation as a banner of the editor and applies it', async () => {
-      const best = { benchmark_id: 7, throughput: 52.3, settings: { tensor_parallel_size: 4, kv_cache_memory_bytes: '2G', max_model_len: 8192 }, recorded_at: null };
+      const best = { benchmark_id: 7, throughput: 52.3, settings: { tensor_parallel_size: 4, kv_cache_memory_bytes: '2G', max_model_len: 5120 }, recorded_at: null };
       service['getNodeInsights'].mockResolvedValue({
         ...insights([
           insight({ benchmark: { best_eligible: best, best_observed: best, current: { tensor_parallel_size: 4, max_model_len: 32768 }, eligible_for_comparison: true } }),
@@ -1087,7 +1136,7 @@ describe('NodeModel', () => {
       root.querySelector<HTMLButtonElement>('.banner--rec button')!.click();
       fixture.detectChanges();
 
-      expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 8192 });
+      expect(page().draft()).toEqual({ tp: 4, kvGb: 2, ctx: 5120 });
     });
   });
 
@@ -1104,11 +1153,11 @@ describe('NodeModel', () => {
       expect(before).toContain('32,768 tokens');
 
       fixture.componentInstance.setKv(2);
-      fixture.componentInstance.setCtx(8192);
+      fixture.componentInstance.setCtx(5120);
       fixture.detectChanges();
 
       expect(side(root)).toBe(before);
-      expect(fixture.componentInstance.draft()).toEqual({ tp: 4, kvGb: 2, ctx: 8192 });
+      expect(fixture.componentInstance.draft()).toEqual({ tp: 4, kvGb: 2, ctx: 5120 });
       // The tiles under the sliders follow the draft.
       expect(root.querySelector('.tiles')!.textContent).not.toBe('');
       expect(fixture.componentInstance.figures()).not.toEqual(fixture.componentInstance.savedFigures());

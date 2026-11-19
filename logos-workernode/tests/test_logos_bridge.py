@@ -5004,6 +5004,31 @@ async def test_keys_calculated_for_a_superseded_revision_are_discarded(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_keys_calculated_for_older_node_settings_are_discarded(tmp_path, monkeypatch):
+    """Two settings saves leave the model revision alone; the settings revision is what moves."""
+    client = _node_config_client(tmp_path)
+    client._app.state.gpu_collector = MagicMock(
+        get_snapshot=AsyncMock(return_value=MagicMock(devices=[]))
+    )  # noqa: SLF001
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    published: list = []
+    registry.set_calibration_keys = lambda keys, *_rest: published.append(keys) or []
+
+    def _keys_while_a_newer_settings_push_lands(*_args):
+        client._cfg.node_settings_revision += 1  # noqa: SLF001
+        return {"org/ready": {"schema": 2}}
+
+    monkeypatch.setattr(
+        "logos_worker_node.profile_fingerprint.node_calibration_keys", _keys_while_a_newer_settings_push_lands
+    )
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_slice_gpu_counts", lambda *_a: {})
+
+    await client._refresh_calibration_keys()  # noqa: SLF001
+
+    assert published == []
+
+
+@pytest.mark.asyncio
 async def test_a_node_config_waits_for_a_running_calibration_and_applies_afterwards(tmp_path):
     client = _node_config_client(tmp_path)
     client._calibration_session_is_live = lambda: True  # noqa: SLF001

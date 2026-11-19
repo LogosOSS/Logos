@@ -45,7 +45,9 @@ def reconfigured_vram_mb(profile: Any, measured_mb: float, gpu_count: int, cache
     Unknown or inconsistent metadata retains the conservative measured total.
     """
     old_count = getattr(profile, "tensor_parallel_size", None)
-    old_cache = getattr(profile, "kv_budget_mb", None)
+    # The cache the measured total includes. kv_budget_mb follows the configured and the observed
+    # cache, so it only stands in for profiles measured before the calibration kept its own.
+    old_cache = getattr(profile, "calibrated_kv_mb", None) or getattr(profile, "kv_budget_mb", None)
     if (
         getattr(profile, "residency_source", None) != "calibrated"
         or not old_count
@@ -73,6 +75,10 @@ class ModelProfileRecord:
     disk_size_bytes: int | None = None  # informational; legacy field — still read from persisted profiles
     base_residency_mb: float | None = None  # full awake footprint; semantics depend on residency_source (see below)
     kv_budget_mb: float | None = None  # last observed kv_cache_sent (informational)
+    # The KV cache for each GPU that base_residency_mb includes, as the calibration gave it to vLLM.
+    # Only a calibration sets it: a configured or observed cache never changes it, so the footprint
+    # of another cache size can be worked out from the measured total.
+    calibrated_kv_mb: float | None = None
     # KV cache envelope discovered by calibration on this hardware. The planner
     # picks a runtime kv_cache_memory_bytes value inside [min, max] based on
     # how much VRAM is free at load time — small enough to coexist with other

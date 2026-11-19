@@ -45,6 +45,31 @@ def test_node_layout_and_bookkeeping_do_not_change_the_plan_hash():
     assert plan_hash(base) == plan_hash({**base, "model": "org/other"})
 
 
+def test_the_choice_inside_the_measured_range_is_not_part_of_the_cuda_plan_hash():
+    base = {"model": "org/m", "dtype": "auto"}
+    assert plan_hash(base) == plan_hash({**base, "kv_cache_memory_bytes": "8G", "max_model_len": 4096})
+
+
+def test_metal_measures_one_point_so_its_context_length_stays_in_the_hash():
+    base = {"model": "org/m", "dtype": "auto"}
+
+    assert plan_hash({**base, "max_model_len": 4096}, metal=True) != plan_hash(
+        {**base, "max_model_len": 8192}, metal=True
+    )
+    assert plan_hash({**base, "max_model_len": 4096}, metal=True) != plan_hash(base, metal=True)
+    # The KV cache size still is a choice, not a condition of the measurement.
+    assert plan_hash({**base, "kv_cache_memory_bytes": "8G"}, metal=True) == plan_hash(base, metal=True)
+
+
+def test_the_metal_key_follows_the_context_length_and_the_cuda_key_does_not(monkeypatch):
+    plan = {"model": "org/m"}
+    cuda = (_key(plan, [_gpu(0)]), _key({**plan, "max_model_len": 8192}, [_gpu(0)]))
+    assert cuda[0] == cuda[1]
+
+    monkeypatch.setenv("LOGOS_WORKER_BACKEND", "metal")
+    assert _key(plan, [_gpu(0)]) != _key({**plan, "max_model_len": 8192}, [_gpu(0)])
+
+
 @pytest.mark.parametrize(
     "change",
     [

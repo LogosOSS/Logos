@@ -17,7 +17,7 @@ import { combineLatest } from 'rxjs';
 
 import { ProviderManagementService } from '../../../core/services/provider-management.service';
 import { ErrorMessageComponent } from '../../../shared/components/error-message/error-message';
-import { NodeConfig, NodeGpuInsight, NodeInsights } from '../../../shared/models/node-config.model';
+import { CalibrationResult, NodeConfig, NodeGpuInsight, NodeInsights } from '../../../shared/models/node-config.model';
 import { CalibrationLabel, calibrationLabel, hasTuning } from '../node-models/node-model-status';
 import {
   ADVANCED_FIELDS,
@@ -176,6 +176,20 @@ export class NodeModel implements OnInit {
   /** The same figures for what is stored: the side card shows these and changes only after a save. */
   readonly savedFigures = computed(() => this.figuresFor(this.saved()));
 
+  /**
+   * The memory a placement takes. The measured total already holds the cache the calibration gave vLLM,
+   * so that part is replaced by the chosen cache, not added to. Without it the measured total stands.
+   */
+  private usedMemoryMb(r: CalibrationResult, p: Placement): number | null {
+    if (r.base_residency_mb == null) {
+      return null;
+    }
+    const measured = (r.measured_kv_mb ?? 0) * r.tp;
+    return measured > 0 && measured < r.base_residency_mb
+      ? r.base_residency_mb - measured + p.kvGb * 1024 * p.tp
+      : r.base_residency_mb;
+  }
+
   private figuresFor(p: Placement | null): { value: string; caption: string }[] {
     const results = this.insight()?.calibration.results ?? [];
     const r = results.find((x) => x.tp === p?.tp) ?? this.result();
@@ -184,7 +198,7 @@ export class NodeModel implements OnInit {
     }
     const gb = (mb: number) => (mb / 1024).toFixed(1);
     const out: { value: string; caption: string }[] = [];
-    const usedMb = r.base_residency_mb != null ? r.base_residency_mb + p.kvGb * 1024 * p.tp : null;
+    const usedMb = this.usedMemoryMb(r, p);
     const gpuMb = this.insights()?.gpus.find((g) => g.total_mb)?.total_mb ?? null;
     if (usedMb !== null && gpuMb) {
       out.push({
@@ -246,6 +260,8 @@ export class NodeModel implements OnInit {
 
   // Editing
   readonly editing = signal(false);
+  /** The revision of the configuration the open editor started from; the save is checked against it. */
+  private editRevision: number | null = null;
   readonly draft = signal<Placement | null>(null);
   readonly adv = signal<AdvancedDraft | null>(null);
   private readonly advStart = signal<AdvancedDraft | null>(null);
@@ -381,6 +397,7 @@ export class NodeModel implements OnInit {
 
   private resetEditing(): void {
     this.editing.set(false);
+    this.editRevision = null;
     this.draft.set(null);
     this.adv.set(null);
     this.advStart.set(null);
@@ -452,6 +469,9 @@ export class NodeModel implements OnInit {
     this.advStart.set(structuredClone(settings));
     this.failure.set(null);
     this.notice.set(null);
+    // A read of the page data that is still on its way must not replace what this draft starts from.
+    this.loadToken++;
+    this.editRevision = this.config()?.revision ?? null;
     this.editing.set(true);
   }
 
@@ -460,6 +480,7 @@ export class NodeModel implements OnInit {
       return;
     }
     this.editing.set(false);
+    this.editRevision = null;
     this.draft.set(null);
     this.adv.set(null);
     this.failure.set(null);
@@ -623,7 +644,7 @@ export class NodeModel implements OnInit {
     try {
       await this.service.replaceNodeConfig(
         id,
-        cfg.revision,
+        this.editRevision ?? cfg.revision,
         d ? withPlacement(cfg.entries, this.modelName(), d, adv ?? undefined) : withSettings(cfg.entries, this.modelName(), adv!),
       );
     } catch (e) {
@@ -640,6 +661,7 @@ export class NodeModel implements OnInit {
     }
     // The change is stored. Whether the page can show it now is a separate question.
     this.editing.set(false);
+    this.editRevision = null;
     this.draft.set(null);
     this.adv.set(null);
     const reloaded = await this.tryRefresh();
@@ -710,6 +732,7 @@ export class NodeModel implements OnInit {
         return;
       }
       this.editing.set(false);
+      this.editRevision = null;
       this.draft.set(null);
       this.adv.set(null);
       this.failure.set(null);

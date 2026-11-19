@@ -48,13 +48,16 @@ def _configured(plan: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in plan.items() if k not in ("model", "gpu_devices") and not str(k).startswith("_")}
 
 
-def plan_hash(plan: dict[str, Any]) -> str:
+def plan_hash(plan: dict[str, Any], *, metal: bool = False) -> str:
     """Hash of what a calibration of the model's lane depends on.
 
     It leaves out the choice inside the measured range, so changing the KV
-    cache size or the context length does not invalidate a calibration.
+    cache size or the context length does not invalidate a calibration. Metal
+    measures one point, with the context length it is given, and finds no
+    range: the context length stays in its hash.
     """
-    relevant = {k: v for k, v in _configured(plan).items() if k not in SELECTION_KEYS}
+    left_out = SELECTION_KEYS - {"max_model_len"} if metal else SELECTION_KEYS
+    relevant = {k: v for k, v in _configured(plan).items() if k not in left_out}
     return hashlib.sha256(_canonical(relevant).encode("utf-8")).hexdigest()
 
 
@@ -123,7 +126,7 @@ def compute_calibration_key(
         "vllm_version": vllm_version,
         "nccl_p2p_available": bool(cfg.engines.vllm.nccl_p2p_available) if cfg.engines else False,
         "sleep_enabled": (not metal) and model_can_sleep(cfg, model_name),
-        "plan_hash": plan_hash(plan),
+        "plan_hash": plan_hash(plan, metal=metal),
     }
     if metal and cfg.engines:
         key["metal"] = _metal_engine_settings(cfg.engines.metal)

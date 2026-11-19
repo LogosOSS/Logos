@@ -27,6 +27,8 @@ export interface CalibrationResult {
   active: boolean;
   base_residency_mb: number | null;
   loaded_vram_mb: number | null;
+  /** The KV cache for each GPU that base_residency_mb includes; unknown for older calibrations. */
+  measured_kv_mb?: number | null;
   kv_min_mb: number | null;
   kv_max_mb: number | null;
   pairs: CalibrationPair[];

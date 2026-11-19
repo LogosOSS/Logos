@@ -2388,6 +2388,27 @@ def test_result_to_profile_dict_serializes_kv_envelope():
     assert data["max_kv_cache_mb"] == 8192.0
 
 
+def test_the_cache_a_calibration_measured_with_is_kept_apart_from_the_audit_field():
+    """kv_budget_mb follows what is configured; calibrated_kv_mb stays what the total includes."""
+    result = _success_result("kv/model", kv_cache_sent_mb=24576.0)
+
+    data = result_to_profile_dict(result)
+
+    assert data["calibrated_kv_mb"] == 24576.0
+    assert data["kv_budget_mb"] == 24576.0
+    assert result_to_profile_dict(_success_result("kv/model", kv_cache_sent_mb=0.0))["calibrated_kv_mb"] is None
+
+
+def test_every_measured_size_names_the_cache_it_was_measured_with():
+    from logos_worker_node.calibration import calibrations_by_tp
+
+    small = _success_result("kv/model", tensor_parallel_size=1, kv_cache_sent_mb=8192.0)
+    large = _success_result("kv/model", tensor_parallel_size=2, kv_cache_sent_mb=4096.0)
+    small.other_tp_results = [large]
+
+    assert [(row["tp"], row["calibrated_kv_mb"]) for row in calibrations_by_tp(small)] == [(1, 8192.0), (2, 4096.0)]
+
+
 def test_result_to_profile_dict_envelope_none_when_unmeasured():
     """Legacy results without an envelope (defaults of 0.0) serialize as None.
 

@@ -35,27 +35,23 @@ export function kvWindowGb(result: CalibrationResult | null): { min: number; max
   return max >= min ? { min, max } : null;
 }
 
-/** The longest context the curve allows at this KV size, in steps of 1,024. */
+/**
+ * The longest context the calibration vouches for at this KV size, in steps of 1,024.
+ *
+ * Only the points at or below the chosen KV size count: a point measured with a larger cache says
+ * nothing about a smaller one. Logos and the worker judge a placement by the same rule, so a context
+ * offered here is never marked outdated at once.
+ */
 export function contextCapacity(pairs: CalibrationPair[], kvGb: number, limit: number | null | undefined): number | null {
   const points = pairs
     .filter((p) => p.kv_mb != null && p.max_model_len != null)
-    .map((p) => ({ kv: p.kv_mb as number, len: p.max_model_len as number }))
-    .sort((a, b) => a.kv - b.kv);
+    .map((p) => ({ kv: p.kv_mb as number, len: p.max_model_len as number }));
   if (points.length === 0) {
     return limit ?? null;
   }
   const kv = kvGb * 1024;
-  let len: number;
-  if (kv <= points[0].kv) {
-    len = (points[0].len / points[0].kv) * kv;
-  } else if (kv >= points[points.length - 1].kv) {
-    len = points[points.length - 1].len;
-  } else {
-    const upper = points.findIndex((p) => p.kv >= kv);
-    const a = points[upper - 1];
-    const b = points[upper];
-    len = a.len + ((b.len - a.len) * (kv - a.kv)) / (b.kv - a.kv);
-  }
+  const reachable = points.filter((p) => p.kv <= kv + 1e-6).map((p) => p.len);
+  const len = reachable.length > 0 ? Math.max(...reachable) : 0;
   const capped = limit ? Math.min(len, limit) : len;
   // One step is the smallest context to offer, but never more than the model itself allows.
   const stepped = Math.max(CONTEXT_STEP, Math.floor(capped / CONTEXT_STEP) * CONTEXT_STEP);

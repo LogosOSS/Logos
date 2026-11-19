@@ -199,6 +199,23 @@ def test_every_measured_tensor_parallel_size_is_listed_and_the_lanes_one_is_acti
     assert results[0]["enforce_eager"] is True
 
 
+def test_each_size_names_the_cache_its_total_was_measured_with():
+    profile = {
+        "residency_source": "calibrated",
+        "tensor_parallel_size": 2,
+        "calibrated_kv_mb": 4096.0,
+        "calibrations_by_tp": [
+            {"tp": 1, "base_residency_mb": 16000.0, "calibrated_kv_mb": 8192.0},
+            {"tp": 2, "base_residency_mb": 9000.0, "calibrated_kv_mb": 4096.0},
+        ],
+    }
+
+    assert [r["measured_kv_mb"] for r in calibration_view(profile)["results"]] == [8192.0, 4096.0]
+
+    older = {"residency_source": "calibrated", "tensor_parallel_size": 1, "base_residency_mb": 5.0}
+    assert calibration_view(older)["results"][0]["measured_kv_mb"] is None
+
+
 def test_sizes_the_node_has_no_gpus_for_are_not_offered():
     profile = {
         "residency_source": "calibrated",

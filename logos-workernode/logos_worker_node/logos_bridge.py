@@ -2143,6 +2143,11 @@ class LogosBridgeClient:
                 ordered.append(model_name)
         return ordered
 
+    def _current_revisions(self) -> tuple[int, int]:
+        """The revisions of the models and of the node settings this worker runs with."""
+        logos = self._app.state.config.logos
+        return logos.node_config_revision, logos.node_settings_revision
+
     async def _refresh_calibration_keys(self) -> None:
         """Re-fingerprint from the models as this session will run it.
 
@@ -2152,8 +2157,9 @@ class LogosBridgeClient:
         gpu_collector = getattr(self._app.state, "gpu_collector", None)
         if gpu_collector is None:
             return
-        # Pushes can overlap while the keys are calculated.
-        revision = self._app.state.config.logos.node_config_revision
+        # Pushes can overlap while the keys are calculated: the models and the node settings
+        # (the global arguments) both go into them, and each has its own revision.
+        revision = self._current_revisions()
         try:
             from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
             from logos_worker_node.profile_fingerprint import (  # noqa: PLC0415
@@ -2173,8 +2179,8 @@ class LogosBridgeClient:
         except Exception:  # noqa: BLE001
             logger.warning("[Calibration] Could not refresh calibration keys; keeping the previous ones", exc_info=True)
             return
-        if self._app.state.config.logos.node_config_revision != revision:
-            logger.info("[Calibration] Discarding keys of revision %d: a newer configuration was applied", revision)
+        if self._current_revisions() != revision:
+            logger.info("[Calibration] Discarding keys of revisions %s: a newer configuration was applied", revision)
             return
         self._app.state.model_profiles.set_slice_gpu_counts(counts)
         changed = self._app.state.model_profiles.set_calibration_keys(keys, fingerprints, selections)

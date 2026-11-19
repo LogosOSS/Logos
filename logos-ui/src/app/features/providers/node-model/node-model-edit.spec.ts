@@ -35,15 +35,15 @@ describe('the KV window', () => {
 });
 
 describe('the context capacity', () => {
-  it('follows the measured curve between its points', () => {
+  it('counts only the measured points at or below the chosen KV size', () => {
     expect(contextCapacity(pairs, 4, null)).toBe(32768);
     expect(contextCapacity(pairs, 1, null)).toBe(5120);
-    // 2.5 GB lies between 1 GB (5,440) and 4 GB (32,768): 19,104 in steps.
-    expect(contextCapacity(pairs, 2.5, null)).toBe(18432);
+    // 2.5 GB lies between 1 GB (5,440) and 4 GB (32,768): only the 1 GB point is below it.
+    expect(contextCapacity(pairs, 2.5, null)).toBe(5120);
   });
 
-  it('scales below the first point and stays at the last above it', () => {
-    expect(contextCapacity(pairs, 0.5, null)).toBe(2048);
+  it('offers one step below the first point and stays at the last above it', () => {
+    expect(contextCapacity(pairs, 0.5, null)).toBe(1024);
     expect(contextCapacity(pairs, 8, null)).toBe(32768);
   });
 

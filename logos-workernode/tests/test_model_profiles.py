@@ -964,6 +964,21 @@ def test_reconfigured_vram_replaces_only_known_per_rank_cache(tp, cache, expecte
     assert reconfigured_vram_mb(profile, 15988, tp, cache) == 15988
 
 
+def test_the_cache_a_calibration_measured_with_outlives_a_configured_cache():
+    """A configured or observed cache overwrites kv_budget_mb; the measured total still names its own cache."""
+    from logos_worker_node.model_profiles import reconfigured_vram_mb
+
+    profile = ModelProfileRecord(
+        residency_source="calibrated", tensor_parallel_size=1, kv_budget_mb=2048, calibrated_kv_mb=24576
+    )
+
+    # An 8 GiB model measured with 24 GiB of cache needs 10 GiB with 2 GiB of cache.
+    assert reconfigured_vram_mb(profile, 32768, 1, 2048) == 10240
+    # A profile measured before the calibration kept its own cache falls back to the old field.
+    legacy = ModelProfileRecord(residency_source="calibrated", tensor_parallel_size=1, kv_budget_mb=24576)
+    assert reconfigured_vram_mb(legacy, 32768, 1, 2048) == 10240
+
+
 # ---------------------------------------------------------------------------
 # mark_capacity_floor
 # ---------------------------------------------------------------------------
