@@ -79,6 +79,16 @@ public class RequestLogController {
         return ResponseEntity.ok(requestLogService.getRequestPayloads(requestId));
     }
 
+    /** Candidate observations use the same administrator access as the request feed. */
+    @PostMapping("/request_routing")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> requestRouting(@RequestBody Map<String, Object> body) {
+        if (!(body.get("request_id") instanceof String requestId) || requestId.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "request_id must be a non-empty string"));
+        }
+        return ResponseEntity.ok(requestLogService.getRequestRouting(requestId));
+    }
+
     @PostMapping("/request_logs")
     public ResponseEntity<?> requestLogs(@RequestAttribute("authContext") AuthContext auth,
                                          @RequestBody Map<String, Object> body) {

@@ -110,6 +110,7 @@
           [canLinkKeycloak]="isLogosAdmin()"
           (refresh)="refresh()"
           (teamDeleted)="onTeamDeleted()"
+          (publicStatsSaved)="applyPublicStats($event)"
         />
       }
 

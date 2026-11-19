@@ -37,8 +37,8 @@ Optional arrival trace (CSV with `model_assigned`):
 ```bash
 cd e2e
 rm -rf .venv-ci && uv venv .venv-ci
-uv pip install --python .venv-ci/bin/python -e .
-uv pip install --python .venv-ci/bin/python -r ../logos-workernode/requirements.txt
+uv pip install --python .venv-ci/bin/python --no-deps --require-hashes -r requirements.lock
+uv pip install --python .venv-ci/bin/python --no-deps --no-build-isolation -e .
 # Must pass with empty PYTHONPATH (CI does not inject orchestrator src):
 env -u PYTHONPATH .venv-ci/bin/python -m pytest tests/gpu -v --timeout=120
 ```

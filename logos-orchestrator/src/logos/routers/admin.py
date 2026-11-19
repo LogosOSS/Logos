@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 import logos.main as _main
+from logos.residency_policy import DEFAULT_RESIDENCY_POLICY
 from logos.routers.internal import _require_internal_secret
 
 router = APIRouter()
@@ -35,7 +36,11 @@ async def scheduler_state(request: Request):
 
     payload = {
         "queue_total": _main._pipeline.scheduler.get_total_queue_depth(),
-        "residency_policy": (_main._capacity_planner.residency_policy if _main._capacity_planner else "demand"),
+        "residency_policy": (
+            _main._capacity_planner.residency_policy
+            if _main._capacity_planner
+            else getattr(_main._pipeline.scheduler, "_residency_policy", DEFAULT_RESIDENCY_POLICY)
+        ),
         "logosnode": _main._logosnode_facade.debug_state(),
     }
     prefix_router = getattr(_main._pipeline.scheduler, "_prefix_router", None)

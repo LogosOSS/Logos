@@ -1,0 +1,84 @@
+:host {
+  display: block;
+  flex: 0 0 100%;
+  min-width: 0;
+  border-top: 1px solid rgb(var(--color-primary-300) / 0.4);
+  padding-top: 16px;
+}
+
+// Shared theme tokens keep the same hierarchy in light and dark mode.
+.routing-table {
+  overflow: hidden;
+  border: 1px solid rgb(var(--color-primary-300) / 0.4);
+  border-radius: 12px;
+  background: rgb(var(--color-surface-0));
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-300));
+}
+
+th, td {
+  padding: 15px 18px;
+  text-align: left;
+  border-bottom: 1px solid rgb(var(--color-primary-300) / 0.3);
+}
+
+th {
+  background: rgb(var(--color-primary-500) / 0.06);
+  color: rgb(var(--color-typography-700));
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.numeric { text-align: right; font-variant-numeric: tabular-nums; }
+.wait, strong { color: rgb(var(--color-typography-100)); font-weight: var(--font-weight-semibold); }
+.selected { background: rgb(var(--color-primary-500) / 0.08); }
+.selected td:first-child { box-shadow: inset 3px 0 rgb(var(--color-primary-500)); }
+.candidate { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.selected-badge {
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: #7c3aed;
+  color: white;
+  font-size: 9px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.model-name { display: block; margin-top: 4px; font-size: var(--font-size-xs); overflow-wrap: anywhere; }
+.candidate-state { display: inline-flex; align-items: center; gap: 9px; }
+.state-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: rgb(var(--color-typography-700)); }
+.warm .state-dot { background: rgb(var(--color-accent-green)); }
+.cloud .state-dot { background: rgb(var(--color-accent-cyan)); }
+.unavailable .state-dot { background: rgb(var(--color-error)); }
+.routing-note {
+  margin: 0;
+  padding: 10px 18px;
+  font-size: var(--font-size-xs);
+  color: rgb(var(--color-typography-700));
+  background: rgb(var(--color-primary-500) / 0.06);
+}
+.routing-message { margin: 0 0 8px; color: rgb(var(--color-typography-500)); font-size: var(--font-size-sm); }
+.routing-message button { color: rgb(var(--color-text-accent)); background: none; border: 0; text-decoration: underline; cursor: pointer; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+@media (max-width: 767px) {
+  // Keep every value readable on narrow screens without horizontal scrolling.
+  thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  table, tbody, tr, td { display: block; }
+  tr { padding: 10px 14px; border-bottom: 1px solid rgb(var(--color-primary-300) / 0.3); }
+  td { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 6px 0; border: 0; text-align: right; }
+  td::before { content: attr(data-label); flex-shrink: 0; color: rgb(var(--color-typography-700)); font-size: var(--font-size-xs); }
+  td:first-child { flex-wrap: wrap; }
+  .candidate { justify-content: flex-end; overflow-wrap: anywhere; }
+  .model-name { width: 100%; }
+  .selected { box-shadow: inset 3px 0 rgb(var(--color-primary-500)); }
+  .selected td:first-child { box-shadow: none; }
+  .routing-note { padding: 10px 14px; }
+}

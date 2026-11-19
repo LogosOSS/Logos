@@ -394,8 +394,8 @@
 
 .performance-workspace {
   --model-detail-font-family: var(--font-family-base);
-  --model-detail-font-size: var(--font-size-md);
-  --model-detail-heading-size: var(--font-size-lg);
+  --model-detail-font-size: 1rem;
+  --model-detail-heading-size: 1.25rem;
   font-family: var(--model-detail-font-family);
   font-size: var(--model-detail-font-size);
   line-height: 1.5;

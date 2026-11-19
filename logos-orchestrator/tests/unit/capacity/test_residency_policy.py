@@ -1,6 +1,6 @@
 """Residency policy switch (LOGOS_RESIDENCY_POLICY).
 
-"demand" (default) orders eviction victims by effective demand; "lru" orders
+"demand" orders eviction victims by effective demand; "lru" orders
 them by idle time (least recently used first) and disables the demand-ratio
 gates on speculative wake/load. Sleep-before-stop, drain, tenure, backoff, and
 queued-residency GPU safeguards are shared.
@@ -80,22 +80,25 @@ def _setup(policy: str | None) -> tuple[CapacityPlanner, _MockProvider]:
 
 
 class TestParseResidencyPolicy:
-    @pytest.mark.parametrize("raw", [None, "", "demand", "DEMAND", " demand "])
-    def test_defaults_to_demand(self, raw):
+    @pytest.mark.parametrize("raw", ["demand", "DEMAND", " demand "])
+    def test_accepts_demand(self, raw):
         assert CapacityPlanner._parse_residency_policy(raw) == "demand"
 
     @pytest.mark.parametrize("raw", ["lru", "LRU", " lru "])
     def test_accepts_lru(self, raw):
         assert CapacityPlanner._parse_residency_policy(raw) == "lru"
 
-    def test_unknown_value_falls_back_to_demand(self):
-        assert CapacityPlanner._parse_residency_policy("fifo") == "demand"
+    @pytest.mark.parametrize("raw", [None, "", "  ", "fifo"])
+    def test_defaults_to_simple(self, raw):
+        assert CapacityPlanner._parse_residency_policy(raw) == "simple"
 
 
 class TestEvictionOrder:
-    def test_planner_without_attribute_uses_demand_policy(self):
-        planner, _ = _setup(policy=None)
-        assert planner.residency_policy == "demand"
+    def test_planner_without_attribute_uses_simple_policy(self):
+        planner, provider = _setup(policy=None)
+        planner.__dict__.pop("_residency_policy", None)
+        assert planner.residency_policy == "simple"
+        assert _evict_one(planner, provider) == "Hot"
 
     def test_demand_policy_evicts_lowest_demand(self):
         planner, provider = _setup(policy="demand")

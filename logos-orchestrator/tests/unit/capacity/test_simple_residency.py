@@ -114,9 +114,9 @@ def test_final_sleep_check_accepts_idle_lane_and_refuses_missing_snapshot():
 
 def test_first_waiting_uses_arrival_instead_of_priority_and_respects_affinity():
     queue = PriorityQueueManager()
-    first = queue.enqueue(None, 1, priority=Priority.LOW)
+    first = queue.enqueue("older-low", 1, priority=Priority.LOW)
     pinned = queue.enqueue(None, 1, priority=Priority.HIGH, provider_affinity=2)
-    last = queue.enqueue(None, 1, priority=Priority.HIGH)
+    last = queue.enqueue("newer-high", 1, priority=Priority.HIGH)
     for entry, at in [(first, 10), (pinned, 5), (last, 20)]:
         queue.get_entry_info(entry).enqueue_time = datetime.fromtimestamp(at)
     facade = LogosNodeSchedulingDataFacade.__new__(LogosNodeSchedulingDataFacade)
@@ -129,9 +129,11 @@ def test_first_waiting_uses_arrival_instead_of_priority_and_respects_affinity():
     planner._facade = facade
     assert planner._first_waiting_at(1, "model") == 10
     assert planner._first_waiting_at(2, "model") == 5
+    assert queue.dequeue(1, provider_id=1) == "newer-high"
+    assert queue.get_entry_info(last) is None
+    assert queue.get_entry_info(first) is not None
+    assert planner._first_waiting_at(1, "model") == 10
     queue.remove(first)
-    assert planner._first_waiting_at(1, "model") == 20
-    queue.remove(last)
     assert planner._first_waiting_at(1, "model") == float("inf")
 
 

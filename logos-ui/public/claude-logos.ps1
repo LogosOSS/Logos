@@ -54,7 +54,7 @@ $ErrorActionPreference = 'Stop'
 # Bump on every change installed copies should pick up. Keep in step with the same
 # constant in claude-logos.sh - the two wrappers are one tool with two front ends.
 # A monotonic integer, not a version string: the comparison cannot misread anything.
-$ClaudeLogosVersion = 7          # 2026-10-09
+$ClaudeLogosVersion = 8          # 2026-11-14
 
 $ConfigDir = if ($env:LOGOS_CONFIG_DIR) { $env:LOGOS_CONFIG_DIR }
              else { Join-Path $env:USERPROFILE '.config\claude-logos' }

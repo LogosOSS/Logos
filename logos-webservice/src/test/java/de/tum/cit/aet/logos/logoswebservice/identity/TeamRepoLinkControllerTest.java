@@ -138,6 +138,42 @@ class TeamRepoLinkControllerTest {
     }
 
     @Test
+    void codingAgent_isOptInAndKeepsSettingsAcrossPartialUpdates() throws Exception {
+        MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/project\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_enabled").value(false))
+            .andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        String url = "/admin/teams/2001/repositories/" + id;
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"agent_enabled\":true}"))
+            .andExpect(status().isBadRequest());
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("""
+                    {"agent_enabled":true,"verification_command":"make check",
+                     "agent_instructions":"Use the Makefile"}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_enabled").value(true))
+            .andExpect(jsonPath("$.verification_command").value("make check"))
+            .andExpect(jsonPath("$.agent_instructions").value("Use the Makefile"));
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"branch\":\"develop\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_enabled").value(true))
+            .andExpect(jsonPath("$.verification_command").value("make check"));
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"verification_command\":\"\"}"))
+            .andExpect(status().isBadRequest());
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"agent_enabled\":false,\"verification_command\":\"\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_enabled").value(false));
+    }
+
+    @Test
     void create_rejectsCaseVariantDuplicate() throws Exception {
         mvc.perform(post("/admin/teams/2001/repositories")
                 .with(TestJwt.logosAdmin())

@@ -36,7 +36,7 @@ from logos.benchmarks.reservations import benchmark_reservations
 from logos.context_budget import estimate_prompt_tokens
 from logos.monitoring import prometheus_metrics as prom
 from logos.queue.priority_queue import Priority
-from logos.residency_policy import configured_residency_policy
+from logos.residency_policy import DEFAULT_RESIDENCY_POLICY, configured_residency_policy
 from logos.terminal_logging import style_model, style_provider
 from logos.timeouts import global_timeout_s
 
@@ -135,7 +135,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 logger.warning("Invalid ECCS_WEIGHT_OVERRIDE, ignoring: %s", _override_raw)
 
     def _uses_ettft_routing(self) -> bool:
-        return getattr(self, "_residency_policy", "demand") != "simple"
+        return getattr(self, "_residency_policy", DEFAULT_RESIDENCY_POLICY) != "simple"
 
     @staticmethod
     def _simple_candidate_key(candidate: tuple) -> tuple:
@@ -196,6 +196,23 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         except OSError:
             logger.debug("Failed to write ECCS decision log", exc_info=True)
 
+    def _snapshot_candidates(self, scored: list) -> list[dict]:
+        """Copy decision-time observations without changing candidate order or scores."""
+        return [
+            {
+                "model_id": model_id,
+                "provider_id": provider_id,
+                "provider_type": provider_type,
+                "state": estimate.tier.value,
+                # The scheduler queue is shared by all deployments of a model.
+                "queue_depth": (
+                    self._queue_mgr.get_total_depth_by_model(model_id) if provider_type == "logosnode" else None
+                ),
+                "expected_wait_s": (estimate.expected_wait_s if math.isfinite(estimate.expected_wait_s) else None),
+            }
+            for model_id, provider_id, provider_type, _score, _priority, estimate in scored
+        ]
+
     async def schedule(self, request: SchedulingRequest) -> Optional[SchedulingResult]:
         """
         Select a model from candidates based on ETTFT ranking.
@@ -228,6 +245,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 request_id=request.request_id,
             )
 
+        routing_candidates = self._snapshot_candidates(scored)
+
         # Try immediate selection
         with perf_trace.phase(request.request_id, "schedule.reserve"):
             best = self._try_immediate_select(scored, request.request_id)
@@ -249,6 +268,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             result.ettft_estimate_ms = ettft.ettft_ms
             result.ettft_tier = ettft.tier.value
             result.warmth_state = ettft.warmth_state
+            result.routing_candidates = routing_candidates
             return result
 
         # No immediate candidate — queue on the best logosnode candidate.
@@ -304,6 +324,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         self._record_scheduling_metrics(lc_model_id, lc_provider_id, lc_ettft)
         result = await self._queue_and_wait(logosnode_candidate, request)
         if result is not None:
+            result.routing_candidates = routing_candidates
             self._record_affinity(request, result.model_id, result.provider_id, result.provider_type, affinity)
         return result
 
@@ -359,6 +380,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         ]
         if not ready:
             return None
+        routing_candidates = self._snapshot_candidates(scored)
         best = self._try_immediate_select(ready, request.request_id)
         if best is None:
             logger.info(
@@ -390,6 +412,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         result.ettft_estimate_ms = ettft.ettft_ms
         result.ettft_tier = ettft.tier.value
         result.warmth_state = ettft.warmth_state
+        result.routing_candidates = routing_candidates
         return result
 
     # ------------------------------------------------------------------
