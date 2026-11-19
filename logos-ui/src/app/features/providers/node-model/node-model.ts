@@ -51,6 +51,7 @@ import {
   formatTokens,
   kvToGb,
   mbToGb,
+  placementFigures,
 } from './node-model-format';
 
 /** How often the page reads the state again while a calibration runs. It ends without an event for this page. */
@@ -250,25 +251,15 @@ export class NodeModel implements OnInit {
   });
 
   /** What a lane runs with now, as figures; for a model without a placement of its own. */
-  readonly runningFigures = computed(() => {
-    const run = this.insight()?.running;
-    if (!run) {
-      return [];
-    }
-    const out: { value: string; caption: string }[] = [];
-    const tp = Number(run['tensor_parallel_size']);
-    if (tp > 0) {
-      out.push({ value: `TP ${tp}`, caption: tp === 1 ? 'Tensor parallel · 1 GPU' : `Tensor parallel · ${tp} GPUs` });
-    }
-    const kv = kvToGb(run['kv_cache_memory_bytes']);
-    if (kv !== null) {
-      out.push({ value: formatGb(kv), caption: 'KV cache per GPU' });
-    }
-    const ctx = Number(run['max_model_len']);
-    if (ctx > 0) {
-      out.push({ value: `${formatTokens(ctx)} tokens`, caption: 'Max. context length' });
-    }
-    return out;
+  readonly runningFigures = computed(() => placementFigures(this.insight()?.running));
+
+  /** What the worker will choose when the model is loaded, as figures; from the calibration. */
+  readonly expectedFigures = computed(() => placementFigures(this.insight()?.expected));
+
+  /** The smallest KV cache the worker may choose when GPU memory is short. */
+  readonly expectedKvMin = computed(() => {
+    const min = this.insight()?.expected?.kv_min_mb;
+    return typeof min === 'number' ? formatGb(min / 1024) : null;
   });
 
   /** The settings besides the placement that a lane runs with now, as text per key. */
@@ -332,6 +323,7 @@ export class NodeModel implements OnInit {
   });
   readonly calibrating = computed(() => this.insight()?.calibrating ?? false);
   readonly outdated = computed(() => this.insight()?.calibration.status === 'outdated');
+  readonly unsupported = computed(() => this.insight()?.calibration.status === 'unsupported');
   private readonly failureBanner = viewChild<ElementRef<HTMLElement>>('failureBanner');
 
   /** A calibrated model can be placed while its worker can check the list. */

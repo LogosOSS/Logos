@@ -211,6 +211,54 @@ def test_the_settings_a_lane_runs_with_besides_the_placement_are_listed():
     }
 
 
+def test_an_automatic_model_carries_what_the_worker_will_choose_from_its_calibration():
+    calibrated = {
+        "residency_source": "calibrated",
+        "tensor_parallel_size": 1,
+        "min_kv_cache_mb": 1024.0,
+        "max_kv_cache_mb": 3072.0,
+        "kv_cache_to_max_model_len_pairs": [
+            {"kv_mb": 1024.0, "max_model_len": 5440},
+            {"kv_mb": 3072.0, "max_model_len": 16368},
+        ],
+    }
+    placed = {
+        "model_name": "org/placed",
+        "capability": {"tensor_parallel_size": 1, "kv_cache_memory_bytes": "4G"},
+        "overrides": {"max_model_len": 8192},
+    }
+
+    result = build_insights(
+        provider_id=1,
+        config={"revision": 1, "entries": [placed]},
+        sources={},
+        profiles={"org/placed": calibrated, "org/auto": calibrated, "org/none": {"residency_source": "cached"}},
+        calibrated_at={},
+        snapshot={"capabilities_models": ["org/auto", "org/none"], "configured_models": [], "runtime": {}},
+        supports={},
+        calibrating=False,
+        benchmarks={},
+    )
+
+    by_name = {m["model_name"]: m for m in result["models"]}
+    assert by_name["org/auto"]["expected"] == {
+        "tensor_parallel_size": 1,
+        "kv_cache_memory_bytes": "3072M",
+        "max_model_len": 16368,
+        "kv_min_mb": 1024,
+    }
+    # A placed model has a placement of its own; a model without a calibration has nothing to expect.
+    assert by_name["org/placed"]["expected"] is None
+    assert by_name["org/none"]["expected"] is None
+
+
+def test_only_a_calibrated_profile_counts_as_calibrated():
+    view = calibration_view({"residency_source": "measured", "tensor_parallel_size": 1, "base_residency_mb": 9.0})
+
+    assert view["status"] == "not_calibrated"
+    assert view["results"] == []
+
+
 def test_each_model_carries_its_catalog_id_when_it_has_one():
     config = {"revision": 1, "entries": [{"model_name": "org/a", "capability": {}, "overrides": {}}]}
 

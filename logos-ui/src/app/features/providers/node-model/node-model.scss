@@ -11,6 +11,20 @@
   color: rgb(var(--color-text-accent));
 }
 
+// A quiet red for an action that stops something: the outline of a secondary button in the colour of an error,
+// with a light tint. It takes the lighter red of the dark theme from the token, so neither theme glares.
+.btn-stop {
+  color: rgb(var(--color-error));
+  border-color: rgb(var(--color-error) / 0.4);
+  background: rgb(var(--color-error) / 0.08);
+
+  &:hover:not(:disabled) {
+    color: rgb(var(--color-error));
+    border-color: rgb(var(--color-error) / 0.65);
+    background: rgb(var(--color-error) / 0.16);
+  }
+}
+
 .head-actions {
   display: flex;
   flex-wrap: wrap;
@@ -103,6 +117,13 @@
   div {
     padding: 4px 0;
   }
+}
+
+// A quiet line below a box that has nothing to show yet.
+.running-note {
+  margin: 12px 0 0;
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-700));
 }
 
 // A small heading above figures inside a card.

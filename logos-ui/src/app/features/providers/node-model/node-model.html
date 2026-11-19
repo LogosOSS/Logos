@@ -38,7 +38,7 @@
           @if (calibrating()) {
             <button
               type="button"
-              class="btn-secondary"
+              class="btn-secondary btn-stop"
               [disabled]="!workerOnline() || calibrationStopping()"
               [attr.aria-busy]="calibrationStopping()"
               (click)="stopAsk.set(true)"
@@ -178,7 +178,20 @@
       </div>
     }
 
-    @if (!measured() && !outdated() && !editing() && !calibrating()) {
+    @if (unsupported() && !editing()) {
+      <div class="banner banner--err" role="status">
+        <i class="pi pi-times-circle" aria-hidden="true"></i>
+        <div>
+          <b>Calibration not supported</b>
+          <span>
+            {{ insight()?.calibration?.reason || providerName() + ' cannot calibrate this model.' }}
+            The worker will not load the model.
+          </span>
+        </div>
+      </div>
+    }
+
+    @if (!measured() && !outdated() && !unsupported() && !editing() && !calibrating()) {
       <div class="banner banner--info" role="status">
         <i class="pi pi-info-circle" aria-hidden="true"></i>
         <div>
@@ -435,6 +448,23 @@
                     <div class="tile"><b>{{ f.value }}</b><span>{{ f.caption }}</span></div>
                   }
                 </div>
+              } @else if (expectedFigures().length > 0) {
+                <h3 class="running-title">Expected when loaded</h3>
+                @if (workerOnline()) {
+                  <p class="running-note">
+                    No lane holds this model right now. With free GPU memory the worker will use these values from the calibration.
+                    @if (expectedKvMin(); as min) {
+                      With less memory it will choose a smaller KV cache, down to {{ min }}.
+                    }
+                  </p>
+                }
+                <div class="tiles">
+                  @for (f of expectedFigures(); track f.caption) {
+                    <div class="tile"><b>{{ f.value }}</b><span>{{ f.caption }}</span></div>
+                  }
+                </div>
+              } @else if (workerOnline()) {
+                <p class="running-note">No lane holds this model right now. The values it runs with appear here while it is loaded.</p>
               }
             }
           </section>
@@ -553,14 +583,14 @@
         } @else if (advanced().length > 0 || !measured()) {
           <section class="card" aria-labelledby="adv-title">
             <div class="card-head">
-              <h2 id="adv-title">{{ measured() ? 'Advanced settings' : 'Calibration settings' }}</h2>
+              <h2 id="adv-title">{{ measured() ? 'Advanced settings' : unsupported() ? 'Settings' : 'Calibration settings' }}</h2>
               <span class="count">{{ advanced().length === 0 ? 'All default' : advanced().length + ' set' }}</span>
             </div>
             @if (advanced().length === 0) {
               <p class="sub">No settings yet. Logos calibrates this model with the defaults.</p>
             } @else {
               <p class="sub">
-                {{ measured() ? 'Settings this model is configured with besides placement.' : 'Logos uses these settings when it calibrates this model.' }}
+                {{ measured() ? 'Settings this model is configured with besides placement.' : unsupported() ? 'Settings stored for this model.' : 'Logos uses these settings when it calibrates this model.' }}
               </p>
               <dl class="facts">
                 @for (a of advanced(); track a.key) {

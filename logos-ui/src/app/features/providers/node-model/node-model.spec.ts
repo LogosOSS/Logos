@@ -163,6 +163,7 @@ describe('NodeModel', () => {
 
     const tiles = Array.from(root.querySelectorAll('.running-title ~ .tiles .tile')).map((t) => t.textContent);
     expect(root.textContent).toContain('Running now');
+    expect(root.textContent).not.toContain('No lane holds this model');
     expect(root.textContent).not.toContain('Running settings');
     expect(tiles).toEqual([
       expect.stringContaining('TP 1'),
@@ -174,6 +175,7 @@ describe('NodeModel', () => {
     TestBed.resetTestingModule();
     const without = await create();
     expect(without.textContent).not.toContain('Running now');
+    expect(without.textContent).toContain('No lane holds this model right now');
   });
 
   it('lists the settings besides the placement that a lane runs a model with', async () => {
@@ -196,6 +198,29 @@ describe('NodeModel', () => {
       ['max_num_seqs', '20'],
       ['quantization', 'awq'],
     ]);
+  });
+
+  it('shows what the worker will choose for an automatic model that no lane holds', async () => {
+    const expected = { tensor_parallel_size: 1, kv_cache_memory_bytes: '3072M', max_model_len: 16368, kv_min_mb: 1024 };
+    service['getNodeInsights'].mockResolvedValue(insights([insight({ configured: false, running: null, expected })]));
+    const root = await create();
+
+    expect(root.textContent).toContain('Expected when loaded');
+    expect(root.textContent).toContain('down to 1 GB');
+    const tiles = Array.from(root.querySelectorAll('.running-title ~ .tiles .tile')).map((t) => t.textContent);
+    expect(tiles).toEqual([
+      expect.stringContaining('TP 1'),
+      expect.stringContaining('3 GB'),
+      expect.stringContaining('16,368 tokens'),
+    ]);
+
+    // A lane that holds the model wins: its values are what the model runs with.
+    TestBed.resetTestingModule();
+    const running = { tensor_parallel_size: 1, kv_cache_memory_bytes: '2G', max_model_len: 10896 };
+    service['getNodeInsights'].mockResolvedValue(insights([insight({ configured: false, running, expected })]));
+    const loaded = await create();
+    expect(loaded.textContent).toContain('Running now');
+    expect(loaded.textContent).not.toContain('Expected when loaded');
   });
 
   it('warns when the worker is offline', async () => {
@@ -896,6 +921,25 @@ describe('NodeModel', () => {
       const root = await create();
 
       expect(root.textContent).not.toContain('Stop calibration');
+    });
+
+    it('says why a model cannot be calibrated instead of calling it not calibrated yet', async () => {
+      service['getNodeInsights'].mockResolvedValue(
+        insights([
+          insight({
+            row: false,
+            configured: false,
+            calibration: { status: 'unsupported', reason: 'Needs more memory than the node has.', results: [] },
+          }),
+        ]),
+      );
+      const root = await create();
+
+      expect(root.textContent).toContain('Calibration not supported');
+      expect(root.textContent).toContain('Needs more memory than the node has.');
+      expect(root.textContent).not.toContain('Not calibrated yet');
+      expect(button(root)).toBeUndefined();
+      expect(root.textContent).not.toContain('when it calibrates this model');
     });
 
     it('offers it again for an outdated calibration and says why', async () => {

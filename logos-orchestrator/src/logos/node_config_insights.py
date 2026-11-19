@@ -27,6 +27,38 @@ def placement_of(entry: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return {key: merged[key] for key in REQUIRED_PLACEMENT}
 
 
+def expected_placement(profile: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """What the planner of the worker will choose for the model when GPU memory is free, from its calibration.
+
+    The size is the calibrated TP, the largest measured KV cache and the context that point reaches. With less
+    free memory the planner picks a smaller KV cache, down to ``kv_min_mb``. None without a usable calibration.
+    """
+    if not profile or profile.get("residency_source") != "calibrated" or profile.get("calibration_unsupported"):
+        return None
+    max_kv = profile.get("max_kv_cache_mb")
+    if not isinstance(max_kv, (int, float)) or max_kv <= 0:
+        return None
+    reached = [
+        pair["max_model_len"]
+        for pair in profile.get("kv_cache_to_max_model_len_pairs") or []
+        if isinstance(pair, dict)
+        and isinstance(pair.get("kv_mb"), (int, float))
+        and isinstance(pair.get("max_model_len"), int)
+        and pair["kv_mb"] <= max_kv + 1e-6
+    ]
+    context = max(reached) if reached else profile.get("calibration_max_model_len")
+    expected: dict[str, Any] = {
+        "tensor_parallel_size": int(profile.get("tensor_parallel_size") or 1),
+        "kv_cache_memory_bytes": f"{round(max_kv)}M",
+    }
+    if isinstance(context, int) and context > 0:
+        expected["max_model_len"] = context
+    min_kv = profile.get("min_kv_cache_mb")
+    if isinstance(min_kv, (int, float)) and 0 < min_kv < max_kv:
+        expected["kv_min_mb"] = round(min_kv)
+    return expected
+
+
 def _running_vllm_config(snapshot: Mapping[str, Any] | None, model: str) -> Mapping[str, Any] | None:
     """The vLLM settings of the lane that holds the model, or None while no lane does."""
     lanes = (((snapshot or {}).get("runtime") or {}).get("lanes")) or []
@@ -119,7 +151,7 @@ def calibration_view(
     ``gpu_slice`` is the number of GPUs the node can serve the model on. A shared calibration
     may carry results for larger tensor-parallel sizes, which this node cannot run.
     """
-    if profile is None or profile.get("residency_source") not in ("calibrated", "measured"):
+    if profile is None or profile.get("residency_source") != "calibrated":
         view: dict[str, Any] = {"status": "not_calibrated", "reason": None, "results": []}
         if profile and profile.get("calibration_unsupported"):
             view.update(status="unsupported", reason=profile.get("calibration_unsupported_reason"))
@@ -253,6 +285,7 @@ def build_insights(
                 "configured": is_configured(entry),
                 "placement": placement_of(entry),
                 "running": running_placement(snapshot, name),
+                "expected": None if is_configured(entry) else expected_placement(profiles.get(name)),
                 "running_settings": running_settings(snapshot, name),
                 "calibration": calibration_view(
                     profiles.get(name), calibrated_at.get(name), (gpu_slices or {}).get(name)

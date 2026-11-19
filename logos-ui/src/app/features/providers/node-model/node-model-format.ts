@@ -72,3 +72,24 @@ export function advancedSettings(entry: NodeConfigEntry | undefined): { key: str
     }))
     .sort((a, b) => a.key.localeCompare(b.key));
 }
+
+/** TP, KV cache and context of a placement as figures for the tiles of a page. */
+export function placementFigures(values: Record<string, unknown> | null | undefined): { value: string; caption: string }[] {
+  if (!values) {
+    return [];
+  }
+  const out: { value: string; caption: string }[] = [];
+  const tp = Number(values['tensor_parallel_size']);
+  if (tp > 0) {
+    out.push({ value: `TP ${tp}`, caption: tp === 1 ? 'Tensor parallel · 1 GPU' : `Tensor parallel · ${tp} GPUs` });
+  }
+  const kv = kvToGb(values['kv_cache_memory_bytes']);
+  if (kv !== null) {
+    out.push({ value: formatGb(kv), caption: 'KV cache per GPU' });
+  }
+  const ctx = Number(values['max_model_len']);
+  if (ctx > 0) {
+    out.push({ value: `${formatTokens(ctx)} tokens`, caption: 'Max. context length' });
+  }
+  return out;
+}

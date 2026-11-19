@@ -58,10 +58,10 @@
             </span>
           </div>
           <div role="cell" data-label="Placement">
-            <span class="status" [attr.title]="model.configured ? null : 'The worker chooses TP, KV cache and context itself.'">
-              <span [class]="'status-dot status-dot--' + (model.configured ? 'ok' : 'gray')" aria-hidden="true"></span>
-              {{ model.configured ? 'Set' : 'Automatic' }}
-              @if (model.configured && model.placement) {
+            @let place = placementLabel(model);
+            <span class="status" [attr.title]="place.title">
+              <span [class]="'status-dot status-dot--' + place.tone" aria-hidden="true"></span>{{ place.text }}
+              @if (place.text === 'Set' && model.placement) {
                 <span class="muted">{{ describePlacement(model.placement) }}</span>
               }
             </span>

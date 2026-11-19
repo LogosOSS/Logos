@@ -38,3 +38,36 @@ export function calibrationLabel(model: NodeModelInsight): CalibrationLabel {
   }
   return { text: 'Not calibrated', tone: 'gray', title: null };
 }
+
+export interface PlacementLabel {
+  text: string;
+  tone: StatusTone;
+  title: string | null;
+}
+
+/**
+ * Where a model sits, in the words of the list.
+ *
+ * The worker loads a model only with a calibration, so a model without one is not loadable, whatever its
+ * placement: "Automatic" would promise a choice that the worker cannot make.
+ */
+export function placementLabel(model: NodeModelInsight): PlacementLabel {
+  const { status, reason } = model.calibration;
+  if (status === 'unsupported') {
+    return { text: 'Not loadable', tone: 'err', title: reason };
+  }
+  if (status === 'not_calibrated') {
+    return { text: 'Not loadable', tone: 'gray', title: 'The model needs a calibration before the worker can load it.' };
+  }
+  if (model.configured) {
+    return { text: 'Set', tone: 'ok', title: null };
+  }
+  if (status === 'outdated') {
+    return {
+      text: 'Automatic',
+      tone: 'warn',
+      title: 'The calibration is outdated. The model keeps running until it is measured again.',
+    };
+  }
+  return { text: 'Automatic', tone: 'gray', title: 'The worker chooses TP, KV cache and context itself.' };
+}

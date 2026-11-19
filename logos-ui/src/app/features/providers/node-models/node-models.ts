@@ -11,7 +11,7 @@ import { AppSelectOption, SelectComponent } from '../../../shared/components/sel
 import { loadFailure, saveFailure } from '../node-model/node-model-edit';
 import { ErrorMessageComponent } from '../../../shared/components/error-message/error-message';
 import { describePlacement } from '../node-model/node-model-format';
-import { CalibrationLabel, calibrationLabel, hasTuning } from './node-model-status';
+import { CalibrationLabel, calibrationLabel, hasTuning, PlacementLabel, placementLabel } from './node-model-status';
 
 /** The models of one logosnode: calibration and configuration state. */
 @Component({
@@ -126,6 +126,10 @@ export class NodeModels implements OnInit {
 
   describePlacement(settings: Record<string, unknown>): string {
     return describePlacement(settings);
+  }
+
+  placementLabel(model: NodeModelInsight): PlacementLabel {
+    return placementLabel(model);
   }
 
   hasTuning(model: NodeModelInsight): boolean {

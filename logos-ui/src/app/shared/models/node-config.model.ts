@@ -81,6 +81,8 @@ export interface NodeModelInsight {
   placement?: Record<string, unknown> | null;
   /** What a lane of the model runs with now; for a model without a placement, what the worker chose. */
   running?: Record<string, unknown> | null;
+  /** For a model without a placement: what the worker will choose with free GPU memory, from its calibration. */
+  expected?: (Record<string, unknown> & { kv_min_mb?: number }) | null;
   /** The settings besides the placement that a lane of the model runs with now. */
   running_settings?: Record<string, unknown> | null;
   calibration: CalibrationInsight;

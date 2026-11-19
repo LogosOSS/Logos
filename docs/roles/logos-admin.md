@@ -414,8 +414,10 @@ Each row shows two statuses:
 - **Calibration**: **Calibrated**, **Not calibrated**, **Outdated** or **Unsupported**.
   Logos measures the memory use of a model during a calibration.
 - **Placement**: **Set** if the model has a placement (GPUs, KV cache and
-  context length). The row then shows these values. Otherwise the status is
-  **Automatic**, and the worker chooses the placement itself. The model runs in both cases.
+  context length). The row then shows these values. If the model has a calibration but no
+  placement, the status is **Automatic**, and the worker chooses the placement itself.
+  If the model has no calibration, the status is **Not loadable**. The worker loads a model only
+  with a calibration.
 
 The chip at the top shows **Worker online** or **Worker offline**. Select a row
 to open the page of the model.
@@ -512,7 +514,7 @@ if its calibration is outdated in the same way.
 
 ![Dialog to connect a model to a node](/img/roles/logos-admin-node-connect-model.png)
 
-The model is in the list as **Not calibrated** with the placement **Automatic**.
+The model is in the list as **Not calibrated** with the placement **Not loadable**.
 The dialog shows only models that the node does not list yet.
 
 ### Node settings

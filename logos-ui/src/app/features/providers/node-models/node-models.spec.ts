@@ -88,6 +88,30 @@ describe('NodeModels', () => {
     expect(text()).not.toContain('runs with');
   });
 
+  it('says that a model without a calibration is not loadable and that an outdated one keeps running', async () => {
+    const none = { status: 'not_calibrated' as const, reason: null, results: [] };
+    const outdated = { status: 'outdated' as const, reason: null, results: [] };
+    const unsupported = { status: 'unsupported' as const, reason: 'Needs more memory.', results: [] };
+    await create(
+      insights([
+        model({ model_name: 'org/a', configured: false, placement: null, calibration: none }),
+        model({ model_name: 'org/b', configured: false, placement: null, calibration: outdated }),
+        model({ model_name: 'org/c', configured: false, placement: null, calibration: unsupported }),
+        model({ model_name: 'org/d' }),
+      ]),
+    );
+
+    const cells = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('[data-label="Placement"] .status'));
+    expect(cells.map((c) => c.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+      'Not loadable',
+      'Automatic',
+      'Not loadable',
+      expect.stringContaining('Set'),
+    ]);
+    expect(cells[1].getAttribute('title')).toContain('keeps running');
+    expect(cells[2].getAttribute('title')).toBe('Needs more memory.');
+  });
+
   it('shows whether the worker is online', async () => {
     await create(insights([model()], false));
     expect(text()).toContain('Worker offline');
