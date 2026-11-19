@@ -69,9 +69,6 @@
           </div>
           <div class="timeline-scroll">
             <div class="timeline-plot">
-              <div class="timeline-grid" aria-hidden="true">
-                @for (tick of chart.ticks; track $index) { <i [style.bottom.%]="100 * (tick / chart.axisMax)"></i> }
-              </div>
               <ol class="timeline-runs" aria-label="Benchmark runs in completion order">
                 @for (point of timelineRuns(); track point.run.id) {
                   @let kind = point.isBaseline ? 'Baseline' : point.run.configuration['nightly'] ? 'Trial' : 'Manual run';

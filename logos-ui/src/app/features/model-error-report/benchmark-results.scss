@@ -81,24 +81,27 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 .timeline-chart {
   --plot-height: 10.5rem;
   --plot-headroom: 1.8rem;
+  --axis-color: rgb(var(--color-typography-500) / .7);
   margin: 20px 0 0;
   font-variant-numeric: tabular-nums;
   figcaption, .timeline-axis-title { font-size: .8125rem; font-weight: 600; }
   figcaption span, .timeline-axis-title span { color: rgb(var(--color-typography-500)); font-weight: 400; }
 }
-.timeline-axes { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: .65rem; }
+.timeline-axes { display: grid; grid-template-columns: max-content minmax(0, 1fr); }
 .timeline-ticks {
   display: grid; justify-items: end; align-items: end; position: relative;
-  height: var(--plot-height); margin-top: var(--plot-headroom);
+  height: var(--plot-height); margin-top: var(--plot-headroom); padding-inline-end: .65rem;
+  border-inline-end: 1px solid var(--axis-color);
   font-size: .75rem; color: rgb(var(--color-typography-500));
   span { position: relative; grid-area: 1 / 1; transform: translateY(50%); }
 }
 .timeline-scroll { overflow-x: auto; }
-.timeline-plot { position: relative; width: max-content; min-width: 100%; padding-top: var(--plot-headroom); }
-.timeline-grid {
-  position: absolute; inset: var(--plot-headroom) 0 auto; height: var(--plot-height); pointer-events: none;
-  i { position: absolute; width: 100%; border-bottom: 1px solid rgb(var(--color-outline-200)); }
-  i:first-child { border-color: rgb(var(--color-outline-400)); }
+.timeline-plot {
+  position: relative; width: max-content; min-width: 100%; padding-top: var(--plot-headroom);
+  &::before {
+    content: ''; position: absolute; inset-inline: 0; top: calc(var(--plot-headroom) + var(--plot-height) - 1px);
+    border-top: 1px solid var(--axis-color); pointer-events: none;
+  }
 }
 .timeline-runs { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; margin: 0; padding: 0; list-style: none; }
 .timeline-run {
