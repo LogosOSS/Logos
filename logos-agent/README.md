@@ -742,6 +742,11 @@ credentialed checkout and verified fix PRs on that repository; team repository
 links do not grant this authority. The bot needs read and push access. All
 security endpoints use the same Keycloak Logos Admin check as agent controls.
 
+Enrollment requires a **Build and test command**. Each assessment session snapshots
+this command; fix sessions run it from the repository root before publication.
+Verification has no credentials or network access and uses tools already in the
+agent image. A failed check produces only a draft PR and a failed assessment.
+
 The runner checks the queue every 5 minutes and ingests these feeds hourly:
 
 - GitHub-reviewed **critical** advisories, with pagination and a durable cursor.

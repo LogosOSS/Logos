@@ -89,9 +89,12 @@
     <section class="setup">
       <details><summary>Monitored repositories <span>{{ overview.repositories.length }}</span></summary>
         <p>Register a GitHub repository to authorize analysis and fix PRs by LogosOSSAgent. The bot needs access to clone and push.</p>
-        @for (repo of overview.repositories; track repo.id) { <p><strong>{{ repo.repo_slug }}</strong> · {{ repo.branch }}</p> }
+        @for (repo of overview.repositories; track repo.id) { <p><strong>{{ repo.repo_slug }}</strong> · {{ repo.branch }}<br><code>{{ repo.verification_command }}</code></p> }
         <form (ngSubmit)="enroll()"><label>Repository<input name="repo" [(ngModel)]="repoSlug" placeholder="owner/repository" required></label>
-          <label>Base branch<input name="branch" [(ngModel)]="branch" required></label><button class="btn" [disabled]="busy() || !repoSlug || !branch">Register repository</button></form>
+          <label>Base branch<input name="branch" [(ngModel)]="branch" required></label>
+          <label>Build and test command<textarea name="verification" [(ngModel)]="verificationCommand" required maxlength="4000" placeholder="make check" aria-describedby="verification-help"></textarea></label>
+          <p id="verification-help">Runs from the repository root before a fix PR opens, without credentials or network access. Use tools available in the agent image.</p>
+          <button class="btn" [disabled]="busy() || !repoSlug.trim() || !branch.trim() || !verificationCommand.trim()">Register repository</button></form>
       </details>
       <details><summary>Report an important incident</summary><p>Use a vendor advisory or a verified report. Explain the material impact; ordinary dependency updates belong in the update workflow.</p>
         <form (ngSubmit)="reportIncident()"><div class="form-grid">

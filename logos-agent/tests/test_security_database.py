@@ -19,6 +19,7 @@ from app import auth, main
 from app import security_incidents as incidents
 from app import security_scans
 from app import security_store as store
+from app import sessions
 from app.security_models import IncidentInput, RepositoryInput
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -53,9 +54,9 @@ async def database(monkeypatch, tmp_path):
                 task text, status text, created_by text, open_pull_request boolean,
                 deploy_to_dev boolean, screenshot_paths jsonb, no_push boolean, trigger_kind text,
                 trigger_ref text, priority integer, priority_reason text, repo_url text, repo_slug text,
-                error text, pr_url text)"""))
+                error text, pr_url text, verification_command text)"""))
             changelogs = Path(__file__).resolve().parents[2] / "logos-webservice/src/main/resources/liquibase/changelog"
-            for name in ("078_security_incidents.xml", "079_security_manual_updates.xml"):
+            for name in ("080_security_incidents.xml", "081_security_manual_updates.xml"):
                 sql = (
                     ET.parse(changelogs / name)
                     .getroot()
@@ -86,7 +87,7 @@ def incident_body(**updates):
 
 async def test_incident_lifecycle_is_atomic_and_revisits_new_evidence(database, monkeypatch, tmp_path):
     engine = database
-    await store.enroll(RepositoryInput(repo_slug="Example/App"), "admin")
+    await store.enroll(RepositoryInput(repo_slug="Example/App", verification_command="make check"), "admin")
     body = incident_body()
     first = await store.ingest(body, "admin", manual=True)
     duplicate = await store.ingest(body, "admin", manual=True)
@@ -134,6 +135,40 @@ async def test_incident_lifecycle_is_atomic_and_revisits_new_evidence(database, 
     async with engine.begin() as conn:
         fix = (await conn.execute(text("SELECT * FROM agent_sessions ORDER BY id DESC LIMIT 1"))).mappings().one()
         assert fix["open_pull_request"] and not fix["no_push"] and not fix["deploy_to_dev"]
+        assert fix["verification_command"] == "make check"
+        workspace = dict(
+            (await conn.execute(text("SELECT * FROM agent_workspaces WHERE id=:id"), {"id": fix["workspace_id"]}))
+            .mappings()
+            .one()
+        )
+        # Exercise the real finalizer and verifier selection with the persisted
+        # session; only the container boundary is replaced by a helper double.
+        manager = sessions.SessionManager()
+        finalizing = {**fix, "status": "finalizing", "branch_name": "agent/security-fix"}
+        monkeypatch.setattr(sessions.db, "get_session", AsyncMock(return_value=finalizing))
+        monkeypatch.setattr(sessions.db, "get_workspace", AsyncMock(return_value=workspace))
+        monkeypatch.setattr(sessions.db, "add_event", AsyncMock())
+        monkeypatch.setattr(sessions.docker_engine, "volume_mountpoint", AsyncMock(return_value=str(tmp_path)))
+        baseline = sessions.state_dir(fix["id"]) / "checkout_baseline.json"
+        baseline.parent.mkdir(parents=True, exist_ok=True)
+        baseline.write_text(
+            json.dumps(
+                {"checkout_sha": "a" * 40, "branch_sha": "", "comparison_sha": "a" * 40, "pr_base_branch": "main"}
+            )
+        )
+        monkeypatch.setattr(
+            manager, "_read_result", lambda _: {"candidate_tree": "b" * 40, "candidate_paths": ["src/parser.py"]}
+        )
+        helper = AsyncMock(return_value=0)
+        monkeypatch.setattr(manager, "_run_helper", helper)
+        assert await manager._finalize(fix["id"])
+        calls = [call.kwargs for call in helper.await_args_list]
+        assert [call["phase"] for call in calls] == ["snapshot", "verify", "finalize"]
+        verify_env = calls[1]["env"]
+        assert verify_env["LOGOS_VERIFICATION_MODE"] == "repository"
+        assert verify_env["LOGOS_VERIFICATION_COMMAND"] == "make check"
+        assert "GITHUB_TOKEN" not in verify_env and "GH_TOKEN" not in verify_env
+        assert calls[2]["env"]["LOGOS_SESSION_VERIFICATION"] == "passed"
         await conn.execute(
             text(
                 "UPDATE agent_sessions SET status='succeeded', "
@@ -205,7 +240,7 @@ async def test_manual_evidence_supersedes_any_creator_and_survives_feed_polls(da
 
 
 async def test_resolving_queued_or_stale_assessment_accepts_current_evidence(database):
-    await store.enroll(RepositoryInput(repo_slug="example/app"), "admin")
+    await store.enroll(RepositoryInput(repo_slug="example/app", verification_command="make check"), "admin")
     first = await store.ingest(incident_body(), "admin", manual=True)
     await incidents.ensure_assessments()
     row = (await incidents.due_assessments())[0]
@@ -220,7 +255,7 @@ async def test_resolving_queued_or_stale_assessment_accepts_current_evidence(dat
 
 
 async def test_resolution_serializes_with_concurrent_evidence_updates(database, monkeypatch):
-    await store.enroll(RepositoryInput(repo_slug="example/app"), "admin")
+    await store.enroll(RepositoryInput(repo_slug="example/app", verification_command="make check"), "admin")
     await store.ingest(incident_body(), "admin", manual=True)
     await incidents.ensure_assessments()
     row = (await incidents.due_assessments())[0]
@@ -250,7 +285,7 @@ async def test_resolution_serializes_with_concurrent_evidence_updates(database, 
 
 
 async def test_reconciliation_visits_later_sessions_despite_open_prs(database, monkeypatch):
-    await store.enroll(RepositoryInput(repo_slug="example/app"), "admin")
+    await store.enroll(RepositoryInput(repo_slug="example/app", verification_command="make check"), "admin")
     async with database.begin() as conn:
         await conn.execute(text("""INSERT INTO security_incidents
             (advisory_id, title, severity, source_url, summary, importance, created_by)
@@ -277,9 +312,9 @@ async def test_reconciliation_visits_later_sessions_despite_open_prs(database, m
 
 async def test_repository_and_operator_action_conflicts_are_explicit(database):
     assert not await store.act(999, "resolve", "Verified deployment.", "admin")
-    await store.enroll(RepositoryInput(repo_slug="example/app"), "admin")
+    await store.enroll(RepositoryInput(repo_slug="example/app", verification_command="make check"), "admin")
     with pytest.raises(ValueError, match="already monitored"):
-        await store.enroll(RepositoryInput(repo_slug="EXAMPLE/App"), "admin")
+        await store.enroll(RepositoryInput(repo_slug="EXAMPLE/App", verification_command="make check"), "admin")
     await store.ingest(incident_body(), "admin", manual=True)
     await incidents.ensure_assessments()
     row = (await incidents.due_assessments())[0]
@@ -291,7 +326,7 @@ async def test_repository_and_operator_action_conflicts_are_explicit(database):
 async def test_scan_import_keeps_unfixed_evidence_and_only_newer_observations(database):
     from datetime import datetime, timedelta, timezone
 
-    repo = await store.enroll(RepositoryInput(repo_slug="example/app"), "admin")
+    repo = await store.enroll(RepositoryInput(repo_slug="example/app", verification_command="make check"), "admin")
     body = security_scans.ScanInput.model_validate(
         {
             "repository_id": repo["id"],
@@ -336,8 +371,16 @@ async def test_admin_api_updates_evidence_and_reports_action_conflicts(database)
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
             assert (await client.get("/security")).json()["repositories"] == []
-            assert (await client.post("/security/repositories", json={"repo_slug": "example/app"})).status_code == 201
-            assert (await client.post("/security/repositories", json={"repo_slug": "example/app"})).status_code == 409
+            assert (
+                await client.post(
+                    "/security/repositories", json={"repo_slug": "example/app", "verification_command": "make check"}
+                )
+            ).status_code == 201
+            assert (
+                await client.post(
+                    "/security/repositories", json={"repo_slug": "example/app", "verification_command": "make check"}
+                )
+            ).status_code == 409
             original = await store.ingest(incident_body(), "feed:github")
             response = await client.post(
                 "/security/incidents",
@@ -377,7 +420,7 @@ async def test_manual_precedence_migration_backfills_existing_records(database):
             SELECT 'CVE-2026-' || n, 'Parser', 'critical', 'https://example.org', 'Details', 'Critical', creator
             FROM (VALUES (10000, 'admin'), (10001, 'feed:github'), (10002, 'scanner:trivy')) AS old(n, creator)"""))
         migration = Path(__file__).resolve().parents[2] / (
-            "logos-webservice/src/main/resources/liquibase/changelog/079_security_manual_updates.xml"
+            "logos-webservice/src/main/resources/liquibase/changelog/081_security_manual_updates.xml"
         )
         sql = ET.parse(migration).getroot().find(".//{http://www.liquibase.org/xml/ns/dbchangelog}sql").text
         for statement in sql.split(";"):
@@ -422,7 +465,7 @@ async def test_later_github_evidence_enriches_incidents_without_replacing_displa
 async def test_upstream_timeouts_preserve_missing_evidence_and_queue_later_assessments(database, monkeypatch):
     monkeypatch.setattr(incidents, "settings", replace(incidents.settings, security_feeds_enabled=False))
     monkeypatch.setattr(incidents.github, "_get", AsyncMock(side_effect=httpx.ReadTimeout("GitHub timeout")))
-    await store.enroll(RepositoryInput(repo_slug="example/app"), "admin")
+    await store.enroll(RepositoryInput(repo_slug="example/app", verification_command="make check"), "admin")
     for n in (12345, 12346):
         await store.ingest(
             incident_body(advisory_id=f"CVE-2026-{n}", upstream_repositories=["vendor/server"]),

@@ -37,4 +37,25 @@ describe('Security incident dashboard', () => {
     http.verify();
     fixture.destroy();
   });
+  it('requires and submits the configured build and test command', async () => {
+    TestBed.configureTestingModule({ imports: [SecurityIncidents], providers: [provideRouter([]), provideHttpClient(), provideHttpClientTesting()] });
+    const fixture = TestBed.createComponent(SecurityIncidents);
+    const http = TestBed.inject(HttpTestingController);
+    const component = fixture.componentInstance;
+    component.repoSlug = ' org/repo '; component.branch = ' release '; component.verificationCommand = '   ';
+    await component.enroll();
+    http.expectNone('/api/agent/security/repositories');
+    component.verificationCommand = ' make check ';
+    const enrolled = component.enroll();
+    const post = http.expectOne('/api/agent/security/repositories');
+    expect(post.request.body).toEqual({ repo_slug: 'org/repo', branch: 'release', verification_command: 'make check' });
+    post.flush({});
+    await Promise.resolve();
+    http.expectOne('/api/agent/security').flush({ repositories: [], incidents: [], assessments: [], feeds: [] });
+    await enrolled;
+    expect(component.repoSlug).toBe('');
+    expect(component.verificationCommand).toBe('');
+    http.verify(); fixture.destroy();
+  });
+
 });

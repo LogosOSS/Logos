@@ -71,7 +71,7 @@ def test_shutdown_is_an_operator_recommendation():
 )
 def test_repository_scope_is_a_canonical_github_slug(slug):
     with pytest.raises(ValidationError):
-        RepositoryInput(repo_slug=slug)
+        RepositoryInput(repo_slug=slug, verification_command="make check")
 
 
 def test_low_severity_incidents_are_not_admitted():
@@ -347,3 +347,17 @@ async def test_poller_retries_after_failure_and_stops_cleanly(monkeypatch):
     monkeypatch.setattr(incidents, "settings", replace(incidents.settings, security_enabled=False))
     await poller.start()
     assert poller._task is None
+
+
+@pytest.mark.parametrize("command", ["", "   ", "\n\t", "make\x00check", "x" * 4001])
+def test_repository_enrollment_requires_a_usable_verification_command(command):
+    with pytest.raises(ValidationError):
+        RepositoryInput(repo_slug="org/repo", verification_command=command)
+
+
+def test_repository_enrollment_normalizes_the_verification_command():
+    body = RepositoryInput(repo_slug="Org/Repo", verification_command="  make check\n")
+    assert body.verification_command == "make check"
+    assert body.repo_slug == "org/repo"
+    with pytest.raises(ValidationError):
+        RepositoryInput(repo_slug="org/repo")

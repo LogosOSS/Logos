@@ -560,7 +560,8 @@ error remains visible. Low and medium findings do not enter this workflow.
 
 ### Register a repository
 
-Expand **Monitored repositories**. Enter `owner/repository` and its base branch.
+Expand **Monitored repositories**. Enter `owner/repository`, its base branch, and a **Build and test command**.
+The command runs from the repository root before a fix PR opens. It uses installed tools without credentials or network access.
 Select **Register repository**. This gives LogosOSSAgent permission to analyze
 the repository and propose fix PRs. The bot account must have repository access.
 Team repository links do not automatically grant this permission.

@@ -84,7 +84,6 @@
     <include file="liquibase/changelog/077_team_public_category.xml"/>
     <include file="liquibase/changelog/078_repository_coding_agent.xml"/>
     <include file="liquibase/changelog/079_gateway_pricing_performance.xml"/>
-    <include file="liquibase/changelog/078_security_incidents.xml"/>
-    <include file="liquibase/changelog/079_security_manual_updates.xml"/>
-    <include file="liquibase/changelog/080_gateway_pricing_performance.xml"/>
+    <include file="liquibase/changelog/080_security_incidents.xml"/>
+    <include file="liquibase/changelog/081_security_manual_updates.xml"/>
 </databaseChangeLog>

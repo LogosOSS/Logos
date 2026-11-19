@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-class RepositoryInput(BaseModel):
+class RepositoryReference(BaseModel):
     repo_slug: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}$")
     branch: str = Field(default="main", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9/_.-]*$")
 
@@ -24,6 +24,18 @@ class RepositoryInput(BaseModel):
     def validate_branch(cls, value: str) -> str:
         if ".." in value or "//" in value or value.endswith(("/", ".", ".lock")):
             raise ValueError("Invalid branch")
+        return value
+
+
+class RepositoryInput(RepositoryReference):
+    verification_command: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("verification_command")
+    @classmethod
+    def validate_verification_command(cls, value: str) -> str:
+        value = value.strip()
+        if not value or "\x00" in value:
+            raise ValueError("A build and test command is required")
         return value
 
 
@@ -54,7 +66,7 @@ class IncidentInput(BaseModel):
     @field_validator("upstream_repositories")
     @classmethod
     def validate_repositories(cls, values: list[str]) -> list[str]:
-        return list(dict.fromkeys(RepositoryInput(repo_slug=v).repo_slug for v in values))
+        return list(dict.fromkeys(RepositoryReference(repo_slug=v).repo_slug for v in values))
 
 
 class Evidence(BaseModel):

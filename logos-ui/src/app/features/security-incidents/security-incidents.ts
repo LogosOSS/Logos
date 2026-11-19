@@ -21,7 +21,7 @@ interface Assessment {
 interface Overview {
   enabled: boolean; feeds_enabled: boolean; poll_error: string;
   incidents: Incident[]; assessments: Assessment[];
-  repositories: { id: number; repo_slug: string; branch: string }[];
+  repositories: { id: number; repo_slug: string; branch: string; verification_command: string }[];
   feeds: { name: string; last_success: string | null; error: string | null }[];
 }
 interface HistoryEntry { id: number; status: string; created_at: string; created_by: string; detail: { reason?: string; error?: string } }
@@ -52,7 +52,7 @@ export class SecurityIncidents implements OnInit {
   readonly actionTarget = signal<Assessment | null>(null);
   actionKind: 'recheck' | 'resolve' = 'recheck';
   actionReason = '';
-  repoSlug = ''; branch = 'main';
+  repoSlug = ''; branch = 'main'; verificationCommand = '';
   incident = { advisory_id: '', title: '', severity: 'critical', known_exploited: false,
     source_url: '', summary: '', importance: '', upstream: '' };
   readonly counts = computed(() => {
@@ -93,7 +93,13 @@ export class SecurityIncidents implements OnInit {
     finally { this.busy.set(false); }
   }
   async enroll(): Promise<void> {
-    if (await this.submit('/repositories', { repo_slug: this.repoSlug.trim(), branch: this.branch.trim() })) this.repoSlug = '';
+    const repo_slug = this.repoSlug.trim();
+    const branch = this.branch.trim();
+    const verification_command = this.verificationCommand.trim();
+    if (!repo_slug || !branch || !verification_command) return;
+    if (await this.submit('/repositories', { repo_slug, branch, verification_command })) {
+      this.repoSlug = ''; this.verificationCommand = '';
+    }
   }
   async reportIncident(): Promise<void> {
     const { upstream, ...body } = this.incident;

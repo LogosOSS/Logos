@@ -25,8 +25,8 @@ async def enroll(body: RepositoryInput, by: str) -> dict:
             (
                 await conn.execute(
                     text("""
-            INSERT INTO security_repositories (repo_slug, branch, created_by)
-            VALUES (:repo_slug, :branch, :by) ON CONFLICT (repo_slug) DO NOTHING RETURNING *
+            INSERT INTO security_repositories (repo_slug, branch, verification_command, created_by)
+            VALUES (:repo_slug, :branch, :verification_command, :by) ON CONFLICT (repo_slug) DO NOTHING RETURNING *
         """),
                     {**body.model_dump(), "by": by},
                 )

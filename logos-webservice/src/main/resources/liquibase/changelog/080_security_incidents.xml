@@ -2,12 +2,13 @@
 <databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
-    <changeSet id="078-security-incidents" author="logos">
+    <changeSet id="080-security-incidents" author="logos">
         <sql><![CDATA[
             CREATE TABLE security_repositories (
                 id BIGSERIAL PRIMARY KEY,
                 repo_slug TEXT NOT NULL UNIQUE,
                 branch TEXT NOT NULL DEFAULT 'main',
+                verification_command TEXT NOT NULL CHECK (length(trim(verification_command)) > 0),
                 created_by TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );

@@ -15,7 +15,7 @@ from . import db, github, security_feeds, security_store
 from .artifacts import read_artifact
 from .asyncio_tasks import cancel_and_wait
 from .config import settings
-from .security_models import AssessmentReport, RepositoryInput
+from .security_models import AssessmentReport, RepositoryReference
 
 logger = logging.getLogger(__name__)
 POLL_SECONDS = 300
@@ -72,7 +72,7 @@ async def upstream_snapshots(incident: dict, report: dict) -> list[dict]:
     slugs = list(dict.fromkeys(incident.get("upstream_repositories", []) + report.get("upstream_repositories", [])))
     snapshots = []
     for slug in slugs[:10]:
-        slug = RepositoryInput(repo_slug=slug).repo_slug
+        slug = RepositoryReference(repo_slug=slug).repo_slug
         try:
             release = await github._get(f"/repos/{slug}/releases/latest")
             snapshots.append(
@@ -115,7 +115,7 @@ async def ensure_assessments() -> None:
 async def due_assessments() -> list[dict]:
     async with db.sessionmaker()() as conn:
         return [dict(r) for r in (await conn.execute(text("""
-            SELECT a.*, r.repo_slug, r.branch, i.revision AS incident_revision,
+            SELECT a.*, r.repo_slug, r.branch, r.verification_command, i.revision AS incident_revision,
                    row_to_json(i) AS incident,
                    (SELECT COALESCE(jsonb_agg(observation), '[]'::jsonb) FROM (
                        SELECT image_digest, scanned_at, findings FROM security_scan_observations
@@ -180,9 +180,10 @@ async def queue_assessment(row: dict) -> None:
             text("""
             INSERT INTO agent_sessions (id, workspace_id, task, status, created_by,
                 open_pull_request, deploy_to_dev, screenshot_paths, no_push, trigger_kind,
-                trigger_ref, priority, priority_reason, repo_url, repo_slug)
+                trigger_ref, priority, priority_reason, repo_url, repo_slug, verification_command)
             VALUES (:session, :workspace, :task, 'queued', 'LogosOSSAgent (security)',
-                :fix, false, '[]', :no_push, :kind, :ref, 90, 'Important security incident', :url, :slug)
+                :fix, false, '[]', :no_push, :kind, :ref, 90, 'Important security incident',
+                :url, :slug, :verification_command)
         """),
             {
                 "session": attempt,
@@ -194,6 +195,7 @@ async def queue_assessment(row: dict) -> None:
                 "ref": f"security:{row['id']}:{attempt}",
                 "url": f"https://github.com/{row['repo_slug']}.git",
                 "slug": row["repo_slug"],
+                "verification_command": row["verification_command"],
             },
         )
         target = "remediating" if fix else "analyzing"

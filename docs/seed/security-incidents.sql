@@ -3,9 +3,9 @@
 BEGIN;
 DELETE FROM security_incidents WHERE created_by = 'docs-role-screenshots';
 DELETE FROM security_repositories WHERE created_by = 'docs-role-screenshots';
-INSERT INTO security_repositories (repo_slug, branch, created_by) VALUES
-  ('docs-example/logos', 'main', 'docs-role-screenshots'),
-  ('docs-example/public-portal', 'main', 'docs-role-screenshots');
+INSERT INTO security_repositories (repo_slug, branch, verification_command, created_by) VALUES
+  ('docs-example/logos', 'main', 'make check', 'docs-role-screenshots'),
+  ('docs-example/public-portal', 'main', 'make check', 'docs-role-screenshots');
 INSERT INTO security_incidents
   (advisory_id, title, severity, known_exploited, source_url, summary, importance, created_by)
 VALUES
