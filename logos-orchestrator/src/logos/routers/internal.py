@@ -1021,13 +1021,25 @@ def _gather_insights(provider_id: int, config: Dict[str, Any]) -> Dict[str, Any]
     profiles = {row["model_name"]: effective_profile(provider_id, row) for row in rows}
     calibrated_at = {row["model_name"]: row.get("cal_calibrated_at") for row in rows}
     gpu_slices = {row["model_name"]: row.get("slice_gpu_count") for row in rows}
-    benchmarks: Dict[str, Any] = {}
-    for model, pair_id in pairs.items():
-        summary = nightly_store.selection_summary(pair_id)
-        ids = [row["benchmark_id"] for row in (summary["best_eligible"], summary["best_observed"]) if row]
-        with DBManager() as db:
-            runs = db.get_benchmark_runs(ids)
-        benchmarks[model] = benchmark_view(summary, runs, extract_serving_configuration(snapshot, model))
+    summaries = nightly_store.selection_summaries(list(pairs.values()))
+    chosen = {
+        model: [
+            row["benchmark_id"]
+            for row in (summaries[pair_id]["best_eligible"], summaries[pair_id]["best_observed"])
+            if row
+        ]
+        for model, pair_id in pairs.items()
+    }
+    with DBManager() as db:
+        runs = db.get_benchmark_runs(sorted({run_id for ids in chosen.values() for run_id in ids}))
+    benchmarks: Dict[str, Any] = {
+        model: benchmark_view(
+            summaries[pair_id],
+            {run_id: runs[run_id] for run_id in chosen[model] if run_id in runs},
+            extract_serving_configuration(snapshot, model),
+        )
+        for model, pair_id in pairs.items()
+    }
     calibrating = any(claim["provider_id"] == provider_id for claim in nightly_store.calibration_claims())
     return build_insights(
         provider_id=provider_id,

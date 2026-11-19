@@ -471,11 +471,14 @@ def test_the_insights_gather_profiles_benchmarks_and_the_live_worker(internal, m
     registry.peek_runtime_snapshot = lambda pid: _snapshot()
     monkeypatch.setattr(
         internal_mod.nightly_store,
-        "selection_summary",
-        lambda pair: {
-            "best_observed": {"benchmark_id": 2, "throughput": 5.0},
-            "best_eligible": None,
-            "comparisons": [],
+        "selection_summaries",
+        lambda pairs: {
+            pair: {
+                "best_observed": {"benchmark_id": 2, "throughput": 5.0},
+                "best_eligible": None,
+                "comparisons": [],
+            }
+            for pair in pairs
         },
     )
     monkeypatch.setattr(internal_mod.nightly_store, "calibration_claims", lambda: [{"provider_id": 7}])

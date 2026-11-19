@@ -52,7 +52,7 @@ import {
 } from './node-model-format';
 
 /** How often the page reads the state again while a calibration runs. It ends without an event for this page. */
-export const CALIBRATION_POLL_MS = 5000;
+export const CALIBRATION_POLL_MS = 10000;
 
 /** One model on one logosnode: its configuration and what Logos measured. */
 @Component({

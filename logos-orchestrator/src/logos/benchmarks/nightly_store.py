@@ -544,18 +544,33 @@ def adoption_candidate(pair_id, search, report):
 
 def selection_summary(pair_id, workload_id=None):
     """Return bounded comparison diagnostics without request or response content."""
+    return selection_summaries([pair_id], workload_id)[pair_id]
+
+
+def selection_summaries(pair_ids, workload_id=None):
+    """The comparison diagnostics of several pairs from one query, newest 100 runs of each."""
+    ids = list(dict.fromkeys(pair_ids))
+    runs_by_pair = {pair_id: [] for pair_id in ids}
+    if ids:
+        with DBManager() as db:
+            rows = db.session.execute(
+                text(
+                    "SELECT model_provider_id, id, configuration, metrics, sample_size FROM ("
+                    "SELECT model_provider_id, id, configuration, metrics, sample_size, "
+                    "ROW_NUMBER() OVER (PARTITION BY model_provider_id ORDER BY id DESC) AS recency "
+                    "FROM model_provider_benchmarks WHERE model_provider_id = ANY(:pairs)) ranked "
+                    "WHERE recency <= 100 ORDER BY model_provider_id, id DESC"
+                ),
+                {"pairs": ids},
+            ).mappings()
+            for row in rows:
+                runs_by_pair[row["model_provider_id"]].append(dict(row))
+    return {pair_id: _summarize(runs, workload_id) for pair_id, runs in runs_by_pair.items()}
+
+
+def _summarize(runs, workload_id):
     from logos.benchmarks.optimization import eligibility_issues, rate
 
-    with DBManager() as db:
-        runs = list(
-            db.session.execute(
-                text(
-                    "SELECT id, configuration, metrics, sample_size FROM model_provider_benchmarks "
-                    "WHERE model_provider_id = :pair ORDER BY id DESC LIMIT 100"
-                ),
-                {"pair": pair_id},
-            ).mappings()
-        )
     by_id = {run["id"]: run for run in runs}
     if not workload_id and runs:
         workload_id = runs[0]["configuration"].get("workload", {}).get("id")
