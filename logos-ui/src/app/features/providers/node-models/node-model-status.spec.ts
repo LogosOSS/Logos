@@ -47,6 +47,14 @@ describe('a recommendation of a benchmark', () => {
     expect(hasTuning(model(best, current), { max_num_seqs: 64, max_num_batched_tokens: 4096 })).toBe(false);
   });
 
+  it('counts a batch flag of the stored extra arguments as the value in force', () => {
+    const best = { max_num_seqs: 64 };
+
+    // The dedicated value is already 64, but the flag after it makes vLLM run with 8.
+    expect(hasTuning(model(best), { max_num_seqs: '8' })).toBe(true);
+    expect(hasTuning(model(best), { max_num_seqs: '64' })).toBe(false);
+  });
+
   it('is not offered without a comparable run or for a setting it does not apply', () => {
     expect(hasTuning(model({ tensor_parallel_size: 4 }, {}, false))).toBe(false);
     expect(hasTuning(model({ block_size: 16 }))).toBe(false);

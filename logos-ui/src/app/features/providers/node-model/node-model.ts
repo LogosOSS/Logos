@@ -44,7 +44,9 @@ import {
 } from './node-model-edit';
 import {
   advancedSettings,
-  batchedTokensOf,
+  BATCHING_FLAGS,
+  BATCHING_KEYS,
+  flagValueOf,
   describePlacement,
   describeRecommendation,
   entrySettings,
@@ -55,7 +57,7 @@ import {
   mbToGb,
   placementFigures,
   storedSettings,
-  withBatchedTokens,
+  withFlag,
 } from './node-model-format';
 
 /** How often the page reads the state again while a calibration runs. It ends without an event for this page. */
@@ -591,14 +593,20 @@ export class NodeModel implements OnInit {
     const kv = kvToGb(best['kv_cache_memory_bytes']);
     const ctx = Number(best['max_model_len']) || null;
     const values = this.adv()?.values ?? {};
-    const seqs = best['max_num_seqs'] != null ? String(best['max_num_seqs']) : null;
-    const tokens = best['max_num_batched_tokens'] != null ? String(best['max_num_batched_tokens']) : null;
+    const args = (values['extra_args'] ?? '').split('\n').map((line) => line.trim());
+    const batchApplied = BATCHING_KEYS.every((key) => {
+      if (best[key] == null) {
+        return true;
+      }
+      const value = String(best[key]);
+      // The flag decides in the launch command; the dedicated field must not say anything else.
+      return flagValueOf(args, BATCHING_FLAGS[key]) === value && (key !== 'max_num_seqs' || (values[key] ?? '').trim() === value);
+    });
     return (
       (tp === null || tp === d.tp) &&
       (kv === null || Math.abs(kv - d.kvGb) < 0.05) &&
       (ctx === null || ctx === d.ctx) &&
-      (seqs === null || (values['max_num_seqs'] ?? '').trim() === seqs) &&
-      (tokens === null || batchedTokensOf((values['extra_args'] ?? '').split('\n').map((l) => l.trim())) === tokens)
+      batchApplied
     );
   });
 
@@ -611,12 +619,17 @@ export class NodeModel implements OnInit {
     if (!d) {
       return;
     }
-    // The batch values do not depend on a measurement; the placement does.
-    if (best['max_num_seqs'] != null) {
-      this.setAdv('max_num_seqs', String(best['max_num_seqs']));
-    }
-    if (best['max_num_batched_tokens'] != null) {
-      this.setAdv('extra_args', withBatchedTokens(this.adv()?.values['extra_args'] ?? '', String(best['max_num_batched_tokens'])));
+    // The batch values do not depend on a measurement; the placement does. The extra arguments come after the
+    // dedicated setting in the launch command, and worker-wide arguments before them: the flag last decides.
+    for (const key of BATCHING_KEYS) {
+      if (best[key] == null) {
+        continue;
+      }
+      const value = String(best[key]);
+      if (key === 'max_num_seqs') {
+        this.setAdv(key, value);
+      }
+      this.setAdv('extra_args', withFlag(this.adv()?.values['extra_args'] ?? '', BATCHING_FLAGS[key], value));
     }
     const tp = Number(best['tensor_parallel_size']);
     if (tp && this.insight()?.calibration.results.some((r) => r.tp === tp)) {

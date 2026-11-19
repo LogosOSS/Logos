@@ -1332,15 +1332,24 @@ describe('NodeModel', () => {
 
       root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
       fixture.detectChanges();
-      page().adv.set({ ...page().adv()!, values: { ...page().adv()!.values, extra_args: '--foo\n--max-num-batched-tokens=2048' } });
+      page().adv.set({
+        ...page().adv()!,
+        values: { ...page().adv()!.values, extra_args: '--foo\n--max-num-batched-tokens=2048\n--max-num-seqs=8' },
+      });
       const button = (): HTMLButtonElement => root.querySelector<HTMLButtonElement>('.banner--rec button')!;
       expect(button().disabled).toBe(false);
       button().click();
       fixture.detectChanges();
 
+      // A flag in the extra arguments would win over the dedicated field in the launch command, so it is replaced and last.
       expect(page().adv()!.values['max_num_seqs']).toBe('64');
-      expect(page().adv()!.values['extra_args']).toBe('--foo\n--max-num-batched-tokens=4096');
+      expect(page().adv()!.values['extra_args']).toBe('--foo\n--max-num-seqs=64\n--max-num-batched-tokens=4096');
       expect(button().disabled).toBe(true);
+
+      // The dedicated field alone is not enough while another value is in force.
+      page().adv.set({ ...page().adv()!, values: { ...page().adv()!.values, extra_args: '--max-num-seqs=8\n--max-num-batched-tokens=4096' } });
+      fixture.detectChanges();
+      expect(button().disabled).toBe(false);
     });
   });
 

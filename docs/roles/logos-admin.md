@@ -445,7 +445,9 @@ If a comparable benchmark found better values, then the page shows the purple ba
 and how much faster the run was. The page compares the run with the stored configuration of the model.
 The nightly benchmark changes only the running lane and never the stored configuration.
 Select **Edit configuration** and then **Use recommendation** to store the values.
-The button sets the placement, **Max. parallel requests** and `--max-num-batched-tokens` in **Extra arguments**.
+The button sets the placement and **Max. parallel requests**.
+It also writes `--max-num-seqs` and `--max-num-batched-tokens` as the last lines of **Extra arguments**.
+A flag in **Extra arguments** decides over the field and over the global arguments of the node.
 A change of these batch values makes the calibration outdated.
 If the worker is offline, the page shows a banner and you cannot edit the model.
 

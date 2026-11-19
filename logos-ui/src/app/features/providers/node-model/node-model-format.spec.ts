@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   advancedSettings,
-  batchedTokensOf,
+  BATCHING_FLAGS,
+  flagValueOf,
   describePlacement,
   describeRecommendation,
   entrySettings,
@@ -12,7 +13,7 @@ import {
   kvToGb,
   mbToGb,
   storedSettings,
-  withBatchedTokens,
+  withFlag,
 } from './node-model-format';
 
 describe('node model formatting', () => {
@@ -70,25 +71,32 @@ describe('node model formatting', () => {
   });
 });
 
-describe('the batched-token limit of an entry', () => {
-  it('reads either spelling of the flag from the extra arguments', () => {
-    expect(batchedTokensOf(['--max-num-batched-tokens=2048', '--foo'])).toBe('2048');
-    expect(batchedTokensOf(['--foo', '--max-num-batched-tokens', '4096'])).toBe('4096');
-    expect(batchedTokensOf(['--foo'])).toBeNull();
-    expect(batchedTokensOf(undefined)).toBeNull();
+describe('the batch flags of an entry', () => {
+  it('reads either spelling of a flag from the extra arguments', () => {
+    expect(flagValueOf(['--max-num-batched-tokens=2048', '--foo'], '--max-num-batched-tokens')).toBe('2048');
+    expect(flagValueOf(['--foo', '--max-num-seqs', '8'], '--max-num-seqs')).toBe('8');
+    expect(flagValueOf(['--foo'], '--max-num-seqs')).toBeNull();
+    expect(flagValueOf(undefined, '--max-num-seqs')).toBeNull();
   });
 
-  it('is part of the stored settings of an entry', () => {
-    const entry = { model_name: 'm', capability: {}, overrides: { max_num_seqs: 8, extra_args: ['--max-num-batched-tokens=2048'] } };
+  it('are part of the stored settings, and a flag in the extra arguments is the value in force', () => {
+    const entry = {
+      model_name: 'm',
+      capability: {},
+      overrides: { max_num_seqs: 64, extra_args: ['--max-num-batched-tokens=2048', '--max-num-seqs=8'] },
+    };
 
-    expect(storedSettings(entry as never)).toMatchObject({ max_num_seqs: 8, max_num_batched_tokens: '2048' });
+    expect(storedSettings(entry as never)).toMatchObject({ max_num_seqs: '8', max_num_batched_tokens: '2048' });
+    expect(storedSettings({ model_name: 'm', capability: {}, overrides: { max_num_seqs: 64 } } as never)['max_num_seqs']).toBe(64);
     expect(storedSettings({ model_name: 'm', capability: {}, overrides: {} } as never)['max_num_batched_tokens']).toBeUndefined();
   });
 
-  it('is set once in the lines of the extra arguments, whatever spelling was there', () => {
-    expect(withBatchedTokens('--foo\n--max-num-batched-tokens=2048', 4096)).toBe('--foo\n--max-num-batched-tokens=4096');
-    expect(withBatchedTokens('--max-num-batched-tokens\n2048\n--foo', '4096')).toBe('--foo\n--max-num-batched-tokens=4096');
-    expect(withBatchedTokens('', 4096)).toBe('--max-num-batched-tokens=4096');
+  it('are set once and last in the lines of the extra arguments, whatever spelling was there', () => {
+    const tokens = BATCHING_FLAGS['max_num_batched_tokens'];
+    expect(withFlag('--foo\n--max-num-batched-tokens=2048', tokens, 4096)).toBe('--foo\n--max-num-batched-tokens=4096');
+    expect(withFlag('--max-num-batched-tokens\n2048\n--foo', tokens, '4096')).toBe('--foo\n--max-num-batched-tokens=4096');
+    expect(withFlag('--max-num-seqs=8\n--foo', BATCHING_FLAGS['max_num_seqs'], 64)).toBe('--foo\n--max-num-seqs=64');
+    expect(withFlag('', tokens, 4096)).toBe('--max-num-batched-tokens=4096');
   });
 
   it('is named with the placement of a recommendation', () => {

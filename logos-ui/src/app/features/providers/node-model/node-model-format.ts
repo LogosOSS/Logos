@@ -64,41 +64,57 @@ export function entrySettings(entry: NodeConfigEntry | undefined): Record<string
 /** The batch values a benchmark run can recommend besides the placement. */
 export const BATCHING_KEYS = ['max_num_seqs', 'max_num_batched_tokens'] as const;
 
-const BATCHED_TOKENS_FLAG = '--max-num-batched-tokens';
+/** The extra-argument flags that carry a batch value, and the setting each one overrides. */
+export const BATCHING_FLAGS: Record<(typeof BATCHING_KEYS)[number], string> = {
+  max_num_seqs: '--max-num-seqs',
+  max_num_batched_tokens: '--max-num-batched-tokens',
+};
 
-/** The value of `--max-num-batched-tokens` in a list of extra arguments, in either spelling; null when absent. */
-export function batchedTokensOf(args: readonly unknown[] | null | undefined): string | null {
+/** The value of a flag in a list of extra arguments, in either spelling; null when absent. */
+export function flagValueOf(args: readonly unknown[] | null | undefined, flag: string): string | null {
   const list = (args ?? []).map(String);
   for (let i = 0; i < list.length; i++) {
-    if (list[i] === BATCHED_TOKENS_FLAG) {
+    if (list[i] === flag) {
       return list[i + 1]?.trim() || null;
     }
-    if (list[i].startsWith(BATCHED_TOKENS_FLAG + '=')) {
-      return list[i].slice(BATCHED_TOKENS_FLAG.length + 1).trim() || null;
+    if (list[i].startsWith(flag + '=')) {
+      return list[i].slice(flag.length + 1).trim() || null;
     }
   }
   return null;
 }
 
-/** The extra arguments as lines of text, with `--max-num-batched-tokens` set to the value and no other copy of it. */
-export function withBatchedTokens(lines: string, value: number | string): string {
+/** The extra arguments as lines of text, with the flag set to the value last and no other copy of it. */
+export function withFlag(lines: string, flag: string, value: number | string): string {
   const kept: string[] = [];
-  const list = lines.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+  const list = lines
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
   for (let i = 0; i < list.length; i++) {
-    if (list[i] === BATCHED_TOKENS_FLAG) {
+    if (list[i] === flag) {
       i++;
-    } else if (!list[i].startsWith(BATCHED_TOKENS_FLAG + '=')) {
+    } else if (!list[i].startsWith(flag + '=')) {
       kept.push(list[i]);
     }
   }
-  return [...kept, `${BATCHED_TOKENS_FLAG}=${value}`].join('\n');
+  return [...kept, `${flag}=${value}`].join('\n');
 }
 
-/** What the stored entry sets: its settings, and the batched-token limit its extra arguments carry. */
+/**
+ * What the stored entry sets. The extra arguments come after the dedicated setting in the launch command,
+ * so a batch flag there is the value in force and stands in place of the dedicated value.
+ */
 export function storedSettings(entry: NodeConfigEntry | undefined): Record<string, unknown> {
-  const settings = entrySettings(entry);
-  const tokens = batchedTokensOf(Array.isArray(settings['extra_args']) ? settings['extra_args'] : []);
-  return tokens === null ? settings : { ...settings, max_num_batched_tokens: tokens };
+  const settings = { ...entrySettings(entry) };
+  const args = Array.isArray(settings['extra_args']) ? settings['extra_args'] : [];
+  for (const key of BATCHING_KEYS) {
+    const value = flagValueOf(args, BATCHING_FLAGS[key]);
+    if (value !== null) {
+      settings[key] = value;
+    }
+  }
+  return settings;
 }
 
 /** What a benchmark run recommends, in words: the placement and the batch values it recorded. */
