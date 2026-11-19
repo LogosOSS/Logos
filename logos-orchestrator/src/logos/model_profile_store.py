@@ -171,13 +171,13 @@ def material_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _selection_outside(profile: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
-    """Whether the KV cache size or context length chosen for the node lies outside what the calibration measured.
+    """Whether the KV cache, context length or tensor-parallel size chosen for the node lies outside what was measured.
 
     The worker applies the same rule to its own profile. A calibration measured under the
     node's current configuration is left alone: a repeat could not cover the choice either.
     """
-    kv_mb, context = selection_of(row.get("cfg_capability"), row.get("cfg_overrides"))
-    if selection_covered(dict(profile), kv_mb, context):
+    kv_mb, context, tp = selection_of(row.get("cfg_capability"), row.get("cfg_overrides"))
+    if selection_covered(dict(profile), kv_mb, context, tp):
         return False
     own = profile.get("config_fingerprint")
     return not (own and own == row.get("config_fingerprint"))

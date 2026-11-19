@@ -2224,10 +2224,10 @@ class DBManager:
         ).fetchall()
         if not candidates:
             return None
-        kv_mb, context = self._node_selection(provider_id, model_name)
+        kv_mb, context, tp = self._node_selection(provider_id, model_name)
         for candidate in candidates:
             shared = json.loads(candidate.profile) if isinstance(candidate.profile, str) else dict(candidate.profile)
-            if not selection_covered(shared, kv_mb, context):
+            if not selection_covered(shared, kv_mb, context, tp):
                 continue
             locked = self.session.execute(
                 text("""
@@ -2241,8 +2241,10 @@ class DBManager:
                 return locked
         return None
 
-    def _node_selection(self, provider_id: int, model_name: str) -> Tuple[Optional[float], Optional[int]]:
-        """The KV cache size (MB) and context length configured for a model on a node."""
+    def _node_selection(
+        self, provider_id: int, model_name: str
+    ) -> Tuple[Optional[float], Optional[int], Optional[int]]:
+        """The KV cache size (MB), context length and tensor-parallel size configured for a model on a node."""
         row = self.session.execute(
             text("""
                 SELECT capability, overrides
@@ -2252,7 +2254,7 @@ class DBManager:
             {"provider_id": provider_id, "model_name": model_name},
         ).fetchone()
         if row is None:
-            return None, None
+            return None, None, None
         return selection_of(_json_object(row.capability) or {}, _json_object(row.overrides) or {})
 
     def _adopt_shared_calibration(

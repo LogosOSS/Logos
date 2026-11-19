@@ -4,9 +4,9 @@ Logos compares a node's current key with the key a calibration was measured
 under; any difference marks the calibration stale.
 
 The key holds the conditions a measurement depends on. The operator's choice
-inside the measured range (KV cache size, context length) is not one of them:
-it is covered by the calibration or it is not, and it is tracked by the
-configuration fingerprint, which never triggers a measurement.
+inside what was measured (KV cache size, context length, tensor-parallel size)
+is not one of them: it is covered by the calibration or it is not, and it is
+tracked by the configuration fingerprint, which never triggers a measurement.
 """
 
 from __future__ import annotations
@@ -23,9 +23,10 @@ from logos_worker_node.vllm_compat import DEFAULT_VLLM
 
 logger = logging.getLogger(__name__)
 
-_KEY_SCHEMA = 2
-# The operator's pick inside the calibrated range; calibration ignores both.
-SELECTION_KEYS = frozenset({"kv_cache_memory_bytes", "max_model_len"})
+_KEY_SCHEMA = 1
+# The operator's pick inside what the calibration measured; calibration ignores all of them and measures every
+# tensor-parallel size that works, the full KV cache range and the contexts it reaches.
+SELECTION_KEYS = frozenset({"kv_cache_memory_bytes", "max_model_len", "tensor_parallel_size"})
 # A KV size a calibration is pinned to; unlike the pick above, it shapes the
 # measurement and therefore belongs to the key.
 CALIBRATION_KV_KEY = "calibration_kv_cache_memory_bytes"
@@ -51,8 +52,9 @@ def _configured(plan: dict[str, Any]) -> dict[str, Any]:
 def plan_hash(plan: dict[str, Any], *, metal: bool = False) -> str:
     """Hash of what a calibration of the model's lane depends on.
 
-    It leaves out the choice inside the measured range, so changing the KV
-    cache size or the context length does not invalidate a calibration. Metal
+    It leaves out the choice inside what was measured, so changing the KV
+    cache size, the context length or the tensor-parallel size does not
+    invalidate a calibration. Metal
     measures one point, with the context length it is given, and finds no
     range: the context length stays in its hash.
     """
@@ -196,12 +198,14 @@ def node_config_fingerprints(cfg: AppConfig, plans: list[dict[str, Any]]) -> dic
     return config_fingerprints(plans, models)
 
 
-def node_selections(cfg: AppConfig, plans: list[dict[str, Any]]) -> dict[str, tuple[float | None, int | None]]:
-    """KV cache size (MB) and context length chosen for each configured model."""
+def node_selections(
+    cfg: AppConfig, plans: list[dict[str, Any]]
+) -> dict[str, tuple[float | None, int | None, int | None]]:
+    """KV cache size (MB), context length and tensor-parallel size chosen for each configured model."""
     from logos_worker_node.calibration import _parse_kv_to_mb  # noqa: PLC0415
 
     plan_by_model = {p["model"]: p for p in plans if p.get("model")}
-    result: dict[str, tuple[float | None, int | None]] = {}
+    result: dict[str, tuple[float | None, int | None, int | None]] = {}
     for name in cfg.logos.configured_models if cfg.logos else []:
         plan = plan_by_model.get(name) or {}
         kv_text = str(plan.get("kv_cache_memory_bytes") or "").strip()
@@ -210,7 +214,8 @@ def node_selections(cfg: AppConfig, plans: list[dict[str, Any]]) -> dict[str, tu
         except ValueError:
             kv_mb = None
         context = plan.get("max_model_len")
-        result[name] = (kv_mb, int(context) if context else None)
+        tp = plan.get("tensor_parallel_size")
+        result[name] = (kv_mb, int(context) if context else None, int(tp) if tp else None)
     return result
 
 

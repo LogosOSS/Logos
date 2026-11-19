@@ -284,26 +284,26 @@ def test_the_nodes_choice_is_read_from_its_configuration():
     db = _db()
     row = SimpleNamespace(capability={"kv_cache_memory_bytes": "2G"}, overrides={"max_model_len": 8192})
     db.session.execute.return_value = SimpleNamespace(fetchone=lambda: row)
-    assert db._node_selection(7, "org/m") == (2048.0, 8192)
+    assert db._node_selection(7, "org/m") == (2048.0, 8192, None)
 
     # Text from the driver, and a choice that is not one.
     text_row = SimpleNamespace(capability='{"kv_cache_memory_bytes": "bad"}', overrides='{"max_model_len": "x"}')
     db.session.execute.return_value = SimpleNamespace(fetchone=lambda: text_row)
-    assert db._node_selection(7, "org/m") == (None, None)
+    assert db._node_selection(7, "org/m") == (None, None, None)
 
     db.session.execute.return_value = SimpleNamespace(fetchone=lambda: None)
-    assert db._node_selection(7, "org/m") == (None, None)
+    assert db._node_selection(7, "org/m") == (None, None, None)
 
 
 def test_a_kv_cache_choice_stored_under_overrides_counts_with_capability_first():
     db = _db()
     row = SimpleNamespace(capability={}, overrides={"kv_cache_memory_bytes": "8G"})
     db.session.execute.return_value = SimpleNamespace(fetchone=lambda: row)
-    assert db._node_selection(7, "org/m") == (8192.0, None)
+    assert db._node_selection(7, "org/m") == (8192.0, None, None)
 
     both = SimpleNamespace(capability={"kv_cache_memory_bytes": "2G"}, overrides={"kv_cache_memory_bytes": "8G"})
     db.session.execute.return_value = SimpleNamespace(fetchone=lambda: both)
-    assert db._node_selection(7, "org/m") == (2048.0, None)
+    assert db._node_selection(7, "org/m") == (2048.0, None, None)
 
 
 def test_a_choice_in_overrides_beyond_the_measured_range_skips_the_snapshot():

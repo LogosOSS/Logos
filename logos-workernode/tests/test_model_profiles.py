@@ -1366,6 +1366,52 @@ def test_a_choice_is_covered_when_it_lies_in_the_measured_range():
     assert not selection_covered(profile, 4096.0, 20000)
 
 
+def test_a_tensor_parallel_size_is_covered_only_when_it_was_measured():
+    from logos_worker_node.model_profiles import selection_covered
+
+    profile = _record(
+        tensor_parallel_size=1,
+        min_kv_cache_mb=1024.0,
+        max_kv_cache_mb=4096.0,
+        calibrations_by_tp=[
+            {
+                "tp": 1,
+                "min_kv_cache_mb": 1024.0,
+                "max_kv_cache_mb": 4096.0,
+                "kv_cache_to_max_model_len_pairs": [{"kv_mb": 4096.0, "max_model_len": 8192}],
+            },
+            {
+                "tp": 2,
+                "min_kv_cache_mb": 2048.0,
+                "max_kv_cache_mb": 16384.0,
+                "kv_cache_to_max_model_len_pairs": [
+                    {"kv_mb": 2048.0, "max_model_len": 8192},
+                    {"kv_mb": 16384.0, "max_model_len": 32768},
+                ],
+            },
+        ],
+    )
+
+    assert selection_covered(profile, None, None, 1)
+    assert selection_covered(profile, None, None, 2)
+    assert not selection_covered(profile, None, None, 4)
+    # The range is the one of the chosen size: 12 GB is out of reach at TP 1 and fine at TP 2.
+    assert not selection_covered(profile, 12288.0, None, 1)
+    assert selection_covered(profile, 12288.0, 8192, 2)
+    assert not selection_covered(profile, 12288.0, 32768, 2)
+
+
+def test_an_older_calibration_knows_the_one_size_its_lane_uses():
+    from logos_worker_node.model_profiles import selection_covered
+
+    profile = _record(tensor_parallel_size=2, min_kv_cache_mb=1024.0, max_kv_cache_mb=4096.0)
+
+    assert selection_covered(profile, 2048.0, None, 2)
+    assert not selection_covered(profile, 2048.0, None, 1)
+    # Nothing known about the size: nothing counts against the choice.
+    assert selection_covered(_record(min_kv_cache_mb=1024.0, max_kv_cache_mb=4096.0), 2048.0, None, 4)
+
+
 def test_a_choice_is_covered_when_nothing_is_known_about_the_range():
     from logos_worker_node.model_profiles import selection_covered
 
@@ -1386,10 +1432,10 @@ def test_a_choice_outside_the_range_makes_the_calibration_stale_without_changing
         }
     )
     key = {"org/m": {"plan_hash": "x"}}
-    assert registry.set_calibration_keys(key, {"org/m": "f1"}, {"org/m": (2048.0, None)}) == []
+    assert registry.set_calibration_keys(key, {"org/m": "f1"}, {"org/m": (2048.0, None, None)}) == []
     assert registry.get_profile("org/m").calibration_stale is not True
 
-    assert registry.set_calibration_keys(key, {"org/m": "f2"}, {"org/m": (8192.0, None)}) == ["org/m"]
+    assert registry.set_calibration_keys(key, {"org/m": "f2"}, {"org/m": (8192.0, None, None)}) == ["org/m"]
     assert registry.get_profile("org/m").calibration_stale is True
 
 
@@ -1429,7 +1475,7 @@ def test_a_choice_the_hardware_cannot_reach_does_not_make_a_calibration_of_this_
     )
     key = {"org/m": {"plan_hash": "x"}}
 
-    assert registry.set_calibration_keys(key, {"org/m": "fp-now"}, {"org/m": (20480.0, None)}) == []
+    assert registry.set_calibration_keys(key, {"org/m": "fp-now"}, {"org/m": (20480.0, None, None)}) == []
     assert registry.get_profile("org/m").calibration_stale is not True
 
 
@@ -1449,7 +1495,7 @@ def test_a_calibration_measured_under_another_configuration_is_stale_when_the_ch
     )
 
     changed = registry.set_calibration_keys(
-        {"org/m": {"plan_hash": "x"}}, {"org/m": "fp-now"}, {"org/m": (20480.0, None)}
+        {"org/m": {"plan_hash": "x"}}, {"org/m": "fp-now"}, {"org/m": (20480.0, None, None)}
     )
 
     assert changed == ["org/m"]

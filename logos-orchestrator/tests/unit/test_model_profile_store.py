@@ -248,6 +248,23 @@ def test_a_choice_in_overrides_counts_too():
     assert effective_profile(1, row)["calibration_stale"] is True
 
 
+def test_a_tensor_parallel_size_that_was_not_measured_leaves_the_calibration_stale_although_the_key_matches():
+    measured = {"tensor_parallel_size": 1, "calibrations_by_tp": [{"tp": 1, **_RANGE_ONLY}]}
+
+    def row(size, fingerprint="F2"):
+        row = _measured_row(
+            cfg_capability={"tensor_parallel_size": size}, cfg_overrides={}, config_fingerprint=fingerprint
+        )
+        row["profile"] = {**row["profile"], **measured}
+        return row
+
+    # Choosing the measured size is what "Set placement" stores: the calibration stays fresh.
+    assert effective_profile(1, row(1))["calibration_stale"] is False
+    assert effective_profile(1, row(2))["calibration_stale"] is True
+    # Measured under this very configuration: a repeat could not cover the choice either.
+    assert effective_profile(1, row(2, "F1"))["calibration_stale"] is False
+
+
 def test_a_calibration_measured_under_the_current_configuration_is_not_made_stale_again():
     row = _measured_row(cfg_capability={"kv_cache_memory_bytes": "8G"}, cfg_overrides={}, config_fingerprint="F1")
 

@@ -1069,16 +1069,16 @@ class ModelProfileRegistry:
         self,
         keys: dict[str, dict[str, Any]],
         fingerprints: dict[str, str] | None = None,
-        selections: dict[str, tuple[float | None, int | None]] | None = None,
+        selections: dict[str, tuple[float | None, int | None, int | None]] | None = None,
     ) -> list[str]:
         """Adopt the node's current keys; returns the models to re-measure.
 
         A changed key means the stored calibration no longer describes how the
-        node runs the model. So does a choice of KV cache size or context
-        length outside the measured range (``selections``: per model the KV
-        size in MB and the context length, ``None`` for not configured). A
-        calibration measured under the current configuration fingerprint is
-        left alone: a repeat could not cover the choice either.
+        node runs the model. So does a choice of KV cache size, context length
+        or tensor-parallel size outside what was measured (``selections``: per
+        model the KV size in MB, the context length and the size, ``None`` for
+        not configured). A calibration measured under the current configuration
+        fingerprint is left alone: a repeat could not cover the choice either.
         """
         from logos_worker_node.profile_fingerprint import key_hash  # noqa: PLC0415
 
@@ -1092,9 +1092,9 @@ class ModelProfileRegistry:
                 for name, (_, digest) in self._calibration_keys.items()
                 if name in previous and previous[name][1] != digest
             ]
-            for name, (kv_mb, context) in (selections or {}).items():
+            for name, (kv_mb, context, tp) in (selections or {}).items():
                 profile = self._profiles.get(name)
-                if name in changed or profile is None or selection_covered(profile, kv_mb, context):
+                if name in changed or profile is None or selection_covered(profile, kv_mb, context, tp):
                     continue
                 # Measured under this very configuration: another run would end the same way, so a choice
                 # the hardware cannot reach does not make it stale again and again.
@@ -1195,16 +1195,42 @@ class ModelProfileRegistry:
 _RECORD_FIELDS = frozenset(field.name for field in fields(ModelProfileRecord))
 
 
-def selection_covered(profile: ModelProfileRecord, kv_mb: float | None, context: int | None) -> bool:
-    """Whether a calibration covers the KV cache size and context length chosen for the lane.
+def _measurement_of(profile: ModelProfileRecord, tp: int | None) -> tuple[float | None, float | None, list[Any]] | None:
+    """The KV range and the context sweep that belong to one tensor-parallel size; None when it was not measured.
+
+    Without a size, or without the list of measured sizes and a size to compare with, the profile's own values
+    (those of the size its lane uses) stand for it.
+    """
+    own = (profile.min_kv_cache_mb, profile.max_kv_cache_mb, profile.kv_cache_to_max_model_len_pairs or [])
+    if tp is None:
+        return own
+    sizes = [run for run in (profile.calibrations_by_tp or []) if isinstance(run, dict)]
+    if sizes:
+        run = next((r for r in sizes if r.get("tp") == tp), None)
+        if run is None:
+            return None
+        return run.get("min_kv_cache_mb"), run.get("max_kv_cache_mb"), run.get("kv_cache_to_max_model_len_pairs") or []
+    # An older calibration knows one size only: the one its lane uses.
+    if profile.tensor_parallel_size and int(profile.tensor_parallel_size) != tp:
+        return None
+    return own
+
+
+def selection_covered(
+    profile: ModelProfileRecord, kv_mb: float | None, context: int | None, tp: int | None = None
+) -> bool:
+    """Whether a calibration covers the KV cache size, context length and tensor-parallel size chosen for the lane.
 
     Nothing chosen, or nothing known about the measured range, is covered: only
-    a value the calibration can show to be out of range counts against it.
+    a value the calibration can show to be out of range counts against it. The range is
+    that of the chosen tensor-parallel size; a size that was not measured is not covered.
     """
-    low, high = profile.min_kv_cache_mb, profile.max_kv_cache_mb
+    measured = _measurement_of(profile, tp)
+    if measured is None:
+        return False
+    low, high, pairs = measured
     if kv_mb is not None and low is not None and high is not None and not (low - 1e-6 <= kv_mb <= high + 1e-6):
         return False
-    pairs = profile.kv_cache_to_max_model_len_pairs
     if context is not None and pairs:
         reachable = [
             int(pair.get("max_model_len") or 0)

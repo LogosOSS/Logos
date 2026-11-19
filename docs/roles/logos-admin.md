@@ -460,6 +460,8 @@ You can edit a model that has a calibration. The worker must be online.
 ![Editor of a model configuration](/img/roles/logos-admin-node-model-edit.png)
 
 The **Current configuration** card shows the stored values. It changes only after you save.
+A choice of the size, the KV cache memory or the context length does not make the calibration
+outdated if the calibration measured it. A choice that the calibration did not measure makes it outdated.
 The figures below the sliders follow your changes.
 
 If a comparable benchmark found a better placement, then the purple banner
@@ -502,8 +504,9 @@ instead of the editor.
 3. Wait. The calibration takes several minutes.
 
 The button shows **Calibrating…** while the worker measures the model.
-The page shows the result when the calibration is done. You can calibrate a model
-if its calibration is outdated in the same way.
+Before it starts, the page asks you to confirm. The page shows the result when the calibration is done.
+You can calibrate a model if its calibration is outdated in the same way.
+Select **Stop calibration** and confirm to end the calibration of the node. The model in progress stays uncalibrated.
 
 ### Connect a model
 
