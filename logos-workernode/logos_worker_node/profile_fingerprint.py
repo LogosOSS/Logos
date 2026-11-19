@@ -72,12 +72,15 @@ def config_fingerprint(plan: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical(_configured(plan)).encode("utf-8")).hexdigest()
 
 
-def calibration_plan(plan: dict[str, Any]) -> dict[str, Any]:
+def calibration_plan(plan: dict[str, Any], *, keep_tensor_parallel: bool = False) -> dict[str, Any]:
     """The plan a calibration measures: the full range, whatever the lane is set to.
 
     A KV size to pin the measurement to comes only from ``CALIBRATION_KV_KEY``.
+    The tensor-parallel search drops the chosen size once, before it starts; each
+    attempt of that search then keeps the size it was given (``keep_tensor_parallel``).
     """
-    measured = {k: v for k, v in plan.items() if k not in SELECTION_KEYS and k != CALIBRATION_KV_KEY}
+    left_out = SELECTION_KEYS - {"tensor_parallel_size"} if keep_tensor_parallel else SELECTION_KEYS
+    measured = {k: v for k, v in plan.items() if k not in left_out and k != CALIBRATION_KV_KEY}
     pinned = plan.get(CALIBRATION_KV_KEY)
     if pinned:
         measured["kv_cache_memory_bytes"] = pinned

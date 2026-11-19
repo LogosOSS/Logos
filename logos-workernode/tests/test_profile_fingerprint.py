@@ -241,6 +241,11 @@ def test_a_calibration_plan_measures_the_full_range_unless_pinned_for_calibratio
 
     # The tensor-parallel size is a choice too: the measurement tries every size that works.
     assert calibration_plan(plan) == {"model": "org/m", "dtype": "auto"}
+    assert calibration_plan(plan, keep_tensor_parallel=True) == {
+        "model": "org/m",
+        "dtype": "auto",
+        "tensor_parallel_size": 2,
+    }
     pinned = calibration_plan({**plan, "calibration_kv_cache_memory_bytes": "4G"})
     assert pinned == {"model": "org/m", "dtype": "auto", "kv_cache_memory_bytes": "4G"}
 

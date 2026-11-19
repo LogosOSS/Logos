@@ -2398,7 +2398,7 @@ def calibrate_model(
 
     # The lane's KV size and context length are a choice inside the range this
     # measures; only a KV size pinned for calibration itself is kept.
-    plan = calibration_plan(plan)
+    plan = calibration_plan(plan, keep_tensor_parallel=True)
     try:
         return _calibrate_model_probe(
             plan,
@@ -4309,6 +4309,9 @@ def calibrate_with_tp_escalation(
 
     ``available_gpus`` defaults to the host's current GPU count.
     """
+    # The tensor-parallel size chosen for the lane is a selection, not a bound of
+    # the search: it is dropped here, before the search sets the size of each attempt.
+    plan = {k: v for k, v in plan.items() if k != "tensor_parallel_size"}
     model_name = plan["model"]
     _reset_calibration_log(log_dir, model_name)
 

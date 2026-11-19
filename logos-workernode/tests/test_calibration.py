@@ -364,7 +364,7 @@ def test_no_escalation_on_single_gpu(tmp_path):
 
 
 def test_no_escalation_when_already_max_tp(tmp_path):
-    """Model configured at tp=2 on 2-GPU host — max == configured, single attempt."""
+    """Model configured at tp=2 on a 2-GPU host: the choice does not bound the search."""
     cfg = {"logos": {"capabilities_models": [{"model": "big-model", "tensor_parallel_size": 2}]}}
     config_path = tmp_path / "config.yml"
     config_path.write_text(yaml.safe_dump(cfg))
@@ -379,7 +379,8 @@ def test_no_escalation_when_already_max_tp(tmp_path):
         mock_cm.return_value = _fail_result("big-model")
         result = _escalate(config_path, "big-model", 2, tmp_path)
 
-    assert mock_cm.call_count == 1  # already at max tp, single attempt
+    # The tp chosen for the lane is not a floor: after the largest size fails, the search falls back to 1.
+    assert mock_cm.call_count == 2
     assert not result.success
 
 
@@ -592,8 +593,9 @@ def test_calibrate_with_tp_escalation_honors_hf_max_tp_ceiling(tmp_path):
     assert seen_tps[0] == 2  # HF ceiling, not hardware max (8)
     assert 8 not in seen_tps
 
+    # The tp chosen for the lane is a selection: it neither raises nor lowers the search.
     seen_tps = _seen_tps({"tensor_parallel_size": 4, "_hf_max_tp_ceiling": 1})
-    assert seen_tps[0] == 4  # ceiling below the pinned tp is ignored
+    assert seen_tps[0] == 1
 
 
 def test_calibrate_with_tp_escalation_widens_to_hardware_max_on_ceiling_failure(tmp_path):
@@ -881,10 +883,9 @@ def test_calibrate_with_tp_escalation_does_not_skip_fallback_on_non_capacity_no_
     assert result.tensor_parallel_size == 1
 
 
-def test_calibrate_with_tp_escalation_honors_explicit_tp_despite_capacity_exhaustion(tmp_path):
-    """The same VRAM-shortfall skip must not apply when the orchestrator
-    explicitly pinned the lower tp itself — an explicit pin is honored
-    regardless of what failed above it."""
+def test_the_tp_chosen_for_the_lane_does_not_lift_the_capacity_exhaustion_skip(tmp_path):
+    """The tp chosen for the lane is a selection the search does not see, so
+    a VRAM shortfall at the larger size still ends the search there."""
 
     def side_effect(plan, **kw):
         tp = plan.get("tensor_parallel_size", 1)
@@ -905,7 +906,7 @@ def test_calibrate_with_tp_escalation_honors_explicit_tp_despite_capacity_exhaus
     seen_tps: list[int] = []
     with patch("logos_worker_node.calibration.calibrate_model", side_effect=side_effect):
         result = calibrate_with_tp_escalation(
-            {"model": "big-model", "tensor_parallel_size": 1},  # explicit pin
+            {"model": "big-model", "tensor_parallel_size": 1},  # the lane's choice
             vllm_binary="vllm",
             port=11499,
             log_dir=tmp_path,
@@ -914,9 +915,8 @@ def test_calibrate_with_tp_escalation_honors_explicit_tp_despite_capacity_exhaus
             available_gpus=2,
         )
 
-    assert seen_tps == [2, 1]  # fallback attempted despite the shortfall
-    assert result.success
-    assert result.tensor_parallel_size == 1
+    assert seen_tps == [2]  # the shortfall ends the search
+    assert not result.success
 
 
 def test_calibrate_with_tp_escalation_stops_on_normalized_fatal_error(tmp_path):
@@ -4365,8 +4365,11 @@ def test_a_model_that_works_at_one_size_lists_only_that_size(tmp_path):
     result = _escalate_plan(
         tmp_path,
         4,
-        lambda plan, **kw: _success_result("big-model", tensor_parallel_size=plan["tensor_parallel_size"]),
-        tensor_parallel_size=4,
+        lambda plan, **kw: (
+            _success_result("big-model", tensor_parallel_size=4)
+            if plan["tensor_parallel_size"] == 4
+            else _fail_result("big-model")
+        ),
     )
 
     assert result.other_tp_results == []
@@ -4406,3 +4409,27 @@ def test_pairs_with_parallelity_are_kept_per_size():
         {"kv_mb": 2048.0, "max_model_len": 8192, "parallelity": None},
     ]
     assert _pairs_of(_success_result("m")) is None
+
+
+def test_every_attempt_of_the_tp_search_probes_the_size_it_was_given(tmp_path):
+    """The real calibrate_model must hand each attempt's tp to the probe."""
+    probed: list[int] = []
+
+    def probe(plan, **kw):
+        probed.append(plan["tensor_parallel_size"])
+        assert "kv_cache_memory_bytes" not in plan and "max_model_len" not in plan
+        return _success_result("big-model", tensor_parallel_size=plan["tensor_parallel_size"])
+
+    with patch("logos_worker_node.calibration._calibrate_model_probe", side_effect=probe):
+        result = calibrate_with_tp_escalation(
+            {"model": "big-model", "tensor_parallel_size": 1, "kv_cache_memory_bytes": "8G", "max_model_len": 4096},
+            vllm_binary="vllm",
+            port=11499,
+            log_dir=tmp_path,
+            sleep_level=0,
+            ready_timeout_s=60.0,
+            available_gpus=4,
+        )
+    assert result.success
+    assert probed[0] == 4
+    assert set(probed) <= {1, 2, 4}
