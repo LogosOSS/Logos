@@ -36,8 +36,8 @@
     </button>
   } @else {
     <app-data-table
-      [columns]="['Model', 'Calibration', 'Configured', '']"
-      gridCols="minmax(0, 1fr) 230px 200px 44px"
+      [columns]="['Model', 'Calibration', 'Placement', '']"
+      gridCols="minmax(0, 1fr) 230px minmax(200px, 340px) 44px"
       [loading]="loading()"
       [empty]="models().length === 0"
       emptyMessage="No models yet. They appear here once the worker announces them or you configure them."
@@ -57,9 +57,15 @@
               <span [class]="'status-dot status-dot--' + label.tone" aria-hidden="true"></span>{{ label.text }}
             </span>
           </div>
-          <div role="cell" data-label="Configured">
-            <span class="status">
-              <span [class]="'status-dot status-dot--' + (model.configured ? 'ok' : 'gray')" aria-hidden="true"></span>{{ model.configured ? 'Configured' : 'Not configured' }}
+          <div role="cell" data-label="Placement">
+            <span class="status" [attr.title]="model.configured ? null : 'The worker chooses TP, KV cache and context itself.'">
+              <span [class]="'status-dot status-dot--' + (model.configured ? 'ok' : 'gray')" aria-hidden="true"></span>
+              {{ model.configured ? 'Set' : 'Automatic' }}
+              @if (model.configured && model.placement) {
+                <span class="muted">{{ describePlacement(model.placement) }}</span>
+              } @else if (!model.configured && model.running) {
+                <span class="muted">runs with {{ describePlacement(model.running) }}</span>
+              }
             </span>
           </div>
           <div class="col-actions" role="cell">

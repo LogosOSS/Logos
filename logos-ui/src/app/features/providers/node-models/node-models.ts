@@ -10,6 +10,7 @@ import { ModalFormComponent } from '../../../shared/components/modal/modal-form/
 import { AppSelectOption, SelectComponent } from '../../../shared/components/select/select';
 import { loadFailure, saveFailure } from '../node-model/node-model-edit';
 import { ErrorMessageComponent } from '../../../shared/components/error-message/error-message';
+import { describePlacement } from '../node-model/node-model-format';
 import { CalibrationLabel, calibrationLabel, hasTuning } from './node-model-status';
 
 /** The models of one logosnode: calibration and configuration state. */
@@ -121,6 +122,10 @@ export class NodeModels implements OnInit {
 
   calibrationLabel(model: NodeModelInsight): CalibrationLabel {
     return calibrationLabel(model);
+  }
+
+  describePlacement(settings: Record<string, unknown>): string {
+    return describePlacement(settings);
   }
 
   hasTuning(model: NodeModelInsight): boolean {

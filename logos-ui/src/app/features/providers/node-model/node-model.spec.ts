@@ -122,7 +122,8 @@ describe('NodeModel', () => {
     expect(root.textContent).toContain('wake from sleep 1 s');
     expect(root.querySelectorAll('[role="radio"]').length).toBe(1);
     expect(root.textContent).toContain('Calibrated');
-    expect(root.textContent).toContain('Configured');
+    expect(root.textContent).toContain('Placement');
+    expect(root.textContent).toContain('Set');
     expect(root.textContent).toContain('Online');
   });
 
@@ -152,7 +153,20 @@ describe('NodeModel', () => {
     service['getNodeInsights'].mockResolvedValue(insights([insight({ configured: false })]));
     const root = await create();
 
-    expect(root.textContent).toContain('calibrated but has no placement');
+    expect(root.textContent).toContain('The worker chooses TP, KV cache and context itself');
+  });
+
+  it('says what the worker chose for a model without a placement that a lane runs', async () => {
+    const running = { tensor_parallel_size: 1, kv_cache_memory_bytes: '3G', max_model_len: 16368 };
+    service['getNodeInsights'].mockResolvedValue(insights([insight({ configured: false, running })]));
+    const root = await create();
+
+    expect(root.textContent).toContain('It runs this model with TP 1 · KV 3 GB per GPU · context 16368 now.');
+
+    service['getNodeInsights'].mockResolvedValue(insights([insight({ configured: false, running: null })]));
+    TestBed.resetTestingModule();
+    const without = await create();
+    expect(without.textContent).not.toContain('It runs this model with');
   });
 
   it('warns when the worker is offline', async () => {
@@ -413,7 +427,7 @@ describe('NodeModel', () => {
       const labels = Array.from(root.querySelectorAll('.head button')).map((b) => b.textContent!.trim());
 
       expect(labels).toEqual(['Edit settings', 'Calibrate model']);
-      expect(root.textContent).not.toContain('Configure model');
+      expect(root.textContent).not.toContain('Set placement');
     });
 
     it('starts a model without a placement from the best benchmark and calls it Configure', async () => {
@@ -429,7 +443,7 @@ describe('NodeModel', () => {
         ]),
       );
       const root = await create();
-      expect(root.querySelector('.head button')!.textContent).toContain('Configure model');
+      expect(root.querySelector('.head button')!.textContent).toContain('Set placement');
 
       click(root, '.head button.btn-primary');
       fixture.detectChanges();

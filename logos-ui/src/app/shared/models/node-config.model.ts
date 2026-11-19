@@ -77,6 +77,10 @@ export interface NodeModelInsight {
   source: 'ui' | 'yaml_import' | 'tuning' | null;
   /** The row places the model: TP, KV cache and context are set. */
   configured: boolean;
+  /** TP, KV cache and context of that placement; null while the worker places the model itself. */
+  placement?: Record<string, unknown> | null;
+  /** What a lane of the model runs with now; for a model without a placement, what the worker chose. */
+  running?: Record<string, unknown> | null;
   calibration: CalibrationInsight;
   benchmark: BenchmarkInsight | null;
   /** The worker calibrates (for the whole node, not this model alone). */

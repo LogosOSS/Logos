@@ -413,8 +413,9 @@ Each row shows two statuses:
 
 - **Calibration**: **Calibrated**, **Not calibrated**, **Outdated** or **Unsupported**.
   Logos measures the memory use of a model during a calibration.
-- **Configured**: **Configured** if the model has a placement (GPUs, KV cache and
-  context length). Otherwise **Not configured**.
+- **Placement**: **Set** if the model has a placement (GPUs, KV cache and
+  context length). The row then shows these values. Otherwise the status is
+  **Automatic**, and the worker chooses the placement itself. The model runs in both cases.
 
 The chip at the top shows **Worker online** or **Worker offline**. Select a row
 to open the page of the model.
@@ -447,7 +448,7 @@ If the worker is offline, the page shows a banner and you cannot edit the model.
 You can edit a model that has a calibration. The worker must be online.
 
 1. Open the model page.
-2. Select **Edit configuration**. For a model without a placement, select **Configure model**.
+2. Select **Edit configuration**. For a model without a placement, select **Set placement**.
 3. Select the number of GPUs. Only sizes that the calibration measured are available.
 4. Set the KV cache memory. Use whole GB inside the measured range.
 5. Set the maximum context length. The limit follows the chosen KV cache size.
@@ -511,7 +512,7 @@ if its calibration is outdated in the same way.
 
 ![Dialog to connect a model to a node](/img/roles/logos-admin-node-connect-model.png)
 
-The model is in the list as **Not calibrated** and **Not configured**.
+The model is in the list as **Not calibrated** with the placement **Automatic**.
 The dialog shows only models that the node does not list yet.
 
 ### Node settings

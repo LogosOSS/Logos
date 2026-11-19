@@ -13,6 +13,7 @@ const model = (overrides: Partial<NodeModelInsight> = {}): NodeModelInsight => (
   row: true,
   source: 'ui',
   configured: true,
+  placement: { tensor_parallel_size: 4, kv_cache_memory_bytes: '4G', max_model_len: 32768 },
   calibration: { status: 'calibrated', reason: null, results: [] },
   benchmark: null,
   calibrating: false,
@@ -67,14 +68,24 @@ describe('NodeModels', () => {
   beforeEach(() => TestBed.resetTestingModule());
 
   it('loads the insights of its node and lists every model', async () => {
-    await create(insights([model(), model({ model_name: 'org/b', configured: false })]));
+    await create(insights([model(), model({ model_name: 'org/b', configured: false, placement: null })]));
 
     expect(getNodeInsights).toHaveBeenCalledWith(4);
     const rows = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('a.table-row'));
     expect(rows.map((r) => r.querySelector('.provider-name')?.textContent)).toEqual(['org/a', 'org/b']);
     expect(rows[0].getAttribute('href')).toBe('/providers/4/models?model=org%2Fa');
-    expect(text()).toContain('Configured');
-    expect(text()).toContain('Not configured');
+    expect(text()).toContain('Set');
+    expect(text()).toContain('Automatic');
+    expect(rows[0].textContent).toContain('TP 4');
+    expect(rows[1].textContent).not.toContain('TP');
+  });
+
+  it('shows what a lane runs with for a model without a placement', async () => {
+    const running = { tensor_parallel_size: 1, kv_cache_memory_bytes: '3G', max_model_len: 16368 };
+    await create(insights([model({ configured: false, placement: null, running })]));
+
+    expect(text()).toContain('Automatic');
+    expect(text()).toContain('runs with TP 1 · KV 3 GB per GPU · context 16368');
   });
 
   it('shows whether the worker is online', async () => {

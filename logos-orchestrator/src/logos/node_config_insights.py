@@ -19,6 +19,32 @@ def is_configured(entry: Mapping[str, Any] | None) -> bool:
     return all(merged.get(key) not in (None, "") for key in REQUIRED_PLACEMENT)
 
 
+def placement_of(entry: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """TP, KV cache and context that place the model, or None while the worker places it itself."""
+    if not is_configured(entry):
+        return None
+    merged = {**(entry.get("overrides") or {}), **(entry.get("capability") or {})}
+    return {key: merged[key] for key in REQUIRED_PLACEMENT}
+
+
+def running_placement(snapshot: Mapping[str, Any] | None, model: str) -> dict[str, Any] | None:
+    """TP, KV cache and context a lane of the model runs with now, or None while no lane holds the model.
+
+    For a model without a placement of its own, these are the values the planner of the worker chose.
+    """
+    lanes = (((snapshot or {}).get("runtime") or {}).get("lanes")) or []
+    for lane in lanes:
+        if not isinstance(lane, dict) or lane.get("model") != model:
+            continue
+        if lane.get("runtime_state") not in ("loaded", "running", "sleeping"):
+            continue
+        vllm = ((lane.get("lane_config") or {}).get("vllm_config")) or {}
+        found = {key: vllm[key] for key in REQUIRED_PLACEMENT if vllm.get(key) not in (None, "")}
+        if found:
+            return found
+    return None
+
+
 def _pairs(raw: Any) -> list[dict[str, Any]]:
     return [
         {"kv_mb": p.get("kv_mb"), "max_model_len": p.get("max_model_len"), "measured": True}
@@ -208,6 +234,8 @@ def build_insights(
                 "row": entry is not None,
                 "source": sources.get(name),
                 "configured": is_configured(entry),
+                "placement": placement_of(entry),
+                "running": running_placement(snapshot, name),
                 "calibration": calibration_view(
                     profiles.get(name), calibrated_at.get(name), (gpu_slices or {}).get(name)
                 ),

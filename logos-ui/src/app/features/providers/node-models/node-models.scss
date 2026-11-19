@@ -41,10 +41,17 @@
 
 .status {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 2px 8px;
   font-size: var(--font-size-md);
   color: rgb(var(--color-typography-0));
+
+  // The values of a placement after its name, quieter than the name.
+  .muted {
+    font-size: var(--font-size-sm);
+    color: rgb(var(--color-typography-700));
+  }
 }
 
 .chevron {

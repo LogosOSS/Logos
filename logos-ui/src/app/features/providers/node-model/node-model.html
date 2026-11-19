@@ -15,7 +15,7 @@
             (click)="startEdit()"
           >
             <i class="pi pi-pencil" aria-hidden="true"></i>
-            {{ !measured() ? 'Edit settings' : insight()?.configured ? 'Edit configuration' : 'Configure model' }}
+            {{ !measured() ? 'Edit settings' : insight()?.configured ? 'Edit configuration' : 'Set placement' }}
           </button>
         }
         @if (canCalibrate()) {
@@ -79,7 +79,7 @@
       @if (measured()) {
         <div class="pill">
           <span [class]="'status-dot status-dot--' + (insight()?.configured ? 'ok' : 'gray')" aria-hidden="true"></span>
-          <div><small>Configuration</small><b>{{ insight()?.configured ? 'Configured' : 'Not configured' }}</b></div>
+          <div><small>Placement</small><b>{{ insight()?.configured ? 'Set' : 'Automatic' }}</b></div>
         </div>
       }
       <div class="pill">
@@ -425,13 +425,13 @@
               }
             } @else {
               <div class="empty">
-                <b>Not configured yet</b>
+                <b>Automatic placement</b>
                 <span>
-                  @if (insight()?.calibration?.status === 'calibrated') {
-                    This model is calibrated but has no placement. Configure it to let the worker serve it.
-                  } @else {
-                    The calibration no longer matches how {{ providerName() }} runs this model. Calibrate it again to place the model.
+                  The worker chooses TP, KV cache and context itself.
+                  @if (insight()?.running; as run) {
+                    It runs this model with {{ describePlacement(run) }} now.
                   }
+                  Set them here to choose them yourself.
                 </span>
               </div>
             }

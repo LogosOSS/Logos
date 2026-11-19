@@ -117,6 +117,60 @@ def test_the_best_eligible_run_carries_the_throughput_of_the_run_it_was_compared
     assert view["best_eligible"]["baseline_throughput"] == 48.4
 
 
+def test_a_placed_model_carries_its_placement_and_an_automatic_one_none():
+    placed = {
+        "model_name": "org/a",
+        "capability": {"tensor_parallel_size": 2, "kv_cache_memory_bytes": "4G"},
+        "overrides": {"max_model_len": 8192, "quantization": "awq"},
+    }
+    automatic = {"model_name": "org/b", "capability": {}, "overrides": {"quantization": "awq"}}
+
+    result = build_insights(
+        provider_id=1,
+        config={"revision": 1, "entries": [placed, automatic]},
+        sources={},
+        profiles={},
+        calibrated_at={},
+        snapshot=None,
+        supports={},
+        calibrating=False,
+        benchmarks={},
+    )
+
+    first, second = result["models"]
+    assert first["placement"] == {"tensor_parallel_size": 2, "kv_cache_memory_bytes": "4G", "max_model_len": 8192}
+    assert first["configured"] is True
+    assert second["placement"] is None and second["configured"] is False
+
+
+def test_a_model_in_a_lane_carries_what_it_runs_with():
+    lane = {
+        "model": "org/a",
+        "runtime_state": "running",
+        "lane_config": {
+            "vllm_config": {"tensor_parallel_size": 1, "kv_cache_memory_bytes": "3G", "max_model_len": 16368}
+        },
+    }
+    cold = {"model": "org/b", "runtime_state": "cold", "lane_config": {"vllm_config": {"tensor_parallel_size": 2}}}
+    snapshot = {"capabilities_models": ["org/a", "org/b"], "configured_models": [], "runtime": {"lanes": [lane, cold]}}
+
+    result = build_insights(
+        provider_id=1,
+        config={"revision": 1, "entries": []},
+        sources={},
+        profiles={},
+        calibrated_at={},
+        snapshot=snapshot,
+        supports={},
+        calibrating=False,
+        benchmarks={},
+    )
+
+    first, second = result["models"]
+    assert first["running"] == {"tensor_parallel_size": 1, "kv_cache_memory_bytes": "3G", "max_model_len": 16368}
+    assert second["running"] is None
+
+
 def test_each_model_carries_its_catalog_id_when_it_has_one():
     config = {"revision": 1, "entries": [{"model_name": "org/a", "capability": {}, "overrides": {}}]}
 
