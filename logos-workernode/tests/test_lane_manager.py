@@ -1083,6 +1083,68 @@ async def test_auto_place_gpu_devices_picks_best_fit_single_gpu() -> None:
     assert placed.gpu_devices == "0"
 
 
+def _two_gpu_manager(selection: str) -> LaneManager:
+    """GPU 0 has the most free memory; the model's own choice may point to GPU 1 instead."""
+    from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry
+
+    profiles = ModelProfileRegistry()
+    profiles._profiles["Qwen/Qwen2.5-0.5B-Instruct"] = ModelProfileRecord(  # noqa: SLF001
+        loaded_vram_mb=6000.0,
+        engine="vllm",
+    )
+
+    async def _snapshot() -> DeviceSummary:
+        return DeviceSummary(
+            timestamp=datetime.now(timezone.utc),
+            mode="nvidia",
+            nvidia_smi_available=True,
+            devices=[
+                DeviceInfo(
+                    device_id=f"gpu{index}",
+                    kind="nvidia",
+                    memory_total_mb=40960.0,
+                    memory_free_mb=free,
+                    extra={"index": index},
+                )
+                for index, free in enumerate((40000.0, 30000.0))
+            ],
+            total_memory_mb=2 * 40960.0,
+            free_memory_mb=70000.0,
+        )
+
+    return LaneManager(
+        WorkerConfig(gpu_devices="all"),
+        lane_port_start=15100,
+        lane_port_end=15110,
+        model_profiles=profiles,
+        gpu_snapshot=_snapshot,
+        model_gpu_selection=lambda _model: selection,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_lane_takes_only_the_gpus_chosen_for_its_model() -> None:
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+
+    unrestricted = await _two_gpu_manager("")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+    chosen = await _two_gpu_manager("1")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    # Without a choice the roomier GPU 0 wins; with GPU 1 chosen the lane never leaves it.
+    assert unrestricted.gpu_devices == "0"
+    assert chosen.gpu_devices == "1"
+
+
+@pytest.mark.asyncio
+async def test_a_choice_outside_the_worker_pool_leaves_no_gpu_for_the_lane() -> None:
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+    manager = _two_gpu_manager("7")
+
+    placed = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    # No GPU of the choice exists: the lane is not pinned to one the model did not choose.
+    assert placed.gpu_devices == ""
+
+
 def _faulted_gpu0_manager(
     *,
     lost: bool = False,

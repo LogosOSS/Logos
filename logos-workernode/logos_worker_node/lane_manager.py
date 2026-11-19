@@ -359,8 +359,11 @@ class LaneManager:
         on_lane_slept: Callable[[], Awaitable[None]] | None = None,
         on_lane_added: Callable[[], Awaitable[None]] | None = None,
         on_lane_woken: Callable[[], Awaitable[None]] | None = None,
+        model_gpu_selection: Callable[[str], str] | None = None,
     ) -> None:
         self._global_config = global_config
+        # The GPUs an admin chose for one model ("" or "all" for none): they narrow the worker's GPU pool.
+        self._model_gpu_selection = model_gpu_selection or (lambda _model: "")
         self._vllm_engine_config = vllm_engine_config or VllmEngineConfig()
         # Only consulted when is_metal_backend() is true; harmless defaults
         # otherwise, so the CUDA path needs no conditional.
@@ -1229,6 +1232,9 @@ class LaneManager:
             pool = self._global_config.gpu_devices
             if pool and pool.lower() != "all":
                 available = min(available, len(set(self._parse_gpu_selector(pool))))
+            chosen = self._model_gpu_selection(new_lc.model).strip().lower()
+            if chosen and chosen != "all":
+                available = min(available, len(set(self._parse_gpu_selector(chosen))))
             required = new_lc.vllm_config.parallel_gpu_count
             if required > available:
                 raise ValueError(
@@ -2403,6 +2409,14 @@ class LaneManager:
         )
         return new_config
 
+    def _allowed_gpu_indices(self, model: str, available_indices: set[int]) -> list[int]:
+        """The GPUs a lane of the model may take: the worker's pool, narrowed to the model's own choice."""
+        pool = self._parse_gpu_selector(self._global_config.gpu_devices, available_indices)
+        chosen = (self._model_gpu_selection(model) or "").strip().lower()
+        if not chosen or chosen == "all":
+            return pool
+        return self._parse_gpu_selector(chosen, set(pool))
+
     @staticmethod
     def _parse_gpu_selector(selector: str, allowed_indices: set[int] | None = None) -> list[int]:
         raw = (selector or "").strip().replace(" ", "")
@@ -2840,7 +2854,7 @@ class LaneManager:
             return lane_config
 
         available_indices = {int(row["index"]) for row in device_rows}
-        allowed_indices = self._parse_gpu_selector(self._global_config.gpu_devices, available_indices)
+        allowed_indices = self._allowed_gpu_indices(lane_config.model, available_indices)
         if not allowed_indices:
             if faulted_indices:
                 raise RuntimeError(

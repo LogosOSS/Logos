@@ -1301,6 +1301,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         auto_reboot_on_stuck_gpu=cfg.worker.auto_reboot_on_stuck_gpu and not is_metal_backend(),
         reboot_sentinel_path=cfg.worker.reboot_sentinel_path,
         metal_config=cfg.engines.metal,
+        # The GPUs chosen for a model in its stored configuration narrow the worker's pool for its lanes.
+        model_gpu_selection=lambda model: (
+            str(((cfg.logos.capabilities_overrides.get(model) if cfg.logos else None) or {}).get("gpu_devices") or "")
+        ),
         # The reactive half of the RAM-cache re-plan: the moment a lane's
         # weights land in host RAM, the cache re-plans against the new
         # MemAvailable instead of waiting for the next tick. The closure
