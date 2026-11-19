@@ -1,5 +1,5 @@
 # docker-compose.yml — Production GPU worker node (pulls the pre-built vLLM image)
-# REGISTRY defaults to the public GHCR mirror; deployments override it with Harbor.
+# REGISTRY defaults to ghcr.io/logososs for both deployments and self-hosted installs.
 # For local development, use: docker compose -f docker-compose.dev.yml up --build
 #
 # Config split:

@@ -20,7 +20,7 @@ the Angular UI block below). Then open `http://localhost:4200/`.
 
 | Compose file | Purpose |
 | --- | --- |
-| `docker-compose.yaml` | Production. It pulls the released images from Harbor. |
+| `docker-compose.yaml` | Production. It pulls published images from GHCR. |
 | `docker-compose.dev.yaml` | Development. It builds all images from the source. |
 | `docker-compose.screenshots.yaml` | A separate stack for documentation screenshots. See `docs/AGENTS.md`. |
 
