@@ -517,6 +517,8 @@ class LaneManager:
         self._served_models: dict[str, int | None] = {}
         self._crash_restart_counts: dict[str, int] = {}
         self._static_lane_ids: set[str] = set()
+        # Pins auto-placement chose itself, by lane: re-evaluated when the model's GPU choice changes.
+        self._auto_pins: dict[str, str] = {}
         # lane -> what the node's overrides replaced in its launch config, so a
         # removed override gives the original back; explicit lanes keep theirs.
         self._override_baselines: dict[str, dict[str, Any]] = {}
@@ -1973,6 +1975,7 @@ class LaneManager:
         self._override_baselines.pop(lane_id, None)
         self._staged_baselines.pop(lane_id, None)
         self._explicit_lanes.discard(lane_id)
+        self._auto_pins.pop(lane_id, None)
 
     def _forget_sleep_state(self, lane_id: str) -> None:
         self._known_sleep_state.pop(lane_id, None)
@@ -2754,7 +2757,44 @@ class LaneManager:
                 "(nvidia-smi reports them as failed; reset or reboot the node)"
             )
 
+    def _model_restricts_gpus(self, model: str) -> bool:
+        """Whether the model's own GPU choice narrows the worker's pool."""
+        chosen = (self._model_gpu_selection(model) or "").strip().lower()
+        return bool(chosen) and chosen != "all"
+
+    def _automatic_pin_outside_selection(self, lane_id: str, lane_config: LaneConfig) -> bool:
+        """An automatic pin that the model's current GPU choice no longer allows.
+
+        Only pins this manager chose itself qualify; an operator's explicit
+        ``gpu_devices`` stays authoritative.
+        """
+        if self._auto_pins.get(lane_id) != lane_config.gpu_devices or not lane_config.gpu_devices:
+            return False
+        if not self._model_restricts_gpus(lane_config.model):
+            return False
+        pinned = self._lane_gpu_set(lane_config.gpu_devices)
+        allowed = set(self._parse_gpu_selector(self._model_gpu_selection(lane_config.model).strip().lower()))
+        return pinned is None or not pinned <= allowed
+
     async def _auto_place_gpu_devices(
+        self, lane_id: str, lane_config: LaneConfig, busy_gpus: frozenset[int] = frozenset()
+    ) -> LaneConfig:
+        """Place the lane and remember the pin when placement chose it."""
+        if self._automatic_pin_outside_selection(lane_id, lane_config):
+            # Chosen before the model's GPU choice changed: place afresh.
+            logger.info(
+                "Lane '%s': automatic pin gpu_devices=%s lies outside the model's GPU choice; placing again",
+                lane_id,
+                lane_config.gpu_devices,
+            )
+            lane_config = lane_config.model_copy(update={"gpu_devices": ""})
+            self._auto_pins.pop(lane_id, None)
+        placed = await self._place_gpu_devices(lane_id, lane_config, busy_gpus)
+        if placed.gpu_devices and not lane_config.gpu_devices:
+            self._auto_pins[lane_id] = placed.gpu_devices
+        return placed
+
+    async def _place_gpu_devices(
         self, lane_id: str, lane_config: LaneConfig, busy_gpus: frozenset[int] = frozenset()
     ) -> LaneConfig:
         """Pick an explicit GPU set for auto-managed vLLM lanes.
@@ -2861,6 +2901,11 @@ class LaneManager:
                     f"Auto-placement: no healthy GPU in this worker's GPU pool for lane '{lane_id}' "
                     f"model={lane_config.model}; faulted GPU(s) {sorted(faulted_indices)}"
                 )
+            if self._model_restricts_gpus(lane_config.model):
+                raise RuntimeError(
+                    f"Auto-placement: the GPU choice {self._model_gpu_selection(lane_config.model)!r} for model "
+                    f"{lane_config.model} matches no GPU available to this worker (lane '{lane_id}')"
+                )
             return lane_config
 
         allowed_rows = [row for row in device_rows if int(row["index"]) in set(allowed_indices)]
@@ -2894,6 +2939,13 @@ class LaneManager:
                     f"Auto-placement: only {len(allowed_rows)} healthy GPU(s) for lane '{lane_id}' "
                     f"model={lane_config.model} (tp={tp_size}); faulted GPU(s) {sorted(faulted_indices)}"
                 )
+            if self._model_restricts_gpus(lane_config.model):
+                # Unpinned, the lane would open every GPU of the worker's pool.
+                raise RuntimeError(
+                    f"Auto-placement: the GPU choice {self._model_gpu_selection(lane_config.model)!r} for model "
+                    f"{lane_config.model} leaves only {len(allowed_rows)} usable GPU(s) for lane '{lane_id}' "
+                    f"(tp={tp_size}); widen the selection or lower the parallel size"
+                )
             logger.warning(
                 "Auto-placement skipped for lane '%s': only %d allowed GPU(s) for tp=%d",
                 lane_id,
@@ -2904,10 +2956,11 @@ class LaneManager:
 
         required_total_mb = self._estimate_lane_vram_mb(lane_config)
         if required_total_mb <= 0:
-            if faulted_indices:
+            if faulted_indices or self._model_restricts_gpus(lane_config.model):
                 # Without an estimate there is nothing to fit, but leaving the
-                # lane unpinned would let it start on a faulted GPU: take the
-                # healthy GPUs with the most free memory.
+                # lane unpinned would let it start on a faulted GPU or outside
+                # the model's GPU choice: take the allowed GPUs with the most
+                # free memory.
                 rows = sorted(allowed_rows, key=lambda r: (-float(r["free_mb"]), int(r["index"])))[:tp_size]
                 selector = ",".join(str(index) for index in sorted(int(r["index"]) for r in rows))
                 logger.info(

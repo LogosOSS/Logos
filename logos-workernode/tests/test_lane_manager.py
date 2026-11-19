@@ -1083,15 +1083,16 @@ async def test_auto_place_gpu_devices_picks_best_fit_single_gpu() -> None:
     assert placed.gpu_devices == "0"
 
 
-def _two_gpu_manager(selection: str) -> LaneManager:
+def _two_gpu_manager(selection: str, *, with_profile: bool = True) -> LaneManager:
     """GPU 0 has the most free memory; the model's own choice may point to GPU 1 instead."""
     from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry
 
     profiles = ModelProfileRegistry()
-    profiles._profiles["Qwen/Qwen2.5-0.5B-Instruct"] = ModelProfileRecord(  # noqa: SLF001
-        loaded_vram_mb=6000.0,
-        engine="vllm",
-    )
+    if with_profile:
+        profiles._profiles["Qwen/Qwen2.5-0.5B-Instruct"] = ModelProfileRecord(  # noqa: SLF001
+            loaded_vram_mb=6000.0,
+            engine="vllm",
+        )
 
     async def _snapshot() -> DeviceSummary:
         return DeviceSummary(
@@ -1134,15 +1135,76 @@ async def test_a_lane_takes_only_the_gpus_chosen_for_its_model() -> None:
     assert chosen.gpu_devices == "1"
 
 
+def _launch_visible_devices(lane: LaneConfig) -> str | None:
+    """CUDA_VISIBLE_DEVICES the engine process would get for *lane* on a worker whose pool is every GPU."""
+    from logos_worker_node.vllm_process import VllmProcessHandle
+
+    env = VllmProcessHandle("lane", 19000, WorkerConfig(gpu_devices="all"))._build_env(lane)  # noqa: SLF001
+    return env.get("CUDA_VISIBLE_DEVICES")
+
+
 @pytest.mark.asyncio
-async def test_a_choice_outside_the_worker_pool_leaves_no_gpu_for_the_lane() -> None:
+async def test_a_choice_outside_the_worker_pool_is_rejected() -> None:
     lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
-    manager = _two_gpu_manager("7")
+
+    # No GPU of the choice exists: leaving the lane unpinned would open every GPU.
+    with pytest.raises(RuntimeError, match="matches no GPU"):
+        await _two_gpu_manager("7")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_choice_too_small_for_the_parallel_size_is_rejected() -> None:
+    lane = LaneConfig(
+        model="Qwen/Qwen2.5-0.5B-Instruct",
+        vllm=True,
+        vllm_config=VllmConfig(tensor_parallel_size=2),
+    )
+
+    with pytest.raises(RuntimeError, match="leaves only 1 usable GPU"):
+        await _two_gpu_manager("1")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_missing_memory_estimate_still_launches_on_the_chosen_gpu() -> None:
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+
+    placed = await _two_gpu_manager("1", with_profile=False)._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    assert placed.gpu_devices == "1"
+    assert _launch_visible_devices(placed) == "1"
+
+
+@pytest.mark.asyncio
+async def test_restart_places_an_automatic_pin_again_after_the_choice_changes() -> None:
+    selection = {"value": ""}
+    manager = _two_gpu_manager("")
+    manager._model_gpu_selection = lambda _model: selection["value"]  # noqa: SLF001
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+
+    first = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+    assert first.gpu_devices == "0"
+
+    selection["value"] = "1"
+    restarted = await manager._auto_place_gpu_devices("lane", first)  # noqa: SLF001
+
+    assert restarted.gpu_devices == "1"
+    assert _launch_visible_devices(restarted) == "1"
+
+
+@pytest.mark.asyncio
+async def test_restart_keeps_an_explicit_pin_the_choice_does_not_cover() -> None:
+    manager = _two_gpu_manager("1")
+    lane = LaneConfig(
+        model="Qwen/Qwen2.5-0.5B-Instruct",
+        vllm=True,
+        gpu_devices="0",
+        vllm_config=VllmConfig(tensor_parallel_size=1),
+    )
 
     placed = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
 
-    # No GPU of the choice exists: the lane is not pinned to one the model did not choose.
-    assert placed.gpu_devices == ""
+    # The operator's own pin is authoritative.
+    assert placed.gpu_devices == "0"
 
 
 def _faulted_gpu0_manager(
