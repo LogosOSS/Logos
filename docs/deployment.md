@@ -647,7 +647,9 @@ Optional `.env` options:
 - `LOGOS_GATEWAY_MAX_IN_FLIGHT` (default `0`) — the concurrent request limit for
   each webservice replica. The value `0` disables this limit. A positive value
   includes provider work after a client disconnects. Excess requests receive
-  HTTP `503` without a gateway queue. Select a limit for the available memory,
+  HTTP `503` without a gateway queue.
+
+  Select a limit for the available memory,
   sockets and database capacity. Each request can retain a 51 MiB body and an
   8 MiB cloud response buffer. The benchmark does not establish production capacity.
 - `LOGOS_GATEWAY_BUDGET_CACHE_TTL_SECONDS` (default `15`) — the approximate
