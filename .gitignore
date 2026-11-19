@@ -1,4 +1,5 @@
 .test-deploy/
+.github/scripts/coverage/
 benchmarks/benchmark_results/
 benchmarks/workloads/
 benchmarks/data/
