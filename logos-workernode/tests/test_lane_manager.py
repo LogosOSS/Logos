@@ -1192,6 +1192,63 @@ async def test_restart_places_an_automatic_pin_again_after_the_choice_changes() 
 
 
 @pytest.mark.asyncio
+async def test_restart_places_an_automatic_pin_again_after_the_pool_is_narrowed() -> None:
+    manager = _two_gpu_manager("")
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+    first = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+    assert first.gpu_devices == "0"
+
+    manager._global_config.gpu_devices = "1"  # noqa: SLF001
+    restarted = await manager._auto_place_gpu_devices("lane", first)  # noqa: SLF001
+
+    assert restarted.gpu_devices == "1"
+
+
+@pytest.mark.asyncio
+async def test_restart_drops_an_automatic_pin_when_the_pool_is_disabled() -> None:
+    from logos_worker_node.vllm_process import VllmProcessHandle
+
+    manager = _two_gpu_manager("")
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+    first = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    manager._global_config.gpu_devices = "none"  # noqa: SLF001
+    restarted = await manager._auto_place_gpu_devices("lane", first)  # noqa: SLF001
+
+    env = VllmProcessHandle("lane", 19000, manager._global_config)._build_env(restarted)  # noqa: SLF001
+    assert restarted.gpu_devices == ""
+    assert env["CUDA_VISIBLE_DEVICES"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_forced_restart_that_moves_an_automatic_pin_waits_for_the_destination_gpu() -> None:
+    selection = {"value": ""}
+    manager = _two_gpu_manager("")
+    manager._model_gpu_selection = lambda _model: selection["value"]  # noqa: SLF001
+    lane = LaneConfig(
+        model="Qwen/Qwen2.5-0.5B-Instruct",
+        vllm=True,
+        gpu_devices="0",
+        vllm_config=VllmConfig(tensor_parallel_size=1),
+    )
+    manager._handles["lane"] = _StubHandle(lane)  # noqa: SLF001
+    manager._auto_pins["lane"] = "0"  # noqa: SLF001
+    manager._restart_lane_unlocked = AsyncMock()  # noqa: SLF001
+    manager._get_status_unlocked = AsyncMock()  # noqa: SLF001
+    manager._validate_vllm_runtime_requirements = MagicMock()  # noqa: SLF001
+    selection["value"] = "1"
+
+    # Another load holds GPU 1 while the restart wants to move there.
+    async with manager._lock.scoped(["other"], frozenset({1})):  # noqa: SLF001
+        task = asyncio.create_task(manager.reconfigure_lane("lane", {}, force_restart=True))
+        await asyncio.sleep(0.1)
+        assert not manager._restart_lane_unlocked.await_count  # noqa: SLF001
+    await asyncio.wait_for(task, timeout=5)
+
+    assert manager._restart_lane_unlocked.await_args.kwargs["scoped"] is False  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_restart_keeps_an_explicit_pin_the_choice_does_not_cover() -> None:
     manager = _two_gpu_manager("1")
     lane = LaneConfig(

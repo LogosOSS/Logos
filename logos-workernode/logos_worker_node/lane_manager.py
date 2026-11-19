@@ -1227,7 +1227,12 @@ class LaneManager:
                 if lane_id not in self._static_lane_ids:
                     current_data["gpu_devices"] = ""
         new_lc = LaneConfig(**current_data)
-        if held_gpus is not None and (parallel_changed or self._launch_gpu_set(new_lc) != held_gpus):
+        if held_gpus is not None and (
+            parallel_changed
+            or self._launch_gpu_set(new_lc) != held_gpus
+            # Placement will move the pin: the replacement may start on GPUs this lock does not cover.
+            or self._automatic_pin_outside_selection(lane_id, new_lc)
+        ):
             return _NEEDS_WHOLE_LOCK
         if parallel_changed:
             available = self._gpu_device_count()
@@ -2763,27 +2768,32 @@ class LaneManager:
         return bool(chosen) and chosen != "all"
 
     def _automatic_pin_outside_selection(self, lane_id: str, lane_config: LaneConfig) -> bool:
-        """An automatic pin that the model's current GPU choice no longer allows.
+        """An automatic pin that the worker's GPU pool and the model's choice no longer allow together.
 
         Only pins this manager chose itself qualify; an operator's explicit
         ``gpu_devices`` stays authoritative.
         """
-        if self._auto_pins.get(lane_id) != lane_config.gpu_devices or not lane_config.gpu_devices:
-            return False
-        if not self._model_restricts_gpus(lane_config.model):
+        if not lane_config.gpu_devices or self._auto_pins.get(lane_id) != lane_config.gpu_devices:
             return False
         pinned = self._lane_gpu_set(lane_config.gpu_devices)
-        allowed = set(self._parse_gpu_selector(self._model_gpu_selection(lane_config.model).strip().lower()))
-        return pinned is None or not pinned <= allowed
+        if pinned is None:
+            return True
+        for selector in (self._global_config.gpu_devices, self._model_gpu_selection(lane_config.model)):
+            chosen = (selector or "").strip().lower()
+            if not chosen or chosen == "all":
+                continue
+            if not pinned <= set(self._parse_gpu_selector(chosen)):
+                return True
+        return False
 
     async def _auto_place_gpu_devices(
         self, lane_id: str, lane_config: LaneConfig, busy_gpus: frozenset[int] = frozenset()
     ) -> LaneConfig:
         """Place the lane and remember the pin when placement chose it."""
         if self._automatic_pin_outside_selection(lane_id, lane_config):
-            # Chosen before the model's GPU choice changed: place afresh.
+            # Chosen before the pool or the model's GPU choice changed: place afresh.
             logger.info(
-                "Lane '%s': automatic pin gpu_devices=%s lies outside the model's GPU choice; placing again",
+                "Lane '%s': automatic pin gpu_devices=%s lies outside the worker's GPU pool or the model's GPU choice; placing again",
                 lane_id,
                 lane_config.gpu_devices,
             )
