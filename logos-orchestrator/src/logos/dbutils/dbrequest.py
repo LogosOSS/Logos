@@ -162,6 +162,8 @@ class LogosNodeModelProfilesRequest(BaseModel):
     calibration_key_hashes: dict[str, str] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
     # model name -> GPUs the node can calibrate and serve the model on
     slice_gpu_counts: dict[str, int] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
+    # model name -> hash of the whole configuration, the KV cache choice included
+    config_fingerprints: dict[str, str] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
 
 
 class LogosNodeCalibrationReservationRequest(BaseModel):
@@ -199,6 +201,10 @@ class LogosNodeConfigRequest(BaseModel):
 
 class LogosNodeConfigImportRequest(LogosNodeConfigRequest):
     entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
+
+
+class LogosNodeSettingsImportRequest(LogosNodeConfigRequest):
+    settings: dict[str, Any] = Field(default_factory=dict, max_length=32)
 
 
 class LogosNodeConfigGetRequest(LogosKeyModel):
@@ -274,6 +280,26 @@ class LaneLockChangedRequest(BaseModel):
 
 class InternalCalibrateRequest(BaseModel):
     provider_id: int
+    # Calibrate only this model; empty calibrates everything that needs it.
+    model: str | None = None
+
+
+class InternalNodeConfigRequest(BaseModel):
+    provider_id: int
+
+
+class InternalNodeConfigReplaceRequest(InternalNodeConfigRequest):
+    # The admin's user id from the JWT; None stores no author
+    user_id: Optional[int] = None
+    expected_revision: int = Field(ge=0)
+    entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
+
+
+class InternalNodeSettingsReplaceRequest(InternalNodeConfigRequest):
+    # The admin's user id from the JWT; None stores no author
+    user_id: Optional[int] = None
+    expected_revision: int = Field(ge=0)
+    settings: dict[str, Any] = Field(default_factory=dict, max_length=32)
 
 
 class InternalStopCalibrationRequest(BaseModel):

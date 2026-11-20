@@ -72,7 +72,7 @@ def database(monkeypatch):
         workloads_migration = migration.with_name("068_benchmark_request_workloads.xml")
         for sql in ElementTree.parse(workloads_migration).findall("{*}changeSet/{*}sql"):
             connection.execute(text(sql.text))
-        for sql in ElementTree.parse(migration.with_name("082_benchmark_workload_size.xml")).findall(
+        for sql in ElementTree.parse(migration.with_name("084_benchmark_workload_size.xml")).findall(
             "{*}changeSet/{*}sql"
         ):
             connection.execute(text(sql.text))

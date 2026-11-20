@@ -258,3 +258,37 @@ permissions. Use DML so the old and new grants are recorded. Database cascades
 from deleting teams, keys, models or providers preserve their names before the
 parent row disappears. Configuration imports also preserve the audit history
 and attribute their replacement grants to the importing admin.
+
+## HTTP QUERY searches
+
+The following read-only management endpoints accept HTTP `QUERY` with an
+`application/json` body. Existing `POST` requests keep the same behavior.
+All paths below are relative to `/api/logosdb` at the public gateway:
+
+- `/latest_requests`, `/request_payloads`, `/request_routing`, `/request_logs`
+- `/request_log_stats`, `/request_latency_stats`, `/request_log_scope_options`
+- `/billing/team_budget_history`, `/billing/key_budget_history/{teamId}`
+
+```bash
+curl --request QUERY 'http://localhost:18081/api/logosdb/latest_requests' \
+  --header "Authorization: Bearer $ACCESS_TOKEN" \
+  --header 'Content-Type: application/json' \
+  --data '{"team_id":42,"limit":25}'
+```
+
+The body format and role, team-owner, and per-user restrictions are identical
+to the corresponding POST endpoint. Responses retain `Cache-Control: no-store`
+because they contain private usage and billing data. `OPTIONS` advertises
+`QUERY` in `Allow` and `application/json` in `Accept-Query`. Browser clients
+must use an origin in `logos.cors.allowed-origins`.
+
+Write operations and inference endpoints do not accept `QUERY`. Inference
+creates billable usage and does not have the safe semantics of a search.
+
+With Spring MVC 7.0, `HttpQueryFilter` adapts QUERY to POST only for methods
+marked `@ReadOnlyQuery`, after Spring Security checks the original request.
+Normal MVC interceptors, body validation, and method security still run.
+Use this marker only on safe, idempotent JSON searches. When upgrading to
+Spring Framework 7.1, replace the adapter and markers with native
+`RequestMethod.QUERY` mappings alongside the existing POST mappings; retain
+the firewall, CORS, discovery, and authorization tests.

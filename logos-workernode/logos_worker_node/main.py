@@ -31,7 +31,8 @@ from logos_worker_node.model_cache import ModelRamCache, _DisabledModelRamCache,
 from logos_worker_node.model_profiles import ModelProfileRegistry
 from logos_worker_node.models import HF_REDUNDANT_WEIGHT_PATTERNS, ProcessState, model_can_sleep
 from logos_worker_node.node_config import apply_node_config, entries_from_yaml_file, plans_from_app_config, yaml_drift
-from logos_worker_node.profile_fingerprint import node_calibration_keys, node_slice_gpu_counts
+from logos_worker_node.node_settings import apply_node_settings, settings_from_yaml_file
+from logos_worker_node.profile_fingerprint import node_calibration_keys, node_config_fingerprints, node_slice_gpu_counts
 from logos_worker_node.runtime import SERVICE_VERSION, _build_host_memory_summary, existing_volume_path
 
 logging.basicConfig(
@@ -247,6 +248,38 @@ async def _load_central_node_config(cfg: AppConfig, logos_bridge: LogosBridgeCli
         logger.warning("config.yml differs from what Logos stores; Logos wins: %s", "; ".join(drift))
 
 
+async def _load_central_node_settings(cfg: AppConfig, logos_bridge: LogosBridgeClient) -> None:
+    """Take the node-wide settings from Logos instead of config.yml.
+
+    On the first start Logos holds nothing yet, so the worker hands it the
+    settings of config.yml once and reads them back. A Logos that predates the
+    settings leaves config.yml in force.
+    """
+    if not (cfg.logos and cfg.logos.enabled):
+        return
+    config_path = LogosBridgeClient.resolve_config_path()
+    from_yaml = settings_from_yaml_file(config_path) if config_path.exists() else {}
+    delay = 5.0
+    while True:
+        try:
+            central = await logos_bridge.fetch_node_settings()
+            if central is not None and not central["yaml_imported"]:
+                await logos_bridge.import_node_settings(from_yaml)
+                central = await logos_bridge.fetch_node_settings()
+            break
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Waiting for the node settings from Logos (%s); retrying in %.0fs", exc, delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60.0)
+    if central is None:
+        logger.info("Logos does not store node settings yet; config.yml stays in force")
+        return
+    changed = apply_node_settings(cfg, central["settings"], central["revision"])
+    logger.info(
+        "Loaded node settings from Logos (revision %d, changed: %s)", central["revision"], ", ".join(changed) or "none"
+    )
+
+
 def _prepare_added_models(app: FastAPI, models: list[str]) -> None:
     """Do for models added while running what the start does for all of them.
 
@@ -272,7 +305,10 @@ async def _load_central_profiles(
     """
     snapshot = await gpu_collector.get_snapshot()
     plans = plans_from_app_config(cfg)
-    model_profiles.set_calibration_keys(node_calibration_keys(cfg, plans, list(snapshot.devices)))
+    model_profiles.set_calibration_keys(
+        node_calibration_keys(cfg, plans, list(snapshot.devices)),
+        node_config_fingerprints(cfg, plans),
+    )
     model_profiles.set_slice_gpu_counts(node_slice_gpu_counts(cfg, plans, list(snapshot.devices)))
     if not (cfg.logos and cfg.logos.enabled):
         logger.info("Logos bridge disabled — starting without model profiles")
@@ -282,7 +318,9 @@ async def _load_central_profiles(
     while True:
         try:
             profiles = await logos_bridge.fetch_model_profiles(
-                model_profiles.calibration_key_hashes(), model_profiles.slice_gpu_counts()
+                model_profiles.calibration_key_hashes(),
+                model_profiles.slice_gpu_counts(),
+                model_profiles.config_fingerprints(),
             )
             break
         except Exception as exc:  # noqa: BLE001
@@ -1083,6 +1121,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _log_storage_layout(cfg)
 
     logos_bridge = LogosBridgeClient(app, cfg.logos)
+    await _load_central_node_settings(cfg, logos_bridge)
     await _load_central_node_config(cfg, logos_bridge)
     await logos_bridge.bootstrap_hf_token()
 
@@ -1262,6 +1301,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         auto_reboot_on_stuck_gpu=cfg.worker.auto_reboot_on_stuck_gpu and not is_metal_backend(),
         reboot_sentinel_path=cfg.worker.reboot_sentinel_path,
         metal_config=cfg.engines.metal,
+        # The GPUs chosen for a model in its stored configuration narrow the worker's pool for its lanes.
+        model_gpu_selection=lambda model: (
+            str(((cfg.logos.capabilities_overrides.get(model) if cfg.logos else None) or {}).get("gpu_devices") or "")
+        ),
         # The reactive half of the RAM-cache re-plan: the moment a lane's
         # weights land in host RAM, the cache re-plans against the new
         # MemAvailable instead of waiting for the next tick. The closure

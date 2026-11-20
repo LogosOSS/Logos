@@ -1083,6 +1083,187 @@ async def test_auto_place_gpu_devices_picks_best_fit_single_gpu() -> None:
     assert placed.gpu_devices == "0"
 
 
+def _two_gpu_manager(selection: str, *, with_profile: bool = True) -> LaneManager:
+    """GPU 0 has the most free memory; the model's own choice may point to GPU 1 instead."""
+    from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry
+
+    profiles = ModelProfileRegistry()
+    if with_profile:
+        profiles._profiles["Qwen/Qwen2.5-0.5B-Instruct"] = ModelProfileRecord(  # noqa: SLF001
+            loaded_vram_mb=6000.0,
+            engine="vllm",
+        )
+
+    async def _snapshot() -> DeviceSummary:
+        return DeviceSummary(
+            timestamp=datetime.now(timezone.utc),
+            mode="nvidia",
+            nvidia_smi_available=True,
+            devices=[
+                DeviceInfo(
+                    device_id=f"gpu{index}",
+                    kind="nvidia",
+                    memory_total_mb=40960.0,
+                    memory_free_mb=free,
+                    extra={"index": index},
+                )
+                for index, free in enumerate((40000.0, 30000.0))
+            ],
+            total_memory_mb=2 * 40960.0,
+            free_memory_mb=70000.0,
+        )
+
+    return LaneManager(
+        WorkerConfig(gpu_devices="all"),
+        lane_port_start=15100,
+        lane_port_end=15110,
+        model_profiles=profiles,
+        gpu_snapshot=_snapshot,
+        model_gpu_selection=lambda _model: selection,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_lane_takes_only_the_gpus_chosen_for_its_model() -> None:
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+
+    unrestricted = await _two_gpu_manager("")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+    chosen = await _two_gpu_manager("1")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    # Without a choice the roomier GPU 0 wins; with GPU 1 chosen the lane never leaves it.
+    assert unrestricted.gpu_devices == "0"
+    assert chosen.gpu_devices == "1"
+
+
+def _launch_visible_devices(lane: LaneConfig) -> str | None:
+    """CUDA_VISIBLE_DEVICES the engine process would get for *lane* on a worker whose pool is every GPU."""
+    from logos_worker_node.vllm_process import VllmProcessHandle
+
+    env = VllmProcessHandle("lane", 19000, WorkerConfig(gpu_devices="all"))._build_env(lane)  # noqa: SLF001
+    return env.get("CUDA_VISIBLE_DEVICES")
+
+
+@pytest.mark.asyncio
+async def test_a_choice_outside_the_worker_pool_is_rejected() -> None:
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+
+    # No GPU of the choice exists: leaving the lane unpinned would open every GPU.
+    with pytest.raises(RuntimeError, match="matches no GPU"):
+        await _two_gpu_manager("7")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_choice_too_small_for_the_parallel_size_is_rejected() -> None:
+    lane = LaneConfig(
+        model="Qwen/Qwen2.5-0.5B-Instruct",
+        vllm=True,
+        vllm_config=VllmConfig(tensor_parallel_size=2),
+    )
+
+    with pytest.raises(RuntimeError, match="leaves only 1 usable GPU"):
+        await _two_gpu_manager("1")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_missing_memory_estimate_still_launches_on_the_chosen_gpu() -> None:
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+
+    placed = await _two_gpu_manager("1", with_profile=False)._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    assert placed.gpu_devices == "1"
+    assert _launch_visible_devices(placed) == "1"
+
+
+@pytest.mark.asyncio
+async def test_restart_places_an_automatic_pin_again_after_the_choice_changes() -> None:
+    selection = {"value": ""}
+    manager = _two_gpu_manager("")
+    manager._model_gpu_selection = lambda _model: selection["value"]  # noqa: SLF001
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+
+    first = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+    assert first.gpu_devices == "0"
+
+    selection["value"] = "1"
+    restarted = await manager._auto_place_gpu_devices("lane", first)  # noqa: SLF001
+
+    assert restarted.gpu_devices == "1"
+    assert _launch_visible_devices(restarted) == "1"
+
+
+@pytest.mark.asyncio
+async def test_restart_places_an_automatic_pin_again_after_the_pool_is_narrowed() -> None:
+    manager = _two_gpu_manager("")
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+    first = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+    assert first.gpu_devices == "0"
+
+    manager._global_config.gpu_devices = "1"  # noqa: SLF001
+    restarted = await manager._auto_place_gpu_devices("lane", first)  # noqa: SLF001
+
+    assert restarted.gpu_devices == "1"
+
+
+@pytest.mark.asyncio
+async def test_restart_drops_an_automatic_pin_when_the_pool_is_disabled() -> None:
+    from logos_worker_node.vllm_process import VllmProcessHandle
+
+    manager = _two_gpu_manager("")
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+    first = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    manager._global_config.gpu_devices = "none"  # noqa: SLF001
+    restarted = await manager._auto_place_gpu_devices("lane", first)  # noqa: SLF001
+
+    env = VllmProcessHandle("lane", 19000, manager._global_config)._build_env(restarted)  # noqa: SLF001
+    assert restarted.gpu_devices == ""
+    assert env["CUDA_VISIBLE_DEVICES"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_forced_restart_that_moves_an_automatic_pin_waits_for_the_destination_gpu() -> None:
+    selection = {"value": ""}
+    manager = _two_gpu_manager("")
+    manager._model_gpu_selection = lambda _model: selection["value"]  # noqa: SLF001
+    lane = LaneConfig(
+        model="Qwen/Qwen2.5-0.5B-Instruct",
+        vllm=True,
+        gpu_devices="0",
+        vllm_config=VllmConfig(tensor_parallel_size=1),
+    )
+    manager._handles["lane"] = _StubHandle(lane)  # noqa: SLF001
+    manager._auto_pins["lane"] = "0"  # noqa: SLF001
+    manager._restart_lane_unlocked = AsyncMock()  # noqa: SLF001
+    manager._get_status_unlocked = AsyncMock()  # noqa: SLF001
+    manager._validate_vllm_runtime_requirements = MagicMock()  # noqa: SLF001
+    selection["value"] = "1"
+
+    # Another load holds GPU 1 while the restart wants to move there.
+    async with manager._lock.scoped(["other"], frozenset({1})):  # noqa: SLF001
+        task = asyncio.create_task(manager.reconfigure_lane("lane", {}, force_restart=True))
+        await asyncio.sleep(0.1)
+        assert not manager._restart_lane_unlocked.await_count  # noqa: SLF001
+    await asyncio.wait_for(task, timeout=5)
+
+    assert manager._restart_lane_unlocked.await_args.kwargs["scoped"] is False  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_restart_keeps_an_explicit_pin_the_choice_does_not_cover() -> None:
+    manager = _two_gpu_manager("1")
+    lane = LaneConfig(
+        model="Qwen/Qwen2.5-0.5B-Instruct",
+        vllm=True,
+        gpu_devices="0",
+        vllm_config=VllmConfig(tensor_parallel_size=1),
+    )
+
+    placed = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    # The operator's own pin is authoritative.
+    assert placed.gpu_devices == "0"
+
+
 def _faulted_gpu0_manager(
     *,
     lost: bool = False,

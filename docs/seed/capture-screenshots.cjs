@@ -16,6 +16,7 @@
  * Without arguments, shots marked `needs` are left out: the seed does not
  * create their example state, and the committed PNG stays in place.
  * OUT_DIR writes the PNGs to another folder instead of overwriting static/img/.
+ * CHROMIUM_PATH names a browser to use when Playwright does not find its own build.
  * LOGOS_SCREENSHOT_WIDTH overrides the viewport width for mobile PR screenshots.
  * The nightly shots change the schedule of llama-3.1-8b-instruct on Docs Local
  * Worker. Use only the isolated documentation stack.
@@ -50,6 +51,7 @@ function lookupIds() {
   );
   return {
     team: sql("SELECT id FROM teams WHERE name = 'Logos'"),
+    worker: sql("SELECT id FROM providers WHERE name = 'Docs Local Worker'"),
     model,
     // The second nightly night: its variant is the linked result in the guide.
     linkedBenchmark: sql(
@@ -129,6 +131,20 @@ async function details(page, text, open = true) {
 }
 
 const button = (page, name) => page.getByRole("button", { name, exact: true }).first();
+
+// The Providers page with the documentation worker expanded to its node models.
+async function expandWorker(page) {
+  await page.goto(BASE + "/providers");
+  await settle(page);
+  await page.getByRole("button", { name: "Expand Docs Local Worker" }).first().click();
+  await page.locator("app-node-models .table-row").first().waitFor();
+}
+
+// The page of one model of the documentation worker (view mode).
+async function nodeModel(page, ids, model) {
+  await page.goto(`${BASE}/providers/${ids.worker}/models?model=${encodeURIComponent(model)}`);
+  await page.locator("h1.page-title").waitFor();
+}
 
 // The shell scrolls inside .main-content; unlock it for a full-page shot and
 // stretch fixed full-viewport layers (dialog backdrops) over the whole page.
@@ -336,6 +352,69 @@ const SHOTS = [
       await settle(p);
       await p.getByRole("button", { name: "Expand Docs Cloud (EU)" }).first().click();
       await p.locator('[data-testid="batch-support"]').first().waitFor();
+    },
+  },
+  {
+    file: "roles/logos-admin-node-models.png",
+    user: ADMIN,
+    go: expandWorker,
+  },
+  {
+    file: "roles/logos-admin-node-model-view.png",
+    user: ADMIN,
+    full: true,
+    go: (p, ids) => nodeModel(p, ids, "llama-3.1-8b-instruct"),
+  },
+  {
+    file: "roles/logos-admin-node-model-edit.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await nodeModel(p, ids, "llama-3.1-8b-instruct");
+      await button(p, "Edit configuration").click();
+      await p.locator(".savebar").waitFor();
+      // The save bar sticks to the window; in a full-page shot it belongs at the end.
+      await p.addStyleTag({ content: ".savebar { position: static !important; }" });
+    },
+  },
+  {
+    file: "roles/logos-admin-node-model-calibrate.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await nodeModel(p, ids, "mistral-small-3.2-24b");
+      await p.getByRole("button", { name: "Calibrate model" }).waitFor();
+    },
+  },
+  {
+    file: "roles/logos-admin-node-connect-model.png",
+    user: ADMIN,
+    go: async (p, ids) => {
+      // The documentation catalog lists only the three models the worker already has.
+      // Add a fourth to the catalog answer, so the dialog shows a choice.
+      await p.route("**/api/logosdb/get_models", async (route) => {
+        const response = await route.fetch();
+        const models = await response.json();
+        await route.fulfill({ response, json: [...models, { ...models[0], id: 9999, name: "gemma-3-27b-it" }] });
+      });
+      await expandWorker(p);
+      await button(p, "Connect model").click();
+      await p.getByText("Add a model from the Logos catalog to this node.").waitFor();
+      await p.getByRole("combobox").last().selectOption({ label: "gemma-3-27b-it" });
+    },
+    after: async (p) => {
+      await button(p, "Cancel").evaluate((b) => b.click());
+      await p.unroute("**/api/logosdb/get_models");
+    },
+  },
+  {
+    file: "roles/logos-admin-node-settings.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await p.goto(`${BASE}/providers/${ids.worker}/node-settings`);
+      await p.locator(".seg").waitFor();
+      await p.addStyleTag({ content: ".savebar { position: static !important; }" });
     },
   },
   { file: "roles/logos-admin-policies.png", user: ADMIN, go: (p) => p.goto(BASE + "/policies") },
@@ -609,7 +688,7 @@ const SHOTS = [
   // they run only when named on the command line.
   const selected = SHOTS.filter((s) => (ONLY.length ? ONLY.includes(s.file) : !s.needs));
   for (const s of SHOTS) if (!ONLY.length && s.needs) console.log("not selected", s.file, "- needs", s.needs);
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   let session = null;
   const failed = [];
   for (const shot of selected) {

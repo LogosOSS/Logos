@@ -964,6 +964,89 @@ def test_reconfigured_vram_replaces_only_known_per_rank_cache(tp, cache, expecte
     assert reconfigured_vram_mb(profile, 15988, tp, cache) == 15988
 
 
+def _calibrated_with_cache(**extra):
+    """A model of 8 GiB measured at 32 GiB with 24 GiB of cache; the lane ran with 2 GiB since."""
+    values = dict(
+        residency_source="calibrated",
+        tensor_parallel_size=1,
+        base_residency_mb=32768,
+        calibrated_footprint_mb=32768,
+        calibrated_kv_mb=24576,
+        kv_budget_mb=2048,
+    )
+    values.update(extra)
+    return ModelProfileRecord(**values)
+
+
+def test_the_cache_a_calibration_measured_with_outlives_a_configured_cache():
+    """A configured or observed cache overwrites kv_budget_mb; the measured total still names its own cache."""
+    from logos_worker_node.model_profiles import reconfigured_vram_mb
+
+    # An 8 GiB model measured with 24 GiB of cache needs 10 GiB with 2 GiB of cache.
+    assert reconfigured_vram_mb(_calibrated_with_cache(), 32768, 1, 2048) == 10240
+    # A profile measured before the calibration kept its own cache falls back to the old field.
+    legacy = ModelProfileRecord(residency_source="calibrated", tensor_parallel_size=1, kv_budget_mb=24576)
+    assert reconfigured_vram_mb(legacy, 32768, 1, 2048) == 10240
+
+
+def test_a_live_total_observed_under_a_smaller_cache_does_not_lose_the_measured_cache_twice():
+    """The live total already holds only 2 GiB of cache; taking 24 GiB out of it leaves too little."""
+    from logos_worker_node.model_profiles import reconfigured_vram_mb
+
+    profile = _calibrated_with_cache()
+    live_total = 25.4 * 1024
+
+    assert reconfigured_vram_mb(profile, live_total, 1, 2048) == 10240
+    assert reconfigured_vram_mb(profile, live_total, 1, 4096) == 12288
+
+
+def test_an_operator_replacing_the_base_residency_is_not_overruled_by_the_calibrated_pair():
+    from logos_worker_node.model_profiles import reconfigured_vram_mb
+
+    profile = _calibrated_with_cache(base_residency_mb=20000)
+
+    # The pair no longer describes this profile; the total the caller passes is the one to adjust.
+    assert reconfigured_vram_mb(profile, 20000, 1, 2048) == 20000 - 2048 + 2048
+
+
+def _measured_at_two_sizes(**extra):
+    """TP 1 measured 20 GiB with 8 GiB of cache; TP 2 measured 28 GiB with 8 GiB of cache per GPU."""
+    values = dict(
+        residency_source="calibrated",
+        tensor_parallel_size=1,
+        base_residency_mb=20480,
+        calibrated_footprint_mb=20480,
+        calibrated_kv_mb=8192,
+        calibrations_by_tp=[
+            {"tp": 1, "base_residency_mb": 20480, "calibrated_kv_mb": 8192},
+            {"tp": 2, "base_residency_mb": 28672, "calibrated_kv_mb": 8192},
+        ],
+    )
+    values.update(extra)
+    return ModelProfileRecord(**values)
+
+
+def test_a_tp_change_before_recalibration_uses_the_result_measured_at_that_size():
+    from logos_worker_node.model_profiles import reconfigured_vram_mb
+
+    # The editor already set TP 2 on the profile; the stored pair still describes TP 1.
+    profile = _measured_at_two_sizes(tensor_parallel_size=2)
+
+    assert reconfigured_vram_mb(profile, 20480, 2, 2048) == 28672 - 2 * 8192 + 2 * 2048
+    assert reconfigured_vram_mb(profile, 20480, 1, 2048) == 20480 - 8192 + 2048
+
+
+def test_a_tp_without_a_result_scales_the_pair_by_the_size_it_was_measured_at():
+    from logos_worker_node.model_profiles import reconfigured_vram_mb
+
+    profile = _measured_at_two_sizes(
+        tensor_parallel_size=2, calibrations_by_tp=[{"tp": 1, "base_residency_mb": 20480, "calibrated_kv_mb": 8192}]
+    )
+
+    # 12 GiB of weights and overhead stay; two ranks hold 2 GiB of cache each.
+    assert reconfigured_vram_mb(profile, 20480, 2, 2048) == 16384
+
+
 # ---------------------------------------------------------------------------
 # mark_capacity_floor
 # ---------------------------------------------------------------------------
@@ -1254,3 +1337,166 @@ def test_an_override_that_stays_is_not_reported_as_removed():
     registry = _with_host_ram(50.0)
     assert registry.overrides_removed_by({"m": {"host_ram_mb": 7.0}}) == {}
     assert ModelProfileRegistry({"m": {"host_ram_mb": 1.0}}).overrides_removed_by({}) == {}
+
+
+def _record(**fields):
+    from logos_worker_node.model_profiles import ModelProfileRecord
+
+    return ModelProfileRecord(**fields)
+
+
+def test_a_choice_is_covered_when_it_lies_in_the_measured_range():
+    from logos_worker_node.model_profiles import selection_covered
+
+    profile = _record(
+        min_kv_cache_mb=1024.0,
+        max_kv_cache_mb=8192.0,
+        kv_cache_to_max_model_len_pairs=[
+            {"kv_mb": 1024.0, "max_model_len": 4096},
+            {"kv_mb": 4096.0, "max_model_len": 16384},
+            {"kv_mb": 8192.0, "max_model_len": 32768},
+        ],
+    )
+
+    assert selection_covered(profile, None, None)
+    assert selection_covered(profile, 4096.0, 16384)
+    assert selection_covered(profile, 8192.0, 32768)
+    assert not selection_covered(profile, 512.0, None)
+    assert not selection_covered(profile, 16384.0, None)
+    assert not selection_covered(profile, 4096.0, 20000)
+
+
+def test_a_tensor_parallel_size_is_covered_only_when_it_was_measured():
+    from logos_worker_node.model_profiles import selection_covered
+
+    profile = _record(
+        tensor_parallel_size=1,
+        min_kv_cache_mb=1024.0,
+        max_kv_cache_mb=4096.0,
+        calibrations_by_tp=[
+            {
+                "tp": 1,
+                "min_kv_cache_mb": 1024.0,
+                "max_kv_cache_mb": 4096.0,
+                "kv_cache_to_max_model_len_pairs": [{"kv_mb": 4096.0, "max_model_len": 8192}],
+            },
+            {
+                "tp": 2,
+                "min_kv_cache_mb": 2048.0,
+                "max_kv_cache_mb": 16384.0,
+                "kv_cache_to_max_model_len_pairs": [
+                    {"kv_mb": 2048.0, "max_model_len": 8192},
+                    {"kv_mb": 16384.0, "max_model_len": 32768},
+                ],
+            },
+        ],
+    )
+
+    assert selection_covered(profile, None, None, 1)
+    assert selection_covered(profile, None, None, 2)
+    assert not selection_covered(profile, None, None, 4)
+    # The range is the one of the chosen size: 12 GB is out of reach at TP 1 and fine at TP 2.
+    assert not selection_covered(profile, 12288.0, None, 1)
+    assert selection_covered(profile, 12288.0, 8192, 2)
+    assert not selection_covered(profile, 12288.0, 32768, 2)
+
+
+def test_an_older_calibration_knows_the_one_size_its_lane_uses():
+    from logos_worker_node.model_profiles import selection_covered
+
+    profile = _record(tensor_parallel_size=2, min_kv_cache_mb=1024.0, max_kv_cache_mb=4096.0)
+
+    assert selection_covered(profile, 2048.0, None, 2)
+    assert not selection_covered(profile, 2048.0, None, 1)
+    # Nothing known about the size: nothing counts against the choice.
+    assert selection_covered(_record(min_kv_cache_mb=1024.0, max_kv_cache_mb=4096.0), 2048.0, None, 4)
+
+
+def test_a_choice_is_covered_when_nothing_is_known_about_the_range():
+    from logos_worker_node.model_profiles import selection_covered
+
+    assert selection_covered(_record(), 99999.0, 999999)
+
+
+def test_a_choice_outside_the_range_makes_the_calibration_stale_without_changing_the_key():
+    registry = ModelProfileRegistry()
+    registry.replace_from_sync(
+        {
+            "org/m": {
+                "base_residency_mb": 1000.0,
+                "min_kv_cache_mb": 1024.0,
+                "max_kv_cache_mb": 4096.0,
+                "sync_revision": 1,
+                "calibration_id": 11,
+            }
+        }
+    )
+    key = {"org/m": {"plan_hash": "x"}}
+    assert registry.set_calibration_keys(key, {"org/m": "f1"}, {"org/m": (2048.0, None, None)}) == []
+    assert registry.get_profile("org/m").calibration_stale is not True
+
+    assert registry.set_calibration_keys(key, {"org/m": "f2"}, {"org/m": (8192.0, None, None)}) == ["org/m"]
+    assert registry.get_profile("org/m").calibration_stale is True
+
+
+def test_profiles_report_the_current_fingerprint_until_a_calibration_carries_its_own():
+    registry = ModelProfileRegistry()
+    registry.replace_from_sync({"org/m": {"base_residency_mb": 1.0, "sync_revision": 1, "calibration_id": 3}})
+    registry.set_calibration_keys({"org/m": {"plan_hash": "x"}}, {"org/m": "fp-now"})
+
+    assert registry.get_all_profiles()["org/m"]["config_fingerprint"] == "fp-now"
+    assert registry.config_fingerprints() == {"org/m": "fp-now"}
+
+
+def test_the_list_of_measured_sizes_survives_a_round_trip_and_a_bad_value_is_dropped():
+    sizes = [{"tp": 1, "base_residency_mb": 10.0}, {"tp": 2, "base_residency_mb": 6.0}]
+
+    record = _record_from_dict({"calibrations_by_tp": sizes, "tensor_parallel_size": 1})
+
+    assert record.calibrations_by_tp == sizes
+    assert record.to_dict()["calibrations_by_tp"] == sizes
+    assert _record_from_dict({"calibrations_by_tp": "x"}).calibrations_by_tp is None
+    assert _record_from_dict({}).calibrations_by_tp is None
+
+
+def test_a_choice_the_hardware_cannot_reach_does_not_make_a_calibration_of_this_configuration_stale_again():
+    registry = ModelProfileRegistry()
+    registry.replace_from_sync(
+        {
+            "org/m": {
+                "base_residency_mb": 1000.0,
+                "min_kv_cache_mb": 1024.0,
+                "max_kv_cache_mb": 4096.0,
+                "sync_revision": 1,
+                "calibration_id": 11,
+                "config_fingerprint": "fp-now",
+            }
+        }
+    )
+    key = {"org/m": {"plan_hash": "x"}}
+
+    assert registry.set_calibration_keys(key, {"org/m": "fp-now"}, {"org/m": (20480.0, None, None)}) == []
+    assert registry.get_profile("org/m").calibration_stale is not True
+
+
+def test_a_calibration_measured_under_another_configuration_is_stale_when_the_choice_is_out_of_range():
+    registry = ModelProfileRegistry()
+    registry.replace_from_sync(
+        {
+            "org/m": {
+                "base_residency_mb": 1000.0,
+                "min_kv_cache_mb": 1024.0,
+                "max_kv_cache_mb": 4096.0,
+                "sync_revision": 1,
+                "calibration_id": 11,
+                "config_fingerprint": "fp-other",
+            }
+        }
+    )
+
+    changed = registry.set_calibration_keys(
+        {"org/m": {"plan_hash": "x"}}, {"org/m": "fp-now"}, {"org/m": (20480.0, None, None)}
+    )
+
+    assert changed == ["org/m"]
+    assert registry.get_profile("org/m").calibration_stale is True

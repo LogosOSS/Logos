@@ -24,7 +24,7 @@ from logos.benchmarks.nightly_store import write_progress
 
 DATASET = "openai/gsm8k"
 _SECRET_KEYS = {"api_key", "apikey", "authorization", "password", "secret", "token"}
-_SERVING_KEYS = {
+SERVING_KEYS = {
     "tensor_parallel_size",
     "pipeline_parallel_size",
     "attention_backend",
@@ -305,7 +305,7 @@ def lane_serving_configuration(lane: dict[str, Any]) -> dict[str, Any]:
     vllm_config = lane_config.get("vllm_config")
     if not isinstance(vllm_config, dict):
         vllm_config = {}
-    result = {key: vllm_config[key] for key in _SERVING_KEYS if key in vllm_config}
+    result = {key: vllm_config[key] for key in SERVING_KEYS if key in vllm_config}
     extra_args = list(vllm_config.get("extra_args") or [])
     for key, flag in _EXTRA_SERVING_FLAGS.items():
         aliases = (flag, "-pp") if key == "pipeline_parallel_size" else (flag,)
