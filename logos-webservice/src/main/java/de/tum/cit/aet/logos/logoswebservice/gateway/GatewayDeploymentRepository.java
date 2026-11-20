@@ -43,7 +43,7 @@ public class GatewayDeploymentRepository {
             FROM api_keys ak
             LEFT JOIN teams t ON t.id = ak.team_id
             WHERE ak.key_value = :key_value
-              AND ak.is_active = true
+              AND ak.is_active = true AND ak.internal_service IS NULL
         ),
         effective_providers AS (
             SELECT akpp.provider_id
@@ -132,7 +132,7 @@ public class GatewayDeploymentRepository {
         FROM api_keys ak
         LEFT JOIN teams t ON t.id = ak.team_id
         WHERE ak.key_value = :key_value
-          AND ak.is_active = true
+          AND ak.is_active = true AND ak.internal_service IS NULL
         """;
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -190,7 +190,7 @@ public class GatewayDeploymentRepository {
                        ak.use_custom_permissions AS custom
                 FROM api_keys ak
                 WHERE ak.id = :api_key_id
-                  AND ak.is_active = true
+                  AND ak.is_active = true AND ak.internal_service IS NULL
             ),
             effective_providers AS (
                 SELECT akpp.provider_id

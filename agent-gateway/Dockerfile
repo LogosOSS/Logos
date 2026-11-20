@@ -12,7 +12,7 @@
 #
 # It stays a *template*: the image's entrypoint runs envsubst over
 # /etc/nginx/templates at container start, which is what puts
-# ${LOGOS_AGENT_API_KEY} into the live configuration — the key belongs in
+# ${LOGOS_INTERNAL_SECRET} into the live configuration — the key belongs in
 # the running container, not in an image layer.
 FROM nginx:1.31-alpine
 

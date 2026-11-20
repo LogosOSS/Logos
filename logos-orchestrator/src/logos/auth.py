@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
 
-from logos import batch_credential, refcache
+from logos import agent_credential, batch_credential, refcache
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbmodules import LoggingLevel
 
@@ -258,7 +258,18 @@ def authenticate_api_key(headers: Optional[Dict[str, str]], client_ip: Optional[
     enforce_auth_failure_budget(client_ip)
     try:
         logos_key = _resolve_logos_key(headers)
-        row = _lookup_api_key_row(logos_key)
+        if logos_key.startswith(agent_credential.AGENT_CREDENTIAL_PREFIX):
+            # Validate expiry on every request, never via the key cache. A
+            # revoked identity stops accepting even previously issued tokens.
+            key_id = agent_credential.resolve_agent_credential(logos_key)
+            row = None
+            if key_id is not None:
+                with DBManager() as db:
+                    candidate = db.get_api_key_by_id(key_id)
+                if candidate and candidate.get("internal_service") == "agent":
+                    row = candidate
+        else:
+            row = _lookup_api_key_row(logos_key)
         if row is None:
             raise HTTPException(status_code=401, detail="Invalid or inactive logos key")
         release_auth_failure_reservation(client_ip)

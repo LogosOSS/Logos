@@ -848,7 +848,7 @@ class SessionManager:
         fall back to counting sessions while it is.
         """
         if self._cached_own_api_key_id is None:
-            self._cached_own_api_key_id = await db.agent_key_id(settings.agent_api_key)
+            self._cached_own_api_key_id = await db.agent_key_id()
         return self._cached_own_api_key_id
 
     def request_scheduler_pass(self) -> None:
