@@ -644,6 +644,14 @@ Optional `.env` options:
 - `LOGOS_GATEWAY_ENABLED` (default `true`) — if the value is `false`, the gateway
   still accepts the public paths. It proxies every request to the orchestrator
   after the API-key authentication.
+- `LOGOS_GATEWAY_MAX_IN_FLIGHT` (default `0`) — the concurrent request limit for
+  each webservice replica. The value `0` disables this limit. A positive value
+  includes provider work after a client disconnects. Excess requests receive
+  HTTP `503` without a gateway queue.
+
+  Select a limit for the available memory,
+  sockets and database capacity. Each request can retain a 51 MiB body and an
+  8 MiB cloud response buffer. The benchmark does not establish production capacity.
 - `LOGOS_GATEWAY_BUDGET_CACHE_TTL_SECONDS` (default `15`) — the approximate
   limit of the budget overshoot (see `GatewayBudgetService`). When a budget
   snapshot is older than this, the gateway reloads it in the background. Until
@@ -679,6 +687,21 @@ Optional `.env` options:
 - A change to `LOGOS_DB_MAX_CONNECTIONS` or `LOGOS_DB_SHARED_BUFFERS` takes
   effect only after `logos-db` restarts.
 
+To change the gateway limit:
+
+1. Set `LOGOS_GATEWAY_MAX_IN_FLIGHT` in the core host's `.env` file.
+2. Remove any conflicting shell value. A shell value overrides the `.env` file.
+3. Recreate the webservice containers with the current replica count:
+
+   ```bash
+   docker compose --env-file .env -f docker-compose.yaml up -d --no-deps --force-recreate \
+     --scale logos-webservice=<current-replica-count> logos-webservice
+   ```
+
+A plain `docker compose restart` does not apply changed environment variables.
+Both production and development Compose files pass this limit to the webservice.
+Set the previous positive value to restore a previous limit. Set `0` to disable the limit.
+
 ### Failover Verification
 
 A configuration with 2 replicas does not prove that a kill of one replica is
@@ -691,6 +714,11 @@ connection errors (`000`), `5xx`, and other statuses (including rate-gateway
 `429`). This check covers new requests only. A killed replica can lose an
 inference stream that it holds. The check does not test client recovery. The
 script restarts the killed container on exit.
+
+The gateway concurrency benchmark also tests active inference streams. CI requires
+successful new requests after a fixed 5 s allowance for the routing update.
+The report includes all interrupted streams. This recovery check does not prove
+that an active stream survives a replica failure.
 
 On the dev compose, first comment out the fixed `127.0.0.1:18082:8081` host
 publish under `logos-webservice: ports:`. Scaled replicas cannot share a fixed

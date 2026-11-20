@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.core.task.TaskRejectedException;
 import org.springframework.core.task.support.TaskExecutorAdapter;
 import org.springframework.http.ResponseEntity;
@@ -57,6 +58,9 @@ class GatewayUnattachedRelayTest {
     private final AtomicReference<GatewayForwardResult> failure = new AtomicReference<>();
     private final AtomicReference<String> error = new AtomicReference<>();
     private HttpServer upstream;
+    private boolean failSettlement;
+    private boolean omitSettlement;
+    private final AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
 
     @AfterEach
     void stopProvider() {
@@ -82,6 +86,8 @@ class GatewayUnattachedRelayTest {
         MockHttpServletResponse client = new MockHttpServletResponse();
         ServletWebRequest request = new ServletWebRequest(servlet, client);
         RequestContextHolder.setRequestAttributes(request);
+        GatewayInFlightLimit limit = new GatewayInFlightLimit(1);
+        GatewayRelayCleanup.begin(servlet, limit.tryAcquire());
         ResponseEntity<StreamingResponseBody> forwarded = forward(clientEnd);
         RequestContextHolder.resetRequestAttributes();
         GatewayCloudForwarder.UpstreamPump pump = (GatewayCloudForwarder.UpstreamPump)
@@ -122,6 +128,7 @@ class GatewayUnattachedRelayTest {
             assertLateRelayRefused(forwarded);
             if (providerEnd != ProviderEnd.EMPTY_EOF) {
                 assertThat(settlements.get()).isZero();
+                assertThat(limit.inFlight()).isEqualTo(1);
             }
         }
 
@@ -163,6 +170,39 @@ class GatewayUnattachedRelayTest {
         new GatewayRelayCleanup().afterCompletion(request, () -> null);
         assertLateRelayRefused(forwarded);
         assertThat(settlements.get()).isEqualTo(1);
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2))
+            .untilAsserted(() -> assertThat(limit.inFlight()).isZero());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ProviderEnd.class, names = {"USAGE", "ERROR", "EMPTY_EOF"})
+    void failingSettlementStillReleasesTheProviderOwner(ProviderEnd end) throws Exception {
+        failSettlement = true;
+        verifyProviderOwnerReleased(end);
+    }
+
+    @org.junit.jupiter.api.Test
+    void nullSettlementCallbacksStillReleaseTheProviderOwner() throws Exception {
+        omitSettlement = true;
+        verifyProviderOwnerReleased(ProviderEnd.USAGE);
+    }
+
+    private void verifyProviderOwnerReleased(ProviderEnd end) throws Exception {
+        startProvider(end);
+        MockHttpServletRequest servlet = new MockHttpServletRequest();
+        ServletWebRequest request = new ServletWebRequest(servlet);
+        RequestContextHolder.setRequestAttributes(request);
+        GatewayInFlightLimit limit = new GatewayInFlightLimit(1);
+        GatewayRelayCleanup.begin(servlet, limit.tryAcquire());
+        forward(ClientEnd.COMPLETED);
+        new GatewayRelayCleanup().afterCompletion(request, () -> null);
+        if (end != ProviderEnd.EMPTY_EOF) assertThat(limit.inFlight()).isEqualTo(1);
+        continueProvider.countDown();
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> {
+            assertThat(limit.inFlight()).isZero();
+            if (failSettlement) assertThat(callbackFailure.get()).hasMessage("Fake settlement failure");
+        });
+        assertThat(settlements.get()).isEqualTo(omitSettlement ? 0 : 1);
     }
 
     private void assertLateRelayRefused(ResponseEntity<StreamingResponseBody> forwarded) {
@@ -183,16 +223,24 @@ class GatewayUnattachedRelayTest {
             "Authorization", "Bearer {}", "sk", "CLOUD_NOT_IN_EU_BY_US_PROVIDER", null);
         return forwarder.forward(deployment, "/v1/chat/completions", null, "POST", REQUEST,
             Map.of("content-type", List.of("application/json")), false,
-            result -> {
+            omitSettlement ? null : result -> {
                 success.set(result);
                 settlements.incrementAndGet();
                 settled.countDown();
+                if (failSettlement) {
+                    Thread.currentThread().setUncaughtExceptionHandler((thread, failure) -> callbackFailure.set(failure));
+                    throw new IllegalStateException("Fake settlement failure");
+                }
             },
-            (message, result) -> {
+            omitSettlement ? null : (message, result) -> {
                 error.set(message);
                 failure.set(result);
                 settlements.incrementAndGet();
                 settled.countDown();
+                if (failSettlement) {
+                    Thread.currentThread().setUncaughtExceptionHandler((thread, failure) -> callbackFailure.set(failure));
+                    throw new IllegalStateException("Fake settlement failure");
+                }
             });
     }
 

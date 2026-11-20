@@ -66,6 +66,10 @@ class GatewayCloudBillingEndToEndTest {
     @MockitoBean
     JwtDecoder jwtDecoder;
 
+    @Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("gatewayResponseExecutor")
+    org.springframework.core.task.AsyncTaskExecutor responseExecutor;
+
     @Container
     @SuppressWarnings("resource")
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17")
@@ -83,6 +87,8 @@ class GatewayCloudBillingEndToEndTest {
         registry.add("spring.liquibase.enabled", () -> "true");
         registry.add("spring.liquibase.change-log", () -> "classpath:liquibase/changelog/master.xml");
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
+        registry.add("spring.datasource.hikari.maximum-pool-size", () -> "4");
+        registry.add("spring.datasource.hikari.minimum-idle", () -> "1");
     }
 
     private static final AtomicInteger SEQ = new AtomicInteger(1);
@@ -99,6 +105,7 @@ class GatewayCloudBillingEndToEndTest {
     /** When set, the upstream sends this after {@link #responseBody}, {@link #tailDelayMs} later. */
     private volatile String responseTail;
     private volatile long tailDelayMs;
+    private volatile java.util.concurrent.CountDownLatch responseTailRelease;
 
     @BeforeEach
     void startUpstream() throws IOException {
@@ -115,7 +122,11 @@ class GatewayCloudBillingEndToEndTest {
                 exchange.getResponseBody().write(out);
                 exchange.getResponseBody().flush();
                 try {
-                    Thread.sleep(tailDelayMs);
+                    if (responseTailRelease != null) {
+                        responseTailRelease.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                    } else {
+                        Thread.sleep(tailDelayMs);
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
@@ -128,6 +139,7 @@ class GatewayCloudBillingEndToEndTest {
 
     @AfterEach
     void stopUpstream() {
+        if (responseTailRelease != null) responseTailRelease.countDown();
         if (upstream != null) {
             upstream.stop(0);
         }
@@ -179,6 +191,85 @@ class GatewayCloudBillingEndToEndTest {
         assertThat(callbacks.get()).isEqualTo(1);
         assertThat(settledCost(logId)).isEqualTo(37 * 20L + 19 * 120L);
         assertThat(usageTokens(logId)).containsEntry("prompt_tokens", 37).containsEntry("completion_tokens", 19);
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(60)
+    void concurrentVirtualResponsesSettleExactlyOnceThroughASmallDatabasePool() throws Exception {
+        responseBody = "{\"usage\":{\"prompt_tokens\":37,\"completion_tokens\":19}}";
+        Fixture f = seedPricedDeployment();
+        // A finite synthetic budget covers every concurrent reservation. The
+        // ordinary budget and pricing checks stay enabled throughout this load.
+        jdbc.update("UPDATE teams SET default_monthly_budget_micro_cents = ? WHERE id = ?",
+            265 * RESERVATION, f.key().teamId());
+        GatewayInFlightLimit limit = new GatewayInFlightLimit(264);
+        var ready = new java.util.concurrent.CountDownLatch(264);
+        var settle = new java.util.concurrent.CountDownLatch(1);
+        var callbacks = new AtomicInteger();
+        var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+        var ids = new java.util.ArrayList<Integer>();
+        try {
+            for (int i = 0; i < 264; i++) {
+                var servlet = new org.springframework.mock.web.MockHttpServletRequest();
+                var request = new org.springframework.web.context.request.ServletWebRequest(servlet);
+                var lifecycle = GatewayRelayCleanup.begin(servlet, limit.tryAcquire());
+                ResponseEntity<StreamingResponseBody> response;
+                int id = admit(f);
+                ids.add(id);
+                org.springframework.web.context.request.RequestContextHolder.setRequestAttributes(request);
+                try {
+                    response = forwarder.forward(f.deployment(), "/v1/chat/completions", null, "POST", requestBody(false),
+                        Map.of("content-type", List.of("application/json")), false, result -> {
+                            assertThat(Thread.currentThread().isVirtual()).isTrue();
+                            ready.countDown();
+                            try {
+                                if (!settle.await(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                                    throw new AssertionError("Settlement barrier timed out");
+                                }
+                            } catch (InterruptedException failure) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(failure);
+                            }
+                            accounting.settleSuccess(id, result.usage(), result.responseBody(),
+                                result.serviceTier(), result.timings());
+                            callbacks.incrementAndGet();
+                        }, (error, result) -> { throw new AssertionError(error); });
+                } finally {
+                    org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
+                }
+                futures.add(responseExecutor.submit(() -> {
+                    try {
+                        response.getBody().writeTo(OutputStream.nullOutputStream());
+                        return null;
+                    } finally {
+                        lifecycle.close();
+                    }
+                }));
+            }
+            assertThat(ready.await(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(limit.inFlight()).isEqualTo(264);
+            long started = System.nanoTime();
+            settle.countDown();
+            long deadline = started + Duration.ofSeconds(30).toNanos();
+            for (var future : futures) future.get(Math.max(1, deadline - System.nanoTime()), java.util.concurrent.TimeUnit.NANOSECONDS);
+            assertThat(limit.inFlight()).isZero();
+            assertThat(callbacks.get()).isEqualTo(264);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM log_entry WHERE api_key_id = ? "
+                + "AND result_status = 'success' AND cost_finalized = TRUE", Integer.class, f.key().id())).isEqualTo(264);
+            for (int id : ids) {
+                assertThat(settledCost(id)).isEqualTo(37 * 20L + 19 * 120L);
+                assertThat(usageTokens(id)).containsEntry("prompt_tokens", 37).containsEntry("completion_tokens", 19);
+            }
+            System.out.printf("GATEWAY_DB_LOAD responses=264 hikari_max=4 callbacks=%d settle_and_verify_ms=%.1f%n",
+                callbacks.get(), (System.nanoTime() - started) / 1_000_000.0);
+        } finally {
+            settle.countDown();
+            org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
+            for (var future : futures) {
+                try { future.get(5, java.util.concurrent.TimeUnit.SECONDS); }
+                catch (Exception ignored) { future.cancel(true); }
+            }
+        }
     }
 
     // ------------------------------------------------------ non-streaming
@@ -722,6 +813,50 @@ class GatewayCloudBillingEndToEndTest {
             result -> accounting.settleSuccess(
                 logId, result.usage(), result.responseBody(), result.serviceTier(), result.timings()),
             (err, result) -> accounting.settleFailure(logId, err, result));
+    }
+
+    @Test
+    void interruptedVirtualBodyAccountsForFailureAndRestoresInterrupt() throws Exception {
+        // Binary bodies pass through immediately, so the barrier proves the relay is waiting for more bytes.
+        responseContentType = "application/octet-stream";
+        responseBody = "first";
+        responseTail = "last";
+        responseTailRelease = new java.util.concurrent.CountDownLatch(1);
+        Fixture f = seedPricedDeployment();
+        int logId = admit(f);
+        var response = forward(f, requestBody(false), "/v1/chat/completions");
+        var firstByte = new java.util.concurrent.CountDownLatch(1);
+        var finished = new java.util.concurrent.CountDownLatch(1);
+        var interrupted = new java.util.concurrent.atomic.AtomicBoolean();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread relay = Thread.ofVirtual().start(() -> {
+            try {
+                response.getBody().writeTo(new OutputStream() {
+                    @Override public void write(int b) { firstByte.countDown(); }
+                    @Override public void write(byte[] b, int off, int len) { firstByte.countDown(); }
+                });
+            } catch (Throwable e) {
+                failure.set(e);
+            } finally {
+                interrupted.set(Thread.currentThread().isInterrupted());
+                finished.countDown();
+            }
+        });
+        try {
+            assertThat(firstByte.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            relay.interrupt();
+            assertThat(finished.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(failure.get()).isInstanceOf(java.io.InterruptedIOException.class);
+            assertThat(interrupted.get()).isTrue();
+            assertThat(status(logId)).isEqualTo("error");
+            assertThat(settledCost(logId)).isZero();
+            assertThat(jdbc.queryForObject("SELECT cost_finalized FROM log_entry WHERE id = ?",
+                Boolean.class, logId)).isTrue();
+        } finally {
+            relay.interrupt();
+            relay.join(5000);
+            responseTailRelease.countDown();
+        }
     }
 
     /** The reservation this forward belongs to — the one the controller just made. */

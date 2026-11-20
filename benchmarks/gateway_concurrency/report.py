@@ -135,13 +135,27 @@ def build_markdown(result: Dict[str, Any]) -> str:
         lines.append("")
         onset = conc["onset_concurrency"]
         onset_str = str(onset) if onset is not None else "not reached within the tested steps"
+        if "gateway_max_in_flight_per_replica" in ceiling:
+            limits = [str(n) if n else "unlimited" for n in ceiling["gateway_max_in_flight_per_replica"]]
+            aggregate = ceiling["configured_admission_ceiling"]
+            aggregate_text = str(aggregate) if aggregate is not None else "unlimited"
+            capacity_text = (
+                f"Configured gateway I/O limits: {', '.join(limits)} "
+                f"across {ceiling['replicas']} replica(s) = {aggregate_text}. "
+                f"Executor: `{ceiling['executor_kind']}`. Source: {ceiling['source']}."
+            )
+        else:
+            # Historic artifacts predate the independent I/O limit.
+            capacity_text = (
+                f"Configured ceiling: `max-size`={ceiling['spring_task_execution_pool_max_size']} + "
+                f"`queue-capacity`={ceiling['spring_task_execution_pool_queue_capacity']} "
+                f"(≈{ceiling['approx_admission_ceiling_per_replica']} per replica) "
+                f"x {ceiling['replicas']} replica(s) = ≈{ceiling['approx_admission_ceiling']}."
+            )
         lines.append(
             f"Peak gateway relay tasks simultaneously: **{conc.get('max_concurrent_relays', 0)}**. "
             f"Onset of failures (>{conc['fail_threshold']:.0%} of a step): **{onset_str}** requests per step. "
-            f"Configured ceiling: `max-size`={ceiling['spring_task_execution_pool_max_size']} + "
-            f"`queue-capacity`={ceiling['spring_task_execution_pool_queue_capacity']} "
-            f"(≈{ceiling['approx_admission_ceiling_per_replica']} per replica) "
-            f"x {ceiling['replicas']} replica(s) = ≈{ceiling['approx_admission_ceiling']}."
+            + capacity_text
         )
         lines.append("")
         lines.append(
@@ -223,6 +237,23 @@ def build_markdown(result: Dict[str, Any]) -> str:
             lines.append("")
             lines.append(f"Sample errors: `{fo['connectivity_failure_samples']}`")
         lines.append("")
+        recovery = fo.get("recovery")
+        if recovery:
+            verdict = "PASS" if recovery["passed"] else "FAIL"
+            lines.append(
+                f"**Recovery: {verdict}.** New requests must succeed after the fixed "
+                f"{recovery['allowance_s']} s routing allowance. Interrupted streams still count above; "
+                "this does not assert seamless stream failover."
+            )
+            lines.append("")
+            lines.append("| Phase | Requests | OK | Connectivity failures | Other failures |")
+            lines.append("|---|---:|---:|---:|---:|")
+            for phase, counts in recovery["phases"].items():
+                lines.append(
+                    f"| {phase.replace('_', ' ')} | {counts['total']} | {counts['ok']} | "
+                    f"{counts['connectivity_failures']} | {counts['other_failures']} |"
+                )
+            lines.append("")
 
     # -- budget admission ------------------------------------------------
     bud = result.get("budget")
@@ -236,7 +267,10 @@ def build_markdown(result: Dict[str, Any]) -> str:
         "so the numbers above are the gateway's own overhead/limits, not a real cloud provider's throttling."
     )
     lines.append(
-        "- The concurrency, latency and failover legs have no PASS/FAIL gate yet. The budget-admission leg "
+        "- The concurrency and latency legs are informational. With "
+        "`LOGOS_BENCH_GW_FAILOVER_REQUIRE_RECOVERY=1`, failover requires successful requests before the kill "
+        "and after the fixed routing allowance, zero failures in those phases, and no other HTTP errors. "
+        "Missing or skipped recovery measurements fail this gate. The budget-admission leg "
         "checks the median and p99 time in Logos against `LOGOS_BENCH_GW_BUDGET_LOGOS_P50_MAX_MS` and "
         "`LOGOS_BENCH_GW_BUDGET_LOGOS_P99_MAX_MS`; with `LOGOS_BENCH_GW_BUDGET_FAIL_ON_THRESHOLD=1` "
         "a breach fails the run."
