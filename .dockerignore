@@ -27,6 +27,7 @@
 !logos-agent/workspace/screenshot.js
 # Compile caches are resolved at image build time for offline session checks.
 !logos-webservice/pom.xml
+!logos-webservice/install-temurin.sh
 !logos-webservice/src
 !logos-ui/package.json
 !logos-ui/package-lock.json

@@ -1,4 +1,13 @@
-FROM maven:3.10-eclipse-temurin-25 AS builder
+# Both compiler and runtime use the same verified Temurin security release.
+FROM maven:3.10-eclipse-temurin-25@sha256:37ecd7dbbe926e9b69586747a25164c0f3b764455072322d25cc7724ee9e1b64 AS java-runtime
+COPY install-temurin.sh /tmp/install-temurin.sh
+RUN sh /tmp/install-temurin.sh jre
+
+FROM maven:3.10-eclipse-temurin-25@sha256:37ecd7dbbe926e9b69586747a25164c0f3b764455072322d25cc7724ee9e1b64 AS builder
+# Official Temurin archives carry the patch before the base images are rebuilt.
+COPY install-temurin.sh /tmp/install-temurin.sh
+RUN sh /tmp/install-temurin.sh jdk && rm /tmp/install-temurin.sh
+ENV JAVA_VERSION=jdk-25.0.5.1+2
 WORKDIR /build
 COPY pom.xml .
 
@@ -7,6 +16,9 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.m2 mvn package -DskipTests -q
 
 FROM eclipse-temurin:25-jre-noble@sha256:e3b6f7887a50f20d8f07abf279d8a81a5953fb398a9555bd9edd56b9bd15968c
+RUN rm -rf /opt/java/openjdk
+COPY --from=java-runtime /opt/java/openjdk /opt/java/openjdk
+ENV JAVA_VERSION=jdk-25.0.5.1+2
 # apt installs exact versions from a fixed Ubuntu archive snapshot, so every
 # build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
 # digest together. Snapshot lists are older than their Valid-Until date by
@@ -30,9 +42,4 @@ RUN groupadd --system --gid 10001 logos \
 ENV HOME=/home/logos
 USER 10001:10001
 EXPOSE 8081
-# The JRE's AVX-512 Base64 decoder intrinsic has a heap overflow reachable with
-# unauthenticated input (CVE-2026-114938); no Temurin 25 build with the fix is
-# published yet. Turn the intrinsic off (the portable Java decoder is used
-# instead) until the base image ships a fixed JRE. The flag sits in the
-# entrypoint so a JDK_JAVA_OPTIONS override cannot drop it.
-ENTRYPOINT ["java", "-XX:-UseBASE64Intrinsics", "-jar", "app.war"]
+ENTRYPOINT ["java", "-jar", "app.war"]

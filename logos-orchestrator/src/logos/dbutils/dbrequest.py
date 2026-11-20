@@ -2,7 +2,7 @@ from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from logos.benchmarks.configuration import BenchmarkBatch, BenchmarkSettings
+from logos.benchmarks.configuration import BenchmarkBatch, BenchmarkRunSettings
 from logos.dbutils.dbmodules import ThresholdLevel
 
 
@@ -20,6 +20,10 @@ class NightlyUpdateRequest(NightlyStatusRequest):
     expected_enabled: StrictBool
     workload_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     expected_workload_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+class RecentBenchmarkWorkloadRequest(NightlyStatusRequest):
+    lookback_days: Literal[1, 3, 7] | None = None
 
 
 class BenchmarkWorkloadRequest(BaseModel):
@@ -351,11 +355,10 @@ class InternalWakeLaneRequest(BaseModel):
     lane_id: str
 
 
-class InternalBenchmarkRequest(BenchmarkSettings):
+class InternalBenchmarkRequest(BenchmarkRunSettings):
+    model_config = ConfigDict(extra="ignore")
     batch: BenchmarkBatch | None = None
     model_provider_id: int = Field(gt=0)
-    samples: int = Field(default=5, gt=0, le=100)
-    max_output_tokens: int = Field(default=512, gt=0, le=4096)
 
 
 class DatasetSearchRequest(BaseModel):

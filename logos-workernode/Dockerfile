@@ -76,7 +76,7 @@ ARG BASE_IMAGE=ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d
 # package is needed.) Extras must precede the version specifier (PEP 508):
 # vllm[audio]==vX.Y.Z parses, vllm==vX.Y.Z[audio] does not. The hourly
 # "Logos - Update vLLM" workflow carries the extra over when it bumps the pin.
-ARG VLLM_PIP_SPEC="vllm[audio]==v0.33.0"
+ARG VLLM_PIP_SPEC="vllm[audio]==v0.34.0"
 # TORCH_INDEX_URL — leave empty (default) to use the PyPI torch that vLLM
 # installs, which already includes CUDA support matching its nvidia-* deps.
 # Only set this to override with a specific CUDA wheel index (e.g.

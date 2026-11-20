@@ -7,7 +7,10 @@
 # Resolve the same Maven toolchain and project dependencies as the application
 # image while build-time network access is available. Running test-compile
 # warms compiler/plugin dependencies that dependency:go-offline can miss.
-FROM maven:3.10-eclipse-temurin-25 AS java-verification
+FROM maven:3.10-eclipse-temurin-25@sha256:37ecd7dbbe926e9b69586747a25164c0f3b764455072322d25cc7724ee9e1b64 AS java-verification
+COPY logos-webservice/install-temurin.sh /tmp/install-temurin.sh
+RUN sh /tmp/install-temurin.sh jdk && rm /tmp/install-temurin.sh
+ENV JAVA_VERSION=jdk-25.0.5.1+2
 WORKDIR /build/logos-webservice
 COPY logos-webservice/pom.xml ./pom.xml
 COPY logos-webservice/src ./src
@@ -85,13 +88,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Maven distribution and offline repository come from the build stage below.
 ARG JDK_VERSION=25
 # The exact package version from Adoptium's repository (it keeps old releases).
-ARG JDK_PACKAGE_VERSION=25.0.5.0.0+8-1
+ARG JDK_PACKAGE_VERSION=25.0.5.1.0+2-0
 RUN curl --proto =https -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
       | gpg --dearmor -o /usr/share/keyrings/adoptium.gpg \
   && echo "deb [signed-by=/usr/share/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
       > /etc/apt/sources.list.d/adoptium.list \
   && apt-get update \
   && apt-get install -y --no-install-recommends "temurin-${JDK_VERSION}-jdk=${JDK_PACKAGE_VERSION}" \
+  && java -version 2>&1 | grep -F 'build 25.0.5.1+2' \
   && rm -rf /var/lib/apt/lists/*
 
 # GitHub CLI, the release package of an exact version verified against its

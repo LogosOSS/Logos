@@ -270,7 +270,7 @@ The view identifies measurements with matching settings and the same measurement
 Measurements from another environment appear with a historical label. They do not verify current performance.
 The measurement includes its benchmark number, baseline throughput, result throughput and percentage change.
 Temporary benchmark settings and recovery states do not establish the production configuration.
-An offline worker shows an unavailable state. A historical winner alone does not verify a deployment.
+The status distinguishes an offline worker, a sleeping model and a model waiting to start. A sleeping model can still show its configured settings. Active replicas with different settings are identified separately.
 Manual measurements can show their change from the first comparable dataset baseline. The summary labels this baseline as **Starting baseline**.
 The details also show the last confirmed adoption and reasons that exclude faster runs.
 A fresh comparison must verify a historical candidate before automatic adoption.
@@ -312,14 +312,10 @@ See the [nightly benchmark guide](../admin/nightly-benchmarks.md) for rotation, 
 1. Open a model from **Models**.
 2. Select **Performance**.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Select **Manage**, then expand **Schedule and test plan**.
-5. Select **Enable nightly runs…**.
-6. Read the dialog and select **Enable nightly runs**.
+4. Select **Manage** and check the time window and request workload.
+5. Select **Enable nightly runs**. If the button is unavailable, the dialog shows what needs attention.
 
-Select **Cancel** to keep the current schedule state.
-The confirmation dialog shows the time window and the effect on production traffic.
-
-![Confirmation dialog to enable nightly benchmarks](../static/img/roles/logos-admin-nightly-enable.png)
+![Nightly schedule ready to enable](../static/img/roles/logos-admin-nightly-enable.png)
 
 The card then shows **Enabled · in nightly rotation**.
 The schedule stays active after a page reload.
@@ -330,8 +326,7 @@ The example uses illustrative measurements and an active nightly schedule.
 Use **Run a benchmark** to configure a run during the day.
 These controls do not change the nightly workload.
 Use **Request workload** to select a saved dataset for the nightly schedule.
-Select **Create a fixed dataset from FULL request logs** to copy 1–100 successful requests from the database.
-Enter the request IDs, name and provenance. Select **Create dataset**, then **Apply dataset**.
+Choose **Recent FULL request logs**, keep **Latest 100 requests** and click **Create and apply dataset**. On production, this saves up to 100 replayable requests for the model from the production log. You can also select a time window. Each dataset has a 5 MB limit. For a hand-picked dataset, open **Select individual request IDs**.
 ![Create a fixed request dataset](../static/img/roles/logos-admin-nightly-workload.png)
 
 The dataset keeps its inputs when source logs are deleted.
