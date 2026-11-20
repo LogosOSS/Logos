@@ -14,10 +14,9 @@ page Deployments of that Logos (see "Orders from Logos").
 
 A deployment is one request to run a given image tag. The daemon takes requests one at a time, oldest first.
 
-Before the first phase, the manager settles two things, if the host is set up for them. It logs in to the registry with
-the login of the `.env` file (see "Registry login"), and it takes the compose file out of the image of the tag (see
-"Compose file from the tag"). If one of them fails, the deployment ends as `failed` (`pull_failed`) before it touches
-anything. A deployment that goes on after a restart of the manager keeps the compose file it began with.
+Before the first phase, the manager takes the compose file out of the image of the tag, if the host is set up for it (see
+"Compose file from the tag"). If that fails, the deployment ends as `failed` (`pull_failed`) before it touches anything.
+A deployment that goes on after a restart of the manager keeps the compose file it began with.
 
 | Phase | What happens |
 |---|---|
@@ -181,33 +180,6 @@ run again.
 A problem during the removal does not fail the step. Images built before the label existed have none: remove them once
 by ID with `docker rmi`. A host without the deploy workflow keeps its old manager images and needs the same command.
 
-## Registry login
-
-A registry that needs a login needs one on every host. The manager can make the login itself, from the `.env` file of
-the host:
-
-```bash
-# in the .env of the host
-REGISTRY=<registry-host>/logos     # where the images come from, as before
-REGISTRY_USER=<user>
-REGISTRY_PASSWORD=<password or token>
-```
-
-* At the start of every deployment, the manager runs `docker login <registry-host>` with these values. The host name is
-  the part of `REGISTRY` before the first slash. A new password is a new line in the `.env` file: there is no restart and
-  no command on the host. The file is read at every deployment.
-* The password goes to `docker login` through stdin. It is on no command line, in no log and in no record. The login is
-  stored in a directory of its own in the temporary file system of the container, so it is gone when the container
-  stops, and nothing of it is written to the host.
-* Without `REGISTRY_USER` and `REGISTRY_PASSWORD`, the manager does not log in, and the login of the host (the directory
-  `.docker` of the project directory, see "Use") is used as before. With only one of the two, the manager warns once and
-  does not log in.
-* If the login fails, for example because the password is wrong, the deployment ends as `failed` (`pull_failed`) with the
-  reason, before it touches anything.
-* If a value has a `$`, put it in single quotes, for example `REGISTRY_USER='robot$logos'`. Compose also reads the `.env`
-  file and would take `$logos` for a variable. The manager takes the quotes off.
-* Use an account that can pull but not push.
-
 ## Compose file from the tag
 
 Every host has a copy of its compose file, and a release that needs a new entry in it ran with the old settings until
@@ -279,9 +251,9 @@ How it goes:
    `logos-deployer`), and Compose must have made that container as the service of the project. Otherwise `docker compose`
    would start a second container with the same name. If not, the request ends as `failed` (`not_eligible`) before
    anything is touched.
-3. **The image.** The manager logs in (see "Registry login"), takes the compose file of its service out of the image of the
-   tag if the host is set to (see "Compose file from the tag"), pulls the image that its service names for the tag, and
-   compares it with the one it runs. The same image ends the request as `unchanged`. A `NODE_MANAGER_IMAGE_TAG` in the
+3. **The image.** The manager takes the compose file of its service out of the image of the tag if the host is set to
+   (see "Compose file from the tag"), pulls the image that its service names for the tag, and compares it with the one
+   it runs. The same image ends the request as `unchanged`. A `NODE_MANAGER_IMAGE_TAG` in the
    `.env` file keeps the service on that tag, as before, so the tag of the update does not change it.
 4. **The hand-over.** For another image, the manager saves the record and starts the helper: a container named
    `nm-self-update`, made from the image that the manager runs now, the version that is known to work. It has the volumes of
@@ -401,7 +373,6 @@ of a deployment would otherwise restart the manager in the middle of its own dep
 * **The address that must answer** is `<Logos>/api/info` by default (`NODE_MANAGER_LOGOS_URL`). It
   shows that the whole way, from the proxy to the webservice, works. Set `NODE_MANAGER_CORE_HEALTH_URL` to check another
   address, for example if the host cannot reach its own public address. The check cannot be switched off.
-* **The registry login** is the directory `.docker` of the project directory, as for a worker.
 
 ## Use
 
@@ -421,10 +392,10 @@ longer do it. A worker without `drain: true` is followed to its end (`deploy --w
 once. Give every worker of a workflow `drain: true`, or put the workers without it first: a worker without it does not
 wait for a node that still drains. The next run prints how the last deployment of the host ended.
 
-The image of the service is `${REGISTRY}/logos-node-manager`. The default registry is the public GHCR mirror, which
-carries the image of `main` (tag `latest`). The deploy workflows set `REGISTRY` in the `.env` of the worker to the
-deployment registry (`<registry>/logos`). Set it there as well to pull a version tag or a pull request build, which the
-mirror does not carry.
+The image of the service is `${REGISTRY}/logos-node-manager`. The default registry is `ghcr.io/logososs`, the public GHCR
+namespace of Logos. It carries the images of `main` (tag `latest`), of pull requests (tag `pr-<number>`) and of releases
+(a version such as `1.0.2`). The deploy workflows write `REGISTRY` and `IMAGE_TAG` to the `.env` of the worker. On a
+host without them, set `IMAGE_TAG` there to pull a tag other than `latest`.
 
 The service needs two things from the host:
 
@@ -432,11 +403,10 @@ The service needs two things from the host:
 * the worker directory, mounted at the same path as on the host (Compose turns relative bind mounts into absolute host
   paths before it sends them to the Docker engine).
 
-To pull from a registry that needs a login, the manager can log in itself with the user and the password of the `.env`
-file (see "Registry login"). Without them, it reads the login from the directory `.docker` of the worker directory. The
-compose file sets `DOCKER_CONFIG` to this directory. Because the directory is part of the mount of the worker directory,
-the login does not depend on the user who runs `docker compose`. A new login is visible at once. The deploy workflows
-write the login there. On a host without them, and without a login in the `.env` file, run this command:
+GHCR needs no login. To pull from another registry that needs one (`REGISTRY` in the `.env` file), the manager reads the
+login from the directory `.docker` of the worker directory. The compose file sets `DOCKER_CONFIG` to this directory.
+Because the directory is part of the mount of the worker directory, the login does not depend on the user who runs
+`docker compose`. A new login is visible at once. Run this command on the host:
 
 ```bash
 DOCKER_CONFIG=/opt/logos-workernode/.docker docker login <registry>
@@ -517,9 +487,8 @@ All settings are environment variables with the prefix `NODE_MANAGER_`.
 A missing, malformed or non-positive timeout falls back to its default.
 
 A few settings are not environment variables of the container. The manager reads them from the `.env` file of the host
-at the start of every deployment, so a change needs no restart: `REGISTRY`, `REGISTRY_USER` and `REGISTRY_PASSWORD` (see
-"Registry login"), `NODE_MANAGER_COMPOSE_FROM_TAG` (see "Compose file from the tag") and `NODE_MANAGER_SELF_UPDATE` (see
-"Self-update").
+at the start of every deployment, so a change needs no restart: `REGISTRY`, `NODE_MANAGER_COMPOSE_FROM_TAG` (see
+"Compose file from the tag") and `NODE_MANAGER_SELF_UPDATE` (see "Self-update").
 
 ## Rules the code keeps
 
@@ -567,9 +536,7 @@ for the worker. The risk is accepted for these reasons:
   an order or read anything else. Logos stores only a hash of the key.
 * The container sees little of the host: the worker directory (read-only), its own state directory and the socket. The
   worker directory includes the `.env` with the secrets of the worker, because Compose needs that file, and the Docker
-  login in `.docker`. If the `.env` has a registry login (see "Registry login"), the manager reads the password from
-  it and gives it to `docker login` through stdin. It keeps the resulting login in the temporary file system of the
-  container only. No output of `docker compose config` and no environment is logged (see "Rules the code keeps").
+  login in `.docker`. No output of `docker compose config` and no environment is logged (see "Rules the code keeps").
 * With `NODE_MANAGER_COMPOSE_FROM_TAG`, the compose file comes from the registry (see "Compose file from the tag").
   Compose treats a compose file as trusted input: it can ask for privileged containers and for any host mount. Whoever
   can push an image to the tag of the registry then decides what runs as root on that host. This is already true of the
@@ -606,7 +573,6 @@ For people who change the code:
 * Do not publish a port or add a network listener.
 * Do not start a command through a shell. Check every value that comes from outside before it reaches a command.
 * Do not write the key of the node, or a request that carries it, to a log or a record.
-* Do not put the registry password on a command line, in a log or in a record. It goes through stdin.
 * Do not mount more of the host into the container, and do not add capabilities.
 * Do not give the helper of the self-update more than the manager has: no other mount, no network, no secret.
 
@@ -624,14 +590,13 @@ The unit tests need no Docker. `FakeDocker` in `tests/conftest.py` simulates the
 and no GPU. It covers a normal deployment, a broken release that is rolled back, a tag that does not exist, a deployment
 with nothing to change, a manager that restarts in the middle of a deployment, and a later release that removes the
 image from two versions back. After each of them it counts the images on the host, to see that none is left without a
-purpose. Five more checks use real Docker for the parts that the unit tests can only simulate: the compose file taken out
+purpose. Four more checks use real Docker for the parts that the unit tests can only simulate: the compose file taken out
 of the image of a tag (including that a relative path in it still means the project directory of the host, and the
-fallback for a tag without such an image), and the login from the `.env` file against a second registry that wants a
-password (a wrong password, the right one, and that no password reaches the log), the replacement of the manager by the
-image of another tag (the manager that runs afterwards, a worker that stays as it was, a helper that is gone), the way
-back to the old manager when the new image does not come up, and the update that follows a deployment on its own. The
-script builds the image of the manager from the root of the repository, like the build of the image. It needs a running Docker engine and network
-access to pull the base images.
+fallback for a tag without such an image), the replacement of the manager by the image of another tag (the manager that
+runs afterwards, a worker that stays as it was, a helper that is gone), the way back to the old manager when the new
+image does not come up, and the update that follows a deployment on its own. The script builds the image of the manager
+from the root of the repository, like the build of the image. It needs a running Docker engine and network access to pull
+the base images.
 
 ## Limits of this version
 

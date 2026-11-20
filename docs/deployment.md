@@ -245,27 +245,23 @@ Images from before the label existed have no label. Remove them once with
 and needs the same command.
 
 The node manager writes the record of each deployment to the directory
-`node-manager/` in the worker directory. The image `logos-node-manager` is in the
-deployment registry and, for builds of `main`, in the public mirror.
+`node-manager/` in the worker directory. The image `logos-node-manager` is in GHCR,
+as are the other images.
 
 CAUTION: On a host with the node manager, do not run `docker compose up` for the
 worker service. Use the node manager instead.
 
 To use the node manager on a host without the deploy workflow, do these steps:
 
-1. If the registry needs a login, run
-   `DOCKER_CONFIG=<worker directory>/.docker docker login <registry>` on the
-   host. Or let the node manager log in with the `.env` file. See
-   [Let the Node Manager Log In and Get the Compose File](#let-the-node-manager-log-in-and-get-the-compose-file).
-2. Add `COMPOSE_PROFILES=node-manager` to the `.env` file of the worker.
-3. To pull a version tag, set `REGISTRY` in the `.env` file of the worker to
-   the deployment registry (`<registry>/logos`). Then set `IMAGE_TAG`. The
-   public mirror has only the tag `latest`.
-4. In the worker directory, run `docker compose up -d logos-node-manager`.
+1. Add `COMPOSE_PROFILES=node-manager` to the `.env` file of the worker.
+2. To pull a version tag or a pull request build, set `IMAGE_TAG` in the `.env`
+   file of the worker. The default is `latest`.
+3. In the worker directory, run `docker compose up -d logos-node-manager`.
 
-The node manager reads the login from the directory `.docker` of the worker
-directory. A new login is visible at once. The deploy workflows write the login
-to this directory on each run.
+GHCR needs no login. If `REGISTRY` names another registry that needs a login,
+run `DOCKER_CONFIG=<worker directory>/.docker docker login <registry>` on the
+host. The node manager reads the login from the directory `.docker` of the worker
+directory. A new login is visible at once.
 
 To send a deploy request, run this command:
 
@@ -277,35 +273,15 @@ The node manager reserves the tag `previous`. Do not deploy that tag.
 
 To see the latest deployment, run `docker exec logos-node-manager node-manager status`.
 
-### Let the Node Manager Log In and Get the Compose File
+### Let the Node Manager Get the Compose File
 
-The node manager can do two jobs that a person or a workflow does on each host.
-Both are set in the `.env` file of the host. The node manager reads that file at
-the start of each deployment, so it needs no restart. The same lines work on a
+The node manager can take the compose file of a deployment out of the image of
+the tag. Without this, a person or a workflow copies the compose file to each
+host. A new version can then run with old settings.
+
+You set this in the `.env` file of the host. The node manager reads that file at
+the start of each deployment, so it needs no restart. The same line works on a
 core host.
-
-**The registry login.** Without this, a person runs `docker login` on each host.
-
-1. Make a registry account that can pull images but cannot push them.
-2. Add these lines to the `.env` file of the host:
-
-   ```bash
-   REGISTRY=<registry-host>/logos
-   REGISTRY_USER=<user>
-   REGISTRY_PASSWORD=<password or token>
-   ```
-
-3. If a value has a `$`, put the value in single quotes.
-
-Before each deployment, the node manager runs `docker login` with these values.
-It sends the password through stdin. The login stays in the temporary storage of
-the container, so nothing of it stays on the host. If the login fails, the
-deployment fails and the host does not change. To change the password, change the
-`.env` file. If the `.env` file has no login, the node manager uses the login of
-the directory `.docker`, as before.
-
-**The compose file of the tag.** Without this, a person or a workflow copies the
-compose file to each host. A new version can then run with old settings.
 
 1. Add this line to the `.env` file of the host:
 
@@ -555,7 +531,7 @@ it again after the run.
 
 A new compose file can need a variable that the `.env` file does not have. If the
 compose file comes from the image of the tag (see
-[Let the Node Manager Log In and Get the Compose File](#let-the-node-manager-log-in-and-get-the-compose-file))
+[Let the Node Manager Get the Compose File](#let-the-node-manager-get-the-compose-file))
 and the variable is required, the deployment fails before it changes anything.
 The error names the variable. Add the variable to the `.env` file, and deploy
 again.

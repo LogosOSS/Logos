@@ -15,9 +15,9 @@ from logos_node_manager.state import Deployment
 # What a registry answers through Docker for a tag that does not exist: the classic image store, and the containerd
 # image store (the default of Docker Desktop, seen in the smoke test).
 MISSING_TAG = [
-    "Error response from daemon: manifest for harbor.example/logos/logos-node-manager:v9 not found: manifest unknown",
-    'Error response from daemon: failed to resolve reference "harbor.example/logos/logos-node-manager:v9": '
-    "harbor.example/logos/logos-node-manager:v9: not found",
+    "Error response from daemon: manifest for registry.example/logos/logos-node-manager:v9 not found: manifest unknown",
+    'Error response from daemon: failed to resolve reference "registry.example/logos/logos-node-manager:v9": '
+    "registry.example/logos/logos-node-manager:v9: not found",
 ]
 
 
@@ -37,7 +37,7 @@ def engine() -> FakeEngine:
 
 @pytest.fixture
 def source(settings, engine, store) -> ComposeSource:
-    write_env(settings, "REGISTRY=harbor.example/logos")
+    write_env(settings, "REGISTRY=registry.example/logos")
     return ComposeSource(settings, engine, store.compose_dir)
 
 
@@ -66,7 +66,7 @@ def test_the_file_of_the_host_kind_is_taken_out_of_the_image_of_the_tag_without_
 
     fetched = source.fetch(deployment())
 
-    assert fetched.image == "harbor.example/logos/logos-node-manager:v2"
+    assert fetched.image == "registry.example/logos/logos-node-manager:v2"
     assert fetched.path == store.compose_dir / "run-1" / "worker.yml"
     assert fetched.path.read_text(encoding="utf-8") == engine.content
     assert fetched.sha256 == hashlib.sha256(engine.content.encode()).hexdigest()
@@ -78,7 +78,7 @@ def test_the_file_of_the_host_kind_is_taken_out_of_the_image_of_the_tag_without_
 
 
 def test_a_core_host_gets_the_file_of_the_core(settings, engine, store):
-    write_env(settings, "REGISTRY=harbor.example/logos")
+    write_env(settings, "REGISTRY=registry.example/logos")
     source = ComposeSource(replace(settings, kind="core"), engine, store.compose_dir)
 
     fetched = source.fetch(deployment())
@@ -114,9 +114,9 @@ def test_an_image_without_the_label_carries_no_compose_file(source, engine, labe
     [
         "Error response from daemon: unauthorized: authentication required",
         # The containerd image store opens its message like the one for a missing tag. It does not end in "not found".
-        'Error response from daemon: failed to resolve reference "harbor.example/logos/logos-node-manager:v2": '
+        'Error response from daemon: failed to resolve reference "registry.example/logos/logos-node-manager:v2": '
         "pull access denied, repository does not exist or may require authorization: insufficient_scope",
-        "Get https://harbor.example/v2/: dial tcp: lookup harbor.example: no such host",
+        "Get https://registry.example/v2/: dial tcp: lookup registry.example: no such host",
         # A missing program says "not found" too. That is no sign that the tag does not exist.
         "docker: command not found",
     ],
@@ -184,7 +184,7 @@ def test_the_file_that_ran_last_is_kept_for_the_rollback_and_the_host_file_clear
 
 
 def test_the_file_of_the_manager_itself_is_taken_out_of_a_folder_of_its_own(settings, engine, store):
-    write_env(settings, "REGISTRY=harbor.example/logos")
+    write_env(settings, "REGISTRY=registry.example/logos")
     source = ComposeSource(replace(settings, kind="core"), engine, store.compose_dir)
 
     own = source.fetch(deployment(), own=True)

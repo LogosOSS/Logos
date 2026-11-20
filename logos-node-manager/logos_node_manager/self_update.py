@@ -42,7 +42,6 @@ from logos_node_manager.compose_source import ComposeSource
 from logos_node_manager.config import Settings
 from logos_node_manager.docker_ops import QUERY_TIMEOUT_S, ContainerInfo, Docker, read_env_value, split_image_ref
 from logos_node_manager.errors import ComposeError, DockerError, Interrupted, StateError
-from logos_node_manager.registry import RegistryLogin
 from logos_node_manager.runner import Runner
 from logos_node_manager.state import (
     MAX_EVENTS,
@@ -412,8 +411,8 @@ class SelfUpdater(Recorder):
     """The part of the self-update that the daemon does: request, prepare, hand over, watch and clean up.
 
     ``docker`` is aimed at the manager's own service (see ``self_docker``), ``runner`` runs the commands for the helper.
-    ``registry`` logs in before the pull, and ``compose`` takes the compose file of the manager's service out of the
-    image of the tag. Without them the update uses the login and the compose file of the host.
+    ``compose`` takes the compose file of the manager's service out of the image of the tag. Without it the update uses
+    the compose file of the host.
     """
 
     def __init__(
@@ -423,7 +422,6 @@ class SelfUpdater(Recorder):
         store: SelfUpdateStore,
         runner: Runner,
         *,
-        registry: RegistryLogin | None = None,
         compose: ComposeSource | None = None,
         should_stop: Callable[[], bool] = lambda: False,
         now: Callable[[], str] = utc_now,
@@ -433,7 +431,6 @@ class SelfUpdater(Recorder):
         super().__init__(store, now)
         self.settings = settings
         self.docker = docker
-        self.registry = registry
         self.compose = compose
         self.should_stop = should_stop
         self._hostname = hostname
@@ -537,11 +534,6 @@ class SelfUpdater(Recorder):
         me = self._identify(record)
         if me is None:
             return
-        if self.registry is not None:
-            problem = self.registry.login()
-            if problem:
-                self.finish(record, Outcome.FAILED, Failure.PULL_FAILED, f"{problem}. Nothing on the host was touched.")
-                return
         self.check_stop()
         if not self._settle_compose(record):
             return

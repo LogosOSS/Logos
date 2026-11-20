@@ -3,14 +3,13 @@
 #
 # It starts a local registry, builds a dummy worker in four flavors (v1, v2, v3 and a broken one), runs the real manager
 # image next to a dummy worker in a throw-away compose project, and asks the manager for deployments. After each one it
-# counts the dummy worker images on the host, to see that none is left that no longer has a purpose. Two more checks
-# use a second registry that wants a password: the manager must log in with the login of the .env file, and must take
-# the compose file out of the image of a tag. The last three checks are about the manager itself: it replaces itself
-# with the image of another tag, it goes back to its own image if the new one does not come up, and it does the
-# replacement on its own after a deployment that went well. Everything it creates is named nm-smoke... and is removed
-# at the end, also the data volumes of the two registries. The base images that it downloads (registry:2, httpd:2) stay
-# in the image cache of Docker. Set KEEP=1 to keep it for a look. SMOKE_COLLECT=<directory> copies the records of the
-# manager there before everything is deleted.
+# counts the dummy worker images on the host, to see that none is left that no longer has a purpose. One more check
+# makes the manager take the compose file out of the image of a tag. The last three checks are about the manager
+# itself: it replaces itself with the image of another tag, it goes back to its own image if the new one does not come
+# up, and it does the replacement on its own after a deployment that went well. Everything it creates is named
+# nm-smoke... and is removed at the end, also the data volume of the registry. The base image that it downloads
+# (registry:2) stays in the image cache of Docker. Set KEEP=1 to keep it for a look. SMOKE_COLLECT=<directory> copies
+# the records of the manager there before everything is deleted.
 #
 # Needs a running Docker engine with the Compose plugin, and network access for the base images.
 #   logos-node-manager/tests/smoke/run-smoke.sh
@@ -23,15 +22,11 @@ REPO_ROOT="$(cd "$COMPONENT/.." && pwd)"
 
 PORT="${SMOKE_REGISTRY_PORT:-5001}"
 REGISTRY="localhost:${PORT}"
-# A second registry that wants a login, for the check of the login from the .env file.
-AUTH_PORT="${SMOKE_AUTH_REGISTRY_PORT:-5002}"
-AUTH_REGISTRY="localhost:${AUTH_PORT}"
 WORKER=nm-smoke-worker
 MANAGER=nm-smoke-manager
 # The container that does the swap of a self-update. The manager gives it this name.
 HELPER=nm-self-update
 REGISTRY_CONTAINER=nm-smoke-registry
-AUTH_REGISTRY_CONTAINER=nm-smoke-registry-auth
 MANAGER_IMAGE=nm-smoke-manager:local
 
 # The project directory is mounted into the manager at the same path, so the Docker engine must be able to share it, and
@@ -87,13 +82,11 @@ wait_for() { # seconds, command...
 
 remove_leftovers() {
   # -v also removes the anonymous volume of a registry container, which holds the images that were pushed to it.
-  docker rm -fv "$HELPER" "$WORKER" "$MANAGER" "$REGISTRY_CONTAINER" "$AUTH_REGISTRY_CONTAINER" >/dev/null 2>&1
+  docker rm -fv "$HELPER" "$WORKER" "$MANAGER" "$REGISTRY_CONTAINER" >/dev/null 2>&1
   docker rmi -f "$MANAGER_IMAGE" "$REGISTRY/dummy-worker:v1" "$REGISTRY/dummy-worker:v2" "$REGISTRY/dummy-worker:v3" \
     "$REGISTRY/dummy-worker:broken" "$REGISTRY/dummy-worker:previous" "$REGISTRY/logos-node-manager:v1" \
     "$REGISTRY/logos-node-manager:v2" "$REGISTRY/logos-node-manager:v3" "$REGISTRY/logos-node-manager:broken" \
-    "$REGISTRY/logos-node-manager:previous" \
-    "$AUTH_REGISTRY/dummy-worker:v4" "$AUTH_REGISTRY/dummy-worker:previous" >/dev/null 2>&1
-  docker logout "$AUTH_REGISTRY" >/dev/null 2>&1
+    "$REGISTRY/logos-node-manager:previous" >/dev/null 2>&1
   # Images that lost their name, which a run that found a leak leaves behind.
   docker images -q --filter label=nm-smoke | sort -u | xargs docker rmi -f >/dev/null 2>&1
   docker network rm nm-smoke_default >/dev/null 2>&1
@@ -305,55 +298,7 @@ else
   pass "the compose file of the host ran: the entry of the other file is gone"
 fi
 
-log "8. The manager logs in with the login of the .env file"
-mkdir -p "$WORK/auth"
-docker run --rm --entrypoint htpasswd httpd:2 -Bbn smoke smoke-password >"$WORK/auth/htpasswd" ||
-  die "could not make the password file"
-docker run -d --name "$AUTH_REGISTRY_CONTAINER" -p "127.0.0.1:${AUTH_PORT}:5000" -v "$WORK/auth:/auth:ro" \
-  -e REGISTRY_AUTH=htpasswd -e REGISTRY_AUTH_HTPASSWD_REALM=nm-smoke -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd \
-  registry:2 >/dev/null || die "could not start the registry that wants a login (is port $AUTH_PORT free?)"
-wait_for 30 curl -s -o /dev/null "http://$AUTH_REGISTRY/v2/" || die "the registry that wants a login does not answer"
-# Push a release to it with the login of this machine, then take that login away again. The manager has to bring
-# its own.
-echo "smoke-password" | docker login "$AUTH_REGISTRY" -u smoke --password-stdin >/dev/null ||
-  die "could not log in to the registry that wants a login"
-docker build -q --build-arg "VERSION=v4" --build-arg "MODE=good" -t "$AUTH_REGISTRY/dummy-worker:v4" \
-  "$HERE/dummy-worker" >/dev/null || die "the build of v4 failed"
-docker push -q "$AUTH_REGISTRY/dummy-worker:v4" >/dev/null || die "the push of v4 failed"
-docker rmi "$AUTH_REGISTRY/dummy-worker:v4" >/dev/null
-docker logout "$AUTH_REGISTRY" >/dev/null
-write_env() { # password
-  cat >"$WORK/.env" <<EOF
-SMOKE_DIR=$WORK
-SMOKE_REGISTRY=$AUTH_REGISTRY
-IMAGE_TAG=v1
-COMPOSE_PROFILES=node-manager
-REGISTRY=$AUTH_REGISTRY
-REGISTRY_USER=smoke
-REGISTRY_PASSWORD=$1
-EOF
-}
-write_env "a-wrong-password"
-before_login="$(worker_image)"
-nm deploy --id t8 --tag v4 --wait --timeout 240
-expect_equal "a wrong password fails the deployment (exit 11)" 11 "$?"
-if nm status t8 --json | has "the login to the registry $AUTH_REGISTRY failed"; then
-  pass "the record says that the login failed"
-else
-  fail "the record does not say that the login failed"
-fi
-expect_equal "the worker was not touched" "$before_login" "$(worker_image)"
-write_env "smoke-password"
-nm deploy --id t8b --tag v4 --wait --timeout 240
-expect_equal "the right password lets the deployment pull and finish (exit 0)" 0 "$?"
-expect_equal "the worker runs v4" "$AUTH_REGISTRY/dummy-worker:v4" "$(worker_image)"
-if docker logs "$MANAGER" 2>&1 | has "smoke-password\|a-wrong-password"; then
-  fail "a password is in the log of the manager"
-else
-  pass "no password is in the log of the manager"
-fi
-
-log "9. The manager replaces itself with the image of a tag"
+log "8. The manager replaces itself with the image of a tag"
 # The .env file names neither the tag nor the profile of the manager. The update has to find its service without them.
 write_plain_env() { # extra lines for the .env file...
   {
@@ -404,7 +349,7 @@ else
   fail "the update did not finish"
 fi
 
-log "10. A manager that does not come up is replaced by the one that ran before"
+log "9. A manager that does not come up is replaced by the one that ran before"
 broken="$WORK/broken-manager"
 mkdir -p "$broken"
 cat >"$broken/Dockerfile" <<EOF
@@ -440,7 +385,7 @@ else
   fail "the update did not finish"
 fi
 
-log "11. A deployment that went well is followed by an update of the manager"
+log "10. A deployment that went well is followed by an update of the manager"
 # A second stand-in image, so that tag v3 names another manager than the one that runs. It carries the compose file of
 # the dummy worker, which holds the service of the manager too. The compose file comes from the tag, for the deployment
 # and for the update that follows it.

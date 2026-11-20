@@ -187,7 +187,7 @@ def test_a_core_host_takes_the_file_of_the_core_from_the_tag_and_keeps_nothing_f
 ):
     core_settings.env_file.parent.mkdir(parents=True, exist_ok=True)
     core_settings.env_file.write_text(
-        "REGISTRY=harbor.example/logos\nNODE_MANAGER_COMPOSE_FROM_TAG=true\n", encoding="utf-8"
+        "REGISTRY=registry.example/logos\nNODE_MANAGER_COMPOSE_FROM_TAG=true\n", encoding="utf-8"
     )
     store = StateStore(core_settings.state_dir)
     source = ComposeSource(core_settings, FakeEngine(), store.compose_dir)

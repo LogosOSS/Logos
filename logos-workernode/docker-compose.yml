@@ -123,16 +123,13 @@ services:
   # it sends them to the Docker engine, so the path has to mean the same thing in
   # both places. The directory is read-only except for the state of the manager.
   #
-  # The node manager reads its registry login from the directory .docker of the
-  # worker directory (DOCKER_CONFIG, below). The directory is part of the
-  # read-only mount of the worker directory, so the login does not depend on who
-  # runs `docker compose`, and a new login is visible at once. The deploy
-  # workflows write the login there. Without them, run this on the host:
+  # The images come from GHCR, which needs no login. If REGISTRY names another
+  # registry that needs one, the node manager reads its registry login from the
+  # directory .docker of the worker directory (DOCKER_CONFIG, below). The
+  # directory is part of the read-only mount of the worker directory, so the
+  # login does not depend on who runs `docker compose`, and a new login is
+  # visible at once. Run this on the host:
   #   DOCKER_CONFIG=<worker directory>/.docker docker login <registry>
-  # Or let the manager log in itself: with REGISTRY_USER and REGISTRY_PASSWORD in
-  # the .env file it runs `docker login` before each deployment, and the login of
-  # this directory is not used. The manager reads these two lines from the file
-  # itself, so they need no entry in this compose file.
   # A host without a login still starts the service. Only a pull from a registry
   # that needs a login fails.
   #

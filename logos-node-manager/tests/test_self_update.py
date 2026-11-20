@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 from conftest import NEW, OLD, REPO, FakeEngine
-from self_update_support import FakeHelperEngine, StubRegistry, Wall, ended, handed_over, request
+from self_update_support import FakeHelperEngine, Wall, ended, handed_over, request
 
 from logos_node_manager.compose_source import ComposeSource
 from logos_node_manager.errors import DockerError
@@ -22,7 +22,6 @@ from logos_node_manager.self_update import (
 )
 from logos_node_manager.state import Deployment, Outcome, Phase
 
-LOGIN_FAILED = "the login to the registry harbor.example failed: unauthorized"
 # A third manager image: the one that runs after NEW gave way.
 NEWER = "sha256:" + "2" * 12 + "cccc"
 
@@ -135,7 +134,7 @@ def test_the_helper_gets_the_volumes_and_the_settings_of_the_manager_but_no_secr
         "NODE_MANAGER_DEPLOYER_KEY": "the-deployer-key",
         "NODE_MANAGER_SOME_TOKEN": "a-token",
         "PATH": "/usr/bin",
-        "DOCKER_CONFIG": "/somewhere",
+        "HOME": "/somewhere",
     }
 
     command = Helper(own_settings, engine, environ).command(OLD, "u1", "c-old")
@@ -215,17 +214,6 @@ def test_a_manager_that_cannot_replace_itself_ends_the_request_before_anything_i
     assert engine.calls == [] and not any(call[0] == "pull" for call in own_docker.calls)
 
 
-def test_a_failed_login_ends_the_request_before_anything_is_touched(make_updater, su_store, own_docker, engine):
-    request(su_store)
-
-    work(make_updater(registry=StubRegistry(LOGIN_FAILED)))
-
-    record = su_store.load("u1")
-    assert record.failure is Failure.PULL_FAILED
-    assert record.message == f"{LOGIN_FAILED}. Nothing on the host was touched."
-    assert own_docker.calls == [] and engine.calls == []
-
-
 @pytest.mark.parametrize("tag", ["v9", "latest"])
 def test_an_image_that_cannot_be_had_ends_the_request_before_the_manager_is_touched(
     updater, su_store, own_docker, engine, tag
@@ -241,20 +229,10 @@ def test_an_image_that_cannot_be_had_ends_the_request_before_the_manager_is_touc
     assert engine.calls == []
 
 
-def test_a_login_is_made_once_before_the_pull(make_updater, su_store, own_docker):
-    registry = StubRegistry()
-    request(su_store)
-
-    work(make_updater(registry=registry))
-
-    assert registry.logins == 1
-    assert su_store.load("u1").phase is UpdatePhase.HANDED_OVER
-
-
 def test_the_compose_file_of_the_tag_is_used_for_the_swap_and_checked_first(
     make_updater, su_store, own_docker, own_settings, store
 ):
-    write_env(own_settings, "REGISTRY=harbor.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=true")
+    write_env(own_settings, "REGISTRY=registry.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=true")
     files = FakeEngine()
     files.content = "services:\n  logos-node-manager: {}\n"
     request(su_store)
@@ -274,7 +252,7 @@ def test_the_compose_file_of_the_tag_is_used_for_the_swap_and_checked_first(
 def test_a_compose_file_that_does_not_work_with_the_env_file_ends_the_request(
     make_updater, su_store, own_docker, own_settings, store, engine
 ):
-    write_env(own_settings, "REGISTRY=harbor.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=true")
+    write_env(own_settings, "REGISTRY=registry.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=true")
     own_docker.validate_error = "required variable LOGOS_DB_PASSWORD is missing a value"
     request(su_store)
 
@@ -290,7 +268,7 @@ def test_a_compose_file_that_does_not_work_with_the_env_file_ends_the_request(
 def test_an_image_without_a_file_for_the_manager_falls_back_to_the_compose_file_of_the_host(
     make_updater, su_store, own_docker, own_settings, store
 ):
-    write_env(own_settings, "REGISTRY=harbor.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=true")
+    write_env(own_settings, "REGISTRY=registry.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=true")
     files = FakeEngine()
     files.copy_error = "Error response from daemon: Could not find the file /compose/worker.yml in container x"
     request(su_store)
@@ -305,7 +283,7 @@ def test_an_image_without_a_file_for_the_manager_falls_back_to_the_compose_file_
 def test_an_image_that_cannot_be_downloaded_for_its_compose_file_ends_the_request(
     make_updater, su_store, own_docker, own_settings, store, engine
 ):
-    write_env(own_settings, "REGISTRY=harbor.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=true")
+    write_env(own_settings, "REGISTRY=registry.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=true")
     files = FakeEngine()
     files.pull_error = "Error response from daemon: unauthorized: authentication required"
     request(su_store)

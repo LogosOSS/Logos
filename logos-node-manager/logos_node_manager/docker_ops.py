@@ -35,7 +35,8 @@ CONFIG_HASH_LABEL = "com.docker.compose.config-hash"
 PROJECT_LABEL = "com.docker.compose.project"
 SERVICE_LABEL = "com.docker.compose.service"
 CONFIG_FILES_LABEL = "com.docker.compose.project.config_files"
-# The registry and namespace that the images come from when the ``.env`` file names none. It is the public mirror.
+# The registry and namespace that the images come from when the ``.env`` file names none: the GHCR namespace of Logos.
+# Its packages are public, so a pull needs no login.
 DEFAULT_REGISTRY = "ghcr.io/logososs"
 
 

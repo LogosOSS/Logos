@@ -248,7 +248,7 @@ class FakeEngine:
         # The containers that exist. A real engine refuses a second one with the same name.
         self.containers: set[str] = set()
 
-    def run(self, argv, *, timeout_s, env=None, stdin=None) -> CommandResult:
+    def run(self, argv, *, timeout_s, env=None) -> CommandResult:
         command = tuple(argv)
         self.calls.append(command)
         verb = command[1]

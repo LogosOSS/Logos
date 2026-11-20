@@ -404,6 +404,3 @@ jobs:
           proxy-key: ${{ secrets.DEPLOYMENT_GATEWAY_SSH_KEY }}
           proxy-port: ${{ vars.DEPLOYMENT_GATEWAY_PORT }}
           base-path: ${{ matrix.base-path }}
-          registry: ${{ vars.LOGOS_HARBOR_REGISTRY }}
-          registry-user: ${{ vars.LOGOS_HARBOR_USER }}
-          registry-password: ${{ secrets.LOGOS_HARBOR_PASSWORD }}

@@ -26,7 +26,6 @@ from logos_node_manager.config import Settings
 from logos_node_manager.docker_ops import Docker
 from logos_node_manager.errors import ComposeError, DockerError, Interrupted
 from logos_node_manager.orchestrator import OrchestratorClient, OrchestratorUnavailable
-from logos_node_manager.registry import RegistryLogin
 from logos_node_manager.state import MAX_EVENTS, Deployment, FailureKind, Outcome, Phase, StateStore, utc_now
 from logos_node_manager.targets import Target
 from logos_node_manager.worker_target import WorkerTarget
@@ -69,14 +68,13 @@ class Deployer:
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], str] = utc_now,
         should_stop: Callable[[], bool] = lambda: False,
-        registry: RegistryLogin | None = None,
         compose: ComposeSource | None = None,
     ) -> None:
         """``target_factory`` builds the target of the host from this deployer, which the target needs for its helpers.
 
-        Without it the host is a worker host and ``docker`` is its Docker object. ``registry`` logs in to the registry
-        before a deployment pulls, and ``compose`` takes the compose file out of the image of the tag. Without them the
-        deployment does neither, and the host has to have its login and its compose file by other means.
+        Without it the host is a worker host and ``docker`` is its Docker object. ``compose`` takes the compose file out
+        of the image of the tag. Without it the deployment does not, and the host has to have its compose file by other
+        means.
         """
         self.settings = settings
         self.docker = docker
@@ -86,7 +84,6 @@ class Deployer:
         self.sleep = sleep
         self.now = now
         self.should_stop = should_stop
-        self.registry = registry
         self.compose = compose
         if target_factory is None:
             if docker is None:
@@ -125,24 +122,17 @@ class Deployer:
         return deployment
 
     def _prepare(self, deployment: Deployment) -> None:
-        """Settle what the phases need: which compose file the deployment uses, and the registry login.
+        """Settle what the phases need: which compose file the deployment uses.
 
-        The login and the choice of the compose file belong to the start of a deployment, before anything is pulled. A
-        deployment that goes on after a restart only takes up the compose file it began with, so that it ends with the
-        settings it started with. If the start fails, the deployment ends as failed before it touches the host.
+        The choice of the compose file belongs to the start of a deployment, before anything is pulled. A deployment
+        that goes on after a restart only takes up the compose file it began with, so that it ends with the settings it
+        started with. If the start fails, the deployment ends as failed before it touches the host.
         """
         docker = self.docker
         if self.compose is not None and docker is not None:
             docker.use_compose(self._recorded_compose(deployment))
         if deployment.phase not in (Phase.QUEUED, Phase.PULLING):
             return
-        if self.registry is not None:
-            problem = self.registry.login()
-            if problem:
-                self.finish(
-                    deployment, Outcome.FAILED, FailureKind.PULL_FAILED, f"{problem}. Nothing on the host was touched."
-                )
-                return
         if self.compose is not None and docker is not None and not deployment.compose_settled:
             self._settle_compose(deployment, docker, self.compose)
 

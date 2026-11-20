@@ -151,10 +151,7 @@ class Daemon:
             logger.info("Docker: %s", self._docker.versions())
         if self._registry_login_file is not None:
             logger.info("%s", describe_registry_login(self._registry_login_file))
-        registry = getattr(self._deployer, "registry", None)
         compose = getattr(self._deployer, "compose", None)
-        if registry is not None:
-            logger.info("Registry: %s", registry.describe())
         if compose is not None:
             logger.info("Compose file: %s", compose.describe())
         if self._updater is not None:

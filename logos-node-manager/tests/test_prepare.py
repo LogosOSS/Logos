@@ -1,4 +1,4 @@
-"""The start of a deployment: the registry login and the choice of the compose file, before anything is pulled."""
+"""The start of a deployment: the choice of the compose file, before anything is pulled."""
 
 from __future__ import annotations
 
@@ -12,25 +12,12 @@ from logos_node_manager.compose_source import ComposeSource
 from logos_node_manager.errors import DockerError
 from logos_node_manager.state import FailureKind, Outcome, Phase
 
-LOGIN_FAILED = "the login to the registry harbor.example failed: unauthorized"
 # The classic image store and the containerd image store (Docker Desktop) say it differently.
 MISSING_TAG = [
-    "Error response from daemon: manifest for harbor.example/logos/logos-node-manager:v2 not found: manifest unknown",
-    'Error response from daemon: failed to resolve reference "harbor.example/logos/logos-node-manager:v2": '
-    "harbor.example/logos/logos-node-manager:v2: not found",
+    "Error response from daemon: manifest for registry.example/logos/logos-node-manager:v2 not found: manifest unknown",
+    'Error response from daemon: failed to resolve reference "registry.example/logos/logos-node-manager:v2": '
+    "registry.example/logos/logos-node-manager:v2: not found",
 ]
-
-
-class StubRegistry:
-    """Stands for the registry login: counts the logins and fails with the given reason, if there is one."""
-
-    def __init__(self, problem: str | None = None) -> None:
-        self.problem = problem
-        self.logins = 0
-
-    def login(self) -> str | None:
-        self.logins += 1
-        return self.problem
 
 
 @pytest.fixture
@@ -40,7 +27,7 @@ def engine() -> FakeEngine:
 
 @pytest.fixture
 def source(settings, engine, store) -> ComposeSource:
-    write_env(settings, "REGISTRY=harbor.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=true")
+    write_env(settings, "REGISTRY=registry.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=true")
     return ComposeSource(settings, engine, store.compose_dir)
 
 
@@ -51,28 +38,6 @@ def write_env(settings, *lines: str) -> None:
 
 def pulled(docker) -> bool:
     return any(call[0] == "pull" for call in docker.calls)
-
-
-# ---------------------------------------------------------------------- The registry login
-
-
-def test_a_failed_registry_login_ends_the_deployment_before_anything_is_touched(make_deployer, docker, store):
-    record = make_deployer(registry=StubRegistry(LOGIN_FAILED)).process(queued(store, "v2"))
-
-    assert record.outcome is Outcome.FAILED
-    assert record.failure is FailureKind.PULL_FAILED
-    assert record.message == f"{LOGIN_FAILED}. Nothing on the host was touched."
-    assert docker.calls == []
-    assert docker.container_info.id == "c-old"
-
-
-def test_the_login_is_made_once_at_the_start_and_the_deployment_goes_on(make_deployer, store):
-    registry = StubRegistry()
-
-    record = make_deployer(registry=registry).process(queued(store, "v2"))
-
-    assert registry.logins == 1
-    assert record.outcome is Outcome.SUCCEEDED
 
 
 # ---------------------------------------------------------------------- The compose file
@@ -102,7 +67,7 @@ def test_the_compose_file_of_the_tag_is_used_for_the_whole_deployment(make_deplo
 def test_with_the_switch_off_the_host_keeps_its_own_file_and_the_image_is_not_asked(
     make_deployer, docker, store, settings, engine
 ):
-    write_env(settings, "REGISTRY=harbor.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=false")
+    write_env(settings, "REGISTRY=registry.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=false")
     off = ComposeSource(settings, engine, store.compose_dir)
 
     record = make_deployer(compose=off).process(queued(store, "v2"))
@@ -229,7 +194,7 @@ def test_a_rollback_after_the_switch_was_turned_off_restores_the_previous_compos
     deployer = make_deployer(compose=source)
     run_a_bundled_deployment(deployer, docker, store, engine)
     # The next deployment goes on with the file of the host, and its image does not become healthy.
-    write_env(settings, "REGISTRY=harbor.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=false")
+    write_env(settings, "REGISTRY=registry.example/logos", "NODE_MANAGER_COMPOSE_FROM_TAG=false")
     docker.new_container_timeline = list(UNHEALTHY)
     docker.registry[f"{REPO}:v2"] = NEW
 

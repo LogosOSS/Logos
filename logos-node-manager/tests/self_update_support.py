@@ -31,18 +31,6 @@ class Wall:
         self.moment += timedelta(seconds=seconds)
 
 
-class StubRegistry:
-    """Stands for the registry login: counts the logins and fails with the given reason, if there is one."""
-
-    def __init__(self, problem: str | None = None) -> None:
-        self.problem = problem
-        self.logins = 0
-
-    def login(self) -> str | None:
-        self.logins += 1
-        return self.problem
-
-
 class FakeHelperEngine:
     """The docker commands for the helper and for the containers that hold images.
 
@@ -61,7 +49,7 @@ class FakeHelperEngine:
         self.pins: set[str] = set()
         self.create_error: str | None = None
 
-    def run(self, argv, *, timeout_s, env=None, stdin=None) -> CommandResult:
+    def run(self, argv, *, timeout_s, env=None) -> CommandResult:
         command = tuple(argv)
         self.calls.append(command)
         verb = command[1]

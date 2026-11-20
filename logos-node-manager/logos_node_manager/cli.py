@@ -36,7 +36,6 @@ from logos_node_manager.docker_ops import Docker, ProjectDocker, self_docker
 from logos_node_manager.errors import StateError
 from logos_node_manager.logos_link import LogosLink
 from logos_node_manager.orchestrator import OrchestratorClient
-from logos_node_manager.registry import RegistryLogin
 from logos_node_manager.runner import SubprocessRunner
 from logos_node_manager.self_update import SelfUpdate, SelfUpdater, SelfUpdateStore
 from logos_node_manager.self_update_helper import run_helper
@@ -342,9 +341,7 @@ def cmd_self_update_run(args: argparse.Namespace, settings: Settings, *, out: Te
 def cmd_run(args: argparse.Namespace, settings: Settings) -> int:
     stop = threading.Event()
     store = StateStore(settings.state_dir)
-    # One runner for every command: the registry login sets DOCKER_CONFIG on it, and every command that follows uses it.
     runner = SubprocessRunner()
-    registry = RegistryLogin(settings, runner)
     compose = ComposeSource(settings, runner, store.compose_dir)
     if settings.kind == CORE:
         # A core host has no node to cordon and no orchestrator to ask: the Logos link is how it hears and reports.
@@ -355,7 +352,6 @@ def cmd_run(args: argparse.Namespace, settings: Settings) -> int:
             store,
             target_factory=lambda deployer: CoreTarget(deployer, docker),  # type: ignore[arg-type]
             should_stop=stop.is_set,
-            registry=registry,
             compose=compose,
         )
     else:
@@ -367,18 +363,16 @@ def cmd_run(args: argparse.Namespace, settings: Settings) -> int:
             store,
             orchestrator=orchestrator,
             should_stop=stop.is_set,
-            registry=registry,
             compose=compose,
         )
     link = LogosLink.from_settings(settings, store, stop)
     # The manager's own service, which a self-update replaces, has a Docker object of its own: another project, another
-    # compose file, another container. It shares the runner, so it has the registry login too.
+    # compose file, another container.
     updater = SelfUpdater(
         settings,
         self_docker(settings, runner),
         SelfUpdateStore(settings.state_dir),
         runner,
-        registry=registry,
         compose=compose,
         should_stop=stop.is_set,
     )

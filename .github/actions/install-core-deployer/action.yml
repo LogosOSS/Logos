@@ -42,15 +42,6 @@ inputs:
   base-path:
     description: The directory of Logos on the host, for example /opt/logos
     required: true
-  registry:
-    description: The registry that the images come from
-    required: true
-  registry-user:
-    description: The user of the registry
-    required: true
-  registry-password:
-    description: The password of the registry user
-    required: true
 
 runs:
   using: composite
@@ -75,9 +66,6 @@ runs:
     - name: Start the deployer
       uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
       env:
-        LOGOS_HARBOR_PASSWORD: ${{ inputs.registry-password }}
-        REGISTRY_HOST: ${{ inputs.registry }}
-        REGISTRY_USER: ${{ inputs.registry-user }}
         DEPLOYER_BASE_PATH: ${{ inputs.base-path }}
       with:
         host: ${{ inputs.host }}
@@ -88,14 +76,10 @@ runs:
         proxy_key: ${{ inputs.proxy-key }}
         proxy_port: ${{ inputs.proxy-port }}
         command_timeout: 15m
-        envs: LOGOS_HARBOR_PASSWORD,REGISTRY_HOST,REGISTRY_USER,DEPLOYER_BASE_PATH
+        envs: DEPLOYER_BASE_PATH
         script: |
           set -eu
           BASE="$DEPLOYER_BASE_PATH"
-          # The login of the deploy user serves the pull below. The deployer reads its own login from .docker.
-          printf '%s' "$LOGOS_HARBOR_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
-          mkdir -p -m 700 "$BASE/.docker"
-          printf '%s' "$LOGOS_HARBOR_PASSWORD" | DOCKER_CONFIG="$BASE/.docker" docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
           mkdir -p "$BASE/node-manager"
           compose() {
             docker compose -p logos-deployer -f "$BASE/docker-compose.deployer.yml" --env-file="$BASE/.env" "$@"
