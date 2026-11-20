@@ -3125,6 +3125,7 @@ class DBManager:
                             SELECT ak.id AS aki,
                                    ak.team_id AS tid,
                                    u.role AS user_role,
+                                   ak.internal_service,
                                    ak.use_custom_permissions AS custom
                             FROM api_keys ak
                                 LEFT JOIN users u ON ak.user_id = u.id
@@ -3134,7 +3135,10 @@ class DBManager:
                         effective_providers AS (
                             SELECT akpp.provider_id
                             FROM api_key_provider_permissions akpp, key_info ki
-                            WHERE akpp.api_key_id = ki.aki AND ki.custom = true
+                            WHERE akpp.api_key_id = ki.aki AND ki.custom = true AND ki.internal_service IS NULL
+                            UNION
+                            SELECT p.id FROM providers p, key_info ki
+                            WHERE ki.internal_service = 'agent' AND p.provider_type = 'logosnode'
                             UNION
                             SELECT tpp.provider_id
                             FROM team_provider_permissions tpp, key_info ki
@@ -3143,7 +3147,11 @@ class DBManager:
                         effective_models AS (
                             SELECT akmp.model_id
                             FROM api_key_model_permissions akmp, key_info ki
-                            WHERE akmp.api_key_id = ki.aki AND ki.custom = true
+                            WHERE akmp.api_key_id = ki.aki AND ki.custom = true AND ki.internal_service IS NULL
+                            UNION
+                            SELECT mp.model_id FROM model_provider mp
+                            JOIN providers p ON p.id = mp.provider_id, key_info ki
+                            WHERE ki.internal_service = 'agent' AND p.provider_type = 'logosnode'
                             UNION
                             SELECT tmp.model_id
                             FROM team_model_permissions tmp, key_info ki
@@ -4158,6 +4166,13 @@ class DBManager:
         ).mappings()
         return {row["custom_id"]: row["row"] for row in rows.all()}
 
+    def get_agent_api_key_id(self) -> Optional[int]:
+        """The active, migration-managed agent accounting identity."""
+        value = self.session.execute(
+            text("SELECT id FROM api_keys WHERE internal_service = 'agent' AND is_active = true")
+        ).scalar_one_or_none()
+        return int(value) if value is not None else None
+
     def get_api_key_by_id(self, api_key_id: int) -> Optional[Dict[str, Any]]:
         """One active api key by id, in the shape ``authenticate_api_key`` uses.
 
@@ -4168,7 +4183,7 @@ class DBManager:
             self.session.execute(
                 text("""
                 SELECT ak.id, ak.key_value, ak.name, ak.key_type, ak.team_id, ak.user_id,
-                       ak.environment, ak.log, ak.settings, ak.default_priority,
+                       ak.environment, ak.log, ak.settings, ak.default_priority, ak.internal_service,
                        u.role,
                        t.priority AS team_priority
                 FROM api_keys ak
@@ -5735,6 +5750,7 @@ class DBManager:
                           LEFT JOIN teams t ON t.id = ak.team_id
                  WHERE ak.key_value = :kv
                    AND ak.is_active = true
+                   AND ak.internal_service IS NULL
                  """),
             {"kv": key_value},
         ).fetchone()
@@ -5919,6 +5935,7 @@ class DBManager:
                           LEFT JOIN users u ON u.id = ak.user_id
                  WHERE ak.key_value = :kv
                    AND ak.is_active = true
+                   AND ak.internal_service IS NULL
                  """),
             {"kv": key_value},
         ).fetchone()

@@ -14,6 +14,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import logos.main as _main
+from logos.agent_credential import issue_agent_credential
 from logos.auth import AuthContext
 from logos.batch_credential import issue_batch_credential
 from logos.benchmarks import nightly_store
@@ -426,6 +427,23 @@ async def internal_live_streams(request: Request):
     """
     _require_internal_secret(request)
     return {"streams": _live_streams.snapshot()}
+
+
+@router.get("/internal/agent_credentials", tags=["admin"])
+def internal_agent_credentials(request: Request):
+    """Authorize a gateway subrequest with a fresh, local-only agent token."""
+    _require_internal_secret(request, disabled_detail="Internal agent credentials disabled")
+    with DBManager() as db:
+        key_id = db.get_agent_api_key_id()
+    if key_id is None:
+        raise HTTPException(status_code=403, detail="Internal agent identity is missing or disabled")
+    return JSONResponse(
+        content={},
+        headers={
+            "X-Logos-Agent-Token": issue_agent_credential(key_id),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/internal/batch_credentials", tags=["admin"])
