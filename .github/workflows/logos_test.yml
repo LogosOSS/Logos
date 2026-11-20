@@ -209,7 +209,7 @@ jobs:
       - name: Set up Java
         uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
-          java-version: "25.0.5+8"
+          java-version: "25.0.5.1+2"
           distribution: "temurin"
           cache: "maven"
           cache-dependency-path: logos-webservice/pom.xml
@@ -320,7 +320,7 @@ jobs:
       - name: Set up Java
         uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
-          java-version: "25.0.5+8"
+          java-version: "25.0.5.1+2"
           distribution: "temurin"
           cache: "maven"
           cache-dependency-path: logos-webservice/pom.xml
