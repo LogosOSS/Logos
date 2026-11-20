@@ -20,6 +20,7 @@
 # Agent runner: the service package and the session-image entrypoints.
 # Deliberately not the whole directory — no README, no tests in the image.
 !logos-agent/pyproject.toml
+!logos-agent/uv.lock
 !logos-agent/app
 !logos-agent/workspace/run_session.py
 !logos-agent/workspace/verify_checkout.py
@@ -38,13 +39,11 @@
 !logos-ui/postcss.config.mjs
 !logos-ui/vitest-base.config.mts
 # The E2E node simulator image: the real worker package plus the harness.
-!logos-workernode/requirements.txt
+!logos-workernode/requirements-standalone.lock
 !logos-workernode/logos_worker_node
 !e2e/harness
 # The node manager image: the package, and the compose files that it carries for the hosts to take out of it (the
 # stack of the core and the worker). No tests, no virtual environment.
-!logos-node-manager/pyproject.toml
-!logos-node-manager/README.md
 !logos-node-manager/logos_node_manager
 !docker-compose.yaml
 !logos-workernode/docker-compose.yml
@@ -52,6 +51,7 @@
 # The session image installs the repository's own hook environments at build
 # time, because a session has no network to install them with.
 !.pre-commit-config.yaml
+!tools/pre-commit/requirements.lock
 # The model gateway's nginx configuration, shipped in its image rather than
 # bind-mounted: a deployment copies only the compose file to its VM.
 !agent-gateway/nginx.conf

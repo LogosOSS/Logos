@@ -223,20 +223,24 @@ This stop alone does not confirm that the worker is ready. Actual worker errors 
 
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
-The **Performance** tab shows **Currently deployed** and **Timeline**.
+The **Performance → Overview** section shows **Currently deployed** and **Timeline**.
+Select **Benchmarks** for manual runs and nightly settings, **Request measurements** for request times, or **Analysis** for comparisons.
 Expand **Benchmark runs** to read saved runs grouped by dataset.
 Without a nightly series, **Highest recorded throughput** shows the best result within each provider's latest captured workload.
 Older workloads are not ranked against it. Unknown controls do not establish a comparison.
 Manual benchmarks do not apply these parameters automatically. Nightly runs with saved request datasets can apply verified improvements.
 
-To benchmark saved requests manually, open **Run benchmark → Dataset and settings**.
+Select **Run benchmark** to start a manual run. The page shows the provider, sample size and current test setup.
+Select **Customize** to change advanced controls. Select **Done** to keep the settings and return to the start button.
+
+To benchmark saved requests manually, open **Run benchmark → Customize**.
 Select the saved dataset under **Input dataset**. Logos fixes the sample size to its request count.
 The run preserves each source request's output limit. Set the profile and concurrency for the comparison.
 **Repeat or compare settings** uses the same saved requests for every configuration.
 
 ![Manual benchmark with a saved request dataset](../static/img/roles/logos-admin-benchmark-saved-requests.png)
 
-Open **Repeat or compare settings** and select **Run a batch** to compare parameter values.
+Select **Customize**, open **Repeat or compare settings**, and select **Run a batch** to compare parameter values.
 Open **View run plan & fixed settings** to check each combination and the saved request count.
 The frozen dataset keeps its source inference and output settings for all runs.
 A response that reaches the caller's explicit token limit completes the requested output budget.
@@ -244,18 +248,14 @@ A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
-The **Timeline** shows absolute throughput in output tokens per second (tok/s).
-The solid line includes complete slower runs and repeated baselines.
-The dashed line shows the freshly measured production baseline of each round.
-The visible legend identifies square baselines, circular trials and outlined points that fail automatic selection checks.
-Each point is one complete benchmark run. A filled point does not confirm production deployment.
-Each point keeps its actual measurement date and configuration.
-The percentage change compares each measurement with its captured baseline from the same round.
-The chart separates datasets, providers and captured test settings. Worker releases can share a measurement history.
-Select a point to open its benchmark result.
-Expand **Measured configurations** to read the dates and parameters.
-Outlined points fail automatic selection checks and remain visible to show measurement variation.
-The chart does not establish automatic parameter adoption or statistical significance.
+The **Timeline** shows the latest six complete runs for the selected workload.
+Read the runs from left to right in completion order.
+Each dot shows output tokens per second (tok/s) on the vertical scale. An open circle marks a baseline.
+Each trial shows its change from the baseline of its round, if available.
+Select a run to see its settings and any reason for exclusion.
+Select **Show all** to see older runs.
+Read **When settings change** for the nightly adoption rule.
+Expand **What does Logos check?** for the limits on output length and request latency.
 Expand **Benchmark runs** to see the latest 5 results per dataset.
 A baseline shows its own throughput and 0% change. Missing comparisons show why the baseline is unavailable. Select **Show all** to read older results.
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
@@ -277,13 +277,12 @@ A fresh comparison must verify a historical candidate before automatic adoption.
 
 ![Current worker configuration and its measured result](../static/img/roles/logos-admin-deployed-configuration.png)
 
-The configuration and measurement sections start closed.
-The desktop overview places **Currently deployed** and **Timeline** side by side.
-On small screens, these cards appear below each other.
-Select **Run benchmark** to open **Benchmark setup & nightly automation**.
-Expand **More analysis & details** for the comparison charts, saved configurations and glossary.
+The overview shows **Currently deployed** above **Timeline** on desktop and mobile.
+Configuration details and benchmark history start closed.
+Select **Benchmarks** or **Run benchmark** for manual runs and nightly settings.
+Select **Analysis** for the comparison charts, saved configurations and glossary.
 The large analysis sections open one at a time.
-Expand **Charts and comparison**. Select the **Reference run**, **Parameter** and **Metric**.
+**Charts and comparison** opens first. Select the **Reference run**, **Parameter** and **Metric**.
 The chart shows one parameter at a time, with a dashed reference line and measured changes.
 Only matching workloads and other captured settings enter the comparison.
 A single parameter value shows an explanation instead of an empty comparison chart.
@@ -313,7 +312,7 @@ See the [nightly benchmark guide](../admin/nightly-benchmarks.md) for rotation, 
 1. Open a model from **Models**.
 2. Select **Performance**.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Expand **Schedule and test plan**.
+4. Select **Manage**, then expand **Schedule and test plan**.
 5. Select **Enable nightly runs…**.
 6. Read the dialog and select **Enable nightly runs**.
 
@@ -325,10 +324,10 @@ The confirmation dialog shows the time window and the effect on production traff
 The card then shows **Enabled · in nightly rotation**.
 The schedule stays active after a page reload.
 Each night, Logos selects up to 2 eligible pairs, with new or older attempts first.
-The card shows possible parameter values for this pair, not a guaranteed place for tonight.
+Select **Manage** to inspect the parameter values for this pair. The plan does not guarantee a place for tonight.
 
 The example uses illustrative measurements and an active nightly schedule.
-Use **Manual benchmark** to configure a run during the day.
+Use **Run a benchmark** to configure a run during the day.
 These controls do not change the nightly workload.
 Use **Request workload** to select a saved dataset for the nightly schedule.
 Select **Create a fixed dataset from FULL request logs** to copy 1–100 successful requests from the database.
@@ -355,20 +354,25 @@ If the measurement is deleted, then the page identifies the unavailable benchmar
 ![Selected benchmark with its result and changed parameters](../static/img/roles/logos-admin-benchmark-linked-result.png)
 
 
-![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
+![Run a benchmark and compact nightly status](../static/img/roles/logos-admin-nightly-benchmarks.png)
+
+Select **Manage** beside a worker to inspect its workload and schedule.
+The **Schedule and test plan** section explains the rounds and the maintenance window.
+
+![Nightly management with the schedule and test plan](../static/img/roles/logos-admin-nightly-plan.png)
 
 Some deployments select a user instead of a fixed dataset.
-The card then shows **Latest 50 successful FULL requests**, the username and the cutoff.
+The management dialog shows **Latest 50 successful FULL requests**, the username and the cutoff.
 All configurations use the same selection for that night.
 The dataset controls are unavailable because the deployment setting controls this source.
-If fewer than 50 requests qualify, then the card shows the selection error.
+If fewer than 50 requests qualify, then the management dialog shows the selection error.
 See [deployment-specific request sources](../admin/nightly-benchmarks.md#deployment-specific-request-sources) for the exact rules.
 
 ![Nightly selection of recent user requests](../static/img/roles/logos-admin-nightly-automatic-source.png)
 
 To remove the pair from the nightly rotation:
 
-1. Select **Disable nightly runs…**.
+1. Select **Manage → Disable nightly runs…**.
 2. Read the dialog and select **Disable nightly runs**.
 3. Check that the card shows **Disabled · not scheduled**.
 
@@ -567,3 +571,81 @@ The page does not change with the role. For the step-by-step procedure, see
 
 This is the same Batch UI as for the App Admin. Upload a `.jsonl` file, look at
 the progress and download the results. See [App Admin → Batches](app-admin.md#batches).
+
+## Security incidents
+
+Open **Agents**, then select **Security incidents**. Only Logos Admins can open
+this page or use its API. The examples below are illustrative. They do not show
+the security state of a production system.
+
+The dashboard shows important vulnerabilities and a separate status for each
+repository. The totals count repository assessments. Select **All statuses** to
+include **Not affected** and **Resolved** results.
+
+![Security incidents with a separate status for each repository](/img/roles/logos-admin-security-incidents.png)
+
+The automatic sources are GitHub critical advisories and the CISA list of known
+exploited vulnerabilities. Each source shows its last successful update. A source
+error remains visible. Low and medium findings do not enter this workflow.
+
+### Register a repository
+
+Expand **Monitored repositories**. Enter `owner/repository`, its base branch, and a **Build and test command**.
+The command runs from the repository root before a fix PR opens. It uses installed tools without credentials or network access.
+Select **Register repository**. This gives LogosOSSAgent permission to analyze
+the repository and propose fix PRs. The bot account must have repository access.
+Team repository links do not automatically grant this permission.
+
+![Repository registration for security assessments](/img/roles/logos-admin-security-repositories.png)
+
+### Report an incident
+
+Expand **Report an important incident**. Enter the advisory ID, severity, title,
+source URL and advisory details. Explain the material impact in **Why this is
+important**. Mark exploitation only when a source confirms it. Optional upstream
+GitHub repositories let the agent check for new releases.
+
+![Manual incident report with source and impact fields](/img/roles/logos-admin-security-intake.png)
+
+Select **Record incident**. The runner creates an assessment for each registered
+repository within 5 minutes. It checks dependencies, images and configuration.
+This includes servers that an application image contains, such as an nginx server
+behind another proxy. Repository files do not prove the current deployment state.
+
+### Read the evidence and next action
+
+Select **Evidence & history** on a repository result. Review the checked commit,
+file evidence, reason and status history. **Not affected** requires an explanation
+of why the vulnerable dependency, version or code path does not apply.
+
+![Repository evidence and security status history](/img/roles/logos-admin-security-evidence.png)
+
+| Status | Meaning and next action |
+|---|---|
+| Queued / Analyzing | Wait for capacity and the analysis result. |
+| Not affected | Read the evidence. The agent checks again each day. |
+| Awaiting upstream | No suitable patch is available. Review the temporary mitigation. The agent checks again after 6 hours. |
+| Fix available / Preparing fix | The agent prepares a change from the verified patch information. |
+| PR open | Review the PR and its checks. The agent does not merge it. |
+| Action required | Review missing evidence or the recommended containment action. |
+| Awaiting deployment | The PR is merged. Confirm that the affected systems received the fix. |
+| Analysis failed | Inspect the linked session. Correct the problem, then select Recheck. |
+| Resolved | An admin recorded completed remediation and its evidence. |
+
+An incident without a patch stays open. A recommendation can include a partial
+shutdown or a complete shutdown. The operator must decide and perform that
+change. The recommendation states the affected service and recovery conditions.
+
+### Confirm remediation
+
+After deployment or mitigation, select **Confirm resolved**. Enter the actual
+remediation evidence, then select **Confirm**. A merged PR alone does not prove
+that the running service is fixed. **Recheck** requests another assessment and
+also requires a reason. New advisory evidence reopens a completed assessment.
+
+![Confirmation with deployment or mitigation evidence](/img/roles/logos-admin-security-confirm.png)
+
+Image scanners can send critical Trivy findings through the admin API. The import
+retains the image digest, scan time and findings without a fix. See the
+[agent service guide](https://github.com/LogosOSS/Logos/tree/main/logos-agent#scanner-evidence)
+for the request format and other source options.

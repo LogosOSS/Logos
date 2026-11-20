@@ -2,6 +2,7 @@ import { Component, Input, OnChanges, OnDestroy, inject, signal } from '@angular
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { FormsModule } from '@angular/forms';
+import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
 import { requestDatasetLabel } from './benchmark-configuration';
 
@@ -23,7 +24,7 @@ export interface NightlyStatus {
 @Component({
   selector: 'app-nightly-benchmarks',
   standalone: true,
-  imports: [ModalConfirmComponent, FormsModule],
+  imports: [ModalConfirmComponent, ModalFormComponent, FormsModule],
   templateUrl: './nightly-benchmarks.html',
   styleUrl: './nightly-benchmarks.scss',
 })
@@ -34,6 +35,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   @Input({ required: true }) modelName!: string;
   private readonly http = inject(HttpClient);
   readonly state = signal<NightlyStatus | null>(null);
+  readonly managing = signal(false);
   readonly confirming = signal(false);
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
@@ -55,6 +57,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     this.workloadName = '';
     this.logIds = '';
     this.confirming.set(false);
+    this.managing.set(false);
     clearTimeout(this.timer);
     void this.refresh();
   }
@@ -170,6 +173,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
 
   review(): void {
     if (!this.state() || this.saving() || (!this.state()!.enabled && !this.window)) return;
+    this.managing.set(false);
     this.expected = this.state()!.enabled;
     this.error.set(null);
     this.confirming.set(true);

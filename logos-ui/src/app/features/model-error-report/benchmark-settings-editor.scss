@@ -1,5 +1,5 @@
-.settings-editor { font-size: var(--model-detail-font-size, var(--font-size-sm)); line-height: var(--line-height-normal); padding: 16px; border-bottom: 1px solid rgb(var(--color-outline-200) / var(--opacity-strong)); }
-h4 { font-size: var(--model-detail-heading-size, var(--font-size-base)); font-weight: var(--font-weight-semibold); margin: 0; color: rgb(var(--color-typography-100)); }
+.settings-editor { font-size: var(--model-detail-font-size, var(--font-size-sm)); line-height: var(--line-height-normal); padding: 0 0 16px; border-bottom: 1px solid rgb(var(--color-outline-200) / var(--opacity-strong)); }
+h4 { font-size: var(--model-detail-heading-size, var(--font-size-base)); font-weight: var(--font-weight-semibold); margin: 0 0 16px; color: rgb(var(--color-typography-100)); }
 p { margin: 8px 0 14px; color: rgb(var(--color-typography-500)); font-size: var(--model-detail-font-size, var(--font-size-sm)); }
 .settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 20px 0; align-items: end; }
 label { display: flex; flex-direction: column; gap: 8px; min-width: 0; color: rgb(var(--color-typography-100)); font-size: var(--model-detail-font-size, var(--font-size-sm)); }
@@ -9,7 +9,7 @@ button { display: inline-flex; align-items: center; justify-content: center; gap
 button:disabled, input:disabled, select:disabled { opacity: 0.5; cursor: not-allowed; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }
 .dataset-picker { display: grid; gap: 8px; color: rgb(var(--color-typography-100)); }
-.dataset-picker__toggle { width: 100%; justify-content: space-between; text-align: left; color: inherit; }
+.dataset-picker__toggle { width: 100%; justify-content: space-between; padding-inline-end: 14px; text-align: left; color: inherit; }
 .dataset-picker__toggle span, .dataset-grid__option span { min-width: 0; overflow-wrap: anywhere; }
 .dataset-picker__panel { padding: 16px; border: 1px solid rgb(var(--color-outline-200) / var(--opacity-strong)); border-radius: 6px; }
 .dataset-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; max-height: 360px; overflow-y: auto; margin-top: 16px; padding: 3px; }

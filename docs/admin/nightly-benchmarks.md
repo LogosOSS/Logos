@@ -5,9 +5,7 @@ title: Nightly Benchmarks
 # Nightly Benchmarks
 
 Logos admins enable or disable a nightly schedule for each model/worker pair on
-**Model Details → Performance**. Both actions require confirmation. Schedules
-show the model and concrete parameter values to be tested, in the
-**Run benchmark** view with its manual benchmark editor. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
+**Model Details → Performance**. Both actions require confirmation. Select **Benchmarks → Manage** to inspect the schedule and parameter values for a worker. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
 settings; the scheduler builds the plan again when the nightly run starts.
 
 Schedules are off by default and persist in PostgreSQL. The nightly plan is independent
@@ -19,27 +17,31 @@ restores the worker before it returns to production.
 See the [illustrated admin walkthrough](../roles/logos-admin.md#nightly-benchmarks)
 for screenshots of the plan and both confirmation dialogs.
 
-![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
+![Run a benchmark and compact nightly status](../static/img/roles/logos-admin-nightly-benchmarks.png)
+
+Select **Manage** beside the intended worker to inspect its workload, schedule and results.
+
+![Nightly management with the schedule and test plan](../static/img/roles/logos-admin-nightly-plan.png)
 
 1. Sign in as a Logos Admin and open **Models**.
 2. Open the model's **Model Details → Performance** tab.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Expand **Schedule and test plan**.
+4. Select **Manage**, then expand **Schedule and test plan**.
 5. Select **Enable nightly runs…**, then confirm **Enable nightly runs**.
 6. Check that the card shows **Enabled · in nightly rotation**.
 
 The schedule persists after a page reload or browser close. To remove the pair
-from rotation, select **Disable nightly runs…** and confirm **Disable nightly runs**.
+from rotation, select **Manage → Disable nightly runs…** and confirm **Disable nightly runs**.
 Cancelling either dialog leaves the saved state unchanged. Activation requires
 an updated, connected worker. Run admission also checks the lane and the other
 available workers.
 
-The card shows a plan for this pair, not a guaranteed reservation for tonight.
-The scheduler selects eligible pairs at runtime. Use **Manual benchmark** for the dataset editor and question previews.
+Select **Manage** to inspect the plan for this pair. The plan does not guarantee a reservation for tonight.
+The scheduler selects eligible pairs at runtime. Use **Run a benchmark** for the dataset editor and question previews.
 These controls configure manual runs. They do not alter the nightly workload.
 
-The next day, expand **Latest round results** and inspect each configuration's
-outcome, attempt and benchmark ID. Use the performance comparison below for
+The next day, select **Manage**, then expand **Latest round results** and inspect each configuration's
+outcome, attempt and benchmark ID. Use **Overview** or **Analysis** for
 successful measurements. A finished plan can contain failed configurations;
 review individual outcomes before comparing throughput.
 
@@ -54,7 +56,7 @@ Select **Run**, **Measured from → to**, **Before**, **After** or **Change** to
 Each sort control cycles through the initial order, ascending order and descending order.
 The third selection restores the initial order. Missing measurements remain last.
 A dash means the value or baseline is unavailable. Historical timestamps are not reconstructed.
-Expand **Charts and comparison** or **Run details and saved configurations** for more information.
+Select **Performance → Analysis** for **Charts and comparison** or **Run details and saved configurations**.
 
 ## Automatic Pair Rotation
 
@@ -261,18 +263,15 @@ After an application restart, recovery completes the recorded adoption or restor
 A disabled schedule cancels pending adoption.
 The round report identifies an adopted benchmark or an adoption failure.
 
-The **Performance** tab contains the **Timeline** section.
-The vertical axis shows throughput in output tokens per second (tok/s).
-The solid line shows complete measurements, including slower runs and repeated baselines.
-The dashed line shows the measured production baseline of each round.
-The visible legend identifies square baselines, circular trials and outlined points that fail selection checks.
-Each point represents a complete benchmark run. It does not represent one request or confirm production deployment.
-Each new round measures the current production settings first, including previously adopted improvements.
-Each point keeps its measurement date and configuration. Its percentage change uses the captured baseline from the same round.
-Outlined points fail automatic selection checks. They remain visible so that the chart shows measurement variation.
-Select a point to open its benchmark. Expand **Measured configurations** to read dates and parameters.
-The chart separates captured workloads and test settings. Measurements can span worker releases.
-A historical record does not replace the fresh comparison required for production adoption.
+The **Performance → Overview** section contains the **Timeline** section.
+Each completed run has one dot. Runs appear from left to right in completion order.
+The vertical axis shows output tokens per second (tok/s). Each stem starts at zero. An open circle marks a baseline.
+Trials show their change from the baseline of the same round, if available.
+Slower runs and excluded trials remain visible. Select a run to see its configuration and result.
+Select **Show all** to see more than the latest 6 runs.
+The timeline separates workloads and test settings. Measurements can span worker releases.
+Read **When settings change** for the nightly adoption rule.
+Expand **What does Logos check?** for the limits on output length and request latency.
 Expand **Currently deployed → Configuration & selection details** to inspect current settings and selection failures.
 A completed eligible winner is saved before the next trial starts.
 Recovery can apply this saved winner if a later trial is interrupted. Disabling the schedule cancels pending adoption.

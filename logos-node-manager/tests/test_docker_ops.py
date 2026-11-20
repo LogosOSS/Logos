@@ -274,13 +274,13 @@ def test_the_versions_line_never_raises(settings):
 
 def test_the_registry_login_is_described_without_its_secrets(tmp_path):
     config = tmp_path / "config.json"
-    config.write_text(json.dumps({"auths": {"harbor.example": {"auth": "c2VjcmV0"}}}), encoding="utf-8")
+    config.write_text(json.dumps({"auths": {"ghcr.io": {"auth": "c2VjcmV0"}}}), encoding="utf-8")
 
     text = describe_registry_login(config)
 
     assert "1 registry login(s)" in text
     assert "c2VjcmV0" not in text
-    assert "harbor.example" not in text
+    assert "ghcr.io" not in text
 
 
 def test_a_credential_helper_is_pointed_out(tmp_path):

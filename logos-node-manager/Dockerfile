@@ -7,8 +7,7 @@ FROM python:3.13-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_ROOT_USER_ACTION=ignore
+    PYTHONPATH=/app
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
@@ -17,10 +16,13 @@ WORKDIR /app
 
 # The build context is the root of the repository, because the image also carries the compose files of the commit (see
 # below). The .dockerignore of the root lets through exactly what is copied here.
-# The package has no runtime dependencies, so installing it is a single layer.
-COPY logos-node-manager/pyproject.toml logos-node-manager/README.md ./
+# The package has no runtime dependencies, so nothing is installed: it runs from
+# the source tree on PYTHONPATH (building a wheel would resolve the build
+# backend's own dependencies at build time). The `node-manager` command the
+# deploy workflows `docker exec` is a wrapper around `python -m`.
 COPY logos-node-manager/logos_node_manager ./logos_node_manager
-RUN pip install --no-cache-dir .
+RUN printf '#!/bin/sh\nexec python -m logos_node_manager "$@"\n' > /usr/local/bin/node-manager \
+  && chmod 0755 /usr/local/bin/node-manager
 
 # The compose files of this commit, for the hosts to take out of the image of a tag: the manager of a host reads
 # /compose/core.yaml or /compose/worker.yml from it (see compose_source.py), so that the settings of a deployment always

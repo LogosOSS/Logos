@@ -164,6 +164,8 @@ services:
       LOGOS_DOMAIN: "${LOGOS_DOMAIN:-localhost}"
       LOGOS_SCHEDULER_ETTFT_ENABLED: "${LOGOS_SCHEDULER_ETTFT_ENABLED:-true}"
       LOGOS_CAPACITY_PLANNER_ENABLED: "${LOGOS_CAPACITY_PLANNER_ENABLED:-true}"
+      # Read at startup; recreate the orchestrator after changing this value.
+      LOGOS_RESIDENCY_POLICY: "${LOGOS_RESIDENCY_POLICY:-simple}"
       # Seconds a vLLM lane may stay idle before the capacity planner puts it to
       # sleep (level 1). Waking a sleeping lane costs seconds on the next
       # request, so the default keeps lanes warm through ordinary pauses.
@@ -459,7 +461,7 @@ services:
       - internal
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.8
+    image: quay.io/keycloak/keycloak:26.8.2-2@sha256:c68e286cacd87b942ac1939a0a1481461109d6acd3a57dc496969a319a76bbf0
     container_name: logos-keycloak
     restart: unless-stopped
     command: ["start-dev", "--import-realm", "--health-enabled=true"]
@@ -468,6 +470,9 @@ services:
       # WARNING: default admin password — local dev only, MUST be changed before any deployment
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_HOSTNAME: "http://localhost:8085"
+      # Disable the JVM's AVX-512 Base64 decoder intrinsic (CVE-2026-114938)
+      # until the Keycloak image ships a JRE with the fix.
+      JAVA_OPTS_APPEND: "-XX:-UseBASE64Intrinsics"
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
     ports:

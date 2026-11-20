@@ -303,8 +303,9 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-statistics-requesters.png` | `tobias.wasner` | `/statistics?tab=requests` — **Requesters** list open | `roles/logos-admin.md` |
 | `logos-admin-models.png` | `tobias.wasner` | `/models` | `roles/logos-admin.md` |
 | `logos-admin-nightly-enable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — activation dialog | `roles/logos-admin.md#nightly-benchmarks` |
-| `logos-admin-nightly-benchmarks.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark controls and active nightly plan | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-benchmarks.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Run a benchmark** and compact nightly status | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-automatic-source.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — automatic recent-user source policy | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-plan.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Manage → Schedule and test plan** | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-workload.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — request dataset form | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-results.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Currently deployed** summary and **Timeline** record chart | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-notification.png` | `tobias.wasner` | Notification inbox — benchmark with captured result link | `roles/logos-admin.md#nightly-benchmarks` |
@@ -329,6 +330,11 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-team-management.png` | `tobias.wasner` | `/team-management` | `roles/logos-admin.md` |
 | `logos-admin-permission-audit.png` | `tobias.wasner` | `/permission-audit-log` | `roles/logos-admin.md#permission-audit` |
 | `logos-admin-new-team.png` | `tobias.wasner` | `/team-management` — **New Team** dialog, Keycloak group filled | `roles/logos-admin.md#keycloak-group-links` |
+| `logos-admin-security-incidents.png` | `tobias.wasner` | `/agents/security` — all statuses; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-repositories.png` | `tobias.wasner` | `/agents/security` — Monitored repositories expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-intake.png` | `tobias.wasner` | `/agents/security` — Report an important incident expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-evidence.png` | `tobias.wasner` | `/agents/security` — Evidence & history expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-confirm.png` | `tobias.wasner` | `/agents/security` — Confirm resolved form; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-agents.png` | `tobias.wasner` | `/agents` | `roles/logos-admin.md` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |
 | `app-admin-models.png` | `alexandra.szuminska` | `/models` | `roles/app-admin.md` |
@@ -338,6 +344,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `team-detail-members.png` | same | `/teams/<id>` — **Members** | same |
 | `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys** | same |
 | `team-detail-repositories.png` | owner or `logos_admin` | `/teams/<id>` — **Repositories** | same |
+| `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled | `roles/app-admin.md#enable-the-coding-agent` |
 | `team-detail-workflows.png` | owner or `logos_admin` | `/teams/<id>` — **Workflows** | same |
 | `team-detail-models.png` | owner or `logos_admin` | `/teams/<id>` — **Models** | same |
 | `team-detail-activity.png` | owner or `logos_admin` | `/teams/<id>` — **Activity** | same |

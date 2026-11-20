@@ -1,13 +1,13 @@
 # Logos Deployment
 
-Logos deployments use pull. The project publishes prebuilt images to its Harbor
-registry (`${LOGOS_HARBOR_REGISTRY}/logos`). The tag `latest` follows `main`.
-A pinned tag selects one specific build. Logos also mirrors builds of `main` to
-public GHCR. A self-hosted installation can therefore pull images without
-credentials (see the [installation guide](admin/installation.md)). Deployments
-use Harbor. A deployment is the compose file plus a `.env` file on each node. To
-update, run `docker compose pull` and `docker compose up -d`. The deploy workflows copy the compose file and `.env` to each selected node. A worker node needs no inbound port (see the
-[architecture overview](developer/architecture) for the subsystem breakdown).
+Logos publishes prebuilt images to public GitHub Container Registry (GHCR) at `ghcr.io/logososs`.
+The tag `latest` follows `main`. Releases use version tags.
+A deployment consists of a compose file and a `.env` file on each node.
+All deployment workflows use GHCR. No registry login is required.
+See the [installation guide](admin/installation.md) for a self-hosted installation.
+To update, run `docker compose pull` and `docker compose up -d`.
+The deploy workflows copy the compose file and `.env` to each selected node.
+A worker node needs no inbound port (see the [architecture overview](developer/architecture)).
 
 A deployment consists of:
 
@@ -63,6 +63,50 @@ Do not delete the volume to change its password.
 Redis uses `requirepass`. The web service and Redis health check use the same `LOGOS_REDIS_PASSWORD`.
 To change the Redis password, update `.env`, then recreate Redis and the web service together.
 
+## Residency policy
+
+`LOGOS_RESIDENCY_POLICY` selects the orchestrator policy. The default is `simple`.
+Missing, empty, and invalid values select `simple`. Invalid values produce a warning.
+
+| Value | Routing and residency |
+|---|---|
+| `simple` | Stable selection of ready deployments; oldest waiting request first for residency activation; idle lanes released by LRU. |
+| `demand` | ETTFT routing; demand-based residency, victim selection, and competitive activation gates; automatic drains of busy lanes. |
+| `lru` | ETTFT routing and demand-based residency; LRU victims; no competitive activation gates; automatic drains of busy lanes. |
+
+Simple prefers sleep to stop. It does not create speculative demand replicas or displace busy lanes.
+FIFO applies to residency activations. Existing request priorities within each model still apply.
+All policies retain GPU and host-RAM limits, locks, checks for active requests, minimum hold times, and failure cooldowns.
+
+The production and local development Compose files pass this variable to the orchestrator.
+Check host environment variables and additional Compose files for overrides before a policy change.
+The benchmark topology retains its explicit `E2E_RESIDENCY_POLICY` default of `demand`.
+The simulation workflow selects each policy explicitly.
+Deploy workflows copy GitHub configuration variables into `.env`.
+For these workflows, set `LOGOS_RESIDENCY_POLICY` in the matching GitHub environment to retain an explicit selection across deployments.
+
+The orchestrator reads the policy at startup. It does not reload the policy during operation.
+To return to Demand with production Compose:
+
+1. Set `LOGOS_RESIDENCY_POLICY=demand` in the core host's `.env` file.
+2. Remove or update any conflicting shell environment or Compose override.
+3. Recreate the orchestrator with the command below.
+4. Check the startup log for `residency_policy=demand` and complete a test inference request.
+
+```bash
+docker compose --env-file .env -f docker-compose.yaml up -d --no-deps --force-recreate logos-orchestrator
+docker compose -f docker-compose.yaml logs --since=5m logos-orchestrator
+```
+
+Use `lru` or `simple` instead of `demand` to select another policy.
+For local development, use `-f docker-compose.dev.yaml` in both commands.
+A plain `docker compose restart` does not apply changes to the container environment.
+When the planner is enabled, its startup log reports the selected policy.
+The internal `/logosdb/scheduler_state` response also reports `residency_policy`.
+
+The inspected benchmark favored Simple. This result does not establish that Simple performs best for all production workloads.
+The deployed production policy requires a separate check on the target host.
+
 ## Container privileges
 
 The orchestrator and web service images run as UID `10001`.
@@ -80,29 +124,36 @@ PostgreSQL, Redis, nginx, and GPU worker images retain their existing startup us
 
 | Image | Contents |
 |---|---|
-| `logos` | orchestrator |
+| `logos-orchestrator` | orchestrator |
 | `logos-webservice` | Spring admin/statistics service and public inference gateway (`/v1`, `/openai`, `/jobs`) |
-| `logos-ui` | Angular frontend |
+| `logos-ui` | Angular web application |
 | `logos-db` | PostgreSQL 17 plus `pg_cron` |
 | `logos-rate-gateway` | per-IP rate limiting (nginx) |
 | `logos-agent`, `logos-agent-gateway`, `logos-agent-workspace` | the agent stack (only with the `agent` profile) |
 | `logos-workernode-vllm` | the worker node runtime (on the GPU host) |
-| `logos-workernode-mlx` | the Apple Silicon worker. Logos does not push this image to Harbor, and nobody runs it as a container (see the MLX section below) |
+| `logos-workernode-mlx` | files for the native Apple Silicon worker (see the MLX section below) |
+| `logos-node-manager` | worker deployment control plane |
 
-`REGISTRY` (default `ghcr.io/logososs`, the public mirror) and
-`IMAGE_TAG` (default `latest`) in the `.env` select the source. The deploy
-workflows write `${LOGOS_HARBOR_REGISTRY}/logos` and the deployed tag into the
-`.env` that they send. Every node therefore pulls from Harbor, and you log in
-once (`docker login`). The default is for installations that have no Harbor
-account.
+`REGISTRY` defaults to `ghcr.io/logososs`, and `IMAGE_TAG` defaults to `latest`.
+Deployment workflows write this registry and the selected tag into each node's `.env`.
+They ignore legacy registry variables. Remove unused `LOGOS_HARBOR_*` variables and secrets from GitHub environments after the migration.
 
-Only pushes to `main` write to the mirror. A pull request builds to Harbor only.
-There, the cleanup workflow prunes its `pr-<number>` tag. A release also
-publishes its version tag to Harbor. The version tag has no `v`. For example,
-the release `v1.0.2` has the tag `1.0.2`. Nothing prunes a public package, so PR
-builds and release builds do not go to the mirror. When a package appears for the
-first time, check that it is public. A private package gives a 403 to a
-self-hosted installation. To fix this, use Package settings → Change visibility.
+All images use these tags in GHCR:
+
+- Pushes to `main` update `latest`.
+- Releases publish their version tag without changing `latest`. The version tag has no `v`. For example, the release `v1.0.2` has the tag `1.0.2`.
+- Same-repository pull requests publish `pr-<number>`. Dependabot builds without publishing.
+
+When a PR closes, cleanup deletes versions whose only tag is that PR's tag.
+Versions with other tags remain available. Untagged manifests also remain because live image indexes can reference them.
+Cleanup uses trusted default-branch code and the workflow's `GITHUB_TOKEN`.
+The repository needs admin access to each package for version deletion.
+See [GitHub's container registry permissions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+When a package first appears, set **Package settings → Change visibility → Public**.
+New GHCR packages start private. Deployments cannot pull a private package without credentials.
+Check that every image required by a deployment has the selected tag before deploying.
+Existing tags in another registry are not copied automatically.
 
 ## Local development ports
 

@@ -20,6 +20,7 @@ import {
 import { RequestItem } from '../../statistics.models';
 import { StatsClockService } from '../../services/stats-clock.service';
 import { StatsSkeletonComponent } from '../skeletons/skeletons';
+import { RequestRoutingComponent } from '../request-routing/request-routing';
 import {
   deriveStage,
   getRequestBorderColor,
@@ -69,7 +70,7 @@ export function tokenLabel(
 @Component({
   selector: 'app-stats-recent-requests',
   standalone: true,
-  imports: [CommonModule, StatsSkeletonComponent],
+  imports: [CommonModule, StatsSkeletonComponent, RequestRoutingComponent],
   templateUrl: './recent-requests.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './recent-requests.scss',
@@ -79,6 +80,11 @@ export class RecentRequests implements OnChanges, OnDestroy {
   private clock = inject(StatsClockService);
 
   readonly expandedRequestId = signal<string | null>(null);
+  readonly expandedRoutingId = signal<string | null>(null);
+
+  toggleRouting(requestId: string): void {
+    this.expandedRoutingId.update(current => current === requestId ? null : requestId);
+  }
   readonly payloadTab = signal<'request' | 'response'>('request');
   readonly payloads = signal<RequestPayloads | null>(null);
   readonly payloadLoading = signal(false);
@@ -361,6 +367,7 @@ export class RecentRequests implements OnChanges, OnDestroy {
   }
 
   private resetToFirstPage(): void {
+    this.expandedRoutingId.set(null);
     this.clearPayloads();
     this.pageFetchGeneration++;
     this.pageIndex.set(0);

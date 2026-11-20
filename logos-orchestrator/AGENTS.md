@@ -2,7 +2,7 @@
 
 Python 3.13 / FastAPI / Uvicorn service: the LLM proxy core — authentication, classification, scheduling, provider routing, request logging.
 
-- **Dependencies**: `uv` (lockfile `uv.lock`, committed). Requirements are declared in `[project].dependencies` (dev tools in the `dev` extra), which is the form both `uv` and Dependabot edit; `poetry-core` remains only as the build backend, so there is no `poetry.lock` — installs go through `uv pip install .` / `uv sync`.
+- **Dependencies**: `uv` (lockfile `uv.lock`, committed). Requirements are declared in `[project].dependencies` (dev tools in the `dev` extra), which is the form both `uv` and Dependabot edit; `poetry-core` remains only as the build backend, so there is no `poetry.lock` — installs go through `uv sync --locked`, never a resolving `uv pip install`.
 - **DB**: PostgreSQL 17 via SQLAlchemy 2.x raw SQL (`text()`, NOT the ORM query API). Schema owned by `logos-webservice` (Liquibase) — this service has no migration tooling.
 - **Testing**: pytest + pytest-asyncio (`asyncio_mode = "auto"`).
 - **CI**: `.github/workflows/logos_test.yml` — orchestrator unit tests plus a `logos-workernode` test step in the same job; a change touching both needs both green.
@@ -70,9 +70,8 @@ PROXY mode is not a scheduler bypass: it only skips classification (Laura). Priv
 
 ```bash
 cd logos-orchestrator
-uv venv .venv && source .venv/bin/activate
-uv pip install .
-uv pip install "coverage[toml]" pytest-timeout   # matches CI
+uv sync --locked --extra dev --no-install-project --python 3.13   # matches CI
+source .venv/bin/activate
 
 ./run_tests.sh unit          # unit tests only
 pytest tests/unit -v         # full suite

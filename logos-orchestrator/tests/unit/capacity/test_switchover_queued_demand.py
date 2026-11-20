@@ -202,6 +202,7 @@ def _planner(
     demand.get_score.side_effect = lambda name: scores.get(name, 0.0)
 
     planner = CapacityPlanner.__new__(CapacityPlanner)
+    planner._residency_policy = "demand"
     planner._facade = facade
     planner._registry = registry
     planner._demand = demand

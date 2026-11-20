@@ -19,7 +19,8 @@ TLS is terminated by the Logos server's reverse proxy (Traefik).
 | Source | What | Managed by |
 |---|---|---|
 | `.env` | Credentials (`LOGOS_URL`, `LOGOS_API_KEY`) | GitHub secrets/variables |
-| `config.yml` | Hardware & tuning (capabilities, vLLM overrides, NCCL/FlashInfer, port ranges) | Ansible |
+| `config.yml` | Hardware & tuning (NCCL/FlashInfer, port ranges, node-wide settings); its models are imported into Logos once | Ansible |
+| Logos (database) | The node's models: `capabilities_models` and `model_overrides` | Admin requests, see [Node model configuration](#node-model-configuration) |
 | `/app/data/` | Runtime state (lane config, calibration logs) | Auto-managed (Docker volume) |
 
 No overlap between `.env` and `config.yml`.
@@ -111,10 +112,11 @@ engines:
 
 (From the worker directory entered in step 3.) The production Compose file
 pulls `${REGISTRY}/logos-workernode-vllm` from
-the project's registry (Harbor for team deployments — set `REGISTRY` and
-`IMAGE_TAG` in `.env` and log in). Without registry access, build the image
-first (this directory is the build context). Put the values in `.env` and
-export them in the shell as well — the Docker CLI does not read `.env`:
+public GHCR at `ghcr.io/logososs`. No registry login is needed.
+Set `IMAGE_TAG` in `.env` to select a published version or PR build.
+To use a local build instead, set `REGISTRY` and `IMAGE_TAG` in `.env`.
+Export them in the shell too: the Docker CLI does not read `.env`.
+Then build from the worker directory:
 
 ```bash
 export REGISTRY=<your-registry> IMAGE_TAG=<tag>
@@ -248,8 +250,15 @@ curl -X POST https://logos.aet.cit.tum.de/logosdb/providers/logosnode/model-prof
 
 Logos can store which models a node serves and their per-model settings, the
 same data as the `capabilities_models` entries and `engines.vllm.model_overrides`
-in `config.yml`. Workers do not read it yet: `config.yml` stays the source
-until they do, and the requests below only store and return the data.
+in `config.yml`. A worker with `logos.enabled: true` reads them from Logos at
+start, before it calculates its calibration keys, and ignores the model entries
+of its `config.yml` from then on. On its first start Logos has nothing stored,
+so the worker imports its `config.yml` models unchanged, then reads them back.
+Later changes reach a connected worker at once: the model list applies
+immediately, overrides from the next lane start (a lane restart counts). While
+a calibration runs, the worker keeps the revision it has and applies the newer
+one when the session ends. Until Logos answers, the worker retries with a
+backoff.
 
 Each model has `capability` (`tensor_parallel_size`, `kv_cache_memory_bytes`,
 `gpu_devices`, `base_residency_mb`, `min_context_fraction`) and `overrides`
@@ -277,9 +286,12 @@ curl -X POST https://logos.aet.cit.tum.de/logosdb/providers/logosnode/node-confi
                    "overrides":{"quantization":"awq"}}]}'
 ```
 
-`replace` answers 400 with the problems found, 404 for an unknown provider and
-409 for an outdated revision. A connected worker that supports it is sent the
-new configuration right away.
+Before storing, `replace` has the connected worker check the models the way a
+lane start would, and refuses unknown override keys. It answers 400 with the
+problems found, 404 for an unknown provider, 409 for an outdated revision or a
+worker that is too old to check, 503 when the worker is not connected and 502
+when it cannot answer. Clearing the list needs no worker. The new configuration
+is sent to the worker right away, and again whenever a worker connects.
 
 The worker itself uses two requests with its `shared_key`, over TLS:
 `node-config` returns the stored configuration, and `node-config/import` stores
