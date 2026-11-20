@@ -12,6 +12,9 @@
  *   NODE_PATH=../logos-ui/node_modules node seed/capture-screenshots.cjs
  *   NODE_PATH=../logos-ui/node_modules node seed/capture-screenshots.cjs roles/batches.png roles/team-detail-overview.png
  *
+ * The Deployments shots need seed/deployments.sql after the role seed. The shot of the running deployment adds
+ * seed/deployments-running.sql for that one shot and removes the deployment again.
+ *
  * Arguments limit the run to the named files (paths relative to static/img/).
  * Without arguments, shots marked `needs` are left out: the seed does not
  * create their example state, and the committed PNG stays in place.
@@ -313,6 +316,36 @@ async function aiTools(page, target, model) {
   await settle(page, 600);
 }
 
+// The Deployments page. seed/deployments.sql makes two deployers and the finished deployments #139 to #142.
+// Logos counts a deployer as online for 90 s after its last request, so every shot marks the example deployers as
+// seen first. The running deployment (#143) exists for one shot only: it switches the button Deploy off.
+const RUNNING_DEPLOYMENT = fs.readFileSync(path.join(__dirname, "deployments-running.sql"), "utf8");
+
+function psql(input) {
+  execFileSync("docker", ["exec", "-i", DB_CONTAINER, "psql", "-U", "postgres", "-d", "logosdb", "-q", "-v", "ON_ERROR_STOP=1"], { input }); // NOSONAR - developer tool: uses the docker CLI from the developer's PATH
+}
+
+function prepareDeployments() {
+  sql("DELETE FROM deployment_plans WHERE number = 143");
+  sql("DELETE FROM deployers WHERE name = 'Docs standby host'");
+  sql("UPDATE deployers SET last_seen_at = now() WHERE name IN ('Docs core host', 'Docs Local Worker')");
+}
+
+async function deploymentsPage(page) {
+  prepareDeployments();
+  await page.goto(BASE + "/deployments");
+  await page.locator("table.deployers").waitFor();
+  await page.locator("table.deployers .lg-dot--succeeded").nth(1).waitFor();
+}
+
+// The page of one finished deployment, by its number on this Logos.
+async function deploymentPage(page, number) {
+  prepareDeployments();
+  const id = sql(`SELECT id FROM deployment_plans WHERE number = ${number}`);
+  await page.goto(`${BASE}/deployments/${id}`);
+  await page.locator("ol.timeline").first().waitFor();
+}
+
 // ---------------------------------------------------------------- shot list
 // file: path relative to static/img/; full: full-page shot (else 1440×900).
 
@@ -414,6 +447,56 @@ const SHOTS = [
       await p.goto(`${BASE}/providers/${ids.worker}/node-settings`);
       await p.locator(".seg").waitFor();
       await p.addStyleTag({ content: ".savebar { position: static !important; }" });
+    },
+  },
+  {
+    file: "roles/logos-admin-deployments.png",
+    user: ADMIN,
+    full: true,
+    go: async (p) => {
+      await deploymentsPage(p);
+      await p.fill("#deploy-tag", "1.0.3");
+    },
+  },
+  {
+    file: "roles/logos-admin-deployments-running.png",
+    user: ADMIN,
+    go: async (p) => {
+      prepareDeployments();
+      psql(RUNNING_DEPLOYMENT);
+      await p.goto(BASE + "/deployments");
+      await p.locator(".node").nth(1).waitFor();
+    },
+    after: () => sql("DELETE FROM deployment_plans WHERE number = 143"),
+  },
+  {
+    file: "roles/logos-admin-deployments-confirm.png",
+    user: ADMIN,
+    go: async (p) => {
+      await deploymentsPage(p);
+      await p.fill("#deploy-tag", "1.0.3");
+      await button(p, "Deploy").click();
+      await p.getByText("Deploy 1.0.3?").waitFor();
+    },
+    // Never confirm: the dialog would start a deployment.
+    after: (p) => button(p, "Cancel").evaluate((b) => b.click()),
+  },
+  { file: "roles/logos-admin-deployment-detail.png", user: ADMIN, full: true, go: (p) => deploymentPage(p, 142) },
+  { file: "roles/logos-admin-deployment-rolled-back.png", user: ADMIN, full: true, go: (p) => deploymentPage(p, 140) },
+  {
+    file: "roles/logos-admin-deployer-key.png",
+    user: ADMIN,
+    go: async (p) => {
+      await deploymentsPage(p);
+      await button(p, "Add a core deployer").click();
+      await p.fill("#deployer-name", "Docs standby host");
+      await button(p, "Make the deployer").click();
+      await p.locator('[data-testid="deployer-key"]').waitFor();
+    },
+    // The key is made up for the shot: the deployer goes away again.
+    after: async (p) => {
+      await button(p, "I have copied the key").evaluate((b) => b.click());
+      sql("DELETE FROM deployers WHERE name = 'Docs standby host'");
     },
   },
   { file: "roles/logos-admin-policies.png", user: ADMIN, go: (p) => p.goto(BASE + "/policies") },
