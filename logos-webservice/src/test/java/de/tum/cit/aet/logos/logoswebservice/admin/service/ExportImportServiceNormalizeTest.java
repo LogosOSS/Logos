@@ -145,6 +145,26 @@ class ExportImportServiceNormalizeTest {
     }
 
     @Test
+    void theConfigurationOfNodesTravelsWithTheExport() {
+        assertTrue(ExportImportService.TABLES.containsAll(
+            List.of("node_model_config", "node_config_state", "node_settings")));
+        // Providers are replaced before their node tables, so the rows have a provider to point to.
+        int providers = ExportImportService.TABLES.indexOf("providers");
+        for (String table : List.of("node_model_config", "node_config_state", "node_settings")) {
+            assertTrue(ExportImportService.TABLES.indexOf(table) > providers, table + " must follow providers");
+        }
+    }
+
+    @Test
+    void importAcceptsAnExportTakenBeforeTheNodeTablesExisted() {
+        Map<String, Object> data = allTables();
+        data.remove("node_model_config");
+        data.remove("node_config_state");
+        data.remove("node_settings");
+        ExportImportService.requireTables(data);
+    }
+
+    @Test
     void importRejectsExportMissingARequiredTable() {
         Map<String, Object> data = allTables();
         data.remove("teams");

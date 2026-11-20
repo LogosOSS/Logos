@@ -324,6 +324,12 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-model-request-measurements.png` | `tobias.wasner` | `/models/<id>/details` — **Performance → Request measurements** of a model with requests at more than one reasoning effort (local or cloud provider) | `roles/logos-admin.md#models` |
 | `logos-admin-providers.png` | `tobias.wasner` | `/providers` | `roles/logos-admin.md` |
 | `logos-admin-provider-connections.png` | `tobias.wasner` | `/providers` — a cloud provider expanded, connected models with their **Batch** labels | `roles/logos-admin.md` |
+| `logos-admin-node-models.png` | `tobias.wasner` | `/providers` — the documentation worker expanded: **Node models** list, **Node settings** and **Connect model** | `roles/logos-admin.md` |
+| `logos-admin-node-model-view.png` | `tobias.wasner` | `/providers/:id/models?model=llama-3.1-8b-instruct` — the model page in view mode | `roles/logos-admin.md` |
+| `logos-admin-node-model-edit.png` | `tobias.wasner` | the same page after **Edit configuration**: TP tiles, KV cache, context, **Advanced settings** | `roles/logos-admin.md` |
+| `logos-admin-node-model-calibrate.png` | `tobias.wasner` | the page of `mistral-small-3.2-24b`: **Calibration settings** with **Calibrate model** | `roles/logos-admin.md` |
+| `logos-admin-node-connect-model.png` | `tobias.wasner` | the **Connect model** dialog; the capture adds a fourth catalog model to the answer of `get_models` | `roles/logos-admin.md` |
+| `logos-admin-node-settings.png` | `tobias.wasner` | `/providers/:id/node-settings` — **GPU pool**, **Engine defaults**, **Node care** | `roles/logos-admin.md` |
 | `logos-admin-policies.png` | `tobias.wasner` | `/policies` | `roles/logos-admin.md` |
 | `logos-admin-billing.png` | `tobias.wasner` | `/billing` | `roles/logos-admin.md` |
 | `logos-admin-user-management.png` | `tobias.wasner` | `/user-management` | `roles/logos-admin.md` |

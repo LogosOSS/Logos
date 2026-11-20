@@ -1,0 +1,16 @@
+// ─── Status Dot ───────────────────────────────────────────────────────────────
+// A small coloured dot in front of a status text. Green unless a tone says
+// otherwise; the tone names follow the status tones of the node pages.
+
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: rgb(var(--color-success));
+
+  &--gray { background: rgb(var(--color-typography-900)); }
+  &--warn { background: rgb(var(--color-warning)); }
+  &--err  { background: rgb(var(--color-error)); }
+}
