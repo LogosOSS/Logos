@@ -3004,7 +3004,7 @@ class LaneManager:
         # understate the requirement.
         #
         # Startup GMU matches VllmProcessHandle._resolve_gmu via
-        # resolve_startup_gmu (configured / derived / vLLM default 0.9).
+        # resolve_startup_gmu (configured / derived / FALLBACK_GMU 0.9).
         # Always gate cold placement on that reservation, including when
         # kv_cache_memory_bytes pins the steady-state KV pool: request_memory
         # still refuses free < gmu×total at EngineCore init. Placement need is
@@ -3019,7 +3019,7 @@ class LaneManager:
                 )
             # Prefer the spawn callback; fall back to the largest card in this
             # snapshot so derivation still runs when the callback is unset (tests
-            # / early boot) instead of silently admitting at vLLM's 0.9 default.
+            # / early boot) instead of silently admitting at FALLBACK_GMU.
             per_gpu_total = float(self._per_gpu_vram_mb() or 0.0)
             if per_gpu_total <= 0:
                 per_gpu_total = max(float(row.get("total_mb", 0.0) or 0.0) for row in allowed_rows)

@@ -83,6 +83,8 @@ def main() -> int:
         dtype=args.dtype,
         quantization=(args.quantization or None),
         trust_remote_code=args.trust_remote_code,
+        # Match FALLBACK_GMU without requiring the worker package in this interpreter.
+        gpu_memory_utilization=0.9,
     )
 
     # Loads the full checkpoint across ``tensor_parallel_size`` ranks on GPU.

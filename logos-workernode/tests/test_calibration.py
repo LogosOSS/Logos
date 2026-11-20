@@ -4321,6 +4321,17 @@ def test_gpu_error_during_a_probe_aborts_the_calibration_without_blacklisting(tm
     assert "[LOGOS] gpu health: gpu-error: GPU1.power='ERR!'" in log_path.read_text()
 
 
+def test_build_vllm_cmd_probes_with_the_fallback_gmu_unless_overridden() -> None:
+    """A probe never runs at vLLM's own whole-GPU default; an override wins."""
+    from logos_worker_node.vllm_compat import FALLBACK_GMU
+
+    cmd = _build_vllm_cmd({"model": "m"}, "vllm", "127.0.0.1", 9000, "4G")
+    assert cmd[cmd.index("--gpu-memory-utilization") + 1] == str(FALLBACK_GMU)
+    cmd = _build_vllm_cmd({"model": "m", "gpu_memory_utilization": 0.7}, "vllm", "127.0.0.1", 9000, "4G")
+    assert cmd.count("--gpu-memory-utilization") == 1
+    assert cmd[cmd.index("--gpu-memory-utilization") + 1] == "0.7"
+
+
 def _escalate_plan(tmp_path, gpus: int, side_effect, **plan):
     with patch("logos_worker_node.calibration.calibrate_model", side_effect=side_effect):
         return calibrate_with_tp_escalation(
