@@ -293,41 +293,46 @@ def extract_serving_configuration(snapshot: dict[str, Any] | None, model: str) -
     for lane in lanes:
         if not isinstance(lane, dict) or lane.get("model") != model:
             continue
-        lane_config = lane.get("lane_config")
-        if not isinstance(lane_config, dict):
-            lane_config = {}
-        vllm_config = lane_config.get("vllm_config")
-        if not isinstance(vllm_config, dict):
-            vllm_config = {}
-        result = {key: vllm_config[key] for key in SERVING_KEYS if key in vllm_config}
-        extra_args = list(vllm_config.get("extra_args") or [])
-        for key, flag in _EXTRA_SERVING_FLAGS.items():
-            aliases = (flag, "-pp") if key == "pipeline_parallel_size" else (flag,)
-            for index, arg in enumerate(extra_args):
-                name, has_value, inline_value = str(arg).partition("=")
-                if name not in aliases:
-                    continue
-                raw = inline_value if has_value else extra_args[index + 1] if index + 1 < len(extra_args) else None
-                if raw is not None:
-                    try:
-                        result[key] = json.loads(raw)
-                    except (ValueError, TypeError):
-                        result[key] = raw
-        # The worker includes global flags, aliases and lane override precedence.
-        # Older workers without this field cannot establish an implicit default.
-        backend_metrics = lane.get("backend_metrics")
-        if isinstance(backend_metrics, dict):
-            pipeline_size = backend_metrics.get("pipeline_parallel_size")
-            if type(pipeline_size) is int and pipeline_size > 0:
-                result["pipeline_parallel_size"] = pipeline_size
-        if "kv_cache_memory_bytes" in result:
-            result["kv_cache_memory"] = result.pop("kv_cache_memory_bytes")
-        if lane_config.get("gpu_devices"):
-            result["gpu_devices"] = lane_config["gpu_devices"]
-        if lane.get("command"):
-            result["command"] = lane["command"]
-        return redact_secrets(result)
+        return lane_serving_configuration(lane)
     return {}
+
+
+def lane_serving_configuration(lane: dict[str, Any]) -> dict[str, Any]:
+    """Capture only public settings from one worker lane."""
+    lane_config = lane.get("lane_config")
+    if not isinstance(lane_config, dict):
+        lane_config = {}
+    vllm_config = lane_config.get("vllm_config")
+    if not isinstance(vllm_config, dict):
+        vllm_config = {}
+    result = {key: vllm_config[key] for key in SERVING_KEYS if key in vllm_config}
+    extra_args = list(vllm_config.get("extra_args") or [])
+    for key, flag in _EXTRA_SERVING_FLAGS.items():
+        aliases = (flag, "-pp") if key == "pipeline_parallel_size" else (flag,)
+        for index, arg in enumerate(extra_args):
+            name, has_value, inline_value = str(arg).partition("=")
+            if name not in aliases:
+                continue
+            raw = inline_value if has_value else extra_args[index + 1] if index + 1 < len(extra_args) else None
+            if raw is not None:
+                try:
+                    result[key] = json.loads(raw)
+                except (ValueError, TypeError):
+                    result[key] = raw
+    # The worker includes global flags, aliases and lane override precedence.
+    # Older workers without this field cannot establish an implicit default.
+    backend_metrics = lane.get("backend_metrics")
+    if isinstance(backend_metrics, dict):
+        pipeline_size = backend_metrics.get("pipeline_parallel_size")
+        if type(pipeline_size) is int and pipeline_size > 0:
+            result["pipeline_parallel_size"] = pipeline_size
+    if "kv_cache_memory_bytes" in result:
+        result["kv_cache_memory"] = result.pop("kv_cache_memory_bytes")
+    if lane_config.get("gpu_devices"):
+        result["gpu_devices"] = lane_config["gpu_devices"]
+    if lane.get("command"):
+        result["command"] = lane["command"]
+    return redact_secrets(result)
 
 
 def successful_summary(

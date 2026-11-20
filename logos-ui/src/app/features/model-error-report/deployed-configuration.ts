@@ -15,6 +15,10 @@ interface DeploymentStatus extends NightlyStatus { deployment?: DeploymentSnapsh
 
 export interface DeploymentSnapshot {
   available: boolean;
+  status?: string;
+  active_replicas?: number;
+  mixed_configuration?: boolean;
+  configured_settings?: Record<string, unknown>;
   observed_at?: string;
   lane_state?: string;
   maintenance: boolean;
@@ -69,11 +73,27 @@ export class DeployedConfiguration implements OnDestroy {
   readonly error = signal(false);
   readonly datasetLabel = benchmarkDatasetLabel;
   readonly deployment = computed(() => this.state()?.deployment);
+  readonly workerStatus = computed(() => {
+    const deployment = this.deployment();
+    if (this.error()) return 'Status check failed';
+    if (!this.state()) return 'Checking…';
+    if (deployment?.maintenance) return 'Benchmark maintenance';
+    if (deployment?.available) return (deployment.active_replicas ?? 0) > 1 ? `Active · ${deployment.active_replicas} replicas` : 'Active';
+    const labels: Record<string, string> = {
+      offline: 'Worker offline', waiting: 'Waiting for telemetry', sleeping: 'Model sleeping', cold: 'Model cold',
+      starting: 'Model starting', configured: 'Configured on worker', stopped: 'Model stopped',
+      no_lane: 'No model lane reported', error: 'Worker reported a model error', not_ready: 'Model not ready',
+    };
+    return labels[deployment?.status ?? ''] ?? 'No live status';
+  });
   readonly measurement = computed(() => deployedMeasurement(this.deployment(), this.runs().filter(run => run.model_provider_id === this.pairId())));
   readonly historicalMeasurement = computed(() => this.measurement() ?? deployedMeasurement(this.deployment(),
     this.runs().filter(run => run.model_provider_id === this.pairId()), false));
   readonly result = computed(() => this.historicalMeasurement() ? deployedResult(this.historicalMeasurement()!, this.runs()) : null);
   readonly parameters = computed(() => servingConfigurationItems({ configuration: { serving: this.deployment()?.configuration } }).filter(item => item.captured));
+  readonly configuredParameters = computed(() => servingConfigurationItems({
+    configuration: { serving: this.deployment()?.configured_settings },
+  }).filter(item => item.captured));
   readonly keyParameters = computed(() => this.parameters().filter(item => ['max_num_seqs', 'max_num_batched_tokens'].includes(item.key)));
   readonly selection = computed(() => this.state()?.selection);
   readonly adoption = computed(() => this.state()?.optimizer?.production_adoption);

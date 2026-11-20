@@ -5,7 +5,7 @@ title: Nightly Benchmarks
 # Nightly Benchmarks
 
 Logos admins enable or disable a nightly schedule for each model/worker pair on
-**Model Details → Performance**. Both actions require confirmation. Select **Benchmarks → Manage** to inspect the schedule and parameter values for a worker. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
+**Model Details → Performance**. Select **Benchmarks → Manage** to inspect the schedule and parameter values for a worker. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
 settings; the scheduler builds the plan again when the nightly run starts.
 
 Schedules are off by default and persist in PostgreSQL. The nightly plan is independent
@@ -15,7 +15,7 @@ restores the worker before it returns to production.
 ## Enable, Inspect and Disable a Schedule
 
 See the [illustrated admin walkthrough](../roles/logos-admin.md#nightly-benchmarks)
-for screenshots of the plan and both confirmation dialogs.
+for screenshots of the plan and schedule controls.
 
 ![Run a benchmark and compact nightly status](../static/img/roles/logos-admin-nightly-benchmarks.png)
 
@@ -26,13 +26,13 @@ Select **Manage** beside the intended worker to inspect its workload, schedule a
 1. Sign in as a Logos Admin and open **Models**.
 2. Open the model's **Model Details → Performance** tab.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Select **Manage**, then expand **Schedule and test plan**.
-5. Select **Enable nightly runs…**, then confirm **Enable nightly runs**.
+4. Select **Manage** and review the time window and request workload.
+5. Select **Enable nightly runs**. The dialog explains any missing prerequisite.
 6. Check that the card shows **Enabled · in nightly rotation**.
 
 The schedule persists after a page reload or browser close. To remove the pair
 from rotation, select **Manage → Disable nightly runs…** and confirm **Disable nightly runs**.
-Cancelling either dialog leaves the saved state unchanged. Activation requires
+Activation requires
 an updated, connected worker. Run admission also checks the lane and the other
 available workers.
 
@@ -151,12 +151,13 @@ Hugging Face runs retain the original production settings.
 Use **Request workload** to replace Hugging Face data for a nightly schedule.
 The manual benchmark editor remains independent.
 
-1. Collect successful requests with `FULL` logging.
-2. Open **Create a fixed dataset from FULL request logs**.
-3. Enter a name and 1–100 distinct request IDs for the same model.
-4. Select **Synthetic test requests** or **Production requests**.
-5. Select **Create dataset**.
-6. Check the selected dataset and select **Apply dataset**.
+1. Choose **Recent FULL request logs** in the **Dataset** menu.
+2. Keep **Latest 100 requests** to use recent traffic regardless of age. For a time window, choose **Last 24 hours**, **Last 3 days** or **Last 7 days**.
+3. Select **Create and apply dataset**. Logos shows the number of requests saved. The selection ends when you create the dataset.
+
+On production, Logos reads the selected model’s most recent successful, replayable FULL requests from the production request log. The default selection takes up to 100 requests. A time window can include up to 500. Both selections stop at 5 MB. Benchmark traffic is excluded. Every baseline and candidate uses the same saved inputs until you apply another dataset. An empty window leaves the current selection in place.
+
+For a hand-picked dataset, open **Select individual request IDs**, enter a name and 1–100 distinct IDs, choose the provenance, then select **Create dataset** and **Apply dataset**.
 
 The database stores an ordered copy of the inputs and inference settings.
 It excludes request headers, API keys, user identities and response bodies.
