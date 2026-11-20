@@ -248,18 +248,14 @@ A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
-The **Timeline** shows absolute throughput in output tokens per second (tok/s).
-The solid line includes complete slower runs and repeated baselines.
-The dashed line shows the freshly measured production baseline of each round.
-Expand **How to read this chart** for the legend and explanations of automatic selection checks.
-Each point is one complete benchmark run. A filled point does not confirm production deployment.
-Each point keeps its actual measurement date and configuration.
-The percentage change compares each measurement with its captured baseline from the same round.
-The chart separates datasets, providers and captured test settings. Worker releases can share a measurement history.
-Select a point to open its benchmark result.
-Expand **Measured configurations** to read the dates and parameters.
-Outlined points fail automatic selection checks and remain visible to show measurement variation.
-The chart does not establish automatic parameter adoption or statistical significance.
+The **Timeline** shows the latest six complete runs for the selected workload.
+Read the runs from left to right in completion order.
+Each dot shows output tokens per second (tok/s) on the vertical scale. An open circle marks a baseline.
+Each trial shows its change from the baseline of its round, if available.
+Select a run to see its settings and any reason for exclusion.
+Select **Show all** to see older runs.
+Read **When settings change** for the nightly adoption rule.
+Expand **What does Logos check?** for the limits on output length and request latency.
 Expand **Benchmark runs** to see the latest 5 results per dataset.
 A baseline shows its own throughput and 0% change. Missing comparisons show why the baseline is unavailable. Select **Show all** to read older results.
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
@@ -402,6 +398,149 @@ names the batch deployment or the reason for a refusal. See
 
 ![Providers page — connected models with their batch status](/img/roles/logos-admin-provider-connections.png)
 
+### Node models
+
+Expand a worker node to see the **Node models** list. The list shows each model
+that the worker can serve. Cloud providers keep the **Connected Models** list.
+
+![Node models of a worker node](/img/roles/logos-admin-node-models.png)
+
+Each row shows two statuses:
+
+- **Calibration**: **Calibrated**, **Not calibrated**, **Outdated** or **Unsupported**.
+  Logos measures the memory use of a model during a calibration.
+- **Placement**: **Set** if the model has a placement (GPUs, KV cache and
+  context length). The row then shows these values. If the model has a calibration but no
+  placement, the status is **Automatic**, and the worker chooses the placement itself.
+  If the model has no calibration, the status is **Not loadable**. The worker loads a model only
+  with a calibration.
+
+The chip at the top shows **Worker online** or **Worker offline**. Select a row
+to open the page of the model.
+
+### Model page
+
+The model page shows the configuration of one model on one worker node.
+
+![Model page of a configured model](/img/roles/logos-admin-node-model-view.png)
+
+The page has these parts:
+
+- **Configuration**: the tile of the tensor parallel size (TP), the KV cache memory for each GPU
+  and the maximum context length. Each slider shows the measured range. A grey band marks what the
+  calibration measured. Hatching marks what it did not measure.
+- **Figures**: the GPU memory in use, the context capacity, the load times and, if a benchmark ran
+  this placement, its throughput and latencies.
+- **Advanced settings**: the settings of the model that are not part of the placement.
+  Select **N set** to open or close the list.
+- **Best benchmark**: the best result of the nightly benchmarks for this model.
+  Select **Open all benchmarks** to see them all. The part is not shown if the model has no benchmark.
+
+If a comparable benchmark found better values, then the page shows the purple banner
+**Recommendation not in use**. It names the placement, the number of parallel requests and the batch size,
+and how much faster the run was. The page compares the run with the stored configuration of the model.
+The nightly benchmark changes only the running lane and never the stored configuration.
+Select **Edit configuration** and then **Use recommendation** to store the values.
+The button sets the placement and **Max. parallel requests**.
+It also writes `--max-num-seqs` and `--max-num-batched-tokens` as the last lines of **Extra arguments**.
+A flag in **Extra arguments** decides over the field and over the global arguments of the node.
+A change of these batch values makes the calibration outdated.
+If the worker is offline, the page shows a banner and you cannot edit the model.
+
+### Edit the configuration of a model
+
+You can edit a model that has a calibration. The worker must be online.
+
+1. Open the model page.
+2. Select **Edit configuration**. For a model without a placement, select **Set placement**.
+3. Select the number of GPUs. Only sizes that the calibration measured are available.
+4. Set the KV cache memory. Use whole GB inside the measured range.
+5. Set the maximum context length. The limit follows the chosen KV cache size.
+6. Change the fields in **Advanced settings** if necessary.
+7. Select **Save**.
+
+![Editor of a model configuration](/img/roles/logos-admin-node-model-edit.png)
+
+The **Current configuration** card shows the stored values. It changes only after you save.
+A choice of the size, the KV cache memory or the context length does not make the calibration
+outdated if the calibration measured it. A choice that the calibration did not measure makes it outdated.
+The figures below the sliders follow your changes.
+
+If a comparable benchmark found a better placement, then the purple banner
+**Recommended by benchmark** shows it. Select **Use recommendation** to set the size, the
+KV cache memory and the context length. You can change them afterwards.
+
+**Advanced settings** has groups: **Placement**, **Engine** and, under **All engine settings**,
+**Memory and precision**, **Performance and stability**, **Serving** and **Arguments**.
+In **Memory and precision**, the field **Base residency** replaces the memory that the calibration
+measured for the weights. Use it only if the calibration cannot measure the model.
+A new value marks the calibration as outdated.
+Type in **Filter settings** to find a setting by name or key. A dot marks a setting that has a value.
+Select **Use default** to remove the value of a setting. In **GPU devices**, select the GPUs that
+the model may use. If all GPUs are selected, then the model may use all of them.
+
+The save bar lists your changes. The worker checks all settings before Logos stores them.
+This takes a few seconds. The worker uses the new settings when it starts the lane the next time.
+
+If a value is not valid, then Logos shows the message at the field. Nothing is saved.
+If another admin saved the node at the same time, then Logos shows **Configuration changed**.
+Select **Reload** to load the new state. Your changes are lost.
+
+A change of the KV cache size or the context length inside the measured range does
+not start a new calibration. A change of a setting that the calibration depends on
+does start one. Examples are the tensor parallel size, the quantization and the
+extra arguments.
+
+Use **Custom settings** for a vLLM setting that has no field. The worker rejects a name that it
+does not know. If the name looks like a known one, then Logos suggests the correct name.
+
+### Calibrate a model
+
+A model without a calibration has no placement. The page shows **Calibration settings**
+instead of the editor.
+
+![Model page of a model that is not calibrated](/img/roles/logos-admin-node-model-calibrate.png)
+
+1. Open the model page.
+2. Select **Calibrate model**.
+3. Wait. The calibration takes several minutes.
+
+The button shows **Calibrating…** while the worker measures the model.
+Before it starts, the page asks you to confirm. The page shows the result when the calibration is done.
+You can calibrate a model if its calibration is outdated in the same way.
+Select **Stop calibration** and confirm to end the calibration of the node. The model in progress stays uncalibrated.
+
+### Connect a model
+
+1. Expand the worker node.
+2. Select **Connect model**.
+3. Select a model of the Logos catalog.
+4. Select **Connect**.
+
+![Dialog to connect a model to a node](/img/roles/logos-admin-node-connect-model.png)
+
+The model is in the list as **Not calibrated** with the placement **Not loadable**.
+The dialog shows only models that the node does not list yet.
+
+### Node settings
+
+The settings of the whole node are on one page. Select **Node settings** in the
+expanded worker node.
+
+![Node settings page](/img/roles/logos-admin-node-settings.png)
+
+| Card | Setting | Meaning |
+|---|---|---|
+| **GPU pool** | `gpu_devices` | The GPUs on which the node can place lanes: all, none or selected GPUs. |
+| **Engine defaults** | `global_extra_args` | The vLLM arguments that Logos adds to every lane. One argument in each line. |
+| **Node care** | `auto_reboot_on_stuck_gpu` | Restarts the host if all lanes failed and a GPU holds unused memory. The worker uses a new value after the next start. |
+| **Node care** | `gpu_poll_interval` | The time in seconds between two readings of the GPU memory (1 to 300). |
+
+An empty field keeps the value of the `config.yml` file of the worker.
+If you change the global arguments, then every model of the node is measured again
+in the next calibration window. The worker uses a new GPU poll interval after the next start.
+You can save the settings if the worker is offline. The worker applies them when it connects.
+
 ## Policies
 
 Policies are the rules that decide which models a team or an API key can use.
@@ -541,3 +680,81 @@ The page does not change with the role. For the step-by-step procedure, see
 
 This is the same Batch UI as for the App Admin. Upload a `.jsonl` file, look at
 the progress and download the results. See [App Admin → Batches](app-admin.md#batches).
+
+## Security incidents
+
+Open **Agents**, then select **Security incidents**. Only Logos Admins can open
+this page or use its API. The examples below are illustrative. They do not show
+the security state of a production system.
+
+The dashboard shows important vulnerabilities and a separate status for each
+repository. The totals count repository assessments. Select **All statuses** to
+include **Not affected** and **Resolved** results.
+
+![Security incidents with a separate status for each repository](/img/roles/logos-admin-security-incidents.png)
+
+The automatic sources are GitHub critical advisories and the CISA list of known
+exploited vulnerabilities. Each source shows its last successful update. A source
+error remains visible. Low and medium findings do not enter this workflow.
+
+### Register a repository
+
+Expand **Monitored repositories**. Enter `owner/repository`, its base branch, and a **Build and test command**.
+The command runs from the repository root before a fix PR opens. It uses installed tools without credentials or network access.
+Select **Register repository**. This gives LogosOSSAgent permission to analyze
+the repository and propose fix PRs. The bot account must have repository access.
+Team repository links do not automatically grant this permission.
+
+![Repository registration for security assessments](/img/roles/logos-admin-security-repositories.png)
+
+### Report an incident
+
+Expand **Report an important incident**. Enter the advisory ID, severity, title,
+source URL and advisory details. Explain the material impact in **Why this is
+important**. Mark exploitation only when a source confirms it. Optional upstream
+GitHub repositories let the agent check for new releases.
+
+![Manual incident report with source and impact fields](/img/roles/logos-admin-security-intake.png)
+
+Select **Record incident**. The runner creates an assessment for each registered
+repository within 5 minutes. It checks dependencies, images and configuration.
+This includes servers that an application image contains, such as an nginx server
+behind another proxy. Repository files do not prove the current deployment state.
+
+### Read the evidence and next action
+
+Select **Evidence & history** on a repository result. Review the checked commit,
+file evidence, reason and status history. **Not affected** requires an explanation
+of why the vulnerable dependency, version or code path does not apply.
+
+![Repository evidence and security status history](/img/roles/logos-admin-security-evidence.png)
+
+| Status | Meaning and next action |
+|---|---|
+| Queued / Analyzing | Wait for capacity and the analysis result. |
+| Not affected | Read the evidence. The agent checks again each day. |
+| Awaiting upstream | No suitable patch is available. Review the temporary mitigation. The agent checks again after 6 hours. |
+| Fix available / Preparing fix | The agent prepares a change from the verified patch information. |
+| PR open | Review the PR and its checks. The agent does not merge it. |
+| Action required | Review missing evidence or the recommended containment action. |
+| Awaiting deployment | The PR is merged. Confirm that the affected systems received the fix. |
+| Analysis failed | Inspect the linked session. Correct the problem, then select Recheck. |
+| Resolved | An admin recorded completed remediation and its evidence. |
+
+An incident without a patch stays open. A recommendation can include a partial
+shutdown or a complete shutdown. The operator must decide and perform that
+change. The recommendation states the affected service and recovery conditions.
+
+### Confirm remediation
+
+After deployment or mitigation, select **Confirm resolved**. Enter the actual
+remediation evidence, then select **Confirm**. A merged PR alone does not prove
+that the running service is fixed. **Recheck** requests another assessment and
+also requires a reason. New advisory evidence reopens a completed assessment.
+
+![Confirmation with deployment or mitigation evidence](/img/roles/logos-admin-security-confirm.png)
+
+Image scanners can send critical Trivy findings through the admin API. The import
+retains the image digest, scan time and findings without a fix. See the
+[agent service guide](https://github.com/LogosOSS/Logos/tree/main/logos-agent#scanner-evidence)
+for the request format and other source options.

@@ -1,0 +1,120 @@
+:host {
+  display: block;
+}
+
+.expanded-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.expanded-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-wider);
+  text-transform: uppercase;
+  color: rgb(var(--color-typography-700));
+}
+
+.provider-name {
+  font-weight: var(--font-weight-semibold);
+}
+
+.worker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  background: rgb(var(--color-success) / 0.14);
+  color: rgb(var(--color-typography-0));
+}
+
+.worker-chip--offline {
+  background: rgb(var(--color-warning) / 0.16);
+}
+
+.status {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  font-size: var(--font-size-md);
+  color: rgb(var(--color-typography-0));
+
+  // The values of a placement after its name, quieter than the name.
+  .muted {
+    font-size: var(--font-size-sm);
+    color: rgb(var(--color-typography-700));
+  }
+}
+
+.chevron {
+  padding-right: 6px;
+  font-size: 12px;
+  color: rgb(var(--color-typography-700));
+}
+
+.retry {
+  margin-top: 12px;
+}
+
+:host ::ng-deep a.table-row {
+  color: inherit;
+  text-decoration: none;
+}
+
+.head-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+// On a narrow screen the title and the actions need their own rows, or the last button leaves the page.
+@media (max-width: 640px) {
+  .expanded-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .head-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  // The rows are cards here; the table's rule for the last row would leave the last card without its bottom edge.
+  :host ::ng-deep a.table-row:last-child {
+    border-bottom: 1px solid rgb(var(--color-outline-200) / var(--opacity-border));
+  }
+}
+
+.form-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-intro,
+.form-hint {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: rgb(var(--color-typography-700));
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: var(--font-weight-semibold);
+}
+
+.required {
+  color: rgb(var(--color-error));
+}

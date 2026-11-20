@@ -262,6 +262,7 @@ async def test_lifespan_bootstraps_central_hf_token_before_startup_model_operati
                 "revision": 0,
                 "yaml_imported": True,
                 "entries": [],
+                "settings": {},
             }
 
     class _HttpClient:
@@ -364,7 +365,7 @@ class _FakeBridge:
         self.profiles = profiles
         self.calls: list = []
 
-    async def fetch_model_profiles(self, key_hashes, slice_gpu_counts):
+    async def fetch_model_profiles(self, key_hashes, slice_gpu_counts, config_fingerprints=None):
         self.calls.append(key_hashes)
         if len(self.calls) <= self.failures:
             raise RuntimeError("Logos unreachable")

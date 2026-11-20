@@ -217,3 +217,68 @@ def test_a_model_that_cannot_sleep_is_judged_without_sleep_fields():
 
 def test_an_unsupported_model_is_never_a_candidate():
     assert profile_needs_calibration({"calibration_unsupported": True}) is False
+
+
+_RANGE_ONLY = {"min_kv_cache_mb": 1024.0, "max_kv_cache_mb": 4096.0, "config_fingerprint": "F1"}
+
+
+def _measured_row(**extra):
+    row = _row(cal_id=9, cal_key_hash="H1", calibration_key_hash="H1", cal_source_provider_id=1, **extra)
+    row["profile"] = {**row["profile"], **_RANGE_ONLY}
+    return row
+
+
+def test_a_choice_beyond_the_measured_range_leaves_the_calibration_stale_although_the_key_matches():
+    row = _measured_row(cfg_capability={"kv_cache_memory_bytes": "8G"}, cfg_overrides={}, config_fingerprint="F2")
+
+    assert effective_profile(1, row)["calibration_stale"] is True
+    # The worker echoes the profile again and asks for it: the verdict does not change.
+    assert effective_profile(1, row)["calibration_stale"] is True
+
+
+def test_a_choice_inside_the_range_or_without_a_choice_keeps_the_calibration_fresh():
+    inside = _measured_row(cfg_capability={"kv_cache_memory_bytes": "2G"}, cfg_overrides={}, config_fingerprint="F2")
+    assert effective_profile(1, inside)["calibration_stale"] is False
+    assert effective_profile(1, _measured_row())["calibration_stale"] is False
+
+
+def test_a_choice_in_overrides_counts_too():
+    row = _measured_row(cfg_capability={}, cfg_overrides={"kv_cache_memory_bytes": "8G"}, config_fingerprint="F2")
+
+    assert effective_profile(1, row)["calibration_stale"] is True
+
+
+def test_a_tensor_parallel_size_that_was_not_measured_leaves_the_calibration_stale_although_the_key_matches():
+    measured = {"tensor_parallel_size": 1, "calibrations_by_tp": [{"tp": 1, **_RANGE_ONLY}]}
+
+    def row(size, fingerprint="F2"):
+        row = _measured_row(
+            cfg_capability={"tensor_parallel_size": size}, cfg_overrides={}, config_fingerprint=fingerprint
+        )
+        row["profile"] = {**row["profile"], **measured}
+        return row
+
+    # Choosing the measured size is what "Set placement" stores: the calibration stays fresh.
+    assert effective_profile(1, row(1))["calibration_stale"] is False
+    assert effective_profile(1, row(2))["calibration_stale"] is True
+    # Measured under this very configuration: a repeat could not cover the choice either.
+    assert effective_profile(1, row(2, "F1"))["calibration_stale"] is False
+
+
+def test_a_calibration_measured_under_the_current_configuration_is_not_made_stale_again():
+    row = _measured_row(cfg_capability={"kv_cache_memory_bytes": "8G"}, cfg_overrides={}, config_fingerprint="F1")
+
+    assert effective_profile(1, row)["calibration_stale"] is False
+
+
+def test_a_live_edit_to_an_out_of_range_cache_is_seen_once_the_worker_reports_its_new_fingerprint():
+    """The 2 GB the calibration was measured under, then 8 GB against a calibrated maximum of 4 GB."""
+    config = {"cfg_capability": {"kv_cache_memory_bytes": "8G"}, "cfg_overrides": {}}
+
+    before_report = _measured_row(config_fingerprint="F1", **config)
+    after_report = _measured_row(config_fingerprint="F2", **config)
+
+    # Logos still holds the fingerprint of the configuration the calibration was measured under.
+    assert effective_profile(1, before_report)["calibration_stale"] is False
+    # The next status of the worker carries the fingerprint of the edited configuration.
+    assert effective_profile(1, after_report)["calibration_stale"] is True

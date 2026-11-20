@@ -324,12 +324,23 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-model-request-measurements.png` | `tobias.wasner` | `/models/<id>/details` — **Performance → Request measurements** of a model with requests at more than one reasoning effort (local or cloud provider) | `roles/logos-admin.md#models` |
 | `logos-admin-providers.png` | `tobias.wasner` | `/providers` | `roles/logos-admin.md` |
 | `logos-admin-provider-connections.png` | `tobias.wasner` | `/providers` — a cloud provider expanded, connected models with their **Batch** labels | `roles/logos-admin.md` |
+| `logos-admin-node-models.png` | `tobias.wasner` | `/providers` — the documentation worker expanded: **Node models** list, **Node settings** and **Connect model** | `roles/logos-admin.md` |
+| `logos-admin-node-model-view.png` | `tobias.wasner` | `/providers/:id/models?model=llama-3.1-8b-instruct` — the model page in view mode | `roles/logos-admin.md` |
+| `logos-admin-node-model-edit.png` | `tobias.wasner` | the same page after **Edit configuration**: TP tiles, KV cache, context, **Advanced settings** | `roles/logos-admin.md` |
+| `logos-admin-node-model-calibrate.png` | `tobias.wasner` | the page of `mistral-small-3.2-24b`: **Calibration settings** with **Calibrate model** | `roles/logos-admin.md` |
+| `logos-admin-node-connect-model.png` | `tobias.wasner` | the **Connect model** dialog; the capture adds a fourth catalog model to the answer of `get_models` | `roles/logos-admin.md` |
+| `logos-admin-node-settings.png` | `tobias.wasner` | `/providers/:id/node-settings` — **GPU pool**, **Engine defaults**, **Node care** | `roles/logos-admin.md` |
 | `logos-admin-policies.png` | `tobias.wasner` | `/policies` | `roles/logos-admin.md` |
 | `logos-admin-billing.png` | `tobias.wasner` | `/billing` | `roles/logos-admin.md` |
 | `logos-admin-user-management.png` | `tobias.wasner` | `/user-management` | `roles/logos-admin.md` |
 | `logos-admin-team-management.png` | `tobias.wasner` | `/team-management` | `roles/logos-admin.md` |
 | `logos-admin-permission-audit.png` | `tobias.wasner` | `/permission-audit-log` | `roles/logos-admin.md#permission-audit` |
 | `logos-admin-new-team.png` | `tobias.wasner` | `/team-management` — **New Team** dialog, Keycloak group filled | `roles/logos-admin.md#keycloak-group-links` |
+| `logos-admin-security-incidents.png` | `tobias.wasner` | `/agents/security` — all statuses; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-repositories.png` | `tobias.wasner` | `/agents/security` — Monitored repositories expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-intake.png` | `tobias.wasner` | `/agents/security` — Report an important incident expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-evidence.png` | `tobias.wasner` | `/agents/security` — Evidence & history expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-confirm.png` | `tobias.wasner` | `/agents/security` — Confirm resolved form; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-agents.png` | `tobias.wasner` | `/agents` | `roles/logos-admin.md` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |
 | `app-admin-models.png` | `alexandra.szuminska` | `/models` | `roles/app-admin.md` |
@@ -339,6 +350,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `team-detail-members.png` | same | `/teams/<id>` — **Members** | same |
 | `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys** | same |
 | `team-detail-repositories.png` | owner or `logos_admin` | `/teams/<id>` — **Repositories** | same |
+| `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled | `roles/app-admin.md#enable-the-coding-agent` |
 | `team-detail-workflows.png` | owner or `logos_admin` | `/teams/<id>` — **Workflows** | same |
 | `team-detail-models.png` | owner or `logos_admin` | `/teams/<id>` — **Models** | same |
 | `team-detail-activity.png` | owner or `logos_admin` | `/teams/<id>` — **Activity** | same |

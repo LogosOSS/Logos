@@ -86,7 +86,7 @@ class _FakeDB:
         self.durations = getattr(self, "durations", []) + [duration_s]
         return self.new_revision
 
-    def update_reported_calibration_keys(self, provider_id, key_hashes, slice_gpu_counts=None):
+    def update_reported_calibration_keys(self, provider_id, key_hashes, slice_gpu_counts=None, fingerprints=None):
         self.reported_keys.append((provider_id, key_hashes))
         self.slice_counts = slice_gpu_counts
 
@@ -797,7 +797,7 @@ def test_a_reservation_stores_the_workers_key_before_judging_the_profile(monkeyp
     class _Db(_FakeDB):
         reported = "OLD"
 
-        def update_reported_calibration_keys(self, provider_id, key_hashes, slice_gpu_counts=None):
+        def update_reported_calibration_keys(self, provider_id, key_hashes, slice_gpu_counts=None, fingerprints=None):
             self.reported = key_hashes["org/model"]
             self.slice_counts = slice_gpu_counts
 

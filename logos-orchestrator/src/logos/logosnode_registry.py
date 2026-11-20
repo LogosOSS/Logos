@@ -20,7 +20,7 @@ from logos.benchmarks.nightly import LEASE_CHECK, NIGHTLY_CONTEXT
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.errors import UpstreamStreamError
 from logos.monitoring import prometheus_metrics as prom
-from logos.residency_policy import configured_residency_policy
+from logos.residency_policy import DEFAULT_RESIDENCY_POLICY, configured_residency_policy
 from logos.terminal_logging import (
     BOLD,
     CYAN,
@@ -51,7 +51,14 @@ class LogosNodeCommandError(RuntimeError):
 
 
 class LogosNodeCommandRejectedError(LogosNodeCommandError):
-    """The worker explicitly refused a command without accepting it."""
+    """The worker explicitly refused a command without accepting it.
+
+    ``errors`` holds the problems one by one when the worker listed them.
+    """
+
+    def __init__(self, message: str, errors: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.errors: list[str] = list(errors or [])
 
 
 class MaintenanceBusyError(LogosNodeCommandError):
@@ -1489,7 +1496,11 @@ class LogosNodeRuntimeRegistry:
         # timeout — so it is raised like any other command failure.
         if isinstance(payload, dict) and payload.get("ok") is False:
             _undo_optimistic_calibration_mark()
-            raise LogosNodeCommandRejectedError(str(payload.get("error", f"worker refused '{action}'")))
+            listed = payload.get("errors")
+            raise LogosNodeCommandRejectedError(
+                str(payload.get("error", f"worker refused '{action}'")),
+                [str(item) for item in listed] if isinstance(listed, list) else None,
+            )
         return payload
 
     async def send_stream_command(
@@ -1863,7 +1874,7 @@ class LogosNodeRuntimeRegistry:
             candidates.append(lane)
         if not candidates:
             return None
-        if getattr(self, "_residency_policy", "demand") == "simple":
+        if getattr(self, "_residency_policy", DEFAULT_RESIDENCY_POLICY) == "simple":
             candidates = [lane for lane in candidates if lane.get("runtime_state") in {"loaded", "running"}]
             return min(candidates, key=lambda lane: str(lane.get("lane_id", "")), default=None)
         candidates.sort(key=_lane_sort_key)

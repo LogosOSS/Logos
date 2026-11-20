@@ -57,19 +57,28 @@ async def test_returns_503_when_pipeline_not_initialized(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_returns_scheduler_payload_with_the_internal_secret(monkeypatch):
+@pytest.mark.parametrize("policy", [None, "simple", "demand", "lru"])
+@pytest.mark.parametrize("planner_enabled", [False, True])
+async def test_returns_scheduler_payload_with_the_internal_secret(monkeypatch, policy, planner_enabled):
     monkeypatch.setattr(internal_mod, "_INTERNAL_SECRET", "correct-secret")
     pipeline = MagicMock()
     pipeline.scheduler.get_total_queue_depth.return_value = 7
     pipeline.scheduler._prefix_router = None
+    if policy is None:
+        del pipeline.scheduler._residency_policy
+    else:
+        pipeline.scheduler._residency_policy = policy
     facade = MagicMock()
     facade.debug_state.return_value = {"providers": {}}
     monkeypatch.setattr(main_mod, "_pipeline", pipeline)
     monkeypatch.setattr(main_mod, "_logosnode_facade", facade)
 
+    planner = MagicMock(residency_policy=policy or "simple") if planner_enabled else None
+    monkeypatch.setattr(main_mod, "_capacity_planner", planner)
     response = await admin_mod.scheduler_state(_make_request("Bearer correct-secret"))
 
     assert response.status_code == 200
     payload = json.loads(response.body)
+    assert payload["residency_policy"] == (policy or "simple")
     assert payload["queue_total"] == 7
     assert payload["logosnode"] == {"providers": {}}

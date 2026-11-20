@@ -264,17 +264,14 @@ A disabled schedule cancels pending adoption.
 The round report identifies an adopted benchmark or an adoption failure.
 
 The **Performance → Overview** section contains the **Timeline** section.
-The vertical axis shows throughput in output tokens per second (tok/s).
-The solid line shows complete measurements, including slower runs and repeated baselines.
-The dashed line shows the measured production baseline of each round.
-Expand **How to read this chart** for the legend and explanations of selection checks.
-Each point represents a complete benchmark run. It does not represent one request or confirm production deployment.
-Each new round measures the current production settings first, including previously adopted improvements.
-Each point keeps its measurement date and configuration. Its percentage change uses the captured baseline from the same round.
-Outlined points fail automatic selection checks. They remain visible so that the chart shows measurement variation.
-Select a point to open its benchmark. Expand **Measured configurations** to read dates and parameters.
-The chart separates captured workloads and test settings. Measurements can span worker releases.
-A historical record does not replace the fresh comparison required for production adoption.
+Each completed run has one dot. Runs appear from left to right in completion order.
+The vertical axis shows output tokens per second (tok/s). Each stem starts at zero. An open circle marks a baseline.
+Trials show their change from the baseline of the same round, if available.
+Slower runs and excluded trials remain visible. Select a run to see its configuration and result.
+Select **Show all** to see more than the latest 6 runs.
+The timeline separates workloads and test settings. Measurements can span worker releases.
+Read **When settings change** for the nightly adoption rule.
+Expand **What does Logos check?** for the limits on output length and request latency.
 Expand **Currently deployed → Configuration & selection details** to inspect current settings and selection failures.
 A completed eligible winner is saved before the next trial starts.
 Recovery can apply this saved winner if a later trial is interrupted. Disabling the schedule cancels pending adoption.

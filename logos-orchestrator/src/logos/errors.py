@@ -215,9 +215,15 @@ def openai_error_response(
     return JSONResponse(content={"error": error}, status_code=status_code, headers=headers)
 
 
-def admin_error_response(status_code: int, message: str) -> JSONResponse:
-    """Error body of the admin endpoints: a plain string the UI and the webservice read."""
-    return JSONResponse(status_code=status_code, content={"error": message})
+def admin_error_response(status_code: int, message: str, errors: list[dict[str, Any]] | None = None) -> JSONResponse:
+    """Error body of the admin endpoints: a plain string the UI reads.
+
+    ``errors`` adds the problems one by one, for a UI that shows them at fields.
+    """
+    content: dict[str, Any] = {"error": message}
+    if errors is not None:
+        content["errors"] = errors
+    return JSONResponse(status_code=status_code, content=content)
 
 
 def raise_openai_error(

@@ -23,7 +23,7 @@ from logos.benchmarks.reservations import benchmark_reservations
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeRuntimeRegistry
 from logos.monitoring import prometheus_metrics as prom
 from logos.pipeline.latency_store import LatencyStore
-from logos.residency_policy import RESIDENCY_POLICIES, parse_residency_policy
+from logos.residency_policy import DEFAULT_RESIDENCY_POLICY, RESIDENCY_POLICIES, parse_residency_policy
 from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
 from logos.sdi.models import CapacityPlanAction, LaneSchedulerSignals, ModelProfile
 from logos.terminal_logging import (
@@ -610,7 +610,7 @@ class CapacityPlanner:
     def residency_policy(self) -> str:
         # getattr default keeps planners built via __new__ (unit tests) on the
         # production policy without having to set the attribute explicitly.
-        return getattr(self, "_residency_policy", "demand")
+        return getattr(self, "_residency_policy", DEFAULT_RESIDENCY_POLICY)
 
     def _lru_policy_active(self) -> bool:
         return self.residency_policy in {"lru", "simple"}

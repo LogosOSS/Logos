@@ -474,3 +474,33 @@ def test_existing_pr_gets_draft_and_failure_diagnostics_before_publishing(finali
     assert "--undo" in calls[1]
     assert calls[2][:4] == ["gh", "pr", "edit", "7"]
     assert "test compilation failed" in calls[2][calls[2].index("--body") + 1]
+
+
+async def test_repository_verifier_receives_configured_command_without_credentials(monkeypatch):
+    manager = sessions.SessionManager()
+    baseline()
+    calls = []
+
+    async def helper(**kwargs):
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(manager, "_run_helper", helper)
+    monkeypatch.setattr(manager, "_read_result", lambda _: {"candidate_tree": TREE, "candidate_paths": ["src/lib.rs"]})
+    monkeypatch.setattr(sessions.db, "get_session", active)
+    monkeypatch.setattr(sessions.db, "add_event", no_event)
+    env = await manager._verify_before_push(
+        7,
+        {"volume_name": "workspace"},
+        {
+            "GITHUB_TOKEN": "credential-not-for-builds",
+            "LOGOS_VERIFICATION_MODE": "repository",
+            "LOGOS_VERIFICATION_COMMAND": "cargo test --offline",
+        },
+        "/artifacts/7",
+    )
+    verify_env = calls[1]["env"]
+    assert verify_env["LOGOS_VERIFICATION_MODE"] == "repository"
+    assert verify_env["LOGOS_VERIFICATION_COMMAND"] == "cargo test --offline"
+    assert "GITHUB_TOKEN" not in verify_env
+    assert env["LOGOS_SESSION_VERIFICATION"] == "passed"

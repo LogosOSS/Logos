@@ -565,9 +565,12 @@ All constants are defined as class variables on `CapacityPlanner` in `capacity_p
 
 ## Residency strategies
 
-`LOGOS_RESIDENCY_POLICY` accepts `demand` (default), `lru`, and `simple`.
-Unknown values fall back to `demand`. The startup log and scheduler-state
-response expose the selected strategy.
+`LOGOS_RESIDENCY_POLICY` accepts `simple` (default), `demand`, and `lru`.
+Missing, empty, and unknown values fall back to `simple`. The startup log and
+scheduler-state response expose the selected strategy. Each component reads the
+flag at startup; a policy change requires an orchestrator restart. For Compose,
+recreate the container so it receives the new environment. See the
+[deployment and rollback procedure](../../../../docs/deployment.md#residency-policy).
 
 `demand` uses estimated time to first token for routing, effective demand
 for residency ordering and victims, competitive wake/load gates, and busy-lane
