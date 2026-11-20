@@ -134,6 +134,26 @@ pipeline/
 - Queues on the best eligible local candidate when no candidate is immediately available
 - Uses the shared strict-priority queues from `BaseScheduler`
 
+ETTFT adapts its service-time and decode-time estimates to **new histogram
+observations** from each worker lane and engine process. It subtracts the previous
+snapshot before learning, handles counter resets, and ignores duplicate or invalid
+snapshots. Thus, short warmup requests do not indefinitely dominate later traffic,
+and replicas do not re-ingest one another's retained measurements. Genuine short
+prefill and service-time observations remain eligible for learning.
+
+Queue estimates reconcile engine running/waiting counts with accepted worker
+reservations, counting waiting requests once. Cold deployments without a visible
+lane include queue and VRAM-reclaim costs. Reclaim uses each victim model's recent
+service-time estimate and includes drain whenever either engine counters or worker
+reservations report outstanding work. These remain approximations: remaining
+generation length and the planner's eventual victim selection are not known.
+
+First-token accuracy uses the prediction's original provider. Outcomes dispatched
+elsewhere by a model-only queue increment `logos_ettft_rerouted_outcomes_total`
+instead of being attributed to that provider's prediction. Accuracy histogram
+buckets extend to 7,200 seconds to expose long waits. These metrics support runtime
+validation; unit tests alone do not establish an end-to-end accuracy improvement.
+
 ### `executor.py` - Executor
 **HTTP backend client.** Used by `main.py` for non-LogosNode providers:
 - Consumes `execution_context.forward_url` plus the headers and payload prepared by the response helper

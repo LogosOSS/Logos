@@ -1666,6 +1666,12 @@ def _record_ettft_accuracy(scheduling_stats: Optional[dict]) -> None:
         return
     tier = str(scheduling_stats.get("ettft_tier") or "unknown")
     provider_id = scheduling_stats.get("provider_id")
+    predicted_provider_id = scheduling_stats.get("ettft_provider_id")
+    if predicted_provider_id is not None and predicted_provider_id != provider_id:
+        # A model-only queue may dispatch elsewhere. This outcome is not an
+        # observation of the predicted worker's wait and must not train it.
+        prom.ETTFT_REROUTED_OUTCOMES_TOTAL.inc()
+        return
     provider = provider_name_cache.get(provider_id) if provider_id is not None else "unknown"
     prom.record_ettft_outcome(
         estimate_s=ettft_ms / 1000.0,
