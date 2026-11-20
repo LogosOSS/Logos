@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- The use policy a model repository publishes alongside its license.
+
+         Some gated models (Meta's Llama repositories, Black Forest Labs'
+         FLUX) carry an acceptable-use policy in a dedicated repository file
+         (USE_POLICY.md, POLICY.md) next to the license file. It is fetched in
+         the same pass as the license — the same tree scan, the same byte cap
+         — and stored with it: use_policy_file the file the text was read
+         from, use_policy_text its text, use_policy_fetched_date when the
+         fetch ran. A NULL use_policy_text after a fetch means the repository
+         publishes no use policy file — unlike the license, whose absence is
+         a state to flag, an absent use policy is simply nothing to show. The
+         team's app admin accepts it together with the license agreement. -->
+    <changeSet id="084-requested-model-use-policy" author="maltebai">
+        <preConditions onFail="MARK_RAN">
+            <not><columnExists tableName="requested_models" columnName="use_policy_text"/></not>
+        </preConditions>
+        <addColumn tableName="requested_models">
+            <column name="use_policy_file" type="TEXT">
+                <constraints nullable="true"/>
+            </column>
+            <column name="use_policy_text" type="TEXT">
+                <constraints nullable="true"/>
+            </column>
+            <column name="use_policy_fetched_date" type="TIMESTAMP WITH TIME ZONE">
+                <constraints nullable="true"/>
+            </column>
+        </addColumn>
+        <rollback>
+            <dropColumn tableName="requested_models" columnName="use_policy_fetched_date"/>
+            <dropColumn tableName="requested_models" columnName="use_policy_text"/>
+            <dropColumn tableName="requested_models" columnName="use_policy_file"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

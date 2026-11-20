@@ -166,6 +166,29 @@ describe('Shell', () => {
     });
   });
 
+  describe('the team-gated Models entry', () => {
+    it('stays visible to a teamless app admin', async () => {
+      auth.currentUser.set(makeUser('app_admin'));
+      await probeAs(runnerAnswer);
+
+      expect(menuLabels()).toContain('Models');
+    });
+
+    it('stays out for a teamless app developer', async () => {
+      auth.currentUser.set(makeUser('app_developer'));
+      await probeAs(runnerAnswer);
+
+      expect(menuLabels()).not.toContain('Models');
+    });
+
+    it('appears for an app developer once they belong to a team', async () => {
+      auth.currentUser.set({ ...makeUser('app_developer'), teams: [{ id: 1, name: 'Test team' }] });
+      await probeAs(runnerAnswer);
+
+      expect(menuLabels()).toContain('Models');
+    });
+  });
+
   describe('isNavActive', () => {
     it('highlights Teams for both the list and team-detail routes', () => {
       const teams = { path: '/team-management' } as const;

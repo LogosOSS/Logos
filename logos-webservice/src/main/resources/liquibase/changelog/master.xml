@@ -90,4 +90,7 @@
     <include file="liquibase/changelog/083_node_settings.xml"/>
     <include file="liquibase/changelog/084_benchmark_workload_size.xml"/>
     <include file="liquibase/changelog/085_recent_model_full_requests.xml"/>
+    <include file="liquibase/changelog/082_requested_model_license.xml"/>
+    <include file="liquibase/changelog/083_model_license_approvals_nullable_user.xml"/>
+    <include file="liquibase/changelog/084_requested_model_use_policy.xml"/>
 </databaseChangeLog>

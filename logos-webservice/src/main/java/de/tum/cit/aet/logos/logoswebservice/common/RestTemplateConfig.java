@@ -56,6 +56,22 @@ public class RestTemplateConfig {
     }
 
     /**
+     * Template for the orchestrator's HF license fetch.
+     *
+     * Unlike the precheck's single Hub call, the license fetch is several
+     * sequential Hub round trips (model card, tree scan, license file); the
+     * orchestrator bounds the whole fetch with a 60 s overall deadline, so the
+     * read timeout exceeds that deadline instead of the one-call bound.
+     */
+    @Bean
+    public RestTemplate hfLicenseRestTemplate() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(3_000);
+        factory.setReadTimeout(65_000);
+        return new RestTemplate(factory);
+    }
+
+    /**
      * Template for the on-demand full calibration log fetch. The worker reads
      * up to 10 MB and ships it over the websocket within the orchestrator's
      * 20 s command budget, so the shared 5 s read timeout would cut it off.

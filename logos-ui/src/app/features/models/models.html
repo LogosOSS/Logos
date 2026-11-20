@@ -1,317 +1,338 @@
 <div class="models">
   <!-- ── Header ──────────────────────────────────────────────────────── -->
   <h1 class="page-title">Model Management</h1>
-  <p class="page-subtitle">Configure LLM models</p>
-
-  <!-- ── Toolbar ─────────────────────────────────────────────────────── -->
-  <div class="toolbar">
-    <app-search-input
-      [value]="search()"
-      placeholder="Search models..."
-      (valueChange)="search.set($event)"
-    />
-    @if (role() === 'logos_admin') {
-      <button type="button" class="btn-primary" (click)="openAddDialog()">
-        <i class="pi pi-plus" aria-hidden="true"></i> Add Model
-      </button>
-    }
-  </div>
-
-  @if (loadError()) {
-    <app-error-message variant="banner" message="Failed to load models, please refresh." />
+  @if (activeTab() === 'requests') {
+    <p class="page-subtitle">Vote for models Logos does not serve yet.</p>
   }
 
-<!-- ── Table ──────────────────────────────────────────────────────────── -->
-<app-data-table
-  [columns]="[
-    'MODEL NAME',
-    'DESCRIPTION',
-    ...(role() === 'logos_admin' ? ['TAGS', 'ALIASES'] : []),
-    'CAPABILITIES',
-    'PROFILE',
-    ...(role() === 'logos_admin' ? ['LAST USED', 'NIGHTLY BENCHMARK', 'WEIGHTS', ''] : [])
-  ]"
-  [gridCols]="
-    role() === 'logos_admin'
-      ? '180fr 180fr 110fr 120fr 100fr 110fr 120fr 140fr 150fr 72px'
-      : '200fr 240fr 180fr 140fr'
-  "
-  [loading]="loading()"
-  [empty]="filteredModels().length === 0"
-  [sortableColumns]="role() === 'logos_admin' ? [6, 7] : []"
-  [sortableColumn]="role() === 'logos_admin' ? (nightlySort() !== 'none' ? 7 : 6) : -1"
-  [sortDirection]="nightlySort() !== 'none' ? (nightlySort() === 'asc' ? 'asc' : 'desc') : lastUsedSortDirection"
-  (sortToggle)="toggleSort($event)"
-  emptyMessage="No models match your search."
->
-  @for (model of filteredModels(); track model.id) {
-    <div class="table-row">
+  <!-- Two tabs, because the page answers two unrelated questions: what
+       Logos serves right now, and what it is asked to serve next. -->
+  <nav class="models-tabs" role="tablist" aria-label="Model management sections">
+    @for (tab of TABS; track tab.id) {
+      <button
+        class="models-tabs__tab"
+        [class.models-tabs__tab--active]="activeTab() === tab.id"
+        type="button"
+        role="tab"
+        [attr.aria-selected]="activeTab() === tab.id"
+        (click)="setActiveTab(tab.id)"
+      >{{ tab.label }}</button>
+    }
+  </nav>
 
-      <!-- Model Name -->
-      <div class="col-name name-cell" role="cell">
-        @if (role() === 'logos_admin') {
-          <button
-            type="button"
-            class="model-name"
-            (click)="openModel(model)"
-          >
-            {{ model.name }}
-          </button>
-        } @else {
-          <span class="model-name">{{ model.name }}</span>
-        }
+  @if (activeTab() === 'active') {
+    <!-- ── Toolbar ─────────────────────────────────────────────────────── -->
+    <div class="toolbar">
+      <app-search-input
+        [value]="search()"
+        placeholder="Search models..."
+        (valueChange)="search.set($event)"
+      />
+      @if (role() === 'logos_admin') {
+        <button type="button" class="btn-primary" (click)="openAddDialog()">
+          <i class="pi pi-plus" aria-hidden="true"></i> Add Model
+        </button>
+      }
+    </div>
 
-        @if (role() === 'logos_admin') {
-          <div class="name-mobile-actions">
-            <button
-              class="btn-icon"
-              type="button"
-              [attr.aria-label]="'Edit model ' + model.name"
-              (click)="openEditDialog(model); $event.stopPropagation()"
-            >
-              <i class="pi pi-pencil" aria-hidden="true"></i>
-            </button>
+    @if (loadError()) {
+      <app-error-message variant="banner" message="Failed to load models, please refresh." />
+    }
 
-            <button
-              class="btn-icon btn-icon--danger"
-              type="button"
-              [attr.aria-label]="'Delete model ' + model.name"
-              (click)="openDeleteDialog(model); $event.stopPropagation()"
-            >
-              <i class="pi pi-trash" aria-hidden="true"></i>
-            </button>
+    <!-- ── Table ──────────────────────────────────────────────────────────── -->
+    <app-data-table
+      [columns]="[
+        'MODEL NAME',
+        'DESCRIPTION',
+        ...(role() === 'logos_admin' ? ['TAGS', 'ALIASES'] : []),
+        'CAPABILITIES',
+        'PROFILE',
+        ...(role() === 'logos_admin' ? ['LAST USED', 'NIGHTLY BENCHMARK', 'WEIGHTS', ''] : [])
+      ]"
+      [gridCols]="
+        role() === 'logos_admin'
+          ? '180fr 180fr 110fr 120fr 100fr 110fr 120fr 140fr 150fr 72px'
+          : '200fr 240fr 180fr 140fr'
+      "
+      [loading]="loading()"
+      [empty]="filteredModels().length === 0"
+      [sortableColumns]="role() === 'logos_admin' ? [6, 7] : []"
+      [sortableColumn]="role() === 'logos_admin' ? (nightlySort() !== 'none' ? 7 : 6) : -1"
+      [sortDirection]="nightlySort() !== 'none' ? (nightlySort() === 'asc' ? 'asc' : 'desc') : lastUsedSortDirection"
+      (sortToggle)="toggleSort($event)"
+      emptyMessage="No models match your search."
+    >
+      @for (model of filteredModels(); track model.id) {
+        <div class="table-row">
+
+          <!-- Model Name -->
+          <div class="col-name name-cell" role="cell">
+            @if (role() === 'logos_admin') {
+              <button
+                type="button"
+                class="model-name"
+                (click)="openModel(model)"
+              >
+                {{ model.name }}
+              </button>
+            } @else {
+              <span class="model-name">{{ model.name }}</span>
+            }
+
+            @if (role() === 'logos_admin') {
+              <div class="name-mobile-actions">
+                <button
+                  class="btn-icon"
+                  type="button"
+                  [attr.aria-label]="'Edit model ' + model.name"
+                  (click)="openEditDialog(model); $event.stopPropagation()"
+                >
+                  <i class="pi pi-pencil" aria-hidden="true"></i>
+                </button>
+
+                <button
+                  class="btn-icon btn-icon--danger"
+                  type="button"
+                  [attr.aria-label]="'Delete model ' + model.name"
+                  (click)="openDeleteDialog(model); $event.stopPropagation()"
+                >
+                  <i class="pi pi-trash" aria-hidden="true"></i>
+                </button>
+              </div>
+            }
           </div>
-        }
-      </div>
 
-      <!-- Description -->
-      <div
-        class="col-desc desc-cell"
-        role="cell"
-        data-label="Description"
-      >
-        <span class="desc-text">
-          {{ model.description || '-' }}
-        </span>
-      </div>
+          <!-- Description -->
+          <div
+            class="col-desc desc-cell"
+            role="cell"
+            data-label="Description"
+          >
+            <span class="desc-text">
+              {{ model.description || '-' }}
+            </span>
+          </div>
 
-      <!-- Tags: logos_admin only -->
-      @if (role() === 'logos_admin') {
-        <div
-          class="col-tags tags-cell"
-          role="cell"
-          data-label="Tags"
-        >
-          <span class="tags-text">
-            {{ model.tags || '-' }}
-          </span>
-        </div>
-      }
-
-      <!-- Aliases: logos_admin only -->
-      @if (role() === 'logos_admin') {
-        <div
-          class="col-aliases tags-cell"
-          role="cell"
-          data-label="Aliases"
-        >
-          <span class="tags-text">
-            {{ model.aliases || '-' }}
-          </span>
-        </div>
-      }
-
-      <!-- Capabilities -->
-      <div
-        class="col-capabilities capabilities-cell"
-        role="cell"
-        data-label="Capabilities"
-      >
-        @if (getCapabilities(model.id); as capabilities) {
-          <div class="capability-chips">
-
-            @if (capabilities.supports_function_calling) {
-              <span
-                class="capability-chip capability-chip--supported"
-                role="img"
-                aria-label="Supports function calling"
-                title="Function Calling"
-              >
-                <i class="pi pi-code" aria-hidden="true"></i>
+          <!-- Tags: logos_admin only -->
+          @if (role() === 'logos_admin') {
+            <div
+              class="col-tags tags-cell"
+              role="cell"
+              data-label="Tags"
+            >
+              <span class="tags-text">
+                {{ model.tags || '-' }}
               </span>
-            }
+            </div>
+          }
 
-            @if (capabilities.supports_vision) {
-              <span
-                class="capability-chip capability-chip--supported"
-                role="img"
-                aria-label="Supports vision"
-                title="Vision"
-              >
-                <i class="pi pi-eye" aria-hidden="true"></i>
+          <!-- Aliases: logos_admin only -->
+          @if (role() === 'logos_admin') {
+            <div
+              class="col-aliases tags-cell"
+              role="cell"
+              data-label="Aliases"
+            >
+              <span class="tags-text">
+                {{ model.aliases || '-' }}
               </span>
-            }
+            </div>
+          }
 
-            @if (capabilities.supports_reasoning) {
-              <span
-                class="capability-chip capability-chip--supported"
-                role="img"
-                aria-label="Supports reasoning"
-                title="Reasoning"
-              >
-                <i class="pi pi-lightbulb" aria-hidden="true"></i>
-              </span>
-            }
+          <!-- Capabilities -->
+          <div
+            class="col-capabilities capabilities-cell"
+            role="cell"
+            data-label="Capabilities"
+          >
+            @if (getCapabilities(model.id); as capabilities) {
+              <div class="capability-chips">
 
-            @if (
-              !capabilities.supports_function_calling &&
-              !capabilities.supports_vision &&
-              !capabilities.supports_reasoning
-            ) {
+                @if (capabilities.supports_function_calling) {
+                  <span
+                    class="capability-chip capability-chip--supported"
+                    role="img"
+                    aria-label="Supports function calling"
+                    title="Function Calling"
+                  >
+                    <i class="pi pi-code" aria-hidden="true"></i>
+                  </span>
+                }
+
+                @if (capabilities.supports_vision) {
+                  <span
+                    class="capability-chip capability-chip--supported"
+                    role="img"
+                    aria-label="Supports vision"
+                    title="Vision"
+                  >
+                    <i class="pi pi-eye" aria-hidden="true"></i>
+                  </span>
+                }
+
+                @if (capabilities.supports_reasoning) {
+                  <span
+                    class="capability-chip capability-chip--supported"
+                    role="img"
+                    aria-label="Supports reasoning"
+                    title="Reasoning"
+                  >
+                    <i class="pi pi-lightbulb" aria-hidden="true"></i>
+                  </span>
+                }
+
+                @if (
+                  !capabilities.supports_function_calling &&
+                  !capabilities.supports_vision &&
+                  !capabilities.supports_reasoning
+                ) {
+                  <span>-</span>
+                }
+
+              </div>
+            } @else {
               <span>-</span>
             }
-
           </div>
-        } @else {
-          <span>-</span>
-        }
-      </div>
 
-      <!-- Profile spider -->
-      <div class="col-profile profile-cell" role="cell" data-label="Profile">
-        @if (hasProfileRatings(model)) {
-          <app-model-profile-radar [ratings]="model.profile_ratings!" [size]="88" />
-        } @else {
-          <span>-</span>
-        }
-      </div>
+          <!-- Profile spider -->
+          <div class="col-profile profile-cell" role="cell" data-label="Profile">
+            @if (hasProfileRatings(model)) {
+              <app-model-profile-radar [ratings]="model.profile_ratings!" [size]="88" />
+            } @else {
+              <span>-</span>
+            }
+          </div>
 
-      <!-- Last used: logos_admin only -->
-      @if (role() === 'logos_admin') {
-        <div
-          class="col-last-used last-used-cell"
-          role="cell"
-          data-label="Last used"
-        >
-          @if (formatLastUsed(model.last_used_at); as lastUsed) {
-            <span
-              class="last-used"
-              [class.last-used--stale]="isStaleModel(model.last_used_at)"
-              [attr.title]="lastUsedTooltip(model.last_used_at)"
+          <!-- Last used: logos_admin only -->
+          @if (role() === 'logos_admin') {
+            <div
+              class="col-last-used last-used-cell"
+              role="cell"
+              data-label="Last used"
             >
-              <span class="last-used__primary">{{ lastUsed.primary }}</span>
-              @if (lastUsed.age) {
-                <span class="last-used__age">{{ lastUsed.age }}</span>
+              @if (formatLastUsed(model.last_used_at); as lastUsed) {
+                <span
+                  class="last-used"
+                  [class.last-used--stale]="isStaleModel(model.last_used_at)"
+                  [attr.title]="lastUsedTooltip(model.last_used_at)"
+                >
+                  <span class="last-used__primary">{{ lastUsed.primary }}</span>
+                  @if (lastUsed.age) {
+                    <span class="last-used__age">{{ lastUsed.age }}</span>
+                  }
+                </span>
               }
-            </span>
+            </div>
           }
-        </div>
-      }
 
-      @if (role() === 'logos_admin') {
-        <div role="cell" data-label="Nightly benchmark" class="nightly-cell">
-          @if (nightlyError()) { <span title="Nightly status could not be loaded">Unavailable</span> }
-          @else if (!nightly()) { <span>Loading…</span> }
-          @else {
-            @for (schedule of nightlyFor(model.id); track schedule.model_provider_id) {
-              <button type="button" class="nightly-status" [attr.data-state]="schedule.state"
-                [title]="nightlyDetail(schedule)" [attr.aria-label]="nightlyDetail(schedule)"
-                (click)="openPerformance(model)">
-                <i [class]="schedule.state === 'recent' ? 'pi pi-check-circle' : 'pi pi-circle-fill'" aria-hidden="true"></i>
-                {{ nightlyLabels[schedule.state] }}
-                @if (schedule.recent_success && schedule.state !== 'recent') {
-                  <i class="pi pi-check-circle nightly-recent" aria-label="Successful benchmark in the last 7 days"></i>
-                }
+          @if (role() === 'logos_admin') {
+            <div role="cell" data-label="Nightly benchmark" class="nightly-cell">
+              @if (nightlyError()) { <span title="Nightly status could not be loaded">Unavailable</span> }
+              @else if (!nightly()) { <span>Loading…</span> }
+              @else {
+                @for (schedule of nightlyFor(model.id); track schedule.model_provider_id) {
+                  <button type="button" class="nightly-status" [attr.data-state]="schedule.state"
+                    [title]="nightlyDetail(schedule)" [attr.aria-label]="nightlyDetail(schedule)"
+                    (click)="openPerformance(model)">
+                    <i [class]="schedule.state === 'recent' ? 'pi pi-check-circle' : 'pi pi-circle-fill'" aria-hidden="true"></i>
+                    {{ nightlyLabels[schedule.state] }}
+                    @if (schedule.recent_success && schedule.state !== 'recent') {
+                      <i class="pi pi-check-circle nightly-recent" aria-label="Successful benchmark in the last 7 days"></i>
+                    }
+                  </button>
+                } @empty { <span class="nightly-off">Off</span> }
+              }
+            </div>
+          }
+
+          <!-- Weights: logos_admin only -->
+          @if (role() === 'logos_admin') {
+            <div
+              class="col-weights weights-cell"
+              role="cell"
+              data-label="Weights"
+            >
+              <div class="weights-chips">
+
+                <span
+                  class="wchip wchip--latency"
+                  [class.wchip--null]="model.weight_latency == null"
+                  title="Latency"
+                >
+                  L
+                  <span class="wchip-val">
+                    {{ model.weight_latency ?? '-' }}
+                  </span>
+                </span>
+
+                <span
+                  class="wchip wchip--accuracy"
+                  [class.wchip--null]="model.weight_accuracy == null"
+                  title="Accuracy"
+                >
+                  A
+                  <span class="wchip-val">
+                    {{ model.weight_accuracy ?? '-' }}
+                  </span>
+                </span>
+
+                <span
+                  class="wchip wchip--cost"
+                  [class.wchip--null]="model.weight_cost == null"
+                  title="Cost"
+                >
+                  C
+                  <span class="wchip-val">
+                    {{ model.weight_cost ?? '-' }}
+                  </span>
+                </span>
+
+                <span
+                  class="wchip wchip--quality"
+                  [class.wchip--null]="model.weight_quality == null"
+                  title="Quality"
+                >
+                  Q
+                  <span class="wchip-val">
+                    {{ model.weight_quality ?? '-' }}
+                  </span>
+                </span>
+
+              </div>
+            </div>
+
+            <!-- Actions: logos_admin only -->
+            <div class="col-actions actions-cell" role="cell">
+              <button
+                class="btn-icon"
+                type="button"
+                [attr.aria-label]="'Edit model ' + model.name"
+                (click)="openEditDialog(model); $event.stopPropagation()"
+              >
+                <i class="pi pi-pencil" aria-hidden="true"></i>
               </button>
-            } @empty { <span class="nightly-off">Off</span> }
+
+              <button
+                class="btn-icon btn-icon--danger"
+                type="button"
+                [attr.aria-label]="'Delete model ' + model.name"
+                (click)="openDeleteDialog(model); $event.stopPropagation()"
+              >
+                <i class="pi pi-trash" aria-hidden="true"></i>
+              </button>
+            </div>
           }
+
         </div>
       }
-
-      <!-- Weights: logos_admin only -->
-      @if (role() === 'logos_admin') {
-        <div
-          class="col-weights weights-cell"
-          role="cell"
-          data-label="Weights"
-        >
-          <div class="weights-chips">
-
-            <span
-              class="wchip wchip--latency"
-              [class.wchip--null]="model.weight_latency == null"
-              title="Latency"
-            >
-              L
-              <span class="wchip-val">
-                {{ model.weight_latency ?? '-' }}
-              </span>
-            </span>
-
-            <span
-              class="wchip wchip--accuracy"
-              [class.wchip--null]="model.weight_accuracy == null"
-              title="Accuracy"
-            >
-              A
-              <span class="wchip-val">
-                {{ model.weight_accuracy ?? '-' }}
-              </span>
-            </span>
-
-            <span
-              class="wchip wchip--cost"
-              [class.wchip--null]="model.weight_cost == null"
-              title="Cost"
-            >
-              C
-              <span class="wchip-val">
-                {{ model.weight_cost ?? '-' }}
-              </span>
-            </span>
-
-            <span
-              class="wchip wchip--quality"
-              [class.wchip--null]="model.weight_quality == null"
-              title="Quality"
-            >
-              Q
-              <span class="wchip-val">
-                {{ model.weight_quality ?? '-' }}
-              </span>
-            </span>
-
-          </div>
-        </div>
-
-        <!-- Actions: logos_admin only -->
-        <div class="col-actions actions-cell" role="cell">
-          <button
-            class="btn-icon"
-            type="button"
-            [attr.aria-label]="'Edit model ' + model.name"
-            (click)="openEditDialog(model); $event.stopPropagation()"
-          >
-            <i class="pi pi-pencil" aria-hidden="true"></i>
-          </button>
-
-          <button
-            class="btn-icon btn-icon--danger"
-            type="button"
-            [attr.aria-label]="'Delete model ' + model.name"
-            (click)="openDeleteDialog(model); $event.stopPropagation()"
-          >
-            <i class="pi pi-trash" aria-hidden="true"></i>
-          </button>
-        </div>
-      }
-
-    </div>
+    </app-data-table>
   }
-</app-data-table>
 
-<!-- ── Model Requests (voting for models Logos does not serve yet) ────────── -->
-<app-model-requests />
+  @if (activeTab() === 'requests') {
+    <!-- ── Model Requests (voting for models Logos does not serve yet) ────────── -->
+    <app-model-requests />
+  }
 
 <!-- ── Delete Dialog ──────────────────────────────────────────────────────── -->
 <app-modal-confirm
