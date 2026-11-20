@@ -282,7 +282,13 @@ ETTFT_ACCURACY_SECONDS = Histogram(
     "logos_ettft_accuracy_seconds",
     "Absolute error |ettft_estimate_s - actual_ttft_s| per provider and tier at first-token time",
     ["provider", "tier"],
-    buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+    buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0, 1800.0, 3600.0, 7200.0),
+    registry=registry,
+)
+
+ETTFT_REROUTED_OUTCOMES_TOTAL = Counter(
+    "logos_ettft_rerouted_outcomes_total",
+    "First-token outcomes excluded from provider-specific ETTFT accuracy because queue dispatch changed provider",
     registry=registry,
 )
 
