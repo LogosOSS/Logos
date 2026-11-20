@@ -12,6 +12,20 @@ public interface ProviderRepository extends JpaRepository<Provider, Integer> {
 
     List<Provider> findByCloudProviderTypeIsNotNull();
 
+    /**
+     * The logosnode providers that have this key. The key of a cloud provider is a key of another service, so only the
+     * type {@code logosnode} counts, like in the orchestrator. At most two rows are read: a key that several providers
+     * share does not name one worker, and the caller has to refuse it.
+     */
+    @Query(value = """
+        SELECT id, name
+        FROM providers
+        WHERE api_key = :apiKey AND provider_type = 'logosnode'
+        ORDER BY id
+        LIMIT 2
+        """, nativeQuery = true)
+    List<ProviderIdentity> findLogosnodeByApiKey(@Param("apiKey") String apiKey);
+
     @Query(value = """
         SELECT id, name, base_url, api_key, provider_type::text, cloud_provider_type::text,
                privacy_level::text, auth_name, auth_format

@@ -9,6 +9,7 @@ export const MENU_ITEMS: MenuItem[] = [
   { label: 'Statistics', path: '/statistics',      piIcon: 'chart-bar',      group: 'system',     roles: ['logos_admin'] },
   { label: 'Models',     path: '/models',          piIcon: 'microchip-ai',   group: 'system',     roles: ALL_ROLES, requiresTeam: true },
   { label: 'Providers',  path: '/providers',       piIcon: 'cloud',          group: 'system',     roles: ['logos_admin'] },
+  { label: 'Deployments', path: '/deployments',    piIcon: 'box',            group: 'system',     roles: ['logos_admin'] },
   { label: 'Policies',   path: '/policies',        piIcon: 'shield',         group: 'system',     roles: ['logos_admin'] },
   { label: 'Billing',    path: '/billing',         piIcon: 'credit-card',    group: 'system',     roles: ['logos_admin'] },
   { label: 'Agents',     path: '/agents',          piIcon: 'sparkles',       group: 'system',     roles: ['logos_admin'], requiresAgent: true },

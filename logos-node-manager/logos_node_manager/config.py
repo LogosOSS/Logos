@@ -57,6 +57,10 @@ def compose_project_name(project_dir: Path) -> str:
     return name or "logos-workernode"
 
 
+WORKER = "worker"
+CORE = "core"
+
+
 @dataclass(frozen=True)
 class Settings:
     """What the manager needs to know about its host."""
@@ -99,15 +103,92 @@ class Settings:
     reconnect_timeout_s: float
     log_level: str
 
+    # What the host is: a GPU worker (``worker``) or the core of Logos (``core``). A worker host replaces the one worker
+    # container. A core host replaces the services of the whole compose project, and the manager sits outside that
+    # project so that it survives the replacement of Logos.
+    kind: str = WORKER
+    # The Logos that this host obeys: its address, and the key that Logos knows the host by. A core host has a deployer
+    # key that this Logos made for it. A worker is known by its worker key, the key that it also uses with the
+    # orchestrator. It has no deployer key, and a DEPLOYER_KEY on a worker is not read. The manager asks Logos for
+    # orders and tells it how they go. A host obeys one Logos only. Without both values, only the command line gives
+    # orders.
+    logos_url: str = ""
+    deployer_key: str = field(default="", repr=False)
+    # How long a request for orders may wait at Logos before it answers with none, and the margin that the connection
+    # gets on top of it.
+    order_wait_s: float = 25.0
+    order_timeout_margin_s: float = 15.0
+    # How often a deployment in progress is reported to Logos, also when nothing changed. Logos reads the report as a
+    # sign that the host is alive.
+    report_interval_s: float = 20.0
+
+    # Core host only. The service that runs as several copies, the variable of the ``.env`` file that says how many, the
+    # time the services get to come up, and the address that must answer once they did
+    # (empty: not checked, which is the case without a Logos).
+    scale_service: str = "logos-webservice"
+    replicas_variable: str = "LOGOS_WEBSERVICE_REPLICAS"
+    core_verify_timeout_s: float = 900.0
+    core_health_url: str = ""
+
+    # The manager's own service, which a self-update replaces. A worker host has the manager next to the worker, in the
+    # compose file of the worker. A core host has it in a compose project of its own, ``logos-deployer``, so that a
+    # deployment of Logos never replaces it. The compose file of that project lies next to the one of Logos.
+    self_project_name: str = ""
+    self_compose_file: Path = Path()
+    self_service: str = ""
+    self_container: str = ""
+    # How long the new manager gets to become healthy after the swap, in seconds. Its health check runs every 30 s, and
+    # the first run comes one interval after the start.
+    self_verify_timeout_s: float = 180.0
+
+    @property
+    def logos_enabled(self) -> bool:
+        """Whether this host takes orders from a Logos: it needs the address and the key."""
+        return bool(self.logos_url and self.deployer_key)
+
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
         env = os.environ if environ is None else environ
-        project_dir = Path(_text(env, "PROJECT_DIR", "/opt/logos-workernode"))
+        kind = _text(env, "KIND", WORKER).lower()
+        if kind not in (WORKER, CORE):
+            kind = WORKER
+        core = kind == CORE
+        project_dir = Path(_text(env, "PROJECT_DIR", "/opt/logos" if core else "/opt/logos-workernode"))
+        compose_name = "docker-compose.yaml" if core else "docker-compose.yml"
+        # An address that is not http(s) counts as none: a bad value must not stop the manager at start.
+        logos_url = _text(env, "LOGOS_URL", "").rstrip("/")
+        if not logos_url.startswith(("https://", "http://")):
+            logos_url = ""
+        node_key = _text(env, "NODE_KEY", "")
+        # Logos knows a worker by its worker key and a core host by its deployer key. A host reads only its own key. A
+        # worker has no deployer key, so DEPLOYER_KEY means nothing on a worker. A core host has no worker key.
+        deployer_key = _text(env, "DEPLOYER_KEY", "") if core else node_key
+        health_default = f"{logos_url}/api/info" if core and logos_url and deployer_key else ""
+        project_name = _text(env, "PROJECT_NAME", compose_project_name(project_dir))
+        compose_file = Path(_text(env, "COMPOSE_FILE", str(project_dir / compose_name)))
+        # The names of the manager's own service. They match the compose files of this repository.
+        self_name = "logos-deployer" if core else "logos-node-manager"
+        self_compose_default = project_dir / "docker-compose.deployer.yml" if core else compose_file
         return cls(
+            kind=kind,
+            logos_url=logos_url,
+            deployer_key=deployer_key,
+            order_wait_s=_seconds(env, "ORDER_WAIT_S", 25.0),
+            order_timeout_margin_s=_seconds(env, "ORDER_TIMEOUT_MARGIN_S", 15.0),
+            report_interval_s=_seconds(env, "REPORT_INTERVAL_S", 20.0),
+            scale_service=_text(env, "SCALE_SERVICE", "logos-webservice"),
+            replicas_variable=_text(env, "REPLICAS_VARIABLE", "LOGOS_WEBSERVICE_REPLICAS"),
+            core_verify_timeout_s=_seconds(env, "CORE_VERIFY_TIMEOUT_S", 900.0),
+            core_health_url=_text(env, "CORE_HEALTH_URL", health_default),
+            self_project_name=_text(env, "SELF_PROJECT_NAME", self_name if core else project_name),
+            self_compose_file=Path(_text(env, "SELF_COMPOSE_FILE", str(self_compose_default))),
+            self_service=_text(env, "SELF_SERVICE", self_name),
+            self_container=_text(env, "SELF_CONTAINER", self_name),
+            self_verify_timeout_s=_seconds(env, "SELF_VERIFY_TIMEOUT_S", 180.0),
             project_dir=project_dir,
-            compose_file=Path(_text(env, "COMPOSE_FILE", str(project_dir / "docker-compose.yml"))),
+            compose_file=compose_file,
             env_file=Path(_text(env, "ENV_FILE", str(project_dir / ".env"))),
-            project_name=_text(env, "PROJECT_NAME", compose_project_name(project_dir)),
+            project_name=project_name,
             service=_text(env, "SERVICE", "logos-workernode"),
             container=_text(env, "CONTAINER", "logos-workernode"),
             state_dir=Path(_text(env, "STATE_DIR", str(project_dir / "node-manager"))),
@@ -120,7 +201,7 @@ class Settings:
             loop_interval_s=_seconds(env, "LOOP_INTERVAL_S", 2.0),
             drain_enabled=_flag(env, "DRAIN_ENABLED", False),
             orchestrator_url=_text(env, "ORCHESTRATOR_URL", "").rstrip("/"),
-            node_key=_text(env, "NODE_KEY", ""),
+            node_key=node_key,
             drain_timeout_s=_seconds(env, "DRAIN_TIMEOUT_S", 900.0),
             turn_timeout_s=_seconds(env, "TURN_TIMEOUT_S", 7200.0),
             orchestrator_retry_window_s=_seconds(env, "ORCHESTRATOR_RETRY_WINDOW_S", 120.0),
