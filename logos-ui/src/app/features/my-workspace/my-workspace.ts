@@ -299,10 +299,10 @@ export class MyWorkspace implements OnInit {
 
   budgetExhaustedMessage(team: MyTeam, key: MyKey): string | null {
     if (this.isTeamBudgetExhausted(team)) {
-      return `Monthly member budget exhausted: your ${team.name} keys are currently inactive.`;
+      return 'Monthly member cloud budget exhausted. Permitted local models remain available.';
     }
     if (this.isKeyBudgetExhausted(key)) {
-      return 'Key budget exhausted: this key is currently inactive.';
+      return 'Key cloud budget exhausted. Permitted local models remain available.';
     }
     return null;
   }
