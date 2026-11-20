@@ -52,6 +52,12 @@ from logos_worker_node.node_config import (
     profile_overrides_of,
     validation_errors,
 )
+from logos_worker_node.node_settings import (
+    RESTART_KEYS,
+    SYNC_NODE_SETTINGS_ACTION,
+    apply_node_settings,
+    normalize_node_settings,
+)
 from logos_worker_node.request_content import (
     MULTIPART_PAYLOAD_KEY,
     MediaReferenceError,
@@ -63,6 +69,9 @@ from logos_worker_node.vllm_compat import DEFAULT_VLLM
 from logos_worker_node.vllm_metrics_export import collect_vllm_metrics_text
 
 logger = logging.getLogger("logos_worker_node.logos_bridge")
+
+# How often a refresh of the calibration keys starts over when a push overtakes it.
+_KEY_REFRESH_ATTEMPTS = 3
 
 _INFERENCE_RELAY_TIMEOUT = httpx.Timeout(
     connect=10.0,
@@ -98,8 +107,15 @@ class _CalibrationSession:
     RPCs and consumes calibration_* events back from the worker.
     """
 
-    def __init__(self, sleep_level: int, skip_models: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        sleep_level: int,
+        skip_models: frozenset[str] = frozenset(),
+        only_models: frozenset[str] = frozenset(),
+    ) -> None:
         self.sleep_level: int = sleep_level
+        # When not empty, the session calibrates only these models.
+        self.only_models: frozenset[str] = only_models
         self.cancel_event: threading.Event = threading.Event()
         self.task: asyncio.Task | None = None
         self.started_at: float = time.time()
@@ -198,6 +214,9 @@ class LogosBridgeClient:
         self._active_calibration_session: _CalibrationSession | None = None
         # A node configuration that arrived while a calibration was running.
         self._pending_node_config: dict[str, Any] | None = None
+        self._pending_node_settings: dict[str, Any] | None = None
+        # The keys, slices and fingerprints Logos was last told; a status carries them again only when they change.
+        self._last_key_report: dict[str, Any] | None = None
         # Sequence counter for calibration event_id (independent of lane events).
         self._calibration_event_seq: int = 0
         # Lazily built by _get_hf_info_cache(); lives for the client's whole
@@ -403,6 +422,7 @@ class LogosBridgeClient:
         self,
         calibration_key_hashes: dict[str, str],
         slice_gpu_counts: dict[str, int],
+        config_fingerprints: dict[str, str] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """This node's profiles from Logos, the only place they are stored."""
         url = f"{self._logos_base_url()}/logosdb/providers/logosnode/model-profiles"
@@ -411,6 +431,8 @@ class LogosBridgeClient:
             "calibration_key_hashes": calibration_key_hashes,
             "slice_gpu_counts": slice_gpu_counts,
         }
+        if config_fingerprints:
+            payload["config_fingerprints"] = config_fingerprints
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, json=payload)
         if resp.status_code >= 400:
@@ -428,6 +450,25 @@ class LogosBridgeClient:
         if resp.status_code >= 400:
             raise RuntimeError(f"/node-config rejected with HTTP {resp.status_code}: {resp.text}")
         return normalize_node_config(resp.json() if resp.content else None)
+
+    async def fetch_node_settings(self) -> dict[str, Any] | None:
+        """This node's settings and revision as Logos stores them; None when Logos predates them."""
+        url = f"{self._logos_base_url()}/logosdb/providers/logosnode/node-settings"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json={"shared_key": self._cfg.shared_key})
+        if resp.status_code in (404, 405):
+            return None
+        if resp.status_code >= 400:
+            raise RuntimeError(f"/node-settings rejected with HTTP {resp.status_code}: {resp.text}")
+        return normalize_node_settings(resp.json() if resp.content else None)
+
+    async def import_node_settings(self, settings: dict[str, Any]) -> None:
+        """Hand Logos the node-wide settings of config.yml; it keeps them once."""
+        url = f"{self._logos_base_url()}/logosdb/providers/logosnode/node-settings/import"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json={"shared_key": self._cfg.shared_key, "settings": settings})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"/node-settings/import rejected with HTTP {resp.status_code}: {resp.text}")
 
     async def import_node_config(self, entries: list[dict[str, Any]]) -> list[str]:
         """Hand Logos the models of config.yml; it keeps them once. Returns warnings."""
@@ -626,12 +667,15 @@ class LogosBridgeClient:
         if hasattr(self._app, "state") and hasattr(self._app.state, "lane_manager"):
             static_lane_ids = sorted(self._app.state.lane_manager._static_lane_ids)
         calibration_key_hashes: dict[str, str] = {}
+        config_fingerprints: dict[str, str] = {}
         slice_gpu_counts: dict[str, int] = {}
         pending_snapshots: list[str] = []
         if hasattr(self._app, "state") and hasattr(self._app.state, "model_profiles"):
             calibration_key_hashes = self._app.state.model_profiles.calibration_key_hashes()
+            config_fingerprints = self._app.state.model_profiles.config_fingerprints()
             slice_gpu_counts = self._app.state.model_profiles.slice_gpu_counts()
             pending_snapshots = self._app.state.model_profiles.awaiting_snapshot_models()
+        self._last_key_report = self._key_report()
         await self._send_json(
             ws,
             {
@@ -654,6 +698,7 @@ class LogosBridgeClient:
                 "calibrating_model": self._calibrating_model(),
                 "pending_snapshots": pending_snapshots,
                 "calibration_key_hashes": calibration_key_hashes,
+                "config_fingerprints": config_fingerprints,
                 "slice_gpu_counts": slice_gpu_counts,
                 "actions": [
                     "infer",
@@ -676,6 +721,7 @@ class LogosBridgeClient:
                     "get_calibration_status",
                     SYNC_MODEL_PROFILES_ACTION,
                     SYNC_NODE_CONFIG_ACTION,
+                    SYNC_NODE_SETTINGS_ACTION,
                     VALIDATE_NODE_CONFIG_ACTION,
                 ],
             },
@@ -730,6 +776,17 @@ class LogosBridgeClient:
         # new status push, so a count-triggered update must always reach it.
         return await self._send_runtime_payload(ws, payload, force=True)
 
+    def _key_report(self) -> dict[str, Any]:
+        """What Logos keeps about the calibration of each model here: keys, GPU slices, fingerprints."""
+        profiles = getattr(getattr(self._app, "state", None), "model_profiles", None)
+        if profiles is None:
+            return {}
+        return {
+            "calibration_key_hashes": profiles.calibration_key_hashes(),
+            "slice_gpu_counts": profiles.slice_gpu_counts(),
+            "config_fingerprints": profiles.config_fingerprints(),
+        }
+
     async def _send_runtime_payload(self, ws, payload: dict[str, Any], force: bool = False) -> bool:
         # Every status repeats the live calibration state, so the server can
         # settle it without depending on a lifecycle event arriving. An event
@@ -740,8 +797,9 @@ class LogosBridgeClient:
         # session that starts and ends while the lanes are untouched changes
         # nothing else in the payload, and the status would not be sent at all.
         calibrating = self._calibration_session_is_live()
+        report = self._key_report()
         signature = json.dumps(
-            {"runtime": payload, "calibrating": calibrating},
+            {"runtime": payload, "calibrating": calibrating, "keys": report},
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -750,17 +808,19 @@ class LogosBridgeClient:
         self._last_runtime_signature = signature
         self._last_runtime_payload = payload
         self._last_status_sent_at = datetime.now(timezone.utc)
-        await self._send_json(
-            ws,
-            {
-                "type": "status",
-                "worker_id": self.worker_id,
-                "capabilities_models": self._cfg.capabilities_models,
-                "configured_models": self._cfg.configured_models,
-                "calibrating": calibrating,
-                "runtime": payload,
-            },
-        )
+        message: dict[str, Any] = {
+            "type": "status",
+            "worker_id": self.worker_id,
+            "capabilities_models": self._cfg.capabilities_models,
+            "configured_models": self._cfg.configured_models,
+            "calibrating": calibrating,
+            "runtime": payload,
+        }
+        # A live edit changes the keys and fingerprints without a reconnect; Logos learns of it here.
+        if report and report != self._last_key_report:
+            message["key_report"] = report
+        await self._send_json(ws, message)
+        self._last_key_report = report
         return True
 
     async def _send_heartbeat(self, ws) -> None:
@@ -1111,6 +1171,8 @@ class LogosBridgeClient:
             return self._handle_sync_model_profiles(params)
         if action == SYNC_NODE_CONFIG_ACTION:
             return await self._handle_sync_node_config(params)
+        if action == SYNC_NODE_SETTINGS_ACTION:
+            return await self._handle_sync_node_settings(params)
         if action == VALIDATE_NODE_CONFIG_ACTION:
             return self._handle_validate_node_config(params)
         if action == "start_calibration_session":
@@ -1174,6 +1236,60 @@ class LogosBridgeClient:
         await self._apply_node_config(config)
         return {"ok": True, "applied": True, "revision": config["revision"]}
 
+    async def _handle_sync_node_settings(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Adopt the node-wide settings Logos stores, unless this worker already has them.
+
+        During a calibration they wait: the global flags reach every plan, and
+        new keys would label the results of the session wrongly.
+        """
+        try:
+            config = normalize_node_settings(params)
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc)}
+        current = self._app.state.config.logos.node_settings_revision
+        if config["revision"] <= current:
+            return {"ok": True, "applied": False, "revision": current}
+        if self._calibration_session_is_live():
+            pending = self._pending_node_settings
+            if pending is None or config["revision"] > pending["revision"]:
+                self._pending_node_settings = config
+            logger.info("[NodeSettings] Revision %d waits for the running calibration", config["revision"])
+            return {"ok": True, "applied": False, "deferred": True, "revision": current}
+        changed = await self._apply_node_settings(config)
+        return {
+            "ok": True,
+            "applied": True,
+            "revision": config["revision"],
+            "restart_needed": sorted(changed & RESTART_KEYS),
+        }
+
+    async def _apply_pending_node_state(self) -> None:
+        """Apply the configuration and settings that waited for a calibration, until none is left."""
+        while self._pending_node_config is not None or self._pending_node_settings is not None:
+            for apply in (self._apply_pending_node_config, self._apply_pending_node_settings):
+                try:
+                    await apply()
+                except Exception:  # noqa: BLE001
+                    logger.warning("[NodeConfig] The configuration that waited could not be applied", exc_info=True)
+
+    async def _apply_pending_node_settings(self) -> None:
+        config, self._pending_node_settings = self._pending_node_settings, None
+        if config is not None and config["revision"] > self._app.state.config.logos.node_settings_revision:
+            await self._apply_node_settings(config)
+
+    async def _apply_node_settings(self, config: dict[str, Any]) -> set[str]:
+        changed = set(apply_node_settings(self._app.state.config, config["settings"], config["revision"]))
+        if "global_extra_args" in changed:
+            # They are part of every plan, so every calibration key moves with them.
+            await self._refresh_calibration_keys()
+        lane_manager = getattr(self._app.state, "lane_manager", None)
+        if lane_manager is not None:
+            lane_manager.mark_status_dirty()
+        logger.info(
+            "[NodeSettings] Applied revision %d (changed: %s)", config["revision"], ", ".join(sorted(changed)) or "none"
+        )
+        return changed
+
     async def _apply_pending_node_config(self) -> None:
         config, self._pending_node_config = self._pending_node_config, None
         if config is not None and config["revision"] > self._app.state.config.logos.node_config_revision:
@@ -1194,7 +1310,9 @@ class LogosBridgeClient:
             # Logos keeps the measured values beneath an override.
             try:
                 central = await self.fetch_model_profiles(
-                    model_profiles.calibration_key_hashes(), model_profiles.slice_gpu_counts()
+                    model_profiles.calibration_key_hashes(),
+                    model_profiles.slice_gpu_counts(),
+                    model_profiles.config_fingerprints(),
                 )
             except Exception:  # noqa: BLE001
                 logger.warning("[NodeConfig] Removed overrides are cleared; Logos' values return at the next start")
@@ -1729,15 +1847,17 @@ class LogosBridgeClient:
             logger.debug("[Calibration] node_health evaluation failed", exc_info=True)
 
         skip_models = frozenset(str(m) for m in (params.get("skip_models") or []))
-        session = _CalibrationSession(sleep_level=sleep_level, skip_models=skip_models)
+        only_models = frozenset(str(m) for m in (params.get("models") or []))
+        session = _CalibrationSession(sleep_level=sleep_level, skip_models=skip_models, only_models=only_models)
         session.task = asyncio.create_task(
             self._run_calibration_session(session),
             name="calibration-session",
         )
         self._active_calibration_session = session
         logger.info(
-            "[Calibration] Session started (sleep_level=%d) — worker drives model selection",
+            "[Calibration] Session started (sleep_level=%d, %s) — worker drives model selection",
             sleep_level,
+            ", ".join(sorted(only_models)) or "all models",
         )
         return {
             "ok": True,
@@ -1982,6 +2102,13 @@ class LogosBridgeClient:
             if self._active_calibration_session is not None
             else frozenset()
         )
+        only_models = (
+            self._active_calibration_session.only_models
+            if self._active_calibration_session is not None
+            else frozenset()
+        )
+        if only_models:
+            candidates = [name for name in candidates if name in only_models]
 
         ordered: list[str] = []
         for model_name in candidates:
@@ -2036,39 +2163,64 @@ class LogosBridgeClient:
                 ordered.append(model_name)
         return ordered
 
+    def _current_revisions(self) -> tuple[int, int]:
+        """The revisions of the models and of the node settings this worker runs with."""
+        logos = self._app.state.config.logos
+        return logos.node_config_revision, logos.node_settings_revision
+
     async def _refresh_calibration_keys(self) -> None:
         """Re-fingerprint from the models as this session will run it.
 
         A pushed configuration can change them without a restart; the startup
         keys would then stamp snapshots with a plan that was never measured.
+        A result a newer push overtook is calculated again: that push may not have changed
+        anything the keys depend on, and so would schedule no refresh of its own.
         """
         gpu_collector = getattr(self._app.state, "gpu_collector", None)
         if gpu_collector is None:
             return
-        # Pushes can overlap while the keys are calculated.
-        revision = self._app.state.config.logos.node_config_revision
-        try:
-            from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
-            from logos_worker_node.profile_fingerprint import (  # noqa: PLC0415
-                node_calibration_keys,
-                node_slice_gpu_counts,
-            )
+        for _attempt in range(_KEY_REFRESH_ATTEMPTS):
+            # Pushes can overlap while the keys are calculated: the models and the node settings
+            # (the global arguments) both go into them, and each has its own revision.
+            revision = self._current_revisions()
+            try:
+                from logos_worker_node.node_config import plans_from_app_config  # noqa: PLC0415
+                from logos_worker_node.profile_fingerprint import (  # noqa: PLC0415
+                    node_calibration_keys,
+                    node_config_fingerprints,
+                    node_selections,
+                    node_slice_gpu_counts,
+                )
 
-            snapshot = await gpu_collector.get_snapshot()
-            plans = plans_from_app_config(self._app.state.config)
-            # Resolving an unknown vLLM version may fork a subprocess.
-            keys = await asyncio.to_thread(node_calibration_keys, self._app.state.config, plans, list(snapshot.devices))
-            counts = node_slice_gpu_counts(self._app.state.config, plans, list(snapshot.devices))
-        except Exception:  # noqa: BLE001
-            logger.warning("[Calibration] Could not refresh calibration keys; keeping the previous ones", exc_info=True)
+                snapshot = await gpu_collector.get_snapshot()
+                plans = plans_from_app_config(self._app.state.config)
+                # Resolving an unknown vLLM version may fork a subprocess.
+                keys = await asyncio.to_thread(
+                    node_calibration_keys, self._app.state.config, plans, list(snapshot.devices)
+                )
+                counts = node_slice_gpu_counts(self._app.state.config, plans, list(snapshot.devices))
+                fingerprints = node_config_fingerprints(self._app.state.config, plans)
+                selections = node_selections(self._app.state.config, plans)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[Calibration] Could not refresh calibration keys; keeping the previous ones", exc_info=True
+                )
+                return
+            if self._current_revisions() != revision:
+                logger.info(
+                    "[Calibration] Calibration keys of revisions %s are out of date: calculating them again", revision
+                )
+                continue
+            self._app.state.model_profiles.set_slice_gpu_counts(counts)
+            changed = self._app.state.model_profiles.set_calibration_keys(keys, fingerprints, selections)
+            if changed:
+                logger.info("[Calibration] Calibration no longer fits %s — re-measuring", ", ".join(sorted(changed)))
+            # The next status reports the new keys and fingerprints, so Logos judges the calibration by them.
+            lane_manager = getattr(self._app.state, "lane_manager", None)
+            if lane_manager is not None:
+                lane_manager.mark_status_dirty()
             return
-        if self._app.state.config.logos.node_config_revision != revision:
-            logger.info("[Calibration] Discarding keys of revision %d: a newer configuration was applied", revision)
-            return
-        self._app.state.model_profiles.set_slice_gpu_counts(counts)
-        changed = self._app.state.model_profiles.set_calibration_keys(keys)
-        if changed:
-            logger.info("[Calibration] Calibration key changed for %s — re-measuring", ", ".join(sorted(changed)))
+        logger.warning("[Calibration] Calibration keys kept changing while they were calculated; keeping the old ones")
 
     async def _run_calibration_session(self, session: _CalibrationSession) -> None:
         """Async driver that walks uncalibrated models one at a time.
@@ -2475,13 +2627,15 @@ class LogosBridgeClient:
                     lane_manager.mark_status_dirty()
                 except Exception:  # noqa: BLE001
                     pass
-            if self._active_calibration_session is session:
-                self._active_calibration_session = None
             logger.info("[Calibration] Session ended (%s)", terminal_event)
+            # The session counts as running until what waited is applied: a push that
+            # arrives meanwhile waits too and is taken by the loop, and no new session
+            # can start under a configuration that is half applied.
             try:
-                await self._apply_pending_node_config()
-            except Exception:  # noqa: BLE001
-                logger.warning("[NodeConfig] The configuration that waited could not be applied", exc_info=True)
+                await self._apply_pending_node_state()
+            finally:
+                if self._active_calibration_session is session:
+                    self._active_calibration_session = None
 
     async def _maybe_convert_sharded_checkpoint(
         self,

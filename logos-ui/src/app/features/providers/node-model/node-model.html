@@ -1,0 +1,787 @@
+<div class="node-model">
+  <a class="breadcrumb" routerLink="/providers"><i class="pi pi-chevron-left" aria-hidden="true"></i> Provider Management</a>
+
+  <div class="head">
+    <h1 class="page-title">{{ modelName() || 'Model' }}</h1>
+    @if (editing()) {
+      <span class="chip">Editing</span>
+    } @else if (!loading() && !error()) {
+      <div class="head-actions">
+        @if (canEditSettings()) {
+          <button
+            type="button"
+            [class.btn-primary]="measured()"
+            [class.btn-secondary]="!measured()"
+            [disabled]="calibrating() || calibrationStarting()"
+            [attr.title]="calibrating() ? 'The settings cannot be changed while the model is being calibrated.' : null"
+            (click)="startEdit()"
+          >
+            <i class="pi pi-pencil" aria-hidden="true"></i>
+            {{ !measured() ? 'Edit settings' : insight()?.configured ? 'Edit configuration' : 'Set placement' }}
+          </button>
+        }
+        @if (canCalibrate()) {
+          <button
+            type="button"
+            [class.btn-primary]="!measured()"
+            [class.btn-secondary]="measured()"
+            [disabled]="!workerOnline() || calibrating() || calibrationStarting()"
+            [attr.aria-busy]="calibrationStarting()"
+            [attr.title]="workerOnline() ? null : 'The worker must be online to calibrate.'"
+            (click)="calibrateAsk.set(true)"
+          >
+            @if (calibrationStarting() || calibrating()) {
+              <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+            } @else {
+              <i class="pi pi-play" aria-hidden="true"></i>
+            }
+            {{ calibrating() ? 'Calibrating…' : 'Calibrate model' }}
+          </button>
+          @if (calibrating()) {
+            <button
+              type="button"
+              class="btn-secondary btn-stop"
+              [disabled]="!workerOnline() || calibrationStopping()"
+              [attr.aria-busy]="calibrationStopping()"
+              (click)="stopAsk.set(true)"
+            >
+              <i class="pi pi-stop-circle" aria-hidden="true"></i>
+              Stop calibration
+            </button>
+          }
+        }
+      </div>
+    }
+  </div>
+
+  @if (loading()) {
+    <div class="loading" role="status" aria-live="polite">
+      <span class="vh">Loading the configuration of this model…</span>
+      <span class="skel pills"></span>
+      <span class="skel block"></span>
+      <span class="skel block"></span>
+    </div>
+  } @else if (error()) {
+    <app-error-message variant="banner" [message]="error()!" />
+    <button class="btn-secondary retry" type="button" (click)="load()">
+      <i class="pi pi-refresh" aria-hidden="true"></i>
+      Try again
+    </button>
+  } @else if (!insight() && !entry()) {
+    <app-error-message variant="banner" message="This node does not know this model." />
+    <a class="btn-secondary retry" routerLink="/providers">Back to providers</a>
+  } @else {
+    <div class="status-row">
+      @if (label(); as l) {
+        <div class="pill">
+          <span [class]="'status-dot status-dot--' + l.tone" aria-hidden="true"></span>
+          <div><small>Calibration</small><b [attr.title]="l.title">{{ l.text }}</b></div>
+        </div>
+      }
+      @if (measured()) {
+        <div class="pill">
+          <span [class]="'status-dot status-dot--' + (insight()?.configured ? 'ok' : 'gray')" aria-hidden="true"></span>
+          <div><small>Placement</small><b>{{ insight()?.configured ? 'Set' : 'Automatic' }}</b></div>
+        </div>
+      }
+      <div class="pill">
+        <span [class]="'status-dot status-dot--' + (workerOnline() ? 'ok' : 'warn')" aria-hidden="true"></span>
+        <div><small>Worker</small><b>{{ workerOnline() ? 'Online' : 'Offline' }}</b></div>
+      </div>
+    </div>
+
+    @if (saving()) {
+      <div class="banner banner--info" role="status">
+        <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+        <div>
+          <b>Checking the settings</b>
+          <span>{{ providerName() }} checks every setting before it is saved. This usually takes a few seconds.</span>
+        </div>
+      </div>
+    }
+
+    @if (failure(); as f) {
+      <div class="banner" [class.banner--err]="f.kind !== 'conflict'" tabindex="-1" #failureBanner [attr.role]="f.kind === 'conflict' ? 'status' : 'alert'">
+        <i class="pi" [class.pi-refresh]="f.kind === 'conflict'" [class.pi-times-circle]="f.kind !== 'conflict'" aria-hidden="true"></i>
+        <div>
+          @switch (f.kind) {
+            @case ('conflict') {
+              <b>Configuration changed</b>
+              <span>Another admin saved this node while you were editing. Your changes were not saved.</span>
+            }
+            @case ('rejected') {
+              <b>Worker rejected the settings</b>
+              <span>
+                {{ f.items.length === 1 ? '1 setting needs a change.' : (f.items.length || 'Some') + ' settings need a change.' }}
+                Nothing was saved.
+              </span>
+              @if (f.items.length === 0) {
+                <span>{{ f.message }}</span>
+              }
+              <ul class="elist">
+                @for (item of f.items; track $index) {
+                  <li><code>{{ item.key || item.model }}</code> {{ item.message }}</li>
+                }
+              </ul>
+            }
+            @case ('unreachable') {
+              <b>Worker not reachable</b>
+              <span>{{ providerName() }} did not answer. Nothing was saved. Check that the worker is running, then save again.</span>
+            }
+            @default {
+              <b>Could not save</b>
+              <span>{{ f.message }}</span>
+            }
+          }
+        </div>
+        @if (f.kind === 'conflict') {
+          <button class="btn-secondary btn-sm" type="button" (click)="reloadAfterConflict()">
+            <i class="pi pi-refresh" aria-hidden="true"></i>
+            Reload
+          </button>
+        } @else if (f.kind === 'unreachable') {
+          <button class="btn-danger btn-sm" type="button" (click)="save()">
+            <i class="pi pi-refresh" aria-hidden="true"></i>
+            Try again
+          </button>
+        }
+      </div>
+    }
+
+    @if (notice(); as n) {
+      @if (!editing()) {
+        <div class="banner banner--info" role="status">
+          <i class="pi pi-check-circle" aria-hidden="true"></i>
+          <div>
+            <b>{{ n.title }}</b>
+            <span>{{ n.text }}</span>
+          </div>
+        </div>
+      }
+    }
+
+    @if (!workerOnline()) {
+      <div class="banner" role="status">
+        <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+        <div>
+          <b>Worker offline</b>
+          <span>{{ providerName() }} is not connected. The configuration cannot be edited.</span>
+        </div>
+      </div>
+    }
+
+    @if (outdated() && !editing() && !calibrating()) {
+      <div class="banner" role="status">
+        <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+        <div>
+          <b>Calibration outdated</b>
+          <span>The calibration no longer matches how {{ providerName() }} runs this model. Calibrate it again to place the model.</span>
+        </div>
+      </div>
+    }
+
+    @if (unsupported() && !editing()) {
+      <div class="banner banner--err" role="status">
+        <i class="pi pi-times-circle" aria-hidden="true"></i>
+        <div>
+          <b>Calibration not supported</b>
+          <span>
+            {{ insight()?.calibration?.reason || providerName() + ' cannot calibrate this model.' }}
+            The worker will not load the model.
+          </span>
+        </div>
+      </div>
+    }
+
+    @if (!measured() && !outdated() && !unsupported() && !editing() && !calibrating()) {
+      <div class="banner banner--info" role="status">
+        <i class="pi pi-info-circle" aria-hidden="true"></i>
+        <div>
+          <b>Not calibrated yet</b>
+          <span>These settings are used when Logos calibrates this model. TP, KV cache and context can be chosen after calibration.</span>
+        </div>
+      </div>
+    }
+
+    @if (calibrating()) {
+      <div class="banner banner--info" role="status">
+        <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+        <div>
+          <b>Calibrating</b>
+          <span>The worker is measuring this model. This takes several minutes.</span>
+        </div>
+      </div>
+    }
+
+    @if (calibrationError(); as e) {
+      <div class="banner banner--err" role="alert">
+        <i class="pi pi-times-circle" aria-hidden="true"></i>
+        <div>
+          <b>{{ calibrationErrorOf() === 'stop' ? 'Calibration not stopped' : 'Calibration not started' }}</b>
+          <span>{{ e }}</span>
+        </div>
+      </div>
+    }
+
+    @if (tuning() && recommendation(); as rec) {
+      @if (editing()) {
+        <div class="banner banner--rec" role="status">
+          <div>
+            <small>Recommended by benchmark</small>
+            <b>{{ describeRecommendation(rec.settings) }}</b>
+            <span>{{ speedup() ?? rec.throughput.toFixed(1) + ' tok/s, benchmark #' + rec.benchmark_id + '.' }}</span>
+          </div>
+          <button class="btn-primary" type="button" [disabled]="recommendationApplied()" (click)="applyRecommendation()">
+            @if (recommendationApplied()) {
+              <i class="pi pi-check" aria-hidden="true"></i>
+              Recommendation in use
+            } @else {
+              <i class="pi pi-bolt" aria-hidden="true"></i>
+              Use recommendation
+            }
+          </button>
+        </div>
+      } @else {
+        <div class="banner banner--rec banner--rec-view" role="status">
+          <div>
+            <small><i class="pi pi-bolt" aria-hidden="true"></i>Recommendation not in use</small>
+            <b>Benchmark suggests {{ describeRecommendation(rec.settings) }}</b>
+            <span>{{ speedup() ?? rec.throughput.toFixed(1) + ' tok/s, benchmark #' + rec.benchmark_id + '.' }}</span>
+          </div>
+        </div>
+      }
+    }
+
+    <div class="grid" [class.grid--single]="!insight()?.benchmark && !editing()" [attr.inert]="saving() ? '' : null" [attr.aria-busy]="saving()">
+      <div class="stack">
+        @if (measured()) {
+          <section class="card" aria-labelledby="cfg-title">
+            <h2 id="cfg-title">Configuration</h2>
+            @if (placement(); as p) {
+              <p class="sub">
+                @if (editing()) {
+                  How this model is placed on {{ providerName() }}. Only options that calibrated successfully can be chosen.
+                } @else {
+                  Current placement on {{ providerName() }}.
+                }
+              </p>
+
+              <div class="field">
+                <span class="label" id="tp-label">GPUs per instance (tensor parallel) @if (editing()) {<span class="req">*</span>}</span>
+                <div class="options" role="radiogroup" aria-labelledby="tp-label">
+                  @for (r of tpTiles(); track r.tp) {
+                    <button
+                      type="button"
+                      role="radio"
+                      class="option"
+                      [class.option--on]="p.tp === r.tp"
+                      [attr.aria-checked]="p.tp === r.tp"
+                      [disabled]="!editing()"
+                      (click)="setTp(r.tp)"
+                    >
+                      <span class="option-top">
+                        <b>TP {{ r.tp }}</b>
+                        @if (bestTp() === r.tp) {
+                          <span class="best-tag">Best</span>
+                        }
+                      </span>
+                      <small>{{ r.tp }} {{ r.tp === 1 ? 'GPU' : 'GPUs' }}@if (gpuSizeGb(r.tp); as size) { · {{ size }} GB }</small>
+                    </button>
+                  }
+                </div>
+                @if (fieldError('tensor_parallel_size'); as e) {
+                  <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e.message }}</p>
+                }
+              </div>
+
+              @if (window(); as w) {
+                <div class="field">
+                  <div class="field-head">
+                    <label class="label" for="kv">KV cache memory per GPU @if (editing()) {<span class="req">*</span>}</label>
+                    <div class="field-value">
+                      @if (editing()) {
+                        @if (bestKv() !== null) {
+                          <button class="best-chip" type="button" (click)="setKv(bestKv())"><span class="best-dot"></span>Best <b>{{ bestKv() }} GB</b></button>
+                        }
+                        <span class="unit-in">
+                          <input
+                            id="kv"
+                            type="number"
+                            class="num"
+                            [min]="w.min"
+                            [max]="w.max"
+                            step="1"
+                            [value]="p.kvGb"
+                            [class.invalid]="fieldError('kv_cache_memory_bytes')"
+                            [attr.aria-invalid]="fieldError('kv_cache_memory_bytes') ? 'true' : null"
+                            (input)="setKv($any($event.target).value)"
+                          />
+                          <span class="unit">GB</span>
+                        </span>
+                      } @else {
+                        <b class="big">{{ p.kvGb }}</b>
+                        <span class="unit">GB</span>
+                      }
+                    </div>
+                  </div>
+                  <div class="sl" [class.sl--edit]="editing()">
+                    <div class="sl-track">
+                      @if (kvBand(); as band) {
+                        <div class="sl-off" [style.left.%]="0" [style.width.%]="band.left" style="border-radius: 99px 0 0 99px"></div>
+                        <div class="sl-win" [style.left.%]="band.left" [style.width.%]="band.width"></div>
+                        <div class="sl-fill" [style.left.%]="band.left" [style.width.%]="kvFill()"></div>
+                      }
+                      @if (bestKv() !== null && bestKv()! <= w.max) {
+                        <i class="sl-best" [style.left.%]="(bestKv()! / w.max) * 100" aria-hidden="true"></i>
+                      }
+                    </div>
+                    @if (editing()) {
+                      <div class="sl-thumb" [style.left.%]="(p.kvGb / w.max) * 100" aria-hidden="true"></div>
+                      <input
+                        class="sl-input"
+                        type="range"
+                        aria-label="KV cache memory per GPU"
+                        min="0"
+                        [max]="w.max"
+                        step="1"
+                        [value]="p.kvGb"
+                        (input)="setKv($any($event.target).value)"
+                      />
+                    }
+                    <div class="sl-scale" aria-hidden="true">
+                      @for (t of kvTicks(); track t.pct) {
+                        <div class="tick" [class.first]="$first" [class.last]="$last" [style.left.%]="t.pct"><span>{{ t.label }}</span></div>
+                      }
+                    </div>
+                  </div>
+                  @if (editing()) {
+                    <p class="hint">Measured range: {{ w.min }} to {{ w.max }} GB per GPU, in whole GB.</p>
+                  }
+                  @if (fieldError('kv_cache_memory_bytes'); as e) {
+                    <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e.message }}</p>
+                  }
+                </div>
+              }
+
+              <div class="field">
+                <div class="field-head">
+                  <label class="label" for="ctx">Max. context length @if (editing()) {<span class="req">*</span>}</label>
+                  <div class="field-value">
+                    @if (editing()) {
+                      @if (bestCtx() !== null) {
+                        <button class="best-chip" type="button" (click)="setCtx(bestCtx())"><span class="best-dot"></span>Best <b>{{ formatTokens(bestCtx()) }}</b></button>
+                      }
+                      <span class="unit-in">
+                        <input
+                          id="ctx"
+                          type="number"
+                          class="num"
+                          [min]="ctxMin"
+                          [max]="capacity() ?? null"
+                          step="1024"
+                          [value]="p.ctx"
+                          [class.invalid]="fieldError('max_model_len')"
+                          [attr.aria-invalid]="fieldError('max_model_len') ? 'true' : null"
+                          (change)="setCtx($any($event.target).value)"
+                        />
+                        <span class="unit">tokens</span>
+                      </span>
+                    } @else {
+                      <b class="big">{{ p.ctx }}</b>
+                      <span class="unit">tokens</span>
+                    }
+                  </div>
+                </div>
+                <div class="sl" [class.sl--edit]="editing()">
+                  <div class="sl-track">
+                    <div class="sl-win" [style.left.%]="0" [style.width.%]="ctxBand()" style="border-radius: 99px 0 0 99px"></div>
+                    <div class="sl-off" [style.left.%]="ctxBand()" [style.width.%]="100 - ctxBand()" style="border-radius: 0 99px 99px 0"></div>
+                    <div class="sl-fill" [style.left.%]="0" [style.width.%]="ctxPct(p.ctx)" style="border-radius: 99px 0 0 99px"></div>
+                    @if (bestCtx() !== null && bestCtx()! <= ctxMax()) {
+                      <i class="sl-best" [style.left.%]="ctxPct(bestCtx()!)" aria-hidden="true"></i>
+                    }
+                  </div>
+                  @if (editing()) {
+                    <div class="sl-thumb" [style.left.%]="ctxPct(p.ctx)" aria-hidden="true"></div>
+                    <input
+                      class="sl-input"
+                      type="range"
+                      aria-label="Max. context length"
+                      [min]="ctxMin"
+                      [max]="ctxMax()"
+                      step="1024"
+                      [value]="p.ctx"
+                      (input)="setCtx($any($event.target).value)"
+                    />
+                  }
+                  <div class="sl-scale" aria-hidden="true">
+                    @for (t of ctxTicks(); track t.pct) {
+                      <div class="tick" [class.first]="$first" [class.last]="$last" [style.left.%]="t.pct"><span>{{ t.label }}</span></div>
+                    }
+                  </div>
+                </div>
+                @if (editing() && capacity(); as cap) {
+                  <p class="hint">Up to about {{ formatTokens(cap) }} tokens at this KV cache size.</p>
+                }
+                @if (fieldError('max_model_len'); as e) {
+                  <p class="ferr" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e.message }}</p>
+                }
+              </div>
+
+              @if (figures().length > 0) {
+                <div class="tiles">
+                  @for (f of figures(); track f.caption) {
+                    <div class="tile"><b>{{ f.value }}</b><span>{{ f.caption }}</span></div>
+                  }
+                </div>
+              }
+            } @else {
+              <div class="empty">
+                <b>Automatic placement</b>
+                <span>The worker chooses TP, KV cache and context itself. Set them here to choose them yourself.</span>
+              </div>
+              @if (runningFigures().length > 0) {
+                <h3 class="running-title">Running now</h3>
+                <div class="tiles">
+                  @for (f of runningFigures(); track f.caption) {
+                    <div class="tile"><b>{{ f.value }}</b><span>{{ f.caption }}</span></div>
+                  }
+                </div>
+              } @else if (expectedFigures().length > 0) {
+                <h3 class="running-title">Expected when loaded</h3>
+                @if (workerOnline()) {
+                  <p class="running-note">
+                    No lane holds this model right now. With free GPU memory the worker will use these values from the calibration.
+                    @if (expectedKvMin(); as min) {
+                      With less memory it will choose a smaller KV cache, down to {{ min }}.
+                    }
+                  </p>
+                }
+                <div class="tiles">
+                  @for (f of expectedFigures(); track f.caption) {
+                    <div class="tile"><b>{{ f.value }}</b><span>{{ f.caption }}</span></div>
+                  }
+                </div>
+              } @else if (workerOnline()) {
+                <p class="running-note">No lane holds this model right now. The values it runs with appear here while it is loaded.</p>
+              }
+            }
+          </section>
+        }
+
+        @if (!editing() && !insight()?.configured && runningSettings().length > 0) {
+          <section class="card" aria-labelledby="run-title">
+            <div class="card-head">
+              <h2 id="run-title">Running settings</h2>
+              <span class="count">{{ runningSettings().length }} in use</span>
+            </div>
+            <p class="sub">The settings besides the placement that the worker runs this model with now.</p>
+            <dl class="facts facts--quiet">
+              @for (a of runningSettings(); track a.key) {
+                <div><dt class="mono">{{ a.key }}</dt><dd class="mono">{{ a.value }}</dd></div>
+              }
+            </dl>
+          </section>
+        }
+
+        @if (editing() && adv(); as a) {
+          <section class="card" aria-labelledby="adv-title">
+            <div class="card-head">
+              <h2 id="adv-title">Advanced settings</h2>
+              <span class="summary">{{ setCount() === 0 ? 'All default' : setCount() + ' set' }}</span>
+            </div>
+            <p class="sub">Optional. Empty fields use the default or the value measured by calibration.</p>
+            <label class="filter">
+              <i class="pi pi-search" aria-hidden="true"></i>
+              <input
+                type="search"
+                placeholder="Filter settings…"
+                aria-label="Filter settings"
+                [value]="filter()"
+                (input)="filter.set($any($event.target).value)"
+              />
+            </label>
+
+            @for (g of groups; track g.id) {
+              @if (g.top && groupVisible(g)) {
+                <h3 class="group">{{ g.title }}</h3>
+                @for (f of fieldsOf(g); track f.key) {
+                  <ng-container [ngTemplateOutlet]="row" [ngTemplateOutletContext]="{ $implicit: f }" />
+                }
+              }
+            }
+
+            <button
+              class="all-toggle"
+              type="button"
+              [attr.aria-expanded]="showAll()"
+              (click)="allOpen.set(!allOpen())"
+            >
+              <span>All engine settings</span>
+              <i class="pi" [class.pi-chevron-up]="showAll()" [class.pi-chevron-down]="!showAll()" aria-hidden="true"></i>
+            </button>
+            @if (showAll()) {
+              <p class="hint hint--note">
+                <i class="pi pi-info-circle" aria-hidden="true"></i>
+                Changing a setting can mark the calibration of this model as outdated.
+              </p>
+              @for (g of groups; track g.id) {
+                @if (!g.top && groupVisible(g)) {
+                  <h3 class="group">{{ g.title }}</h3>
+                  @for (f of fieldsOf(g); track f.key) {
+                    <ng-container [ngTemplateOutlet]="row" [ngTemplateOutletContext]="{ $implicit: f }" />
+                  }
+                }
+              }
+            }
+
+            <h3 class="subhead">Custom settings</h3>
+            <p class="hint">Any other vLLM setting. The worker rejects names it does not know.</p>
+            @for (row of a.custom; track $index; let i = $index) {
+              <div class="crow">
+                <input
+                  class="num mono"
+                  type="text"
+                  aria-label="Setting name"
+                  placeholder="setting_name"
+                  [value]="row.key"
+                  [class.invalid]="customError(i)"
+                  [attr.aria-invalid]="customError(i) ? 'true' : null"
+                  (input)="setCustom(i, 'key', $any($event.target).value)"
+                />
+                <input
+                  class="num mono"
+                  type="text"
+                  aria-label="Setting value"
+                  placeholder="value"
+                  [value]="row.value"
+                  (input)="setCustom(i, 'value', $any($event.target).value)"
+                />
+                <button class="btn-icon btn-icon--danger" type="button" aria-label="Remove setting" (click)="removeCustom(i)">
+                  <i class="pi pi-trash" aria-hidden="true"></i>
+                </button>
+              </div>
+              @if (customError(i); as e) {
+                <p class="ferr" role="alert">
+                  <i class="pi pi-exclamation-circle" aria-hidden="true"></i>
+                  <span>
+                    {{ e }}
+                    @if (customSuggestion(i); as hint) {
+                      Did you mean
+                      <button class="fix" type="button" (click)="setCustom(i, 'key', hint)">{{ hint }}</button>?
+                    }
+                  </span>
+                </p>
+              }
+            }
+            <button class="btn-secondary btn-sm add-setting" type="button" (click)="addCustom()">
+              <i class="pi pi-plus" aria-hidden="true"></i>
+              Add setting
+            </button>
+          </section>
+        } @else if (advanced().length > 0 || !measured()) {
+          <section class="card" aria-labelledby="adv-title">
+            <div class="card-head">
+              <h2 id="adv-title">{{ measured() ? 'Advanced settings' : unsupported() ? 'Settings' : 'Calibration settings' }}</h2>
+              <span class="count">{{ advanced().length === 0 ? 'All default' : advanced().length + ' set' }}</span>
+            </div>
+            @if (advanced().length === 0) {
+              <p class="sub">No settings yet. Logos calibrates this model with the defaults.</p>
+            } @else {
+              <p class="sub">
+                {{ measured() ? 'Settings this model is configured with besides placement.' : unsupported() ? 'Settings stored for this model.' : 'Logos uses these settings when it calibrates this model.' }}
+              </p>
+              <dl class="facts">
+                @for (a of advanced(); track a.key) {
+                  <div><dt class="mono">{{ a.key }}</dt><dd class="mono">{{ a.value }}</dd></div>
+                }
+              </dl>
+            }
+          </section>
+        }
+      </div>
+
+      @if (insight()?.benchmark || editing()) {
+        <div class="stack">
+          @if (insight()?.benchmark; as b) {
+            <section class="card" aria-labelledby="bm-title">
+              <h2 id="bm-title" class="eyebrow">Best benchmark{{ bestRunTp() ? ' at TP ' + bestRunTp() : '' }}</h2>
+              @if (bestRun(); as best) {
+                <div class="best">
+                  <div class="best-top">
+                    <b>{{ best.throughput.toFixed(1) }} tok/s</b>
+                    @if (b.best_eligible) {
+                      <span class="best-tag">Best</span>
+                    }
+                  </div>
+                  <span>{{ describeRecommendation(best.settings) }} · #{{ best.benchmark_id }}</span>
+                </div>
+              }
+              @if (insight()?.model_id; as modelId) {
+                <a class="bm-link" [routerLink]="['/models', modelId, 'details']" [queryParams]="{ tab: 'performance' }">
+                  Open all benchmarks <i class="pi pi-arrow-up-right" aria-hidden="true"></i>
+                </a>
+              }
+            </section>
+          }
+          @if (editing() && saved(); as p) {
+            <section class="card" aria-labelledby="cur-title">
+              <h2 id="cur-title" class="eyebrow">Current configuration</h2>
+              <dl class="facts facts--compact">
+                <div><dt>GPUs</dt><dd>TP {{ p.tp }} · {{ p.tp }} {{ p.tp === 1 ? 'GPU' : 'GPUs' }}</dd></div>
+                <div><dt>KV cache</dt><dd>{{ p.kvGb }} GB per GPU</dd></div>
+                <div><dt>Max. context</dt><dd>{{ formatTokens(p.ctx) }} tokens</dd></div>
+                @for (f of savedFigures(); track f.caption) {
+                  <div><dt>{{ f.caption.split(' · ')[0] }}</dt><dd>{{ f.value }}</dd></div>
+                }
+              </dl>
+            </section>
+          }
+        </div>
+      }
+    </div>
+
+    @if (editing()) {
+      <div class="savebar" role="region" aria-label="Save changes">
+        @if (saving()) {
+          <div class="progress" aria-hidden="true"></div>
+        }
+        <p role="status" aria-live="polite">
+          @if (saving()) {
+            Waiting for the worker to check the settings…
+          } @else if (dirty()) {
+            <b>{{ changes().length }} unsaved {{ changes().length === 1 ? 'change' : 'changes' }}:</b>
+            {{ changes().join(' · ') }}
+          } @else {
+            No changes. The worker checks the settings before they are saved.
+          }
+        </p>
+        <div class="actions">
+          <button class="btn-secondary" type="button" [disabled]="saving()" (click)="cancelEdit()">Cancel</button>
+          <button class="btn-primary" type="button" [disabled]="!dirty() || saving() || hasAdvErrors()" [attr.aria-busy]="saving()" (click)="save()">
+            @if (saving()) {
+              <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+              Checking…
+            } @else {
+              Save
+            }
+          </button>
+        </div>
+      </div>
+    }
+  }
+</div>
+<ng-template #row let-f>
+  <div class="row" [class.row--wide]="f.kind === 'lines' || f.kind === 'gpus'">
+    <div class="row-text">
+      <label class="label" [for]="'adv-' + f.key">
+        {{ f.label }}
+        @if (isSet(f.key)) {
+          <span class="set-dot" title="Set" aria-label="Set"></span>
+        }
+        <code class="key">{{ f.key }}</code>
+      </label>
+      <p class="hint">{{ f.help }}</p>
+    </div>
+    <div class="row-control">
+      @switch (f.kind) {
+        @case ('tri') {
+          <select class="num sel" [id]="'adv-' + f.key" [value]="adv()!.values[f.key]" (change)="setAdv(f.key, $any($event.target).value)">
+            <option value="">Default</option>
+            <option value="true">On</option>
+            <option value="false">Off</option>
+          </select>
+        }
+        @case ('select') {
+          <select class="num sel" [id]="'adv-' + f.key" [value]="adv()!.values[f.key]" (change)="setAdv(f.key, $any($event.target).value)">
+            @for (o of f.options; track o.value) {
+              <option [value]="o.value" [selected]="adv()!.values[f.key] === o.value">{{ o.label }}</option>
+            }
+          </select>
+        }
+        @case ('lines') {
+          <textarea
+            class="area mono"
+            rows="3"
+            [id]="'adv-' + f.key"
+            [placeholder]="f.placeholder ?? ''"
+            [value]="adv()!.values[f.key]"
+            [attr.aria-invalid]="advFieldError(f.key) ? 'true' : null"
+            (input)="setAdv(f.key, $any($event.target).value)"
+          ></textarea>
+        }
+        @case ('gpus') {
+          <div class="gpus gpus--compact" role="group" [attr.aria-label]="f.label">
+            @for (gpu of nodeGpus(); track gpu.index) {
+              <button
+                type="button"
+                class="gpu"
+                [class.gpu--on]="modelGpuOn(gpu.index)"
+                [attr.aria-pressed]="modelGpuOn(gpu.index)"
+                (click)="toggleModelGpu(gpu.index)"
+              >
+                <span class="gpu-name"><b>GPU {{ gpu.index }}</b></span>
+                <span class="gpu-bar" aria-hidden="true"><span [style.width.%]="gpuUsedPct(gpu)"></span></span>
+                <small>{{ gpuFreeGb(gpu) }}</small>
+                @if (modelGpuOn(gpu.index)) {
+                  <i class="pi pi-check-circle gpu-check" aria-hidden="true"></i>
+                }
+              </button>
+            } @empty {
+              <p class="hint">The worker reports no GPUs. It must be online to list them.</p>
+            }
+          </div>
+        }
+        @default {
+          <div class="control">
+            <input
+              class="num wide"
+              type="text"
+              [id]="'adv-' + f.key"
+              [placeholder]="f.placeholder ?? ''"
+              [value]="adv()!.values[f.key]"
+              [class.invalid]="advFieldError(f.key)"
+              [attr.aria-invalid]="advFieldError(f.key) ? 'true' : null"
+              (input)="setAdv(f.key, $any($event.target).value)"
+            />
+            @if (f.unit) {
+              <span class="unit">{{ f.unit }}</span>
+            }
+          </div>
+        }
+      }
+      <button
+        class="link link--reset"
+        type="button"
+        [class.link--hidden]="!isSet(f.key)"
+        (click)="setAdv(f.key, '')"
+      >
+        Use default
+      </button>
+    </div>
+    @if (advFieldError(f.key); as e) {
+      <p class="ferr row-error" role="alert"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ e }}</p>
+    }
+  </div>
+</ng-template>
+
+<app-modal-confirm
+  [visible]="calibrateAsk()"
+  (visibleChange)="calibrateAsk.set($event)"
+  title="Calibrate this model?"
+  message="The worker will measure {{ modelName() }}. This will take several minutes and will use the GPUs of the node."
+  icon="pi-play"
+  confirmLabel="Calibrate"
+  [danger]="false"
+  (confirmed)="calibrate()"
+/>
+
+<app-modal-confirm
+  [visible]="stopAsk()"
+  (visibleChange)="stopAsk.set($event)"
+  title="Stop the calibration?"
+  message="The worker will stop measuring on this node. The model in progress will stay uncalibrated, and nothing partial will be saved."
+  icon="pi-stop-circle"
+  confirmLabel="Stop calibration"
+  (confirmed)="stopCalibration()"
+/>

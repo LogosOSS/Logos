@@ -4901,7 +4901,7 @@ async def test_a_removed_profile_override_takes_the_measured_value_from_logos(tm
     assert registry.get_profile("org/ready").base_residency_mb == 500.0
     fetched: list = []
 
-    async def _fetch(hashes, counts):
+    async def _fetch(hashes, counts, fingerprints=None):
         fetched.append((hashes, counts))
         return {"org/ready": {"base_residency_mb": 9000.0, "residency_source": "calibrated"}}
 
@@ -5001,6 +5001,105 @@ async def test_keys_calculated_for_a_superseded_revision_are_discarded(tmp_path,
     await client._refresh_calibration_keys()  # noqa: SLF001
 
     assert published == []
+
+
+@pytest.mark.asyncio
+async def test_keys_calculated_for_older_node_settings_are_discarded(tmp_path, monkeypatch):
+    """Two settings saves leave the model revision alone; the settings revision is what moves."""
+    client = _node_config_client(tmp_path)
+    client._app.state.gpu_collector = MagicMock(
+        get_snapshot=AsyncMock(return_value=MagicMock(devices=[]))
+    )  # noqa: SLF001
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    published: list = []
+    registry.set_calibration_keys = lambda keys, *_rest: published.append(keys) or []
+
+    def _keys_while_a_newer_settings_push_lands(*_args):
+        client._cfg.node_settings_revision += 1  # noqa: SLF001
+        return {"org/ready": {"schema": 2}}
+
+    monkeypatch.setattr(
+        "logos_worker_node.profile_fingerprint.node_calibration_keys", _keys_while_a_newer_settings_push_lands
+    )
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_slice_gpu_counts", lambda *_a: {})
+
+    await client._refresh_calibration_keys()  # noqa: SLF001
+
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_that_a_settings_push_overtakes_is_calculated_again(tmp_path, monkeypatch):
+    """Revision N changes the arguments and its keys are still being calculated when N+1 changes the poll
+    interval only. N+1 schedules no refresh of its own, so the overtaken one has to start over."""
+    client = _node_config_client(tmp_path)
+    client._app.state.gpu_collector = MagicMock(
+        get_snapshot=AsyncMock(return_value=MagicMock(devices=[]))
+    )  # noqa: SLF001
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    published: list = []
+    registry.set_calibration_keys = lambda keys, *_rest: published.append(keys) or []
+    calls: list[int] = []
+
+    def _keys(*_args):
+        calls.append(1)
+        if len(calls) == 1:
+            client._cfg.node_settings_revision += 1  # noqa: SLF001
+        return {"org/ready": {"schema": len(calls)}}
+
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_calibration_keys", _keys)
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_slice_gpu_counts", lambda *_a: {})
+
+    await client._refresh_calibration_keys()  # noqa: SLF001
+
+    assert len(calls) == 2
+    assert published == [{"org/ready": {"schema": 2}}]
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_that_keeps_being_overtaken_gives_up_and_keeps_the_old_keys(tmp_path, monkeypatch):
+    client = _node_config_client(tmp_path)
+    client._app.state.gpu_collector = MagicMock(
+        get_snapshot=AsyncMock(return_value=MagicMock(devices=[]))
+    )  # noqa: SLF001
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    published: list = []
+    registry.set_calibration_keys = lambda keys, *_rest: published.append(keys) or []
+
+    def _keys(*_args):
+        client._cfg.node_settings_revision += 1  # noqa: SLF001
+        return {"org/ready": {"schema": 1}}
+
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_calibration_keys", _keys)
+    monkeypatch.setattr("logos_worker_node.profile_fingerprint.node_slice_gpu_counts", lambda *_a: {})
+
+    await client._refresh_calibration_keys()  # noqa: SLF001
+
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_new_keys_and_fingerprints_reach_logos_with_the_next_status_and_only_once(tmp_path):
+    """A live edit changes them without a reconnect; hello told Logos the old ones."""
+    client = _node_config_client(tmp_path)
+    registry = client._app.state.model_profiles  # noqa: SLF001
+    registry.set_calibration_keys({"org/ready": {"plan_hash": "a"}}, {"org/ready": "F-2G"})
+    sends: list[dict] = []
+
+    async def _send(_ws, payload):
+        sends.append(payload)
+
+    client._send_json = _send  # type: ignore[method-assign]  # noqa: SLF001
+    await client._send_hello(object())  # noqa: SLF001
+    assert sends[0]["config_fingerprints"] == {"org/ready": "F-2G"}
+    sends.clear()
+
+    registry.set_calibration_keys({"org/ready": {"plan_hash": "a"}}, {"org/ready": "F-8G"})
+    await client._send_runtime_payload(object(), {"lanes": []})  # noqa: SLF001
+    await client._send_runtime_payload(object(), {"lanes": [{"lane_id": "x"}]})  # noqa: SLF001
+
+    assert sends[0]["key_report"]["config_fingerprints"] == {"org/ready": "F-8G"}
+    assert "key_report" not in sends[1]
 
 
 @pytest.mark.asyncio
@@ -5184,3 +5283,200 @@ async def test_bridge_relays_embedded_or_allowlisted_media(stream, url, domains)
         app.state.lane_manager.decrement_active_requests.assert_awaited_once_with("lane-a")
     finally:
         await client._relay_client.aclose()
+
+
+def test_a_session_started_for_one_model_lists_only_that_model(tmp_path):
+    from logos_worker_node.logos_bridge import _CalibrationSession
+
+    app = _make_app_for_calibration(tmp_path)
+    cfg = LogosConfig(
+        enabled=True,
+        logos_url="https://logos.example",
+        shared_key="secret",
+        configured_models=["org/a", "org/b"],
+    )
+    client = LogosBridgeClient(app, cfg)
+
+    assert sorted(client._list_uncalibrated_models()) == ["org/a", "org/b"]  # noqa: SLF001
+
+    client._active_calibration_session = _CalibrationSession(  # noqa: SLF001
+        sleep_level=1, only_models=frozenset({"org/b"})
+    )
+
+    assert client._list_uncalibrated_models() == ["org/b"]  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_hello_offers_node_settings_sync(tmp_path):
+    ws = _CollectWS()
+    await _central_client(tmp_path)._send_hello(ws)  # noqa: SLF001
+
+    assert "sync_node_settings" in ws.frames[0]["actions"]
+
+
+def _settings_client(tmp_path) -> LogosBridgeClient:
+    client = _node_config_client(tmp_path)
+    client._cfg.node_settings_revision = 2  # noqa: SLF001
+    return client
+
+
+def _document(revision: int, **settings) -> dict:
+    return {"revision": revision, "yaml_imported": True, "settings": settings}
+
+
+@pytest.mark.asyncio
+async def test_newer_node_settings_are_applied(tmp_path):
+    client = _settings_client(tmp_path)
+
+    response = await client._execute_command(  # noqa: SLF001
+        "sync_node_settings", _document(3, gpu_devices="0", gpu_poll_interval=9)
+    )
+
+    assert response == {"ok": True, "applied": True, "revision": 3, "restart_needed": ["gpu_poll_interval"]}
+    assert client._app.state.config.worker.gpu_devices == "0"  # noqa: SLF001
+    assert client._cfg.node_settings_revision == 3  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_reboot_setting_that_only_the_next_start_takes_over_is_reported_as_such(tmp_path):
+    client = _settings_client(tmp_path)
+
+    response = await client._execute_command(  # noqa: SLF001
+        "sync_node_settings", _document(3, auto_reboot_on_stuck_gpu=False, gpu_devices="0")
+    )
+
+    assert response["applied"] is True
+    assert response["restart_needed"] == ["auto_reboot_on_stuck_gpu"]
+    assert client._app.state.config.worker.auto_reboot_on_stuck_gpu is False  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_node_settings_of_the_current_or_an_older_revision_change_nothing(tmp_path):
+    client = _settings_client(tmp_path)
+
+    same = await client._execute_command("sync_node_settings", _document(2, gpu_devices="0"))  # noqa: SLF001
+    older = await client._execute_command("sync_node_settings", _document(1, gpu_devices="0"))  # noqa: SLF001
+
+    assert same == {"ok": True, "applied": False, "revision": 2}
+    assert older["applied"] is False
+    assert client._app.state.config.worker.gpu_devices == "all"  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_broken_settings_push_is_refused(tmp_path):
+    client = _settings_client(tmp_path)
+
+    response = await client._execute_command("sync_node_settings", {"revision": 3})  # noqa: SLF001
+
+    assert response["ok"] is False and "settings mapping" in response["error"]
+
+
+@pytest.mark.asyncio
+async def test_node_settings_wait_for_a_running_calibration_and_apply_after_it(tmp_path):
+    client = _settings_client(tmp_path)
+    client._calibration_session_is_live = lambda: True  # noqa: SLF001
+
+    first = await client._execute_command("sync_node_settings", _document(3, gpu_devices="0"))  # noqa: SLF001
+    second = await client._execute_command("sync_node_settings", _document(4, gpu_devices="1"))  # noqa: SLF001
+    older = await client._execute_command("sync_node_settings", _document(3, gpu_devices="2"))  # noqa: SLF001
+
+    assert first == {"ok": True, "applied": False, "deferred": True, "revision": 2}
+    assert second["deferred"] and older["deferred"]
+    assert client._app.state.config.worker.gpu_devices == "all"  # noqa: SLF001
+
+    client._calibration_session_is_live = lambda: False  # noqa: SLF001
+    await client._apply_pending_node_settings()  # noqa: SLF001
+
+    assert client._app.state.config.worker.gpu_devices == "1"  # noqa: SLF001
+    assert client._cfg.node_settings_revision == 4  # noqa: SLF001
+    await client._apply_pending_node_settings()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_what_arrives_while_the_waiting_state_is_applied_is_applied_too(tmp_path):
+    client = _settings_client(tmp_path)
+    waiting = {"revision": 3, "yaml_imported": True, "settings": {"gpu_devices": "0"}}
+    client._pending_node_settings = waiting  # noqa: SLF001
+    original = client._apply_node_settings  # noqa: SLF001
+
+    async def _a_newer_push_lands_meanwhile(config):
+        if config["revision"] == 3:
+            client._pending_node_settings = {  # noqa: SLF001
+                "revision": 4,
+                "yaml_imported": True,
+                "settings": {"gpu_devices": "1"},
+            }
+        return await original(config)
+
+    client._apply_node_settings = _a_newer_push_lands_meanwhile  # noqa: SLF001
+
+    await client._apply_pending_node_state()  # noqa: SLF001
+
+    assert client._app.state.config.worker.gpu_devices == "1"  # noqa: SLF001
+    assert client._cfg.node_settings_revision == 4  # noqa: SLF001
+    assert client._pending_node_settings is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_failing_apply_of_waiting_state_does_not_keep_the_session_open_or_loop(tmp_path):
+    client = _settings_client(tmp_path)
+    client._pending_node_config = _central(9, _entry("org/a"))  # noqa: SLF001
+    waiting = {"revision": 3, "yaml_imported": True, "settings": {"gpu_devices": "0"}}
+    client._pending_node_settings = waiting  # noqa: SLF001
+
+    async def _boom(_config):
+        raise RuntimeError("no")
+
+    client._apply_node_config = _boom  # noqa: SLF001
+
+    await client._apply_pending_node_state()  # noqa: SLF001
+
+    assert client._pending_node_config is None  # noqa: SLF001
+    assert client._app.state.config.worker.gpu_devices == "0"  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_changed_global_flags_refresh_the_calibration_keys(tmp_path):
+    client = _settings_client(tmp_path)
+    refreshed = []
+
+    async def _refresh():
+        refreshed.append(True)
+
+    client._refresh_calibration_keys = _refresh  # noqa: SLF001
+
+    await client._execute_command("sync_node_settings", _document(3, gpu_devices="0"))  # noqa: SLF001
+    assert refreshed == []
+    await client._execute_command("sync_node_settings", _document(4, global_extra_args=["--x"]))  # noqa: SLF001
+    assert refreshed == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status, outcome", [(404, None), (405, None)])
+async def test_a_logos_without_node_settings_answers_none(tmp_path, monkeypatch, status, outcome):
+    _fake_http(monkeypatch, status, None, [])
+
+    assert await _central_client(tmp_path).fetch_node_settings() is outcome
+
+
+@pytest.mark.asyncio
+async def test_node_settings_are_read_and_imported(tmp_path, monkeypatch):
+    posted: list = []
+    _fake_http(monkeypatch, 200, {"revision": 3, "yaml_imported": True, "settings": {"gpu_devices": "0"}}, posted)
+    client = _central_client(tmp_path)
+
+    assert (await client.fetch_node_settings())["revision"] == 3
+    await client.import_node_settings({"gpu_devices": "0"})
+
+    assert posted[0][0].endswith("/logosdb/providers/logosnode/node-settings")
+    assert posted[1][0].endswith("/node-settings/import")
+    assert posted[1][1]["settings"] == {"gpu_devices": "0"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method, args", [("fetch_node_settings", ()), ("import_node_settings", ({},))])
+async def test_a_refused_node_settings_request_raises(tmp_path, monkeypatch, method, args):
+    _fake_http(monkeypatch, 500, None, [])
+
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        await getattr(_central_client(tmp_path), method)(*args)

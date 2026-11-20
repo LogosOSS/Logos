@@ -86,4 +86,6 @@
     <include file="liquibase/changelog/079_gateway_pricing_performance.xml"/>
     <include file="liquibase/changelog/080_security_incidents.xml"/>
     <include file="liquibase/changelog/081_security_manual_updates.xml"/>
+    <include file="liquibase/changelog/082_model_profile_config_fingerprint.xml"/>
+    <include file="liquibase/changelog/083_node_settings.xml"/>
 </databaseChangeLog>
