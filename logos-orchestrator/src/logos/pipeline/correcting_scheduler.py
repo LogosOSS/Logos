@@ -37,6 +37,7 @@ from logos.context_budget import estimate_prompt_tokens
 from logos.monitoring import prometheus_metrics as prom
 from logos.queue.priority_queue import Priority
 from logos.residency_policy import DEFAULT_RESIDENCY_POLICY, configured_residency_policy
+from logos.sdi.models import ModelSchedulerView
 from logos.terminal_logging import style_model, style_provider
 from logos.timeouts import global_timeout_s
 
@@ -267,6 +268,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             )
             result.ettft_estimate_ms = ettft.ettft_ms
             result.ettft_tier = ettft.tier.value
+            result.ettft_provider_id = provider_id
             result.warmth_state = ettft.warmth_state
             result.routing_candidates = routing_candidates
             return result
@@ -411,6 +413,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         )
         result.ettft_estimate_ms = ettft.ettft_ms
         result.ettft_tier = ettft.tier.value
+        result.ettft_provider_id = provider_id
         result.warmth_state = ettft.warmth_state
         result.routing_candidates = routing_candidates
         return result
@@ -787,61 +790,22 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                     )
                     view = None
 
-            if view is None:
-                # No lanes visible — treat as COLD (capacity planner can
-                # cold-load during context resolution).  Consult the latency
-                # store so that the provider-specific learned cold overhead
-                # (or size-derived prior) is used instead of the static
-                # constant, which matters for cold-provider selection when a
-                # lane has been removed but history is still persisted.
-                cold_s = OVERHEAD_COLD_S
-                _nl_learned_ttft: Optional[float] = None
-                _nl_prefill_s: Optional[float] = None
-                if self._latency_store is not None:
-                    _no_lane_model_name = self._logosnode.get_model_name(model_id, provider_id)
-                    if _no_lane_model_name:
-                        _nl_vram_mb = 0.0
-                        _nl_tp_size = 1
-                        try:
-                            _profiles = self._logosnode.get_model_profiles(provider_id)
-                            if _no_lane_model_name in _profiles:
-                                _p = _profiles[_no_lane_model_name]
-                                _nl_vram_mb = _p.estimate_vram_mb()
-                                _nl_tp_size = int(_p.tensor_parallel_size or 1)
-                        except KeyError:
-                            pass
-                        except Exception:  # noqa: BLE001
-                            logger.warning(
-                                "Unexpected error reading model profile for no-lane estimate" " model=%s provider=%s",
-                                model_id,
-                                provider_id,
-                                exc_info=True,
-                            )
-                        cold_s = self._latency_store.get_overhead_s(
-                            _no_lane_model_name,
-                            provider_id,
-                            ReadinessTier.COLD,
-                            model_vram_mb=_nl_vram_mb,
-                            tp_size=_nl_tp_size,
-                        )
-                        _nl_learned_ttft = self._latency_store.get_ttft_s(_no_lane_model_name, provider_id)
-                        if input_tokens > 0:
-                            _nl_prefill_s = self._latency_store.get_prefill_s(
-                                _no_lane_model_name, provider_id, input_tokens
-                            )
-                _nl_added = (_nl_learned_ttft or 0.0) + (_nl_prefill_s or 0.0)
-                _nl_parts: list[str] = [f"cold {cold_s:.2f}s"]
-                if _nl_learned_ttft is not None:
-                    _nl_parts.append(f"TTFT {_nl_learned_ttft:.2f}s")
-                if _nl_prefill_s is not None:
-                    _nl_parts.append(f"prefill {_nl_prefill_s:.2f}s ({input_tokens} tok)")
-                return EttftEstimate(
-                    expected_wait_s=cold_s + _nl_added,
-                    tier=ReadinessTier.COLD,
-                    reasoning=f"No lanes for logosnode model {model_id}: {' + '.join(_nl_parts)}",
-                    state_overhead_s=cold_s,
-                    prefill_s=_nl_prefill_s or 0.0,
-                    warmth_state=-1,
+            no_visible_lane = view is None
+            if no_visible_lane:
+                # A declared deployment can be cold-loaded, but it must pay the
+                # same queue and VRAM-reclaim costs as a visible cold lane.
+                view = ModelSchedulerView(
+                    model_id=model_id,
+                    model_name=self._logosnode.get_model_name(model_id, provider_id) or str(model_id),
+                    provider_id=provider_id,
+                    is_loaded=False,
+                    best_lane_state="cold",
+                    best_sleep_state="unknown",
+                    aggregate_active_requests=0,
+                    aggregate_queue_waiting=0.0,
+                    warmest_ttft_p95_seconds=0.0,
+                    warmest_e2e_latency_p50_seconds=0.0,
+                    gpu_cache_pressure_max=None,
                 )
 
             with perf_trace.phase(request_id, "schedule.infra"):
@@ -937,12 +901,20 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                             overhead_overrides[tier] = self._latency_store.get_overhead_s(
                                 model_name_for_store, provider_id, tier, **_store_kwargs
                             )
-                    # Replace the live e2e p50 with the learned value when the
-                    # store has sufficient history (learned value is more stable
-                    # across the session than a single-lane histogram p50).
+                    # The store learns new histogram increments rather than
+                    # lifetime medians, so it follows workload changes.
                     learned_e2e = self._latency_store.get_e2e_latency_s(model_name_for_store, provider_id)
                     if learned_e2e is not None:
                         observed_e2e_p50_s = learned_e2e
+                    # Reclaim depends on the victims' work, not the target's
+                    # service time. Apply recent observations to each victim.
+                    updated_lanes = []
+                    for lane in all_provider_lanes or []:
+                        service_s = self._latency_store.get_e2e_latency_s(lane.model_name, provider_id)
+                        if service_s is not None and math.isfinite(service_s) and service_s > 0:
+                            lane = dataclasses.replace(lane, e2e_latency_p50_seconds=service_s)
+                        updated_lanes.append(lane)
+                    all_provider_lanes = updated_lanes
                     # Learned TTFT (decode-only first-token time) for this provider —
                     # added once for this request (queue_wait already embeds TTFT of
                     # preceding requests via e2e_p50 as service time, no double-counting).
@@ -967,6 +939,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                     observed_e2e_p50_s=observed_e2e_p50_s,
                     all_provider_lanes=all_provider_lanes,
                     overhead_overrides=overhead_overrides,
+                    allow_cold_start=no_visible_lane,
                 )
             if (learned_ttft is not None or estimated_prefill_s is not None) and (
                 estimate.tier != ReadinessTier.UNAVAILABLE
@@ -1311,6 +1284,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             # the estimate and warmth as seen when the request was enqueued)
             result.ettft_estimate_ms = ettft.ettft_ms
             result.ettft_tier = ettft.tier.value
+            result.ettft_provider_id = provider_id
             result.warmth_state = ettft.warmth_state
 
             if provider_type == "logosnode":

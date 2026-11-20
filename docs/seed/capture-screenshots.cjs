@@ -16,6 +16,7 @@
  * Without arguments, shots marked `needs` are left out: the seed does not
  * create their example state, and the committed PNG stays in place.
  * OUT_DIR writes the PNGs to another folder instead of overwriting static/img/.
+ * CHROMIUM_PATH names a browser to use when Playwright does not find its own build.
  * LOGOS_SCREENSHOT_WIDTH overrides the viewport width for mobile PR screenshots.
  * The nightly shots change the schedule of llama-3.1-8b-instruct on Docs Local
  * Worker. Use only the isolated documentation stack.
@@ -50,6 +51,7 @@ function lookupIds() {
   );
   return {
     team: sql("SELECT id FROM teams WHERE name = 'Logos'"),
+    worker: sql("SELECT id FROM providers WHERE name = 'Docs Local Worker'"),
     model,
     // The second nightly night: its variant is the linked result in the guide.
     linkedBenchmark: sql(
@@ -130,6 +132,20 @@ async function details(page, text, open = true) {
 
 const button = (page, name) => page.getByRole("button", { name, exact: true }).first();
 
+// The Providers page with the documentation worker expanded to its node models.
+async function expandWorker(page) {
+  await page.goto(BASE + "/providers");
+  await settle(page);
+  await page.getByRole("button", { name: "Expand Docs Local Worker" }).first().click();
+  await page.locator("app-node-models .table-row").first().waitFor();
+}
+
+// The page of one model of the documentation worker (view mode).
+async function nodeModel(page, ids, model) {
+  await page.goto(`${BASE}/providers/${ids.worker}/models?model=${encodeURIComponent(model)}`);
+  await page.locator("h1.page-title").waitFor();
+}
+
 // The shell scrolls inside .main-content; unlock it for a full-page shot and
 // stretch fixed full-viewport layers (dialog backdrops) over the whole page.
 async function unlock(page) {
@@ -197,7 +213,7 @@ async function manageNightly(page) {
   await page.locator(".nightly-management").waitFor({ state: "visible" });
 }
 
-// Sets the schedule through management and confirmation, then returns to the page.
+// Sets the schedule through the management dialog, then returns to the page.
 async function setNightly(page, enabled) {
   const customization = page.getByRole("dialog", { name: "Customize benchmark", exact: true });
   if (await customization.isVisible()) {
@@ -209,15 +225,16 @@ async function setNightly(page, enabled) {
     null, { timeout: 30000 },
   );
   await manageNightly(page);
-  const toggle = page.getByRole("button", { name: /nightly runs…$/ }).first();
+  const toggle = page.getByRole("dialog", { name: /^Nightly benchmarks ·/ }).getByRole("button", { name: /nightly runs…?$/ });
   const label = (await toggle.textContent()).trim();
   if (label.startsWith("Disable") === enabled) {
-    await button(page, "Done").evaluate(b => b.click());
+    await page.keyboard.press("Escape");
     await page.getByRole("dialog", { name: /^Nightly benchmarks ·/ }).waitFor({ state: "hidden" });
     return;
   }
+  await toggle.and(page.locator("button:enabled")).waitFor();
   await toggle.evaluate(b => b.click());
-  await button(page, enabled ? "Enable nightly runs" : "Disable nightly runs").evaluate(b => b.click());
+  if (!enabled) await button(page, "Disable nightly runs").evaluate(b => b.click());
   await page.waitForFunction((enabled) => {
     const status = document.querySelector(".nightly__status");
     return status?.textContent.includes(enabled ? "Enabled" : "Disabled");
@@ -239,7 +256,7 @@ async function runView(page, ids, { nightly, open = [] }) {
   if (open.includes("Dataset and settings") || open.includes("Repeat or compare settings")) await button(page, "Customize").click();
   else if (open.some(text => ["Request workload", "Schedule and test plan", "Latest round results"].includes(text))) await manageNightly(page);
   for (const text of open) {
-    if (text !== "Dataset and settings") await details(page, text);
+    if (!["Dataset and settings", "Request workload"].includes(text)) await details(page, text);
   }
   await page.waitForTimeout(600);
 }
@@ -335,6 +352,69 @@ const SHOTS = [
       await settle(p);
       await p.getByRole("button", { name: "Expand Docs Cloud (EU)" }).first().click();
       await p.locator('[data-testid="batch-support"]').first().waitFor();
+    },
+  },
+  {
+    file: "roles/logos-admin-node-models.png",
+    user: ADMIN,
+    go: expandWorker,
+  },
+  {
+    file: "roles/logos-admin-node-model-view.png",
+    user: ADMIN,
+    full: true,
+    go: (p, ids) => nodeModel(p, ids, "llama-3.1-8b-instruct"),
+  },
+  {
+    file: "roles/logos-admin-node-model-edit.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await nodeModel(p, ids, "llama-3.1-8b-instruct");
+      await button(p, "Edit configuration").click();
+      await p.locator(".savebar").waitFor();
+      // The save bar sticks to the window; in a full-page shot it belongs at the end.
+      await p.addStyleTag({ content: ".savebar { position: static !important; }" });
+    },
+  },
+  {
+    file: "roles/logos-admin-node-model-calibrate.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await nodeModel(p, ids, "mistral-small-3.2-24b");
+      await p.getByRole("button", { name: "Calibrate model" }).waitFor();
+    },
+  },
+  {
+    file: "roles/logos-admin-node-connect-model.png",
+    user: ADMIN,
+    go: async (p, ids) => {
+      // The documentation catalog lists only the three models the worker already has.
+      // Add a fourth to the catalog answer, so the dialog shows a choice.
+      await p.route("**/api/logosdb/get_models", async (route) => {
+        const response = await route.fetch();
+        const models = await response.json();
+        await route.fulfill({ response, json: [...models, { ...models[0], id: 9999, name: "gemma-3-27b-it" }] });
+      });
+      await expandWorker(p);
+      await button(p, "Connect model").click();
+      await p.getByText("Add a model from the Logos catalog to this node.").waitFor();
+      await p.getByRole("combobox").last().selectOption({ label: "gemma-3-27b-it" });
+    },
+    after: async (p) => {
+      await button(p, "Cancel").evaluate((b) => b.click());
+      await p.unroute("**/api/logosdb/get_models");
+    },
+  },
+  {
+    file: "roles/logos-admin-node-settings.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await p.goto(`${BASE}/providers/${ids.worker}/node-settings`);
+      await p.locator(".seg").waitFor();
+      await p.addStyleTag({ content: ".savebar { position: static !important; }" });
     },
   },
   { file: "roles/logos-admin-policies.png", user: ADMIN, go: (p) => p.goto(BASE + "/policies") },
@@ -438,21 +518,14 @@ const SHOTS = [
     full: true,
     go: async (p, ids) => {
       await runView(p, ids, { nightly: false, open: ["Request workload"] });
-      await details(p, "Create a fixed dataset from FULL request logs");
+      await p.getByRole("combobox", { name: "Request workload", exact: true }).selectOption("recent");
     },
   },
   {
     file: "roles/logos-admin-nightly-enable.png",
     user: ADMIN,
     full: true,
-    go: async (p, ids) => {
-      await runView(p, ids, {
-        nightly: false,
-        open: ["Schedule and test plan"],
-      });
-      await p.getByRole("button", { name: "Enable nightly runs…" }).click();
-      await p.waitForTimeout(800);
-    },
+    go: (p, ids) => runView(p, ids, { nightly: false, open: ["Request workload"] }),
   },
   {
     file: "roles/logos-admin-nightly-disable.png",
@@ -615,7 +688,7 @@ const SHOTS = [
   // they run only when named on the command line.
   const selected = SHOTS.filter((s) => (ONLY.length ? ONLY.includes(s.file) : !s.needs));
   for (const s of SHOTS) if (!ONLY.length && s.needs) console.log("not selected", s.file, "- needs", s.needs);
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   let session = null;
   const failed = [];
   for (const shot of selected) {

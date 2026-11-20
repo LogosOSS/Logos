@@ -8,6 +8,7 @@ from logos.benchmarks import nightly_store
 
 def measurement(identifier, workload, throughput, baseline_id=None):
     return {
+        "model_provider_id": 31,
         "id": identifier,
         "sample_size": 1,
         "configuration": {
@@ -54,3 +55,20 @@ def test_selection_summary_has_no_winner_when_no_measurement_is_available(monkey
         "best_eligible": None,
         "comparisons": [],
     }
+
+
+def test_several_pairs_are_summarized_from_one_query(monkeypatch):
+    db = Mock()
+    db.session.execute.return_value.mappings.return_value = [
+        {**measurement(20, "w", 60, baseline_id=19), "model_provider_id": 32},
+        {**measurement(19, "w", 50), "model_provider_id": 32},
+        measurement(14, "current", 55),
+    ]
+    monkeypatch.setattr(nightly_store, "DBManager", lambda: nullcontext(db))
+
+    summaries = nightly_store.selection_summaries([31, 32, 33])
+
+    assert db.session.execute.call_count == 1
+    assert summaries[31]["best_observed"]["benchmark_id"] == 14
+    assert summaries[32]["best_observed"]["benchmark_id"] == 20
+    assert summaries[33] == {"best_observed": None, "best_eligible": None, "comparisons": []}

@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
+import de.tum.cit.aet.logos.logoswebservice.common.ReadOnlyQuery;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.RequestLogService;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.RequestLogStatsService;
@@ -35,6 +36,7 @@ public class RequestLogStatsController {
         this.requestLogStatsService = requestLogStatsService;
     }
 
+    @ReadOnlyQuery
     @PostMapping("/logosdb/request_log_stats")
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> requestLogStats(@RequestAttribute("authContext") AuthContext auth,
@@ -69,6 +71,7 @@ public class RequestLogStatsController {
      * token. Takes the same range and scope as
      * {@code /logosdb/request_log_stats}.
      */
+    @ReadOnlyQuery
     @PostMapping("/logosdb/request_latency_stats")
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> requestLatencyStats(@RequestAttribute("authContext") AuthContext auth,
@@ -98,6 +101,7 @@ public class RequestLogStatsController {
      * those are pushed every few seconds, these two lists only when the range
      * or the selected team moves.
      */
+    @ReadOnlyQuery
     @PostMapping("/logosdb/request_log_scope_options")
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> requestLogScopeOptions(@RequestAttribute("authContext") AuthContext auth,

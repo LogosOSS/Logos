@@ -4,10 +4,12 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.ObjectPostProcessor;
@@ -25,11 +27,15 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.web.BearerTokenResolver;
 import org.springframework.security.oauth2.server.resource.web.DefaultBearerTokenResolver;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
+import org.springframework.security.web.firewall.StrictHttpFirewall;
 import org.springframework.security.web.header.HeaderWriterFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
 
+import de.tum.cit.aet.logos.logoswebservice.common.HttpQueryFilter;
 import de.tum.cit.aet.logos.logoswebservice.common.RequestTiming;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -50,7 +56,8 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http,
-            @Qualifier("logosCorsConfigurationSource") CorsConfigurationSource corsSource) throws Exception {
+            @Qualifier("logosCorsConfigurationSource") CorsConfigurationSource corsSource,
+            @Qualifier("requestMappingHandlerMapping") ObjectProvider<RequestMappingHandlerMapping> mappings) throws Exception {
         http
             .cors(cors -> cors.configurationSource(corsSource))
             // An async relay can commit before the servlet chain returns. Write headers once,
@@ -102,7 +109,15 @@ public class SecurityConfig {
                     response.setContentType("application/json");
                     response.getWriter().write("{\"detail\":\"Forbidden\"}");
                 }));
+        http.addFilterAfter(new HttpQueryFilter(mappings), AuthorizationFilter.class);
         return http.build();
+    }
+
+    @Bean
+    public StrictHttpFirewall httpFirewall() {
+        StrictHttpFirewall firewall = new StrictHttpFirewall();
+        firewall.setAllowedHttpMethods(List.of("DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "QUERY"));
+        return firewall;
     }
 
     @Bean("logosCorsConfigurationSource")
@@ -133,7 +148,8 @@ public class SecurityConfig {
                 inference.addAllowedOrigin(o);
             }
         }
-        cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "QUERY"));
+        cfg.setExposedHeaders(List.of("Accept-Query", HttpHeaders.ALLOW));
         // Admin UI CORS stays tight. Inference paths previously went through the
         // orchestrator (allow-all headers); preserve that for /v1|/openai|/jobs so
         // cross-origin clients can send policy and other OpenAI-compatible headers.

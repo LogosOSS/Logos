@@ -92,9 +92,9 @@ class VllmConfig(BaseModel):
         "PER_GPU_COLD_START_MB headroom remains the sole safety buffer; "
         "gmu itself stays free of margin to avoid double-counting. Set an "
         "explicit float per model under engines.vllm.model_overrides.<model>"
-        ".gpu_memory_utilization to opt out of auto-derivation; vLLM falls "
-        "back to its own 0.9 default when neither this field nor a profile "
-        "is available.",
+        ".gpu_memory_utilization to opt out of auto-derivation. When neither "
+        "this field nor a profile is available, the worker passes 0.9 "
+        "(FALLBACK_GMU), never vLLM's own whole-GPU default.",
     )
     kv_cache_memory_bytes: str = Field(
         default="",
@@ -601,6 +601,9 @@ class LogosConfig(BaseModel):
     # keys derive from these, not from the dicts the worker wires up.
     node_entries: list[dict[str, Any]] | None = Field(default=None, exclude=True)
     node_config_revision: int = Field(default=0, exclude=True)
+    node_settings_revision: int = Field(default=0, exclude=True)
+    # What the worker had for a setting before Logos set it, so removing it there brings it back.
+    node_settings_baseline: dict[str, Any] = Field(default_factory=dict, exclude=True)
     heartbeat_interval_seconds: int = Field(default=5, ge=1)
     reconnect_backoff_seconds: int = Field(default=3, ge=1)
     # Max time between full runtime-status pushes regardless of lane churn.

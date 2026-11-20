@@ -58,8 +58,14 @@ class BenchmarkRunSettings(BenchmarkSettings):
     """One complete configuration in a benchmark batch."""
 
     model_config = ConfigDict(extra="forbid")
-    samples: int = Field(default=5, gt=0, le=100)
+    samples: int = Field(default=5, gt=0, le=500)
     max_output_tokens: int = Field(default=512, gt=0, le=4096)
+
+    @model_validator(mode="after")
+    def validate_sample_limit(self):
+        if not self.workload_id and self.samples > 100:
+            raise ValueError("Public datasets support at most 100 samples")
+        return self
 
 
 class BenchmarkBatch(BaseModel):

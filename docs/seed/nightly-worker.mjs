@@ -1,7 +1,9 @@
 // Documentation telemetry only. Use the isolated screenshots stack and seed.
 // Requires Node.js 22+. No inference or worker-control command is executed.
+// It only accepts the checks and pushes of the node configuration and node settings.
 const origin = 'http://localhost:19080';
 const models = ['llama-3.1-8b-instruct', 'qwen-2.5-72b-instruct', 'mistral-small-3.2-24b'];
+const accepted = new Set(['validate_node_config', 'sync_node_config', 'sync_node_settings']);
 const response = await fetch(`${origin}/logosdb/providers/logosnode/auth`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
@@ -37,17 +39,21 @@ ws.addEventListener('open', () => {
       })),
     },
   }));
-  ws.send(JSON.stringify({ type: 'hello', worker_id: 'Docs Local Worker', capabilities_models: models, configured_models: models }));
+  ws.send(JSON.stringify({
+    type: 'hello', worker_id: 'Docs Local Worker', capabilities_models: models, configured_models: models,
+    actions: [...accepted],
+  }));
   sendStatus();
   timer = setInterval(sendStatus, 5000);
   console.log('Documentation worker connected. Stop with Ctrl+C after capture.');
 });
 ws.addEventListener('message', ({ data }) => {
   const message = JSON.parse(data);
-  if (message.type === 'command') ws.send(JSON.stringify({
-    type: 'command_result', cmd_id: message.cmd_id, success: false,
-    error: 'Documentation worker: commands are disabled',
-  }));
+  if (message.type !== 'command') return;
+  const reply = accepted.has(message.action)
+    ? { success: true, result: { ok: true, applied: false, errors: [] } }
+    : { success: false, error: 'Documentation worker: commands are disabled' };
+  ws.send(JSON.stringify({ type: 'command_result', cmd_id: message.cmd_id, ...reply }));
 });
 ws.addEventListener('error', () => { throw new Error('Documentation worker connection failed'); });
 ws.addEventListener('close', () => { clearInterval(timer); });

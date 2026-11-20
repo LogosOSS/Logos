@@ -863,10 +863,15 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     setTimeout(() => document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 
+  updateBenchmarkSettings(settings: BenchmarkSettings): void {
+    this.benchmarkSettings.set(settings);
+    if (!settings.workload_id && this.benchmarkSampleSize() > 100) this.benchmarkSampleSize.set(100);
+  }
+
   useBenchmarkConfiguration(benchmark: ModelProviderBenchmark): void {
     this.performanceView.set('run');
     this.benchmarkSettings.set(settingsFromBenchmark(benchmark));
-    this.benchmarkSampleSize.set(Math.min(100, Math.max(1, benchmark.sample_size)));
+    this.benchmarkSampleSize.set(Math.min(this.benchmarkSettings().workload_id ? 500 : 100, Math.max(1, benchmark.sample_size)));
     setTimeout(() => document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 

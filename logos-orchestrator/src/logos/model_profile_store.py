@@ -13,6 +13,8 @@ import threading
 import time
 from typing import Any, Mapping
 
+from logos.node_config import selection_covered, selection_of
+
 SYNC_MODEL_PROFILES_ACTION = "sync_model_profiles"
 ORIGIN_LEGACY = "legacy"
 ORIGIN_LOCAL = "local"
@@ -41,6 +43,12 @@ CALIBRATION_FIELDS = frozenset(
         "wake_from_sleep_time_s",
         "residency_source",
         "last_measured_epoch",
+        # What the calibration was measured under and found at each size.
+        "config_fingerprint",
+        "calibrations_by_tp",
+        # The cache each GPU had when the total was measured; what the total includes.
+        "calibrated_kv_mb",
+        "calibrated_footprint_mb",
     }
 )
 
@@ -162,6 +170,19 @@ def material_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
     return {key: _coarse(value) for key, value in profile.items() if key not in VOLATILE_FIELDS}
 
 
+def _selection_outside(profile: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
+    """Whether the KV cache, context length or tensor-parallel size chosen for the node lies outside what was measured.
+
+    The worker applies the same rule to its own profile. A calibration measured under the
+    node's current configuration is left alone: a repeat could not cover the choice either.
+    """
+    kv_mb, context, tp = selection_of(row.get("cfg_capability"), row.get("cfg_overrides"))
+    if selection_covered(dict(profile), kv_mb, context, tp):
+        return False
+    own = profile.get("config_fingerprint")
+    return not (own and own == row.get("config_fingerprint"))
+
+
 def effective_profile(provider_id: int, row: Mapping[str, Any]) -> dict[str, Any]:
     """The profile a worker runs with, built from one model_profiles row.
 
@@ -184,6 +205,8 @@ def effective_profile(provider_id: int, row: Mapping[str, Any]) -> dict[str, Any
     # A key change (vLLM bump, config edit) keeps the old result serving
     # until the next calibration window replaces it.
     stale = cal_key_hash is None or (bool(reported) and reported != cal_key_hash)
+    if not stale and _selection_outside(profile, row):
+        stale = True
     profile["calibration_id"] = int(cal_id)
     profile["calibration_origin"] = origin
     profile["calibration_stale"] = stale

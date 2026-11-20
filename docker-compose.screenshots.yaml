@@ -34,7 +34,7 @@ services:
       - doks-internal
 
   logos-doks-keycloak:
-    image: quay.io/keycloak/keycloak:26.8.2-2@sha256:c68e286cacd87b942ac1939a0a1481461109d6acd3a57dc496969a319a76bbf0
+    image: quay.io/keycloak/keycloak:26.8.2-3@sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3
     container_name: doks-keycloak
     restart: unless-stopped
     command: ["start-dev", "--import-realm", "--health-enabled=true"]
@@ -42,9 +42,6 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_HOSTNAME: "http://localhost:18085"
-      # Disable the JVM's AVX-512 Base64 decoder intrinsic (CVE-2026-114938)
-      # until the Keycloak image ships a JRE with the fix.
-      JAVA_OPTS_APPEND: "-XX:-UseBASE64Intrinsics"
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
     ports:

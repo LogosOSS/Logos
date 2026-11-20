@@ -2,6 +2,7 @@ package de.tum.cit.aet.logos.logoswebservice.configuration.controller;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.ResponseEntity;
@@ -21,6 +22,7 @@ import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.AddProviderRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.AddLaneRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.CalibrateUncalibratedRequestDTO;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReplaceNodeSettingsRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ConnectModelProviderRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.DeleteLaneRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.DeleteProviderRequestDTO;
@@ -28,6 +30,8 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.dto.DisconnectModelPro
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.DrainLaneRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.LaneLoadStatusRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.LockLaneRequestDTO;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.NodeConfigRequestDTO;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReplaceNodeConfigRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseCalibrationClaimRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseRecoveryRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseNodeMaintenanceRequestDTO;
@@ -179,12 +183,62 @@ public class ProviderController {
     public ResponseEntity<?> calibrateUncalibrated(@RequestBody CalibrateUncalibratedRequestDTO req) {
         if (req.providerId() == null) return ResponseEntity.badRequest().body(Map.of("error", "provider_id is required"));
         try {
-            return workerAdminClient.calibrateUncalibrated(req.providerId());
+            return workerAdminClient.calibrateUncalibrated(req.providerId(), req.model());
         } catch (RestClientResponseException e) {
             return ResponseEntity.status(e.getStatusCode()).body(parseOrWrap(e.getResponseBodyAsString()));
         } catch (Exception e) {
             return ResponseEntity.status(503).body(Map.of("error", e.getMessage()));
         }
+    }
+
+    /*
+     * The model configuration of a node. These paths stay outside
+     * /providers/logosnode: the proxy routes that prefix to the orchestrator,
+     * and a path listed nowhere would answer 404 there.
+     */
+    @PostMapping("/node_config/get")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> getNodeConfig(@RequestBody NodeConfigRequestDTO req) {
+        if (req.providerId() == null) return missing("provider_id");
+        return relay(() -> workerAdminClient.getNodeConfig(req.providerId()));
+    }
+
+    @PostMapping("/node_config/replace")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> replaceNodeConfig(
+            @RequestBody ReplaceNodeConfigRequestDTO req,
+            @RequestAttribute("authContext") AuthContext auth) {
+        if (req.providerId() == null) return missing("provider_id");
+        if (req.expectedRevision() == null) return missing("expected_revision");
+        if (req.entries() == null) return missing("entries");
+        return relay(() -> workerAdminClient.replaceNodeConfig(
+            req.providerId(), auth.userId(), req.expectedRevision(), req.entries()));
+    }
+
+    @PostMapping("/node_settings/get")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> getNodeSettings(@RequestBody NodeConfigRequestDTO req) {
+        if (req.providerId() == null) return missing("provider_id");
+        return relay(() -> workerAdminClient.getNodeSettings(req.providerId()));
+    }
+
+    @PostMapping("/node_settings/replace")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> replaceNodeSettings(
+            @RequestBody ReplaceNodeSettingsRequestDTO req,
+            @RequestAttribute("authContext") AuthContext auth) {
+        if (req.providerId() == null) return missing("provider_id");
+        if (req.expectedRevision() == null) return missing("expected_revision");
+        if (req.settings() == null) return missing("settings");
+        return relay(() -> workerAdminClient.replaceNodeSettings(
+            req.providerId(), auth.userId(), req.expectedRevision(), req.settings()));
+    }
+
+    @PostMapping("/node_config/insights")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> nodeConfigInsights(@RequestBody NodeConfigRequestDTO req) {
+        if (req.providerId() == null) return missing("provider_id");
+        return relay(() -> workerAdminClient.nodeConfigInsights(req.providerId()));
     }
 
     @PostMapping("/providers/logosnode/stop_calibration")
@@ -417,6 +471,21 @@ public class ProviderController {
     }
 
     /** e.getMessage() is null for some exceptions, and Map.of rejects null values. */
+    private static ResponseEntity<?> missing(String field) {
+        return ResponseEntity.badRequest().body(Map.of("error", field + " is required"));
+    }
+
+    /** The orchestrator's answer as it is; its error status and body pass through, an unreachable one is a 503. */
+    private ResponseEntity<?> relay(Supplier<ResponseEntity<Map>> call) {
+        try {
+            return call.get();
+        } catch (RestClientResponseException e) {
+            return ResponseEntity.status(e.getStatusCode()).body(parseOrWrap(e.getResponseBodyAsString()));
+        } catch (Exception e) {
+            return ResponseEntity.status(503).body(errorBody(e));
+        }
+    }
+
     private Object errorBody(Exception e) {
         return Map.of("error", e.getMessage() != null ? e.getMessage() : e.toString());
     }

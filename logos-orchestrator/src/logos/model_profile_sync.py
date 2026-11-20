@@ -370,6 +370,7 @@ class ModelProfileSyncService:
         model_names: list[str] | None = None,
         calibration_key_hashes: Dict[str, str] | None = None,
         slice_gpu_counts: Dict[str, int] | None = None,
+        config_fingerprints: Dict[str, str] | None = None,
     ) -> None:
         """Send the stored profiles to a worker that syncs with the database."""
         if not _main._logosnode_registry.supports_action(provider_id, SYNC_MODEL_PROFILES_ACTION):
@@ -377,7 +378,11 @@ class ModelProfileSyncService:
         try:
             if calibration_key_hashes:
                 await asyncio.to_thread(
-                    self.update_reported_keys, provider_id, calibration_key_hashes, slice_gpu_counts
+                    self.update_reported_keys,
+                    provider_id,
+                    calibration_key_hashes,
+                    slice_gpu_counts,
+                    config_fingerprints,
                 )
             profiles = await asyncio.to_thread(self.load_effective_profiles, provider_id, model_names)
             await _main._logosnode_registry.send_command(
@@ -399,10 +404,13 @@ class ModelProfileSyncService:
         provider_id: int,
         calibration_key_hashes: Dict[str, str],
         slice_gpu_counts: Dict[str, int] | None = None,
+        config_fingerprints: Dict[str, str] | None = None,
     ) -> None:
         """Store what a node reports about its models, then let it adopt."""
         with DBManager() as db:
-            db.update_reported_calibration_keys(provider_id, calibration_key_hashes, slice_gpu_counts)
+            db.update_reported_calibration_keys(
+                provider_id, calibration_key_hashes, slice_gpu_counts, config_fingerprints
+            )
             db.session.commit()
             try:
                 with self.adoption_gate:
@@ -473,9 +481,10 @@ class ModelProfileSyncService:
         model_names: list[str] | None = None,
         calibration_key_hashes: Dict[str, str] | None = None,
         slice_gpu_counts: Dict[str, int] | None = None,
+        config_fingerprints: Dict[str, str] | None = None,
     ) -> None:
         task = asyncio.create_task(
-            self.push_profiles(provider_id, model_names, calibration_key_hashes, slice_gpu_counts)
+            self.push_profiles(provider_id, model_names, calibration_key_hashes, slice_gpu_counts, config_fingerprints)
         )
         _main._background_tasks.add(task)
         task.add_done_callback(_main._background_tasks.discard)
