@@ -269,3 +269,25 @@ class TestPersistence:
         store = LatencyStore()  # no db_factory
         store.record_overhead("m", 1, ReadinessTier.COLD, 30.0)
         assert store.get_overhead_s("m", 1, ReadinessTier.COLD) == pytest.approx(30.0)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1.0, 0.0])
+def test_invalid_latency_samples_cannot_poison_estimates(value):
+    store = make_store()
+    store.record_overhead("m", 1, ReadinessTier.COLD, 5)
+    store.record_e2e_latency("m", 1, 5)
+    store.record_prefill("m", 1, 5, 100)
+    store.record_overhead("m", 1, ReadinessTier.COLD, value)
+    store.record_e2e_latency("m", 1, value)
+    store.record_prefill("m", 1, value, 100)
+    assert store.get_overhead_s("m", 1, ReadinessTier.COLD) == 5
+    assert store.get_e2e_latency_s("m", 1) == 5
+    assert store.get_prefill_s("m", 1, 100) == 5
+
+
+def test_short_prefill_and_service_observations_are_not_filtered_as_load_noise():
+    store = make_store()
+    store.record_prefill("m", 1, 0.02, 200)
+    store.record_e2e_latency("m", 1, 0.05)
+    assert store.get_prefill_s("m", 1, 1000) == pytest.approx(0.1)
+    assert store.get_e2e_latency_s("m", 1) == pytest.approx(0.05)

@@ -109,9 +109,13 @@ public class GatewayOrchestratorProxy {
         });
 
         InputStream upstreamBody = upstream.body();
+        GatewayRelayCleanup.CloseAction close = GatewayRelayCleanup.closeWhenRequestEnds(upstreamBody);
         StreamingResponseBody stream = outputStream -> {
-            try (upstreamBody; OutputStream out = outputStream) {
+            try (OutputStream out = outputStream) {
+                if (close.isClosed()) throw new IOException("The upstream body was released");
                 relay(upstreamBody, out);
+            } finally {
+                close.run();
             }
         };
 

@@ -45,12 +45,37 @@ def test_node_layout_and_bookkeeping_do_not_change_the_plan_hash():
     assert plan_hash(base) == plan_hash({**base, "model": "org/other"})
 
 
+def test_the_choice_inside_the_measured_range_is_not_part_of_the_cuda_plan_hash():
+    base = {"model": "org/m", "dtype": "auto"}
+    assert plan_hash(base) == plan_hash({**base, "kv_cache_memory_bytes": "8G", "max_model_len": 4096})
+
+
+def test_metal_measures_one_point_so_its_context_length_stays_in_the_hash():
+    base = {"model": "org/m", "dtype": "auto"}
+
+    assert plan_hash({**base, "max_model_len": 4096}, metal=True) != plan_hash(
+        {**base, "max_model_len": 8192}, metal=True
+    )
+    assert plan_hash({**base, "max_model_len": 4096}, metal=True) != plan_hash(base, metal=True)
+    # The KV cache size still is a choice, not a condition of the measurement.
+    assert plan_hash({**base, "kv_cache_memory_bytes": "8G"}, metal=True) == plan_hash(base, metal=True)
+
+
+def test_the_metal_key_follows_the_context_length_and_the_cuda_key_does_not(monkeypatch):
+    plan = {"model": "org/m"}
+    cuda = (_key(plan, [_gpu(0)]), _key({**plan, "max_model_len": 8192}, [_gpu(0)]))
+    assert cuda[0] == cuda[1]
+
+    monkeypatch.setenv("LOGOS_WORKER_BACKEND", "metal")
+    assert _key(plan, [_gpu(0)]) != _key({**plan, "max_model_len": 8192}, [_gpu(0)])
+
+
 @pytest.mark.parametrize(
     "change",
     [
         {"extra_args": ["--hf-overrides", "{}"]},
         {"kv_cache_dtype": "fp8"},
-        {"kv_cache_memory_bytes": "6G"},
+        {"calibration_kv_cache_memory_bytes": "6G"},
         {"speculative_config": "{}"},
     ],
 )
@@ -159,3 +184,87 @@ def test_the_slice_size_is_the_gpus_a_plan_may_use():
     devices = [_gpu(0), _gpu(1), _gpu(2)]
     plans = [{"model": "org/pinned", "gpu_devices": "0,1"}]
     assert slice_gpu_counts(plans, ["org/pinned", "org/free"], devices) == {"org/pinned": 2, "org/free": 3}
+
+
+def test_the_choice_inside_the_measured_range_does_not_change_the_validity_key():
+    base = {"model": "org/m", "dtype": "auto"}
+    chosen = {**base, "kv_cache_memory_bytes": "8G", "max_model_len": 32768, "tensor_parallel_size": 2}
+
+    assert plan_hash(base) == plan_hash(chosen)
+    assert _key(base, [_gpu(0), _gpu(1)]) == _key(chosen, [_gpu(0), _gpu(1)])
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"quantization": "awq"},
+        {"extra_args": ["--x"]},
+        {"calibration_kv_cache_memory_bytes": "4G"},
+    ],
+)
+def test_what_shapes_a_measurement_changes_the_validity_key(change):
+    base = {"model": "org/m", "tensor_parallel_size": 2}
+
+    assert plan_hash(base) != plan_hash({**base, **change})
+
+
+def test_placing_a_model_does_not_change_the_key_it_was_measured_under():
+    # What "Set placement" stores next to the settings the model was measured with: TP, KV cache and context.
+    measured = {"model": "org/m", "quantization": "awq", "enforce_eager": True, "extra_args": ["--x"]}
+    placed = {**measured, "tensor_parallel_size": 1, "kv_cache_memory_bytes": "4G", "max_model_len": 16384}
+
+    assert plan_hash(measured) == plan_hash(placed)
+    assert _key(measured, [_gpu(0)]) == _key(placed, [_gpu(0)])
+
+
+def test_the_fingerprint_follows_every_configured_value_and_ignores_layout():
+    from logos_worker_node.profile_fingerprint import config_fingerprint
+
+    base = {"model": "org/m", "tensor_parallel_size": 2}
+
+    assert config_fingerprint(base) != config_fingerprint({**base, "tensor_parallel_size": 4})
+    assert config_fingerprint(base) != config_fingerprint({**base, "kv_cache_memory_bytes": "8G"})
+    assert config_fingerprint(base) != config_fingerprint({**base, "max_model_len": 4096})
+    assert config_fingerprint(base) == config_fingerprint({**base, "gpu_devices": "0,1", "_bookkeeping": 1})
+
+
+def test_a_calibration_plan_measures_the_full_range_unless_pinned_for_calibration():
+    from logos_worker_node.profile_fingerprint import calibration_plan
+
+    plan = {
+        "model": "org/m",
+        "kv_cache_memory_bytes": "8G",
+        "max_model_len": 4096,
+        "tensor_parallel_size": 2,
+        "dtype": "auto",
+    }
+
+    # The tensor-parallel size is a choice too: the measurement tries every size that works.
+    assert calibration_plan(plan) == {"model": "org/m", "dtype": "auto"}
+    assert calibration_plan(plan, keep_tensor_parallel=True) == {
+        "model": "org/m",
+        "dtype": "auto",
+        "tensor_parallel_size": 2,
+    }
+    pinned = calibration_plan({**plan, "calibration_kv_cache_memory_bytes": "4G"})
+    assert pinned == {"model": "org/m", "dtype": "auto", "kv_cache_memory_bytes": "4G"}
+
+
+def test_node_fingerprints_and_selections_follow_the_configured_models():
+    from logos_worker_node.models import LogosConfig
+    from logos_worker_node.profile_fingerprint import node_config_fingerprints, node_selections
+
+    cfg = AppConfig(logos=LogosConfig(configured_models=["org/a", "org/b", "org/c"]))
+    plans = [
+        {"model": "org/a", "kv_cache_memory_bytes": "4G", "max_model_len": 8192, "tensor_parallel_size": 2},
+        {"model": "org/b", "kv_cache_memory_bytes": "bad"},
+    ]
+
+    prints = node_config_fingerprints(cfg, plans)
+    assert set(prints) == {"org/a", "org/b", "org/c"}
+    assert len(set(prints.values())) == 3
+    assert node_selections(cfg, plans) == {
+        "org/a": (4096.0, 8192, 2),
+        "org/b": (None, None, None),
+        "org/c": (None, None, None),
+    }

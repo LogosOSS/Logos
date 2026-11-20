@@ -657,6 +657,7 @@ class RequestPipeline:
             "is_cold_start": scheduling_result.is_cold_start,
             "ettft_estimate_ms": scheduling_result.ettft_estimate_ms,
             "ettft_tier": scheduling_result.ettft_tier,
+            "ettft_provider_id": scheduling_result.ettft_provider_id,
             "warmth_state": scheduling_result.warmth_state,
         }
         if schedule_start_s is not None:

@@ -38,6 +38,7 @@ import jakarta.servlet.http.HttpServletResponse;
  * <p><b>Remaining process state</b> (gateway is otherwise stateless per request):
  * <ul>
  *   <li>{@link GatewayBudgetService}'s short-TTL budget usage/limit cache</li>
+ *   <li>{@link GatewayInFlightLimit} bounds owned request/provider I/O</li>
  *   <li>JDK {@link java.net.http.HttpClient} connection pools in the forwarders</li>
  * </ul>
  * Cloud RPM/TPM live in Redis ({@link GatewayCloudRateLimiter}), shared by every
@@ -58,6 +59,7 @@ public class InferenceGatewayController {
     private final GatewayCloudRateLimiter cloudRateLimiter;
     private final GatewayOrchestratorProxy orchestratorProxy;
     private final ObjectMapper objectMapper;
+    private final GatewayInFlightLimit inFlightLimit;
 
     public InferenceGatewayController(
             @Value("${logos.gateway.enabled:true}") boolean enabled,
@@ -66,7 +68,7 @@ public class InferenceGatewayController {
             GatewayCloudForwarder cloudForwarder,
             GatewayCloudRateLimiter cloudRateLimiter,
             GatewayOrchestratorProxy orchestratorProxy,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper, GatewayInFlightLimit inFlightLimit) {
         this.enabled = enabled;
         this.authService = authService;
         this.cloudAccounting = cloudAccounting;
@@ -74,6 +76,7 @@ public class InferenceGatewayController {
         this.cloudRateLimiter = cloudRateLimiter;
         this.orchestratorProxy = orchestratorProxy;
         this.objectMapper = objectMapper;
+        this.inFlightLimit = inFlightLimit;
     }
 
     @RequestMapping(
@@ -82,7 +85,16 @@ public class InferenceGatewayController {
             RequestMethod.PATCH, RequestMethod.DELETE, RequestMethod.OPTIONS})
     public ResponseEntity<StreamingResponseBody> handle(HttpServletRequest request, HttpServletResponse response)
             throws IOException {
-        return GatewayClientFlush.flushingTo(response, route(request));
+        GatewayRelayCleanup.Lifecycle lifecycle = GatewayRelayCleanup.begin(request, inFlightLimit.tryAcquire());
+        try {
+            ResponseEntity<StreamingResponseBody> routed = GatewayClientFlush.flushingTo(response, route(request));
+            if (routed.getBody() == null) return routed;
+            return ResponseEntity.status(routed.getStatusCode()).headers(routed.getHeaders())
+                .body(lifecycle.relay(routed.getBody()));
+        } catch (IOException | RuntimeException | Error failure) {
+            lifecycle.close();
+            throw failure;
+        }
     }
 
     private ResponseEntity<StreamingResponseBody> route(HttpServletRequest request) throws IOException {

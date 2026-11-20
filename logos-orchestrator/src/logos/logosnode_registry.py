@@ -21,6 +21,7 @@ from logos.benchmarks.reservations import benchmark_reservations
 from logos.errors import UpstreamStreamError
 from logos.monitoring import prometheus_metrics as prom
 from logos.residency_policy import DEFAULT_RESIDENCY_POLICY, configured_residency_policy
+from logos.runtime_latency import HistogramDelta
 from logos.terminal_logging import (
     BOLD,
     CYAN,
@@ -51,7 +52,14 @@ class LogosNodeCommandError(RuntimeError):
 
 
 class LogosNodeCommandRejectedError(LogosNodeCommandError):
-    """The worker explicitly refused a command without accepting it."""
+    """The worker explicitly refused a command without accepting it.
+
+    ``errors`` holds the problems one by one when the worker listed them.
+    """
+
+    def __init__(self, message: str, errors: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.errors: list[str] = list(errors or [])
 
 
 class MaintenanceBusyError(LogosNodeCommandError):
@@ -460,14 +468,13 @@ class LogosNodeRuntimeRegistry:
         # reference to fire-and-forget tasks until they complete.
         self._cancellation_tasks: set[asyncio.Task] = set()
         self._latency_store = latency_store
-        # Per-(provider_id, model_name) last-ingested values for idempotency.
-        # Workers retain cold/wake fields across heartbeats; histogram counts are
-        # cumulative — only record when a value has actually changed or new samples
-        # arrived, to avoid inflating EWMA counts with duplicate observations.
-        self._prev_lane_cold_s: dict[tuple[int, str], float] = {}
-        self._prev_lane_wake_s: dict[tuple[int, str], float] = {}
-        self._prev_lane_tpot_count: dict[tuple[int, str], float] = {}
-        self._prev_lane_e2e_count: dict[tuple[int, str], float] = {}
+        # Per engine process, rather than per model: replicas have independent
+        # counters and otherwise make unchanged snapshots look like new samples.
+        self._prev_lane_cold_s: dict[tuple, float] = {}
+        self._prev_lane_wake_s: dict[tuple, float] = {}
+        self._lane_tpot_histograms: dict[tuple, HistogramDelta] = {}
+        self._lane_e2e_histograms: dict[tuple, HistogramDelta] = {}
+        self._prev_lane_prefill: dict[tuple, tuple] = {}
 
     def _absorb_latency_observations(self, provider_id: int, runtime: dict[str, Any]) -> None:
         """Extract timing observations from a worker status update and feed them
@@ -478,6 +485,7 @@ class LogosNodeRuntimeRegistry:
         #   ← sdi.providers.logosnode_provider ← logosnode_registry
         from logos.pipeline.ettft_estimator import ReadinessTier  # noqa: PLC0415
 
+        seen_lanes: set[tuple] = set()
         for lane in runtime.get("lanes") or []:
             if not isinstance(lane, dict):
                 continue
@@ -485,7 +493,10 @@ class LogosNodeRuntimeRegistry:
             if not model_name:
                 continue
 
-            _lane_key = (provider_id, model_name)
+            process = lane.get("process")
+            pid = process.get("pid") if isinstance(process, dict) else None
+            _lane_key = (provider_id, model_name, str(lane.get("lane_id") or model_name), str(pid or ""))
+            seen_lanes.add(_lane_key)
 
             # Cold load timing — workers retain the last value across heartbeats,
             # so only record when it changes to avoid inflating the EWMA count.
@@ -502,26 +513,19 @@ class LogosNodeRuntimeRegistry:
                     self._latency_store.record_overhead(model_name, provider_id, ReadinessTier.SLEEPING, float(wake_s))
                     self._prev_lane_wake_s[_lane_key] = wake_s
 
-            # TPOT and e2e latency from vLLM Prometheus histograms.
-            # Both histograms are cumulative; use the +Inf bucket (total count) as a
-            # generation marker — only ingest when new samples have actually arrived.
+            # Learn the recent interval, not the median of all requests since
+            # engine startup. Duplicate snapshots contain no new observations.
             bm = lane.get("backend_metrics")
             if isinstance(bm, dict):
-                tpot_hist = bm.get("tpot_histogram") or {}
-                tpot_total = float(tpot_hist.get("+Inf", 0.0))
-                if tpot_total > 0 and tpot_total != self._prev_lane_tpot_count.get(_lane_key, 0.0):
-                    tpot_p50 = _histogram_quantile(tpot_hist, 0.50)
-                    if tpot_p50 > 0.0:
-                        self._latency_store.record_ttft(model_name, provider_id, tpot_p50)
-                    self._prev_lane_tpot_count[_lane_key] = tpot_total
-
-                e2e_hist = bm.get("e2e_latency_histogram") or {}
-                e2e_total = float(e2e_hist.get("+Inf", 0.0))
-                if e2e_total > 0 and e2e_total != self._prev_lane_e2e_count.get(_lane_key, 0.0):
-                    e2e_p50 = _histogram_quantile(e2e_hist, 0.50)
-                    if e2e_p50 > 0.0:
-                        self._latency_store.record_e2e_latency(model_name, provider_id, e2e_p50)
-                    self._prev_lane_e2e_count[_lane_key] = e2e_total
+                for histories, metric, record in (
+                    (self._lane_tpot_histograms, "tpot_histogram", self._latency_store.record_ttft),
+                    (self._lane_e2e_histograms, "e2e_latency_histogram", self._latency_store.record_e2e_latency),
+                ):
+                    delta = histories.setdefault(_lane_key, HistogramDelta()).observe(bm.get(metric))
+                    if delta is not None:
+                        median = _histogram_quantile(delta, 0.50)
+                        if median > 0.0:
+                            record(model_name, provider_id, median)
                 # Prefill timing: the worker reports the wall time and prompt-token
                 # count for the most recently completed prefill so the scheduler can
                 # learn the per-token rate and estimate cost for future requests.
@@ -534,7 +538,27 @@ class LogosNodeRuntimeRegistry:
                     and math.isfinite(prefill_tokens)
                     and prefill_tokens > 0
                 ):
-                    self._latency_store.record_prefill(model_name, provider_id, float(prefill_s), float(prefill_tokens))
+                    ttft_histogram = bm.get("ttft_histogram")
+                    completion_count = ttft_histogram.get("+Inf") if isinstance(ttft_histogram, dict) else None
+                    observation = (prefill_s, prefill_tokens, completion_count)
+                    if self._prev_lane_prefill.get(_lane_key) != observation:
+                        self._latency_store.record_prefill(
+                            model_name, provider_id, float(prefill_s), float(prefill_tokens)
+                        )
+                        self._prev_lane_prefill[_lane_key] = observation
+
+        # Full status snapshots replace a provider's lane inventory. Retire
+        # disappeared processes without disturbing other providers' history.
+        for history in (
+            self._prev_lane_cold_s,
+            self._prev_lane_wake_s,
+            self._lane_tpot_histograms,
+            self._lane_e2e_histograms,
+            self._prev_lane_prefill,
+        ):
+            for key in list(history):
+                if key[0] == provider_id and key not in seen_lanes:
+                    del history[key]
 
     def set_on_runtime_updated(self, callback: Callable[[int], None] | None) -> None:
         """Register the post-status hook. See ``_on_runtime_updated``."""
@@ -1489,7 +1513,11 @@ class LogosNodeRuntimeRegistry:
         # timeout — so it is raised like any other command failure.
         if isinstance(payload, dict) and payload.get("ok") is False:
             _undo_optimistic_calibration_mark()
-            raise LogosNodeCommandRejectedError(str(payload.get("error", f"worker refused '{action}'")))
+            listed = payload.get("errors")
+            raise LogosNodeCommandRejectedError(
+                str(payload.get("error", f"worker refused '{action}'")),
+                [str(item) for item in listed] if isinstance(listed, list) else None,
+            )
         return payload
 
     async def send_stream_command(

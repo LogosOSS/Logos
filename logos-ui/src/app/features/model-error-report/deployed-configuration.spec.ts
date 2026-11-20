@@ -1,4 +1,8 @@
-import { deployedMeasurement, deployedResult, DeploymentSnapshot } from './deployed-configuration';
+import { TestBed } from '@angular/core/testing';
+import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClientTesting, HttpTestingController } from '@angular/common/http/testing';
+import { provideRouter } from '@angular/router';
+import { DeployedConfiguration, deployedMeasurement, deployedResult, DeploymentSnapshot } from './deployed-configuration';
 import { benchmarkResultRow } from './benchmark-result-row';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 
@@ -9,6 +13,46 @@ function run(id: number): ModelProviderBenchmark {
     configuration: { serving: { ...deployment.configuration, command: 'vllm serve' }, nightly: { series_key: 'series', baseline_id: 1 } },
     metrics: { request_totals: { successful: 1, total: 1, errored: 0, incomplete: 0 }, aggregate_output_tokens_per_second: 29 } };
 }
+
+describe('Deployment status on Overview', () => {
+  it('uses worker telemetry for the status and shows sleeping lane settings separately', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
+    const fixture = TestBed.createComponent(DeployedConfiguration);
+    fixture.componentRef.setInput('pairId', 31);
+    fixture.componentRef.setInput('providerName', 'Worker');
+    fixture.componentRef.setInput('runs', []);
+    fixture.detectChanges();
+    const component = fixture.componentInstance;
+    expect(component.workerStatus()).toBe('Checking…');
+    const http = TestBed.inject(HttpTestingController);
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush({
+      deployment: { available: false, maintenance: false, status: 'sleeping', configuration: {},
+        configured_settings: { max_num_seqs: 4 } },
+    });
+    await Promise.resolve();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Model sleeping');
+    expect(component.configuredParameters().map(item => item.key)).toContain('max_num_seqs');
+    expect(component.parameters()).toHaveLength(0);
+    const set = (update: Partial<DeploymentSnapshot>) => component.state.update(state => ({
+      ...state!, deployment: { ...deployment, ...update },
+    }));
+    set({ active_replicas: 2 });
+    expect(component.workerStatus()).toBe('Active · 2 replicas');
+    set({});
+    expect(component.workerStatus()).toBe('Active');
+    set({ maintenance: true });
+    expect(component.workerStatus()).toBe('Benchmark maintenance');
+    set({ available: false, status: 'offline' });
+    expect(component.workerStatus()).toBe('Worker offline');
+    set({ available: false });
+    expect(component.workerStatus()).toBe('No live status');
+    component.error.set(true);
+    expect(component.workerStatus()).toBe('Status check failed');
+    fixture.destroy();
+    http.verify();
+  });
+});
 
 describe('Current deployment measurement', () => {
   it('matches captured settings and environment, independently of a historical winner', () => {

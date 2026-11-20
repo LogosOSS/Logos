@@ -5,7 +5,7 @@ pins the steady-state KV pool. Admission must check the exact requested GPU
 set (when pinned), debit accepted load/wake footprints across the batch, never
 invent free VRAM for victims without known placement, filter mixed-size cards
 by each card's own need, and read calculated startup GMU from the worker
-(configured / derived / default 0.9) rather than inventing the auto-derive floor.
+(configured / derived / worker fallback 0.9) rather than inventing the auto-derive floor.
 """
 
 from __future__ import annotations
@@ -351,7 +351,7 @@ def test_e_empty_configured_map_does_not_imply_floor_half():
         include_startup_gmu_field=False,
         available_mb=free,
     )
-    # No startup_gmu publish, no profile pin → vLLM default 0.9.
+    # No startup_gmu publish, no profile pin → the worker fallback 0.9.
     assert planner._startup_gmu_for_model(PROVIDER_ID, MODEL, _profile(observed_gmu=None)) == 0.9  # noqa: SLF001
     assert planner._validate_vram_budget([_load(gpu_devices="0")]) == []  # noqa: SLF001
 

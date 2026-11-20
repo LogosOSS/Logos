@@ -178,16 +178,19 @@ public class GatewayCloudForwarder {
         try {
             upstream = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            if (onFailure != null) {
-                onFailure.accept("Interrupted while forwarding to cloud",
-                    new GatewayForwardResult(Map.of(), null, null,
-                        new GatewayForwardTimings(providerCall, null, Instant.now())));
+            try {
+                if (onFailure != null) {
+                    notifyFailure(onFailure, "Interrupted while forwarding to cloud",
+                        new GatewayForwardResult(Map.of(), null, null,
+                            new GatewayForwardTimings(providerCall, null, Instant.now())));
+                }
+            } finally {
+                Thread.currentThread().interrupt();
             }
             throw new IOException("Interrupted while forwarding to cloud", e);
         } catch (IOException e) {
             if (onFailure != null) {
-                onFailure.accept(e.getMessage(), new GatewayForwardResult(Map.of(), null, null,
+                notifyFailure(onFailure, e.getMessage(), new GatewayForwardResult(Map.of(), null, null,
                         new GatewayForwardTimings(providerCall, null, Instant.now())));
             }
             throw e;
@@ -211,70 +214,97 @@ public class GatewayCloudForwarder {
         // an executor thread to run the relay shifts the provider's timestamps.
         // It starts here, not in the relay, for the second reason.
         String upstreamContentType = upstream.headers().firstValue("content-type").orElse(null);
-        UpstreamPump pump = UpstreamPump.start(upstream.body(), headersAt, relayAttachTimeout, abandoned -> {
-            GatewayUsageCapture capture = new GatewayUsageCapture(OutputStream.nullOutputStream(),
-                objectMapper, upstreamContentType, retainResponseBody, abandoned::currentChunkAt);
-            drain(abandoned, capture, providerCall, body, status,
-                GatewayUsageCapture.isEventStream(upstreamContentType), onSuccess, onFailure);
-        });
+        GatewayInFlightLimit.Owner providerOwner = GatewayRelayCleanup.retainProvider();
+        UpstreamPump pump;
+        try {
+            pump = UpstreamPump.start(upstream.body(), headersAt, relayAttachTimeout, abandoned -> {
+                try {
+                    GatewayUsageCapture capture = new GatewayUsageCapture(OutputStream.nullOutputStream(),
+                        objectMapper, upstreamContentType, retainResponseBody, abandoned::currentChunkAt);
+                    drain(abandoned, capture, providerCall, body, status,
+                        GatewayUsageCapture.isEventStream(upstreamContentType), onSuccess, onFailure, providerOwner);
+                } catch (RuntimeException | Error failure) {
+                    abandoned.close();
+                    providerOwner.close();
+                    throw failure;
+                }
+            });
+        } catch (RuntimeException | Error failure) {
+            try {
+                upstream.body().close();
+            } finally {
+                providerOwner.close();
+            }
+            throw failure;
+        }
         pump.drainOnClientEnd = upstreamOk && GatewayUsageCapture.isEventStream(upstreamContentType);
         GatewayRelayCleanup.closeWhenRequestEnds(pump);
         StreamingResponseBody stream = outputStream -> {
             // Claim ownership before creating capture or entering the settlement path.
             // A request-end drain may already own the buffered provider bytes.
             pump.attachRelay();
-            IOException streamError = null;
-            // The capture sits between the upstream and the client so the
-            // reported token counts can be billed, and settled usage can carry
-            // a live cost line. Without a pricer the bytes stay verbatim.
-            GatewayCostPricer pricer = cloudAccounting == null ? null : cloudAccounting.costPricer(deployment);
-            GatewayUsageCapture capture = new GatewayUsageCapture(
-                outputStream, objectMapper, upstreamContentType, retainResponseBody, pump::currentChunkAt,
-                pricer);
             boolean draining = false;
             try {
-                pump.transferAttachedTo(capture);
-                capture.flush();
-            } catch (GatewayUsageCapture.ClientDisconnectedException e) {
-                if (upstreamOk && GatewayUsageCapture.isEventStream(upstreamContentType)) {
-                    draining = true;
-                    drain(pump, capture, providerCall, body, status, true, onSuccess, onFailure);
-                    throw e;
+                IOException streamError = null;
+                // The capture sits between the upstream and the client so the
+                // reported token counts can be billed, and settled usage can carry
+                // a live cost line. Without a pricer the bytes stay verbatim.
+                GatewayCostPricer pricer = cloudAccounting == null ? null : cloudAccounting.costPricer(deployment);
+                GatewayUsageCapture capture = new GatewayUsageCapture(
+                    outputStream, objectMapper, upstreamContentType, retainResponseBody, pump::currentChunkAt,
+                    pricer);
+                try {
+                    pump.transferAttachedTo(capture);
+                    capture.flush();
+                } catch (GatewayUsageCapture.ClientDisconnectedException e) {
+                    if (upstreamOk && GatewayUsageCapture.isEventStream(upstreamContentType)) {
+                        drain(pump, capture, providerCall, body, status, true, onSuccess, onFailure, providerOwner);
+                        draining = true;
+                        throw e;
+                    }
+                    streamError = e;
+                } catch (IOException e) {
+                    streamError = e;
+                } finally {
+                    if (!draining) {
+                        pump.close();
+                        // Closing the servlet output is MVC's responsibility. Parsing
+                        // the final buffered line must not flush to a disconnected client.
+                        capture.detachClient();
+                        capture.close();
+                    }
                 }
-                streamError = e;
-            } catch (IOException e) {
-                streamError = e;
+                GatewayForwardTimings timings = new GatewayForwardTimings(
+                    providerCall, capture.firstTokenAt(), pump.endedAt());
+                if (streamError != null) {
+                    if (onFailure != null) {
+                        notifyFailure(onFailure, streamError.getMessage(), new GatewayForwardResult(
+                            capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
+                    }
+                    throw streamError;
+                }
+                if (capture.upstreamError() != null) {
+                    if (onFailure != null) {
+                        notifyFailure(onFailure, capture.upstreamError(), new GatewayForwardResult(
+                            capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
+                    }
+                } else if (upstreamOk) {
+                    if (onSuccess != null) {
+                        notifySuccess(onSuccess, new GatewayForwardResult(
+                            capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
+                    }
+                } else if (onFailure != null) {
+                    notifyFailure(onFailure, "Upstream HTTP " + status, new GatewayForwardResult(
+                        capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
+                }
             } finally {
                 if (!draining) {
-                    pump.close();
-                    // Closing the servlet output is MVC's responsibility. Parsing
-                    // the final buffered line must not flush to a disconnected client.
-                    capture.detachClient();
-                    capture.close();
+                    try {
+                        pump.close();
+                    } finally {
+                        providerOwner.close();
+                    }
                 }
-            }
-            GatewayForwardTimings timings = new GatewayForwardTimings(
-                providerCall, capture.firstTokenAt(), pump.endedAt());
-            if (streamError != null) {
-                if (onFailure != null) {
-                    onFailure.accept(streamError.getMessage(), new GatewayForwardResult(
-                        capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
-                }
-                throw streamError;
-            }
-            if (capture.upstreamError() != null) {
-                if (onFailure != null) {
-                    onFailure.accept(capture.upstreamError(), new GatewayForwardResult(
-                        capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
-                }
-            } else if (upstreamOk) {
-                if (onSuccess != null) {
-                    onSuccess.accept(new GatewayForwardResult(
-                        capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
-                }
-            } else if (onFailure != null) {
-                onFailure.accept("Upstream HTTP " + status, new GatewayForwardResult(
-                    capture.usage(), capture.capturedBody(), capture.serviceTier(), timings));
             }
         };
 
@@ -282,55 +312,81 @@ public class GatewayCloudForwarder {
             .body(GatewayRelayOccupancy.track(stream));
     }
 
+    /** An I/O cancellation must not interrupt the JDBC write that accounts for it. */
+    private static void notifyFailure(java.util.function.BiConsumer<String, GatewayForwardResult> callback,
+                                      String error, GatewayForwardResult result) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            callback.accept(error, result);
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void notifySuccess(java.util.function.Consumer<GatewayForwardResult> callback,
+                                      GatewayForwardResult result) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            callback.accept(result);
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
     /** Transfers capture to a single background owner, independent of MVC's relay executor. */
     private void drain(UpstreamPump pump, GatewayUsageCapture capture, Instant providerCall, byte[] request,
                        int status, boolean eventStream, java.util.function.Consumer<GatewayForwardResult> onSuccess,
-                       java.util.function.BiConsumer<String, GatewayForwardResult> onFailure) {
+                       java.util.function.BiConsumer<String, GatewayForwardResult> onFailure,
+                       GatewayInFlightLimit.Owner providerOwner) {
         capture.detachClient();
         pump.beginDrain();
         Thread.ofVirtual().name("gateway-usage-drain").start(() -> {
-            boolean timedOut = false;
-            IOException upstreamError = null;
             try {
-                pump.drainTo(capture, Duration.ofNanos((long) (Math.max(0, streamDrainTimeoutSeconds)
-                    * 1_000_000_000)), capture::drainComplete);
-            } catch (java.util.concurrent.TimeoutException timeout) {
-                timedOut = true;
-            } catch (IOException failure) {
-                upstreamError = failure;
-            } finally {
-                pump.close();
+                boolean timedOut = false;
+                IOException upstreamError = null;
                 try {
-                    capture.close();
-                } catch (IOException ignored) {
-                    // The detached capture owns no client resources.
+                    pump.drainTo(capture, Duration.ofNanos((long) (Math.max(0, streamDrainTimeoutSeconds)
+                        * 1_000_000_000)), capture::drainComplete);
+                } catch (java.util.concurrent.TimeoutException timeout) {
+                    timedOut = true;
+                } catch (IOException failure) {
+                    upstreamError = failure;
+                } finally {
+                    pump.close();
+                    try {
+                        capture.close();
+                    } catch (IOException ignored) {
+                        // The detached capture owns no client resources.
+                    }
                 }
-            }
-            GatewayForwardTimings timings = new GatewayForwardTimings(
-                providerCall, capture.firstTokenAt(), pump.endedAt());
-            String error = capture.upstreamError();
-            if (error == null && upstreamError != null) {
-                error = upstreamError.getMessage();
-            }
-            if (error == null && (status < 200 || status >= 400)) {
-                error = "Upstream HTTP " + status;
-            }
-            // An empty body is an empty response only when the stream ended. A
-            // provider still silent at the drain deadline may be processing the
-            // prompt, so a successful stream is then billed by estimate.
-            if (error == null && capture.firstByteAt() == null && !(timedOut && eventStream)) {
-                error = "Provider delivered no response body";
-            }
-            if (error != null || upstreamError != null) {
-                if (onFailure != null) {
-                    onFailure.accept(error, new GatewayForwardResult(capture.usage(), capture.capturedBody(),
+                GatewayForwardTimings timings = new GatewayForwardTimings(
+                    providerCall, capture.firstTokenAt(), pump.endedAt());
+                String error = capture.upstreamError();
+                if (error == null && upstreamError != null) {
+                    error = upstreamError.getMessage();
+                }
+                if (error == null && (status < 200 || status >= 400)) {
+                    error = "Upstream HTTP " + status;
+                }
+                // An empty body is an empty response only when the stream ended. A
+                // provider still silent at the drain deadline may be processing the
+                // prompt, so a successful stream is then billed by estimate.
+                if (error == null && capture.firstByteAt() == null && !(timedOut && eventStream)) {
+                    error = "Provider delivered no response body";
+                }
+                if (error != null || upstreamError != null) {
+                    if (onFailure != null) {
+                        notifyFailure(onFailure, error, new GatewayForwardResult(capture.usage(), capture.capturedBody(),
+                            capture.serviceTier(), timings));
+                    }
+                } else if (onSuccess != null) {
+                    Map<String, Long> usage = eventStream
+                        ? capture.disconnectedUsage(request, timedOut) : capture.usage();
+                    notifySuccess(onSuccess, new GatewayForwardResult(usage, capture.capturedBody(),
                         capture.serviceTier(), timings));
                 }
-            } else if (onSuccess != null) {
-                Map<String, Long> usage = eventStream
-                    ? capture.disconnectedUsage(request, timedOut) : capture.usage();
-                onSuccess.accept(new GatewayForwardResult(usage, capture.capturedBody(),
-                    capture.serviceTier(), timings));
+            } finally {
+                providerOwner.close();
             }
         });
     }
@@ -433,9 +489,14 @@ public class GatewayCloudForwarder {
         static UpstreamPump start(InputStream in, Instant headersAt, Duration attachTimeout,
                                   java.util.function.Consumer<UpstreamPump> onAbandoned) {
             UpstreamPump pump = new UpstreamPump(in, headersAt, attachTimeout, onAbandoned);
-            pump.reader.start();
-            pump.watchdog.start();
-            return pump;
+            try {
+                pump.reader.start();
+                pump.watchdog.start();
+                return pump;
+            } catch (RuntimeException | Error failure) {
+                pump.close();
+                throw failure;
+            }
         }
 
         private void pump() {

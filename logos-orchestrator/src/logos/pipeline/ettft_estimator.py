@@ -164,9 +164,9 @@ def _effective_service_time_s(
     falling back to the configured constant when the model has no history
     (e.g. just loaded, or histogram not yet populated).
     """
-    if observed_e2e_p50_s > 0:
+    if math.isfinite(observed_e2e_p50_s) and observed_e2e_p50_s > 0:
         return observed_e2e_p50_s
-    return fallback_s
+    return fallback_s if math.isfinite(fallback_s) and fallback_s > 0 else DEFAULT_GENERATION_TIME_S
 
 
 # ── Queue wait estimation ──────────────────────────────────────────────
@@ -178,6 +178,7 @@ def _estimate_queue_wait_s(
     service_time_s: float,
     backend_queue_waiting: int = 0,
     backend_active_requests: int = 0,
+    accepted_active_requests: int = 0,
 ) -> float:
     """Estimate queue wait from total backlog, parallelism, and service time.
 
@@ -186,21 +187,22 @@ def _estimate_queue_wait_s(
 
       effective_depth = scheduler_queue_depth          # waiting in the orchestrator
                       + backend_queue_waiting          # accepted by vLLM, not started
-                      + max(0, backend_active_requests - effective_parallel)
+                      + max(0, reconciled_running - effective_parallel)
                                                        # running beyond the batch slots
+      reconciled_running = max(backend_active_requests,
+                               accepted_active_requests - backend_queue_waiting)
       queue_rounds    = effective_depth / effective_parallel
       queue_wait_s    = queue_rounds × service_time_s
 
-    Previously only scheduler_queue_depth counted. Under steady open-loop
-    dispatch that term is ~0 (requests get reserved onto a lane and leave the
-    orchestrator queue immediately), so ETTFT collapsed to the cold-start
-    constant even while the lane's backend queue held hundreds of requests —
-    the ~35x underestimate observed in benchmarks. Including the backend
-    backlog makes the estimate track real queueing.
+    Worker reservations include engine-waiting requests. Reconcile them with
+    engine counters before computing overflow, so waiting work is counted once
+    and accepted work can still use free parallel slots when a scrape lags.
     """
     parallel = max(effective_parallel, 1)
-    backend_overflow = max(0, int(backend_active_requests) - parallel)
-    effective_depth = max(0, int(scheduler_queue_depth)) + max(0, int(backend_queue_waiting)) + backend_overflow
+    waiting = max(0, int(backend_queue_waiting))
+    running = max(0, int(backend_active_requests), int(accepted_active_requests) - waiting)
+    overflow = max(0, running - parallel)
+    effective_depth = max(0, int(scheduler_queue_depth)) + waiting + overflow
     if effective_depth <= 0:
         return 0.0
     queue_rounds = effective_depth / parallel
@@ -268,15 +270,19 @@ def _estimate_reclaim_overhead_s(
         if lane.model_name == target_model_name:
             continue
 
-        if lane.runtime_state == "sleeping" or (
-            lane.runtime_state in ("loaded", "running") and lane.active_requests == 0
-        ):
+        running = max(0, int(lane.requests_running)) if math.isfinite(lane.requests_running) else 0
+        waiting = max(0, int(lane.queue_waiting)) if math.isfinite(lane.queue_waiting) else 0
+        active = max(0, int(lane.active_requests))
+        # The reservation ledger and engine scrape can lag each other. Never
+        # classify a lane as idle while either still reports accepted work.
+        running = max(running, active - waiting)
+        if lane.runtime_state in ("sleeping", "loaded", "running") and running + waiting == 0:
             cost = RECLAIM_IDLE_EVICT_S
-        elif lane.runtime_state in ("loaded", "running"):
+        elif lane.runtime_state in ("sleeping", "loaded", "running"):
             service_time = _effective_service_time_s(lane.e2e_latency_p50_seconds)
             drain_s = _estimate_drain_time_s(
-                total_running=int(lane.requests_running),
-                queue_waiting=int(lane.queue_waiting),
+                total_running=running,
+                queue_waiting=waiting,
                 effective_parallel=max(lane.num_parallel, 1),
                 service_time_s=service_time,
             )
@@ -336,6 +342,7 @@ def estimate_ettft_local(
     observed_e2e_p50_s: float = 0.0,
     all_provider_lanes: Optional[List[LaneSchedulerSignals]] = None,
     overhead_overrides: Optional[dict] = None,
+    allow_cold_start: bool = False,
 ) -> EttftEstimate:
     """Estimate ETTFT for a local (logosnode) model from its scheduler view.
 
@@ -343,9 +350,9 @@ def estimate_ettft_local(
       ETTFT = state_overhead + reclaim_overhead + queue_wait
 
     State overhead depends on the warmest lane state (warm/sleeping/cold).
-    Reclaim overhead is context-aware: it inspects sibling lanes to determine
-    whether eviction targets are idle (fast, ~3s) or busy (slow, ~30s).
-    Queue wait uses the observed e2e latency p50 as service time when available,
+    Reclaim overhead inspects sibling lanes and adds their estimated drain time
+    when either the reservation ledger or engine counters report active work.
+    Queue wait uses the observed e2e latency as service time when available,
     falling back to a configured constant.
 
     ``overhead_overrides`` is an optional dict mapping ReadinessTier → float
@@ -355,7 +362,8 @@ def estimate_ettft_local(
     the separate ``_estimate_reclaim_overhead_s`` call is skipped.
 
     Decision tree:
-    1. No lanes or all stopped/error → UNAVAILABLE
+    1. No lanes or all stopped/error → UNAVAILABLE; ``allow_cold_start`` permits
+       an empty view for a declared deployment that the planner can load.
     2. All lanes cold/starting:
        a. model_vram_mb > available_vram_mb → COLD_RECLAIM
        b. otherwise → COLD
@@ -367,7 +375,7 @@ def estimate_ettft_local(
     """
     warmth_state = _warmth_state_local(view, scheduler_queue_depth)
 
-    if not view.lanes:
+    if not view.lanes and not allow_cold_start:
         return EttftEstimate(
             expected_wait_s=float("inf"),
             tier=ReadinessTier.UNAVAILABLE,
@@ -376,7 +384,7 @@ def estimate_ettft_local(
         )
 
     active_states = {s.runtime_state for s in view.lanes}
-    if active_states <= {"stopped", "error"}:
+    if active_states and active_states <= {"stopped", "error"}:
         return EttftEstimate(
             expected_wait_s=float("inf"),
             tier=ReadinessTier.UNAVAILABLE,
@@ -387,13 +395,16 @@ def estimate_ettft_local(
     best_state = view.best_lane_state
     service_time = _effective_service_time_s(observed_e2e_p50_s, generation_time_s)
     backend_waiting = max(0, int(view.aggregate_queue_waiting))
-    backend_active = max(0, int(view.aggregate_active_requests))
+    backend_active = sum(
+        max(0, int(lane.requests_running)) for lane in view.lanes if math.isfinite(lane.requests_running)
+    )
     queue_wait_s = _estimate_queue_wait_s(
         scheduler_queue_depth,
         effective_parallel,
         service_time,
         backend_queue_waiting=backend_waiting,
         backend_active_requests=backend_active,
+        accepted_active_requests=max(0, view.aggregate_active_requests),
     )
     queue_suffix = (
         f" + queue {queue_wait_s:.1f}s "

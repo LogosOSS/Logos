@@ -7,7 +7,7 @@ import json
 import logging
 import secrets
 from dataclasses import asdict
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
@@ -57,6 +57,9 @@ from logos.dbutils.dbrequest import (
     InternalDeleteLaneRequest,
     InternalDrainLaneRequest,
     InternalLaneLoadStatusRequest,
+    InternalNodeConfigReplaceRequest,
+    InternalNodeConfigRequest,
+    InternalNodeSettingsReplaceRequest,
     InternalReleaseCalibrationClaimRequest,
     InternalReleaseRecoveryRequest,
     InternalSleepLaneRequest,
@@ -92,7 +95,11 @@ from logos.main import (
     _served_context_window_stats,
     refresh_pipeline_runtime_state,
 )
+from logos.model_profile_store import effective_profile
+from logos.node_config import SYNC_NODE_CONFIG_ACTION, VALIDATE_NODE_CONFIG_ACTION
+from logos.node_config_insights import benchmark_view, build_insights
 from logos.request_content import sanitized_payload_for_logging
+from logos.routers.logosnode import _load_node_config, _load_node_settings, save_node_config, save_node_settings
 
 logger = logging.getLogger("LogosLogger")
 
@@ -981,6 +988,125 @@ async def internal_model_benchmark_completion(job_id: int, path: str, request: R
     return response
 
 
+@router.post("/internal/logosnode/node_config/get", tags=["admin"])
+async def internal_logosnode_node_config_get(data: InternalNodeConfigRequest, request: Request):
+    """A node's configured models and revision (Spring, after the JWT)."""
+    _require_internal_secret(request)
+    config = await asyncio.to_thread(_load_node_config, data.provider_id)
+    if config is None:
+        return admin_error_response(404, f"Provider {data.provider_id} not found")
+    return {"provider_id": data.provider_id, **config}
+
+
+@router.post("/internal/logosnode/node_config/replace", tags=["admin"])
+async def internal_logosnode_node_config_replace(data: InternalNodeConfigReplaceRequest, request: Request):
+    """Replace a node's configured models (Spring, after the JWT)."""
+    _require_internal_secret(request)
+    return await save_node_config(data.provider_id, data.entries, data.expected_revision, data.user_id)
+
+
+@router.post("/internal/logosnode/node_settings/get", tags=["admin"])
+async def internal_logosnode_node_settings_get(data: InternalNodeConfigRequest, request: Request):
+    """A node's settings and their revision (Spring)."""
+    _require_internal_secret(request)
+    settings = await asyncio.to_thread(_load_node_settings, data.provider_id)
+    if settings is None:
+        return admin_error_response(404, f"Provider {data.provider_id} not found")
+    return {"provider_id": data.provider_id, **settings}
+
+
+@router.post("/internal/logosnode/node_settings/replace", tags=["admin"])
+async def internal_logosnode_node_settings_replace(data: InternalNodeSettingsReplaceRequest, request: Request):
+    """Replace a node's settings (Spring, after the JWT)."""
+    _require_internal_secret(request)
+    return await save_node_settings(data.provider_id, data.settings, data.expected_revision, data.user_id)
+
+
+def _gather_insights(provider_id: int, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Collect what the editor shows next to the settings (blocking)."""
+    registry = _main._logosnode_registry
+    snapshot = registry.peek_runtime_snapshot(provider_id)
+    supports = {
+        action: registry.supports_action(provider_id, action)
+        for action in (SYNC_NODE_CONFIG_ACTION, VALIDATE_NODE_CONFIG_ACTION)
+    }
+    with DBManager() as db:
+        sources = db.get_node_config_sources(provider_id)
+        rows = db.get_central_model_profiles(provider_id)
+        pairs = db.get_model_provider_pairs(provider_id)
+        known = [entry["model_name"] for entry in config["entries"]] + [row["model_name"] for row in rows]
+        known += list(pairs)
+        snapshot_models = (snapshot or {}).get("capabilities_models") or []
+        model_ids = db.get_catalog_model_ids(sorted(set(known) | set(snapshot_models)))
+    profiles = {row["model_name"]: effective_profile(provider_id, row) for row in rows}
+    calibrated_at = {row["model_name"]: row.get("cal_calibrated_at") for row in rows}
+    gpu_slices = {row["model_name"]: row.get("slice_gpu_count") for row in rows}
+    summaries = nightly_store.selection_summaries(list(pairs.values()))
+    chosen = {
+        model: [
+            row["benchmark_id"]
+            for row in (summaries[pair_id]["best_eligible"], summaries[pair_id]["best_observed"])
+            if row
+        ]
+        for model, pair_id in pairs.items()
+    }
+    with DBManager() as db:
+        runs = db.get_benchmark_runs(sorted({run_id for ids in chosen.values() for run_id in ids}))
+    benchmarks: Dict[str, Any] = {
+        model: benchmark_view(
+            summaries[pair_id],
+            {run_id: runs[run_id] for run_id in chosen[model] if run_id in runs},
+            extract_serving_configuration(snapshot, model),
+        )
+        for model, pair_id in pairs.items()
+    }
+    calibrating = any(claim["provider_id"] == provider_id for claim in nightly_store.calibration_claims())
+    return build_insights(
+        provider_id=provider_id,
+        config=config,
+        sources=sources,
+        profiles=profiles,
+        calibrated_at=calibrated_at,
+        snapshot=snapshot,
+        supports=supports,
+        calibrating=calibrating,
+        benchmarks=benchmarks,
+        model_ids=model_ids,
+        gpu_slices=gpu_slices,
+    )
+
+
+@router.post("/internal/logosnode/node_config/insights", tags=["admin"])
+async def internal_logosnode_node_config_insights(data: InternalNodeConfigRequest, request: Request):
+    """Measured and benchmarked values of a node's models (Spring)."""
+    _require_internal_secret(request)
+    config = await asyncio.to_thread(_load_node_config, data.provider_id)
+    if config is None:
+        return admin_error_response(404, f"Provider {data.provider_id} not found")
+    return await asyncio.to_thread(_gather_insights, data.provider_id, config)
+
+
+def _why_not_calibrated(model: str, snapshot: Dict[str, Any], needing: List[str], skip_models: List[str]) -> str | None:
+    """Why one model cannot be calibrated now, in words for the admin; None when it can.
+
+    A model the worker would skip must not be reported as started: the session
+    would end at once and nothing would be measured.
+    """
+    configured = snapshot.get("configured_models") or snapshot.get("capabilities_models") or []
+    if model not in configured:
+        return f"{model} is not configured on this worker."
+    profiles = (snapshot.get("runtime") or {}).get("model_profiles")
+    profile = profiles.get(model) if isinstance(profiles, dict) else None
+    if isinstance(profile, dict) and profile.get("calibration_unsupported"):
+        detail = profile.get("calibration_unsupported_reason")
+        return f"Calibration is not supported for {model}" + (f": {detail}" if detail else ".")
+    if model in skip_models:
+        return f"{model} needs more memory than this node is known to have, so it cannot be calibrated here."
+    if model not in needing:
+        return f"{model} does not need calibration."
+    return None
+
+
 @router.post("/internal/logosnode/calibrate_uncalibrated", tags=["admin"])
 async def internal_logosnode_calibrate_uncalibrated(data: InternalCalibrateRequest, request: Request):
     """Calibrate uncalibrated models on a worker, called by Spring after JWT validation."""
@@ -993,22 +1119,31 @@ async def internal_logosnode_calibrate_uncalibrated(data: InternalCalibrateReque
     if not snap.get("first_status_received"):
         return admin_error_response(503, "Worker has not sent its first status yet")
     models = _find_uncalibrated_models_on_provider(data.provider_id)
-    if not models:
-        return {"message": "No uncalibrated models on this worker", "count": 0, "models": []}
-    sleep_level = (
-        _main._calibration_orchestrator._config.sleep_level if _main._calibration_orchestrator is not None else 1
-    )
     skip_models = (
         sorted(_main._calibration_orchestrator._capacity_skip_models(data.provider_id))
         if _main._calibration_orchestrator is not None
         else []
+    )
+    if data.model:
+        reason = _why_not_calibrated(data.model, snap, models, skip_models)
+        if reason:
+            return {"message": reason, "count": 0, "models": []}
+        models = [data.model]
+    if not models:
+        return {"message": "No uncalibrated models on this worker", "count": 0, "models": []}
+    sleep_level = (
+        _main._calibration_orchestrator._config.sleep_level if _main._calibration_orchestrator is not None else 1
     )
     pname = _resolve_provider_name(data.provider_id)
     try:
         await _main._logosnode_registry.send_command(
             data.provider_id,
             "start_calibration_session",
-            params={"sleep_level": sleep_level, "skip_models": skip_models},
+            params={
+                "sleep_level": sleep_level,
+                "skip_models": skip_models,
+                **({"models": models} if data.model else {}),
+            },
             timeout_seconds=30,
         )
     except LogosNodeOfflineError as exc:

@@ -88,8 +88,9 @@ public class ProviderPerformanceController {
         }
         int sampleSize = request.sampleSize() == null ? 5 : request.sampleSize();
         int maxOutputTokens = request.maxOutputTokens() == null ? 512 : request.maxOutputTokens();
-        if (sampleSize <= 0 || sampleSize > 100) {
-            return ResponseEntity.badRequest().body(Map.of("error", "sample_size must be between 1 and 100"));
+        int sampleLimit = request.workloadId() == null ? 100 : 500;
+        if (sampleSize <= 0 || sampleSize > sampleLimit) {
+            return ResponseEntity.badRequest().body(Map.of("error", "sample_size must be between 1 and " + sampleLimit));
         }
         if (maxOutputTokens <= 0 || maxOutputTokens > 4096) {
             return ResponseEntity.badRequest().body(Map.of("error", "max_output_tokens must be between 1 and 4096"));

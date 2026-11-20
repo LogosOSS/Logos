@@ -86,6 +86,10 @@
     <include file="liquibase/changelog/079_gateway_pricing_performance.xml"/>
     <include file="liquibase/changelog/080_security_incidents.xml"/>
     <include file="liquibase/changelog/081_security_manual_updates.xml"/>
+    <include file="liquibase/changelog/082_model_profile_config_fingerprint.xml"/>
+    <include file="liquibase/changelog/083_node_settings.xml"/>
+    <include file="liquibase/changelog/084_benchmark_workload_size.xml"/>
+    <include file="liquibase/changelog/085_recent_model_full_requests.xml"/>
     <include file="liquibase/changelog/082_requested_model_license.xml"/>
     <include file="liquibase/changelog/083_model_license_approvals_nullable_user.xml"/>
     <include file="liquibase/changelog/084_requested_model_use_policy.xml"/>

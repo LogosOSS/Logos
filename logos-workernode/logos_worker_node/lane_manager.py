@@ -359,8 +359,11 @@ class LaneManager:
         on_lane_slept: Callable[[], Awaitable[None]] | None = None,
         on_lane_added: Callable[[], Awaitable[None]] | None = None,
         on_lane_woken: Callable[[], Awaitable[None]] | None = None,
+        model_gpu_selection: Callable[[str], str] | None = None,
     ) -> None:
         self._global_config = global_config
+        # The GPUs an admin chose for one model ("" or "all" for none): they narrow the worker's GPU pool.
+        self._model_gpu_selection = model_gpu_selection or (lambda _model: "")
         self._vllm_engine_config = vllm_engine_config or VllmEngineConfig()
         # Only consulted when is_metal_backend() is true; harmless defaults
         # otherwise, so the CUDA path needs no conditional.
@@ -514,6 +517,8 @@ class LaneManager:
         self._served_models: dict[str, int | None] = {}
         self._crash_restart_counts: dict[str, int] = {}
         self._static_lane_ids: set[str] = set()
+        # Pins auto-placement chose itself, by lane: re-evaluated when the model's GPU choice changes.
+        self._auto_pins: dict[str, str] = {}
         # lane -> what the node's overrides replaced in its launch config, so a
         # removed override gives the original back; explicit lanes keep theirs.
         self._override_baselines: dict[str, dict[str, Any]] = {}
@@ -1222,13 +1227,21 @@ class LaneManager:
                 if lane_id not in self._static_lane_ids:
                     current_data["gpu_devices"] = ""
         new_lc = LaneConfig(**current_data)
-        if held_gpus is not None and (parallel_changed or self._launch_gpu_set(new_lc) != held_gpus):
+        if held_gpus is not None and (
+            parallel_changed
+            or self._launch_gpu_set(new_lc) != held_gpus
+            # Placement will move the pin: the replacement may start on GPUs this lock does not cover.
+            or self._automatic_pin_outside_selection(lane_id, new_lc)
+        ):
             return _NEEDS_WHOLE_LOCK
         if parallel_changed:
             available = self._gpu_device_count()
             pool = self._global_config.gpu_devices
             if pool and pool.lower() != "all":
                 available = min(available, len(set(self._parse_gpu_selector(pool))))
+            chosen = self._model_gpu_selection(new_lc.model).strip().lower()
+            if chosen and chosen != "all":
+                available = min(available, len(set(self._parse_gpu_selector(chosen))))
             required = new_lc.vllm_config.parallel_gpu_count
             if required > available:
                 raise ValueError(
@@ -1967,6 +1980,7 @@ class LaneManager:
         self._override_baselines.pop(lane_id, None)
         self._staged_baselines.pop(lane_id, None)
         self._explicit_lanes.discard(lane_id)
+        self._auto_pins.pop(lane_id, None)
 
     def _forget_sleep_state(self, lane_id: str) -> None:
         self._known_sleep_state.pop(lane_id, None)
@@ -2403,6 +2417,14 @@ class LaneManager:
         )
         return new_config
 
+    def _allowed_gpu_indices(self, model: str, available_indices: set[int]) -> list[int]:
+        """The GPUs a lane of the model may take: the worker's pool, narrowed to the model's own choice."""
+        pool = self._parse_gpu_selector(self._global_config.gpu_devices, available_indices)
+        chosen = (self._model_gpu_selection(model) or "").strip().lower()
+        if not chosen or chosen == "all":
+            return pool
+        return self._parse_gpu_selector(chosen, set(pool))
+
     @staticmethod
     def _parse_gpu_selector(selector: str, allowed_indices: set[int] | None = None) -> list[int]:
         raw = (selector or "").strip().replace(" ", "")
@@ -2740,7 +2762,50 @@ class LaneManager:
                 "(nvidia-smi reports them as failed; reset or reboot the node)"
             )
 
+    def _model_restricts_gpus(self, model: str) -> bool:
+        """Whether the model's own GPU choice narrows the worker's pool."""
+        chosen = (self._model_gpu_selection(model) or "").strip().lower()
+        return bool(chosen) and chosen != "all"
+
+    def _automatic_pin_outside_selection(self, lane_id: str, lane_config: LaneConfig) -> bool:
+        """An automatic pin that the worker's GPU pool and the model's choice no longer allow together.
+
+        Only pins this manager chose itself qualify; an operator's explicit
+        ``gpu_devices`` stays authoritative.
+        """
+        if not lane_config.gpu_devices or self._auto_pins.get(lane_id) != lane_config.gpu_devices:
+            return False
+        pinned = self._lane_gpu_set(lane_config.gpu_devices)
+        if pinned is None:
+            return True
+        for selector in (self._global_config.gpu_devices, self._model_gpu_selection(lane_config.model)):
+            chosen = (selector or "").strip().lower()
+            if not chosen or chosen == "all":
+                continue
+            if not pinned <= set(self._parse_gpu_selector(chosen)):
+                return True
+        return False
+
     async def _auto_place_gpu_devices(
+        self, lane_id: str, lane_config: LaneConfig, busy_gpus: frozenset[int] = frozenset()
+    ) -> LaneConfig:
+        """Place the lane and remember the pin when placement chose it."""
+        if self._automatic_pin_outside_selection(lane_id, lane_config):
+            # Chosen before the pool or the model's GPU choice changed: place afresh.
+            logger.info(
+                "Lane '%s': automatic pin gpu_devices=%s lies outside the worker's GPU pool "
+                "or the model's GPU choice; placing again",
+                lane_id,
+                lane_config.gpu_devices,
+            )
+            lane_config = lane_config.model_copy(update={"gpu_devices": ""})
+            self._auto_pins.pop(lane_id, None)
+        placed = await self._place_gpu_devices(lane_id, lane_config, busy_gpus)
+        if placed.gpu_devices and not lane_config.gpu_devices:
+            self._auto_pins[lane_id] = placed.gpu_devices
+        return placed
+
+    async def _place_gpu_devices(
         self, lane_id: str, lane_config: LaneConfig, busy_gpus: frozenset[int] = frozenset()
     ) -> LaneConfig:
         """Pick an explicit GPU set for auto-managed vLLM lanes.
@@ -2840,12 +2905,17 @@ class LaneManager:
             return lane_config
 
         available_indices = {int(row["index"]) for row in device_rows}
-        allowed_indices = self._parse_gpu_selector(self._global_config.gpu_devices, available_indices)
+        allowed_indices = self._allowed_gpu_indices(lane_config.model, available_indices)
         if not allowed_indices:
             if faulted_indices:
                 raise RuntimeError(
                     f"Auto-placement: no healthy GPU in this worker's GPU pool for lane '{lane_id}' "
                     f"model={lane_config.model}; faulted GPU(s) {sorted(faulted_indices)}"
+                )
+            if self._model_restricts_gpus(lane_config.model):
+                raise RuntimeError(
+                    f"Auto-placement: the GPU choice {self._model_gpu_selection(lane_config.model)!r} for model "
+                    f"{lane_config.model} matches no GPU available to this worker (lane '{lane_id}')"
                 )
             return lane_config
 
@@ -2880,6 +2950,13 @@ class LaneManager:
                     f"Auto-placement: only {len(allowed_rows)} healthy GPU(s) for lane '{lane_id}' "
                     f"model={lane_config.model} (tp={tp_size}); faulted GPU(s) {sorted(faulted_indices)}"
                 )
+            if self._model_restricts_gpus(lane_config.model):
+                # Unpinned, the lane would open every GPU of the worker's pool.
+                raise RuntimeError(
+                    f"Auto-placement: the GPU choice {self._model_gpu_selection(lane_config.model)!r} for model "
+                    f"{lane_config.model} leaves only {len(allowed_rows)} usable GPU(s) for lane '{lane_id}' "
+                    f"(tp={tp_size}); widen the selection or lower the parallel size"
+                )
             logger.warning(
                 "Auto-placement skipped for lane '%s': only %d allowed GPU(s) for tp=%d",
                 lane_id,
@@ -2890,10 +2967,11 @@ class LaneManager:
 
         required_total_mb = self._estimate_lane_vram_mb(lane_config)
         if required_total_mb <= 0:
-            if faulted_indices:
+            if faulted_indices or self._model_restricts_gpus(lane_config.model):
                 # Without an estimate there is nothing to fit, but leaving the
-                # lane unpinned would let it start on a faulted GPU: take the
-                # healthy GPUs with the most free memory.
+                # lane unpinned would let it start on a faulted GPU or outside
+                # the model's GPU choice: take the allowed GPUs with the most
+                # free memory.
                 rows = sorted(allowed_rows, key=lambda r: (-float(r["free_mb"]), int(r["index"])))[:tp_size]
                 selector = ",".join(str(index) for index in sorted(int(r["index"]) for r in rows))
                 logger.info(
@@ -2926,7 +3004,7 @@ class LaneManager:
         # understate the requirement.
         #
         # Startup GMU matches VllmProcessHandle._resolve_gmu via
-        # resolve_startup_gmu (configured / derived / vLLM default 0.9).
+        # resolve_startup_gmu (configured / derived / FALLBACK_GMU 0.9).
         # Always gate cold placement on that reservation, including when
         # kv_cache_memory_bytes pins the steady-state KV pool: request_memory
         # still refuses free < gmu×total at EngineCore init. Placement need is
@@ -2941,7 +3019,7 @@ class LaneManager:
                 )
             # Prefer the spawn callback; fall back to the largest card in this
             # snapshot so derivation still runs when the callback is unset (tests
-            # / early boot) instead of silently admitting at vLLM's 0.9 default.
+            # / early boot) instead of silently admitting at FALLBACK_GMU.
             per_gpu_total = float(self._per_gpu_vram_mb() or 0.0)
             if per_gpu_total <= 0:
                 per_gpu_total = max(float(row.get("total_mb", 0.0) or 0.0) for row in allowed_rows)
