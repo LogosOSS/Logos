@@ -486,7 +486,9 @@ class LogosNodeRuntimeRegistry:
             if not model_name:
                 continue
 
-            _lane_key = (provider_id, model_name, str(lane.get("lane_id") or model_name), str(lane.get("pid") or ""))
+            process = lane.get("process")
+            pid = process.get("pid") if isinstance(process, dict) else None
+            _lane_key = (provider_id, model_name, str(lane.get("lane_id") or model_name), str(pid or ""))
             seen_lanes.add(_lane_key)
 
             # Cold load timing — workers retain the last value across heartbeats,

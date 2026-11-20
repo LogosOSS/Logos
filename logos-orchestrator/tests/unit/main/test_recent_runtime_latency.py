@@ -13,7 +13,7 @@ def _lane(lane_id, histogram, pid=100, **metrics):
     return {
         "model": "model",
         "lane_id": lane_id,
-        "pid": pid,
+        "process": {"pid": pid},
         "backend_metrics": {"e2e_latency_histogram": histogram, **metrics},
     }
 
@@ -38,12 +38,18 @@ def test_replicas_do_not_reingest_each_others_counters():
     assert [call.args[-1] for call in store.record_e2e_latency.call_args_list] == [1, 10]
 
 
-def test_new_process_with_equal_count_is_not_deduplicated():
+@pytest.mark.parametrize("new_count", [1, 2])
+def test_new_process_with_equal_or_higher_count_is_not_deduplicated(new_count):
     store = MagicMock()
     registry = LogosNodeRuntimeRegistry(latency_store=store)
     registry._absorb_latency_observations(1, {"lanes": [_lane("a", {"1": 1, "10": 1, "+Inf": 1})]})
-    registry._absorb_latency_observations(1, {"lanes": [_lane("a", {"1": 0, "10": 1, "+Inf": 1}, pid=101)]})
-    assert [call.args[-1] for call in store.record_e2e_latency.call_args_list] == [1, 10]
+    restarted = _lane("a", {"1": 0, "10": new_count, "+Inf": new_count}, pid=101)
+    registry._absorb_latency_observations(1, {"lanes": [restarted]})
+    registry._absorb_latency_observations(1, {"lanes": [restarted]})
+    registry._absorb_latency_observations(
+        1, {"lanes": [_lane("a", {"1": 0, "10": new_count + 1, "+Inf": new_count + 1}, pid=101)]}
+    )
+    assert [call.args[-1] for call in store.record_e2e_latency.call_args_list] == [1, 10, 10]
     assert len(registry._lane_e2e_histograms) == 1
 
 
