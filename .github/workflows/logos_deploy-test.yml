@@ -90,6 +90,9 @@ jobs:
             | to_entries[]
             | "\(.key)=\(.value | @json)"
           ' >> .env
+          echo "NODE_MANAGER_COMPOSE_FROM_TAG=true" >> .env
+          echo "NODE_MANAGER_SELF_UPDATE=true" >> .env
+          echo "LOGOS_DEPLOYMENTS_PROTECTED=false" >> .env
 
           python3 scripts/write-deployment-secrets.py "$DEPLOY_TARGET" >> .env
         env:
