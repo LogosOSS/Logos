@@ -26,6 +26,7 @@ describe('request feed REST filters', () => {
       { ts: 'cursor-time', request_id: 'cursor-request' },
     );
     const request = http.expectOne('/api/logosdb/latest_requests');
+    expect(request.request.method).toBe('QUERY');
     expect(request.request.body).toEqual({
       start: 'start',
       end: 'end',
