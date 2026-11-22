@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Why the answer cache decided as it did, for every lookup (hit or miss).
+           cache_similarity       — cosine similarity of the closest stored question
+           cache_nearest_entry_id — the answer_cache entry that was closest
+           cache_top_k_agreed     — whether the k closest entries share one intent
+         A request is reused when cache_similarity >= threshold AND
+         cache_top_k_agreed, so these columns give the decision at any
+         threshold without sending the requests again. All three are NULL
+         when no comparison ran (no lookup, or fewer than k stored entries). -->
+    <changeSet id="078-log-entry-cache-lookup" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><columnExists tableName="log_entry" columnName="cache_similarity"/></not>
+        </preConditions>
+        <addColumn tableName="log_entry">
+            <column name="cache_similarity" type="REAL"/>
+            <column name="cache_nearest_entry_id" type="INTEGER"/>
+            <column name="cache_top_k_agreed" type="BOOLEAN"/>
+        </addColumn>
+        <rollback>
+            <dropColumn tableName="log_entry" columnName="cache_top_k_agreed"/>
+            <dropColumn tableName="log_entry" columnName="cache_nearest_entry_id"/>
+            <dropColumn tableName="log_entry" columnName="cache_similarity"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

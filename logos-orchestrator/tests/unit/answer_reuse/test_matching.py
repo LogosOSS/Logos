@@ -83,6 +83,7 @@ def test_a_close_agreeing_neighbourhood_is_reused():
     assert match.index == 0
     assert match.label == "track_order"
     assert match.similarity == pytest.approx(0.95, abs=1e-5)
+    assert match.agreed
 
 
 def test_a_similarity_equal_to_the_threshold_is_accepted():
@@ -100,6 +101,7 @@ def test_just_below_the_threshold_is_a_miss_that_still_reports_its_similarity():
     assert not match.accepted
     assert match.index == 0
     assert match.similarity == pytest.approx(0.84, abs=1e-5)
+    assert match.agreed
 
 
 def test_disagreeing_top_three_is_a_miss_even_when_the_closest_is_very_close():
@@ -108,6 +110,7 @@ def test_disagreeing_top_three_is_a_miss_even_when_the_closest_is_very_close():
 
     assert not match.accepted
     assert match.label == "cancel_order"
+    assert not match.agreed
 
 
 def test_only_the_top_three_have_to_agree():
@@ -118,7 +121,10 @@ def test_only_the_top_three_have_to_agree():
 
 def test_fewer_entries_than_k_cannot_be_reused():
     vectors = np.stack([_at_similarity(QUERY, s) for s in (0.99, 0.98)])
-    assert not decide_reuse(QUERY, vectors, ["track_order"] * 2).accepted
+    match = decide_reuse(QUERY, vectors, ["track_order"] * 2)
+
+    assert not match.accepted
+    assert not match.agreed
 
 
 def test_an_empty_cache_is_a_miss():
@@ -162,6 +168,9 @@ def test_the_rule_matches_the_experiment_on_random_data():
         order = np.argsort(-sims, axis=1)[:, :3]
         best_sim = sims[0, order[0, 0]]
         top_labels = history_labels[order]
-        expected = bool(best_sim >= threshold and (top_labels == top_labels[:, [0]]).all())
+        expected_agreed = bool((top_labels == top_labels[:, [0]]).all())
+        expected = bool(best_sim >= threshold and expected_agreed)
 
-        assert decide_reuse(query, history, list(history_labels), threshold=threshold).accepted == expected
+        match = decide_reuse(query, history, list(history_labels), threshold=threshold)
+        assert match.accepted == expected
+        assert match.agreed == expected_agreed

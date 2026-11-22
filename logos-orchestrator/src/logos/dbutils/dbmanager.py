@@ -535,6 +535,9 @@ class DBManager:
             "rate_limit_admitted",
             "cache_hit",
             "cache_entry_id",
+            "cache_similarity",
+            "cache_nearest_entry_id",
+            "cache_top_k_agreed",
             "available_vram_mb",
             "azure_rate_remaining_requests",
             "azure_rate_remaining_tokens",
@@ -5431,7 +5434,9 @@ class DBManager:
         )
         self.session.commit()
 
-    def finalize_cache_hit_row(self, log_id: int, entry_id: int, *, request_id: Optional[str] = None) -> None:
+    def finalize_cache_hit_row(
+        self, log_id: int, entry_id: int, *, similarity: float, request_id: Optional[str] = None
+    ) -> None:
         """Settle the log row of a request answered from the answer cache.
 
         A cache hit ran no model, so the row gets no model, provider or usage
@@ -5444,6 +5449,7 @@ class DBManager:
         Params:
             log_id: The request's log_entry row.
             entry_id: The answer_cache row whose answer was returned.
+            similarity: The cosine similarity between the request and the entry's question.
             request_id: The request id, written when the row does not have one yet.
         """
         if not isinstance(log_id, int):
@@ -5451,13 +5457,16 @@ class DBManager:
         self.session.execute(
             text("""
                  UPDATE log_entry
-                 SET result_status      = 'success',
-                     timestamp_response = :timestamp,
-                     request_id         = COALESCE(:request_id, request_id),
-                     cache_hit          = TRUE,
-                     cache_entry_id     = :entry_id,
-                     settled_cost_micro_cents = 0,
-                     cost_finalized     = TRUE
+                 SET result_status              = 'success',
+                     timestamp_response         = :timestamp,
+                     request_id                 = COALESCE(:request_id, request_id),
+                     cache_hit                  = TRUE,
+                     cache_entry_id             = :entry_id,
+                     cache_similarity           = :similarity,
+                     cache_nearest_entry_id     = :entry_id,
+                     cache_top_k_agreed         = TRUE,
+                     settled_cost_micro_cents   = 0,
+                     cost_finalized             = TRUE
                  WHERE id = :log_id
                  """),
             {
@@ -5465,6 +5474,7 @@ class DBManager:
                 "request_id": request_id,
                 "entry_id": int(entry_id),
                 "log_id": log_id,
+                "similarity": float(similarity),
             },
         )
         self.session.execute(
