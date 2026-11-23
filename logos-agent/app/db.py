@@ -728,11 +728,13 @@ async def create_session(
 ) -> int:
     """Queue a session. Returns its id.
 
-    ``point_workspace_at`` is the base branch a workspace that last worked on
-    another repository moves to before this session joins it. The check and
-    the move happen under the same workspace lock as the insert, so two
-    requests for different repositories cannot both find the workspace idle;
-    one with work in flight for another repository is refused.
+    A workspace holds one repository's checkout at a time. A session for
+    another repository than the workspace last worked on is refused while
+    the workspace has work in flight (``WorkspaceBusy``), and
+    ``point_workspace_at``, when given, is the base branch an idle workspace
+    moves to. The check and the move happen under the workspace lock that
+    also covers the insert, so concurrent requests cannot both find the
+    workspace idle — whichever path inserts the session.
     """
     async with sessionmaker()() as db:
         # Lock the workspace row before inserting. delete_workspace takes
@@ -751,30 +753,29 @@ async def create_session(
         if workspace is None:
             await db.rollback()
             raise ValueError(f"workspace {workspace_id} does not exist")
-        if point_workspace_at is not None:
-            state = (
-                (
-                    await db.execute(
-                        text("""
-                        SELECT (SELECT s.repo_slug FROM agent_sessions s WHERE s.workspace_id = :id
-                                 ORDER BY s.id DESC LIMIT 1) AS repo_slug,
-                               EXISTS (SELECT 1 FROM agent_sessions s WHERE s.workspace_id = :id
-                                        AND s.status IN ('queued', 'starting', 'running', 'paused', 'finalizing'))
-                                 AS busy
-                        """),
-                        {"id": workspace_id},
-                    )
+        state = (
+            (
+                await db.execute(
+                    text("""
+                    SELECT (SELECT s.repo_slug FROM agent_sessions s WHERE s.workspace_id = :id
+                             ORDER BY s.id DESC LIMIT 1) AS repo_slug,
+                           EXISTS (SELECT 1 FROM agent_sessions s WHERE s.workspace_id = :id
+                                    AND s.status IN ('queued', 'starting', 'running', 'paused', 'finalizing'))
+                             AS busy
+                    """),
+                    {"id": workspace_id},
                 )
-                .mappings()
-                .one()
             )
-            if (state["repo_slug"] or "").lower() != (repo_slug or "").lower():
-                if state["busy"]:
-                    await db.rollback()
-                    raise WorkspaceBusy(
-                        "This workspace has work in flight for another repository; "
-                        "choose or create another workspace"
-                    )
+            .mappings()
+            .one()
+        )
+        if (state["repo_slug"] or "").lower() != (repo_slug or "").lower():
+            if state["busy"]:
+                await db.rollback()
+                raise WorkspaceBusy(
+                    "This workspace has work in flight for another repository; " "choose or create another workspace"
+                )
+            if point_workspace_at is not None:
                 await db.execute(
                     text("UPDATE agent_workspaces SET base_branch = :base WHERE id = :id"),
                     {"id": workspace_id, "base": point_workspace_at},

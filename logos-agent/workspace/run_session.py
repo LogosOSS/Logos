@@ -380,6 +380,18 @@ def _add_push_remote() -> None:
         run(["git", "remote", "add", "push", url], cwd=CHECKOUT, quiet=True)
 
 
+def _base_remote(base_branch: str, branch: str) -> str:
+    """Where the base branch lives: on the fork for continued agent work, else the repository.
+
+    Continued work starts from the session's own branch, or — as the runner
+    says — from an earlier agent branch the workspace published; with a fork
+    both live there rather than on the repository.
+    """
+    if _push_remote() == "push" and (base_branch == branch or _flag("LOGOS_SESSION_BASE_ON_FORK")):
+        return "push"
+    return "origin"
+
+
 def _pull_request_head(branch: str) -> str:
     """How the pull request names its head: ``owner:branch`` from a fork."""
     slug = os.environ.get("LOGOS_PUSH_REPO_SLUG", "").strip()
@@ -507,10 +519,8 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     # the checkout is the code under discussion and there is nothing here to
     # push back to.
     reading = base_branch.startswith("refs/")
-    # Work continued on the session's own branch, when that branch lives on
-    # the agent account's fork rather than on the repository.
-    forked_base = _push_remote() == "push" and base_branch == branch
-    base_remote = "push" if forked_base else "origin"
+    base_remote = _base_remote(base_branch, branch)
+    forked_base = base_remote == "push"
     cloned = not (CHECKOUT / ".git").is_dir()
     if cloned:
         log(f"cloning {repo_url} at {base_branch}")

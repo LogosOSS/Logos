@@ -1155,6 +1155,21 @@ class TriggerPoller:
                 self._pulls[number] = None
         return self._pulls[number]
 
+    @staticmethod
+    def _own_fork_branch(repo: str, ref: str) -> bool:
+        """A branch the agent itself published on its own fork of a linked repository.
+
+        Where the agent account cannot push to a linked repository, its work
+        lives on the account's fork and is proposed from there; reviews of
+        that work are the agent's to address. Another contributor's fork,
+        and a branch on the agent's fork that the agent did not create, stay
+        out of reach. The session that takes the work up pushes to the fork
+        it verifies at preparation.
+        """
+        target = repository_context.current()
+        owner = repo.split("/", 1)[0].lower()
+        return bool(target) and owner == settings.github_login.lower() and ref.startswith(settings.branch_prefix)
+
     async def _writable_head(self, number: int) -> str | None:
         """The branch of a pull request the agent may push to, or None.
 
@@ -1177,7 +1192,7 @@ class TriggerPoller:
         ref, repo = github.head_of(pull)
         if not ref:
             return None
-        if repo.lower() != repository_context.slug(settings.repo_slug).lower():
+        if repo.lower() != repository_context.slug(settings.repo_slug).lower() and not self._own_fork_branch(repo, ref):
             logger.info("pull request %s comes from '%s'; the runner does not push to forks", number, repo or "?")
             return None
         if ref in settings.protected_branches or ref.rsplit("/", 1)[-1] in settings.protected_branches:

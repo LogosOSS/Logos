@@ -126,3 +126,10 @@ async def test_two_requests_for_different_repositories_cannot_share_an_idle_work
 
     assert sum(isinstance(result, int) for result in results) == 1
     assert sum(isinstance(result, db.WorkspaceBusy) for result in results) == 1
+
+
+async def test_a_retry_cannot_join_a_workspace_busy_with_another_repository(database):
+    await db.create_session(**_session(repo_slug="o/b", repo_url="https://github.com/o/b"))
+
+    with pytest.raises(db.WorkspaceBusy):
+        await db.create_session(**_session())

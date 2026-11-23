@@ -795,6 +795,46 @@ class TestForkChoice:
         assert calls == []
 
 
+class TestContinuedWorkOnAFork:
+    def test_an_earlier_agent_branch_is_fetched_from_the_fork(self, monkeypatch):
+        monkeypatch.setenv("LOGOS_PUSH_REPO_URL", "https://github.com/LogosOSSAgent/r.git")
+        monkeypatch.setenv("LOGOS_SESSION_BASE_ON_FORK", "1")
+
+        assert run_session._base_remote("logos/agent/ws/session-1", "logos/agent/ws/session-2") == "push"
+
+    def test_the_sessions_own_branch_is_fetched_from_the_fork(self, monkeypatch):
+        monkeypatch.setenv("LOGOS_PUSH_REPO_URL", "https://github.com/LogosOSSAgent/r.git")
+        monkeypatch.delenv("LOGOS_SESSION_BASE_ON_FORK", raising=False)
+
+        assert run_session._base_remote("logos/agent/ws/session-2", "logos/agent/ws/session-2") == "push"
+        assert run_session._base_remote("main", "logos/agent/ws/session-2") == "origin"
+
+    def test_without_a_fork_everything_comes_from_the_repository(self, monkeypatch):
+        monkeypatch.delenv("LOGOS_PUSH_REPO_URL", raising=False)
+        monkeypatch.setenv("LOGOS_SESSION_BASE_ON_FORK", "1")
+
+        assert run_session._base_remote("logos/agent/ws/session-1", "logos/agent/ws/session-2") == "origin"
+
+    def test_a_review_of_the_agents_own_fork_branch_may_be_worked_on(self):
+        from app import repository_context, triggers
+
+        with repository_context.scope({"repo_slug": "o/r"}):
+            assert triggers.TriggerPoller._own_fork_branch("LogosOSSAgent/r", "logos/agent/x/session-1")
+            assert not triggers.TriggerPoller._own_fork_branch("someone/r", "logos/agent/x/session-1")
+            assert not triggers.TriggerPoller._own_fork_branch("LogosOSSAgent/r", "feature/x")
+        assert not triggers.TriggerPoller._own_fork_branch("LogosOSSAgent/r", "logos/agent/x/session-1")
+
+    def test_work_is_taken_up_again_from_where_it_lives(self):
+        published = {"branch_name": "logos/agent/x/session-1", "pr_url": "https://github.com/o/r/pull/1"}
+        unpublished = {"branch_name": "logos/agent/x/session-1", "repo_base_branch": "develop"}
+        handed_over = {"branch_name": "feature/someones-work"}
+
+        assert sessions.resumption_base(published) == "logos/agent/x/session-1"
+        assert sessions.resumption_base(unpublished) == "develop"
+        assert sessions.resumption_base(handed_over) == "feature/someones-work"
+        assert sessions.resumption_base({}) == "main"
+
+
 class TestClosingReferences:
     def test_several_issues_are_closed_one_line_each(self):
         assert run_session._closed_issues("3,#5, x") == "closes #3\ncloses #5"

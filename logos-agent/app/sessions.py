@@ -210,6 +210,19 @@ def _proxy_url(base: str, session_id: int, token: str) -> str:
     return f"{parts.scheme or 'http'}://{netloc}"
 
 
+def resumption_base(session: dict[str, Any]) -> str:
+    """The branch a workspace moves to when it takes this session's work up again.
+
+    The work's own branch when it exists on GitHub — published by the
+    session, or a pull request handed over — and otherwise the repository's
+    base branch the work started from.
+    """
+    branch = str(session.get("branch_name") or "")
+    if branch and (session.get("pr_url") or not branch.startswith(settings.branch_prefix)):
+        return branch
+    return str(session.get("repo_base_branch") or "main")
+
+
 def _fork_environment(push_repo_slug: str | None) -> dict[str, str]:
     """The finalizer's view of a fork the session pushes to, if any."""
     if not push_repo_slug:
@@ -1988,6 +2001,13 @@ class SessionManager:
             "LOGOS_REPO_SLUG": session.get("repo_slug") or settings.repo_slug,
             "LOGOS_ARTIFACT_DIR": "/artifacts",
             **(await self._push_environment(session)),
+            # A workspace that continues published agent work starts from
+            # that branch, which lives on the fork when the session uses one.
+            "LOGOS_SESSION_BASE_ON_FORK": (
+                "1"
+                if session.get("push_repo_slug") and str(workspace["base_branch"]).startswith(settings.branch_prefix)
+                else ""
+            ),
             # The account the session's commits belong to. The helper
             # configures git with it, and the finalizer refuses to push if
             # the token turns out to be somebody else's.
@@ -2769,6 +2789,7 @@ class SessionManager:
                 team_repository_id=session.get("team_repository_id"),
                 verification_command=session.get("verification_command"),
                 repo_base_branch=session.get("repo_base_branch"),
+                point_workspace_at=resumption_base(session),
             )
         except Exception as exc:
             logger.warning("could not take session %s up again: %s", session.get("id"), exc)
