@@ -2,6 +2,8 @@
 services:
   logos-db:
     image: ${E2E_PERF_DB_IMAGE}
+  migrate:
+    image: ${E2E_PERF_MIGRATE_IMAGE}
   logos-orchestrator:
     image: ${E2E_PERF_ORCHESTRATOR_IMAGE}
     volumes:
