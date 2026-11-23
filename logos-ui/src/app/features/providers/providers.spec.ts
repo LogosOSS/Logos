@@ -144,6 +144,132 @@ describe('Providers', () => {
     });
   });
 
+  describe('the provider overview', () => {
+    it('lists cloud and local providers apart', async () => {
+      component.providers.set([
+        makeProvider({ id: 1, name: 'Anthropic', cloud_provider_type: 'anthropic' }),
+        makeProvider({ id: 2, name: 'GPU box', provider_type: 'logosnode', privacy_level: 'LOCAL' }),
+        makeProvider({ id: 3, name: 'Hetzner' }),
+      ]);
+
+      expect(component.cloudProviders().map((p) => p.name)).toEqual(['Anthropic', 'Hetzner']);
+      expect(component.localProviders().map((p) => p.name)).toEqual(['GPU box']);
+    });
+
+    it('keeps the search across both lists', () => {
+      component.providers.set([
+        makeProvider({ id: 1, name: 'Anthropic' }),
+        makeProvider({ id: 2, name: 'GPU box', provider_type: 'logosnode', privacy_level: 'LOCAL' }),
+      ]);
+      component.search.set('gpu');
+
+      expect(component.cloudProviders()).toEqual([]);
+      expect(component.localProviders().map((p) => p.name)).toEqual(['GPU box']);
+    });
+
+    it('names the vendor of a cloud provider', () => {
+      expect(component.typeLabel(makeProvider({ cloud_provider_type: 'anthropic' }))).toBe('anthropic');
+      expect(component.typeLabel(makeProvider())).toBe('other (OpenAI-compatible)');
+    });
+  });
+
+  describe('the privacy level', () => {
+    it('offers readable choices instead of the stored values', () => {
+      component.openAddDialog();
+      expect(component.addPrivacyLevelOptions().map((o) => o.label)).toEqual([
+        'Cloud in the EU, EU provider',
+        'Cloud in the EU, US provider',
+        'Cloud outside the EU, US provider',
+      ]);
+
+      component.onAddProviderTypeChange('logosnode');
+      expect(component.addPrivacyLevelOptions().map((o) => o.label)).toEqual([
+        'Local hardware',
+        'Third-party hardware',
+      ]);
+    });
+
+    it('still saves the stored value', async () => {
+      component.openAddDialog();
+      component.addName.set('Anthropic');
+      component.addPrivacyLevel.set('CLOUD_NOT_IN_EU_BY_US_PROVIDER');
+      await component.submitAdd();
+
+      expect((addProvider.mock.calls[0][0] as AddProviderPayload).privacy_level).toBe(
+        'CLOUD_NOT_IN_EU_BY_US_PROVIDER',
+      );
+    });
+  });
+
+  describe('the base URL proposal', () => {
+    it('proposes the vendor endpoint once the cloud provider is picked', () => {
+      component.openAddDialog();
+      expect(component.addBaseUrl()).toBe('');
+
+      component.onAddCloudProviderTypeChange('anthropic');
+      expect(component.addBaseUrl()).toBe('https://api.anthropic.com');
+      expect(component.addBaseUrlIsSuggestion()).toBe(true);
+    });
+
+    it('follows a vendor change while the field still holds the proposal', () => {
+      component.openAddDialog();
+      component.onAddCloudProviderTypeChange('anthropic');
+      component.onAddCloudProviderTypeChange('openai');
+      expect(component.addBaseUrl()).toBe('https://api.openai.com/v1');
+
+      component.onAddCloudProviderTypeChange('azure');
+      expect(component.addBaseUrl()).toBe('');
+    });
+
+    it('never replaces a URL the operator typed', () => {
+      component.openAddDialog();
+      component.onAddCloudProviderTypeChange('anthropic');
+      component.addBaseUrl.set('https://proxy.example.org/anthropic');
+      component.onAddCloudProviderTypeChange('openai');
+
+      expect(component.addBaseUrl()).toBe('https://proxy.example.org/anthropic');
+      expect(component.addBaseUrlIsSuggestion()).toBe(false);
+    });
+
+    it('drops the proposal when the provider becomes a logosnode', () => {
+      component.openAddDialog();
+      component.onAddCloudProviderTypeChange('anthropic');
+      component.onAddProviderTypeChange('logosnode');
+      expect(component.addBaseUrl()).toBe('');
+    });
+
+    it('keeps the stored URL of an existing provider when the vendor changes', () => {
+      component.openEditDialog(makeProvider({ base_url: 'https://gateway.example.org/v1' }));
+      component.onEditCloudProviderTypeChange('anthropic');
+      expect(component.editBaseUrl()).toBe('https://gateway.example.org/v1');
+    });
+
+    it('fills an empty URL of an existing provider when the vendor changes', () => {
+      component.openEditDialog(makeProvider({ base_url: null }));
+      component.onEditCloudProviderTypeChange('anthropic');
+      expect(component.editBaseUrl()).toBe('https://api.anthropic.com');
+    });
+
+    it('sends the proposed URL with the new provider', async () => {
+      component.openAddDialog();
+      component.addName.set('Anthropic');
+      component.onAddCloudProviderTypeChange('anthropic');
+      await component.submitAdd();
+
+      const payload = addProvider.mock.calls[0][0] as AddProviderPayload;
+      expect(payload.cloud_provider_type).toBe('anthropic');
+      expect(payload.base_url).toBe('https://api.anthropic.com');
+    });
+
+    it('advertises the auth header the vendor is actually sent', () => {
+      component.openAddDialog();
+      expect(component.addAuthPlaceholders()).toEqual({ name: 'Authorization', format: 'Bearer {}' });
+
+      component.onAddCloudProviderTypeChange('anthropic');
+      expect(component.addAuthPlaceholders()).toEqual({ name: 'x-api-key', format: '{}' });
+    });
+  });
+
   describe('the provider type field', () => {
     it('opens on cloud for a new provider', () => {
       component.openAddDialog();
