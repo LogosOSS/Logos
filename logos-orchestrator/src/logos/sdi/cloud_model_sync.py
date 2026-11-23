@@ -170,6 +170,10 @@ def parse_model_list(body: Any) -> Tuple[List[str], Dict[str, Dict[str, int]], b
     return names, contexts, looks_like_logos
 
 
+class IncompleteModelListError(RuntimeError):
+    """A paged model listing could not be read to its last page."""
+
+
 async def fetch_models(url: str, headers: Dict[str, str], client: httpx.AsyncClient) -> Any:
     """Fetch a provider's model listing, following its pages.
 
@@ -177,6 +181,11 @@ async def fetch_models(url: str, headers: Dict[str, str], client: httpx.AsyncCli
     ``after_id``); reading only the first page catalogued just the 20 newest
     models. An OpenAI-shaped listing reports no ``has_more`` and is returned
     after one request, unchanged.
+
+    A listing that cannot be read to its end raises instead of returning the
+    pages read so far: the sync replaces the provider's model links with the
+    result, so a partial listing would delete the routes of every model on the
+    pages it missed.
     """
     resp = await client.get(url, headers=headers, timeout=REQUEST_TIMEOUT_S)
     resp.raise_for_status()
@@ -188,19 +197,22 @@ async def fetch_models(url: str, headers: Dict[str, str], client: httpx.AsyncCli
     seen_cursors = set()
     page = body
     for _ in range(_MAX_PAGES - 1):
+        if page.get("has_more") is not True:
+            return {**body, "data": entries}
         cursor = page.get("last_id")
-        if page.get("has_more") is not True or not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
-            break
+        if not isinstance(cursor, str) or not cursor:
+            raise IncompleteModelListError(f"{url} reports more models but no cursor to continue from")
+        if cursor in seen_cursors:
+            raise IncompleteModelListError(f"{url} repeated the cursor {cursor!r}")
         seen_cursors.add(cursor)
         resp = await client.get(url, headers=headers, params={"after_id": cursor}, timeout=REQUEST_TIMEOUT_S)
         resp.raise_for_status()
         page = resp.json()
         if not isinstance(page, dict) or not isinstance(page.get("data"), list):
-            break
+            raise IncompleteModelListError(f"{url} returned a page without a model list after {cursor!r}")
         entries.extend(page["data"])
-    else:
-        if page.get("has_more") is True:
-            logger.warning("Cloud model sync: %s still reports more models after %d pages", url, _MAX_PAGES)
+    if page.get("has_more") is True:
+        raise IncompleteModelListError(f"{url} still reports more models after {_MAX_PAGES} pages")
     return {**body, "data": entries}
 
 

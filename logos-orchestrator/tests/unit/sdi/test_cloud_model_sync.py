@@ -689,14 +689,50 @@ async def test_fetch_models_reads_an_unpaged_listing_once():
 
 
 @pytest.mark.asyncio
-async def test_fetch_models_stops_on_a_repeated_cursor():
+@pytest.mark.parametrize(
+    "pages",
+    [
+        pytest.param(
+            {
+                None: {"data": [{"id": "a"}], "has_more": True, "last_id": "a"},
+                "a": {"data": [{"id": "b"}], "has_more": True, "last_id": "a"},
+            },
+            id="repeated-cursor",
+        ),
+        pytest.param({None: {"data": [{"id": "a"}], "has_more": True}}, id="missing-cursor"),
+        pytest.param(
+            {None: {"data": [{"id": "a"}], "has_more": True, "last_id": "a"}, "a": {"error": "boom"}},
+            id="malformed-page",
+        ),
+    ],
+)
+async def test_fetch_models_rejects_an_incomplete_listing(pages):
+    with pytest.raises(cloud_model_sync.IncompleteModelListError):
+        await cloud_model_sync.fetch_models("https://upstream.example.org/v1/models", {}, _PagedClient(pages))
+
+
+@pytest.mark.asyncio
+async def test_fetch_models_rejects_a_listing_beyond_the_page_cap(monkeypatch):
+    monkeypatch.setattr(cloud_model_sync, "_MAX_PAGES", 2)
     client = _PagedClient(
         {
             None: {"data": [{"id": "a"}], "has_more": True, "last_id": "a"},
-            "a": {"data": [{"id": "b"}], "has_more": True, "last_id": "a"},
+            "a": {"data": [{"id": "b"}], "has_more": True, "last_id": "b"},
         }
     )
-    body = await cloud_model_sync.fetch_models("https://upstream.example.org/v1/models", {}, client)
+    with pytest.raises(cloud_model_sync.IncompleteModelListError):
+        await cloud_model_sync.fetch_models("https://upstream.example.org/v1/models", {}, client)
 
-    assert [entry["id"] for entry in body["data"]] == ["a", "b"]
-    assert client.cursors == [None, "a"]
+
+@pytest.mark.asyncio
+async def test_an_incomplete_listing_leaves_the_catalogue_untouched(monkeypatch):
+    """A paging failure must not replace the links with the pages read so far."""
+
+    def fetch(url, headers):  # noqa: ARG001
+        raise cloud_model_sync.IncompleteModelListError("cursor repeated")
+
+    service = _run(monkeypatch, [_provider(cloud_provider_type="anthropic")], fetch)
+    await service.run_once()
+
+    assert not any(db.synced for db in DummyDB.instances)
+    assert not any(db.contexts for db in DummyDB.instances)
