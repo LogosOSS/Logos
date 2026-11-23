@@ -437,8 +437,9 @@ jobs:
       packages: write
     with:
       push: ${{ github.actor != 'dependabot[bot]' }}
-      context: ./logos-node-manager
-      file: ./logos-node-manager/Dockerfile
+      # The repository root, because the image also carries the compose files of the commit.
+      context: .
+      file: logos-node-manager/Dockerfile
       image: logos-node-manager
 
   build-node-manager:
@@ -450,8 +451,9 @@ jobs:
       packages: write
     with:
       push: ${{ github.actor != 'dependabot[bot]' }}
-      context: ./logos-node-manager
-      file: ./logos-node-manager/Dockerfile
+      # The repository root, because the image also carries the compose files of the commit.
+      context: .
+      file: logos-node-manager/Dockerfile
       image: logos-node-manager
 
   build-agent-pr:

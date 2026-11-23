@@ -1,5 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.configuration.entity;
 
+import org.hibernate.annotations.DynamicUpdate;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -9,6 +11,7 @@ import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 
 @Entity
+@DynamicUpdate
 @Table(name = "model_provider",
        uniqueConstraints = @UniqueConstraint(columnNames = {"model_id", "provider_id"}))
 public class ModelProvider {

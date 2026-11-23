@@ -2,6 +2,7 @@ package de.tum.cit.aet.logos.logoswebservice.configuration.service;
 
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +16,7 @@ import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
 import de.tum.cit.aet.logos.logoswebservice.common.ConflictException;
 import de.tum.cit.aet.logos.logoswebservice.common.ForbiddenException;
+import de.tum.cit.aet.logos.logoswebservice.common.NotFoundException;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.AddProviderRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ConnectModelProviderRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.DisconnectModelProviderRequestDTO;
@@ -98,16 +100,7 @@ public class ProviderService {
         p.setCloudProviderType(parseCloudProviderType(req.cloudProviderType()));
         p.setPrivacyLevel(ThresholdLevel.valueOf(req.privacyLevel()));
 
-        // Logosnode providers authenticate their worker node with a shared key.
-        // When the caller did not supply one, generate a random key (mirroring
-        // the orchestrator's logosnode_register bootstrap) and echo it back in
-        // the response so the operator can use it to configure the worker.
-        // Cloud providers keep whatever key was sent.
-        String apiKey = req.apiKey();
-        if (providerType == ProviderType.logosnode && (apiKey == null || apiKey.isBlank())) {
-            apiKey = generateApiKey();
-        }
-        p.setApiKey(apiKey);
+        p.setApiKey(req.apiKey() == null || req.apiKey().isBlank() ? null : req.apiKey());
 
         p = providerRepository.save(p);
         auditLog.record("provider.created", "provider", p.getId(), null, Map.of(), providerSnapshot(p, false));
@@ -116,27 +109,66 @@ public class ProviderService {
         // looking at an empty list until the next interval tick.
         orchestratorNotificationService.notifyRefresh(false, providerType == ProviderType.cloud);
 
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("result", "Created Provider.");
-        response.put("provider-id", p.getId());
-        if (providerType == ProviderType.logosnode && apiKey != null) {
-            response.put("api_key", apiKey);
+        return Map.of("result", "Created Provider.", "provider-id", p.getId());
+    }
+
+    @Transactional
+    public Map<String, String> rotateWorkerKey(int providerId) {
+        Provider provider = providerRepository.findForUpdate(providerId)
+            .orElseThrow(() -> new NotFoundException("Provider not found"));
+        if (provider.getProviderType() != ProviderType.logosnode) {
+            throw new IllegalArgumentException("Select a worker node to rotate its key.");
         }
-        return response;
+        String replacement = generateApiKey();
+        provider.setApiKey(replacement);
+        auditLog.record("provider.updated", "provider", providerId, null,
+            providerSnapshot(provider, false), providerSnapshot(provider, true));
+        return Map.of("api_key", replacement);
+    }
+
+    @Transactional
+    public Map<String, String> replaceCloudKey(int providerId, Integer modelId, String key, boolean clear) {
+        if (clear && key != null) throw new IllegalArgumentException("A clear request cannot include a key.");
+        if (!clear && (key == null || key.isBlank())) throw new IllegalArgumentException("A replacement key is required.");
+        Provider provider = providerRepository.findForUpdate(providerId)
+            .orElseThrow(() -> new NotFoundException("Provider not found"));
+        if (provider.getProviderType() != ProviderType.cloud) {
+            throw new IllegalArgumentException("Select a cloud provider to replace its key.");
+        }
+        if (modelId == null) {
+            provider.setApiKey(key);
+            auditLog.record("provider.updated", "provider", providerId, null,
+                providerSnapshot(provider, false), providerSnapshot(provider, true));
+        } else {
+            ModelProvider connection = modelProviderRepository.findByModelIdAndProviderId(modelId, providerId)
+                .orElseThrow(() -> new NotFoundException("Connection not found"));
+            connection.setApiKey(key);
+            auditLog.record("model_provider.updated", "model_provider", connection.getId(), null,
+                Map.of(), Map.of("api_key_replaced", true));
+        }
+        orchestratorNotificationService.notifyRefresh(false, modelId == null);
+        return Collections.singletonMap("api_key_hint", keyHint(key));
     }
 
     @Transactional
     public Map<String, Object> updateProvider(UpdateProviderRequestDTO req) {
-        Provider p = providerRepository.findById(req.providerId())
+        Provider p = providerRepository.findForUpdate(req.providerId())
             .orElseThrow(() -> new IllegalArgumentException("Provider not found: " + req.providerId()));
         Map<String, Object> before = providerSnapshot(p, false);
-        boolean apiKeyChanged = req.apiKey() != null && !req.apiKey().equals(p.getApiKey());
+        ProviderType newType = req.providerType() == null ? p.getProviderType() : parseProviderType(req.providerType());
+        boolean replaceKey = req.apiKey() != null && !req.apiKey().isBlank();
+        boolean typeChanged = newType != p.getProviderType();
+        boolean apiKeyChanged = typeChanged || (replaceKey && !req.apiKey().equals(p.getApiKey()));
         if (req.providerName() != null) p.setName(req.providerName());
         if (req.baseUrl() != null) p.setBaseUrl(normalizeBaseUrl(req.baseUrl()));
-        if (req.apiKey() != null) p.setApiKey(req.apiKey());
+        if (replaceKey) {
+            p.setApiKey(req.apiKey());
+        } else if (typeChanged) {
+            p.setApiKey(null);
+        }
         if (req.authName() != null) p.setAuthName(req.authName());
         if (req.authFormat() != null) p.setAuthFormat(req.authFormat());
-        if (req.providerType() != null) p.setProviderType(parseProviderType(req.providerType()));
+        p.setProviderType(newType);
         if (req.cloudProviderType() != null) p.setCloudProviderType(parseCloudProviderType(req.cloudProviderType()));
         if (req.privacyLevel() != null) {
             if (!VALID_PRIVACY_LEVELS.contains(req.privacyLevel())) {
@@ -198,7 +230,7 @@ public class ProviderService {
                 n.setProviderId(req.providerId());
                 return n;
             });
-        mp.setApiKey(req.apiKey());
+        if (req.apiKey() != null) mp.setApiKey(req.apiKey());
         mp.setEndpoint(req.endpoint());
         mp = modelProviderRepository.save(mp);
         orchestratorNotificationService.notifyRefresh(false);
@@ -257,7 +289,7 @@ public class ProviderService {
                 m.put("batch_source", p.getBatchSource());
                 m.put("batch_checked_at", p.getBatchCheckedAt() != null ? p.getBatchCheckedAt().toString() : null);
                 if (admin) {
-                    m.put("api_key", p.getApiKey() != null ? p.getApiKey() : "");
+                    m.put("api_key_hint", keyHint(p.getApiKey()));
                 }
                 return m;
             })
@@ -266,6 +298,12 @@ public class ProviderService {
 
     public Map<String, Object> getGeneralProviderStats() {
         return Map.of("totalProviders", providerRepository.count());
+    }
+
+    private static String keyHint(String key) {
+        if (key == null || key.isEmpty()) return null;
+        int length = key.codePointCount(0, key.length());
+        return length <= 3 ? "••••" : "••••" + key.substring(key.offsetByCodePoints(0, length - 3));
     }
 
     private static String normalizeBaseUrl(String raw) {
@@ -315,7 +353,7 @@ public class ProviderService {
         m.put("name", p.getName());
         m.put("base_url", p.getBaseUrl());
         if (admin) {
-            m.put("api_key", p.getApiKey());
+            m.put("api_key_hint", keyHint(p.getApiKey()));
         }
         m.put("provider_type", p.getProviderType());
         m.put("cloud_provider_type", p.getCloudProviderType());

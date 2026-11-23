@@ -44,6 +44,7 @@ import { NodeModels } from './node-models/node-models';
     NodeModels,
   ],
   templateUrl: './providers.html',
+  host: { '(window:pagehide)': 'discardWorkerKey()' },
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './providers.scss',
 })
@@ -221,6 +222,7 @@ export class Providers implements OnInit, OnDestroy {
   onAddProviderTypeChange(type: ProviderType): void {
     const previous = this.suggestedBaseUrl(this.addProviderType(), this.addCloudProviderType());
     this.addProviderType.set(type);
+    this.addApiKey.set('');
     const { cloud, privacy } = this.coercedForType(
       type,
       this.addCloudProviderType(),
@@ -298,20 +300,17 @@ export class Providers implements OnInit, OnDestroy {
   addLoading = signal(false);
   addError = signal('');
 
-  // ── Created-provider key modal ───────────────────────────────────────────
-  // Logosnode providers are given a generated shared key on creation; the
-  // operator must be able to copy it to configure the worker node, so we
-  // surface it in a follow-up modal once the add flow succeeds.
-  createdKeyOpen = signal(false);
-  createdKeyName = signal('');
-  createdKey = signal('');
-  createdKeyCopied = signal(false);
+  keyChange = signal<{ provider: Provider; connection?: ModelConnection; remove: boolean } | null>(null);
+  replacementKey = signal('');
+  rotationLoading = signal(false);
+  rotationError = signal('');
+  rotatedKey = signal<{ name: string; value: string } | null>(null);
+  rotatedKeyCopied = signal(false);
 
   // ── Edit modal ────────────────────────────────────────────────────────────
   editTarget = signal<Provider | null>(null);
   editName = signal('');
   editBaseUrl = signal('');
-  editApiKey = signal('');
   editAuthName = signal('');
   editAuthFormat = signal('');
   editProviderType = signal<ProviderType>('cloud');
@@ -332,7 +331,6 @@ export class Providers implements OnInit, OnDestroy {
   editConnProvider = signal<Provider | null>(null);
   editConnModel = signal<ModelConnection | null>(null);
   editConnEndpoint = signal('');
-  editConnApiKey = signal('');
   editConnLoading = signal(false);
   editConnError = signal('');
 
@@ -422,6 +420,7 @@ export class Providers implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.discardWorkerKey();
     if (this.refreshPollTimer !== null) clearTimeout(this.refreshPollTimer);
   }
 
@@ -612,19 +611,10 @@ export class Providers implements OnInit, OnDestroy {
       privacy_level: this.addPrivacyLevel(),
     };
     try {
-      const res = await this.providerService.addProvider(payload);
+      await this.providerService.addProvider(payload);
+      this.addApiKey.set('');
       await this.fetchProviders();
       this.addOpen.set(false);
-      const generatedKey: string = (res && (res as { api_key?: string }).api_key) || '';
-      // Only surface the key when we actually generated one, i.e. the operator
-      // left the key field empty. An operator-supplied key is echoed back by the
-      // application server too, and there is nothing new to show for that case.
-      if (generatedKey && payload.api_key === undefined) {
-        this.createdKeyName.set(payload.name);
-        this.createdKey.set(generatedKey);
-        this.createdKeyCopied.set(false);
-        this.createdKeyOpen.set(true);
-      }
     } catch {
       this.addError.set('Failed to add provider, please try again.');
     } finally {
@@ -632,21 +622,73 @@ export class Providers implements OnInit, OnDestroy {
     }
   }
 
-  async copyCreatedKey(): Promise<void> {
-    const key = this.createdKey();
-    if (!key) return;
+  requestKeyChange(provider: Provider, connection?: ModelConnection, remove = false): void {
+    this.replacementKey.set('');
+    this.rotationError.set('');
+    this.keyChange.set({ provider, connection, remove });
+  }
+
+  closeKeyChange(): void {
+    if (this.rotationLoading()) return;
+    this.replacementKey.set('');
+    this.keyChange.set(null);
+  }
+
+  async confirmKeyChange(): Promise<void> {
+    const target = this.keyChange();
+    if (!target || this.rotationLoading()) return;
+    const { provider, connection } = target;
+    const worker = provider.provider_type === 'logosnode';
+    const replacement = this.replacementKey().trim();
+    if (!worker && !target.remove && !replacement) return;
+    this.rotationLoading.set(true);
+    this.rotationError.set('');
     try {
-      await navigator.clipboard.writeText(key);
-      this.createdKeyCopied.set(true);
-      setTimeout(() => this.createdKeyCopied.set(false), 2000);
+      if (worker) {
+        const response = await this.providerService.rotateWorkerKey(provider.id);
+        if (this.keyChange() !== target) return;
+        this.editTarget.set(null);
+        this.rotatedKeyCopied.set(false);
+        this.rotatedKey.set({ name: provider.name, value: response.api_key });
+      } else {
+        const { api_key_hint } = await this.providerService.replaceCloudKey(provider.id, target.remove ? null : replacement, connection?.model_id);
+        if (this.keyChange() !== target) return;
+        if (connection) {
+          this.editConnModel.set({ ...connection, api_key_hint });
+        } else {
+          this.editTarget.set({ ...provider, api_key_hint });
+        }
+      }
+      this.keyChange.set(null);
+      this.replacementKey.set('');
+      if (connection) await this.loadProviderModels(provider.id);
+      else await this.fetchProviders();
     } catch {
-      // Clipboard unavailable (e.g. non-secure context) — the key is still
-      // visible in the field above for manual copying.
+      this.rotationError.set(worker
+        ? 'Could not confirm rotation. Rotate again if the replacement key was lost.'
+        : 'Could not update the key. Please try again.');
+    } finally {
+      this.rotationLoading.set(false);
     }
   }
 
-  closeCreatedKeyDialog(): void {
-    this.createdKeyOpen.set(false);
+  async copyRotatedKey(): Promise<void> {
+    const key = this.rotatedKey();
+    if (!key) return;
+    try {
+      await navigator.clipboard.writeText(key.value);
+      if (this.rotatedKey() === key) this.rotatedKeyCopied.set(true);
+    } catch {
+      // The readonly field also supports manual copying.
+    }
+  }
+
+  discardWorkerKey(): void {
+    this.keyChange.set(null);
+    this.replacementKey.set('');
+    this.rotatedKey.set(null);
+    this.rotatedKeyCopied.set(false);
+    this.editTarget.set(null);
   }
 
   // ── Edit flow ─────────────────────────────────────────────────────────────
@@ -654,7 +696,6 @@ export class Providers implements OnInit, OnDestroy {
     this.editTarget.set(provider);
     this.editName.set(provider.name);
     this.editBaseUrl.set(provider.base_url ?? '');
-    this.editApiKey.set(provider.api_key ?? '');
     this.editAuthName.set(provider.auth_name ?? '');
     this.editAuthFormat.set(provider.auth_format ?? '');
     this.editProviderType.set(provider.provider_type);
@@ -682,7 +723,6 @@ export class Providers implements OnInit, OnDestroy {
       provider_id: target.id,
       name: this.editName().trim() || undefined,
       base_url: this.editBaseUrl().trim(),
-      api_key: this.editApiKey().trim(),
       auth_name: this.editAuthName().trim(),
       auth_format: this.editAuthFormat().trim(),
       provider_type: this.editProviderType(),
@@ -743,7 +783,6 @@ export class Providers implements OnInit, OnDestroy {
     this.editConnProvider.set(provider);
     this.editConnModel.set(conn);
     this.editConnEndpoint.set(conn.endpoint ?? '');
-    this.editConnApiKey.set(conn.api_key ?? '');
     this.editConnError.set('');
   }
 
@@ -764,7 +803,6 @@ export class Providers implements OnInit, OnDestroy {
         provider.id,
         conn.model_id,
         this.editConnEndpoint().trim() || undefined,
-        this.editConnApiKey().trim() || undefined,
       );
       await this.loadProviderModels(provider.id);
       this.editConnProvider.set(null);

@@ -373,6 +373,22 @@ def container_name(session_id: int) -> str:
     return f"{_CONTAINER_PREFIX}{session_id}"
 
 
+def _sessions_lane(
+    sessions: list[dict[str, Any]], policy: model_policy.ModelPolicy
+) -> frozenset[tuple[str, str]] | None:
+    """The deployments these sessions are served by, or None without sessions.
+
+    Whether to hand capacity back is a question about the models the
+    runner's sessions use. A model of the key that no session uses — an
+    embedding or speech lane that reports no engine observation — must not
+    make that reading unknown and pause, or hold back, unrelated work.
+    """
+    if not sessions:
+        return None
+    lanes = [policy.lane(policy.resolve(session.get("model"))) or frozenset() for session in sessions]
+    return frozenset().union(*lanes)
+
+
 def _ours_by_model(running: list[dict[str, Any]], policy: model_policy.ModelPolicy) -> dict[str, int]:
     """How many sessions this runner is running, per model they run on.
 
@@ -1048,9 +1064,13 @@ class SessionManager:
                 {provider: (session, observed) for provider, session, observed in reading.sample_id}
             )
 
-    async def _yield_for_capacity(self, reading: capacity.Reading, control) -> bool:
-        """Serialize yielding without holding the lock through any launch."""
-        should_pause, why = capacity.pause_decision(reading)
+    async def _yield_for_capacity(self, reading: capacity.Reading, control, *, running: bool = True) -> bool:
+        """Serialize yielding without holding the lock through any launch.
+
+        Without running sessions there is nothing to hand back: only the
+        operator's pause stops the pass then.
+        """
+        should_pause, why = capacity.pause_decision(reading) if running else (False, "")
         if control.paused:
             should_pause, why = True, control.admission_block()
         if not should_pause:
@@ -1071,12 +1091,15 @@ class SessionManager:
         policy = await model_policy.refresh()
         control = await controls.current()
         running = await db.sessions_in_status(SessionStatus.RUNNING)
+        lane = _sessions_lane(running, policy)
         measured, reading = await capacity.read_load_pair(
-            lane=policy.lane(), ours=_ours_by_model(running, policy), own_api_key_id=await self._own_api_key_id()
+            lane=lane if lane is not None else policy.lane(),
+            ours=_ours_by_model(running, policy),
+            own_api_key_id=await self._own_api_key_id(),
         )
         self._last_reading = measured
         self._observe_capacity(reading)
-        await self._yield_for_capacity(reading, control)
+        await self._yield_for_capacity(reading, control, running=bool(running))
 
     async def _capacity_watch_loop(self) -> None:
         while not self._stopping.is_set():
@@ -1151,8 +1174,11 @@ class SessionManager:
         # Both answers use one HTTP snapshot. Attribution is applied while
         # the per-model figures still exist, before aggregation.
         own_key = await self._own_api_key_id()
+        # On the models the runner's sessions use; with none, on everything
+        # the key reaches, which then only informs the page.
+        lane = _sessions_lane(running + paused, policy)
         measured, reading = await capacity.read_load_pair(
-            lane=policy.lane(),
+            lane=lane if lane is not None else policy.lane(),
             ours=_ours_by_model(running, policy),
             own_api_key_id=own_key,
         )
@@ -1162,7 +1188,7 @@ class SessionManager:
         # 1. Give capacity back first. Yielding always takes precedence over
         #    admitting, so a burst of user traffic is never met by the runner
         #    starting another session in the same pass.
-        if await self._yield_for_capacity(reading, control):
+        if await self._yield_for_capacity(reading, control, running=bool(running)):
             return
 
         # 2. Resume what was paused, oldest first.

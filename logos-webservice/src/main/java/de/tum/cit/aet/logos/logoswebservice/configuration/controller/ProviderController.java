@@ -5,9 +5,11 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -32,6 +34,7 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.dto.LaneLoadStatusRequ
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.LockLaneRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.NodeConfigRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReplaceNodeConfigRequestDTO;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReplaceCloudKeyRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseCalibrationClaimRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseRecoveryRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseNodeMaintenanceRequestDTO;
@@ -101,6 +104,18 @@ public class ProviderController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
         }
+    }
+
+    @PostMapping("/providers/{providerId}/rotate_worker_key")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> rotateWorkerKey(@PathVariable int providerId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(providerService.rotateWorkerKey(providerId));
+    }
+
+    @PostMapping("/providers/{providerId}/replace_cloud_key")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> replaceCloudKey(@PathVariable int providerId, @RequestBody ReplaceCloudKeyRequestDTO req) {
+        return ResponseEntity.ok(providerService.replaceCloudKey(providerId, req.modelId(), req.apiKey(), Boolean.TRUE.equals(req.clear())));
     }
 
     @PostMapping("/delete_provider")

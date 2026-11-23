@@ -93,5 +93,6 @@
     <include file="liquibase/changelog/086_agent_service_identity.xml"/>
     <include file="liquibase/changelog/087_agent_sandbox_permissions.xml"/>
     <include file="liquibase/changelog/088_agent_unrestricted_egress.xml"/>
+    <include file="liquibase/changelog/089_deployments.xml"/>
     <include file="liquibase/changelog/090_agent_session_memory.xml"/>
 </databaseChangeLog>

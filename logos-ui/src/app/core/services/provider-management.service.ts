@@ -51,6 +51,19 @@ export class ProviderManagementService {
     }));
   }
 
+  rotateWorkerKey(id: number): Promise<{ api_key: string }> {
+    return firstValueFrom(this.http.post<{ api_key: string }>(
+      `/api/logosdb/providers/${id}/rotate_worker_key`, {},
+    ));
+  }
+
+  replaceCloudKey(id: number, apiKey: string | null, modelId?: number): Promise<{ api_key_hint: string | null }> {
+    return firstValueFrom(this.http.post<{ api_key_hint: string | null }>(
+      `/api/logosdb/providers/${id}/replace_cloud_key`,
+      apiKey === null ? { clear: true, model_id: modelId } : { api_key: apiKey, model_id: modelId },
+    ));
+  }
+
   deleteProvider(id: number): Promise<void> {
     return firstValueFrom(this.http.post<void>('/api/logosdb/delete_provider', { provider_id: id }));
   }

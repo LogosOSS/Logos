@@ -62,8 +62,9 @@ def _as_text(value: str | bytes | None) -> str:
 class SubprocessRunner:
     """Runs the command on this machine.
 
-    The environment of the process is the base, ``env`` is added on top. Only the command line is logged, and only at
-    debug level: it holds file paths and image tags, and the environment, which can hold secrets, is never written.
+    The environment of the process is the base, and ``env`` adds some variables for one command, on top. Only the
+    command line is logged, and only at debug level: it holds file paths and image tags, and the environment, which can
+    hold secrets, is never written.
 
     Every command runs in a process group of its own. ``docker compose`` hands the work to a helper process, so a
     command that ran out of time is stopped together with everything it started: the group gets SIGTERM, and SIGKILL

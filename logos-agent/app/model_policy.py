@@ -63,6 +63,11 @@ def _names_of(row: dict[str, Any]) -> list[str]:
     return [name for name in names if name]
 
 
+# The alias a session without a model falls back to when
+# LOGOS_AGENT_DEFAULT_MODEL is not set.
+DEFAULT_MODEL_ALIAS = "local-most-powerful"
+
+
 @dataclass(frozen=True)
 class ModelPolicy:
     """What the agent key can reach, and whether that is safe to run on."""
@@ -132,7 +137,10 @@ class ModelPolicy:
     def default_model(self) -> str:
         """The model a session that names none is driven by.
 
-        Configuration wins when it is set and local. Otherwise a deployment
+        Configuration wins when it is set and local. Without it, the alias
+        ``local-most-powerful`` is used when this key reaches it locally: an
+        administrator points that alias at the strongest local model, and a
+        session that names none should get that one. Otherwise a deployment
         that serves exactly one model locally needs no configuration at all:
         there is only one answer, so the runner uses it rather than making
         every session repeat it.
@@ -140,6 +148,8 @@ class ModelPolicy:
         configured = settings.default_model.strip()
         if configured:
             return configured if configured.lower() in self.local_models else ""
+        if DEFAULT_MODEL_ALIAS in self.local_models:
+            return DEFAULT_MODEL_ALIAS
         return self.offered[0] if len(self.offered) == 1 else ""
 
     def resolve(self, model: str | None) -> str:

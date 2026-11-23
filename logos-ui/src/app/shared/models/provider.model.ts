@@ -35,7 +35,7 @@ export interface Provider {
   id: number;
   name: string;
   base_url: string | null;
-  api_key: string | null;
+  api_key_hint?: string | null;
   auth_name: string | null;
   auth_format: string | null;
   provider_type: ProviderType;
@@ -55,7 +55,7 @@ export interface ModelConnection {
   model_id: number;
   model_name: string;
   endpoint: string | null;
-  api_key: string | null;
+  api_key_hint?: string | null;
   batch_support?: BatchSupport;
   batch_deployment?: string | null;
   batch_detail?: string | null;
@@ -212,7 +212,7 @@ export interface UpdateProviderPayload {
   provider_id: number;
   name?: string;
   base_url?: string;
-  api_key: string;
+  api_key?: string;
   auth_name: string;
   auth_format: string;
   provider_type?: ProviderType;
