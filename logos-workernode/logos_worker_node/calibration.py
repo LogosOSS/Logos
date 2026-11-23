@@ -3209,7 +3209,7 @@ def _calibrate_model_probe(
         anchors_parallelity: dict[float, float] = {}
 
         def _probe_kv(kv_mb: float) -> int | None:
-            nonlocal model_default_max_len, kv_needed_for_full_mb, best_kv, resolved_max_num_seqs
+            nonlocal model_default_max_len, kv_needed_for_full_mb, resolved_max_num_seqs
             probe_overrides: dict[str, Any] = {"max_model_len": None, "_max_model_len_retry_count": 0}
             p = _try_start(kv_mb, plan_overrides=probe_overrides, record_blacklist=False, allow_whitelist=False)
             if p is None:
