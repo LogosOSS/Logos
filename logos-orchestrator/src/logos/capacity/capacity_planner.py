@@ -1755,6 +1755,27 @@ class CapacityPlanner:
             self._log_action_plan(all_actions)
 
         validated = self._validate_vram_budget(all_actions)
+        if not self._uses_demand_ordering():
+            # A rejected restore releases the model for FIFO placement on other
+            # eligible workers. Never allocate a second lane around a local pin.
+            serving = {a.model_name for a in validated if a.action in {"load", "wake"}}
+            refused: dict[str, set[int]] = {}
+            for action in all_actions:
+                if action.restore and action.action == "load" and action.model_name not in serving:
+                    refused.setdefault(action.model_name, set()).add(action.provider_id)
+            if refused:
+                used = {a.provider_id for a in validated}
+                fallback = self._compute_simple_cycle_actions(
+                    provider_ids,
+                    serving,
+                    cycle_reserved_lane_ids,
+                    cycle_claimed_gpus_by_provider,
+                    refused_restores=refused,
+                    used_providers=used,
+                )
+                admitted = self._validate_vram_budget(fallback)
+                placed = {a.provider_id for a in admitted if a.action in {"load", "wake"}}
+                validated.extend(a for a in admitted if a.provider_id in placed)
 
         for action in validated:
             key = (action.provider_id, action.lane_id)
@@ -5967,6 +5988,9 @@ class CapacityPlanner:
         planned: set[str],
         reserved_ids: dict[int, set[str]],
         claimed_gpus: dict[int, set[int]],
+        *,
+        refused_restores: Optional[dict[str, set[int]]] = None,
+        used_providers: Optional[set[int]] = None,
     ) -> list[CapacityPlanAction]:
         """Plan feasible models globally in FIFO order, with stable worker selection."""
         providers = [pid for pid in sorted(provider_ids) if self._is_plannable(pid) and not self.is_worker_locked(pid)]
@@ -5975,6 +5999,8 @@ class CapacityPlanner:
         for pid in providers:
             models.update(self._facade.get_worker_capabilities(pid))
             models.update(self._lane_waiter_models(pid))
+        if refused_restores is not None:
+            models.intersection_update(refused_restores)
         ordered = sorted(
             models,
             key=lambda model: (
@@ -5983,7 +6009,7 @@ class CapacityPlanner:
             ),
         )
         actions: list[CapacityPlanAction] = []
-        used_providers: set[int] = set()
+        used_providers = set(used_providers or ())
         for model in ordered:
             if model in planned:
                 continue
@@ -5998,7 +6024,7 @@ class CapacityPlanner:
             ):
                 continue
             for pid in providers:
-                if pid in used_providers:
+                if pid in used_providers or (refused_restores and pid in refused_restores[model]):
                     continue
                 result = self._compute_demand_actions(
                     pid,
@@ -7831,15 +7857,30 @@ class CapacityPlanner:
 
             if free_map is not None:
                 if action.action == "load":
+                    eligible_free = free_map
+                    if not action.operator_initiated:
+                        pools = self._runtime_dict_for_provider(provider_id).get("restore_gpu_pool_by_model") or {}
+                        if action.model_name in pools:
+                            eligible_free = {gpu: free_map[gpu] for gpu in pools[action.model_name] if gpu in free_map}
                     selected = self._select_cold_load_gpus(
                         provider_id,
                         profile,
                         estimated_vram,
                         tp=tp,
-                        per_gpu_free=free_map,
+                        per_gpu_free=eligible_free,
                         required_gpus=required_gpus,
                         model_name=action.model_name,
                     )
+                    if selected is None and action.restore and required_gpus:
+                        alternate = self._restore_gpu_candidates(action, required_gpus, eligible_free)
+                        selected = self._select_cold_load_gpus(
+                            provider_id,
+                            profile,
+                            estimated_vram,
+                            tp=tp,
+                            per_gpu_free=alternate,
+                            model_name=action.model_name,
+                        )
                     if selected is None:
                         gmu = self._startup_gmu_for_model(provider_id, action.model_name, profile)
                         logger.warning(
@@ -7853,7 +7894,7 @@ class CapacityPlanner:
                         continue
                     # Communicate auto-chosen placement so later accounting and the
                     # worker share one concrete set. Pinned sets stay unchanged.
-                    if required_gpus is None:
+                    if selected != required_gpus:
                         if action.params is None:
                             action.params = {}
                         if isinstance(action.params, dict):
@@ -10268,6 +10309,32 @@ class CapacityPlanner:
         # Prefer more free headroom above each card's own need.
         feasible.sort(key=lambda gpu_id: free_map[gpu_id] - _need(gpu_id), reverse=True)
         return tuple(sorted(feasible[:tp]))
+
+    def _restore_gpu_candidates(self, action, previous, free):
+        """Move a historical placement only within a worker-confirmed pool of equivalent cards."""
+        config = (action.params or {}).get("vllm_config") or {}
+        env = config.get("env_overrides") or {}
+        # Visible-device overrides change physical numbering. Parallel layouts
+        # beyond simple tensor parallelism need their own placement evidence.
+        if (
+            self._kept_asleep(action.provider_id)
+            or "CUDA_VISIBLE_DEVICES" in env
+            or env.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID") != "PCI_BUS_ID"
+            or any(config.get(key, 1) != 1 for key in ("pipeline_parallel_size", "data_parallel_size"))
+            or config.get("tensor_parallel_size", len(previous)) != len(previous)
+        ):
+            return {}
+        runtime = self._runtime_dict_for_provider(action.provider_id)
+        pool = (runtime.get("restore_gpu_pool_by_model") or {}).get(action.model_name, [])
+        names = {
+            int(device["extra"]["index"]): device.get("name")
+            for device in (runtime.get("devices") or {}).get("devices", [])
+            if str((device.get("extra") or {}).get("index", "")).isdigit()
+        }
+        kinds = {names.get(gpu) for gpu in previous}
+        if len(kinds) != 1 or not all(kinds):
+            return {}
+        return {gpu: free[gpu] for gpu in pool if gpu in free and names.get(gpu) in kinds}
 
     def _gpus_can_admit_cold_load(
         self,

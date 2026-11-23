@@ -526,6 +526,10 @@
           <span class="session__task">{{ taskPreview(session.task) }}</span>
           <span class="session__meta">
             <span [class]="statusClass(session.status)">{{ statusLabel(session) }}</span>
+            @if (session.subagent_count > 0) {
+              <span class="session__tag" [title]="'Parent agent and ' + session.subagent_count + ' distinct subagent(s)'"
+                    [attr.aria-label]="(session.subagent_count + 1) + ' agents including the parent'">{{ session.subagent_count + 1 }}x</span>
+            }
             @if (analysisTarget(session); as target) {
               <span class="session__tag" title="The team repository this session analyses">
                 <i class="pi pi-github" aria-hidden="true"></i> {{ target }}
@@ -569,6 +573,13 @@
               </span>
               @if (session.memory_mb != null) {
                 <span>Limit <strong>{{ session.memory_mb | number }} MiB</strong></span>
+              }
+              @if (session.progress_percent != null && session.progress_reported_at) {
+                <span class="session__activity">
+                  <span>Agent estimate <strong>{{ session.progress_percent }}%</strong></span>
+                  @if (progressEta(session); as eta) { <span>{{ eta }}</span> }
+                  <span [title]="session.progress_reported_at | date: 'medium'">Reported {{ reportAge(session) }} ago</span>
+                </span>
               }
             </span>
           }

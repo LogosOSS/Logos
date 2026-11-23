@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="093-agent-activity" author="LogosOSS">
+        <sql>
+            ALTER TABLE agent_sessions ADD COLUMN subagent_count INTEGER,
+                ADD COLUMN progress_percent SMALLINT CHECK (progress_percent BETWEEN 0 AND 100),
+                ADD COLUMN progress_active_s BIGINT,
+                ADD COLUMN progress_reported_at TIMESTAMPTZ,
+                ADD COLUMN active_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+                ADD COLUMN active_since TIMESTAMPTZ;
+        </sql>
+        <rollback>
+            <sql>
+                ALTER TABLE agent_sessions DROP COLUMN subagent_count, DROP COLUMN progress_percent,
+                    DROP COLUMN progress_active_s, DROP COLUMN progress_reported_at, DROP COLUMN active_seconds,
+                    DROP COLUMN active_since;
+            </sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

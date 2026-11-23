@@ -55,12 +55,17 @@ async def database(monkeypatch):
                 priority integer, priority_reason text, environment_notes text,
                 repo_url text, repo_slug text, team_repository_id integer, verification_command text,
                 repo_base_branch text, push_repo_slug text, egress_token_hash text,
-                memory_mb integer, memory_peak_bytes bigint,
+                memory_mb integer, memory_peak_bytes bigint, subagent_count integer,
+                progress_percent integer, progress_active_s bigint, progress_reported_at timestamptz,
+                active_seconds double precision NOT NULL DEFAULT 0, active_since timestamptz,
                 tokens_in bigint, tokens_out bigint, cost_usd numeric)"""))
             await conn.execute(text("""CREATE TABLE ai_workflow_analyses (
                 id SERIAL PRIMARY KEY, team_id integer, team_repository_id integer, status text, source text,
-                commit_sha text, started_at timestamptz, finished_at timestamptz, automatically_queued boolean,
-                agent_session_id integer)"""))
+                commit_sha text, error text, started_at timestamptz, finished_at timestamptz,
+                automatically_queued boolean, agent_session_id integer)"""))
+            await conn.execute(text("""CREATE UNIQUE INDEX one_pending_analysis
+                ON ai_workflow_analyses(team_repository_id)
+                WHERE status IN ('queued','running')"""))
             await conn.execute(text("CREATE TABLE agent_events (id SERIAL PRIMARY KEY, session_id integer, kind text)"))
             await conn.execute(text("""INSERT INTO team_repositories (team_id, repo_url, repo_slug, branch,
                 agent_egress_hosts, agent_may_comment)
@@ -219,12 +224,10 @@ async def test_peak_is_nullable_and_only_increases_across_sessions_and_status_ch
 async def test_automatic_analysis_rechecks_opt_out_after_selection_and_before_attach(database):
     poller = analysis_triggers.AnalysisPoller()
     (link,) = await poller._links_needing_analysis()
-    analysis_id = await poller._insert_queued_analysis(1, link["id"])
     async with database.begin() as conn:
         await conn.execute(text("UPDATE team_repositories SET automatic_workflow_analysis = FALSE WHERE id = 1"))
     with pytest.raises(ValueError, match="automatic workflow analysis"):
-        await db.create_session(**_session(), automatic_analysis_id=analysis_id)
-    await poller._drop_queued_analysis(analysis_id)
+        await db.create_session(**_session(), automatic_analysis=True)
     assert await db.list_sessions() == []
     assert await poller._queue(link) is None
     assert await poller._links_needing_analysis() == []
@@ -243,3 +246,72 @@ async def test_automatic_analysis_rechecks_opt_out_after_selection_and_before_at
             await conn.scalar(text("SELECT agent_session_id FROM ai_workflow_analyses WHERE automatically_queued"))
             == session_id
         )
+
+
+async def test_failed_analysis_retry_honors_opt_out_and_attaches_cancellable_analysis(database, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.sessions import SessionManager
+
+    manager = SessionManager()
+    monkeypatch.setattr(manager, "request_scheduler_pass", lambda: None)
+    monkeypatch.setattr(db, "add_event", AsyncMock())
+    poller = analysis_triggers.AnalysisPoller()
+    (link,) = await poller._links_needing_analysis()
+    parent_id = await poller._queue(link)
+    await db.update_session(parent_id, status="failed")
+    parent = await db.get_session(parent_id)
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE team_repositories SET automatic_workflow_analysis = FALSE"))
+    assert await manager.take_up_again(parent) is None
+    assert len(await db.list_sessions()) == 1
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE team_repositories SET automatic_workflow_analysis = TRUE"))
+    retry = await manager.take_up_again(parent)
+    assert retry and retry != parent_id
+    assert await poller._queue(link) is None
+    async with database.begin() as conn:
+        rows = (
+            await conn.execute(
+                text("SELECT agent_session_id, status, automatically_queued " "FROM ai_workflow_analyses ORDER BY id")
+            )
+        ).all()
+        assert rows == [(parent_id, "failed", True), (retry, "queued", True)]
+
+
+async def test_activity_clock_freezes_and_metadata_survives_reread_and_out_of_order_writes(
+    database, monkeypatch, tmp_path
+):
+    from app import sessions
+
+    monkeypatch.setattr(sessions, "artifact_dir", lambda _: tmp_path)
+    sid = await db.create_session(**_session())
+    await db.claim_session(sid, memory_mb=2048)
+    await db.transition_session(sid, db.SessionStatus.RUNNING)
+    async with database.begin() as conn:
+        await conn.execute(
+            text("UPDATE agent_sessions SET active_since = now() - interval '20 minutes' WHERE id = :id"), {"id": sid}
+        )
+    await db.transition_session(sid, db.SessionStatus.PAUSED)
+    paused = await db.get_session(sid)
+    assert 1199 < paused["active_seconds"] < 1202 and paused["active_since"] is None
+    import json
+    import time
+
+    stamp = time.time_ns() // 1000
+    path = tmp_path / "activity.json"
+    path.write_text(
+        json.dumps(dict(subagent_count=2, progress_percent=40, progress_active_s=1200, progress_reported_us=stamp))
+    )
+    await sessions.SessionManager()._collect_activity(sid)
+    path.write_text(
+        json.dumps(dict(subagent_count=1, progress_percent=20, progress_active_s=600, progress_reported_us=stamp - 100))
+    )
+    await sessions.SessionManager()._collect_activity(sid)
+    await db.transition_session(sid, db.SessionStatus.RUNNING)
+    assert (await db.get_session(sid))["active_since"]
+    await db.transition_session(sid, db.SessionStatus.FINALIZING)
+    await db.transition_session(sid, db.SessionStatus.SUCCEEDED)
+    row = (await db.list_sessions())[0]
+    assert (row["subagent_count"], row["progress_percent"], row["progress_active_s"]) == (2, 40, 1200)
+    assert row["active_since"] is None

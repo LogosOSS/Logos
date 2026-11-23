@@ -533,6 +533,13 @@
   }
 }
 
+.session__activity {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
 .session__tag {
   display: inline-flex;
   align-items: center;

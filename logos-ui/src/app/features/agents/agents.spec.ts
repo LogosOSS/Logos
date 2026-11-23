@@ -251,6 +251,36 @@ describe('Agents', () => {
       expect(readings()[0]).toContain('Limit 2,048 MiB');
     });
 
+    it('counts distinct agents and shows a self-reported countdown in active minutes', async () => {
+      const row = makeSession({ status: 'running', active_seconds: 1200, active_since: new Date().toISOString(),
+        progress_percent: 40, progress_active_s: 1200, progress_reported_at: new Date().toISOString(), subagent_count: 1 });
+      agentService.sessions = [row];
+      await component.refresh();
+      fixture.detectChanges();
+      const list = () => fixture.nativeElement.querySelector('.session__head').textContent;
+      expect(list()).toContain('2x');
+      expect(list()).toContain('About 30 min of active work left');
+      await vi.advanceTimersByTimeAsync(61000);
+      expect(component.progressEta(row)).toBe('About 29 min of active work left');
+      const paused = { ...row, status: 'paused' as const, active_seconds: 1320, active_since: null };
+      expect(component.progressEta(paused)).toBe('About 28 min of active work left');
+      await vi.advanceTimersByTimeAsync(61000);
+      expect(component.progressEta(paused)).toBe('About 28 min of active work left');
+      expect(component.progressEta({ ...paused, active_seconds: 2400 })).toBe('Awaiting updated estimate');
+      expect(component.progressEta({ ...paused, progress_percent: 99 })).toBe('Awaiting updated estimate');
+      for (const progress_percent of [null, 0, 100]) expect(component.progressEta({ ...row, progress_percent })).toBe('');
+      agentService.sessions = [{ ...row, subagent_count: 2, status: 'succeeded' }];
+      await component.refresh();
+      fixture.detectChanges();
+      expect(list()).toContain('3x');
+      expect(list()).not.toContain('active work left');
+      agentService.sessions = [makeSession({ subagent_count: null })];
+      await component.refresh();
+      fixture.detectChanges();
+      expect(list()).not.toContain('Agent estimate');
+      expect(list()).not.toContain('2x');
+    });
+
     it('expires RAM now while the session list cannot refresh', async () => {
       agentService.sessions = [makeSession({ status: 'running', memory_current_bytes: 1048576, memory_peak_bytes: 1048576 })];
       await component.refresh();

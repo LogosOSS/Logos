@@ -683,7 +683,8 @@ async def create_session(
     verification_command: str | None = None,
     repo_base_branch: str | None = None,
     point_workspace_at: str | None = None,
-    automatic_analysis_id: int | None = None,
+    automatic_analysis: bool = False,
+    retry_analysis_session_id: int | None = None,
 ) -> int:
     """Queue a session. Returns its id.
 
@@ -696,15 +697,25 @@ async def create_session(
     workspace idle — whichever path inserts the session.
     """
     async with sessionmaker()() as db:
-        if automatic_analysis_id is not None:
-            # An owner can disable analysis while the poller prepares its workspace.
-            # Hold the same link lock as that edit through session creation and attachment.
-            eligible = await db.scalar(
-                text("SELECT id FROM team_repositories WHERE id = :id AND automatic_workflow_analysis FOR UPDATE"),
+        if automatic_analysis:
+            # Serialize initial selection, retry and attachment with an owner's opt-out.
+            team_id = await db.scalar(
+                text("SELECT team_id FROM team_repositories WHERE id = :id AND automatic_workflow_analysis FOR UPDATE"),
                 {"id": team_repository_id},
             )
-            if eligible is None:
+            if team_id is None:
                 raise ValueError("automatic workflow analysis is disabled or the link was removed")
+            if retry_analysis_session_id is not None:
+                await db.execute(
+                    text("""
+                        UPDATE ai_workflow_analyses a SET status = 'failed', finished_at = now(),
+                               error = COALESCE(a.error, 'agent session ended without ingest')
+                          FROM agent_sessions s WHERE s.id = :parent AND s.status = 'failed'
+                           AND a.agent_session_id = s.id AND a.team_repository_id = :repo
+                           AND a.status IN ('queued', 'running')
+                        """),
+                    {"parent": retry_analysis_session_id, "repo": team_repository_id},
+                )
         # Lock the workspace row before inserting. delete_workspace takes
         # the same lock before it counts active sessions and deletes, so
         # the two transactions are serialized on the row: either the delete
@@ -800,17 +811,19 @@ async def create_session(
                 },
             )
         ).scalar_one()
-        if automatic_analysis_id is not None:
+        if automatic_analysis:
             attached = await db.scalar(
                 text("""
-                    UPDATE ai_workflow_analyses SET agent_session_id = :session
-                     WHERE id = :analysis AND team_repository_id = :repo AND automatically_queued
-                       AND status = 'queued' AND agent_session_id IS NULL RETURNING id
+                    INSERT INTO ai_workflow_analyses
+                        (team_id, team_repository_id, status, source, started_at,
+                         automatically_queued, agent_session_id)
+                    VALUES (:team, :repo, 'queued', 'agent', now(), TRUE, :session)
+                    ON CONFLICT (team_repository_id) WHERE status IN ('queued', 'running') DO NOTHING RETURNING id
                     """),
-                {"analysis": automatic_analysis_id, "repo": team_repository_id, "session": session_id},
+                {"team": team_id, "repo": team_repository_id, "session": session_id},
             )
             if attached is None:
-                raise ValueError("automatic analysis is no longer queued")
+                raise ValueError("workflow analysis is already in flight")
         await db.commit()
     return int(session_id)
 
@@ -1013,7 +1026,8 @@ _SESSION_SELECT = """
            s.reply_target, s.reaction_target,
            s.priority, s.priority_reason, s.environment_notes,
            s.repo_url, s.repo_slug, s.team_repository_id, s.verification_command, s.repo_base_branch,
-           s.push_repo_slug, s.memory_mb, s.memory_peak_bytes,
+           s.push_repo_slug, s.memory_mb, s.memory_peak_bytes, s.subagent_count, s.progress_percent,
+           s.progress_active_s, s.progress_reported_at, s.active_seconds, s.active_since,
            t.name AS team_name,
            COALESCE(s.tokens_in, 0) AS tokens_in,
            COALESCE(s.tokens_out, 0) AS tokens_out,
@@ -1566,6 +1580,9 @@ async def sessions_owing_a_replacement(*, max_attempts: int, since: datetime) ->
                      WHERE s.status = 'failed'
                        AND COALESCE(s.trigger_ref, '') <> ''
                        AND COALESCE(s.trigger_kind, '') NOT IN ('security-analysis', 'security-fix')
+                       AND (s.trigger_kind IS DISTINCT FROM 'analysis' OR EXISTS (
+                             SELECT 1 FROM team_repositories tr
+                              WHERE tr.id = s.team_repository_id AND tr.automatic_workflow_analysis))
                        AND s.finished_at IS NOT NULL
                        AND s.finished_at > :since
                        AND NOT EXISTS (
@@ -1656,6 +1673,13 @@ async def transition_session(
             return False
         payload: dict[str, Any] = {**fields, "status": target.value, "id": session_id}
         assignments = ", ".join(f"{k} = :{k}" for k in payload if k != "id")
+        if target == SessionStatus.RUNNING:
+            assignments += ", active_since = clock_timestamp()"
+        elif current == SessionStatus.RUNNING.value:
+            assignments += (
+                ", active_seconds = active_seconds + COALESCE(GREATEST(0, "
+                "EXTRACT(EPOCH FROM clock_timestamp() - active_since)), 0), active_since = NULL"
+            )
         await db.execute(text(f"UPDATE agent_sessions SET {assignments} WHERE id = :id"), payload)
         await db.commit()
     return True
@@ -1669,6 +1693,30 @@ async def count_sessions_by_status() -> dict[str, int]:
             .all()
         )
     return {r["status"]: int(r["n"]) for r in rows}
+
+
+async def record_session_activity(
+    session_id: int, count: int | None, percent: int | None, elapsed: int | None, reported: datetime | None
+) -> None:
+    async with sessionmaker()() as conn:
+        if count is not None:
+            await conn.execute(
+                text(
+                    "UPDATE agent_sessions SET subagent_count = :count WHERE id = :id "
+                    "AND (subagent_count IS NULL OR subagent_count < :count)"
+                ),
+                {"count": count, "id": session_id},
+            )
+        if reported is not None:
+            await conn.execute(
+                text(
+                    "UPDATE agent_sessions SET progress_percent = :percent, progress_active_s = :elapsed, "
+                    "progress_reported_at = :reported WHERE id = :id AND "
+                    "(progress_reported_at IS NULL OR progress_reported_at < :reported)"
+                ),
+                {"id": session_id, "percent": percent, "elapsed": elapsed, "reported": reported},
+            )
+        await conn.commit()
 
 
 async def record_memory_peaks(samples: dict[int, int]) -> None:

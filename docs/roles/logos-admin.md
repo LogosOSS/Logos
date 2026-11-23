@@ -831,6 +831,13 @@ The page has these parts, from top to bottom:
   The runner samples about every 2 seconds. A short peak between samples can be higher.
   **Observed peak** keeps the highest sample after the session ends or the runner restarts.
   **Unavailable** means there is no measurement. **Limit** shows the limit per container at the start of the session.
+  A **2x** badge means the parent used one distinct Claude Code subagent. A second child makes it **3x**.
+  The count includes children that already finished. Older sessions without recorded identities have no badge.
+  **Agent estimate** shows the parent’s latest self-reported percentage and when it reported.
+  After about ten active minutes, the next completed tool call reminds the parent to estimate again.
+  Long tool calls can delay a report. At 40% after 20 active minutes, the forecast is about 30 more active minutes.
+  Pausing freezes the countdown. An elapsed forecast or 20 active minutes without a new report displays
+  **Awaiting updated estimate**. Session status records the actual outcome.
 - **Automatic work**, **Workspaces** and **What every session is told** are
   at the bottom of the page.
 

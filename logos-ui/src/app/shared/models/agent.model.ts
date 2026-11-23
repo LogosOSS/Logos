@@ -43,6 +43,12 @@ export interface AgentSession {
   memory_mb?: number | null;
   memory_current_bytes?: number | null;
   memory_peak_bytes?: number | null;
+  subagent_count?: number | null;
+  progress_percent?: number | null;
+  progress_active_s?: number | null;
+  progress_reported_at?: string | null;
+  active_seconds?: number;
+  active_since?: string | null;
   screenshot_count: number;
   /** Set when the runner queued this session itself: 'issue' or 'review'. */
   trigger_kind: string | null;

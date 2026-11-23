@@ -985,6 +985,23 @@ export class Agents implements OnInit {
     return session.finished_at ? this.elapsed(session.finished_at) : '—';
   }
 
+  reportAge(session: AgentSession): string {
+    return session.progress_reported_at ? this.elapsed(session.progress_reported_at) : '—';
+  }
+
+  progressEta(session: AgentSession): string {
+    const percent = session.progress_percent;
+    const atReport = session.progress_active_s;
+    if (!percent || percent >= 100 || atReport == null || atReport <= 0 ||
+        (session.status !== 'running' && session.status !== 'paused')) return '';
+    const currentInterval = session.active_since && session.status === 'running'
+      ? Math.max(0, (this.now() - Date.parse(session.active_since)) / 1000) : 0;
+    const since = Math.max(0, (session.active_seconds ?? 0) + currentInterval - atReport);
+    const remaining = atReport * (100 - percent) / percent - since;
+    if (remaining <= 0 || since >= 2 * 600) return 'Awaiting updated estimate';
+    return `About ${Math.ceil(remaining / 60)} min of active work left`;
+  }
+
   private elapsed(start: string, end: string | null = null): string {
     const milliseconds = (end ? Date.parse(end) : this.now()) - Date.parse(start);
     if (!Number.isFinite(milliseconds)) return '—';

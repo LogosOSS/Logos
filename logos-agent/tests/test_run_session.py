@@ -854,7 +854,7 @@ class TestSurvivingAPause:
         """Each run is (exit code, lines it printed)."""
         seen: list[list[str]] = []
 
-        def fake_drive(cmd):
+        def fake_drive(cmd, activity):
             seen.append(cmd)
             code, lines = runs[len(seen) - 1]
             interrupted = False
@@ -2010,3 +2010,86 @@ class TestSuccessiveSessionsOnAFork:
         command = created[0]
         assert command[command.index("--base") + 1] == "main"
         assert command[command.index("--head") + 1] == f"LogosOSSAgent:{second}"
+
+
+def test_child_count_correlates_tool_and_local_task_in_either_order_and_survives_continuation(tmp_path, monkeypatch):
+    from session_activity import SessionActivity
+
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
+    activity = SessionActivity()
+
+    def tool(call, name="Agent"):
+        return {
+            "type": "assistant",
+            "session_id": "root",
+            "parent_tool_use_id": None,
+            "message": {"content": [{"type": "tool_use", "name": name, "id": call}]},
+        }
+
+    def start(call, child, kind="local_agent"):
+        return {
+            "type": "system",
+            "session_id": "root",
+            "subtype": "task_started",
+            "task_type": kind,
+            "tool_use_id": call,
+            "task_id": child,
+        }
+
+    for event in [
+        tool("a"),
+        start("a", "one"),
+        start("a", "one"),
+        start("b", "two"),
+        tool("b"),
+        tool("c", "SendMessage"),
+        start("c", "one"),
+        tool("d", "Bash"),
+        start("d", "shell", "local_bash"),
+        start("old", "from-previous-logos-session"),
+        {**start("a", "foreign"), "session_id": "elsewhere"},
+    ]:
+        activity.observe(event, "root")
+    assert json.loads((tmp_path / "activity.json").read_text()) == {"subagent_count": 2}
+    assert SessionActivity().data == {}
+
+
+def test_root_progress_reminder_and_replayed_estimates(tmp_path, monkeypatch):
+    import session_activity as activity
+
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("LOGOS_STATE_DIR", str(tmp_path))
+    now = 10000
+    monkeypatch.setattr(activity.time, "time", lambda: now)
+    (tmp_path / "active-origin").write_text(str(now - 599))
+    marker = tmp_path / "reminder"
+    hook = {"hook_event_name": "PostToolUse"}
+    assert activity.remind(hook, marker) is None
+    now += 1
+    assert activity.remind({**hook, "agent_id": "child"}, marker) is None
+    assert activity.remind(hook, marker)["hookSpecificOutput"]["additionalContext"]
+    assert activity.remind(hook, marker) is None
+    # An hour frozen passes; the runner advances the origin at resume.
+    now += 3600
+    (tmp_path / "active-origin").write_text(str(now - 600))
+    assert activity.remind(hook, marker) is None
+    now += 600
+    assert activity.remind({**hook, "hook_event_name": "PostToolUseFailure"}, marker)
+    session = activity.SessionActivity()
+
+    def report(message_id, value, parent=None):
+        return {
+            "type": "assistant",
+            "parent_tool_use_id": parent,
+            "session_id": "root",
+            "message": {"id": message_id, "content": [{"type": "text", "text": f"Logos progress: {value}%"}]},
+        }
+
+    for event in (report("a", 40, "child"), report("b", -1), report("c", 101), report("d", 4.5)):
+        session.observe(event, "root")
+    assert session.data == {}
+    session.observe(report("e", 40), "root")
+    assert session.data["progress_active_s"] == 1200
+    session.observe(report("f", 30), "root")
+    session.observe(report("e", 40), "root")
+    assert session.data["progress_percent"] == 30

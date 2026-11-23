@@ -482,3 +482,22 @@ async def test_build_runtime_status_survives_an_io_error_while_resolving_the_cac
 
     assert runtime.disk is not None
     assert runtime.disk.source == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_restore_pool_includes_only_worker_and_model_selected_devices():
+    config = AppConfig.model_validate(
+        {
+            "worker": {"gpu_devices": "0"},
+            "logos": {"capabilities_models": ["org/auto", {"model": "org/pinned", "gpu_devices": "1"}]},
+        }
+    )
+
+    class Inventory(_NvidiaCollector):
+        async def get_snapshot(self):
+            snapshot = await super().get_snapshot()
+            snapshot.devices = [DeviceInfo(device_id=str(i), extra={"index": i}) for i in (0, 1)]
+            return snapshot
+
+    runtime = await build_runtime_status(_make_app([], Inventory(), config=config))
+    assert runtime.restore_gpu_pool_by_model == {"org/auto": [0], "org/pinned": []}

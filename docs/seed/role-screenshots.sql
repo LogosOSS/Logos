@@ -648,6 +648,12 @@ WHERE NOT EXISTS (
     WHERE a.created_by = 'docs-role-screenshots' AND a.task = s.task
 );
 
+-- Illustrative parent estimate and one child on the running documentation session.
+UPDATE agent_sessions SET subagent_count = 1, progress_percent = 40,
+    progress_active_s = 1200, progress_reported_at = now() - interval '2 minutes',
+    active_seconds = 1200, active_since = now() - interval '2 minutes'
+WHERE created_by = 'docs-role-screenshots' AND status = 'running';
+
 -- Team → Repositories / Workflows tabs (role-guide PNGs).
 INSERT INTO team_repositories (team_id, repo_url, repo_slug, branch, paths)
 SELECT t.id,

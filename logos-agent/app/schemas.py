@@ -171,6 +171,12 @@ class SessionSummary(BaseModel):
     memory_mb: int | None = None  # Per-container limit at admission, in MiB.
     memory_current_bytes: int | None = None
     memory_peak_bytes: int | None = None
+    subagent_count: int | None = None
+    progress_percent: int | None = None
+    progress_active_s: int | None = None
+    progress_reported_at: datetime | None = None
+    active_seconds: float = 0
+    active_since: datetime | None = None
     screenshot_count: int = 0
     # Set when the runner queued this session itself in response to the
     # repository: what kind of event it was ('issue', 'review') and which one

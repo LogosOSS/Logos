@@ -49,6 +49,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from session_activity import SessionActivity
+
 WORKSPACE = Path("/workspace")
 CHECKOUT = WORKSPACE / "repo"
 SSH_KNOWN_HOSTS = Path("/logos/ssh_known_hosts")
@@ -851,6 +853,11 @@ def _agent_command(prompt: str, *, resuming: bool) -> list[str]:
         "--permission-mode",
         "bypassPermissions",
     ]
+    hook = {"type": "command", "command": "python3 /usr/local/lib/session_activity.py", "timeout": 3}
+    cmd += [
+        "--settings",
+        json.dumps({"hooks": {name: [{"hooks": [hook]}] for name in ("PostToolUse", "PostToolUseFailure")}}),
+    ]
     if resuming:
         # Same conversation, same working directory: the agent keeps what it
         # has already read and done instead of starting the task again.
@@ -879,7 +886,7 @@ def _pauses_so_far() -> int:
         return 0
 
 
-def _drive_agent(cmd: list[str]) -> tuple[int, dict[str, object], bool, bool]:
+def _drive_agent(cmd: list[str], activity: SessionActivity | None = None) -> tuple[int, dict[str, object], bool, bool]:
     """Run one invocation.
 
     Returns its exit code, its usage, whether it was cut off, and whether
@@ -891,6 +898,7 @@ def _drive_agent(cmd: list[str]) -> tuple[int, dict[str, object], bool, bool]:
     pauses_before = _pauses_so_far()
     process = subprocess.Popen(cmd, cwd=CHECKOUT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert process.stdout is not None
+    root = ""
     for line in process.stdout:
         line = line.rstrip("\n")
         if not line:
@@ -904,6 +912,10 @@ def _drive_agent(cmd: list[str]) -> tuple[int, dict[str, object], bool, bool]:
         except json.JSONDecodeError:
             print(line, flush=True)
             continue
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            root = event.get("session_id") or ""
+        if activity is not None:
+            activity.observe(event, root)
         _render_event(event)
         if event.get("type") == "result":
             usage = event
@@ -927,6 +939,7 @@ def run_agent(task: str) -> dict[str, object]:
     threw away everything it had done: hours of work, uncommitted, in a
     checkout the next session resets.
     """
+    activity = SessionActivity()
     prompt = build_prompt(task)
     started = time.monotonic()
     # A conversation restored by the preparation phase is this workspace's
@@ -966,7 +979,7 @@ def run_agent(task: str) -> dict[str, object]:
         # review that just came in — into the conversation that did the
         # earlier rounds. A later run carries only "you were cut off".
         text = CONTINUE_PROMPT if attempt > 0 else prompt
-        code, run_usage, interrupted, frozen = _drive_agent(_agent_command(text, resuming=resuming))
+        code, run_usage, interrupted, frozen = _drive_agent(_agent_command(text, resuming=resuming), activity)
         run_in, run_out, run_cost = usage_totals(run_usage)
         if not run_usage:
             # Cut off before it could report: what the assistant events

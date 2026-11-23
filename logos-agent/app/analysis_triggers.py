@@ -18,7 +18,6 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
 
 from . import controls, db, github, model_policy
 from .asyncio_tasks import cancel_and_wait
@@ -361,18 +360,8 @@ class AnalysisPoller:
         paths_label = ", ".join(paths) if isinstance(paths, list) and paths else "(entire repository)"
         trigger_ref = f"team-repository:{link_id}"
 
-        # The analysis row first: the partial unique index on in-flight
-        # analyses admits one per repository across this poller and the
-        # webservice's individual and bulk queueing, so a lost race ends here,
-        # before any session exists.
-        analysis_id = await self._insert_queued_analysis(team_id, link_id)
-        if analysis_id is None:
-            logger.info("analysis of %s disabled or already in flight", repo_slug)
-            return None
-
         workspace_id = await self._ensure_workspace(team_id, link_id, branch)
         if workspace_id is None:
-            await self._drop_queued_analysis(analysis_id)
             return None
 
         task = ANALYSIS_TASK.format(
@@ -399,11 +388,10 @@ class AnalysisPoller:
                 repo_url=repo_url,
                 repo_slug=repo_slug,
                 team_repository_id=link_id,
-                automatic_analysis_id=analysis_id,
+                automatic_analysis=True,
             )
         except ValueError as exc:
             logger.warning("could not queue analysis for team_repository %s: %s", link_id, exc)
-            await self._drop_queued_analysis(analysis_id)
             return None
 
         self._queued_total += 1
@@ -444,40 +432,6 @@ class AnalysisPoller:
                 logger.info("analysis workspace %s unavailable", name)
                 return None
             return int(row["id"])
-
-    async def _insert_queued_analysis(self, team_id: int, link_id: int) -> int | None:
-        """Claim the repository's in-flight slot, or None when another writer holds it."""
-        async with db.sessionmaker()() as conn:
-            try:
-                analysis_id = (
-                    await conn.execute(
-                        text("""
-                            INSERT INTO ai_workflow_analyses
-                                (team_id, team_repository_id, status, source, started_at, automatically_queued)
-                            SELECT :team_id, id, 'queued', 'agent', :now, TRUE
-                              FROM (SELECT id FROM team_repositories
-                                     WHERE id = :repo_id AND automatic_workflow_analysis FOR UPDATE) link
-                            RETURNING id
-                            """),
-                        {"team_id": team_id, "repo_id": link_id, "now": datetime.now(timezone.utc)},
-                    )
-                ).scalar_one_or_none()
-            except IntegrityError:
-                await conn.rollback()
-                return None
-            await conn.commit()
-        return int(analysis_id) if analysis_id is not None else None
-
-    async def _drop_queued_analysis(self, analysis_id: int) -> None:
-        """Release a claimed slot whose session could not be created."""
-        async with db.sessionmaker()() as conn:
-            await conn.execute(
-                text(
-                    "DELETE FROM ai_workflow_analyses WHERE id = :id AND status = 'queued' AND agent_session_id IS NULL"
-                ),
-                {"id": analysis_id},
-            )
-            await conn.commit()
 
     def status(self) -> dict[str, Any]:
         return {
