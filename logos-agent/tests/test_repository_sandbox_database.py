@@ -185,3 +185,18 @@ async def test_the_claim_records_the_memory_of_the_session(database):
     assert claimed["memory_mb"] == 2048
     assert await REAL_SESSION_MEMORY_MB(session_id) == 2048
     assert await db.reserved_memory_mb(4096) == 2048
+
+
+async def test_a_cancellation_can_only_transfer_the_reservation_it_read(database):
+    session_id = await db.create_session(**_session(repo_slug=None, repo_url=None, team_repository_id=None))
+    queued = await db.get_session(session_id)
+    await db.claim_session(session_id, memory_mb=4096)
+
+    assert not await db.transition_session(
+        session_id, db.SessionStatus.CANCELLED, expected_status=db.SessionStatus(queued["status"])
+    )
+    assert await db.reserved_memory_mb(1024) == 4096
+    assert await db.transition_session(
+        session_id, db.SessionStatus.CANCELLED, expected_status=db.SessionStatus.STARTING
+    )
+    assert await db.reserved_memory_mb(1024) == 0

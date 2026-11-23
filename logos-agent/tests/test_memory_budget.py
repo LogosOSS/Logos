@@ -255,6 +255,8 @@ class TestCancellation:
             return {"id": session_id, "status": status, "container_id": f"c{session_id}", "memory_mb": 2048}
 
         async def moved(*_args, **_kwargs):
+            nonlocal status
+            status = "cancelled"
             return won
 
         async def nothing(*_args, **_kwargs):
@@ -344,6 +346,46 @@ class TestCancellation:
             await asyncio.gather(*sessions._release_tasks)
         assert "c7" in inspected
         assert await sessions.memory_admission_block(controls.Controls(session_memory_override=4096)) == ""
+
+    async def test_a_claim_racing_cancellation_transfers_the_claimed_memory(self, monkeypatch):
+        manager = sessions.SessionManager()
+        self._wire(monkeypatch)
+        memory_budget.set_for_tests(budget(5800))
+        monkeypatch.setattr(sessions, "_held_memory", {})
+        row = {"status": "queued", "container_id": None, "memory_mb": None}
+        helper = sessions._Helper()
+        helper.container_id = "prepare"
+        helper.created.set()
+        helper.started.set()
+        attempts = []
+
+        async def get_session(_sid):
+            return row.copy()
+
+        async def transition(_sid, target, *, expected_status=None, **_fields):
+            if not attempts:
+                row.update(status="starting", memory_mb=4096)
+                manager._helpers[7] = helper
+            attempts.append(expected_status)
+            if expected_status is not None and expected_status.value != row["status"]:
+                return False
+            row["status"] = target.value
+            return True
+
+        monkeypatch.setattr(sessions.db, "get_session", get_session)
+        monkeypatch.setattr(sessions.db, "transition_session", transition)
+        monkeypatch.setattr(sessions.db, "reserved_memory_mb", AsyncMock(return_value=0))
+        monkeypatch.setattr(sessions.docker_engine, "stop_container", AsyncMock(side_effect=OSError))
+        monkeypatch.setattr(sessions.docker_engine, "remove_container", AsyncMock(side_effect=OSError))
+        monkeypatch.setattr(sessions.docker_engine, "container_state", AsyncMock(return_value=("gone", None)))
+
+        assert await manager.cancel(7)
+        assert row["status"] == "cancelled"
+        assert await sessions.reserved_memory_mb() == 4096
+        assert await sessions.memory_admission_block(controls.Controls(session_memory_override=4096))
+        assert attempts == [sessions.SessionStatus.QUEUED, sessions.SessionStatus.STARTING]
+        await asyncio.gather(*sessions._release_tasks)
+        assert await sessions.reserved_memory_mb() == 0
 
     async def test_a_queued_session_holds_nothing(self, monkeypatch):
         monkeypatch.setattr(sessions, "_held_memory", {})

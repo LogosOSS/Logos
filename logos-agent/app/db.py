@@ -1610,7 +1610,9 @@ async def update_session(session_id: int, **fields: Any) -> None:
         await db.commit()
 
 
-async def transition_session(session_id: int, target: SessionStatus, **fields: Any) -> bool:
+async def transition_session(
+    session_id: int, target: SessionStatus, *, expected_status: SessionStatus | None = None, **fields: Any
+) -> bool:
     """Move a session to `target`, but only from a state that allows it.
 
     Returns False when the row was already in another state — the caller then
@@ -1625,7 +1627,7 @@ async def transition_session(session_id: int, target: SessionStatus, **fields: A
                 {"id": session_id},
             )
         ).scalar_one_or_none()
-        if current is None:
+        if current is None or (expected_status is not None and current != expected_status.value):
             await db.rollback()
             return False
         if not can_transition(SessionStatus(current), target):
