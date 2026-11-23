@@ -7,7 +7,7 @@
 # Resolve the same Maven toolchain and project dependencies as the application
 # image while build-time network access is available. Running test-compile
 # warms compiler/plugin dependencies that dependency:go-offline can miss.
-FROM maven:3-eclipse-temurin-26@sha256:69a6c37f0a91fca2c9d0cdd684c9c0ea7b1bc00d4196749c24440b2e02ad163d AS java-verification
+FROM maven:3.10-eclipse-temurin-25@sha256:4ed0327629de542aefd6ea9fd5da0c52e80143bf8405e5dc32ac2bde55d70d88 AS java-verification
 COPY logos-webservice/install-temurin.sh /tmp/install-temurin.sh
 RUN sh /tmp/install-temurin.sh jdk && rm /tmp/install-temurin.sh
 ENV JAVA_VERSION=jdk-25.0.5.1+2
@@ -120,7 +120,7 @@ RUN arch="$(dpkg --print-architecture)" \
   && gh --version | grep -q "gh version ${GH_VERSION} "
 
 # uv, matching the pin used by the other Logos images.
-COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
 
 # Logos targets Python 3.13; Debian bookworm ships 3.11. Install the interpreter
 # at build time into a shared location, so a session runs `uv venv --python
