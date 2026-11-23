@@ -384,28 +384,35 @@
     <span class="field-label">API Key</span>
     <div class="key-value-row">
       <code>{{ (connection ? connection.api_key_hint : provider.api_key_hint) || 'No key configured' }}</code>
-      <button class="btn-secondary" type="button" [disabled]="editLoading() || editConnLoading()" (click)="requestRotation(provider, connection)">
+      <button class="btn-secondary" type="button" [disabled]="editLoading() || editConnLoading()" (click)="requestKeyChange(provider, connection)">
         <i class="pi pi-refresh" aria-hidden="true"></i> Rotate
       </button>
+      @if (provider.provider_type === 'cloud' && (connection ? connection.api_key_hint : provider.api_key_hint)) {
+        <button class="btn-secondary" type="button" [disabled]="editLoading() || editConnLoading()" (click)="requestKeyChange(provider, connection, true)">
+          <i class="pi pi-trash" aria-hidden="true"></i> Remove
+        </button>
+      }
     </div>
   </div>
 </ng-template>
 
-@if (rotation(); as target) {
+@if (keyChange(); as target) {
   <app-modal-confirm
     [visible]="true"
-    (visibleChange)="$event || closeRotation()"
-    [title]="'Rotate API key for ' + (target.connection?.model_name || target.provider.name) + '?'"
+    (visibleChange)="$event || closeKeyChange()"
+    [title]="(target.remove ? 'Remove API key for ' : 'Rotate API key for ') + (target.connection?.model_name || target.provider.name) + '?'"
     [message]="target.provider.provider_type === 'logosnode'
       ? 'This immediately invalidates the current key. Copy the new key and redeploy the worker.'
-      : 'Enter the new key issued by your cloud provider.'"
-    icon="pi-refresh"
-    confirmLabel="Rotate"
+      : target.remove
+        ? (target.connection ? 'This connection will use the provider key, if configured.' : 'Requests without a connection key will use this provider without an API key.')
+        : 'Enter the new key issued by your cloud provider.'"
+    [icon]="target.remove ? 'pi-trash' : 'pi-refresh'"
+    [confirmLabel]="target.remove ? 'Remove' : 'Rotate'"
     [loading]="rotationLoading()"
-    [confirmDisabled]="target.provider.provider_type === 'cloud' && !replacementKey().trim()"
-    (confirmed)="confirmRotation()"
+    [confirmDisabled]="target.provider.provider_type === 'cloud' && !target.remove && !replacementKey().trim()"
+    (confirmed)="confirmKeyChange()"
   >
-    @if (target.provider.provider_type === 'cloud') {
+    @if (target.provider.provider_type === 'cloud' && !target.remove) {
       <div modal-details class="form-field replacement-field">
         <label class="field-label" for="replacement-key">New API key</label>
         <input id="replacement-key" class="field-input" type="password" autocomplete="new-password"
@@ -462,7 +469,7 @@
 
 <!-- ── Edit Provider Dialog ───────────────────────────────────────────────── -->
 <app-modal-form
-  [visible]="editTarget() !== null && !rotation()"
+  [visible]="editTarget() !== null && !keyChange()"
   (visibleChange)="$event || closeEditDialog()"
   title="Edit Provider"
 >
@@ -664,7 +671,7 @@
 
 <!-- ── Edit Connection Dialog ─────────────────────────────────────────────── -->
 <app-modal-form
-  [visible]="editConnModel() !== null && !rotation()"
+  [visible]="editConnModel() !== null && !keyChange()"
   (visibleChange)="$event || closeEditConnDialog()"
   title="Edit Connection"
 >

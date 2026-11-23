@@ -418,6 +418,12 @@ Use the same steps in **Edit Connection** for a key specific to one model.
 
 ![Cloud rotation dialog with an empty New API key field](/img/roles/logos-admin-rotate-cloud-key.png)
 
+Select **Remove** to remove a stored key. Confirm with **Remove**.
+After you remove a connection key, the connection uses the provider key, if available.
+After you remove a provider key, connections without their own key send requests without an API key.
+
+![Confirmation before removal of a cloud provider key](/img/roles/logos-admin-remove-cloud-key.png)
+
 Expand a provider to see its connected models. Next to the endpoint, each model
 shows whether its batches can use the provider's Batch API: **Batch**, **No
 batch**, **Batch unchecked**, or **Batch in Logos** for worker nodes. The tooltip

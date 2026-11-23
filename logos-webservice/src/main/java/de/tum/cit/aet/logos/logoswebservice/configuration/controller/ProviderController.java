@@ -115,7 +115,7 @@ public class ProviderController {
     @PostMapping("/providers/{providerId}/replace_cloud_key")
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> replaceCloudKey(@PathVariable int providerId, @RequestBody ReplaceCloudKeyRequestDTO req) {
-        return ResponseEntity.ok(providerService.replaceCloudKey(providerId, req.modelId(), req.apiKey()));
+        return ResponseEntity.ok(providerService.replaceCloudKey(providerId, req.modelId(), req.apiKey(), Boolean.TRUE.equals(req.clear())));
     }
 
     @PostMapping("/delete_provider")

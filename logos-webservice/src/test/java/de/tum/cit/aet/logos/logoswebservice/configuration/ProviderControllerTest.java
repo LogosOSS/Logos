@@ -177,6 +177,23 @@ class ProviderControllerTest {
     }
 
     @Test
+    void explicitRemovalRestoresProviderInheritanceOrUnauthenticatedAccess() throws Exception {
+        String url = "/logosdb/providers/6001/replace_cloud_key";
+        jdbc.update("UPDATE providers SET api_key = 'synthetic-default' WHERE id = 6001");
+        jdbc.update("UPDATE model_provider SET api_key = 'synthetic-override' WHERE id = 7001");
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"clear\":true,\"api_key\":\"ambiguous\"}")).andExpect(status().isBadRequest());
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"clear\":true,\"model_id\":5001}")).andExpect(status().isOk())
+           .andExpect(jsonPath("$.api_key_hint").value(nullValue()));
+        assertNull(jdbc.queryForObject("SELECT api_key FROM model_provider WHERE id = 7001", String.class));
+        assertEquals("synthetic-default", jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"clear\":true}")).andExpect(status().isOk());
+        assertNull(jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+    }
+
+    @Test
     void getProviders_requiresAuthentication() throws Exception {
         mvc.perform(post("/logosdb/get_providers")
                 .contentType("application/json")

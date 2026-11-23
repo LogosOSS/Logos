@@ -2,6 +2,7 @@ package de.tum.cit.aet.logos.logoswebservice.configuration.service;
 
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -126,8 +127,9 @@ public class ProviderService {
     }
 
     @Transactional
-    public Map<String, String> replaceCloudKey(int providerId, Integer modelId, String key) {
-        if (key == null || key.isBlank()) throw new IllegalArgumentException("A replacement key is required.");
+    public Map<String, String> replaceCloudKey(int providerId, Integer modelId, String key, boolean clear) {
+        if (clear && key != null) throw new IllegalArgumentException("A clear request cannot include a key.");
+        if (!clear && (key == null || key.isBlank())) throw new IllegalArgumentException("A replacement key is required.");
         Provider provider = providerRepository.findForUpdate(providerId)
             .orElseThrow(() -> new NotFoundException("Provider not found"));
         if (provider.getProviderType() != ProviderType.cloud) {
@@ -145,7 +147,7 @@ public class ProviderService {
                 Map.of(), Map.of("api_key_replaced", true));
         }
         orchestratorNotificationService.notifyRefresh(false, modelId == null);
-        return Map.of("api_key_hint", keyHint(key));
+        return Collections.singletonMap("api_key_hint", keyHint(key));
     }
 
     @Transactional

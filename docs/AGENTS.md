@@ -338,6 +338,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-add-provider.png` | `tobias.wasner` | `/providers` — **Add Provider** dialog, cloud provider **anthropic** selected, proposed base URL | `roles/logos-admin.md#add-a-provider` |
 | `logos-admin-edit-cloud-key.png` | `tobias.wasner` | **Edit Provider** for a cloud provider with a configured key | `roles/logos-admin.md#add-a-provider` |
 | `logos-admin-rotate-cloud-key.png` | `tobias.wasner` | **Rotate** for a cloud provider, empty **New API key** field | `roles/logos-admin.md#add-a-provider` |
+| `logos-admin-remove-cloud-key.png` | `tobias.wasner` | **Remove** confirmation for a cloud provider key | `roles/logos-admin.md#add-a-provider` |
 | `logos-admin-rotate-worker-key.png` | `tobias.wasner` | **Rotate** confirmation for a worker node | `roles/logos-admin.md#provision-a-worker-key` |
 | `logos-admin-worker-key-created.png` | `tobias.wasner` | **Worker key rotated** with a disposable example key | `roles/logos-admin.md#provision-a-worker-key` |
 | `logos-admin-node-models.png` | `tobias.wasner` | `/providers` — the documentation worker expanded: **Node models** list, **Node settings** and **Connect model** | `roles/logos-admin.md` |

@@ -114,15 +114,15 @@ describe('Providers', () => {
     const provider = makeProvider();
     component.openEditDialog(provider);
     component.editName.set('Unsaved name');
-    component.requestRotation(provider);
-    await component.confirmRotation();
+    component.requestKeyChange(provider);
+    await component.confirmKeyChange();
     component.replacementKey.set('synthetic-cancelled');
-    component.closeRotation();
+    component.closeKeyChange();
     expect(replaceCloudKey).not.toHaveBeenCalled();
-    component.requestRotation(provider);
+    component.requestKeyChange(provider);
     expect(component.replacementKey()).toBe('');
     component.replacementKey.set('synthetic-new');
-    await component.confirmRotation();
+    await component.confirmKeyChange();
     expect(replaceCloudKey).toHaveBeenCalledWith(provider.id, 'synthetic-new', undefined);
     expect(updateProvider).not.toHaveBeenCalled();
     expect(component.editName()).toBe('Unsaved name');
@@ -130,10 +130,24 @@ describe('Providers', () => {
     expect(component.replacementKey()).toBe('');
   });
 
+  it('removes only the selected connection key after confirmation', async () => {
+    const provider = makeProvider();
+    const connection = { model_id: 11, model_name: 'example-model', endpoint: '/test', api_key_hint: '••••old' };
+    component.openEditConnDialog(provider, connection);
+    component.requestKeyChange(provider, connection, true);
+    component.closeKeyChange();
+    expect(replaceCloudKey).not.toHaveBeenCalled();
+    replaceCloudKey.mockResolvedValue({ api_key_hint: null });
+    component.requestKeyChange(provider, connection, true);
+    await component.confirmKeyChange();
+    expect(replaceCloudKey).toHaveBeenCalledWith(provider.id, null, connection.model_id);
+    expect(component.editConnModel()?.api_key_hint).toBeNull();
+  });
+
   it('discards the rotated worker key when the dialog closes', async () => {
     component.openEditDialog(makeProvider({ provider_type: 'logosnode' }));
-    component.requestRotation(component.editTarget()!);
-    await component.confirmRotation();
+    component.requestKeyChange(component.editTarget()!);
+    await component.confirmKeyChange();
     fixture.detectChanges();
     await fixture.whenStable();
     expect(document.querySelector<HTMLInputElement>('#rotated-key')?.value).toBe('synthetic-worker-replacement');
