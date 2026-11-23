@@ -469,8 +469,8 @@ const SHOTS = [
       await p.goto(BASE + "/agents");
       await settle(p);
       await button(p, "New session").click();
-      await p.getByLabel("Repository", { exact: true }).selectOption({ label: "docs-example/sample-app (develop)" });
-      await p.getByLabel("Workspace", { exact: true }).selectOption({ label: "sample-app" });
+      await p.getByRole("combobox", { name: "Repository", exact: true }).selectOption({ label: "docs-example/sample-app (develop)" });
+      await p.getByRole("combobox", { name: "Workspace", exact: true }).selectOption({ label: "sample-app" });
       await p.locator(".form-card textarea").first().fill("Fix the date format in the export of the order list");
       await p.locator(".form-card textarea").first().blur();
       await p.getByText("Deploy to dev and screenshots are available only for the platform repository.").waitFor();
