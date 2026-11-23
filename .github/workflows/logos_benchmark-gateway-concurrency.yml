@@ -173,8 +173,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
-          # Same uv release as the images (ghcr.io/astral-sh/uv:0.13.6).
-          version: "0.13.6"
+          # Same uv release as the images (ghcr.io/astral-sh/uv:0.13.9).
+          version: "0.13.9"
 
       - name: Install dependencies
         run: |
