@@ -46,10 +46,19 @@ def _auth(**kwargs):
     return SimpleNamespace(**base)
 
 
-def test_local_provider_skips_budget():
+@pytest.mark.parametrize("key_type", ["developer", "application"])
+@pytest.mark.parametrize("limit,used", [(0, 0), (100, 100), (100, 999)])
+def test_local_provider_skips_exhausted_budget(key_type, limit, used):
     db = _FakeDb()
-    db.team_used = 999
-    check_monthly_budget(db, _auth(), False, "2026-10-01")
+    db.team = {"team_monthly_budget_micro_cents": limit}
+    db.team_used = db.default_used = db.key_used = used
+    db.key_limit = limit
+    check_monthly_budget(db, _auth(key_type=key_type), False, "2026-10-01", provider_id=3)
+
+    # The same exhausted key must still be refused when it routes to cloud.
+    with pytest.raises(HTTPException) as exc:
+        check_monthly_budget(db, _auth(key_type=key_type), True, "2026-10-01", provider_id=3)
+    assert exc.value.status_code == 402
 
 
 def test_default_bucket_rejects_when_over():

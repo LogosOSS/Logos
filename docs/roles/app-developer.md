@@ -88,6 +88,13 @@ you can use now. For more information, see
 
 ![My Workspace page](/img/roles/app-developer-my-workspace.png)
 
+Monthly member budgets and key budgets apply to cloud usage.
+If a budget reaches its limit, including $0, the key can still use permitted local models.
+Local rate limits and model permissions still apply.
+The budget message shows this distinction; it does not mean that the key is inactive.
+
+![My Workspace — exhausted cloud budget with local models available](/img/roles/app-developer-my-workspace-budget.png)
+
 ## AI Tools
 
 **AI Coding Tools** is a guided wizard that every role uses. The page does not
