@@ -11,8 +11,10 @@ ENV JAVA_VERSION=jdk-25.0.5.1+2
 WORKDIR /build
 COPY pom.xml .
 
+RUN --mount=type=cache,target=/root/.m2 mvn dependency:go-offline -q
+
 FROM maven-project AS e2e-jdbc
-# Use the same PostgreSQL driver as the service that owns the schema.
+# Reuse the service's resolved dependencies when building the migration image.
 RUN --mount=type=cache,target=/root/.m2 mvn -B -q dependency:copy-dependencies \
     -DincludeScope=runtime -DincludeGroupIds=org.postgresql -DincludeArtifactIds=postgresql -DoutputDirectory=/jdbc
 
@@ -20,7 +22,6 @@ FROM liquibase/liquibase:5.0.4 AS e2e-migrate
 COPY --from=e2e-jdbc /jdbc/postgresql-*.jar /liquibase/lib/
 
 FROM maven-project AS builder
-RUN --mount=type=cache,target=/root/.m2 mvn dependency:go-offline -q
 COPY src ./src
 RUN --mount=type=cache,target=/root/.m2 mvn package -DskipTests -q
 
