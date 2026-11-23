@@ -43,7 +43,7 @@ def database():
                     is_active boolean DEFAULT true, use_custom_permissions boolean DEFAULT true);
                 CREATE TABLE providers (id int PRIMARY KEY, name text, provider_type text,
                     privacy_level text, cloud_provider_type text, base_url text);
-                CREATE TABLE models (id int PRIMARY KEY, name text);
+                CREATE TABLE models (id int PRIMARY KEY, name text, description text);
                 CREATE TABLE model_provider (provider_id int, model_id int);
                 CREATE TABLE model_aliases (model_id int, alias text);
                 CREATE TABLE api_key_provider_permissions (api_key_id int, provider_id int);
@@ -51,7 +51,7 @@ def database():
                 CREATE TABLE team_provider_permissions (team_id int, provider_id int);
                 CREATE TABLE team_model_permissions (team_id int, model_id int);
                 INSERT INTO providers (id, name, provider_type) VALUES (1, 'local', 'logosnode'), (2, 'cloud', 'cloud');
-                INSERT INTO models VALUES (10, 'mixed'), (20, 'cloud-only');
+                INSERT INTO models VALUES (10, 'mixed', NULL), (20, 'cloud-only', NULL);
                 INSERT INTO model_provider VALUES (1, 10), (2, 10), (2, 20);
                 INSERT INTO model_aliases VALUES (10, 'alias');
             """))
@@ -90,6 +90,16 @@ def test_agent_can_only_reach_local_copy_even_with_explicit_cloud_grants(databas
     assert db.get_agent_api_key_id() is None
     assert db.get_api_key_by_id(kid) is None
     assert db.get_deployments_for_api_key(kid) == []
+
+
+def test_agent_discovers_exactly_its_local_models_without_explicit_grants(database):
+    db = database
+    kid = db.get_agent_api_key_id()
+    assert [(m["id"], m["name"], m["aliases"]) for m in db.get_models_for_api_key(kid)] == [(10, "mixed", ["alias"])]
+    assert db.get_model_for_api_key(kid, "mixed")["id"] == 10
+    assert db.get_model_for_api_key(kid, "cloud-only") is None
+    assert db.resolve_proxy_model(kid, "alias") == (10, "mixed")
+    assert db.resolve_proxy_model(kid, "cloud-only") is None
 
 
 def test_normal_key_keeps_its_explicit_cloud_permissions(database):

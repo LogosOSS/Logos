@@ -55,6 +55,50 @@ _METADATA_REFLECTED = False
 _ENGINE_LOCK = threading.Lock()
 _METADATA_LOCK = threading.Lock()
 
+# Effective model and provider permissions of one active api key, as the CTEs
+# ``key_info``, ``effective_providers`` and ``effective_models``. A key with
+# custom permissions uses its own grants, any other key its team's. The
+# managed agent identity ignores explicit grants and may reach exactly the
+# locally served (``logosnode``) models and providers.
+_EFFECTIVE_PERMISSIONS_CTE = """
+    key_info AS (
+        SELECT ak.id AS aki,
+               ak.team_id AS tid,
+               COALESCE(u.role, '') AS user_role,
+               ak.internal_service,
+               ak.use_custom_permissions AS custom
+        FROM api_keys ak
+            LEFT JOIN users u ON ak.user_id = u.id
+        WHERE ak.id = :api_key_id
+            AND ak.is_active = true
+    ),
+    effective_providers AS (
+        SELECT akpp.provider_id
+        FROM api_key_provider_permissions akpp, key_info ki
+        WHERE akpp.api_key_id = ki.aki AND ki.custom = true AND ki.internal_service IS NULL
+        UNION
+        SELECT p.id FROM providers p, key_info ki
+        WHERE ki.internal_service = 'agent' AND p.provider_type = 'logosnode'
+        UNION
+        SELECT tpp.provider_id
+        FROM team_provider_permissions tpp, key_info ki
+        WHERE tpp.team_id = ki.tid AND ki.custom = false
+    ),
+    effective_models AS (
+        SELECT akmp.model_id
+        FROM api_key_model_permissions akmp, key_info ki
+        WHERE akmp.api_key_id = ki.aki AND ki.custom = true AND ki.internal_service IS NULL
+        UNION
+        SELECT mp.model_id FROM model_provider mp
+        JOIN providers p ON p.id = mp.provider_id, key_info ki
+        WHERE ki.internal_service = 'agent' AND p.provider_type = 'logosnode'
+        UNION
+        SELECT tmp.model_id
+        FROM team_model_permissions tmp, key_info ki
+        WHERE tmp.team_id = ki.tid AND ki.custom = false
+    )
+"""
+
 DEFAULT_CLOUD_RPM_LIMIT = 5
 DEFAULT_CLOUD_TPM_LIMIT = 10000
 DEFAULT_LOCAL_RPM_LIMIT = 5
@@ -3120,43 +3164,8 @@ class DBManager:
         """
         Get a list of all authorized model deployments for an api key.
         """
-        sql = text("""
-                   WITH key_info AS (
-                            SELECT ak.id AS aki,
-                                   ak.team_id AS tid,
-                                   u.role AS user_role,
-                                   ak.internal_service,
-                                   ak.use_custom_permissions AS custom
-                            FROM api_keys ak
-                                LEFT JOIN users u ON ak.user_id = u.id
-                            WHERE ak.id = :api_key_id
-                                AND ak.is_active = true
-                        ),
-                        effective_providers AS (
-                            SELECT akpp.provider_id
-                            FROM api_key_provider_permissions akpp, key_info ki
-                            WHERE akpp.api_key_id = ki.aki AND ki.custom = true AND ki.internal_service IS NULL
-                            UNION
-                            SELECT p.id FROM providers p, key_info ki
-                            WHERE ki.internal_service = 'agent' AND p.provider_type = 'logosnode'
-                            UNION
-                            SELECT tpp.provider_id
-                            FROM team_provider_permissions tpp, key_info ki
-                            WHERE tpp.team_id = ki.tid AND ki.custom = false
-                        ),
-                        effective_models AS (
-                            SELECT akmp.model_id
-                            FROM api_key_model_permissions akmp, key_info ki
-                            WHERE akmp.api_key_id = ki.aki AND ki.custom = true AND ki.internal_service IS NULL
-                            UNION
-                            SELECT mp.model_id FROM model_provider mp
-                            JOIN providers p ON p.id = mp.provider_id, key_info ki
-                            WHERE ki.internal_service = 'agent' AND p.provider_type = 'logosnode'
-                            UNION
-                            SELECT tmp.model_id
-                            FROM team_model_permissions tmp, key_info ki
-                            WHERE tmp.team_id = ki.tid AND ki.custom = false
-                        )
+        sql = text(f"""
+                   WITH {_EFFECTIVE_PERMISSIONS_CTE}
                    SELECT m.id               as model_id,
                           p.id               as provider_id,
                           p.provider_type    as type,
@@ -4520,35 +4529,8 @@ class DBManager:
         Returns:
             List of dicts with model id, name, and description.
         """
-        sql = text("""
-           WITH key_info AS (
-                SELECT ak.id AS aki,
-                       ak.team_id AS tid,
-                       u.role AS user_role,
-                       ak.use_custom_permissions AS custom
-                FROM api_keys ak
-                LEFT JOIN users u ON ak.user_id = u.id
-                WHERE ak.id = :api_key_id
-                  AND ak.is_active = true
-            ),
-            effective_providers AS (
-                SELECT akpp.provider_id
-                FROM api_key_provider_permissions akpp, key_info ki
-                WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-                UNION
-                SELECT tpp.provider_id
-                FROM team_provider_permissions tpp, key_info ki
-                WHERE tpp.team_id = ki.tid AND ki.custom = false
-            ),
-            effective_models AS (
-                SELECT akmp.model_id
-                FROM api_key_model_permissions akmp, key_info ki
-                WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-                UNION
-                SELECT tmp.model_id
-                FROM team_model_permissions tmp, key_info ki
-                WHERE tmp.team_id = ki.tid AND ki.custom = false
-            )
+        sql = text(f"""
+           WITH {_EFFECTIVE_PERMISSIONS_CTE}
            SELECT DISTINCT m.id, m.name, m.description,
            (SELECT string_agg(a.alias, ', ' ORDER BY a.alias)
             FROM model_aliases a
@@ -4582,35 +4564,8 @@ class DBManager:
         Returns:
             Dict with model id, name, and description, or None if not found.
         """
-        sql = text("""
-           WITH key_info AS (
-                SELECT ak.id AS aki,
-                       ak.team_id AS tid,
-                       u.role AS user_role,
-                       ak.use_custom_permissions AS custom
-                FROM api_keys ak
-                LEFT JOIN users u ON ak.user_id = u.id
-                WHERE ak.id = :api_key_id
-                  AND ak.is_active = true
-            ),
-            effective_providers AS (
-                SELECT akpp.provider_id
-                FROM api_key_provider_permissions akpp, key_info ki
-                WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-                UNION
-                SELECT tpp.provider_id
-                FROM team_provider_permissions tpp, key_info ki
-                WHERE tpp.team_id = ki.tid AND ki.custom = false
-            ),
-            effective_models AS (
-                SELECT akmp.model_id
-                FROM api_key_model_permissions akmp, key_info ki
-                WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-                UNION
-                SELECT tmp.model_id
-                FROM team_model_permissions tmp, key_info ki
-                WHERE tmp.team_id = ki.tid AND ki.custom = false
-            )
+        sql = text(f"""
+           WITH {_EFFECTIVE_PERMISSIONS_CTE}
             SELECT DISTINCT m.id, m.name, m.description
             FROM models m
             JOIN effective_models em ON m.id = em.model_id
@@ -4866,35 +4821,8 @@ class DBManager:
         # so a top-level import would be circular.
         from logos.logosnode_snapshot import _resolve_requested_model_name
 
-        sql = text("""
-                   WITH key_info AS (
-                            SELECT ak.id AS aki,
-                                   ak.team_id AS tid,
-                                   COALESCE(u.role, '') AS user_role,
-                                   ak.use_custom_permissions AS custom
-                            FROM api_keys ak
-                                LEFT JOIN users u ON ak.user_id = u.id
-                            WHERE ak.id = :api_key_id
-                                AND ak.is_active = true
-                        ),
-                        effective_providers AS (
-                            SELECT akpp.provider_id
-                            FROM api_key_provider_permissions akpp, key_info ki
-                            WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-                            UNION
-                            SELECT tpp.provider_id
-                            FROM team_provider_permissions tpp, key_info ki
-                            WHERE tpp.team_id = ki.tid AND ki.custom = false
-                        ),
-                        effective_models AS (
-                            SELECT akmp.model_id
-                            FROM api_key_model_permissions akmp, key_info ki
-                            WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-                            UNION
-                            SELECT tmp.model_id
-                            FROM team_model_permissions tmp, key_info ki
-                            WHERE tmp.team_id = ki.tid AND ki.custom = false
-                        )
+        sql = text(f"""
+                   WITH {_EFFECTIVE_PERMISSIONS_CTE}
                    SELECT m.id,
                           m.name,
                           (
