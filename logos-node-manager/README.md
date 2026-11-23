@@ -373,6 +373,10 @@ of a deployment would otherwise restart the manager in the middle of its own dep
 * **The address that must answer** is `<Logos>/api/info` by default (`NODE_MANAGER_LOGOS_URL`). It
   shows that the whole way, from the proxy to the webservice, works. Set `NODE_MANAGER_CORE_HEALTH_URL` to check another
   address, for example if the host cannot reach its own public address. The check cannot be switched off.
+* **The registry login** is read from the directory `.docker` of the Logos directory (the compose file sets
+  `DOCKER_CONFIG` to it). GHCR needs no login. To pull from another registry that needs one (`REGISTRY` in the `.env`
+  file), run `DOCKER_CONFIG=/opt/logos/.docker docker login <registry>` on the host. A new login is visible at once. A
+  pull from a registry that needs a login fails without it, and the running services are not touched.
 
 ## Use
 
@@ -563,8 +567,8 @@ host. A proxy would add a second container that holds the socket and would not r
 
 For operators:
 
-* Use a registry account that can pull but not push, for the login in the `.env` file or in `.docker` of the worker
-  directory. The manager can read both, and so can every user who can read the project directory.
+* Use a registry account that can pull but not push, for the login in `.docker` of the project directory. The manager
+  can read it, and so can every user who can read the project directory.
 * Limit who can run `docker` and `docker exec` on the host, and who can write to the state directory. These users are
   root-equivalent with or without the manager.
 

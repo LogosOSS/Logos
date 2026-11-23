@@ -41,6 +41,13 @@ services:
       # The directory of docker-compose.yaml and .env. It is mounted at the same path as on the host, because Compose
       # turns the relative bind mounts of Logos into absolute host paths before it sends them to the Docker engine.
       NODE_MANAGER_PROJECT_DIR: ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}
+      # The directory in which the Docker command line of the deployer looks for the registry login (config.json). GHCR
+      # needs no login. For another registry that needs one, run this on the host:
+      #   DOCKER_CONFIG=<project directory>/.docker docker login <registry>
+      # The directory is part of the project directory, which the deployer sees at the same path, so a new login is
+      # visible at once. A host without a login still starts the deployer. Only a pull from a registry that needs a login
+      # fails.
+      DOCKER_CONFIG: ${NODE_MANAGER_PROJECT_DIR:-/opt/logos}/.docker
       # The Logos that this host obeys: the Logos that runs on it. LOGOS_DEPLOYER_KEY is the key that this Logos made on
       # the page Deployments. Without the key, the host takes no orders from Logos.
       NODE_MANAGER_LOGOS_URL: https://${LOGOS_DOMAIN:-localhost}
