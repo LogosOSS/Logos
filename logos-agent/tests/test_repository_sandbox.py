@@ -441,6 +441,8 @@ class TestSessionEnvironment:
 
         assert env["HTTPS_PROXY"] == "http://session-3:a%2Fb%2Bc@logos-agent-egress-proxy:3128"
         assert env["https_proxy"] == env["HTTPS_PROXY"]
+        # Plain HTTP, the model gateway's protocol, is never proxied.
+        assert "HTTP_PROXY" not in env and "http_proxy" not in env
         assert "logos-agent-gateway" in env["NO_PROXY"].split(",")
         assert env["LOGOS_CACHE_DIR"] == "/cache"
 
@@ -692,6 +694,54 @@ class TestPushTarget:
 
         assert run_session._push_remote() == "origin"
         assert run_session._pull_request_head("b") == "b"
+
+
+class TestForkChoice:
+    @staticmethod
+    def _env(monkeypatch, session):
+        calls: list = []
+
+        async def push_target(slug, login):
+            calls.append(slug)
+            return "LogosOSSAgent/r"
+
+        async def update_session(*_args, **_kwargs):
+            return None
+
+        async def add_event(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(sessions.github, "push_target", push_target)
+        monkeypatch.setattr(sessions.db, "update_session", update_session)
+        monkeypatch.setattr(sessions.db, "add_event", add_event)
+        monkeypatch.setattr(sessions, "settings", replace(sessions.settings, session_github_token="tok"))
+        return calls, sessions.SessionManager._push_environment(session)
+
+    async def test_own_work_without_push_access_goes_to_the_fork(self, monkeypatch):
+        calls, pending = self._env(monkeypatch, {"id": 1, "repo_slug": "o/r", "team_repository_id": 4})
+
+        env = await pending
+
+        assert env == {
+            "LOGOS_PUSH_REPO_URL": "https://github.com/LogosOSSAgent/r.git",
+            "LOGOS_PUSH_REPO_SLUG": "LogosOSSAgent/r",
+        }
+        assert calls == ["o/r"]
+
+    async def test_a_handed_over_pull_request_branch_is_never_moved_to_the_fork(self, monkeypatch):
+        calls, pending = self._env(
+            monkeypatch,
+            {"id": 1, "repo_slug": "o/r", "team_repository_id": 4, "branch_name": "feature/someones-work"},
+        )
+
+        assert await pending == {}
+        assert calls == []
+
+    async def test_platform_sessions_never_fork(self, monkeypatch):
+        calls, pending = self._env(monkeypatch, {"id": 1, "repo_slug": None, "team_repository_id": None})
+
+        assert await pending == {}
+        assert calls == []
 
 
 class TestClosingReferences:

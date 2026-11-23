@@ -1735,12 +1735,13 @@ class SessionManager:
         if egress_token:
             proxy = _proxy_url(settings.egress_proxy_url, int(session["id"]), egress_token)
             gateway = urlsplit(settings.session_model_url).hostname or ""
-            # The model gateway is reached directly, as before; everything
-            # else goes through the allowlisting proxy, which refuses hosts
-            # the repository was not granted.
+            # HTTPS goes through the allowlisting proxy, which refuses hosts
+            # the repository was not granted. Plain HTTP is not proxied at all
+            # (the proxy only tunnels HTTPS), so the model gateway, reached
+            # over plain HTTP, keeps its direct route even for a tool that
+            # ignores NO_PROXY.
             bypass = ",".join(host for host in (gateway, "localhost", "127.0.0.1") if host)
-            for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
-                env[key] = proxy
+            env["HTTPS_PROXY"] = env["https_proxy"] = proxy
             env["NO_PROXY"] = env["no_proxy"] = bypass
         if model:
             for key in (
@@ -1903,11 +1904,15 @@ class SessionManager:
         account's own fork. Recorded on the row so that finalization, pull
         request look-ups and later sessions agree on it.
         """
+        handed_over = str(session.get("branch_name") or "")
         if (
             not _uses_repository_sandbox(session)
             or session.get("no_push")
             or str(session.get("trigger_kind") or "") == "analysis"
             or not settings.session_github_token
+            # A pull request handed over keeps its own branch on the
+            # repository; a fork could never update it.
+            or (handed_over and not handed_over.startswith(settings.branch_prefix))
         ):
             return {}
         with repository_context.scope(session):
