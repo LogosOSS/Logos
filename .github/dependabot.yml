@@ -1,6 +1,6 @@
 version: 2
 
-# Actions and the Python hooks they execute share a CI tooling update.
+# Maintain the actions, benchmark tools and pre-commit hooks used by CI together.
 multi-ecosystem-groups:
   ci-tooling:
     schedule:
@@ -72,7 +72,10 @@ updates:
     multi-ecosystem-group: ci-tooling
 
   - package-ecosystem: "pip"
-    directory: "/tools/pre-commit"
+    directories:
+      - "/tools/pre-commit"
+      - "/benchmarks"
+      - "/benchmarks/gateway_concurrency"
     patterns: ["*"]
     multi-ecosystem-group: ci-tooling
 
@@ -106,8 +109,6 @@ updates:
     directories:
       - "/logos-workernode"
       - "/e2e"
-      - "/benchmarks"
-      - "/benchmarks/gateway_concurrency"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 2

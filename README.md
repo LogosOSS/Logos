@@ -177,7 +177,7 @@ page covers SSH and database access to `logos-test.aet.cit.tum.de`.
 
 Dependabot checks Maven (including the Spring Boot parent), uv projects, pip inputs, the UI and documentation npm
 manifests, GitHub Actions, Dockerfiles and Compose images weekly. Routine groups include major, minor and patch
-versions. The agent and node manager share a uv group. GitHub Actions and the pre-commit hooks share a CI tooling PR.
+versions. The agent and node manager share a uv group. GitHub Actions, benchmark tools and pre-commit hooks share a CI tooling PR.
 The orchestrator and UI keep their own SQLAlchemy and TypeScript compatibility rules. FastAPI has a separate pip
 group because the worker image must also satisfy vLLM's requirements. PostgreSQL, Redis and Liquibase image majors
 are reviewed by dependency so a migration can proceed on its own timeline. Security updates have separate groups
