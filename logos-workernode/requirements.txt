@@ -5,11 +5,11 @@
 # lock resolves this file together with vLLM into one venv, so every pin must
 # satisfy vLLM's own requirements (e.g. its fastapi cap). Re-run the script
 # and commit the locks after any change here.
-fastapi==0.136.3
+fastapi==0.165.0
 uvicorn==0.54.0
 httpx==0.28.1
 pyyaml==6.0.3
-pydantic==2.14.1
+pydantic==2.14.4
 websockets==14.2
 prometheus-client==0.26.0
 # Startup model prefetch (main._download_one_model), the sharded-checkpoint
