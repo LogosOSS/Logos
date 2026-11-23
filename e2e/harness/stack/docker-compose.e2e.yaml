@@ -81,6 +81,7 @@ services:
     build:
       context: ../../../
       dockerfile: ./logos-orchestrator/Dockerfile
+      target: e2e
     depends_on:
       seed:
         condition: service_completed_successfully
