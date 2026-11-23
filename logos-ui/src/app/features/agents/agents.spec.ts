@@ -239,13 +239,13 @@ describe('Agents', () => {
       ];
       await component.refresh();
       fixture.detectChanges();
-      expect(timings()).toEqual(['Queued 9s', 'Queued 2m 0s', 'Run 9s']);
+      expect(timings()).toEqual(['Queued 2m 0s', 'Run 9s', 'Queued 9s']);
       agentService.sessionCalls = 0;
 
       await vi.advanceTimersByTimeAsync(1000);
       fixture.detectChanges();
 
-      expect(timings()).toEqual(['Queued 10s', 'Queued 2m 0s', 'Run 10s']);
+      expect(timings()).toEqual(['Queued 2m 0s', 'Run 10s', 'Queued 10s']);
       expect(agentService.sessionCalls).toBe(0);
       expect(fixture.nativeElement.querySelector('.status--running')).toBeTruthy();
     });
@@ -523,6 +523,19 @@ describe('Agents', () => {
         { session_memory_mb: 2048 },
         { clear_session_memory_mb: true },
       ]);
+    });
+
+    it('shows the reserved share of the memory budget, capped at the budget', async () => {
+      expect(component.memoryPercent()).toBe(0);
+
+      const controls = await agentService.getControls();
+      agentService.getControls = async () => ({ ...controls, memory_reserved_mb: 4096 });
+      await component.refresh();
+      expect(component.memoryPercent()).toBe(50);
+
+      agentService.getControls = async () => ({ ...controls, memory_reserved_mb: 9000 });
+      await component.refresh();
+      expect(component.memoryPercent()).toBe(100);
     });
 
     it('refuses less than 512 MB without sending anything', async () => {

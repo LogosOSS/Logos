@@ -1,482 +1,301 @@
 <div class="agents">
-  <h1 class="page-title">Agent Sessions</h1>
-  <a routerLink="/agents/security">Security incidents →</a>
-  <p class="page-subtitle">
-    Coding agents running in isolated containers on capacity Logos is not otherwise using. Sessions
-    act on the dev environment only, and every change arrives as a pull request.
-  </p>
-
-  <!-- ── Capacity banner ───────────────────────────────────────────────────── -->
-  @if (capacity(); as cap) {
-    <div class="capacity" [class.capacity--blocked]="!cap.may_start">
-      <div
-        class="capacity__meter"
-        role="img"
-        [attr.aria-label]="slotAriaLabel()"
-      >
-        @for (slot of slotCells(); track $index) {
-          <span
-            class="capacity__slot"
-            [class.capacity__slot--agent]="slot === 'agent'"
-            [class.capacity__slot--other]="slot === 'other'"
-            [class.capacity__slot--free]="slot === 'free'"
-          ></span>
-        }
-      </div>
-      <div class="capacity__facts">
-        <span class="capacity__load">{{ loadPercent() }}% platform load</span>
-        <span class="capacity__slots">
-          {{ cap.busy_slots }}/{{ cap.total_slots }} slots on the local model
-          @if (cap.total_slots > 0) {
-            ·
-            <span class="capacity__legend capacity__legend--agent">{{ cap.own_slots }} agent</span>
-            ·
-            <span class="capacity__legend capacity__legend--other">{{ cap.other_slots }} other</span>
-            · {{ freeSlots() }} free
-          }
-        </span>
-        <span class="capacity__sessions">
-          <!-- The ceiling belongs to what runs. The queue is not capped:
-               waiting work is what the ceiling exists to produce. -->
-          {{ cap.sessions_running }}/{{ cap.max_parallel }} running ·
-          {{ cap.sessions_paused }} paused · {{ cap.sessions_queued }} waiting
-        </span>
-      </div>
-      <p class="capacity__reason">
-        @if (cap.may_start) {
-          <i class="pi pi-check-circle" aria-hidden="true"></i> Capacity available —
-          {{ cap.reason }}
-        } @else {
-          <i class="pi pi-pause-circle" aria-hidden="true"></i> Holding — {{ cap.reason }}
-        }
-      </p>
-    </div>
-  }
-
-  <!-- Team repository analysis: runs nightly on its own; this is the manual
-       "everything, now" for when the analysis task itself changed. -->
-  <div class="repo-analysis">
+  <!-- ── Header ────────────────────────────────────────────────────────────── -->
+  <header class="page-header">
+    <h1 class="page-title">Agent Sessions</h1>
     <p class="page-subtitle">
-      <i class="pi pi-sparkles" aria-hidden="true"></i>
-      Linked team repositories are re-analysed every night when their branch has new commits;
-      unchanged repositories are skipped. Results arrive as proposals on each team's Workflows tab.
+      Coding agents running in isolated containers on capacity Logos is not otherwise using.
+      Sessions act on the dev environment only, and every change arrives as a pull request.
     </p>
-    <button
-      type="button"
-      class="btn"
-      (click)="analyzeAllRepositories()"
-      [disabled]="analyzingAll()"
-    >
-      @if (analyzingAll()) {
-        <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
-      } @else {
-        <i class="pi pi-sparkles" aria-hidden="true"></i>
-      }
-      Analyze all repositories
-    </button>
-    @if (analyzeAllMessage(); as msg) {
-      <span class="field__hint" role="status">{{ msg }}</span>
-    }
-  </div>
+    <div class="page-header__actions">
+      <button type="button" class="btn-primary" (click)="openForm()" [disabled]="showForm()">
+        <i class="pi pi-plus" aria-hidden="true"></i> New session
+      </button>
+      <button type="button" class="btn-secondary" (click)="refresh()" [disabled]="loading()">
+        <i class="pi pi-refresh" aria-hidden="true"></i> Refresh
+      </button>
+      <a class="btn-secondary" routerLink="/agents/security">
+        <i class="pi pi-shield" aria-hidden="true"></i> Security incidents
+      </a>
+    </div>
+  </header>
 
   @if (capacity(); as cap) {
     @if (!cap.models_local_only) {
-      <div class="alert alert--error" role="alert">
-        No session can start: {{ cap.models_detail }}
-      </div>
+      <app-error-message variant="banner" [message]="'No session can start: ' + cap.models_detail" />
     }
-  }
-
-  @if (triggers(); as trig) {
-    @if (trig.enabled) {
-      <p class="page-subtitle">
-        <i class="pi pi-bolt" aria-hidden="true"></i>
-        Working as <code>{{ trig.account }}</code
-        >: assign it an issue or a pull request, request changes on its work, or mention it in a
-        comment from the last day, and it queues a session on its own ({{ trig.active_sessions }}/{{
-          trig.max_active_sessions
-        }}
-        active, {{ trig.queued_total }} queued since start).
-        @if (trig.last_error) {
-          <span class="field__hint">Last poll failed: {{ trig.last_error }}</span>
-        }
-      </p>
-    }
-  }
-
-  <!-- ── Runner controls ───────────────────────────────────────────────────── -->
-  @if (controls(); as ctl) {
-    <section class="controls" [class.controls--stopped]="ctl.mode !== 'running'">
-      <div class="controls__state">
-        <i
-          class="pi"
-          [class.pi-play-circle]="ctl.mode === 'running'"
-          [class.pi-hourglass]="ctl.mode === 'draining'"
-          [class.pi-pause-circle]="ctl.mode === 'paused'"
-          aria-hidden="true"
-        ></i>
-        <span>{{ modeLabel() }}</span>
-        @if (ctl.mode_reason) {
-          <span class="field__hint"
-            >{{ ctl.mode_reason }}{{ ctl.updated_by ? ' — ' + ctl.updated_by : '' }}</span
-          >
-        }
-      </div>
-
-      <div class="controls__actions">
-        @if (ctl.mode !== 'running') {
-          <button class="btn" (click)="setMode('running')" [disabled]="controlBusy()">
-            Resume
-          </button>
-        }
-        @if (ctl.mode !== 'draining') {
-          <button
-            class="btn"
-            (click)="setMode('draining')"
-            [disabled]="controlBusy()"
-            title="Start nothing new; let what is running finish"
-          >
-            Stop new sessions
-          </button>
-        }
-        @if (ctl.mode !== 'paused') {
-          <button
-            class="btn btn--danger"
-            (click)="setMode('paused')"
-            [disabled]="controlBusy()"
-            title="Pause everything and hand the capacity back now"
-          >
-            Pause everything
-          </button>
-        }
-      </div>
-
-      <label class="controls__field">
-        <span class="field__label">Reason <span class="field__optional">(optional)</span></span>
-        <input
-          class="input"
-          type="text"
-          placeholder="what is going on"
-          [ngModel]="pauseReason()"
-          (ngModelChange)="pauseReason.set($event)"
-          aria-label="Reason for stopping the runner"
-        />
-      </label>
-
-      <div class="controls__field">
-        <label class="field__label" for="agent-session-memory">
-          Memory per session (MB)
-          @if (ctl.session_memory_override === null) {
-            <span class="field__optional">(default)</span>
-          }
-        </label>
-        <div class="slider">
-          <input
-            id="agent-session-memory"
-            class="input"
-            type="number"
-            min="512"
-            step="512"
-            inputmode="numeric"
-            [value]="memoryShown()"
-            (input)="memoryDraft.set($any($event.target).value)"
-            (change)="applyMemory(memoryDraft())"
-            [disabled]="controlBusy()"
-          />
-          @if (ctl.session_memory_override !== null) {
-            <button
-              class="btn btn--link"
-              (click)="applyMemory('')"
-              [disabled]="controlBusy()"
-              title="Go back to the memory this deployment was configured with"
-            >
-              Reset to {{ ctl.session_memory_configured }} MB
-            </button>
-          }
-        </div>
-        <span class="field__hint">
-          @if (ctl.memory_budget_mb !== null) {
-            Sessions may use {{ ctl.memory_budget_mb }} MB together
-            @if (ctl.host_memory_mb !== null) {
-              of {{ ctl.host_memory_mb }} MB on the host
-            }
-            ({{ ctl.memory_reserved_mb }} MB in use), so up to {{ ctl.max_parallel_available }}
-            {{ ctl.max_parallel_available === 1 ? 'session' : 'sessions' }} of {{ ctl.session_memory_mb }} MB.
-          } @else {
-            The host's memory is unknown; only the configured ceiling of {{ ctl.max_parallel_configured }} applies.
-          }
-          Running sessions keep the memory they started with.
-        </span>
-      </div>
-
-      <div class="controls__field">
-        <span class="field__label">
-          Sessions at once
-          <span class="field__value">{{ limitShown() }}</span>
-          @if (ctl.max_parallel_override === null) {
-            <span class="field__optional">(maximum)</span>
-          }
-        </span>
-        <div class="slider">
-          <input
-            class="slider__track"
-            type="range"
-            min="0"
-            [max]="limitCeiling()"
-            step="1"
-            [value]="limitShown()"
-            (input)="limitDraft.set($any($event.target).value)"
-            (change)="applyLimit(limitDraft())"
-            [disabled]="controlBusy()"
-            aria-label="How many sessions may run at once"
-          />
-          @if (ctl.max_parallel_override !== null) {
-            <button
-              class="btn btn--link"
-              (click)="applyLimit('')"
-              [disabled]="controlBusy()"
-              title="Go back to the most sessions the memory budget holds"
-            >
-              Reset to {{ ctl.max_parallel_available }}
-            </button>
-          }
-        </div>
-        <span class="field__hint">
-          Follows from the memory per session; lower it here. Takes effect on the next scheduler
-          pass. Zero drains without pausing: nothing new starts, what runs finishes.
-        </span>
-      </div>
-    </section>
-  }
-
-  @if (instructions(); as text) {
-    <section class="panel">
-      <div class="panel__head">
-        <h2 class="section-title">What every session is told</h2>
-        <button class="btn btn--ghost" (click)="toggleInstructions()">
-          {{ instructionsOpen() ? 'Close' : 'Edit' }}
-        </button>
-      </div>
-      <p class="field__hint">
-        These two blocks are appended to every task: the conventions the agent works to, and the
-        description of the container it works in. They take effect on the next session — no
-        deployment.
-      </p>
-
-      @if (instructionsOpen()) {
-        <label class="controls__field">
-          <span class="field__label">
-            House rules
-            @if (text.house_rules_default) {
-              <span class="field__optional">(as shipped)</span>
-            } @else {
-              <button
-                class="btn btn--link"
-                (click)="resetInstructions('house_rules')"
-                [disabled]="savingInstructions()"
-              >
-                restore the default
-              </button>
-            }
-          </span>
-          <textarea
-            class="input prompt-editor"
-            rows="14"
-            [ngModel]="houseRulesDraft()"
-            (ngModelChange)="houseRulesDraft.set($event)"
-            [disabled]="savingInstructions()"
-            aria-label="The conventions every session is held to"
-          ></textarea>
-        </label>
-
-        <label class="controls__field">
-          <span class="field__label">
-            Environment notes
-            @if (text.environment_notes_default) {
-              <span class="field__optional">(as shipped)</span>
-            } @else {
-              <button
-                class="btn btn--link"
-                (click)="resetInstructions('environment_notes')"
-                [disabled]="savingInstructions()"
-              >
-                restore the default
-              </button>
-            }
-          </span>
-          <textarea
-            class="input prompt-editor"
-            rows="10"
-            [ngModel]="environmentNotesDraft()"
-            (ngModelChange)="environmentNotesDraft.set($event)"
-            [disabled]="savingInstructions()"
-            aria-label="What the sandbox is, told to the agent inside it"
-          ></textarea>
-        </label>
-
-        <div class="controls__row">
-          <button
-            class="btn btn--primary"
-            (click)="saveInstructions()"
-            [disabled]="savingInstructions()"
-          >
-            {{ savingInstructions() ? 'Saving…' : 'Save' }}
-          </button>
-          @if (text.updated_by) {
-            <span class="field__hint">last changed by {{ text.updated_by }}</span>
-          }
-        </div>
-      }
-    </section>
   }
 
   @if (error(); as message) {
-    <div class="alert alert--error" role="alert">{{ message }}</div>
+    <app-error-message variant="banner" [message]="message" />
   }
 
-  <!-- ── Actions ───────────────────────────────────────────────────────────── -->
-  <div class="toolbar">
-    <button class="btn btn--primary" (click)="openForm()" [disabled]="showForm()">
-      <i class="pi pi-plus" aria-hidden="true"></i> New session
-    </button>
-    <button class="btn" (click)="refresh()" [disabled]="loading()">
-      <i class="pi pi-refresh" aria-hidden="true"></i> Refresh
-    </button>
-  </div>
+  <!-- ── Status summary ────────────────────────────────────────────────────── -->
+  @if (controls() || capacity()) {
+    <section class="summary" aria-label="Runner status">
+      @if (controls(); as ctl) {
+        <div class="tile">
+          <span class="tile__label">Runner</span>
+          <span class="tile__value tile__value--text">
+            <span
+              class="status-dot"
+              [class.status-dot--warn]="ctl.mode === 'draining'"
+              [class.status-dot--err]="ctl.mode === 'paused'"
+              aria-hidden="true"
+            ></span>
+            {{ modeLabel() }}
+          </span>
+          <span class="tile__hint">
+            @if (ctl.mode_reason) {
+              {{ ctl.mode_reason }}{{ ctl.updated_by ? ' — ' + ctl.updated_by : '' }}
+            } @else {
+              Starts queued work when capacity allows
+            }
+          </span>
+        </div>
+      }
+
+      @if (capacity(); as cap) {
+        <div class="tile">
+          <span class="tile__label">Sessions</span>
+          <span class="tile__value">
+            <!-- The ceiling belongs to what runs. The queue is not capped:
+                 waiting work is what the ceiling exists to produce. -->
+            {{ cap.sessions_running }}<span class="tile__of"> / {{ cap.max_parallel }}</span>
+            <span class="tile__unit">running</span>
+          </span>
+          <span class="tile__hint">
+            {{ cap.sessions_queued }} waiting · {{ cap.sessions_paused }} paused
+          </span>
+        </div>
+      }
+
+      @if (controls(); as ctl) {
+        <div class="tile">
+          <span class="tile__label">Memory</span>
+          @if (ctl.memory_budget_mb !== null) {
+            <span class="tile__value">
+              {{ ctl.memory_reserved_mb | number }}<span class="tile__of">
+                / {{ ctl.memory_budget_mb | number }}</span
+              >
+              <span class="tile__unit">MB</span>
+            </span>
+            <span
+              class="meter"
+              role="img"
+              [attr.aria-label]="
+                ctl.memory_reserved_mb + ' of ' + ctl.memory_budget_mb + ' MB reserved'
+              "
+            >
+              <span class="meter__fill" [style.width.%]="memoryPercent()"></span>
+            </span>
+            <span class="tile__hint">
+              Reserved by sessions
+              @if (ctl.host_memory_mb !== null) {
+                · {{ ctl.host_memory_mb | number }} MB on the host
+              }
+            </span>
+          } @else {
+            <span class="tile__value">
+              {{ ctl.session_memory_mb | number }} <span class="tile__unit">MB per session</span>
+            </span>
+            <span class="tile__hint">The host's memory is unknown</span>
+          }
+        </div>
+      }
+
+      @if (capacity(); as cap) {
+        <div class="tile" [class.tile--warn]="!cap.may_start">
+          <span class="tile__label">Platform capacity</span>
+          <span class="tile__value tile__value--text">
+            <span
+              class="status-dot"
+              [class.status-dot--warn]="!cap.may_start"
+              aria-hidden="true"
+            ></span>
+            {{ cap.may_start ? 'Available' : 'Holding' }}
+            <span class="tile__unit">{{ loadPercent() }}% load</span>
+          </span>
+          @if (slotCells().length > 0) {
+            <div class="slots" role="img" [attr.aria-label]="slotAriaLabel()">
+              @for (slot of slotCells(); track $index) {
+                <span
+                  class="slots__cell"
+                  [class.slots__cell--agent]="slot === 'agent'"
+                  [class.slots__cell--other]="slot === 'other'"
+                  [class.slots__cell--free]="slot === 'free'"
+                ></span>
+              }
+            </div>
+          }
+          <span class="tile__hint">
+            {{ cap.busy_slots }}/{{ cap.total_slots }} slots on the local model
+            @if (cap.total_slots > 0) {
+              · <span class="legend legend--agent">{{ cap.own_slots }} agent</span> ·
+              <span class="legend">{{ cap.other_slots }} other</span> ·
+              <span class="legend">{{ freeSlots() }} free</span>
+            }
+          </span>
+          <span class="tile__hint">{{ cap.reason }}</span>
+        </div>
+      }
+    </section>
+  }
 
   <!-- ── New session form ──────────────────────────────────────────────────── -->
   @if (showForm()) {
-    <section class="card form-card">
-      <h2 class="card__title">Start a session</h2>
-
-      <div class="field" role="group" aria-labelledby="new-session-repository">
-        <span class="field__label" id="new-session-repository">Repository</span>
-        <app-select
-          [options]="repositoryOptions()"
-          [value]="formRepositoryId() !== null ? String(formRepositoryId()) : null"
-          (valueChange)="selectRepositoryById($event ?? '')"
-          ariaLabel="Repository"
-        />
-        <span class="field__hint">
-          Linked team repositories appear here when a team enables the coding agent for them.
-        </span>
-      </div>
-
-      <div class="field" role="group" aria-labelledby="new-session-workspace">
-        <span class="field__label" id="new-session-workspace">Workspace</span>
-        @if (workspaceOptions().length > 0) {
-          <app-select
-            [options]="workspaceOptions()"
-            [value]="formWorkspaceId() !== null ? String(formWorkspaceId()) : null"
-            (valueChange)="selectWorkspaceById($event ?? '')"
-            ariaLabel="Workspace"
-          />
-        } @else {
-          <p class="field__hint">No workspaces yet — create one below.</p>
-        }
-      </div>
-
-      <div class="field field--inline">
-        <input
-          class="input"
-          type="text"
-          placeholder="new workspace name"
-          [ngModel]="newWorkspaceName()"
-          (ngModelChange)="newWorkspaceName.set($event)"
-          aria-label="New workspace name"
-        />
+    <section class="card form-card" aria-labelledby="new-session-title">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="new-session-title">Start a session</h2>
+          <p class="card__subtitle">
+            The agent works unattended in the selected workspace and reports back as a pull
+            request.
+          </p>
+        </div>
         <button
-          class="btn"
-          (click)="createWorkspace()"
-          [disabled]="creatingWorkspace() || newWorkspaceName().trim().length === 0"
+          type="button"
+          class="btn-icon"
+          (click)="closeForm()"
+          aria-label="Close the form"
+          title="Close"
         >
-          Create workspace
+          <i class="pi pi-times" aria-hidden="true"></i>
         </button>
       </div>
-      <p class="field__hint">
-        One workspace runs one session at a time — it is a single working copy on its own volume.
-        Add more workspaces to run more sessions in parallel.
-      </p>
 
-      <label class="field">
-        <span class="field__label">Task</span>
-        <textarea
-          class="input textarea"
-          rows="6"
-          placeholder="Describe the change you want. The agent works unattended, so state the goal and any constraints it cannot ask you about."
-          [ngModel]="formTask()"
-          (ngModelChange)="formTask.set($event)"
-        ></textarea>
-      </label>
-
-      <label class="field">
-        <span class="field__label">Model <span class="field__optional">(optional)</span></span>
-        @if (modelOptions().length > 0) {
+      <div class="form-grid">
+        <div class="field" role="group" aria-labelledby="new-session-repository">
+          <span class="field__label" id="new-session-repository">Repository</span>
           <app-select
-            [options]="modelOptions()"
-            [value]="formModel()"
-            (valueChange)="selectModel($event ?? '')"
-            ariaLabel="Model"
+            [options]="repositoryOptions()"
+            [value]="formRepositoryId() !== null ? String(formRepositoryId()) : null"
+            (valueChange)="selectRepositoryById($event ?? '')"
+            ariaLabel="Repository"
           />
           <span class="field__hint">
-            {{ modelPlaceholder() }} — only models this platform serves itself are offered, because
-            agent work never bills a cloud provider.
+            Linked team repositories appear here when a team enables the coding agent for them.
           </span>
-        } @else {
-          <p class="field__hint">
-            {{ models()?.detail ?? 'No locally served model is available.' }}
-          </p>
-        }
-      </label>
+        </div>
 
-      <label class="field">
-        <span class="field__label"
-          >Screenshot paths <span class="field__optional">(optional)</span></span
-        >
-        <input
-          class="input"
-          type="text"
-          placeholder="/dashboard /models"
-          [ngModel]="formScreenshots()"
-          (ngModelChange)="formScreenshots.set($event)"
-          [disabled]="linkedRepositorySelected()"
-        />
-        <span class="field__hint">Pages on the dev environment to capture after deploying.</span>
-      </label>
+        <div class="field" role="group" aria-labelledby="new-session-workspace">
+          <span class="field__label" id="new-session-workspace">Workspace</span>
+          @if (workspaceOptions().length > 0) {
+            <app-select
+              [options]="workspaceOptions()"
+              [value]="formWorkspaceId() !== null ? String(formWorkspaceId()) : null"
+              (valueChange)="selectWorkspaceById($event ?? '')"
+              ariaLabel="Workspace"
+            />
+          } @else {
+            <p class="field__hint">No workspaces yet — create one below.</p>
+          }
+          <div class="inline-input">
+            <input
+              class="input"
+              type="text"
+              placeholder="new workspace name"
+              [ngModel]="newWorkspaceName()"
+              (ngModelChange)="newWorkspaceName.set($event)"
+              aria-label="New workspace name"
+            />
+            <button
+              type="button"
+              class="btn-secondary"
+              (click)="createWorkspace()"
+              [disabled]="creatingWorkspace() || newWorkspaceName().trim().length === 0"
+            >
+              Create workspace
+            </button>
+          </div>
+          <span class="field__hint">
+            One workspace runs one session at a time — it is a single working copy on its own
+            volume. Add more workspaces to run more sessions in parallel.
+          </span>
+        </div>
 
-      <div class="checkboxes">
-        <label class="checkbox">
-          <input
-            type="checkbox"
-            [ngModel]="formOpenPr()"
-            (ngModelChange)="formOpenPr.set($event)"
-          />
-          <span>Open a pull request when finished</span>
+        <label class="field field--wide">
+          <span class="field__label">Task</span>
+          <textarea
+            class="input textarea"
+            rows="6"
+            placeholder="Describe the change you want. The agent works unattended, so state the goal and any constraints it cannot ask you about."
+            [ngModel]="formTask()"
+            (ngModelChange)="formTask.set($event)"
+          ></textarea>
         </label>
-        <label class="checkbox">
+
+        <label class="field">
+          <span class="field__label">Model <span class="field__optional">(optional)</span></span>
+          @if (modelOptions().length > 0) {
+            <app-select
+              [options]="modelOptions()"
+              [value]="formModel()"
+              (valueChange)="selectModel($event ?? '')"
+              ariaLabel="Model"
+            />
+            <span class="field__hint">
+              {{ modelPlaceholder() }} — only models this platform serves itself are offered,
+              because agent work never bills a cloud provider.
+            </span>
+          } @else {
+            <p class="field__hint">
+              {{ models()?.detail ?? 'No locally served model is available.' }}
+            </p>
+          }
+        </label>
+
+        <label class="field">
+          <span class="field__label"
+            >Screenshot paths <span class="field__optional">(optional)</span></span
+          >
           <input
-            type="checkbox"
-            [ngModel]="formDeploy()"
-            (ngModelChange)="formDeploy.set($event)"
+            class="input"
+            type="text"
+            placeholder="/dashboard /models"
+            [ngModel]="formScreenshots()"
+            (ngModelChange)="formScreenshots.set($event)"
             [disabled]="linkedRepositorySelected()"
           />
-          <span>Deploy to the dev environment afterwards</span>
+          <span class="field__hint">Pages on the dev environment to capture after deploying.</span>
         </label>
+
+        <div class="field field--wide">
+          <div class="checkboxes">
+            <label class="checkbox">
+              <input
+                type="checkbox"
+                [ngModel]="formOpenPr()"
+                (ngModelChange)="formOpenPr.set($event)"
+              />
+              <span>Open a pull request when finished</span>
+            </label>
+            <label class="checkbox">
+              <input
+                type="checkbox"
+                [ngModel]="formDeploy()"
+                (ngModelChange)="formDeploy.set($event)"
+                [disabled]="linkedRepositorySelected()"
+              />
+              <span>Deploy to the dev environment afterwards</span>
+            </label>
+          </div>
+          @if (linkedRepositorySelected()) {
+            <p class="field__hint">
+              Deploy to dev and screenshots are available only for the platform repository.
+            </p>
+          }
+        </div>
       </div>
-      @if (linkedRepositorySelected()) {
-        <p class="field__hint">
-          Deploy to dev and screenshots are available only for the platform repository.
-        </p>
-      }
 
       @if (formError(); as message) {
-        <div class="alert alert--error" role="alert">{{ message }}</div>
+        <app-error-message variant="banner" [message]="message" />
       }
 
       <div class="form-actions">
-        <button class="btn" (click)="closeForm()">Cancel</button>
+        <button type="button" class="btn-secondary" (click)="closeForm()">Cancel</button>
         <button
-          class="btn btn--primary"
+          type="button"
+          class="btn-primary"
           (click)="submit()"
           [disabled]="!canSubmit() || submitting()"
         >
@@ -486,27 +305,178 @@
     </section>
   }
 
+  <!-- ── Runner controls ───────────────────────────────────────────────────── -->
+  @if (controls(); as ctl) {
+    <section class="card controls" aria-labelledby="runner-controls-title">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="runner-controls-title">Runner controls</h2>
+          <p class="card__subtitle">
+            Changes take effect on the next scheduler pass. Running sessions keep the memory they
+            started with.
+          </p>
+        </div>
+      </div>
+
+      <div class="controls__mode">
+        <div class="control">
+          <span class="field__label" id="runner-mode-label">Mode</span>
+          <div class="segmented" role="group" aria-labelledby="runner-mode-label">
+            <button
+              type="button"
+              class="segmented__option"
+              [class.segmented__option--active]="ctl.mode === 'running'"
+              [attr.aria-pressed]="ctl.mode === 'running'"
+              (click)="ctl.mode !== 'running' && setMode('running')"
+              [disabled]="controlBusy()"
+              title="Start queued sessions when capacity allows"
+            >
+              <i class="pi pi-play" aria-hidden="true"></i> Run
+            </button>
+            <button
+              type="button"
+              class="segmented__option segmented__option--warn"
+              [class.segmented__option--active]="ctl.mode === 'draining'"
+              [attr.aria-pressed]="ctl.mode === 'draining'"
+              (click)="ctl.mode !== 'draining' && setMode('draining')"
+              [disabled]="controlBusy()"
+              title="Start nothing new; let what is running finish"
+            >
+              <i class="pi pi-hourglass" aria-hidden="true"></i> Stop new sessions
+            </button>
+            <button
+              type="button"
+              class="segmented__option segmented__option--danger"
+              [class.segmented__option--active]="ctl.mode === 'paused'"
+              [attr.aria-pressed]="ctl.mode === 'paused'"
+              (click)="ctl.mode !== 'paused' && setMode('paused')"
+              [disabled]="controlBusy()"
+              title="Pause everything and hand the capacity back now"
+            >
+              <i class="pi pi-pause" aria-hidden="true"></i> Pause everything
+            </button>
+          </div>
+        </div>
+
+        <label class="control control--grow">
+          <span class="field__label">Reason <span class="field__optional">(optional)</span></span>
+          <input
+            class="input"
+            type="text"
+            placeholder="what is going on"
+            [ngModel]="pauseReason()"
+            (ngModelChange)="pauseReason.set($event)"
+            aria-label="Reason for stopping the runner"
+          />
+        </label>
+      </div>
+
+      <div class="controls__limits">
+        <div class="control">
+          <label class="field__label" for="agent-session-memory">
+            Memory per session (MB)
+            @if (ctl.session_memory_override === null) {
+              <span class="field__optional">(default)</span>
+            }
+          </label>
+          <div class="control__row">
+            <input
+              id="agent-session-memory"
+              class="input input--number"
+              type="number"
+              min="512"
+              step="512"
+              inputmode="numeric"
+              [value]="memoryShown()"
+              (input)="memoryDraft.set($any($event.target).value)"
+              (change)="applyMemory(memoryDraft())"
+              [disabled]="controlBusy()"
+            />
+            @if (ctl.session_memory_override !== null) {
+              <button
+                type="button"
+                class="link-btn"
+                (click)="applyMemory('')"
+                [disabled]="controlBusy()"
+                title="Go back to the memory this deployment was configured with"
+              >
+                Reset to {{ ctl.session_memory_configured }} MB
+              </button>
+            }
+          </div>
+          <span class="field__hint">
+            @if (ctl.memory_budget_mb !== null) {
+              Sessions may use {{ ctl.memory_budget_mb | number }} MB together
+              @if (ctl.host_memory_mb !== null) {
+                of {{ ctl.host_memory_mb | number }} MB on the host
+              }
+              ({{ ctl.memory_reserved_mb | number }} MB in use), so up to
+              {{ ctl.max_parallel_available }}
+              {{ ctl.max_parallel_available === 1 ? 'session' : 'sessions' }} of
+              {{ ctl.session_memory_mb | number }} MB.
+            } @else {
+              The host's memory is unknown; only the configured ceiling of
+              {{ ctl.max_parallel_configured }} applies.
+            }
+          </span>
+        </div>
+
+        <div class="control">
+          <span class="field__label">
+            Sessions at once
+            <span class="field__value">{{ limitShown() }}</span>
+            @if (ctl.max_parallel_override === null) {
+              <span class="field__optional">(maximum)</span>
+            }
+          </span>
+          <div class="control__row">
+            <input
+              class="slider"
+              type="range"
+              min="0"
+              [max]="limitCeiling()"
+              step="1"
+              [value]="limitShown()"
+              (input)="limitDraft.set($any($event.target).value)"
+              (change)="applyLimit(limitDraft())"
+              [disabled]="controlBusy()"
+              aria-label="How many sessions may run at once"
+            />
+            @if (ctl.max_parallel_override !== null) {
+              <button
+                type="button"
+                class="link-btn"
+                (click)="applyLimit('')"
+                [disabled]="controlBusy()"
+                title="Go back to the most sessions the memory budget holds"
+              >
+                Reset to {{ ctl.max_parallel_available }}
+              </button>
+            }
+          </div>
+          <span class="field__hint">
+            Follows from the memory per session; lower it here. Zero drains without pausing:
+            nothing new starts, what runs finishes.
+          </span>
+        </div>
+      </div>
+    </section>
+  }
+
   <!-- ── Sessions ──────────────────────────────────────────────────────────── -->
   @if (loading() && sessions().length === 0) {
     <p class="empty">Loading sessions…</p>
   } @else if (sessions().length === 0) {
-    <p class="empty">No sessions yet. Start one to put idle capacity to work.</p>
-  }
-
-  @if (queuedSessions().length > 0) {
-    <!-- Its own group, in the order the scheduler will work through it:
-         shown among the running ones it would read newest-first, which is
-         not the order the arrows move things in. -->
-    <h2 class="section-title">Queue</h2>
-    <ul class="session-list">
-      @for (session of queuedSessions(); track session.id) {
-        <ng-container *ngTemplateOutlet="sessionRow; context: { $implicit: session }" />
-      }
-    </ul>
+    <div class="empty empty--card">
+      <i class="pi pi-inbox" aria-hidden="true"></i>
+      <p>No sessions yet. Start one to put idle capacity to work.</p>
+    </div>
   }
 
   @if (activeSessions().length > 0) {
-    <h2 class="section-title">Active</h2>
+    <h2 class="section-title">
+      Active <span class="section-count">{{ activeSessions().length }}</span>
+    </h2>
     <ul class="session-list">
       @for (session of activeSessions(); track session.id) {
         <ng-container *ngTemplateOutlet="sessionRow; context: { $implicit: session }" />
@@ -514,8 +484,24 @@
     </ul>
   }
 
+  @if (queuedSessions().length > 0) {
+    <!-- Its own group, in the order the scheduler will work through it:
+         shown among the running ones it would read newest-first, which is
+         not the order the arrows move things in. -->
+    <h2 class="section-title">
+      Queue <span class="section-count">{{ queuedSessions().length }}</span>
+    </h2>
+    <ul class="session-list">
+      @for (session of queuedSessions(); track session.id) {
+        <ng-container *ngTemplateOutlet="sessionRow; context: { $implicit: session }" />
+      }
+    </ul>
+  }
+
   @if (finishedSessions().length > 0) {
-    <h2 class="section-title">Finished</h2>
+    <h2 class="section-title">
+      Finished <span class="section-count">{{ finishedSessions().length }}</span>
+    </h2>
     <ul class="session-list">
       @for (session of finishedSessions(); track session.id) {
         <ng-container *ngTemplateOutlet="sessionRow; context: { $implicit: session }" />
@@ -525,90 +511,134 @@
 
   <!-- ── One session row, with its detail panel ────────────────────────────── -->
   <ng-template #sessionRow let-session>
-    <li class="session" [class.session--open]="selectedId() === session.id">
-      <button
-        class="session__head"
-        (click)="select(session)"
-        [attr.aria-expanded]="selectedId() === session.id"
-      >
-        <span [class]="statusClass(session.status)">{{ statusLabel(session) }}</span>
-        <span class="session__task">{{ taskPreview(session.task) }}</span>
-        <span class="session__meta">
-          @if (analysisTarget(session); as target) {
-            <span class="session__workspace" title="The team repository this session analyses">
-              <i class="pi pi-github" aria-hidden="true"></i> {{ target }}
-            </span>
-          } @else {
-            <span class="session__workspace" title="The working copy this session runs in">
-              <i class="pi pi-folder" aria-hidden="true"></i> {{ session.workspace_name }}
-            </span>
-            @if (session.repo_slug) {
-              <span class="session__workspace" title="The repository this session works on">
-                <i class="pi pi-github" aria-hidden="true"></i> {{ session.repo_slug }}
+    <li
+      class="session"
+      [class.session--open]="selectedId() === session.id"
+      [class.session--reorderable]="session.status === 'queued' && queuedSessions().length > 1"
+    >
+      <div class="session__row">
+        <button
+          type="button"
+          class="session__head"
+          (click)="select(session)"
+          [attr.aria-expanded]="selectedId() === session.id"
+        >
+          <span class="session__task">{{ taskPreview(session.task) }}</span>
+          <span class="session__meta">
+            <span [class]="statusClass(session.status)">{{ statusLabel(session) }}</span>
+            @if (analysisTarget(session); as target) {
+              <span class="session__tag" title="The team repository this session analyses">
+                <i class="pi pi-github" aria-hidden="true"></i> {{ target }}
               </span>
-            }
-          }
-          <span class="session__timings">
-            <span class="session__timing" title="Time waiting before the session started">
-              Queued {{ queueDuration(session) }}
-            </span>
-            @if (session.started_at) {
-              <span class="session__timing" title="Time from start to finish"
-                >Run {{ duration(session) }}</span
-              >
-            }
-            @if (session.finished_at) {
-              <span
-                class="session__timing"
-                [title]="'Finished ' + (session.finished_at | date: 'medium')"
-              >
-                Finished {{ finishedAgo(session) }} ago
+            } @else {
+              <span class="session__tag" title="The working copy this session runs in">
+                <i class="pi pi-folder" aria-hidden="true"></i> {{ session.workspace_name }}
               </span>
+              @if (session.repo_slug) {
+                <span class="session__tag" title="The repository this session works on">
+                  <i class="pi pi-github" aria-hidden="true"></i> {{ session.repo_slug }}
+                </span>
+              }
             }
+            <span class="session__timings">
+              <span class="session__timing" title="Time waiting before the session started">
+                Queued {{ queueDuration(session) }}
+              </span>
+              @if (session.started_at) {
+                <span class="session__timing" title="Time from start to finish"
+                  >Run {{ duration(session) }}</span
+                >
+              }
+              @if (session.finished_at) {
+                <span
+                  class="session__timing"
+                  [title]="'Finished ' + (session.finished_at | date: 'medium')"
+                >
+                  Finished {{ finishedAgo(session) }} ago
+                </span>
+              }
+            </span>
           </span>
-        </span>
-      </button>
+          <i class="pi pi-chevron-down session__chevron" aria-hidden="true"></i>
+        </button>
 
-      @if (session.status === 'queued' && queuedSessions().length > 1) {
-        <!-- The order is what the runner works through while the platform
-             is busy. Priority is derived from what a request is, which is
-             right most of the time; the rest is what the person watching
-             knows and the rules do not. -->
-        <div class="session__queue" role="group" aria-label="Position in the queue">
-          <button
-            class="btn btn--ghost btn--icon"
-            (click)="move(session, 'first')"
-            [disabled]="moving() !== null || queuedSessions()[0].id === session.id"
-            title="Work on this one next"
-            aria-label="Move to the front of the queue"
-          >
-            <i class="pi pi-angle-double-up" aria-hidden="true"></i>
-          </button>
-          <button
-            class="btn btn--ghost btn--icon"
-            (click)="move(session, 'up')"
-            [disabled]="moving() !== null || queuedSessions()[0].id === session.id"
-            title="Move up one place"
-            aria-label="Move up in the queue"
-          >
-            <i class="pi pi-angle-up" aria-hidden="true"></i>
-          </button>
-          <button
-            class="btn btn--ghost btn--icon"
-            (click)="move(session, 'down')"
-            [disabled]="
-              moving() !== null || queuedSessions()[queuedSessions().length - 1].id === session.id
-            "
-            title="Move down one place"
-            aria-label="Move down in the queue"
-          >
-            <i class="pi pi-angle-down" aria-hidden="true"></i>
-          </button>
-        </div>
-      }
+        @if (session.status === 'queued' && queuedSessions().length > 1) {
+          <!-- The order is what the runner works through while the platform
+               is busy. Priority is derived from what a request is, which is
+               right most of the time; the rest is what the person watching
+               knows and the rules do not. -->
+          <div class="session__queue" role="group" aria-label="Position in the queue">
+            <button
+              type="button"
+              class="btn-icon"
+              (click)="move(session, 'first')"
+              [disabled]="moving() !== null || queuedSessions()[0].id === session.id"
+              title="Work on this one next"
+              aria-label="Move to the front of the queue"
+            >
+              <i class="pi pi-angle-double-up" aria-hidden="true"></i>
+            </button>
+            <button
+              type="button"
+              class="btn-icon"
+              (click)="move(session, 'up')"
+              [disabled]="moving() !== null || queuedSessions()[0].id === session.id"
+              title="Move up one place"
+              aria-label="Move up in the queue"
+            >
+              <i class="pi pi-angle-up" aria-hidden="true"></i>
+            </button>
+            <button
+              type="button"
+              class="btn-icon"
+              (click)="move(session, 'down')"
+              [disabled]="
+                moving() !== null || queuedSessions()[queuedSessions().length - 1].id === session.id
+              "
+              title="Move down one place"
+              aria-label="Move down in the queue"
+            >
+              <i class="pi pi-angle-down" aria-hidden="true"></i>
+            </button>
+          </div>
+        }
+      </div>
 
       @if (selectedId() === session.id) {
         <div class="session__detail">
+          <div class="session__actions">
+            @if (session.pr_url) {
+              <a class="btn-secondary" [href]="session.pr_url" target="_blank" rel="noopener">
+                <i class="pi pi-github" aria-hidden="true"></i> Open pull request
+              </a>
+            }
+            @if (
+              session.status === 'queued' ||
+              session.status === 'running' ||
+              session.status === 'paused' ||
+              session.status === 'starting' ||
+              session.status === 'finalizing'
+            ) {
+              <button type="button" class="btn-danger" (click)="cancel(session)">
+                Cancel session
+              </button>
+            } @else {
+              <!-- A session that failed took its request with it: the trigger
+                   counts as handled, so the poller will not find that issue,
+                   review or question again. This is the way back. -->
+              <button
+                type="button"
+                class="btn-secondary"
+                (click)="retry(session)"
+                [disabled]="retrying() !== null"
+                title="Queue the same work again — same task, workspace and branch"
+              >
+                <i class="pi pi-replay" aria-hidden="true"></i>
+                {{ retrying() === session.id ? 'Queueing…' : 'Run again' }}
+              </button>
+            }
+          </div>
+
           <dl class="facts">
             <div>
               <dt>Started by</dt>
@@ -665,13 +695,13 @@
             }
             <div>
               <dt>Branch</dt>
-              <dd>{{ session.branch_name ?? '—' }}</dd>
+              <dd class="mono">{{ session.branch_name ?? '—' }}</dd>
             </div>
             <div>
               <dt>Tokens</dt>
               <dd>
                 @if (session.tokens_in || session.tokens_out) {
-                  {{ session.tokens_in }} in / {{ session.tokens_out }} out
+                  {{ session.tokens_in | number }} in / {{ session.tokens_out | number }} out
                 } @else {
                   <!-- A running session that has not reported yet has no
                        number: a zero would read as "spent nothing", which is
@@ -682,35 +712,8 @@
             </div>
           </dl>
 
-          @if (session.pr_url) {
-            <a class="btn btn--link" [href]="session.pr_url" target="_blank" rel="noopener">
-              <i class="pi pi-github" aria-hidden="true"></i> Open pull request
-            </a>
-          }
-          @if (
-            session.status === 'queued' ||
-            session.status === 'running' ||
-            session.status === 'paused' ||
-            session.status === 'starting' ||
-            session.status === 'finalizing'
-          ) {
-            <button class="btn btn--danger" (click)="cancel(session)">Cancel session</button>
-          } @else {
-            <!-- A session that failed took its request with it: the trigger
-                 counts as handled, so the poller will not find that issue,
-                 review or question again. This is the way back. -->
-            <button
-              class="btn"
-              (click)="retry(session)"
-              [disabled]="retrying() !== null"
-              title="Queue the same work again — same task, workspace and branch"
-            >
-              {{ retrying() === session.id ? 'Queueing…' : 'Run again' }}
-            </button>
-          }
-
           @if (session.error) {
-            <div class="alert alert--error" role="alert">{{ session.error }}</div>
+            <app-error-message variant="banner" [message]="session.error" />
           }
 
           <details class="prompt">
@@ -754,28 +757,211 @@
     </li>
   </ng-template>
 
-  <!-- ── Workspaces ────────────────────────────────────────────────────────── -->
-  @if (workspaces().length > 0) {
-    <h2 class="section-title">Workspaces</h2>
-    <ul class="workspace-list">
-      @for (workspace of workspaces(); track workspace.id) {
-        <li class="workspace">
-          <span class="workspace__name">{{ workspace.name }}</span>
-          <span class="workspace__branch">from {{ workspace.base_branch }}</span>
-          @if (occupantOf(workspace); as busy) {
-            <!-- Which session is in there, not merely that one is: a
-                 workspace runs one session at a time, and "busy" left the
-                 other half of that sentence to be guessed. -->
-            <button class="btn btn--link workspace__busy" (click)="select(busy)">
-              session #{{ busy.id }} · {{ taskPreview(busy.task) }}
-            </button>
-          } @else if (workspace.active_sessions > 0) {
-            <span class="workspace__busy">busy</span>
-          } @else {
-            <button class="btn btn--ghost" (click)="deleteWorkspace(workspace)">Delete</button>
-          }
-        </li>
+  <!-- ── Automatic work and workspaces ─────────────────────────────────────── -->
+  <div class="secondary">
+    <section class="card" aria-labelledby="automatic-work-title">
+      <div class="card__head">
+        <h2 class="card__title" id="automatic-work-title">Automatic work</h2>
+      </div>
+
+      @if (triggers(); as trig) {
+        @if (trig.enabled) {
+          <div class="info-row">
+            <i class="pi pi-bolt" aria-hidden="true"></i>
+            <div>
+              <p class="info-row__text">
+                Working as <code>{{ trig.account }}</code
+                >: assign it an issue or a pull request, request changes on its work, or mention it
+                in a comment from the last day, and it queues a session on its own.
+              </p>
+              <p class="field__hint">
+                {{ trig.active_sessions }}/{{ trig.max_active_sessions }} active ·
+                {{ trig.queued_total }} queued since start
+              </p>
+              @if (trig.last_error) {
+                <p class="field__hint field__hint--error">Last poll failed: {{ trig.last_error }}</p>
+              }
+            </div>
+          </div>
+        }
       }
-    </ul>
+
+      <!-- Team repository analysis: runs nightly on its own; this is the manual
+           "everything, now" for when the analysis task itself changed. -->
+      <div class="info-row">
+        <i class="pi pi-sparkles" aria-hidden="true"></i>
+        <div>
+          <p class="info-row__text">
+            Linked team repositories are re-analysed every night when their branch has new commits;
+            unchanged repositories are skipped. Results arrive as proposals on each team's Workflows
+            tab.
+          </p>
+          <div class="info-row__actions">
+            <button
+              type="button"
+              class="btn-secondary"
+              (click)="analyzeAllRepositories()"
+              [disabled]="analyzingAll()"
+            >
+              @if (analyzingAll()) {
+                <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+              } @else {
+                <i class="pi pi-sparkles" aria-hidden="true"></i>
+              }
+              Analyze all repositories
+            </button>
+            @if (analyzeAllMessage(); as msg) {
+              <span class="field__hint" role="status">{{ msg }}</span>
+            }
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="workspaces-title">
+      <div class="card__head">
+        <h2 class="card__title" id="workspaces-title">
+          Workspaces <span class="section-count">{{ workspaces().length }}</span>
+        </h2>
+      </div>
+      @if (workspaces().length > 0) {
+        <ul class="workspace-list">
+          @for (workspace of workspaces(); track workspace.id) {
+            <li class="workspace">
+              <i class="pi pi-folder workspace__icon" aria-hidden="true"></i>
+              <span class="workspace__name">{{ workspace.name }}</span>
+              <span class="workspace__branch">from {{ workspace.base_branch }}</span>
+              @if (occupantOf(workspace); as busy) {
+                <!-- Which session is in there, not merely that one is: a
+                     workspace runs one session at a time, and "busy" left the
+                     other half of that sentence to be guessed. -->
+                <button
+                  type="button"
+                  class="link-btn workspace__busy"
+                  (click)="select(busy)"
+                  [title]="busy.task"
+                >
+                  session #{{ busy.id }} · {{ taskPreview(busy.task) }}
+                </button>
+              } @else if (workspace.active_sessions > 0) {
+                <span class="workspace__busy">busy</span>
+              } @else {
+                <button
+                  type="button"
+                  class="btn-icon btn-icon--danger"
+                  (click)="deleteWorkspace(workspace)"
+                  [attr.aria-label]="'Delete workspace ' + workspace.name"
+                  title="Delete"
+                >
+                  <i class="pi pi-trash" aria-hidden="true"></i>
+                </button>
+              }
+            </li>
+          }
+        </ul>
+      } @else {
+        <p class="field__hint">No workspaces yet. Create one in the New session form.</p>
+      }
+    </section>
+  </div>
+
+  <!-- ── What every session is told ────────────────────────────────────────── -->
+  @if (instructions(); as text) {
+    <section class="card" aria-labelledby="instructions-title">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="instructions-title">What every session is told</h2>
+          <p class="card__subtitle">
+            These two blocks are appended to every task: the conventions the agent works to, and
+            the description of the container it works in. They take effect on the next session —
+            no deployment.
+          </p>
+        </div>
+        <button
+          type="button"
+          class="btn-secondary"
+          (click)="toggleInstructions()"
+          [attr.aria-expanded]="instructionsOpen()"
+        >
+          <i
+            class="pi"
+            [class.pi-pencil]="!instructionsOpen()"
+            [class.pi-times]="instructionsOpen()"
+            aria-hidden="true"
+          ></i>
+          {{ instructionsOpen() ? 'Close' : 'Edit' }}
+        </button>
+      </div>
+
+      @if (instructionsOpen()) {
+        <div class="instructions">
+          <label class="field">
+            <span class="field__label">
+              House rules
+              @if (text.house_rules_default) {
+                <span class="field__optional">(as shipped)</span>
+              } @else {
+                <button
+                  type="button"
+                  class="link-btn"
+                  (click)="resetInstructions('house_rules')"
+                  [disabled]="savingInstructions()"
+                >
+                  restore the default
+                </button>
+              }
+            </span>
+            <textarea
+              class="input prompt-editor"
+              rows="14"
+              [ngModel]="houseRulesDraft()"
+              (ngModelChange)="houseRulesDraft.set($event)"
+              [disabled]="savingInstructions()"
+              aria-label="The conventions every session is held to"
+            ></textarea>
+          </label>
+
+          <label class="field">
+            <span class="field__label">
+              Environment notes
+              @if (text.environment_notes_default) {
+                <span class="field__optional">(as shipped)</span>
+              } @else {
+                <button
+                  type="button"
+                  class="link-btn"
+                  (click)="resetInstructions('environment_notes')"
+                  [disabled]="savingInstructions()"
+                >
+                  restore the default
+                </button>
+              }
+            </span>
+            <textarea
+              class="input prompt-editor"
+              rows="10"
+              [ngModel]="environmentNotesDraft()"
+              (ngModelChange)="environmentNotesDraft.set($event)"
+              [disabled]="savingInstructions()"
+              aria-label="What the sandbox is, told to the agent inside it"
+            ></textarea>
+          </label>
+        </div>
+
+        <div class="form-actions">
+          @if (text.updated_by) {
+            <span class="field__hint">last changed by {{ text.updated_by }}</span>
+          }
+          <button
+            type="button"
+            class="btn-primary"
+            (click)="saveInstructions()"
+            [disabled]="savingInstructions()"
+          >
+            {{ savingInstructions() ? 'Saving…' : 'Save' }}
+          </button>
+        </div>
+      }
+    </section>
   }
 </div>

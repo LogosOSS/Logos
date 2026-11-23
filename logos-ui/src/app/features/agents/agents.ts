@@ -27,6 +27,7 @@ import {
   isActive,
 } from '../../shared/models/agent.model';
 import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
+import { ErrorMessageComponent } from '../../shared/components/error-message/error-message';
 
 /** How often the list and the open session are refreshed while work is live. */
 const POLL_MS = 4000;
@@ -73,7 +74,7 @@ export function scaleSlotCounts(parts: number[], limit: number): number[] {
 @Component({
   selector: 'app-agents',
   standalone: true,
-  imports: [CommonModule, FormsModule, SelectComponent, RouterLink],
+  imports: [CommonModule, FormsModule, SelectComponent, ErrorMessageComponent, RouterLink],
   templateUrl: './agents.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './agents.scss',
@@ -155,6 +156,13 @@ export class Agents implements OnInit {
     const draft = this.memoryDraft().trim();
     if (draft !== '') return draft;
     return String(this.controls()?.session_memory_mb ?? '');
+  });
+
+  /** How much of the memory budget the sessions have reserved, 0 to 100. */
+  readonly memoryPercent = computed(() => {
+    const ctl = this.controls();
+    if (!ctl?.memory_budget_mb) return 0;
+    return Math.min(100, Math.max(0, (ctl.memory_reserved_mb / ctl.memory_budget_mb) * 100));
   });
   creatingWorkspace = signal(false);
 
@@ -380,13 +388,6 @@ export class Agents implements OnInit {
   });
 
   /**
-   * Change how many sessions may run at once, from now on.
-   *
-   * Called when the field is left or Enter is pressed, never on each
-   * keystroke: submitting per character disables the input mid-number, so
-   * "25" could not be typed at all.
-   */
-  /**
    * Set the memory of each session started from now on, in MB. An empty
    * field goes back to the deployment's default. Sessions already running
    * keep the memory they were started with.
@@ -419,6 +420,13 @@ export class Agents implements OnInit {
     }
   }
 
+  /**
+   * Change how many sessions may run at once, from now on.
+   *
+   * Called when the field is left or Enter is pressed, never on each
+   * keystroke: submitting per character disables the input mid-number, so
+   * "25" could not be typed at all.
+   */
   async applyLimit(value: string): Promise<void> {
     if (this.controlBusy()) return;
     const trimmed = value.trim();
