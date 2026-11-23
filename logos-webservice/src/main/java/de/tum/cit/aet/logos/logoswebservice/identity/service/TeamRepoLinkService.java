@@ -38,11 +38,11 @@ public class TeamRepoLinkService {
         "^git@github\\.com:([^/\\s]+)/([^/\\s#?]+?)(?:\\.git)?/?$",
         Pattern.CASE_INSENSITIVE);
 
-    // DNS hostname of at least two labels with an optional leading "*."
-    // wildcard, so "*.com" and "localhost" fail. The last label must start
-    // with a letter, which rules out IPv4 literals.
-    private static final Pattern EGRESS_HOST = Pattern.compile(
-        "^(\\*\\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$");
+    // One DNS label, and the last label of a hostname: it must start with a
+    // letter, which rules out IPv4 literals. A hostname is checked label by
+    // label rather than with one repeating pattern.
+    private static final Pattern DNS_LABEL = Pattern.compile("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$");
+    private static final Pattern TOP_LEVEL_LABEL = Pattern.compile("^[a-z][a-z0-9-]{0,61}[a-z0-9]$");
     private static final int MAX_EGRESS_HOSTS = 64;
     private static final int MAX_HOST_LENGTH = 253;
 
@@ -283,7 +283,7 @@ public class TeamRepoLinkService {
             if (value.isEmpty() || cleaned.contains(value)) {
                 continue;
             }
-            if (value.length() > MAX_HOST_LENGTH || !EGRESS_HOST.matcher(value).matches()) {
+            if (value.length() > MAX_HOST_LENGTH || !isEgressHost(value)) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "agent_egress_hosts entry '" + abbreviate(host.trim()) + "' is not a valid hostname "
                         + "(use a name such as github.com or *.githubusercontent.com, without scheme, port or path)");
@@ -295,6 +295,24 @@ public class TeamRepoLinkService {
                 "agent_egress_hosts allows at most " + MAX_EGRESS_HOSTS + " entries");
         }
         return List.copyOf(cleaned);
+    }
+
+    /**
+     * A DNS hostname of at least two labels, optionally behind a leading
+     * {@code *.} wildcard, so {@code *.com} and {@code localhost} fail.
+     */
+    static boolean isEgressHost(String value) {
+        String host = value.startsWith("*.") ? value.substring(2) : value;
+        String[] labels = host.split("\\.", -1);
+        if (labels.length < 2) {
+            return false;
+        }
+        for (int i = 0; i < labels.length - 1; i++) {
+            if (!DNS_LABEL.matcher(labels[i]).matches()) {
+                return false;
+            }
+        }
+        return TOP_LEVEL_LABEL.matcher(labels[labels.length - 1]).matches();
     }
 
     private static String abbreviate(String value) {

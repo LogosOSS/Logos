@@ -9,7 +9,7 @@ comments only where an administrator allowed them.
     logos-github issue 123
     logos-github issues --label proof --assignee none [--state open] [--page 2]
     logos-github comment 123 "Claiming"
-    logos-github comment 123 --body-file note.md
+    logos-github comment 123 - < note.md      (body from standard input)
 
 The answer is printed as JSON; the exit code is 0 when the runner reports
 success.
@@ -39,7 +39,7 @@ def _request(args: argparse.Namespace) -> dict[str, object]:
         if args.assignee:
             request["assignee"] = args.assignee
         return request
-    body = Path(args.body_file).read_text(encoding="utf-8") if args.body_file else args.body
+    body = sys.stdin.read() if args.body == "-" else args.body
     if not body:
         raise SystemExit("a comment needs a body")
     return {"action": "comment", "number": args.number, "body": body}
@@ -57,8 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     issues.add_argument("--page", type=int, default=1)
     comment = commands.add_parser("comment", help="comment on an issue or pull request")
     comment.add_argument("number", type=int)
-    comment.add_argument("body", nargs="?")
-    comment.add_argument("--body-file")
+    comment.add_argument("body", help="the comment, or - to read it from standard input")
     parser.add_argument("--timeout", type=float, default=180.0, help="seconds to wait for the runner")
     args = parser.parse_args(argv)
 

@@ -30,7 +30,6 @@ import json
 import logging
 import os
 import re
-import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Literal
@@ -39,6 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import disclosure, github
 from .artifacts import read_artifact_text
+from .config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,14 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             json.dump(payload, output)
-        os.chmod(temporary, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+        # Readable by the session user only. The state directory is mounted
+        # read-only into the session, so owning the file lets it read the
+        # answer, not change it. Where the runner cannot hand files over (an
+        # unprivileged development runner), the file stays the runner's.
+        try:
+            os.chown(temporary, settings.session_uid, settings.session_uid)
+        except OSError:
+            pass
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)

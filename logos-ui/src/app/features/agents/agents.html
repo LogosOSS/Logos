@@ -303,8 +303,8 @@
     <section class="card form-card">
       <h2 class="card__title">Start a session</h2>
 
-      <label class="field">
-        <span class="field__label">Repository</span>
+      <div class="field" role="group" aria-labelledby="new-session-repository">
+        <span class="field__label" id="new-session-repository">Repository</span>
         <app-select
           [options]="repositoryOptions()"
           [value]="formRepositoryId() !== null ? String(formRepositoryId()) : null"
@@ -314,10 +314,10 @@
         <span class="field__hint">
           Linked team repositories appear here when a team enables the coding agent for them.
         </span>
-      </label>
+      </div>
 
-      <label class="field">
-        <span class="field__label">Workspace</span>
+      <div class="field" role="group" aria-labelledby="new-session-workspace">
+        <span class="field__label" id="new-session-workspace">Workspace</span>
         @if (workspaceOptions().length > 0) {
           <app-select
             [options]="workspaceOptions()"
@@ -328,7 +328,7 @@
         } @else {
           <p class="field__hint">No workspaces yet — create one below.</p>
         }
-      </label>
+      </div>
 
       <div class="field field--inline">
         <input

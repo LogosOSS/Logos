@@ -252,7 +252,8 @@ def repository_environment_notes(*, egress_hosts: list[str], may_comment: bool, 
             "GitHub: `logos-github issue N` reads an issue or pull request with its comments; "
             "`logos-github issues --label L --assignee none` lists issues (repeat --label, add --page). "
             + (
-                '`logos-github comment N "text"` (or --body-file) posts a comment as the agent account. '
+                '`logos-github comment N "text"` (or `- < file` for a longer body) posts a comment '
+                "as the agent account. "
                 "Use comments for what the repository's contribution process asks of contributors (for "
                 "example claiming or releasing an issue, or reporting a problem with a statement), never "
                 "for anything else; mentions are disabled, the runner adds the model you are using, and "
