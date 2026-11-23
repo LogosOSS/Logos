@@ -67,6 +67,7 @@ export class RepositoriesTabComponent implements OnChanges {
   credLoading = signal(false);
   credError = signal('');
 
+  formAutomaticAnalysis = signal(true);
   formAgentEnabled = signal(false);
   formAgentInstructions = signal('');
   formVerificationCommand = signal('');
@@ -103,6 +104,7 @@ export class RepositoriesTabComponent implements OnChanges {
     this.formUrl.set('');
     this.formBranch.set('main');
     this.formPaths.set('');
+    this.formAutomaticAnalysis.set(true);
     this.formAgentEnabled.set(false);
     this.formAgentInstructions.set('');
     this.formVerificationCommand.set('');
@@ -118,6 +120,7 @@ export class RepositoriesTabComponent implements OnChanges {
     this.formUrl.set(repo.repo_url);
     this.formBranch.set(repo.branch || 'main');
     this.formPaths.set((repo.paths ?? []).join(', '));
+    this.formAutomaticAnalysis.set(repo.automatic_workflow_analysis ?? true);
     this.formAgentEnabled.set(repo.agent_enabled ?? false);
     this.formAgentInstructions.set(repo.agent_instructions ?? '');
     this.formVerificationCommand.set(repo.verification_command ?? '');
@@ -148,6 +151,7 @@ export class RepositoriesTabComponent implements OnChanges {
     const branch = this.formBranch().trim() || 'main';
     const editing = this.formEditing();
     const agentSettings: RepositoryAgentSettings = {
+      automatic_workflow_analysis: this.formAutomaticAnalysis(),
       agent_enabled: this.formAgentEnabled(),
       agent_instructions: this.formAgentInstructions().trim(),
       verification_command: this.formVerificationCommand().trim(),

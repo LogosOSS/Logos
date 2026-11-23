@@ -38,7 +38,7 @@ RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update \
        procps=2:4.0.4-9 psmisc=23.7-2 curl=8.14.1-2+deb13u7 \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
 
 # The worker's standalone lock: exact versions with hashes, without vLLM and
 # its CUDA stack (the simulator provides the `vllm` binary, and the real one

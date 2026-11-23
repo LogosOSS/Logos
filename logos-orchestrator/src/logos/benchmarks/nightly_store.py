@@ -15,17 +15,19 @@ UNCHANGED = object()
 
 
 @contextmanager
-def cluster_lock():
+def cluster_lock(*, shared=False):
     """Hold a dedicated session lock through execution and restoration."""
+    acquire = "pg_try_advisory_lock_shared" if shared else "pg_try_advisory_lock"
+    release = "pg_advisory_unlock_shared" if shared else "pg_advisory_unlock"
     with _init_engine().connect() as connection:
-        acquired = connection.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": LOCK_ID}).scalar()
+        acquired = connection.execute(text(f"SELECT {acquire}(:key)"), {"key": LOCK_ID}).scalar()
         connection.commit()
         try:
             yield connection if acquired else None
         finally:
             if acquired:
                 try:
-                    connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": LOCK_ID})
+                    connection.execute(text(f"SELECT {release}(:key)"), {"key": LOCK_ID})
                     connection.commit()
                 except Exception:
                     connection.invalidate()
@@ -355,15 +357,17 @@ def maintenance_holders():
     return {"calibrations": calibrations, "benchmarks": benchmarks, "recoveries": recoveries}
 
 
-def claim_calibration(provider_id, token, automatic=False):
+def claim_calibration(provider_id, token, automatic=False) -> bool:
     with DBManager() as db:
-        db.session.execute(
+        claimed = db.session.execute(
             text(
-                "INSERT INTO maintenance_calibration (provider_id, token, automatic) VALUES (:pid, :token, :automatic)"
+                "INSERT INTO maintenance_calibration (provider_id, token, automatic) VALUES (:pid, :token, :automatic) "
+                "ON CONFLICT (provider_id) DO NOTHING RETURNING provider_id"
             ),
             {"pid": provider_id, "token": token, "automatic": automatic},
-        )
+        ).scalar_one_or_none()
         db.session.commit()
+        return claimed is not None
 
 
 def confirm_calibration(token):

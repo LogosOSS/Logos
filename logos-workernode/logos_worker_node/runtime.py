@@ -351,9 +351,36 @@ async def build_runtime_status(app: FastAPI) -> WorkerRuntimeStatus:
         gpu_performance_score=cfg.worker.gpu_performance_score,
         sleep_mode_disabled=cfg.engines.vllm.disable_sleep_mode,
         node_health=node_health_dict,
+        restore_gpu_pool_by_model=_restore_gpu_pools(cfg, devices),
         configured_vllm_by_model=configured or None,
         startup_gmu_by_model=startup_gmu or None,
     )
+
+
+def _restore_gpu_pools(cfg, devices: DeviceSummary) -> dict[str, list[int]]:
+    """Publish the configured selection without disclosing engine environment variables."""
+    from .lane_manager import LaneManager
+
+    healthy = {
+        int(device.extra["index"])
+        for device in devices.devices
+        if device.kind == "nvidia" and device.health == "ok" and str(device.extra.get("index", "")).isdigit()
+    }
+    worker_pool = set(LaneManager._parse_gpu_selector(cfg.worker.gpu_devices, healthy))
+    static_models = {lane.model for lane in (*cfg.lanes, *cfg.static_lanes) if lane.gpu_devices}
+    pools = {}
+    for model in cfg.logos.configured_models or cfg.logos.capabilities_models or []:
+        selection = cfg.logos.capabilities_overrides.get(model, {}).get("gpu_devices")
+        env = merged_vllm_engine_overrides(cfg, model).get("env_overrides") or {}
+        if (
+            model in static_models
+            or "CUDA_VISIBLE_DEVICES" in env
+            or env.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID") != "PCI_BUS_ID"
+        ):
+            continue  # Preserve the original lane when the operator controls its physical placement.
+        else:
+            pools[model] = LaneManager._parse_gpu_selector(selection, worker_pool)
+    return pools
 
 
 def _configured_vllm_by_model(cfg) -> dict[str, dict]:

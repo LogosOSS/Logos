@@ -57,7 +57,7 @@ class TestBudget:
 
         assert found.admission_block(reserved_mb=4096, session_mb=4096) == ""
         reason = found.admission_block(reserved_mb=6144, session_mb=4096)
-        assert reason.startswith("the memory budget is used: 6144 of 8192 MB")
+        assert reason.startswith("the memory budget is used: 6144 of 8192 MiB")
 
     async def test_the_docker_hosts_memory_is_read(self, monkeypatch):
         class Response:
@@ -127,7 +127,7 @@ class TestCeilingInForce:
         reason = controls.Controls().admission_block()
 
         assert reason.startswith("the memory budget holds no session")
-        assert "8192 MB" in reason
+        assert "8192 MiB" in reason
 
 
 class TestMemoryAdmission:

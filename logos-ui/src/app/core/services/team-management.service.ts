@@ -155,7 +155,7 @@ export class TeamManagementService {
     );
   }
 
-  /** Queue an agent analysis of every linked repository (Logos Admins). */
+  /** Queue an agent analysis of linked repositories with automatic analysis enabled (Logos Admins). */
   analyzeAllRepositories(): Promise<AnalyzeAllResult> {
     return firstValueFrom(this.http.post<AnalyzeAllResult>('/api/admin/repositories/analyze', {}));
   }

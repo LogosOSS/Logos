@@ -819,21 +819,40 @@ The page has these parts, from top to bottom:
   finish. **Pause everything** pauses the running sessions and gives the
   capacity back to the platform. **Reason** is an optional note for the
   change.
-- **Memory per session (MB)** sets the memory limit of each new session. A
+- **Memory per session (MiB)** sets the memory limit of each new session. A
   running session keeps its memory limit.
 - **Sessions at once** sets the maximum number of sessions that run at the
   same time. The maximum is the number of sessions that the memory budget
   holds. You can only set a lower value. The value 0 starts no new session.
 - **Session lists.** **Active**, **Queue** and **Finished** show the
-  sessions. Select a session to show its details and its transcript. Use the
+  sessions. Select a session to show its details and messages. Use the
   arrows of a queued session to change its position in the queue.
+  **RAM now** shows the latest total for the session containers, including helpers and file cache.
+  The runner samples about every 2 seconds. A short peak between samples can be higher.
+  **Observed peak** keeps the highest sample after the session ends or the runner restarts.
+  **Unavailable** means there is no measurement. **Limit** shows the limit per container at the start of the session.
+  A **2x** badge means the parent used one distinct Claude Code subagent. A second child makes it **3x**.
+  The count includes children that already finished. Older sessions without recorded identities have no badge.
+  **Agent estimate** shows the parent’s latest self-reported percentage and when it reported.
+  After about ten active minutes, the next completed tool call reminds the parent to estimate again.
+  Long tool calls can delay a report. At 40% after 20 active minutes, the forecast is about 30 more active minutes.
+  Pausing freezes the countdown. An elapsed forecast or 20 active minutes without a new report displays
+  **Awaiting updated estimate**. Session status records the actual outcome.
 - **Automatic work**, **Workspaces** and **What every session is told** are
   at the bottom of the page.
 
+Select a session to read **Agent messages** as the agent works. **Agent** identifies
+the parent. **Subagent** and a short identifier distinguish child messages.
+Each message keeps its paragraphs, lists and code. Open **Diagnostic log** to
+see tool activity and runner output, including the logs of older sessions.
+The message view keeps up to 64 recent messages and marks shortened text.
+
+![Expanded agent session with parent and child messages and a code sample](/img/roles/logos-admin-agents-messages.png)
+
 Repository analyses of the linked repositories of the teams also run here.
 Each night, they run again for repositories that have new commits. **Analyze
-all repositories** in **Automatic work** immediately queues an analysis for
-every linked repository, also if there are no new commits. Use it, for
+enabled repositories** in **Automatic work** immediately queues an analysis for
+every repository with **Automatic workflow analysis** enabled, even if there are no new commits. Use it, for
 example, after an improvement of the analysis. It does not change repositories
 that already have an analysis that is queued or that runs. The results go to
 the teams as proposals on their **Workflows** tab

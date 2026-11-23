@@ -45,6 +45,7 @@ from . import (
     github,
     github_broker,
     memory_budget,
+    memory_usage,
     model_policy,
     repository_context,
     triggers,
@@ -603,6 +604,7 @@ class SessionManager:
         self._last_helper_output: dict[int, str] = {}
         self._scheduler_task: asyncio.Task | None = None
         self._capacity_watch_task: asyncio.Task | None = None
+        self._memory_task: asyncio.Task | None = None
         self._maintenance_task: asyncio.Task | None = None
         self._github_broker_task: asyncio.Task | None = None
         self._yield_lock = asyncio.Lock()
@@ -652,6 +654,7 @@ class SessionManager:
         await self.resume_retries()
         self._scheduler_task = asyncio.create_task(self._scheduler_loop(), name="agent-scheduler")
         self._capacity_watch_task = asyncio.create_task(self._capacity_watch_loop(), name="agent-capacity-watch")
+        self._memory_task = asyncio.create_task(memory_usage.monitor(), name="agent-memory-usage")
         self._maintenance_task = asyncio.create_task(self._maintenance_loop(), name="agent-maintenance")
         self._github_broker_task = asyncio.create_task(self._github_broker_loop(), name="agent-github-broker")
 
@@ -659,6 +662,7 @@ class SessionManager:
         self._stopping.set()
         await cancel_and_wait(self._scheduler_task)
         await cancel_and_wait(self._capacity_watch_task)
+        await cancel_and_wait(self._memory_task)
         await cancel_and_wait(self._maintenance_task)
         await cancel_and_wait(self._github_broker_task)
         await self._stand_down()
@@ -1494,6 +1498,8 @@ class SessionManager:
         if not attached:
             logger.error("session %s could not be reattached to the session network; leaving it paused", sid)
             return False
+        if session.get("active_seconds") is not None:
+            self._publish_active_origin(sid, time.time() - session["active_seconds"])
         try:
             thawed = await docker_engine.unpause_container(container_id)
         except Exception as exc:
@@ -2585,6 +2591,56 @@ class SessionManager:
         self._supervisors[session_id] = task
         task.add_done_callback(lambda _t: self._supervisors.pop(session_id, None))
 
+    @staticmethod
+    def _publish_active_origin(session_id: int, origin: float) -> None:
+        # Only the runner writes this directory. An immutable origin between
+        # transitions lets tool hooks measure active seconds without runner RPCs.
+        path = state_dir(session_id) / "active-origin"
+        try:
+            value = str(origin)
+            if path.exists() and path.read_text() == value:
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.parent.chmod(0o755)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(value)
+            temporary.chmod(0o644)  # NOSONAR - visible on the read-only state mount
+            temporary.replace(path)
+        except OSError as exc:
+            logger.debug("Cannot publish the active clock of session %s: %s", session_id, exc)
+
+    @staticmethod
+    async def _collect_activity(session_id: int, row: dict | None = None) -> None:
+        try:
+            data = json.loads(read_artifact_text(artifact_dir(session_id), "activity.json", limit=1024))
+            if not isinstance(data, dict):
+                return
+            count = data.get("subagent_count")
+            if type(count) is not int or not 0 < count < 2**31 or count <= ((row or {}).get("subagent_count") or 0):
+                count = None
+            percent, elapsed, stamp = (
+                data.get(key) for key in ("progress_percent", "progress_active_s", "progress_reported_us")
+            )
+            reported = None
+            if (
+                type(percent) is int
+                and 0 <= percent <= 100
+                and type(elapsed) is int
+                and 0 <= elapsed <= 2**31
+                and type(stamp) is int
+                and 0 < stamp <= (time.time() + 5) * 1_000_000
+            ):
+                timestamp = datetime.fromtimestamp(stamp / 1_000_000, timezone.utc)
+                previous = (row or {}).get("progress_reported_at")
+                if previous is None or previous < timestamp:
+                    reported = timestamp
+            if count is not None or reported is not None:
+                await db.record_session_activity(session_id, count, percent, elapsed, reported)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.debug("Cannot collect activity for session %s: %s", session_id, exc)
+
     async def _supervise_session(self, session_id: int, container_id: str) -> None:
         """Follow a container to its end, persisting its output as it goes.
 
@@ -2638,6 +2694,9 @@ class SessionManager:
                 # we wait on Docker; stop here so occupancy can free cleanly.
                 row = await db.get_session(session_id)
                 if row is not None:
+                    if row.get("active_since") and state == "running":
+                        self._publish_active_origin(session_id, row["active_since"].timestamp() - row["active_seconds"])
+                    await self._collect_activity(session_id, row)
                     status_now = str(row.get("status") or "")
                     err_now = str(row.get("error") or "")
                     if status_now == SessionStatus.CANCELLED.value or err_now.startswith("cancel_requested:"):
@@ -2984,6 +3043,7 @@ class SessionManager:
                 team_repository_id=session.get("team_repository_id"),
                 verification_command=session.get("verification_command"),
                 repo_base_branch=session.get("repo_base_branch"),
+                retry_analysis_session_id=session.get("id") if session.get("trigger_kind") == "analysis" else None,
                 point_workspace_at=resumption_base(session),
             )
         except Exception as exc:
@@ -3025,6 +3085,7 @@ class SessionManager:
                 await self.serve_github_requests([finished])
         except Exception as exc:
             logger.info("could not look for last GitHub requests of session %s: %s", session_id, exc)
+        await self._collect_activity(session_id)
         if exit_code == 0 and not error:
             # A clean agent exit is not yet a finished session: the agent
             # phase carried no GitHub credential, so the trusted finalizer
@@ -4289,6 +4350,8 @@ class SessionManager:
                 await docker_engine.remove_container(container_id)
             except Exception:
                 logger.warning("could not remove the container of cancelled session %s", session_id)
+
+        await self._collect_activity(session_id)
 
 
 manager = SessionManager()
