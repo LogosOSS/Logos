@@ -324,6 +324,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-model-request-measurements.png` | `tobias.wasner` | `/models/<id>/details` — **Performance → Request measurements** of a model with requests at more than one reasoning effort (local or cloud provider) | `roles/logos-admin.md#models` |
 | `logos-admin-providers.png` | `tobias.wasner` | `/providers` | `roles/logos-admin.md` |
 | `logos-admin-provider-connections.png` | `tobias.wasner` | `/providers` — a cloud provider expanded, connected models with their **Batch** labels | `roles/logos-admin.md` |
+| `logos-admin-add-provider.png` | `tobias.wasner` | `/providers` — **Add Provider** dialog, cloud provider **anthropic** selected, proposed base URL | `roles/logos-admin.md#add-a-provider` |
 | `logos-admin-node-models.png` | `tobias.wasner` | `/providers` — the documentation worker expanded: **Node models** list, **Node settings** and **Connect model** | `roles/logos-admin.md` |
 | `logos-admin-node-model-view.png` | `tobias.wasner` | `/providers/:id/models?model=llama-3.1-8b-instruct` — the model page in view mode | `roles/logos-admin.md` |
 | `logos-admin-node-model-edit.png` | `tobias.wasner` | the same page after **Edit configuration**: TP tiles, KV cache, context, **Advanced settings** | `roles/logos-admin.md` |
