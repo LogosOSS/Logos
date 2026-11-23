@@ -6,25 +6,15 @@ work must never reach a cloud model — not by naming one, not by naming an
 alias of one, and not because the agent key was granted a cloud provider by
 mistake.
 
-The boundary itself is the platform's own key scoping: a Logos key reaches
-exactly the deployments its key or team permissions grant, and the model
-gateway replaces whatever credential a session sends with that key. Grant the
-agent key local providers only and cloud is unreachable however the agent
-asks for it — including through an alias, since an alias resolves to the
-model it names and inherits that model's providers.
+The platform provisions a dedicated internal identity automatically. Its
+scope is always the currently registered local providers and models, never
+cloud deployments, including when a model also has a cloud deployment.
+The gateway injects a fresh short-lived credential on each model request.
 
-What this module adds is the refusal to *assume* that configuration is right.
-It reads what the key can actually reach and turns it into one decision:
+This module rechecks the identity and its local model set on each scheduler
+pass. Missing/revoked identity, unreadable database or missing internal secret
+fail closed. The evaluator also rejects cloud/unknown rows defensively.
 
-* every reachable deployment is local — sessions may run;
-* any reachable deployment is a cloud provider — no session starts, and the
-  reason names the models that would have cost money;
-* the key does not resolve, or the database cannot be read — unknown, which
-  is treated as unsafe rather than as permission.
-
-The check runs at startup and on every scheduler pass, because permissions
-are data: a key can be granted a cloud provider long after this service
-started, and the next pass must notice.
 """
 
 from __future__ import annotations
@@ -299,20 +289,15 @@ def evaluate(rows: Iterable[dict[str, Any]]) -> ModelPolicy:
 
 
 async def load() -> ModelPolicy:
-    """Read the agent key's reachable deployments and evaluate them."""
-    if not settings.agent_api_key:
-        return ModelPolicy(detail="LOGOS_AGENT_API_KEY is not configured")
+    """Read the managed identity's local deployments, failing closed."""
+    if not settings.internal_secret:
+        return ModelPolicy(detail="LOGOS_INTERNAL_SECRET is not configured")
     try:
-        if not await db.agent_key_exists(settings.agent_api_key):
-            return ModelPolicy(
-                detail=(
-                    "LOGOS_AGENT_API_KEY is not an active key of this platform, "
-                    "so the models it may reach cannot be established"
-                )
-            )
-        rows = await db.reachable_deployments(settings.agent_api_key)
-    except Exception as exc:  # database down, schema drift, anything
-        logger.warning("could not read the agent key's model permissions: %s", exc)
+        if await db.agent_key_id() is None:
+            return ModelPolicy(detail="Internal agent identity is missing or disabled; check database migrations")
+        rows = await db.reachable_deployments()
+    except Exception as exc:
+        logger.warning("could not read the agent model permissions: %s", exc)
         return ModelPolicy(detail=f"model permissions unreadable: {exc}")
     return evaluate(rows)
 

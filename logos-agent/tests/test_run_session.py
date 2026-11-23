@@ -1934,3 +1934,79 @@ def test_main_reports_success_only_after_result_is_persisted(tmp_path, monkeypat
     assert run_session.main() == 0
     assert json.loads((tmp_path / "artifacts" / "result.json").read_text())["candidate_tree"] == "trusted"
     assert "phase complete" in capsys.readouterr().out
+
+
+class TestSuccessiveSessionsOnAFork:
+    """A second session in a workspace whose first session published to the agent's fork."""
+
+    def test_the_second_session_starts_from_the_fork_and_targets_the_repository(self, tmp_path, monkeypatch):
+        import run_session
+
+        origin, _ = _remote_with_a_feature(tmp_path)
+        fork = tmp_path / "fork.git"
+        subprocess.run(["git", "clone", "--quiet", "--bare", str(origin), str(fork)], check=True)
+        first = "logos/agent/ws/session-1"
+        seed = tmp_path / "seed"
+        _git("checkout", "--quiet", "main", cwd=seed)
+        _git("checkout", "--quiet", "-b", first, cwd=seed)
+        (seed / "proof.txt").write_text("first session\n")
+        _git("add", "proof.txt", cwd=seed)
+        _git("commit", "--quiet", "-m", "first session", cwd=seed)
+        _git("push", "--quiet", str(fork), first, cwd=seed)
+        first_tip = _git("rev-parse", "HEAD", cwd=seed).stdout.strip()
+        main_tip = _git("rev-parse", "main", cwd=seed).stdout.strip()
+
+        workspace = tmp_path / "ws"
+        _patch_workspace(monkeypatch, workspace)
+        monkeypatch.setenv("LOGOS_PUSH_REPO_URL", f"file://{fork}")
+        monkeypatch.setenv("LOGOS_PUSH_REPO_SLUG", "LogosOSSAgent/r")
+        monkeypatch.setenv("LOGOS_SESSION_BASE_ON_FORK", "1")
+        monkeypatch.setenv("LOGOS_SESSION_REPOSITORY_BRANCH", "main")
+        monkeypatch.delenv("LOGOS_REPO_SLUG", raising=False)
+        monkeypatch.delenv("LOGOS_SESSION_PR_BASE_BRANCH", raising=False)
+        second = "logos/agent/ws/session-2"
+
+        run_session.prepare_checkout(f"file://{origin}", first, second, "a-token")
+        checkout = workspace / "repo"
+        branch_sha = run_session._remote_branch_sha(second)
+        comparison, target = run_session._checkout_comparison(first, second, branch_sha)
+
+        # The checkout continues the first session's published work ...
+        assert _git("rev-parse", "HEAD", cwd=checkout).stdout.strip() == first_tip
+        assert branch_sha == ""
+        # ... and the pull request targets a branch the repository has,
+        # compared from where the two lines meet.
+        assert target == "main"
+        assert comparison == main_tip
+
+        # Publication: the commit goes to the fork, the pull request to the
+        # repository's main from the fork's branch.
+        (checkout / "proof.txt").write_text("first session\nsecond session\n")
+        monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", "")
+        monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+        assert run_session.commit_and_push(second, "Prove the second lemma") == 1
+        pushed = subprocess.run(
+            ["git", "--git-dir", str(fork), "rev-parse", second], text=True, capture_output=True, check=True
+        )
+        assert pushed.stdout.strip() == _git("rev-parse", "HEAD", cwd=checkout).stdout.strip()
+        assert (
+            subprocess.run(
+                ["git", "--git-dir", str(origin), "rev-parse", "--verify", "--quiet", second], capture_output=True
+            ).returncode
+            != 0
+        )
+
+        created: list = []
+
+        def fake_run(cmd, **kwargs):
+            created.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="https://github.com/o/r/pull/2\n", stderr="")
+
+        monkeypatch.setenv("LOGOS_REPO_SLUG", "o/r")
+        monkeypatch.setattr(run_session, "run", fake_run)
+        assert (
+            run_session.open_pull_request(second, target, "Prove the second lemma") == "https://github.com/o/r/pull/2"
+        )
+        command = created[0]
+        assert command[command.index("--base") + 1] == "main"
+        assert command[command.index("--head") + 1] == f"LogosOSSAgent:{second}"

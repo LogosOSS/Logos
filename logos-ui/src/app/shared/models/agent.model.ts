@@ -45,7 +45,10 @@ export interface AgentSession {
   trigger_kind: string | null;
   /** Which event it reacted to, e.g. 'issue'.*/
   trigger_ref: string | null;
-  /** For a repository analysis: the linked repository (owner/name). */
+  /**
+   * The linked team repository (owner/name) the session works on or
+   * analyses; null for a session on the platform repository.
+   */
   repo_slug?: string | null;
   /** For a repository analysis: the team that linked the repository. */
   team_name?: string | null;
@@ -143,6 +146,21 @@ export interface CreateSessionRequest {
   open_pull_request: boolean;
   deploy_to_dev: boolean;
   screenshot_paths: string[];
+  /** A linked team repository to work on; null works on the platform repository. */
+  team_repository_id?: number | null;
+}
+
+/** A linked team repository with the coding agent enabled. */
+export interface AgentRepository {
+  id: number;
+  team_id: number;
+  repo_slug: string;
+  branch: string;
+  verification_command: string | null;
+  /** HTTPS hosts sessions for this repository may reach; empty means no internet. */
+  agent_egress_hosts: string[];
+  /** Whether the agent may comment on issues and pull requests during a session. */
+  agent_may_comment: boolean;
 }
 
 /** Sessions in these states still hold a container and a workspace. */

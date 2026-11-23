@@ -616,6 +616,10 @@ services:
       # or every session's model call fails DNS resolution.
       logos-agent-gateway:
         condition: service_healthy
+      # Sessions of linked repositories with allowed hosts reach the internet
+      # only through this proxy.
+      logos-agent-egress-proxy:
+        condition: service_healthy
     environment:
       DB_HOST: logos-db
       DB_PORT: 5432
@@ -641,9 +645,7 @@ services:
       KEYCLOAK_ROLES_LOGOS_ADMIN: "${KEYCLOAK_ROLES_LOGOS_ADMIN:-itg-admin}"
       LOGOS_AGENT_REQUIRED_ROLE: "${LOGOS_AGENT_REQUIRED_ROLE:-logos_admin}"
 
-      # The Logos key sessions call models with. Give it LOW priority so agent
-      # traffic never outranks a user at the scheduler.
-      LOGOS_AGENT_API_KEY: "${LOGOS_AGENT_API_KEY:-}"
+      # Optional default among the managed identity's locally served models.
       LOGOS_AGENT_DEFAULT_MODEL: "${LOGOS_AGENT_DEFAULT_MODEL:-}"
 
       # Sessions run in this image, on this network, under these ceilings.
@@ -657,6 +659,9 @@ services:
       # Where sessions send model traffic: the gateway that exposes only the
       # orchestrator's /v1 model surface on the session network.
       LOGOS_AGENT_SESSION_MODEL_URL: "${LOGOS_AGENT_SESSION_MODEL_URL:-http://logos-agent-gateway}"
+      # The allowlisting HTTPS proxy on the session network; empty disables
+      # internet access for every session.
+      LOGOS_AGENT_EGRESS_PROXY_URL: "${LOGOS_AGENT_EGRESS_PROXY_URL-http://logos-agent-egress-proxy:3128}"
       LOGOS_AGENT_MAX_PARALLEL_SESSIONS: "${LOGOS_AGENT_MAX_PARALLEL_SESSIONS:-10}"
       LOGOS_AGENT_SESSION_MEMORY_MB: "${LOGOS_AGENT_SESSION_MEMORY_MB:-4096}"
       LOGOS_AGENT_SESSION_CPUS: "${LOGOS_AGENT_SESSION_CPUS:-2}"
@@ -771,12 +776,46 @@ services:
     depends_on:
       - logos-orchestrator
     environment:
-      # The Logos key the gateway injects into the agent's model calls. The
-      # image ships the configuration as a template, and its entrypoint runs
-      # envsubst at container start, so the key enters the running
-      # configuration here and never has to be passed to a session
-      # container — nor does it sit in an image layer.
-      LOGOS_AGENT_API_KEY: "${LOGOS_AGENT_API_KEY:-}"
+      # Existing internal trust root; only short-lived inference tokens are
+      # forwarded, never this secret or credentials to session containers.
+      LOGOS_INTERNAL_SECRET: "${LOGOS_INTERNAL_SECRET:-}"
+    networks:
+      - internal
+      - agent
+
+  # The only route from the session network to the internet, and only for
+  # sessions of a linked repository whose link names allowed hosts: HTTPS
+  # CONNECT to those hosts, to public addresses, authenticated with a
+  # per-session token. Everything else is refused. See app/egress_proxy.py.
+  logos-agent-egress-proxy:
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-agent:${IMAGE_TAG:-latest}
+    container_name: logos-agent-egress-proxy
+    command: ["python", "-m", "app.egress_proxy"]
+    # Unlike the runner it needs no Docker socket and no root.
+    user: "65534:65534"
+    restart: unless-stopped
+    profiles: ["agent"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    depends_on:
+      logos-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 3128), 3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      # Reads only the session's status, token hash and its repository's
+      # host list.
+      DB_HOST: logos-db
+      DB_PORT: 5432
+      DB_NAME: logosdb
+      DB_USER: postgres
+      DB_PASSWORD: "${LOGOS_DB_PASSWORD:?LOGOS_DB_PASSWORD must be set}"
     networks:
       - internal
       - agent

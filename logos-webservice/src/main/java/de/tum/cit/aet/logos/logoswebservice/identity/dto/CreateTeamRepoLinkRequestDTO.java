@@ -8,5 +8,13 @@ public record CreateTeamRepoLinkRequestDTO(
     List<String> paths,
     Boolean agentEnabled,
     String agentInstructions,
-    String verificationCommand
-) {}
+    String verificationCommand,
+    List<String> agentEgressHosts,
+    Boolean agentMayComment
+) {
+
+    /** True when the request changes a sandbox permission that only a logos admin may set. */
+    public boolean changesSandboxPermissions() {
+        return agentEgressHosts != null || agentMayComment != null;
+    }
+}

@@ -169,6 +169,10 @@ export interface RepositoryAgentSettings {
   agent_enabled?: boolean;
   agent_instructions?: string | null;
   verification_command?: string | null;
+  /** HTTPS hosts agent sessions may reach; empty means no internet. Logos admins only. */
+  agent_egress_hosts?: string[];
+  /** Whether the agent may comment on issues and pull requests during a session. Logos admins only. */
+  agent_may_comment?: boolean;
 }
 
 export interface TeamRepository extends RepositoryAgentSettings {

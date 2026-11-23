@@ -45,6 +45,14 @@
               </a>
               <span class="repo-url">{{ repo.repo_url }}</span>
               <span class="repo-url">Coding agent: {{ repo.agent_enabled ? 'Enabled' : 'Off' }}</span>
+              @if (hostCount(repo) > 0) {
+                <span class="repo-url" [title]="repo.agent_egress_hosts!.join(', ')">
+                  Network: {{ hostCount(repo) }} {{ hostCount(repo) === 1 ? 'host' : 'hosts' }}
+                </span>
+              }
+              @if (repo.agent_may_comment) {
+                <span class="repo-url">Comments during sessions: Allowed</span>
+              }
             </div>
           </div>
           <div class="cell-branch" role="cell" data-label="Branch">
@@ -207,6 +215,47 @@
           (input)="formAgentInstructions.set($any($event.target).value)"
           [disabled]="formLoading()"></textarea>
       </div>
+      @if (isLogosAdmin) {
+        <div class="form-field">
+          <label class="field-label" for="repo-egress-hosts">Allowed network hosts</label>
+          <textarea id="repo-egress-hosts" class="field-input field-textarea" rows="3"
+            autocomplete="off" spellcheck="false"
+            placeholder="github.com&#10;*.githubusercontent.com"
+            [value]="formEgressHosts()"
+            (input)="formEgressHosts.set($any($event.target).value)"
+            [disabled]="formLoading()"></textarea>
+          <p class="field-hint">
+            One host per line. HTTPS hosts that agent sessions for this repository may reach,
+            for example to download toolchains. Leave empty for no internet access.
+            Private and internal addresses are always blocked.
+          </p>
+        </div>
+        <div class="form-field">
+          <label class="field-label" for="repo-may-comment">
+            <input id="repo-may-comment" type="checkbox"
+              [checked]="formMayComment()"
+              (change)="formMayComment.set($any($event.target).checked)"
+              [disabled]="formLoading()" />
+            Let LogosOSSAgent comment on issues and pull requests during a session
+          </label>
+        </div>
+      } @else {
+        <div class="form-field sandbox-readonly">
+          <span class="field-label">Agent sandbox permissions</span>
+          <p class="field-hint">
+            Network access:
+            @if ((formEditing()?.agent_egress_hosts ?? []).length === 0) {
+              none
+            } @else {
+              {{ formEditing()!.agent_egress_hosts!.join(', ') }}
+            }
+          </p>
+          <p class="field-hint">
+            Comments during sessions: {{ formEditing()?.agent_may_comment ? 'allowed' : 'not allowed' }}
+          </p>
+          <p class="field-hint">A Logos admin manages these permissions.</p>
+        </div>
+      }
     }
     @if (formError()) {
       <app-error-message [message]="formError()" />

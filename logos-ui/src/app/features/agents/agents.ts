@@ -19,6 +19,7 @@ import {
   AgentEvent,
   AgentInstructions,
   AgentModels,
+  AgentRepository,
   AgentSession,
   AgentSessionStatus,
   AgentTriggers,
@@ -91,6 +92,7 @@ export class Agents implements OnInit {
   // ── data ─────────────────────────────────────────────────────────────────
   sessions = signal<AgentSession[]>([]);
   workspaces = signal<AgentWorkspace[]>([]);
+  repositories = signal<AgentRepository[]>([]);
   capacity = signal<AgentCapacity | null>(null);
   models = signal<AgentModels | null>(null);
   triggers = signal<AgentTriggers | null>(null);
@@ -114,6 +116,8 @@ export class Agents implements OnInit {
   // ── new-session form ─────────────────────────────────────────────────────
   showForm = signal(false);
   formWorkspaceId = signal<number | null>(null);
+  /** Null works on the platform repository. */
+  formRepositoryId = signal<number | null>(null);
   formTask = signal('');
   formModel = signal<string | null>(null);
   formOpenPr = signal(true);
@@ -163,6 +167,21 @@ export class Agents implements OnInit {
       label: w.active_sessions > 0 ? `${w.name} (busy)` : w.name,
     })),
   );
+
+  /** The platform repository first, then every linked repository with the agent enabled. */
+  readonly repositoryOptions = computed<AppSelectOption[]>(() => [
+    { value: '', label: 'LogosOSS/Logos (platform repository)' },
+    ...this.repositories().map((r) => ({
+      value: String(r.id),
+      label: `${r.repo_slug} (${r.branch})`,
+    })),
+  ]);
+
+  /**
+   * The runner deploys and screenshots only the platform repository, so
+   * both options are off for a linked repository.
+   */
+  readonly linkedRepositorySelected = computed(() => this.formRepositoryId() !== null);
 
   /**
    * Only locally served models are offered: agent work runs on capacity the
@@ -404,6 +423,16 @@ export class Agents implements OnInit {
       this.models.set(await this.agentService.getModels());
     } catch {
       this.models.set(null);
+    }
+    try {
+      this.repositories.set(await this.agentService.getRepositories());
+    } catch {
+      // Without the list, only the platform repository is offered.
+      this.repositories.set([]);
+    }
+    const repositoryId = this.formRepositoryId();
+    if (repositoryId !== null && !this.repositories().some((r) => r.id === repositoryId)) {
+      this.formRepositoryId.set(null);
     }
     try {
       this.triggers.set(await this.agentService.getTriggers());
@@ -773,10 +802,14 @@ export class Agents implements OnInit {
     this.submitting.set(true);
     this.formError.set(null);
     try {
-      const paths = this.formScreenshots()
-        .split(/[\s,]+/)
-        .map((p) => p.trim())
-        .filter((p) => p.length > 0);
+      const repositoryId = this.formRepositoryId();
+      const linked = repositoryId !== null;
+      const paths = linked
+        ? []
+        : this.formScreenshots()
+            .split(/[\s,]+/)
+            .map((p) => p.trim())
+            .filter((p) => p.length > 0);
 
       const session = await this.agentService.createSession({
         workspace_id: workspaceId,
@@ -785,8 +818,9 @@ export class Agents implements OnInit {
         // default, which is the single local model where there is only one.
         model: this.formModel(),
         open_pull_request: this.formOpenPr(),
-        deploy_to_dev: this.formDeploy(),
+        deploy_to_dev: linked ? false : this.formDeploy(),
         screenshot_paths: paths,
+        team_repository_id: repositoryId,
       });
       this.sessions.update((list) => [session, ...list]);
       this.closeForm();
@@ -809,6 +843,15 @@ export class Agents implements OnInit {
 
   selectWorkspaceById(id: string): void {
     this.formWorkspaceId.set(Number(id));
+  }
+
+  selectRepositoryById(id: string): void {
+    const repositoryId = id ? Number(id) : null;
+    this.formRepositoryId.set(repositoryId);
+    if (repositoryId !== null) {
+      this.formDeploy.set(false);
+      this.formScreenshots.set('');
+    }
   }
 
   selectModel(name: string): void {
