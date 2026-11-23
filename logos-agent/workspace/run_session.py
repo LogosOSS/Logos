@@ -49,7 +49,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from session_activity import SessionActivity
+from session_activity import SessionActivity, redact_output
 
 WORKSPACE = Path("/workspace")
 CHECKOUT = WORKSPACE / "repo"
@@ -116,15 +116,7 @@ def _redact(cmd: list[str]) -> list[str]:
     readable by the agent itself, so a token must never reach it — neither in
     a URL nor in a bare argument.
     """
-    token = os.environ.get("GITHUB_TOKEN", "")
-
-    def scrub(part: str) -> str:
-        if token and token in part:
-            part = part.replace(token, "***")
-        # Generic credential-in-URL shape: https://user:password@host
-        return re.sub(r"(://[^/:\s]+:)[^@\s]+(@)", r"\1***\2", part)
-
-    return [scrub(c) for c in cmd]
+    return [redact_output(part) for part in cmd]
 
 
 def _without_auto_maintenance(cmd: list[str]) -> list[str]:
@@ -910,9 +902,16 @@ def _drive_agent(cmd: list[str], activity: SessionActivity | None = None) -> tup
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
-            print(line, flush=True)
+            print(redact_output(line), flush=True)
             continue
-        if event.get("type") == "system" and event.get("subtype") == "init":
+        if not isinstance(event, dict):
+            continue
+        if (
+            not root
+            and event.get("type") == "system"
+            and event.get("subtype") == "init"
+            and not event.get("parent_tool_use_id")
+        ):
             root = event.get("session_id") or ""
         if activity is not None:
             activity.observe(event, root)
@@ -1100,9 +1099,9 @@ def _render_event(event: dict) -> None:
         message = (event.get("message") or {}) if isinstance(event.get("message"), dict) else {}
         for block in message.get("content") or []:
             if block.get("type") == "text" and block.get("text", "").strip():
-                print(block["text"].strip(), flush=True)
+                print(redact_output(block["text"].strip()), flush=True)
             elif block.get("type") == "tool_use":
-                print(_tool_line(block), flush=True)
+                print(redact_output(_tool_line(block)), flush=True)
         _report_usage(message)
     elif kind == "result":
         subtype = event.get("subtype", "")

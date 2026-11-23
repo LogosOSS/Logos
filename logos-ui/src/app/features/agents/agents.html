@@ -765,12 +765,21 @@
             }
           </details>
 
-          <h3 class="detail-title">Transcript</h3>
-          @if (logLines().length === 0) {
-            <p class="empty empty--small">No output yet.</p>
-          } @else {
-            <pre class="transcript">{{ transcriptText() }}</pre>
+          <h3 class="detail-title">Agent messages</h3>
+          @if (messageError()) {
+            <p class="field__hint">Could not refresh messages. The diagnostic log is available below.</p>
           }
+          @if (messageSnapshot(); as snapshot) {
+            @if (snapshot.omitted) {
+              <p class="field__hint">Showing the most recent messages. Earlier output is in the diagnostic log.</p>
+            }
+            <app-session-messages [messages]="snapshot.messages" [active]="isActive(session.status)" />
+          }
+          <details class="prompt diagnostics">
+            <summary class="prompt__summary">Diagnostic log</summary>
+            @if (logLines().length) { <pre class="transcript">{{ transcriptText() }}</pre> }
+            @else { <p class="field__hint">No log output yet.</p> }
+          </details>
 
           @if (screenshots().length > 0) {
             <h3 class="detail-title">Screenshots</h3>

@@ -737,6 +737,8 @@
   margin: 8px 0;
 }
 
+.diagnostics .transcript { margin-top: 8px; }
+
 .screenshots {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));

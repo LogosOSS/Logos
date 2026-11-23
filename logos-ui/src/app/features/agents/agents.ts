@@ -22,12 +22,14 @@ import {
   AgentRepository,
   AgentSession,
   AgentSessionStatus,
+  SessionMessages,
   AgentTriggers,
   AgentWorkspace,
   isActive,
 } from '../../shared/models/agent.model';
 import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
 import { ErrorMessageComponent } from '../../shared/components/error-message/error-message';
+import { SessionMessagesComponent } from './session-messages';
 
 /** How often the list and the open session are refreshed while work is live. */
 const POLL_MS = 4000;
@@ -74,7 +76,7 @@ export function scaleSlotCounts(parts: number[], limit: number): number[] {
 @Component({
   selector: 'app-agents',
   standalone: true,
-  imports: [CommonModule, FormsModule, SelectComponent, ErrorMessageComponent, RouterLink],
+  imports: [CommonModule, FormsModule, SelectComponent, ErrorMessageComponent, RouterLink, SessionMessagesComponent],
   templateUrl: './agents.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './agents.scss',
@@ -123,6 +125,11 @@ export class Agents implements OnInit {
   // ── selected session ─────────────────────────────────────────────────────
   selectedId = signal<number | null>(null);
   events = signal<AgentEvent[]>([]);
+  messageSnapshot = signal<SessionMessages | null>(null);
+  messageError = signal(false);
+  private messageRequest: object | null = null;
+  private messageReadAt = 0;
+  private messagesFinal = false;
   private lastEventId = 0;
 
   selected = computed(() => {
@@ -350,7 +357,7 @@ export class Agents implements OnInit {
       }
       await this.loadCapacity();
       if (!options.quiet) await this.loadModelsAndTriggers();
-      if (this.selectedId() !== null) await this.loadEvents();
+      if (this.selectedId() !== null) await Promise.all([this.loadEvents(), this.loadMessages()]);
     } catch {
       this.error.set('Could not reach the agent runner.');
     } finally {
@@ -513,6 +520,11 @@ export class Agents implements OnInit {
 
   // ── session selection ────────────────────────────────────────────────────
   async select(session: AgentSession): Promise<void> {
+    this.messageRequest = null;
+    this.messageReadAt = 0;
+    this.messagesFinal = false;
+    this.messageSnapshot.set(null);
+    this.messageError.set(false);
     if (this.selectedId() === session.id) {
       this.selectedId.set(null);
       this.events.set([]);
@@ -525,7 +537,7 @@ export class Agents implements OnInit {
     this.lastEventId = 0;
     this.stopStream();
     this.resetScreenshots();
-    await this.loadEvents();
+    await Promise.all([this.loadEvents(), this.loadMessages()]);
     // The load is asynchronous, and the selection may have moved on while
     // it ran. Opening the stream anyway would leave a connection nobody
     // holds the handle to — untracked, unabortable, and read by the server
@@ -561,6 +573,7 @@ export class Agents implements OnInit {
           this.lastEventId = event.id;
           this.events.update((existing) => [...existing, event]);
           if (event.kind === 'screenshot') void this.loadScreenshots();
+          if (event.kind === 'log' && Date.now() - this.messageReadAt >= 500) void this.loadMessages();
         }
       } catch {
         // Aborted, refused, or dropped: the poll keeps the page correct, so
@@ -734,6 +747,28 @@ export class Agents implements OnInit {
       void this.loadScreenshots();
     } catch {
       /* transient; the next poll retries */
+    }
+  }
+
+  private async loadMessages(): Promise<void> {
+    const id = this.selectedId();
+    if (id === null || this.messageRequest || this.messagesFinal) return;
+    const session = this.selected();
+    const terminal = !!session && !isActive(session.status);
+    const request = {};
+    this.messageRequest = request;
+    this.messageReadAt = Date.now();
+    try {
+      const snapshot = await this.agentService.getMessages(id);
+      if (this.messageRequest === request) {
+        this.messageSnapshot.set(snapshot);
+        this.messagesFinal = terminal;
+        this.messageError.set(false);
+      }
+    } catch {
+      if (this.messageRequest === request) this.messageError.set(true);
+    } finally {
+      if (this.messageRequest === request) this.messageRequest = null;
     }
   }
 

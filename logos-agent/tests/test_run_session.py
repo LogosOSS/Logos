@@ -2093,3 +2093,90 @@ def test_root_progress_reminder_and_replayed_estimates(tmp_path, monkeypatch):
     session.observe(report("f", 30), "root")
     session.observe(report("e", 40), "root")
     assert session.data["progress_percent"] == 30
+
+
+def test_visible_messages_preserve_blocks_and_origin_across_continuation(tmp_path, monkeypatch):
+    from session_activity import SessionActivity
+
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("HTTPS_PROXY", "https://session:example-proxy-secret@proxy.invalid")
+    activity = SessionActivity()
+    base = {"type": "assistant", "session_id": "root", "parent_tool_use_id": None, "uuid": "event-a"}
+    message = {
+        "id": "msg-a",
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "private reasoning"},
+            {"type": "text", "text": "A paragraph.\n\n- One\n- Two"},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "internal path"}},
+        ],
+    }
+    event = {**base, "message": message}
+    for ignored in [
+        {**event, "type": "user"},
+        {**event, "type": "result"},
+        {**event, "isMeta": True},
+        {**event, "session_id": "other"},
+        {**event, "isReplay": True},
+        {**event, "message": {**message, "model": "<synthetic>"}},
+    ]:
+        activity.observe(ignored, "root")
+    assert not (tmp_path / "messages.json").exists()
+    activity.observe(event, "root")
+    next_block = {"type": "text", "text": "Use example-proxy-secret.\n\n```sh\necho 'hello'\n```"}
+    activity.observe({**event, "uuid": "event-b", "message": {**message, "content": [next_block]}}, "root")
+    for call in ("first-call", "resumed-call"):
+        activity.observe(
+            {
+                "type": "system",
+                "subtype": "task_started",
+                "task_type": "local_agent",
+                "session_id": "root",
+                "tool_use_id": call,
+                "task_id": "child",
+            },
+            "root",
+        )
+        activity.observe(
+            {
+                **event,
+                "parent_tool_use_id": call,
+                "uuid": call,
+                "message": {**message, "id": call, "content": [{"type": "text", "text": "Child reply"}]},
+            },
+            "root",
+        )
+    activity.observe(event, "root")
+    activity.observe({**event, "uuid": "new-envelope", "isReplay": True}, "root")
+    raw = (tmp_path / "messages.json").read_text()
+    rows = json.loads(raw)["messages"]
+    assert len(rows) == 3
+    assert rows[0]["actor"] == "main"
+    assert rows[0]["text"] == "A paragraph.\n\n- One\n- Two\n\nUse ***.\n\n```sh\necho 'hello'\n```"
+    assert rows[1]["actor"].startswith("child-") and rows[1]["actor"] == rows[2]["actor"]
+    assert not any(value in raw for value in ["private reasoning", "internal path", "example-proxy-secret"])
+
+
+def test_message_snapshot_limits_each_message_and_total_history(tmp_path, monkeypatch):
+    from session_activity import SessionActivity
+
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
+    activity = SessionActivity()
+    for i in range(70):
+        event = {
+            "type": "assistant",
+            "session_id": "r",
+            "parent_tool_use_id": None,
+            "uuid": str(i),
+            "message": {"id": str(i), "role": "assistant", "content": [{"type": "text", "text": str(i)}]},
+        }
+        activity.observe(event, "r")
+    snapshot = json.loads((tmp_path / "messages.json").read_text())
+    assert snapshot["omitted"] == 6 and len(snapshot["messages"]) == 64
+    for i in range(5):
+        event["uuid"] = event["message"]["id"] = f"large-{i}"
+        event["message"]["content"][0]["text"] = "A" * 20000
+        activity.observe(event, "r")
+    snapshot = json.loads((tmp_path / "messages.json").read_text())
+    assert len(snapshot["messages"]) == 4 and snapshot["omitted"] == 71
+    assert all(row["truncated"] and len(row["text"]) == 16384 for row in snapshot["messages"])

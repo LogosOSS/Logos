@@ -6,13 +6,15 @@ health check requires a Keycloak token carrying the operator role.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
 
 from . import (
@@ -48,6 +50,7 @@ from .schemas import (
     QueueMove,
     SessionCreate,
     SessionEvent,
+    SessionMessages,
     SessionStatus,
     SessionSummary,
     Workspace,
@@ -651,6 +654,30 @@ async def move_session_in_queue(
         )
     logger.info("session %s moved %s in the queue by %s", session_id, body.move, principal.username)
     return SessionSummary(**_summary_fields(moved))
+
+
+@app.get("/sessions/{session_id}/messages", response_model=SessionMessages, tags=["sessions"])
+async def session_messages(
+    session_id: int, request: Request, response: Response, _: Principal = Depends(require_agent_operator)
+) -> SessionMessages | Response:
+    if await db.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        data = await asyncio.to_thread(read_artifact, artifact_dir(session_id), "messages.json", limit=512 * 1024)
+    except FileNotFoundError:
+        return SessionMessages()
+    except OSError:
+        raise HTTPException(status_code=503, detail="Session messages could not be read")
+    etag = '"' + hashlib.sha256(data).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache", "Vary": "Authorization"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    try:
+        messages = SessionMessages.model_validate_json(data, strict=True)
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Session messages could not be read")
+    response.headers.update(headers)
+    return messages
 
 
 @app.get("/sessions/{session_id}/events", response_model=list[SessionEvent], tags=["sessions"])

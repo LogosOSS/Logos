@@ -15,6 +15,7 @@ import {
   AgentTriggers,
   AgentWorkspace,
   CreateSessionRequest,
+  SessionMessages,
   isActive,
 } from '../../shared/models/agent.model';
 import { Agents, scaleSlotCounts } from './agents';
@@ -92,6 +93,10 @@ class FakeAgentService {
 
   async getEvents(): Promise<[]> {
     return [];
+  }
+
+  async getMessages(_id: number): Promise<SessionMessages> {
+    return { messages: [], omitted: 0 };
   }
 
   async *streamEvents(): AsyncGenerator<never> {
@@ -212,6 +217,44 @@ describe('Agents', () => {
     // loop empty for the next test.
     fixture.destroy();
     vi.useRealTimers();
+  });
+
+  it('renders typed messages with safe text, lists, code, and a separate diagnostic log', async () => {
+    const session = makeSession({ status: 'running' });
+    agentService.sessions = [session];
+    const source = { id: 'message-a', actor: 'main', truncated: false, text: 'Summary\n\n- One\n- Two\n\n```html\n<img src=x>\n```' };
+    const read = vi.spyOn(agentService, 'getMessages').mockResolvedValue({ messages: [source], omitted: 0 });
+    await component.refresh();
+    await component.select(session);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.agent-message p')?.textContent).toBe('Summary');
+    expect(root.querySelectorAll('.agent-message li').length).toBe(2);
+    expect(root.querySelector('.agent-message code')?.textContent).toBe('<img src=x>');
+    expect(root.querySelector('.agent-message img')).toBeNull();
+    expect(root.querySelector('details.diagnostics')?.hasAttribute('open')).toBe(false);
+    read.mockResolvedValue({ messages: [source, { ...source, id: 'message-b', actor: 'child-12345678', text: '2. Verify' }], omitted: 0 });
+    await component.refresh();
+    fixture.detectChanges();
+    expect(root.querySelectorAll('.agent-message').length).toBe(2);
+    expect(root.querySelectorAll('.agent-message header')[1].textContent).toContain('Subagent');
+    expect(root.querySelector('.agent-message ol')?.getAttribute('start')).toBe('2');
+  });
+
+  it('keeps legacy output in diagnostics and discards message reads from a previous selection', async () => {
+    const [first, second] = [makeSession({ id: 1 }), makeSession({ id: 2 })];
+    agentService.sessions = [first, second];
+    await component.refresh();
+    let finish!: (data: SessionMessages) => void;
+    vi.spyOn(agentService, 'getMessages').mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pending = component.select(first);
+    await component.select(second);
+    finish({ messages: [{ id: 'old', actor: 'main', text: 'Previous', truncated: false }], omitted: 0 });
+    await pending;
+    component.events.set([{ id: 1, session_id: 2, ts: '', kind: 'log', payload: { lines: ['legacy stdout'] } }]);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.agent-message')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.diagnostics pre').textContent).toContain('legacy stdout');
   });
 
   describe('session timings', () => {

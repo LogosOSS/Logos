@@ -235,6 +235,18 @@ class QueueMove(BaseModel):
     move: str = Field(pattern="^(up|down|first)$")
 
 
+class AssistantMessage(BaseModel):
+    id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    actor: str = Field(pattern=r"^(main|child-[a-f0-9]{8})$")
+    text: str = Field(min_length=1, max_length=16384)
+    truncated: bool = False
+
+
+class SessionMessages(BaseModel):
+    messages: list[AssistantMessage] = Field(default_factory=list, max_length=64)
+    omitted: int = Field(default=0, ge=0)
+
+
 class SessionEvent(BaseModel):
     id: int
     session_id: int

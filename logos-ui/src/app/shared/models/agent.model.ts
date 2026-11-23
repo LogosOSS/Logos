@@ -11,6 +11,18 @@ export type AgentSessionStatus =
 export type AgentEventKind =
   'log' | 'status' | 'pull_request' | 'deploy' | 'screenshot' | 'capacity' | 'error';
 
+export interface AgentMessage {
+  id: string;
+  actor: string;
+  text: string;
+  truncated: boolean;
+}
+
+export interface SessionMessages {
+  messages: AgentMessage[];
+  omitted: number;
+}
+
 export interface AgentWorkspace {
   id: number;
   name: string;

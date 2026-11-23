@@ -825,7 +825,7 @@ The page has these parts, from top to bottom:
   same time. The maximum is the number of sessions that the memory budget
   holds. You can only set a lower value. The value 0 starts no new session.
 - **Session lists.** **Active**, **Queue** and **Finished** show the
-  sessions. Select a session to show its details and its transcript. Use the
+  sessions. Select a session to show its details and messages. Use the
   arrows of a queued session to change its position in the queue.
   **RAM now** shows the latest total for the session containers, including helpers and file cache.
   The runner samples about every 2 seconds. A short peak between samples can be higher.
@@ -840,6 +840,14 @@ The page has these parts, from top to bottom:
   **Awaiting updated estimate**. Session status records the actual outcome.
 - **Automatic work**, **Workspaces** and **What every session is told** are
   at the bottom of the page.
+
+Select a session to read **Agent messages** as the agent works. **Agent** identifies
+the parent. **Subagent** and a short identifier distinguish child messages.
+Each message keeps its paragraphs, lists and code. Open **Diagnostic log** to
+see tool activity and runner output, including the logs of older sessions.
+The message view keeps up to 64 recent messages and marks shortened text.
+
+![Expanded agent session with parent and child messages and a code sample](/img/roles/logos-admin-agents-messages.png)
 
 Repository analyses of the linked repositories of the teams also run here.
 Each night, they run again for repositories that have new commits. **Analyze
