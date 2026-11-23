@@ -83,9 +83,15 @@ _CURRENT_MIN_KEYS = (
     "context_window",
     "context_length",
     "max_context_length",
+    # Anthropic's Models API reports the context window under this name.
+    "max_input_tokens",
 )
 _CURRENT_MAX_KEYS = ("max_model_len_current_max",)
 _OVERALL_KEYS = ("max_model_len_overall",)
+
+# Upper bound on followed pages. Anthropic serves 20 models per page by
+# default; the cap only stops an upstream that keeps announcing more pages.
+_MAX_PAGES = 50
 
 # What a Logos instance stamps on every model it serves. A listing where every
 # entry carries it can only have come from another Logos.
@@ -165,10 +171,37 @@ def parse_model_list(body: Any) -> Tuple[List[str], Dict[str, Dict[str, int]], b
 
 
 async def fetch_models(url: str, headers: Dict[str, str], client: httpx.AsyncClient) -> Any:
-    """Fetch a provider's model listing."""
+    """Fetch a provider's model listing, following its pages.
+
+    Anthropic pages its listing (``has_more`` and ``last_id``, continued with
+    ``after_id``); reading only the first page catalogued just the 20 newest
+    models. An OpenAI-shaped listing reports no ``has_more`` and is returned
+    after one request, unchanged.
+    """
     resp = await client.get(url, headers=headers, timeout=REQUEST_TIMEOUT_S)
     resp.raise_for_status()
-    return resp.json()
+    body = resp.json()
+    if not isinstance(body, dict) or not isinstance(body.get("data"), list):
+        return body
+
+    entries = list(body["data"])
+    seen_cursors = set()
+    page = body
+    for _ in range(_MAX_PAGES - 1):
+        cursor = page.get("last_id")
+        if page.get("has_more") is not True or not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+            break
+        seen_cursors.add(cursor)
+        resp = await client.get(url, headers=headers, params={"after_id": cursor}, timeout=REQUEST_TIMEOUT_S)
+        resp.raise_for_status()
+        page = resp.json()
+        if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+            break
+        entries.extend(page["data"])
+    else:
+        if page.get("has_more") is True:
+            logger.warning("Cloud model sync: %s still reports more models after %d pages", url, _MAX_PAGES)
+    return {**body, "data": entries}
 
 
 class CloudModelSyncService:
