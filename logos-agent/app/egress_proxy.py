@@ -11,7 +11,9 @@ where that list is enforced.
   created at launch; only the token's hash is stored. A session that is not
   running gets nothing.
 * The host must match the repository's list, read live from the database,
-  so withdrawing a host takes effect within seconds.
+  so withdrawing a host takes effect within seconds — for new connections
+  and for open tunnels alike, which are checked again at the same interval
+  and closed when their grant is gone.
 * Every address the host resolves to must be public. A name that resolves
   into a private, loopback, link-local or otherwise non-global range is
   refused, and the connection goes to the address that was checked, so a
@@ -105,6 +107,17 @@ async def public_addresses(host: str, port: int) -> list[str]:
     return addresses
 
 
+def authorised(grant: dict[str, Any] | None, token: str, host: str) -> bool:
+    """Whether a grant still lets this token reach this host."""
+    return bool(
+        grant is not None
+        and grant.get("status") == "running"
+        and grant.get("token_hash")
+        and hmac.compare_digest(str(grant["token_hash"]), token_hash(token))
+        and host_allowed(host, list(grant.get("hosts") or []))
+    )
+
+
 class EgressProxy:
     def __init__(self) -> None:
         self._grants: dict[int, tuple[float, dict[str, Any] | None]] = {}
@@ -156,36 +169,59 @@ class EgressProxy:
             ):
                 await self._refuse(writer, 407, "unknown or inactive session")
                 return
-            if not host_allowed(host, list(grant.get("hosts") or [])):
+            if not authorised(grant, token, host):
                 logger.info("session %s refused %s: not on the repository's list", session_id, host)
                 await self._refuse(writer, 403, f"{host} is not an allowed host for this repository")
                 return
+            # The slot is taken before any await of the connection set-up, so
+            # a burst of CONNECTs cannot all see a free slot.
             if self._open[session_id] >= MAX_CONNECTIONS_PER_SESSION:
                 await self._refuse(writer, 429, "too many open connections")
                 return
-            addresses = await public_addresses(host, 443)
-            if not addresses:
-                logger.info("session %s refused %s: no public address", session_id, host)
-                await self._refuse(writer, 403, f"{host} does not resolve to a public address")
-                return
-            upstream = await self._connect(addresses)
-            if upstream is None:
-                await self._refuse(writer, 502, f"could not connect to {host}")
-                return
-            up_reader, up_writer = upstream
-            logger.info("session %s connected to %s", session_id, host)
-            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            await writer.drain()
             self._open[session_id] += 1
             try:
-                await asyncio.gather(self._pipe(reader, up_writer), self._pipe(up_reader, writer))
+                await self._tunnel(reader, writer, session_id, token, host)
             finally:
                 self._open[session_id] -= 1
-                up_writer.close()
         except Exception:
             logger.exception("egress connection of session %s failed", session_id)
         finally:
             writer.close()
+
+    async def _tunnel(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, session_id: int, token: str, host: str
+    ) -> None:
+        addresses = await public_addresses(host, 443)
+        if not addresses:
+            logger.info("session %s refused %s: no public address", session_id, host)
+            await self._refuse(writer, 403, f"{host} does not resolve to a public address")
+            return
+        upstream = await self._connect(addresses)
+        if upstream is None:
+            await self._refuse(writer, 502, f"could not connect to {host}")
+            return
+        up_reader, up_writer = upstream
+        logger.info("session %s connected to %s", session_id, host)
+        try:
+            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            await writer.drain()
+            pipes = asyncio.ensure_future(asyncio.gather(self._pipe(reader, up_writer), self._pipe(up_reader, writer)))
+            watch = asyncio.ensure_future(self._watch(session_id, token, host))
+            done, _ = await asyncio.wait({pipes, watch}, return_when=asyncio.FIRST_COMPLETED)
+            for task in (pipes, watch):
+                if task not in done:
+                    task.cancel()
+            await asyncio.gather(pipes, watch, return_exceptions=True)
+        finally:
+            up_writer.close()
+
+    async def _watch(self, session_id: int, token: str, host: str) -> None:
+        """Return once the tunnel's grant is gone: the session ended or the host was withdrawn."""
+        while True:
+            await asyncio.sleep(GRANT_TTL_S)
+            if not authorised(await self._grant(session_id), token, host):
+                logger.info("session %s lost its grant for %s; closing the tunnel", session_id, host)
+                return
 
     @staticmethod
     async def _connect(addresses: list[str]) -> tuple[asyncio.StreamReader, asyncio.StreamWriter] | None:

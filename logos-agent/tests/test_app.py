@@ -599,11 +599,6 @@ class TestTheSchedulerPassAnEndpointStarts:
         monkeypatch.setattr(db, "get_session", get_session)
         monkeypatch.setattr(main, "_summary_fields", lambda row: dict(row))
 
-        async def workspace_target(_workspace_id):
-            return {"repo_slug": None, "busy": False}
-
-        monkeypatch.setattr(db, "workspace_target", workspace_target)
-
         await main.create_session(SessionCreate(workspace_id=3, task="Fix the flaky test"), principal=_principal())
 
         await self.assert_one_held_pass(passes, release)

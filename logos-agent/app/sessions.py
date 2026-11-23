@@ -843,7 +843,7 @@ class SessionManager:
                 # runner's settlement only, as they always have.
                 continue
             sid = int(session["id"])
-            permissions = await db.sandbox_permissions(int(link))
+            permissions = await db.sandbox_permissions(int(link), str(session["repo_slug"]))
 
             async def record(line: str, sid: int = sid) -> None:
                 await db.add_event(sid, EventKind.LOG, {"lines": [line]})
@@ -1494,7 +1494,7 @@ class SessionManager:
             # the moment somebody edits them. The page reads it from here.
             sandboxed = _uses_repository_sandbox(session) and session.get("trigger_kind") != "analysis"
             permissions = (
-                await db.sandbox_permissions(int(session["team_repository_id"]))
+                await db.sandbox_permissions(int(session["team_repository_id"]), str(session["repo_slug"]))
                 if sandboxed
                 else {"agent_egress_hosts": [], "agent_may_comment": False}
             )

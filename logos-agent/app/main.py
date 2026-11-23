@@ -484,8 +484,6 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             "verification_command": link.get("verification_command"),
             "repo_base_branch": link.get("branch") or "main",
         }
-    await _point_workspace_at(workspace, target.get("repo_slug"), target.get("repo_base_branch") or "main")
-
     try:
         session_id = await db.create_session(
             workspace_id=body.workspace_id,
@@ -495,6 +493,9 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             open_pull_request=body.open_pull_request,
             deploy_to_dev=body.deploy_to_dev,
             screenshot_paths=body.screenshot_paths,
+            # An idle workspace that last worked on another repository moves
+            # to this one's branch; a busy one is refused (db.WorkspaceBusy).
+            point_workspace_at=target.get("repo_base_branch") or "main",
             **target,
         )
     except ValueError as exc:
@@ -510,26 +511,6 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
     row = await db.get_session(session_id)
     assert row is not None
     return SessionSummary(**_summary_fields(row))
-
-
-async def _point_workspace_at(workspace: dict, repo_slug: str | None, branch: str) -> None:
-    """Move an idle workspace that worked on another repository to this one.
-
-    The workspace's base branch is what the checkout is reset to. One that
-    last served a different repository would otherwise be prepared from a
-    branch that repository may not have. A workspace with work in flight is
-    left alone: re-pointing it would move the base of that work.
-    """
-    state = await db.workspace_target(int(workspace["id"]))
-    if (state["repo_slug"] or "").lower() == (repo_slug or "").lower():
-        return
-    if state["busy"]:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This workspace has work in flight for another repository; choose or create another workspace",
-        )
-    if workspace.get("base_branch") != branch:
-        await db.set_workspace_base_branch(int(workspace["id"]), branch)
 
 
 @app.get("/sessions/{session_id}", response_model=SessionSummary, tags=["sessions"])

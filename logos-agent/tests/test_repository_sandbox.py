@@ -260,7 +260,8 @@ class TestGitHubRequests:
         async def process(session, **_kwargs):
             served.append(session["id"])
 
-        async def permissions(_link):
+        async def permissions(_link, slug):
+            assert slug == "o/r"
             return {"agent_egress_hosts": [], "agent_may_comment": True}
 
         monkeypatch.setattr(sessions.github_broker, "process", process)
@@ -425,6 +426,63 @@ class TestEgressProxy:
         assert tried == ["140.82.121.4"]
 
 
+class TestEgressTunnels:
+    @staticmethod
+    def _grant_for(hosts):
+        return {"status": "running", "token_hash": egress_proxy.token_hash("tok"), "hosts": hosts}
+
+    async def test_a_burst_of_connects_cannot_exceed_the_limit(self, monkeypatch):
+        proxy = egress_proxy.EgressProxy()
+        started: list = []
+        release = asyncio.Event()
+
+        async def grant(_session_id):
+            return self._grant_for(["github.com"])
+
+        async def tunnel(*_args):
+            started.append(1)
+            await release.wait()
+
+        monkeypatch.setattr(egress_proxy.db, "egress_grant", grant)
+        monkeypatch.setattr(egress_proxy, "MAX_CONNECTIONS_PER_SESSION", 2)
+        monkeypatch.setattr(proxy, "_tunnel", tunnel)
+        auth = TestEgressProxy._auth()
+        request = f"CONNECT github.com:443 HTTP/1.1\r\nProxy-Authorization: Basic {auth}\r\n\r\n".encode()
+
+        burst = [asyncio.ensure_future(TestEgressProxy._ask(proxy, request)) for _ in range(5)]
+        await asyncio.sleep(0.05)
+        release.set()
+        answers = await asyncio.gather(*burst)
+
+        assert len(started) == 2
+        assert sum(answer.startswith(b"HTTP/1.1 429") for answer in answers) == 3
+        assert proxy._open[7] == 0
+
+    async def test_an_open_tunnel_closes_when_its_host_is_withdrawn(self, monkeypatch):
+        proxy = egress_proxy.EgressProxy()
+        grants = [self._grant_for(["github.com"]), self._grant_for([])]
+
+        async def grant(_session_id):
+            return grants[0] if len(grants) == 1 else grants.pop(0)
+
+        monkeypatch.setattr(egress_proxy, "GRANT_TTL_S", 0.01)
+        monkeypatch.setattr(egress_proxy.db, "egress_grant", grant)
+
+        await asyncio.wait_for(proxy._watch(7, "tok", "github.com"), timeout=1)
+
+    async def test_an_open_tunnel_stays_while_its_grant_holds(self, monkeypatch):
+        proxy = egress_proxy.EgressProxy()
+
+        async def grant(_session_id):
+            return self._grant_for(["github.com"])
+
+        monkeypatch.setattr(egress_proxy, "GRANT_TTL_S", 0.01)
+        monkeypatch.setattr(egress_proxy.db, "egress_grant", grant)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(proxy._watch(7, "tok", "github.com"), timeout=0.1)
+
+
 class TestSessionEnvironment:
     def test_a_linked_session_reaches_the_internet_only_through_its_proxy(self, monkeypatch):
         monkeypatch.setattr(
@@ -520,7 +578,6 @@ class TestManualLinkedSessions:
     @pytest.fixture
     def created(self, monkeypatch):
         rows: list = []
-        repointed: list = []
 
         async def get_workspace(_workspace_id):
             return {"id": 3, "name": "ws", "base_branch": "main"}
@@ -530,12 +587,6 @@ class TestManualLinkedSessions:
 
         async def coding_repository(link_id):
             return dict(LINK) if link_id == 4 else None
-
-        async def workspace_target(_workspace_id):
-            return {"repo_slug": None, "busy": False}
-
-        async def set_base(workspace_id, branch):
-            repointed.append((workspace_id, branch))
 
         async def create_session(**kwargs):
             rows.append(kwargs)
@@ -550,16 +601,14 @@ class TestManualLinkedSessions:
         monkeypatch.setattr(db, "get_workspace", get_workspace)
         monkeypatch.setattr(main.model_policy, "refresh", refresh)
         monkeypatch.setattr(db, "coding_repository", coding_repository)
-        monkeypatch.setattr(db, "workspace_target", workspace_target)
-        monkeypatch.setattr(db, "set_workspace_base_branch", set_base)
         monkeypatch.setattr(db, "create_session", create_session)
         monkeypatch.setattr(db, "get_session", get_session)
         monkeypatch.setattr(main, "_summary_fields", lambda row: dict(row))
         monkeypatch.setattr(main.manager, "request_scheduler_pass", lambda: None)
-        return rows, repointed
+        return rows
 
     async def test_the_session_targets_the_repository_with_its_instructions(self, created):
-        rows, repointed = created
+        rows = created
 
         await main.create_session(
             SessionCreate(workspace_id=3, task="Prove the lemma", team_repository_id=4), principal=_principal()
@@ -572,7 +621,9 @@ class TestManualLinkedSessions:
         assert row["repo_base_branch"] == "develop"
         assert "Never change a statement." in row["task"]
         assert row["task"].startswith("Prove the lemma")
-        assert repointed == [(3, "develop")]
+        # The workspace moves to the link's branch in the same locked
+        # transaction that queues the session.
+        assert row["point_workspace_at"] == "develop"
 
     async def test_deploys_and_screenshots_are_refused(self, created):
         with pytest.raises(HTTPException) as refused:
@@ -592,10 +643,10 @@ class TestManualLinkedSessions:
         assert refused.value.status_code == 404
 
     async def test_a_busy_workspace_of_another_repository_is_refused(self, created, monkeypatch):
-        async def busy(_workspace_id):
-            return {"repo_slug": "LogosOSS/Logos", "busy": True}
+        async def busy(**_kwargs):
+            raise db.WorkspaceBusy("This workspace has work in flight for another repository")
 
-        monkeypatch.setattr(db, "workspace_target", busy)
+        monkeypatch.setattr(db, "create_session", busy)
 
         with pytest.raises(HTTPException) as refused:
             await main.create_session(

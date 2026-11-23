@@ -185,9 +185,12 @@ RUN chmod -R a+rX /usr/share/maven /opt/logos-verification
 
 # Unprivileged user. The runner starts the container as `agent`; nothing in a
 # session ever runs as root.
+# /cache is the mount point of a linked repository's workspace cache. Docker
+# fills an empty named volume from the image directory it is mounted over,
+# ownership included, so a fresh cache volume belongs to the session user.
 RUN useradd --create-home --shell /bin/bash --uid 10001 agent \
-  && mkdir -p /workspace /artifacts \
-  && chown -R agent:agent /workspace /artifacts /home/agent
+  && mkdir -p /workspace /artifacts /cache \
+  && chown -R agent:agent /workspace /artifacts /cache /home/agent
 
 COPY --chown=agent:agent logos-agent/workspace/run_session.py /usr/local/lib/run_session.py
 COPY --chown=agent:agent logos-agent/workspace/verify_checkout.py /usr/local/lib/verify_checkout.py
