@@ -402,10 +402,27 @@ Select **Add Provider**. The dialog asks for the classification first:
 4. Check the **Base URL**. For OpenAI, Anthropic, DeepSeek and Groq, the dialog
    proposes the public endpoint of the vendor. Replace it for a proxy or a
    regional endpoint. A URL that you typed stays when you change the vendor.
-5. Enter the **Name** and the **API Key**. Leave **Header Name** and **Format**
+5. Enter the **Name**. For a cloud provider, enter its **API Key**. Leave **Header Name** and **Format**
    empty to use the vendor default that the placeholders show.
 
 ![Add Provider dialog with Anthropic selected](/img/roles/logos-admin-add-provider.png)
+
+Open **Edit Provider** to see the masked key. The key can show up to its last 3 characters.
+You can save changes to the provider without changing its key.
+
+![Edit Provider with the masked key and Rotate button](/img/roles/logos-admin-edit-cloud-key.png)
+
+To replace the key, select **Rotate**. Enter the key from the cloud provider in **New API key**.
+Select **Rotate** to apply it, or **Cancel** to keep the current key.
+Use the same steps in **Edit Connection** for a key specific to one model.
+
+![Cloud rotation dialog with an empty New API key field](/img/roles/logos-admin-rotate-cloud-key.png)
+
+Select **Remove** to remove a stored key. Confirm with **Remove**.
+After you remove a connection key, the connection uses the provider key, if available.
+After you remove a provider key, connections without their own key send requests without an API key.
+
+![Confirmation before removal of a cloud provider key](/img/roles/logos-admin-remove-cloud-key.png)
 
 Expand a provider to see its connected models. Next to the endpoint, each model
 shows whether its batches can use the provider's Batch API: **Batch**, **No
@@ -414,6 +431,24 @@ names the batch deployment or the reason for a refusal. See
 [Batch status of a model](../batch-processing.md#batch-status-of-a-model).
 
 ![Providers page — connected models with their batch status](/img/roles/logos-admin-provider-connections.png)
+
+### Provision a worker key
+
+1. Open **Edit Provider** for the worker node.
+2. Select **Rotate** next to the masked key.
+3. Confirm with **Rotate**. The previous key immediately stops working for new authentication requests.
+
+![Worker key rotation confirmation](/img/roles/logos-admin-rotate-worker-key.png)
+
+4. Select **Copy** in **Worker key rotated** before you close the dialog.
+5. Set the deployment secret `LOGOS_API_KEY` for this worker to the new value.
+6. Recreate the worker with the updated environment. Recreate its node manager if the worker uses one.
+7. Check that the worker connects to Logos.
+
+![One-time worker key dialog with a synthetic example](/img/roles/logos-admin-worker-key-created.png)
+
+If you lose the new value, rotate the key again.
+The management export omits provider and model connection keys. Provision them again after you restore an export.
 
 ### Node models
 

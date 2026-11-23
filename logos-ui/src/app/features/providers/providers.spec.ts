@@ -27,7 +27,7 @@ const makeProvider = (overrides: Partial<Provider> = {}): Provider => ({
   id: 7,
   name: 'Hetzner',
   base_url: 'https://inference.hetzner.com/api/v1',
-  api_key: 'hz-secret',
+  api_key_hint: '••••ret',
   auth_name: '',
   auth_format: '',
   provider_type: 'cloud',
@@ -53,6 +53,7 @@ describe('Providers', () => {
   let component: Providers;
   let addProvider: ReturnType<typeof vi.fn>;
   let updateProvider: ReturnType<typeof vi.fn>;
+  let replaceCloudKey: ReturnType<typeof vi.fn>;
   let refreshModels: ReturnType<typeof vi.fn>;
   let modelSyncStatus: ReturnType<typeof vi.fn>;
   let getModels: ReturnType<typeof vi.fn>;
@@ -67,8 +68,11 @@ describe('Providers', () => {
     modelSyncStatus = vi.fn().mockResolvedValue({ running: false });
     getModels = vi.fn().mockResolvedValue([]);
     getProviderModels = vi.fn().mockResolvedValue([]);
+    replaceCloudKey = vi.fn().mockResolvedValue({ api_key_hint: '••••new' });
     const providerService = {
+      replaceCloudKey,
       getProviders: vi.fn().mockResolvedValue([makeProvider()]),
+      rotateWorkerKey: vi.fn().mockResolvedValue({ api_key: 'synthetic-worker-replacement' }),
       addProvider,
       updateProvider,
       refreshModels,
@@ -93,6 +97,67 @@ describe('Providers', () => {
     fixture = TestBed.createComponent(Providers);
     component = fixture.componentInstance;
     await component.fetchProviders();
+  });
+
+  it('shows the cloud key hint as text and saves other settings independently', async () => {
+    component.openEditDialog(makeProvider());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(document.querySelector('.key-value-row code')?.textContent).toBe('••••ret');
+    expect(document.querySelector('#replacement-key')).toBeNull();
+    await component.submitEdit();
+    expect(updateProvider.mock.calls[0][0].api_key).toBeUndefined();
+    expect(replaceCloudKey).not.toHaveBeenCalled();
+  });
+
+  it('only replaces a cloud key on explicit confirmation and preserves pending edits', async () => {
+    const provider = makeProvider();
+    component.openEditDialog(provider);
+    component.editName.set('Unsaved name');
+    component.requestKeyChange(provider);
+    await component.confirmKeyChange();
+    component.replacementKey.set('synthetic-cancelled');
+    component.closeKeyChange();
+    expect(replaceCloudKey).not.toHaveBeenCalled();
+    component.requestKeyChange(provider);
+    expect(component.replacementKey()).toBe('');
+    component.replacementKey.set('synthetic-new');
+    await component.confirmKeyChange();
+    expect(replaceCloudKey).toHaveBeenCalledWith(provider.id, 'synthetic-new', undefined);
+    expect(updateProvider).not.toHaveBeenCalled();
+    expect(component.editName()).toBe('Unsaved name');
+    expect(component.editTarget()?.api_key_hint).toBe('••••new');
+    expect(component.replacementKey()).toBe('');
+  });
+
+  it('removes only the selected connection key after confirmation', async () => {
+    const provider = makeProvider();
+    const connection = { model_id: 11, model_name: 'example-model', endpoint: '/test', api_key_hint: '••••old' };
+    component.openEditConnDialog(provider, connection);
+    component.requestKeyChange(provider, connection, true);
+    component.closeKeyChange();
+    expect(replaceCloudKey).not.toHaveBeenCalled();
+    replaceCloudKey.mockResolvedValue({ api_key_hint: null });
+    component.requestKeyChange(provider, connection, true);
+    await component.confirmKeyChange();
+    expect(replaceCloudKey).toHaveBeenCalledWith(provider.id, null, connection.model_id);
+    expect(component.editConnModel()?.api_key_hint).toBeNull();
+  });
+
+  it('discards the rotated worker key when the dialog closes', async () => {
+    component.openEditDialog(makeProvider({ provider_type: 'logosnode' }));
+    component.requestKeyChange(component.editTarget()!);
+    await component.confirmKeyChange();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(document.querySelector<HTMLInputElement>('#rotated-key')?.value).toBe('synthetic-worker-replacement');
+    component.discardWorkerKey();
+    fixture.detectChanges();
+    expect(component.rotatedKey()).toBeNull();
+    await fixture.whenStable();
+    expect(document.querySelector('#rotated-key')).toBeNull();
+    component.openEditDialog(makeProvider({ provider_type: 'logosnode' }));
+    expect(component.rotatedKey()).toBeNull();
   });
 
   describe('the cloud provider type field', () => {
@@ -451,7 +516,7 @@ describe('Providers', () => {
       model_id: 92,
       model_name: 'gpt-5.6-luna',
       endpoint: 'https://res.openai.azure.com/openai/deployments/gpt-5.6-luna/responses',
-      api_key: null,
+      api_key_hint: null,
       ...overrides,
     });
 
