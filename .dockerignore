@@ -25,6 +25,7 @@
 !logos-agent/workspace/run_session.py
 !logos-agent/workspace/verify_checkout.py
 !logos-agent/workspace/screenshot.js
+!logos-agent/workspace/logos_github.py
 # Compile caches are resolved at image build time for offline session checks.
 !logos-webservice/pom.xml
 !logos-webservice/install-temurin.sh
@@ -56,6 +57,7 @@
 # The model gateway's nginx configuration, shipped in its image rather than
 # bind-mounted: a deployment copies only the compose file to its VM.
 !agent-gateway/nginx.conf
+!agent-gateway/internal-secret.envsh
 # The per-IP rate-limit gateway's nginx configuration and entrypoint, same
 # reasoning as the agent gateway above.
 !rate-limit-gateway/nginx.conf

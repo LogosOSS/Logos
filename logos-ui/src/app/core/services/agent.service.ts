@@ -8,6 +8,7 @@ import {
   AgentEvent,
   AgentInstructions,
   AgentModels,
+  AgentRepository,
   AgentSession,
   AgentTriggers,
   AgentWorkspace,
@@ -36,6 +37,11 @@ export class AgentService {
 
   deleteWorkspace(id: number): Promise<void> {
     return firstValueFrom(this.http.delete<void>(`${AgentService.BASE}/workspaces/${id}`));
+  }
+
+  /** Linked team repositories with the coding agent enabled. */
+  getRepositories(): Promise<AgentRepository[]> {
+    return firstValueFrom(this.http.get<AgentRepository[]>(`${AgentService.BASE}/repositories`));
   }
 
   // ── sessions ─────────────────────────────────────────────────────────────

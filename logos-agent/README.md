@@ -256,7 +256,10 @@ content in them. Search results are untrusted external data.
 
 **May:** read and change the working copy, run tests and linters, push a branch
 under `logos/agent/`, open a pull request, and — if enabled — have its result
-deployed to dev and screenshotted.
+deployed to dev and screenshotted. Sessions of a linked repository may, within
+the bounds in [Working the way the repository asks](#working-the-way-the-repository-asks),
+reach allowed HTTPS hosts, keep a workspace cache, read issues and — where
+allowed — comment.
 
 **May not:** reach the Docker daemon, run as root, push to `main` or any
 protected branch, dispatch a workflow, or touch production. The deploy is
@@ -330,12 +333,19 @@ labels things differently.
 
 ## Configuration
 
-Two variables are required — a Logos key and a GitHub token. Everything else
-has a default that is right for this deployment.
+A GitHub token and the stack's existing `LOGOS_INTERNAL_SECRET` are required.
+No static model API key is needed. The webservice migration provisions a
+low-priority internal agent identity; the gateway obtains a fresh 60-second
+inference token for each model request. Already admitted streams may finish
+after token expiry. Tokens and the internal secret never enter session
+containers. Disabling the internal identity revokes new requests immediately.
+Upgrade the webservice (database migration), orchestrator, runner and gateway
+together. Existing `LOGOS_AGENT_API_KEY` environment/repository secrets are
+unused and can be removed.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LOGOS_AGENT_API_KEY` | — | Logos key sessions call models with. **Required.** |
+| `LOGOS_INTERNAL_SECRET` | — | Existing internal trust root, shared by orchestrator, runner and model gateway. **Required.** |
 | `LOGOS_AGENT_GITHUB_TOKEN` | — | The agent account's token. **Required.** |
 | `LOGOS_AGENT_GITHUB_LOGIN` | `LogosOSSAgent` | The account every token must belong to |
 | `LOGOS_AGENT_DEFAULT_MODEL` | — | Model when a session does not name one. Optional: with exactly one local model reachable, that one is the default |
@@ -352,6 +362,7 @@ has a default that is right for this deployment.
 | `LOGOS_AGENT_SESSION_GITHUB_TOKEN` | falls back to the token above | Given to containers; best without `workflow` scope |
 | `LOGOS_AGENT_DEPLOY_ENABLED` | `false` | Whether dev deploys may be dispatched at all |
 | `LOGOS_AGENT_REQUIRED_ROLE` | `logos_admin` | Realm role required to drive agents |
+| `LOGOS_AGENT_EGRESS_PROXY_URL` | `http://logos-agent-egress-proxy:3128` | The allowlisting HTTPS proxy for linked-repository sessions; empty turns internet access off for every session |
 
 ### The GitHub account
 
@@ -395,24 +406,16 @@ so a session must never reach one — not by naming a cloud model, not through
 an alias of one, and not because the agent key was granted a cloud provider
 by mistake.
 
-The boundary is the platform's own key scoping: a Logos key reaches exactly
-the deployments its permissions grant, and the gateway replaces whatever
-credential a session sends with that key. **Give the agent key local
-providers only.**
+The managed identity can reach only registered `logosnode` providers and their
+models. User/team grants cannot extend it to cloud. When the same model is
+served locally and in the cloud, only the local deployment is eligible.
+The gateway overwrites client authorization and strips alternative key headers.
 
-The runner refuses to assume that was done. It reads what the key can
-actually reach and gates on the answer:
-
-| What it reads | What happens |
-|---|---|
-| every reachable deployment is local | sessions run; those models are what the UI offers |
-| any reachable deployment is a cloud provider | **no session starts at all**, and the reason names the models that would have cost money |
-| the key does not resolve, or the database cannot be read | unknown — treated as unsafe |
-
-It is re-established on every scheduler pass, not once at startup: permissions
-are data, and a key can be granted a cloud provider at any time. A model that
-is served both locally and in the cloud counts as cloud — the scheduler may
-route to either.
+The runner checks the identity and available models at startup and on every
+scheduler pass. A missing/disabled identity, missing internal secret, or
+unreadable database blocks sessions. No local deployment means no session can
+start. The identity keeps a stable id for accounting and LOW queue priority;
+its settings can carry the usual local rate/token/budget limits.
 
 ## Working with it like a colleague
 
@@ -618,9 +621,10 @@ pytest              # capacity gating, state machine, branch derivation
 | `GET` | `/capacity` | Current load and whether a session may start |
 | `GET` | `/models` | The locally served models a session may use |
 | `GET` | `/triggers` | Whether the runner reacts to the repository, and what it queued |
+| `GET` | `/repositories` | Linked team repositories with the coding agent enabled, for manual sessions |
 | `GET`/`POST` | `/workspaces` | List and create workspaces |
 | `DELETE` | `/workspaces/{id}` | Remove a workspace (refused while occupied) |
-| `GET`/`POST` | `/sessions` | List and queue sessions |
+| `GET`/`POST` | `/sessions` | List and queue sessions (`team_repository_id` targets a linked repository) |
 | `GET` | `/sessions/{id}` | One session |
 | `POST` | `/sessions/{id}/cancel` | Stop a session and remove its container |
 | `GET` | `/sessions/{id}/events` | Transcript and status events after an id |
@@ -725,7 +729,8 @@ repository keeps its existing behavior independently of linked-repository opt-in
 Build and test commands run against a disposable copy of the candidate in the
 existing verification container without credentials or internet access. The
 image provides its installed tools and offline Maven/npm caches; other language
-tools or dependencies must already be available in the image. Missing tools or
+tools or dependencies must be in the image or in the workspace cache described
+below. Missing tools or
 dependencies fail verification and allow only a draft PR. Repository instructions
 do not change the container image or install software on the runner. Linked
 coding sessions never invoke Logos image-build or deployment workflows.
@@ -733,6 +738,50 @@ coding sessions never invoke Logos image-build or deployment workflows.
 Disabling the link stops polling for new requests. Sessions already queued or
 running, their retries and pending replies retain their original repository and
 verification command. Changes to repository settings apply to newly queued work.
+
+A session can also be started by hand for a linked repository: the **Repository**
+select of the session form (`team_repository_id` on `POST /sessions`). The task
+gets the same build command and repository instructions a triggered session
+gets. Deploys and screenshots stay with the platform repository. An idle
+workspace that last worked on another repository is moved to the link's branch;
+a busy one is refused.
+
+#### Working the way the repository asks
+
+Repositories have their own contribution process: claim an issue with a
+comment, download a toolchain, contribute from a fork. Nothing here is
+specific to one repository; each piece is a general capability, bounded so that
+an agent steered by text it read cannot turn it against anybody.
+
+| Capability | Who enables it | Bound |
+|---|---|---|
+| **Internet over HTTPS** to named hosts | A Logos admin, per link (`agent_egress_hosts`) | Only through `logos-agent-egress-proxy`: `CONNECT` to port 443, only listed hosts (`*.example.org` for subdomains), only public addresses, only while the session runs, authenticated by a per-session token whose hash is on the row. The list is read live. |
+| **Internet over HTTPS** to any public host | A Logos admin, per link, as an explicit opt-in (`agent_egress_unrestricted`) | The host list is not consulted; every other bound of the row above holds. Text an agent reads can then make it send what it sees anywhere, so the session notes tell it to treat such text as data, and the option is meant for repositories where a host list is not practical. |
+| **Workspace cache** at `$LOGOS_CACHE_DIR` (`/cache`) | Every linked-repository session | A volume per workspace, removed with it. The agent phase writes it, verification reads it; credential-bearing helpers never mount it. |
+| **GitHub reads**: `logos-github issue N`, `logos-github issues --label L --assignee none` | Every linked-repository session | The session's repository only, 500 reads per session. |
+| **Comments**: `logos-github comment N "text"` | A Logos admin, per link (`agent_may_comment`) | The session's repository only, 30 per session, mentions neutralised, model disclosure appended, every comment an event on the session. |
+| **Fork** | Automatic when the agent account cannot push | The account's own fork, created on first use; a same-named repository that is not a fork of the target is refused. Leases, workflow refusal and token identity checks are unchanged. |
+| **Closing references** from `closes.txt` | Every linked-repository session | Only open issues assigned to the agent account, i.e. given to it or claimed through the repository's process. |
+
+The request files are the whole protocol of `logos-github`: the agent writes
+JSON into `/artifacts/github-requests/`, the runner answers into the session's
+read-only state directory within seconds (`app/github_broker.py`). A planted
+link cannot redirect the runner's write, and a request interrupted half way is
+reported rather than repeated.
+
+Verification of a linked repository still runs with no network. Toolchains
+and prebuilt dependencies the build and test command needs belong in
+`$LOGOS_CACHE_DIR`, which the command can read; a command that needs more than
+the default ten minutes needs a larger `LOGOS_AGENT_HELPER_TIMEOUT_S`.
+
+#### Model disclosure
+
+Every comment, review, inline review comment, reply and pull request
+description the agent account publishes ends with a line naming the model
+that wrote it and the session (`app/disclosure.py`). The runner adds it where
+the text is published; the GitHub write functions refuse a body without it.
+The launch records the model a session actually runs with, so "the default"
+is resolved once and stays true after the default changes.
 
 ## Important security incidents
 

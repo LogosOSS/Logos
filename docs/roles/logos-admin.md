@@ -378,12 +378,34 @@ Deactivation stops an active benchmark and restores the worker configuration bef
 
 ## Providers
 
-This page shows each provider that the deployment knows. These are cloud
-providers (Azure, OpenAI and others) and connected worker nodes. For each
-provider, the page shows the status and the connected models. It also shows the
-worker control actions (calibrate, sleep, wake, lane management).
+This page shows each provider that the deployment knows, in two lists.
+**Cloud Providers** lists the cloud providers (Azure, OpenAI, Anthropic and
+others) with their vendor. **Local Providers** lists the connected worker
+nodes. For each provider, the page shows the privacy level and the base URL.
+Expand a provider for its connected models, or for the worker control actions
+(calibrate, sleep, wake, lane management).
 
 ![Providers page](/img/roles/logos-admin-providers.png)
+
+### Add a Provider
+
+Select **Add Provider**. The dialog asks for the classification first:
+
+1. Select the **Provider Type**: `cloud` for a vendor API, `logosnode` for a
+   worker node.
+2. For a cloud provider, select the **Cloud Provider** (the vendor). The vendor
+   decides how Logos authenticates and which protocol headers it sends, and
+   the model sync discovers the models only with the correct vendor. Select
+   **other (OpenAI-compatible)** for an endpoint of no listed vendor.
+3. Select the **Privacy Level**: where the provider processes the data, for
+   example **Cloud in the EU, US provider**.
+4. Check the **Base URL**. For OpenAI, Anthropic, DeepSeek and Groq, the dialog
+   proposes the public endpoint of the vendor. Replace it for a proxy or a
+   regional endpoint. A URL that you typed stays when you change the vendor.
+5. Enter the **Name** and the **API Key**. Leave **Header Name** and **Format**
+   empty to use the vendor default that the placeholders show.
+
+![Add Provider dialog with Anthropic selected](/img/roles/logos-admin-add-provider.png)
 
 Expand a provider to see its connected models. Next to the endpoint, each model
 shows whether its batches can use the provider's Batch API: **Batch**, **No
@@ -758,6 +780,37 @@ that is queued or that runs. The results go to the teams as proposals on their
 **Workflows** tab ([Team detail](app-admin.md#workflows)).
 
 ![Agent Sessions page](/img/roles/logos-admin-agents.png)
+
+### Start a Session
+
+To queue a manual session, do these steps:
+
+1. Select **New session**. The **Start a session** form opens.
+2. In **Repository**, select the repository that the agent changes:
+   - **LogosOSS/Logos (platform repository)** is the default.
+   - Each linked team repository with the coding agent enabled shows as
+     `owner/name (branch)`.
+3. In **Workspace**, select a workspace. One workspace runs one session at a time.
+4. In **Task**, write the change that you want.
+5. Select **Queue session**.
+
+![Start a session form with the linked repository docs-example/sample-app selected](/img/roles/logos-admin-agents-new-session.png)
+
+The example shows the linked repository `docs-example/sample-app` with the
+branch `develop`. For a linked repository, the session works on that
+repository and its branch. The form disables **Deploy to the dev environment
+afterwards** and **Screenshot paths**, because these options are available
+only for the platform repository. A note below the check boxes gives this
+reason.
+
+The session list and the session details show the repository of a session on
+a linked repository. In the session list, the repository shows next to the
+workspace, for example `docs-example/sample-app` in the **Finished** section
+of the **Agent Sessions** page image.
+
+A Logos Admin also sets the network access and the comment permission of each
+linked repository. Edit the repository link on the **Repositories** tab of the
+team ([Agent Sandbox Permissions](app-admin.md#agent-sandbox-permissions)).
 
 ## My Workspace
 

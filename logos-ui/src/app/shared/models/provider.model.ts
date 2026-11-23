@@ -22,6 +22,15 @@ export type PrivacyLevel =
   | 'CLOUD_IN_EU_BY_EU_PROVIDER'
   | 'THIRD_PARTY_HARDWARE';
 
+/** How each privacy level reads in the web application. */
+export const PRIVACY_LEVEL_LABELS: Record<PrivacyLevel, string> = {
+  LOCAL: 'Local hardware',
+  THIRD_PARTY_HARDWARE: 'Third-party hardware',
+  CLOUD_IN_EU_BY_EU_PROVIDER: 'Cloud in the EU, EU provider',
+  CLOUD_IN_EU_BY_US_PROVIDER: 'Cloud in the EU, US provider',
+  CLOUD_NOT_IN_EU_BY_US_PROVIDER: 'Cloud outside the EU, US provider',
+};
+
 export interface Provider {
   id: number;
   name: string;

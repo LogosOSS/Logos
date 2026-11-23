@@ -16,7 +16,8 @@ import de.tum.cit.aet.logos.logoswebservice.identity.repository.ModelAccessProje
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.RateLimitUsageProjection;
 
 public interface ApiKeyRepository extends JpaRepository<ApiKey, Integer> {
-    Optional<ApiKey> findByKeyValueAndIsActiveTrue(String keyValue);
+    @Query(value = "SELECT * FROM api_keys WHERE key_value = :keyValue AND is_active = true AND internal_service IS NULL", nativeQuery = true)
+    Optional<ApiKey> findByKeyValueAndIsActiveTrue(@Param("keyValue") String keyValue);
 
     long countByIsActive(boolean isActive);
 

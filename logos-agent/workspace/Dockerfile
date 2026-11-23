@@ -185,13 +185,21 @@ RUN chmod -R a+rX /usr/share/maven /opt/logos-verification
 
 # Unprivileged user. The runner starts the container as `agent`; nothing in a
 # session ever runs as root.
+# /cache is the mount point of a linked repository's workspace cache. Docker
+# fills an empty named volume from the image directory it is mounted over,
+# ownership included, so a fresh cache volume belongs to the session user.
 RUN useradd --create-home --shell /bin/bash --uid 10001 agent \
-  && mkdir -p /workspace /artifacts \
-  && chown -R agent:agent /workspace /artifacts /home/agent
+  && mkdir -p /workspace /artifacts /cache \
+  && chown -R agent:agent /workspace /artifacts /cache /home/agent
 
 COPY --chown=agent:agent logos-agent/workspace/run_session.py /usr/local/lib/run_session.py
 COPY --chown=agent:agent logos-agent/workspace/verify_checkout.py /usr/local/lib/verify_checkout.py
 COPY --chown=agent:agent logos-agent/workspace/screenshot.js /usr/local/lib/screenshot.js
+# `logos-github`: how a session of a linked repository asks the runner to
+# read or comment on GitHub, since the session holds no credential.
+COPY logos-agent/workspace/logos_github.py /usr/local/lib/logos_github.py
+RUN printf '#!/bin/sh\nexec python3 /usr/local/lib/logos_github.py "$@"\n' > /usr/local/bin/logos-github \
+  && chmod 0755 /usr/local/bin/logos-github && chmod 0644 /usr/local/lib/logos_github.py
 
 USER agent
 WORKDIR /workspace

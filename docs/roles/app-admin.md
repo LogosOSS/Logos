@@ -107,7 +107,7 @@ commits. It does not analyze a repository that has no change.
 
 ![Team detail — Repositories](/img/roles/team-detail-repositories.png)
 
-#### Enable the coding agent
+#### Enable the Coding Agent
 
 Repository analysis uses read-only access. The coding agent can also change
 files and create pull requests after a repository owner requests work on GitHub.
@@ -123,7 +123,8 @@ files and create pull requests after a repository owner requests work on GitHub.
 
 The **Branch** is the base for new issue work. The command runs without
 credentials or internet access. The required tools and dependencies must exist
-in the agent image. A failed command permits only a draft pull request.
+in the agent image or in the workspace cache (see below). A failed command
+permits only a draft pull request.
 
 Assign an issue or pull request to the agent on GitHub to request work.
 You can also request a review or mention the agent in a comment.
@@ -135,6 +136,64 @@ Clear the option and select **Save** to stop new requests.
 Queued work and retries keep their saved repository and command.
 If several teams enable the same repository, the oldest enabled link supplies
 the settings. Linked repositories do not use Logos deployment workflows.
+
+##### Agent Sandbox Permissions
+
+Three settings in the coding agent section control access outside the
+sandbox. Only a Logos Admin can change them:
+
+| Setting | Effect |
+|---|---|
+| **Allow unrestricted internet access (HTTPS to any public host)** | If selected, agent sessions for this repository can reach all public HTTPS hosts. Logos then does not use the list of allowed network hosts. This setting is off by default. |
+| **Allowed network hosts** | The HTTPS hosts that agent sessions for this repository can reach, for example to download toolchains. Write one host per line. If the list is empty, then sessions have no internet access. |
+| **Let LogosOSSAgent comment on issues and pull requests during a session** | If selected, the agent can comment on issues and pull requests of this repository while a session runs. The comments use the GitHub account of the agent. |
+
+The screenshot in [Enable the Coding Agent](#enable-the-coding-agent) shows
+the settings as a Logos Admin sees them. An App Admin sees them in the
+read-only block **Agent sandbox permissions** of the dialog. If a link has
+these permissions, then the list shows, for example, **Network: 2 hosts** (or
+**Network: Any public host**) and **Comments during sessions: Allowed**.
+
+A host is a DNS name, for example `github.com`. A leading `*.` permits all
+subdomains, for example `*.githubusercontent.com`. Logos refuses a scheme, a
+port, a path, an IP address, `localhost` and a top-level wildcard such as
+`*.com`. The list holds a maximum of 64 hosts. Logos always blocks private and
+internal addresses.
+
+Select unrestricted internet access only if a list of hosts is not
+practical. The agent reads issues and comments that other persons write. If
+the agent has unrestricted internet access, then such text can make the agent
+send repository content or session data to a server. Also with this setting,
+sessions can use only HTTPS on port 443 to public addresses, and only while
+the session runs.
+
+Changing the repository URL of a link resets the three settings, because they
+were granted for the previous repository. Logos ignores the three settings in
+the same save. To grant them for the new repository, edit the link again
+after the save.
+
+Every session on a linked repository also gets the following, independent of
+the three settings:
+
+- **Workspace cache.** `$LOGOS_CACHE_DIR` (`/cache`) keeps toolchains and
+  downloaded dependencies between the sessions of a workspace. The build and
+  test command can read it, but it still runs without credentials or internet
+  access.
+- **GitHub reads.** The command `logos-github` in the session reads issues
+  and pull requests of the repository. With the comment permission it also
+  posts comments, for example to claim an issue as the contribution guide of
+  the repository asks.
+- **Fork.** If the agent account cannot push to the repository, the agent
+  pushes to its own fork and opens the pull request from there.
+- **Closing references.** The pull request closes the issues that the agent
+  names, but only open issues that are assigned to the agent account.
+- **Model disclosure.** Every comment, review and pull request description of
+  the agent names the model that wrote it.
+
+An App Admin sees the two settings read-only in the edit dialog, as
+**Network access** and **Comments during sessions**. To change them, ask a
+Logos Admin. The list shows **Network: N hosts** if the repository permits
+hosts, and **Comments during sessions: Allowed** if the agent can comment.
 
 ### Workflows
 

@@ -54,98 +54,38 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# --- what the agent key may reach -----------------------------------------
-
-# Which model deployments the runner's own Logos key is permitted to use, and
-# what kind of provider serves each. The permission rules are the platform's,
-# not this service's: the CTEs mirror the orchestrator's
-# `DBManager.get_deployments_for_api_key` exactly — a key with custom
-# permissions is scoped by its own grants, otherwise by its team's — so the
-# runner sees the same deployments a request with that key would be routed
-# to. `app/model_policy.py` turns the rows into the local-only decision;
-# duplicating the rules there instead of here would put the permission logic
-# two joins away from the tables it is about.
-_REACHABLE_DEPLOYMENTS = """
-    WITH key_info AS (
-        SELECT ak.id AS aki,
-               ak.team_id AS tid,
-               ak.use_custom_permissions AS custom
-          FROM api_keys ak
-         WHERE ak.key_value = :key_value
-           AND ak.is_active = true
-    ),
-    effective_providers AS (
-        SELECT akpp.provider_id
-          FROM api_key_provider_permissions akpp, key_info ki
-         WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-        UNION
-        SELECT tpp.provider_id
-          FROM team_provider_permissions tpp, key_info ki
-         WHERE tpp.team_id = ki.tid AND ki.custom = false
-    ),
-    effective_models AS (
-        SELECT akmp.model_id
-          FROM api_key_model_permissions akmp, key_info ki
-         WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-        UNION
-        SELECT tmp.model_id
-          FROM team_model_permissions tmp, key_info ki
-         WHERE tmp.team_id = ki.tid AND ki.custom = false
-    )
-    SELECT m.id AS model_id,
-           m.name AS model_name,
-           p.id AS provider_id,
-           p.provider_type AS provider_type,
-           (SELECT string_agg(a.alias, ',' ORDER BY a.alias)
-              FROM model_aliases a
-             WHERE a.model_id = m.id) AS aliases
-      FROM models m
-      JOIN model_provider mp ON m.id = mp.model_id
-      JOIN providers p ON mp.provider_id = p.id
-      JOIN effective_models em ON m.id = em.model_id
-      JOIN effective_providers ep ON p.id = ep.provider_id
-     ORDER BY m.name, p.id
-"""
+# --- the managed local-only agent identity -------------------------------
 
 
-async def agent_key_exists(key_value: str) -> bool:
-    """Whether the runner's Logos key is an active key of this platform.
+async def agent_key_id() -> int | None:
+    """Stable accounting id; revocation is shared by runner and issuer."""
+    async with sessionmaker()() as db:
+        value = (
+            await db.execute(text("SELECT id FROM api_keys WHERE internal_service = 'agent' AND is_active = true"))
+        ).scalar_one_or_none()
+    return int(value) if value is not None else None
 
-    A key that does not resolve has no permissions to read, which is not the
-    same as having none: the difference decides whether the model policy is
-    'nothing reachable' or 'unknown', and only the first is safe to run on.
+
+async def reachable_deployments() -> list[dict[str, Any]]:
+    """Same local-only scope as DBManager.get_deployments_for_api_key.
+
+    Explicit user/team grants cannot extend this service identity to cloud.
+    Even a model offered by both provider types reaches only its local copy.
     """
     async with sessionmaker()() as db:
-        row = (
-            await db.execute(
-                text("SELECT 1 FROM api_keys WHERE key_value = :key_value AND is_active = true"),
-                {"key_value": key_value},
-            )
-        ).first()
-    return row is not None
-
-
-async def agent_key_id(key_value: str) -> int | None:
-    """The platform id of the runner's key, or ``None`` if it does not resolve.
-
-    The orchestrator splits a model's in-flight requests by this id, so the
-    runner discounts the requests its own sessions — and the subagents those
-    sessions start — are actually making, rather than guessing one per session.
-    """
-    async with sessionmaker()() as db:
-        row = (
-            await db.execute(
-                text("SELECT id FROM api_keys WHERE key_value = :key_value AND is_active = true"),
-                {"key_value": key_value},
-            )
-        ).first()
-    return int(row[0]) if row is not None else None
-
-
-async def reachable_deployments(key_value: str) -> list[dict[str, Any]]:
-    """Every model deployment the given Logos key is permitted to use."""
-    async with sessionmaker()() as db:
-        rows = (await db.execute(text(_REACHABLE_DEPLOYMENTS), {"key_value": key_value})).mappings().all()
+        rows = (await db.execute(text("""
+            SELECT m.id AS model_id, m.name AS model_name,
+                   p.id AS provider_id, p.provider_type,
+                   (SELECT string_agg(a.alias, ',' ORDER BY a.alias)
+                    FROM model_aliases a WHERE a.model_id = m.id) AS aliases
+            FROM models m
+            JOIN model_provider mp ON mp.model_id = m.id
+            JOIN providers p ON p.id = mp.provider_id
+            WHERE p.provider_type = 'logosnode'
+              AND EXISTS (SELECT 1 FROM api_keys
+                          WHERE internal_service = 'agent' AND is_active = true)
+            ORDER BY m.name, p.id
+        """))).mappings().all()
     return [dict(row) for row in rows]
 
 
@@ -414,14 +354,117 @@ async def get_workspace(workspace_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+_CODING_REPOSITORY_COLUMNS = """
+    id, team_id, repo_url, repo_slug, branch, agent_instructions, verification_command,
+    agent_egress_hosts, agent_egress_unrestricted, agent_may_comment
+"""
+
+
 async def enabled_coding_repositories() -> list[dict[str, Any]]:
     """Linked repositories whose teams opted into coding work."""
     async with sessionmaker()() as db:
-        rows = (await db.execute(text("""
-            SELECT id, repo_url, repo_slug, branch, agent_instructions, verification_command
-              FROM team_repositories WHERE agent_enabled = TRUE ORDER BY id
-        """))).mappings()
+        rows = (
+            await db.execute(
+                text(
+                    f"SELECT {_CODING_REPOSITORY_COLUMNS} FROM team_repositories WHERE agent_enabled = TRUE ORDER BY id"
+                )
+            )
+        ).mappings()
         return [dict(row) for row in rows]
+
+
+async def coding_repository(link_id: int) -> dict[str, Any] | None:
+    """One linked repository with coding work enabled, or None."""
+    async with sessionmaker()() as db:
+        row = (
+            (
+                await db.execute(
+                    text(
+                        f"SELECT {_CODING_REPOSITORY_COLUMNS} FROM team_repositories "
+                        "WHERE id = :id AND agent_enabled = TRUE"
+                    ),
+                    {"id": link_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    return dict(row) if row else None
+
+
+async def sandbox_permissions(link_id: int | None, repo_slug: str | None) -> dict[str, Any]:
+    """What sessions of a linked repository may do beyond the default sandbox.
+
+    Read live rather than copied onto the session: a permission an
+    administrator withdraws must stop applying to work that is already
+    queued or running. Bound to the repository the session works on as well
+    as to the link: a link moved to another repository grants nothing to the
+    sessions of the one it pointed at before.
+    """
+    none: dict[str, Any] = {"agent_egress_hosts": [], "agent_egress_unrestricted": False, "agent_may_comment": False}
+    if link_id is None or not repo_slug:
+        return none
+    async with sessionmaker()() as db:
+        row = (
+            (
+                await db.execute(
+                    text("""
+                    SELECT agent_egress_hosts, agent_egress_unrestricted, agent_may_comment
+                      FROM team_repositories
+                     WHERE id = :id AND agent_enabled = TRUE AND lower(repo_slug) = lower(:slug)
+                    """),
+                    {"id": link_id, "slug": repo_slug},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    if row is None:
+        return none
+    hosts = row["agent_egress_hosts"]
+    if isinstance(hosts, str):
+        hosts = json.loads(hosts)
+    return {
+        "agent_egress_hosts": [str(host) for host in hosts or []],
+        "agent_egress_unrestricted": bool(row["agent_egress_unrestricted"]),
+        "agent_may_comment": bool(row["agent_may_comment"]),
+    }
+
+
+async def egress_grant(session_id: int) -> dict[str, Any] | None:
+    """What the egress proxy needs to decide about one session's connection."""
+    async with sessionmaker()() as db:
+        row = (
+            (
+                await db.execute(
+                    text("""
+                    SELECT s.status, s.egress_token_hash, tr.agent_egress_hosts, tr.agent_egress_unrestricted
+                      FROM agent_sessions s
+                      LEFT JOIN team_repositories tr
+                        ON tr.id = s.team_repository_id
+                       AND tr.agent_enabled = TRUE
+                       -- A link moved to another repository grants nothing
+                       -- to the sessions of the previous one.
+                       AND lower(tr.repo_slug) = lower(s.repo_slug)
+                     WHERE s.id = :id
+                    """),
+                    {"id": session_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    if row is None:
+        return None
+    hosts = row["agent_egress_hosts"] or []
+    if isinstance(hosts, str):
+        hosts = json.loads(hosts)
+    return {
+        "status": row["status"],
+        "token_hash": row["egress_token_hash"],
+        "hosts": [str(h) for h in hosts],
+        "unrestricted": bool(row["agent_egress_unrestricted"]),
+    }
 
 
 async def repository_comments_scanned_at(repository_id: int) -> datetime | None:
@@ -492,7 +535,9 @@ async def disposable_workspaces(idle_before: datetime) -> list[dict[str, Any]]:
                     text("""
                     SELECT w.id, w.name, w.volume_name, w.base_branch,
                            (SELECT s.repo_slug FROM agent_sessions s WHERE s.workspace_id = w.id
-                            ORDER BY s.id DESC LIMIT 1) AS repo_slug
+                            ORDER BY s.id DESC LIMIT 1) AS repo_slug,
+                           (SELECT s.push_repo_slug FROM agent_sessions s WHERE s.workspace_id = w.id
+                            ORDER BY s.id DESC LIMIT 1) AS push_repo_slug
                       FROM agent_workspaces w
                      WHERE w.ephemeral = TRUE
                        AND w.archived_at IS NULL
@@ -599,6 +644,10 @@ async def delete_workspace(workspace_id: int) -> bool:
 # --- sessions -------------------------------------------------------------
 
 
+class WorkspaceBusy(ValueError):
+    """A workspace is still working on another repository."""
+
+
 async def create_session(
     *,
     workspace_id: int,
@@ -621,7 +670,18 @@ async def create_session(
     team_repository_id: int | None = None,
     verification_command: str | None = None,
     repo_base_branch: str | None = None,
+    point_workspace_at: str | None = None,
 ) -> int:
+    """Queue a session. Returns its id.
+
+    A workspace holds one repository's checkout at a time. A session for
+    another repository than the workspace last worked on is refused while
+    the workspace has work in flight (``WorkspaceBusy``), and
+    ``point_workspace_at``, when given, is the base branch an idle workspace
+    moves to. The check and the move happen under the workspace lock that
+    also covers the insert, so concurrent requests cannot both find the
+    workspace idle — whichever path inserts the session.
+    """
     async with sessionmaker()() as db:
         # Lock the workspace row before inserting. delete_workspace takes
         # the same lock before it counts active sessions and deletes, so
@@ -639,6 +699,33 @@ async def create_session(
         if workspace is None:
             await db.rollback()
             raise ValueError(f"workspace {workspace_id} does not exist")
+        state = (
+            (
+                await db.execute(
+                    text("""
+                    SELECT (SELECT s.repo_slug FROM agent_sessions s WHERE s.workspace_id = :id
+                             ORDER BY s.id DESC LIMIT 1) AS repo_slug,
+                           EXISTS (SELECT 1 FROM agent_sessions s WHERE s.workspace_id = :id
+                                    AND s.status IN ('queued', 'starting', 'running', 'paused', 'finalizing'))
+                             AS busy
+                    """),
+                    {"id": workspace_id},
+                )
+            )
+            .mappings()
+            .one()
+        )
+        if (state["repo_slug"] or "").lower() != (repo_slug or "").lower():
+            if state["busy"]:
+                await db.rollback()
+                raise WorkspaceBusy(
+                    "This workspace has work in flight for another repository; " "choose or create another workspace"
+                )
+            if point_workspace_at is not None:
+                await db.execute(
+                    text("UPDATE agent_workspaces SET base_branch = :base WHERE id = :id"),
+                    {"id": workspace_id, "base": point_workspace_at},
+                )
         session_id = (
             await db.execute(
                 text("""
@@ -893,6 +980,7 @@ _SESSION_SELECT = """
            s.reply_target, s.reaction_target,
            s.priority, s.priority_reason, s.environment_notes,
            s.repo_url, s.repo_slug, s.team_repository_id, s.verification_command, s.repo_base_branch,
+           s.push_repo_slug,
            t.name AS team_name,
            COALESCE(s.tokens_in, 0) AS tokens_in,
            COALESCE(s.tokens_out, 0) AS tokens_out,
@@ -1475,6 +1563,14 @@ async def update_session(session_id: int, **fields: Any) -> None:
         # The text this session was handed, as opposed to the text sessions
         # are handed now — the instructions are editable.
         "environment_notes",
+        # The model the session is driven by, once the launch has resolved
+        # "no model named" to the actual default.
+        "model",
+        # The hash of the token the session's egress proxy credentials carry.
+        "egress_token_hash",
+        # Where the session's branch is pushed when the agent account cannot
+        # push to the repository itself: its own fork.
+        "push_repo_slug",
         # The commit whose checks somebody still has to look at, and whether
         # anybody still owes that.
         "checks_sha",

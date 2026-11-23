@@ -193,7 +193,7 @@ def own_key_by_default(monkeypatch):
     not resolve set their own answer.
     """
 
-    async def the_key(_key_value: str):
+    async def the_key():
         return 7
 
     monkeypatch.setattr(db, "agent_key_id", the_key)

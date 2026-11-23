@@ -15,6 +15,24 @@
   app-search-input { flex: 1 1 auto; min-width: 0; }
 }
 
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: rgb(var(--color-typography-0));
+  margin: 28px 0 10px;
+}
+
+.section-count {
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  background: rgb(var(--color-outline-200) / var(--opacity-soft));
+  color: rgb(var(--color-typography-300));
+}
 
 // ── Table cells ───────────────────────────────────────────────────────────
 .col-name { padding-left: 4px; }
@@ -301,4 +319,10 @@
   .conn-key {
     display: none;
   }
+}
+
+.field-hint {
+  font-size: var(--font-size-xs);
+  color: rgb(var(--color-typography-600));
+  margin: 2px 0 0;
 }

@@ -90,5 +90,8 @@
     <include file="liquibase/changelog/083_node_settings.xml"/>
     <include file="liquibase/changelog/084_benchmark_workload_size.xml"/>
     <include file="liquibase/changelog/085_recent_model_full_requests.xml"/>
-    <include file="liquibase/changelog/086_deployments.xml"/>
+    <include file="liquibase/changelog/086_agent_service_identity.xml"/>
+    <include file="liquibase/changelog/087_agent_sandbox_permissions.xml"/>
+    <include file="liquibase/changelog/088_agent_unrestricted_egress.xml"/>
+    <include file="liquibase/changelog/089_deployments.xml"/>
 </databaseChangeLog>

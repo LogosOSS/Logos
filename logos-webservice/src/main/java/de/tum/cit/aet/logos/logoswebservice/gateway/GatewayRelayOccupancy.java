@@ -7,13 +7,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 /**
- * Process-local count of inference-gateway {@link StreamingResponseBody}
- * tasks currently running.
+ * Process-local count of direct-cloud {@link StreamingResponseBody} callbacks
+ * currently running; not total gateway I/O or detached usage drains.
  *
- * <p>The Spring task-executor slot is held for exactly as long as the
- * response-body callback runs. Opening the upstream connection happens
- * earlier, on the servlet thread, so an upstream-side overlap counter can
- * over-count relative to this pool — see the gateway concurrency benchmark.
+ * <p>Opening the upstream connection happens earlier, on the servlet thread,
+ * so an upstream-side overlap counter can over-count relative to these
+ * callbacks. {@link GatewayInFlightLimit} separately bounds owned I/O.
  */
 public final class GatewayRelayOccupancy {
 

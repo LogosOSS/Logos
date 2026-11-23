@@ -170,6 +170,7 @@ async def create_session_container(
     session_id: int,
     labels: dict[str, str] | None = None,
     network: str | None = None,
+    cache_volume: str | None = None,
 ) -> str:
     """Create the container an agent session runs in.
 
@@ -214,6 +215,14 @@ async def create_session_container(
     ]
     if state_host_path:
         binds.append(f"{state_host_path}:/logos/state:ro")
+    if cache_volume:
+        # Toolchains and downloads that outlive one session of a workspace.
+        # Only the agent phase writes it; verification reads it. The trusted
+        # helpers never mount it, so nothing a session put there runs where
+        # a credential is.
+        if env.get("LOGOS_SESSION_PHASE") not in {"agent", "verify"}:
+            raise ValueError("only the agent and verification phases may mount the workspace cache")
+        binds.append(f"{cache_volume}:/cache{mount_mode}")
     trust_only = env.get("LOGOS_SESSION_PHASE") == "ssh-trust"
     if trust_only:
         # Host-key learning cannot see any session-writable files, including

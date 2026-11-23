@@ -799,10 +799,11 @@ class TestReactionsAndReplies:
     async def test_an_answer_goes_to_the_thread_it_was_asked_in(self, monkeypatch):
         sent = self._capture(monkeypatch)
 
-        url = await github.post_issue_comment(772, "the answer")
+        url = await github.post_issue_comment(772, "the answer", footer="<sub>model</sub>")
 
         assert sent[0]["url"].endswith("/issues/772/comments")
-        assert sent[0]["json"] == {"body": "the answer"}
+        # The model disclosure travels with every published answer.
+        assert sent[0]["json"] == {"body": "the answer\n\n<sub>model</sub>"}
         assert url.startswith("https://github.com/")
 
     async def test_an_inline_question_is_answered_inline(self, monkeypatch):
@@ -810,10 +811,18 @@ class TestReactionsAndReplies:
         # an answer nobody finds.
         sent = self._capture(monkeypatch)
 
-        await github.reply_to_review_comment(772, 3910035243, "the answer")
+        await github.reply_to_review_comment(772, 3910035243, "the answer", footer="<sub>model</sub>")
 
         assert sent[0]["url"].endswith("/pulls/772/comments/3910035243/replies")
-        assert sent[0]["json"] == {"body": "the answer"}
+        assert sent[0]["json"] == {"body": "the answer\n\n<sub>model</sub>"}
+
+    async def test_an_answer_without_its_model_disclosure_is_refused(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+
+        with pytest.raises(ValueError):
+            await github.post_issue_comment(772, "the answer", footer="  ")
+
+        assert sent == []
 
 
 class TestReviewSupersession:

@@ -33,6 +33,12 @@ class _Result:
     def scalar_one_or_none(self):
         return self._value
 
+    def mappings(self):
+        return self
+
+    def one(self):
+        return self._value
+
 
 class _Connection:
     """One db session over the shared model, honouring the row lock.
@@ -62,6 +68,20 @@ class _Connection:
             await self.model.lock.acquire()
             self.holding_lock = True
             return _Result(self.model.workspaces.get(workspace_id))
+        if sql.startswith("SELECT (SELECT s.repo_slug FROM agent_sessions"):
+            # Which repository the workspace last worked on, and whether it
+            # has work in flight — read under the row lock taken above.
+            mine = [s for s in self.model.sessions if s["workspace_id"] == params["id"]]
+            active = {s.value for s in db.ACTIVE_STATUSES}
+            return _Result(
+                {
+                    "repo_slug": mine[-1].get("repo_slug") if mine else None,
+                    "busy": any(s["status"] in active for s in mine),
+                }
+            )
+        if sql.startswith("UPDATE agent_workspaces SET base_branch"):
+            self.model.workspaces[params["id"]]["base_branch"] = params["base"]
+            return _Result(rowcount=1)
         if sql.startswith("SELECT COUNT(*) FROM agent_sessions"):
             active = {s.value for s in db.ACTIVE_STATUSES}
             count = sum(1 for s in self.model.sessions if s["workspace_id"] == params["id"] and s["status"] in active)
@@ -74,7 +94,14 @@ class _Connection:
             return _Result(rowcount=1 if deleted else 0)
         if sql.startswith("INSERT INTO agent_sessions"):
             session_id = max((s["id"] for s in self.model.sessions), default=0) + 1
-            self.model.sessions.append({"id": session_id, "workspace_id": params["workspace_id"], "status": "queued"})
+            self.model.sessions.append(
+                {
+                    "id": session_id,
+                    "workspace_id": params["workspace_id"],
+                    "status": "queued",
+                    "repo_slug": params.get("repo_slug"),
+                }
+            )
             self.model.inserted.set()
             return _Result(session_id)
         raise AssertionError(f"unexpected statement in test: {sql}")
@@ -160,7 +187,7 @@ async def test_a_create_that_wins_the_race_keeps_its_session_from_the_delete(mon
     assert isinstance(delete, ValueError)
     assert "active session" in str(delete)
     # The accepted session survived: still queued, still in its workspace.
-    assert model.sessions == [{"id": session_id, "workspace_id": 1, "status": "queued"}]
+    assert model.sessions == [{"id": session_id, "workspace_id": 1, "status": "queued", "repo_slug": None}]
     assert model.workspaces == {1: dict(WORKSPACE)}
 
 
@@ -928,3 +955,28 @@ class TestClaimingOnOneBranch:
         assert len(claimed) == 1
         assert claimed[0]["id"] == 7
         assert model.sessions[7]["status"] == "starting"
+
+
+async def test_a_session_for_another_repository_cannot_join_a_busy_workspace(monkeypatch):
+    model = _Model()
+    _patch_db(monkeypatch, model)
+    await db.create_session(**_create_kwargs(), repo_slug="acme/app")
+
+    with pytest.raises(db.WorkspaceBusy):
+        await db.create_session(**_create_kwargs(), repo_slug="acme/other", point_workspace_at="main")
+
+    assert len(model.sessions) == 1
+    # The lock is released on the refusal, so the workspace is not stuck.
+    assert not model.lock.locked()
+
+
+async def test_an_idle_workspace_moves_to_another_repositorys_branch_with_the_insert(monkeypatch):
+    model = _Model()
+    _patch_db(monkeypatch, model)
+    await db.create_session(**_create_kwargs(), repo_slug="acme/app")
+    model.sessions[0]["status"] = "succeeded"
+
+    await db.create_session(**_create_kwargs(), repo_slug="acme/other", point_workspace_at="develop")
+
+    assert model.workspaces[1]["base_branch"] == "develop"
+    assert model.sessions[-1]["repo_slug"] == "acme/other"

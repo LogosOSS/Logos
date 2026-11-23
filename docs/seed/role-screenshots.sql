@@ -663,13 +663,16 @@ WHERE t.name = 'Logos'
   );
 
 -- Fictional application link for the coding-agent editor. No GitHub work runs here.
+-- The agent sandbox permissions fill the Logos Admin fields of the editor.
 INSERT INTO team_repositories (
     team_id, repo_url, repo_slug, branch, paths,
-    agent_enabled, verification_command, agent_instructions
+    agent_enabled, verification_command, agent_instructions,
+    agent_egress_hosts, agent_may_comment
 )
 SELECT t.id, 'https://github.com/docs-example/sample-app.git', 'docs-example/sample-app',
        'develop', '["src"]'::jsonb, TRUE, 'make check && make build',
-       'Use the project Makefile. Keep API behavior compatible.'
+       'Use the project Makefile. Keep API behavior compatible.',
+       '["github.com", "*.githubusercontent.com"]'::jsonb, TRUE
 FROM teams t
 WHERE t.name = 'Logos'
 ON CONFLICT (team_id, repo_slug) DO UPDATE SET
@@ -677,7 +680,34 @@ ON CONFLICT (team_id, repo_slug) DO UPDATE SET
     paths = EXCLUDED.paths,
     agent_enabled = EXCLUDED.agent_enabled,
     verification_command = EXCLUDED.verification_command,
-    agent_instructions = EXCLUDED.agent_instructions;
+    agent_instructions = EXCLUDED.agent_instructions,
+    agent_egress_hosts = EXCLUDED.agent_egress_hosts,
+    agent_may_comment = EXCLUDED.agent_may_comment;
+
+-- A finished session on the linked repository: the Agents page shows its repository.
+INSERT INTO agent_workspaces (name, base_branch, volume_name, created_by)
+SELECT 'sample-app', 'develop', 'docs-role-vol-sample', 'docs-role-screenshots'
+WHERE NOT EXISTS (SELECT 1 FROM agent_workspaces w WHERE w.name = 'sample-app');
+
+INSERT INTO agent_sessions (
+    workspace_id, task, model, status,
+    open_pull_request, created_by, created_at, started_at, finished_at,
+    tokens_in, tokens_out, cost_usd,
+    repo_url, repo_slug, team_repository_id, verification_command, repo_base_branch
+)
+SELECT w.id, 'Add input validation to the signup form', 'qwen-2.5-72b-instruct', 'succeeded',
+       true, 'docs-role-screenshots',
+       now() - interval '5 hours', now() - interval '5 hours', now() - interval '4 hours',
+       9000, 2500, 0.24,
+       tr.repo_url, tr.repo_slug, tr.id, tr.verification_command, tr.branch
+FROM agent_workspaces w
+JOIN teams t ON t.name = 'Logos'
+JOIN team_repositories tr ON tr.team_id = t.id AND tr.repo_slug = 'docs-example/sample-app'
+WHERE w.name = 'sample-app'
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_sessions a
+      WHERE a.created_by = 'docs-role-screenshots' AND a.task = 'Add input validation to the signup form'
+  );
 
 INSERT INTO ai_workflow_analyses (
     team_id, team_repository_id, commit_sha, status, source, finished_at

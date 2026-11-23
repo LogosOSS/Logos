@@ -7,6 +7,7 @@ import {
   OnDestroy,
   ChangeDetectionStrategy,
 } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
 import { ProviderManagementService } from '../../core/services/provider-management.service';
@@ -19,6 +20,7 @@ import {
   ProviderType,
   CloudProviderType,
   PrivacyLevel,
+  PRIVACY_LEVEL_LABELS,
 } from '../../shared/models/provider.model';
 import { Model } from '../../shared/models/model.model';
 import { isInteractiveClick } from '../../shared/utils/interactive-click';
@@ -32,6 +34,7 @@ import { NodeModels } from './node-models/node-models';
   selector: 'app-providers',
   standalone: true,
   imports: [
+    NgTemplateOutlet,
     ModalFormComponent,
     ModalConfirmComponent,
     SearchInputComponent,
@@ -60,11 +63,12 @@ export class Providers implements OnInit, OnDestroy {
     'logos',
     'none',
   ];
+  // Most private first within each provider type.
   readonly privacyLevels: PrivacyLevel[] = [
     'LOCAL',
+    'CLOUD_IN_EU_BY_EU_PROVIDER',
     'CLOUD_IN_EU_BY_US_PROVIDER',
     'CLOUD_NOT_IN_EU_BY_US_PROVIDER',
-    'CLOUD_IN_EU_BY_EU_PROVIDER',
     // Hardware outside operator control — use it for a personal Mac MLX
     // worker so that LOCAL-threshold requests never route onto a machine
     // whose owner can inspect the running processes.
@@ -89,6 +93,51 @@ export class Providers implements OnInit, OnDestroy {
   private readonly defaultCloudProviderType: CloudProviderType = 'none';
   private readonly defaultCloudPrivacyLevel: PrivacyLevel = 'CLOUD_IN_EU_BY_US_PROVIDER';
 
+  // Where each vendor serves its public API, proposed as the base URL once the
+  // operator picks the vendor. Only a proposal: a proxy or regional endpoint
+  // is typed over it. Vendors whose endpoint names the operator's own resource
+  // or instance (azure, bedrock, logos) have none to propose, and neither does
+  // gemini, whose OpenAI-compatible root does not end in an API version and
+  // so cannot be addressed by the model sync's /v1/models rule.
+  private readonly suggestedBaseUrls: Partial<Record<CloudProviderType, string>> = {
+    openai: 'https://api.openai.com/v1',
+    anthropic: 'https://api.anthropic.com',
+    deepseek: 'https://api.deepseek.com',
+    groq: 'https://api.groq.com/openai/v1',
+  };
+
+  // What the orchestrator and the gateway send when the auth fields are left
+  // empty. Anthropic reads x-api-key and ignores an Authorization header, so
+  // advertising "Authorization: Bearer {}" for it invites a wrong entry.
+  private readonly defaultAuthHeaders: Partial<Record<CloudProviderType, { name: string; format: string }>> = {
+    anthropic: { name: 'x-api-key', format: '{}' },
+  };
+
+  suggestedBaseUrl(type: ProviderType, cloud: CloudProviderType): string {
+    return type === 'cloud' ? (this.suggestedBaseUrls[cloud] ?? '') : '';
+  }
+
+  /**
+   * The base URL after the vendor changed. An empty field, or one still
+   * holding the previous vendor's proposal, takes the new vendor's proposal;
+   * a URL the operator typed is never replaced.
+   */
+  private rebasedUrl(current: string, previous: string, next: string): string {
+    const trimmed = current.trim();
+    return trimmed === '' || trimmed === previous ? next : current;
+  }
+
+  private baseUrlPlaceholder(type: ProviderType, cloud: CloudProviderType): string {
+    return this.suggestedBaseUrl(type, cloud) || 'https://...';
+  }
+
+  private authPlaceholders(type: ProviderType, cloud: CloudProviderType): { name: string; format: string } {
+    return (type === 'cloud' ? this.defaultAuthHeaders[cloud] : undefined) ?? {
+      name: 'Authorization',
+      format: 'Bearer {}',
+    };
+  }
+
   private cloudProviderTypeOptionsFor(type: ProviderType): AppSelectOption[] {
     if (type === 'logosnode') {
       // Never rendered — the field is hidden for a logosnode — but the value
@@ -110,7 +159,7 @@ export class Providers implements OnInit, OnDestroy {
       type === 'logosnode'
         ? this.privacyLevels.filter((l) => l === 'LOCAL' || l === 'THIRD_PARTY_HARDWARE')
         : this.privacyLevels.filter((l) => l !== 'LOCAL' && l !== 'THIRD_PARTY_HARDWARE');
-    return levels.map((l) => ({ value: l, label: l }));
+    return levels.map((l) => ({ value: l, label: PRIVACY_LEVEL_LABELS[l] }));
   }
 
   readonly addCloudProviderTypeOptions = computed(() =>
@@ -125,6 +174,28 @@ export class Providers implements OnInit, OnDestroy {
   readonly editPrivacyLevelOptions = computed(() =>
     this.privacyLevelOptionsFor(this.editProviderType()),
   );
+  readonly addBaseUrlPlaceholder = computed(() =>
+    this.baseUrlPlaceholder(this.addProviderType(), this.addCloudProviderType()),
+  );
+  readonly editBaseUrlPlaceholder = computed(() =>
+    this.baseUrlPlaceholder(this.editProviderType(), this.editCloudProviderType()),
+  );
+  readonly addAuthPlaceholders = computed(() =>
+    this.authPlaceholders(this.addProviderType(), this.addCloudProviderType()),
+  );
+  readonly editAuthPlaceholders = computed(() =>
+    this.authPlaceholders(this.editProviderType(), this.editCloudProviderType()),
+  );
+  // Shown under the field while it holds the proposal, so the operator knows
+  // the value came from the vendor choice and may need adjusting.
+  readonly addBaseUrlIsSuggestion = computed(() => {
+    const suggestion = this.suggestedBaseUrl(this.addProviderType(), this.addCloudProviderType());
+    return suggestion !== '' && this.addBaseUrl().trim() === suggestion;
+  });
+  readonly editBaseUrlIsSuggestion = computed(() => {
+    const suggestion = this.suggestedBaseUrl(this.editProviderType(), this.editCloudProviderType());
+    return suggestion !== '' && this.editBaseUrl().trim() === suggestion;
+  });
 
   private coercedForType(
     type: ProviderType,
@@ -148,6 +219,7 @@ export class Providers implements OnInit, OnDestroy {
   }
 
   onAddProviderTypeChange(type: ProviderType): void {
+    const previous = this.suggestedBaseUrl(this.addProviderType(), this.addCloudProviderType());
     this.addProviderType.set(type);
     const { cloud, privacy } = this.coercedForType(
       type,
@@ -156,9 +228,18 @@ export class Providers implements OnInit, OnDestroy {
     );
     this.addCloudProviderType.set(cloud);
     this.addPrivacyLevel.set(privacy);
+    this.addBaseUrl.set(this.rebasedUrl(this.addBaseUrl(), previous, this.suggestedBaseUrl(type, cloud)));
+  }
+
+  onAddCloudProviderTypeChange(cloud: CloudProviderType): void {
+    const type = this.addProviderType();
+    const previous = this.suggestedBaseUrl(type, this.addCloudProviderType());
+    this.addCloudProviderType.set(cloud);
+    this.addBaseUrl.set(this.rebasedUrl(this.addBaseUrl(), previous, this.suggestedBaseUrl(type, cloud)));
   }
 
   onEditProviderTypeChange(type: ProviderType): void {
+    const previous = this.suggestedBaseUrl(this.editProviderType(), this.editCloudProviderType());
     this.editProviderType.set(type);
     const { cloud, privacy } = this.coercedForType(
       type,
@@ -167,6 +248,14 @@ export class Providers implements OnInit, OnDestroy {
     );
     this.editCloudProviderType.set(cloud);
     this.editPrivacyLevel.set(privacy);
+    this.editBaseUrl.set(this.rebasedUrl(this.editBaseUrl(), previous, this.suggestedBaseUrl(type, cloud)));
+  }
+
+  onEditCloudProviderTypeChange(cloud: CloudProviderType): void {
+    const type = this.editProviderType();
+    const previous = this.suggestedBaseUrl(type, this.editCloudProviderType());
+    this.editCloudProviderType.set(cloud);
+    this.editBaseUrl.set(this.rebasedUrl(this.editBaseUrl(), previous, this.suggestedBaseUrl(type, cloud)));
   }
 
   readonly connectableModelOptions = computed<AppSelectOption[]>(() => [
@@ -261,6 +350,10 @@ export class Providers implements OnInit, OnDestroy {
       (p) => p.name.toLowerCase().includes(q) || (p.base_url ?? '').toLowerCase().includes(q),
     );
   });
+  // Listed apart: a cloud provider is configured by vendor and endpoint, a
+  // local one is a worker node with its own models and GPU settings.
+  cloudProviders = computed(() => this.filteredProviders().filter((p) => p.provider_type === 'cloud'));
+  localProviders = computed(() => this.filteredProviders().filter((p) => p.provider_type !== 'cloud'));
 
   addValid = computed(() => this.addName().trim().length > 0);
   editValid = computed(() => this.editName().trim().length > 0);
@@ -382,14 +475,14 @@ export class Providers implements OnInit, OnDestroy {
   }
 
   formatPrivacy(level: PrivacyLevel): string {
-    const map: Record<PrivacyLevel, string> = {
-      LOCAL: 'LOCAL',
-      CLOUD_IN_EU_BY_US_PROVIDER: 'EU (US)',
-      CLOUD_NOT_IN_EU_BY_US_PROVIDER: 'Non-EU (US)',
-      CLOUD_IN_EU_BY_EU_PROVIDER: 'EU (EU)',
-      THIRD_PARTY_HARDWARE: 'Third-party HW',
-    };
-    return map[level] ?? level;
+    return PRIVACY_LEVEL_LABELS[level] ?? level;
+  }
+
+  typeLabel(provider: Provider): string {
+    if (provider.provider_type !== 'cloud') return provider.provider_type;
+    return provider.cloud_provider_type && provider.cloud_provider_type !== 'none'
+      ? provider.cloud_provider_type
+      : this.untypedCloudLabel;
   }
 
   // ── Expand ────────────────────────────────────────────────────────────────

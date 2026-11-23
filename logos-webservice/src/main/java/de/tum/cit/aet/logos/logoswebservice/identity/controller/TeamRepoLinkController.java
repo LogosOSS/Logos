@@ -23,7 +23,8 @@ import de.tum.cit.aet.logos.logoswebservice.identity.service.TeamRepoLinkService
 /**
  * Team-scoped GitHub repository links used later for AI-workflow / SLO analysis.
  * Same ownership gate as application keys: logos admins, or an app admin who owns
- * the team.
+ * the team. The agent sandbox permissions (network hosts, commenting) are
+ * logos-admin only.
  */
 @RestController
 @RequestMapping("/admin")
@@ -58,6 +59,9 @@ public class TeamRepoLinkController {
         if (forbiddenForNonOwner(auth, teamId)) {
             return ResponseEntity.status(403).body(Map.of("detail", "Team owner access required"));
         }
+        if (body.changesSandboxPermissions() && !isLogosAdmin(auth)) {
+            return sandboxPermissionsForbidden();
+        }
         return ResponseEntity.ok(service.create(teamId, body));
     }
 
@@ -70,6 +74,9 @@ public class TeamRepoLinkController {
             @RequestAttribute("authContext") AuthContext auth) {
         if (forbiddenForNonOwner(auth, teamId)) {
             return ResponseEntity.status(403).body(Map.of("detail", "Team owner access required"));
+        }
+        if (body.changesSandboxPermissions() && !isLogosAdmin(auth)) {
+            return sandboxPermissionsForbidden();
         }
         return service.update(teamId, linkId, body)
             .<ResponseEntity<?>>map(ResponseEntity::ok)
@@ -89,6 +96,15 @@ public class TeamRepoLinkController {
             return ResponseEntity.status(404).body(Map.of("detail", "Repository link not found"));
         }
         return ResponseEntity.ok(Map.of("message", "Repository link deleted"));
+    }
+
+    private static boolean isLogosAdmin(AuthContext auth) {
+        return Role.LOGOS_ADMIN.matches(auth.role());
+    }
+
+    private static ResponseEntity<?> sandboxPermissionsForbidden() {
+        return ResponseEntity.status(403).body(Map.of(
+            "detail", "Only Logos admins can change agent network access and comment permissions"));
     }
 
     private boolean forbiddenForNonOwner(AuthContext auth, Integer teamId) {

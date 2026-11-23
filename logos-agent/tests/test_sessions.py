@@ -1021,7 +1021,7 @@ class TestAnAnswerThatWasNeverWritten:
         async def get_session(_session_id):
             return row
 
-        async def post_issue_comment(number, body):
+        async def post_issue_comment(number, body, *, footer):
             posted.append((number, body))
             return f"https://github.com/x/y/issues/{number}#issuecomment-1"
 
@@ -1132,7 +1132,7 @@ class TestAnAnswerThatWasNeverWritten:
         async def get_session(_session_id):
             return row
 
-        async def post_issue_comment(number, body):
+        async def post_issue_comment(number, body, *, footer):
             await asyncio.sleep(0)  # let a concurrent caller in, as the loop does
             posted.append((number, body))
             return f"https://github.com/x/y/issues/{number}#issuecomment-1"
@@ -3940,7 +3940,7 @@ class TestReplyDelivery:
         (tmp_path / "7" / "reply.md").write_text("the answer")
         attempts: list = []
 
-        async def failing_reply(_target, _body):
+        async def failing_reply(_target, _body, *, footer):
             raise RuntimeError("502 from GitHub")
 
         async def record(session_id, *, delivered):
@@ -3968,7 +3968,7 @@ class TestReplyDelivery:
         async def owing(_max_attempts):
             return [{"id": 7, "reply_target": "issue:772", "reply_attempts": 1}]
 
-        async def send(target, body):
+        async def send(target, body, *, footer):
             posted.append((target, body))
             return "https://github.com/x/y#c9"
 
@@ -3995,7 +3995,7 @@ class TestReplyDelivery:
         (tmp_path / "7" / "reply.md").write_text("the answer")
         posted: list = []
 
-        async def send(target, body):
+        async def send(target, body, *, footer):
             posted.append(target)
             return "url"
 
@@ -4029,7 +4029,7 @@ class TestReplyDelivery:
         async def record(session_id, *, delivered):
             attempts.append((session_id, delivered))
 
-        async def send(_target, _body):
+        async def send(_target, _body, *, footer):
             raise AssertionError("a failed look-up must not reach the POST")
 
         monkeypatch.setattr(sessions.db, "get_session", self._async_value({"reply_target": "issue:772"}))
@@ -4050,7 +4050,7 @@ class TestReplyDelivery:
         (tmp_path / "7" / "reply.md").write_text("x" * 80_000)
         posted: list = []
 
-        async def send(_target, body):
+        async def send(_target, body, *, footer):
             posted.append(body)
             return "url"
 
@@ -4098,7 +4098,7 @@ class TestReplyDelivery:
         posted: list = []
         attempts: list = []
 
-        async def send(target, body):
+        async def send(target, body, *, footer):
             posted.append((target, body))
             if len(posted) == 1:
                 raise RuntimeError("the confirmation never arrived")
@@ -4217,11 +4217,11 @@ class TestReviewReplyDelivery:
                 ]
             )
 
-        async def fake_reply(number, comment_id, body):
+        async def fake_reply(number, comment_id, body, *, footer):
             recorded["threads"].append((number, comment_id, body))
             return f"https://github.com/x/y#issuecomment-{comment_id}"
 
-        async def fake_summary(number, body):
+        async def fake_summary(number, body, *, footer):
             recorded["summaries"].append((number, body))
             return f"https://github.com/x/y#issuecomment-{number}"
 
@@ -4559,7 +4559,7 @@ class TestReviewReplyDelivery:
         (directory / "replies" / "101.md").write_text("one")
         posted_remotely = {"n": 0}
 
-        async def lost_confirmation(number, comment_id, body):
+        async def lost_confirmation(number, comment_id, body, *, footer):
             posted_remotely["n"] += 1
             if posted_remotely["n"] == 1:
                 raise RuntimeError("the confirmation never arrived")
@@ -4600,7 +4600,7 @@ class TestReviewReplyDelivery:
         (directory / "reply.md").write_text("the body point")
         posted_remotely = {"n": 0}
 
-        async def lost_summary(number, body):
+        async def lost_summary(number, body, *, footer):
             posted_remotely["n"] += 1
             if posted_remotely["n"] == 1:
                 raise RuntimeError("the confirmation never arrived")
@@ -4639,7 +4639,7 @@ class TestReviewReplyDelivery:
         async def gone(_number, _review_id):
             raise sessions.github.GitHubError("the review is gone (404)", status=404)
 
-        async def lost_summary(number, body):
+        async def lost_summary(number, body, *, footer):
             posted_remotely["n"] += 1
             if posted_remotely["n"] == 1:
                 raise RuntimeError("the confirmation never arrived")
@@ -4688,7 +4688,7 @@ class TestReviewReplyDelivery:
                 raise RuntimeError("rate limited")
             recorded["re_requests"].extend(logins)
 
-        async def post_summary(number, body):
+        async def post_summary(number, body, *, footer):
             posted["summary"] = True
             recorded["summaries"].append((number, body))
             return f"https://github.com/x/y#issuecomment-{number}"
@@ -4877,7 +4877,7 @@ class TestReviewReplyDelivery:
         (directory / "reply.md").write_text("a" * 40_000)
         posted = {"n": 0}
 
-        async def flaky_post(number, body):
+        async def flaky_post(number, body, *, footer):
             posted["n"] += 1
             if posted["n"] == 1:
                 raise RuntimeError("the confirmation never arrived")
@@ -5127,7 +5127,8 @@ class TestWorkspaceHousekeeping:
 
         await sessions.SessionManager().sweep_workspaces()
 
-        assert removed_volumes == ["logos_agent_ws_issue-812-oom"]
+        # The workspace's cache volume goes with it.
+        assert removed_volumes == ["logos_agent_ws_issue-812-oom", "logos_agent_cache_issue-812-oom"]
         assert archived == [3]
         # Deleting the row would cascade into every finished session in it:
         # the history, the trigger references that keep assignments from
@@ -6687,7 +6688,7 @@ class TestRequestedReviewDelivery:
             (tmp_path / "state" / "31").mkdir(parents=True, exist_ok=True)
             (tmp_path / "state" / "31" / "reviewed-sha").write_text(sha + "\n")
 
-        async def fake_create(number, body, comments, *, commit_id):
+        async def fake_create(number, body, comments, *, commit_id, footer):
             if refuse is not None:
                 raise github.GitHubError("refused", status=refuse)
             recorded["commits"].append(commit_id)

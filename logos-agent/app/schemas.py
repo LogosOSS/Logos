@@ -96,6 +96,19 @@ class WorkspaceCreate(BaseModel):
         return cleaned
 
 
+class CodingRepository(BaseModel):
+    """A linked team repository a session can be started for."""
+
+    id: int
+    team_id: int
+    repo_slug: str
+    branch: str
+    verification_command: str | None = None
+    agent_egress_hosts: list[str] = Field(default_factory=list)
+    agent_egress_unrestricted: bool = False
+    agent_may_comment: bool = False
+
+
 class Workspace(BaseModel):
     id: int
     name: str
@@ -122,6 +135,9 @@ class SessionCreate(BaseModel):
     deploy_to_dev: bool = False
     # URLs (paths on the dev environment) to screenshot once deployed.
     screenshot_paths: list[str] = Field(default_factory=list, max_length=10)
+    # A linked team repository with coding work enabled to work on instead
+    # of the platform's own repository. Absent means the platform repository.
+    team_repository_id: int | None = Field(default=None, ge=1)
 
     @field_validator("screenshot_paths")
     @classmethod
