@@ -1509,7 +1509,7 @@ class SessionManager:
             permissions = (
                 await db.sandbox_permissions(int(session["team_repository_id"]), str(session["repo_slug"]))
                 if sandboxed
-                else {"agent_egress_hosts": [], "agent_may_comment": False}
+                else {"agent_egress_hosts": [], "agent_egress_unrestricted": False, "agent_may_comment": False}
             )
             egress_token = ""
             if sandboxed and settings.egress_proxy_url:
@@ -1521,6 +1521,7 @@ class SessionManager:
             notes = (
                 conventions.repository_environment_notes(
                     egress_hosts=permissions["agent_egress_hosts"] if egress_token else [],
+                    egress_unrestricted=bool(egress_token and permissions["agent_egress_unrestricted"]),
                     may_comment=bool(permissions["agent_may_comment"]),
                     sandboxed=sandboxed,
                 )

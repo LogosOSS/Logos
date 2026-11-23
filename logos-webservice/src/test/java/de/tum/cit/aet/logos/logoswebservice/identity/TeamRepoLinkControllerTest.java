@@ -181,7 +181,43 @@ class TeamRepoLinkControllerTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.agent_egress_hosts").isArray())
             .andExpect(jsonPath("$.agent_egress_hosts.length()").value(0))
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(false))
             .andExpect(jsonPath("$.agent_may_comment").value(false));
+    }
+
+    @Test
+    void unrestrictedEgress_isAnExplicitLogosAdminOptInThatDoesNotFollowARepositoryChange() throws Exception {
+        MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/open-network\",\"agent_egress_unrestricted\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(true))
+            .andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        String url = "/admin/teams/2001/repositories/" + id;
+
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"agent_egress_unrestricted\":false}"))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.detail")
+                .value("Only Logos admins can change agent network access and comment permissions"));
+        mvc.perform(get("/admin/teams/2001/repositories").with(TestJwt.adminUser()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$[?(@.id == " + id + ")].agent_egress_unrestricted").value(true));
+
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/open-network-moved\",\"agent_egress_unrestricted\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(false));
+
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"agent_egress_unrestricted\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(true));
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"agent_egress_unrestricted\":false}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(false));
     }
 
     @Test

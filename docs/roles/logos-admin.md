@@ -704,7 +704,7 @@ a linked repository. In the session list, the repository shows next to the
 workspace, for example `docs-example/sample-app` in the **Finished** section
 of the **Agent Sessions** page image.
 
-A Logos Admin also sets the network hosts and the comment permission of each
+A Logos Admin also sets the network access and the comment permission of each
 linked repository. Edit the repository link on the **Repositories** tab of the
 team ([Agent Sandbox Permissions](app-admin.md#agent-sandbox-permissions)).
 

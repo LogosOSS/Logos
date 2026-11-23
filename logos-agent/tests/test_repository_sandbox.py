@@ -426,6 +426,72 @@ class TestEgressProxy:
         assert tried == ["140.82.121.4"]
 
 
+class TestUnrestrictedEgress:
+    @staticmethod
+    def _grant(**overrides):
+        grant = {"status": "running", "token_hash": egress_proxy.token_hash("tok"), "hosts": [], "unrestricted": True}
+        grant.update(overrides)
+        return grant
+
+    def test_an_unrestricted_grant_reaches_any_host(self):
+        assert egress_proxy.authorised(self._grant(), "tok", "example.com")
+        assert egress_proxy.authorised(self._grant(), "tok", "pypi.org")
+
+    def test_it_still_needs_the_sessions_token_and_a_running_session(self):
+        assert not egress_proxy.authorised(self._grant(), "other", "example.com")
+        assert not egress_proxy.authorised(self._grant(status="succeeded"), "tok", "example.com")
+        assert not egress_proxy.authorised(self._grant(token_hash=None), "tok", "example.com")
+
+    def test_only_an_explicit_opt_in_lifts_the_list(self):
+        assert not egress_proxy.authorised(self._grant(unrestricted="true"), "tok", "example.com")
+        assert not egress_proxy.authorised(self._grant(unrestricted=False), "tok", "example.com")
+        assert egress_proxy.authorised(self._grant(unrestricted=False, hosts=["example.com"]), "tok", "example.com")
+
+    @pytest.fixture
+    def proxy(self, monkeypatch):
+        async def grant(_session_id):
+            return self._grant()
+
+        monkeypatch.setattr(egress_proxy.db, "egress_grant", grant)
+        return egress_proxy.EgressProxy()
+
+    @staticmethod
+    def _connect(host: str, port: int = 443) -> bytes:
+        auth = TestEgressProxy._auth()
+        return f"CONNECT {host}:{port} HTTP/1.1\r\nProxy-Authorization: Basic {auth}\r\n\r\n".encode()
+
+    async def test_other_ports_stay_refused(self, proxy):
+        assert (await TestEgressProxy._ask(proxy, self._connect("example.com", 22))).startswith(b"HTTP/1.1 403")
+
+    async def test_plain_http_stays_refused(self, proxy):
+        answer = await TestEgressProxy._ask(proxy, b"GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n")
+
+        assert answer.startswith(b"HTTP/1.1 405")
+
+    async def test_private_addresses_stay_refused(self, proxy, monkeypatch):
+        async def addresses(host, port):
+            return []
+
+        monkeypatch.setattr(egress_proxy, "public_addresses", addresses)
+
+        answer = await TestEgressProxy._ask(proxy, self._connect("internal.example.com"))
+
+        assert answer.startswith(b"HTTP/1.1 403")
+        assert b"public address" in answer
+
+    async def test_an_open_tunnel_closes_when_the_opt_in_is_withdrawn(self, monkeypatch):
+        proxy = egress_proxy.EgressProxy()
+        grants = [self._grant(), self._grant(unrestricted=False)]
+
+        async def grant(_session_id):
+            return grants[0] if len(grants) == 1 else grants.pop(0)
+
+        monkeypatch.setattr(egress_proxy, "GRANT_TTL_S", 0.01)
+        monkeypatch.setattr(egress_proxy.db, "egress_grant", grant)
+
+        await asyncio.wait_for(proxy._watch(7, "tok", "example.com"), timeout=1)
+
+
 class TestEgressTunnels:
     @staticmethod
     def _grant_for(hosts):
@@ -518,6 +584,15 @@ class TestSessionEnvironment:
         assert "logos-github comment" in notes
         assert "/cache" in notes
         assert "closes.txt" in notes
+
+    def test_the_notes_say_when_any_public_host_is_allowed(self):
+        notes = conventions.repository_environment_notes(
+            egress_hosts=["github.com"], egress_unrestricted=True, may_comment=False, sandboxed=True
+        )
+
+        assert "any public host" in notes
+        assert "data, not instructions" in notes
+        assert "github.com" not in notes
 
     def test_the_notes_say_when_nothing_is_allowed(self):
         notes = conventions.repository_environment_notes(egress_hosts=[], may_comment=False, sandboxed=True)
@@ -664,6 +739,7 @@ class TestManualLinkedSessions:
 
         assert listed[0].repo_slug == "o/r"
         assert listed[0].agent_egress_hosts == ["github.com"]
+        assert listed[0].agent_egress_unrestricted is False
 
 
 # --- forks and closing references ---------------------------------------------

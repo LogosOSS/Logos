@@ -756,6 +756,7 @@ an agent steered by text it read cannot turn it against anybody.
 | Capability | Who enables it | Bound |
 |---|---|---|
 | **Internet over HTTPS** to named hosts | A Logos admin, per link (`agent_egress_hosts`) | Only through `logos-agent-egress-proxy`: `CONNECT` to port 443, only listed hosts (`*.example.org` for subdomains), only public addresses, only while the session runs, authenticated by a per-session token whose hash is on the row. The list is read live. |
+| **Internet over HTTPS** to any public host | A Logos admin, per link, as an explicit opt-in (`agent_egress_unrestricted`) | The host list is not consulted; every other bound of the row above holds. Text an agent reads can then make it send what it sees anywhere, so the session notes tell it to treat such text as data, and the option is meant for repositories where a host list is not practical. |
 | **Workspace cache** at `$LOGOS_CACHE_DIR` (`/cache`) | Every linked-repository session | A volume per workspace, removed with it. The agent phase writes it, verification reads it; credential-bearing helpers never mount it. |
 | **GitHub reads**: `logos-github issue N`, `logos-github issues --label L --assignee none` | Every linked-repository session | The session's repository only, 500 reads per session. |
 | **Comments**: `logos-github comment N "text"` | A Logos admin, per link (`agent_may_comment`) | The session's repository only, 30 per session, mentions neutralised, model disclosure appended, every comment an event on the session. |

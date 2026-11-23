@@ -171,6 +171,8 @@ export interface RepositoryAgentSettings {
   verification_command?: string | null;
   /** HTTPS hosts agent sessions may reach; empty means no internet. Logos admins only. */
   agent_egress_hosts?: string[];
+  /** Whether agent sessions may reach any public HTTPS host instead of only the listed ones. Logos admins only. */
+  agent_egress_unrestricted?: boolean;
   /** Whether the agent may comment on issues and pull requests during a session. Logos admins only. */
   agent_may_comment?: boolean;
 }

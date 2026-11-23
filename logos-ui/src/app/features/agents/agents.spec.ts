@@ -408,6 +408,7 @@ describe('Agents', () => {
       branch: 'develop',
       verification_command: './gradlew test',
       agent_egress_hosts: ['github.com'],
+      agent_egress_unrestricted: false,
       agent_may_comment: false,
     };
     const workspace: AgentWorkspace = {

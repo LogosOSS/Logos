@@ -356,7 +356,7 @@ async def get_workspace(workspace_id: int) -> dict[str, Any] | None:
 
 _CODING_REPOSITORY_COLUMNS = """
     id, team_id, repo_url, repo_slug, branch, agent_instructions, verification_command,
-    agent_egress_hosts, agent_may_comment
+    agent_egress_hosts, agent_egress_unrestricted, agent_may_comment
 """
 
 
@@ -401,7 +401,7 @@ async def sandbox_permissions(link_id: int | None, repo_slug: str | None) -> dic
     as to the link: a link moved to another repository grants nothing to the
     sessions of the one it pointed at before.
     """
-    none: dict[str, Any] = {"agent_egress_hosts": [], "agent_may_comment": False}
+    none: dict[str, Any] = {"agent_egress_hosts": [], "agent_egress_unrestricted": False, "agent_may_comment": False}
     if link_id is None or not repo_slug:
         return none
     async with sessionmaker()() as db:
@@ -409,7 +409,7 @@ async def sandbox_permissions(link_id: int | None, repo_slug: str | None) -> dic
             (
                 await db.execute(
                     text("""
-                    SELECT agent_egress_hosts, agent_may_comment
+                    SELECT agent_egress_hosts, agent_egress_unrestricted, agent_may_comment
                       FROM team_repositories
                      WHERE id = :id AND agent_enabled = TRUE AND lower(repo_slug) = lower(:slug)
                     """),
@@ -426,6 +426,7 @@ async def sandbox_permissions(link_id: int | None, repo_slug: str | None) -> dic
         hosts = json.loads(hosts)
     return {
         "agent_egress_hosts": [str(host) for host in hosts or []],
+        "agent_egress_unrestricted": bool(row["agent_egress_unrestricted"]),
         "agent_may_comment": bool(row["agent_may_comment"]),
     }
 
@@ -437,7 +438,7 @@ async def egress_grant(session_id: int) -> dict[str, Any] | None:
             (
                 await db.execute(
                     text("""
-                    SELECT s.status, s.egress_token_hash, tr.agent_egress_hosts
+                    SELECT s.status, s.egress_token_hash, tr.agent_egress_hosts, tr.agent_egress_unrestricted
                       FROM agent_sessions s
                       LEFT JOIN team_repositories tr
                         ON tr.id = s.team_repository_id
@@ -458,7 +459,12 @@ async def egress_grant(session_id: int) -> dict[str, Any] | None:
     hosts = row["agent_egress_hosts"] or []
     if isinstance(hosts, str):
         hosts = json.loads(hosts)
-    return {"status": row["status"], "token_hash": row["egress_token_hash"], "hosts": [str(h) for h in hosts]}
+    return {
+        "status": row["status"],
+        "token_hash": row["egress_token_hash"],
+        "hosts": [str(h) for h in hosts],
+        "unrestricted": bool(row["agent_egress_unrestricted"]),
+    }
 
 
 async def repository_comments_scanned_at(repository_id: int) -> datetime | None:

@@ -71,6 +71,7 @@ export class RepositoriesTabComponent implements OnChanges {
   formAgentInstructions = signal('');
   formVerificationCommand = signal('');
   formEgressHosts = signal('');
+  formEgressUnrestricted = signal(false);
   formMayComment = signal(false);
 
   busyLinkId = signal<number | null>(null);
@@ -106,6 +107,7 @@ export class RepositoriesTabComponent implements OnChanges {
     this.formAgentInstructions.set('');
     this.formVerificationCommand.set('');
     this.formEgressHosts.set('');
+    this.formEgressUnrestricted.set(false);
     this.formMayComment.set(false);
     this.formError.set('');
     this.formOpen.set(true);
@@ -120,6 +122,7 @@ export class RepositoriesTabComponent implements OnChanges {
     this.formAgentInstructions.set(repo.agent_instructions ?? '');
     this.formVerificationCommand.set(repo.verification_command ?? '');
     this.formEgressHosts.set((repo.agent_egress_hosts ?? []).join('\n'));
+    this.formEgressUnrestricted.set(repo.agent_egress_unrestricted ?? false);
     this.formMayComment.set(repo.agent_may_comment ?? false);
     this.formError.set('');
     this.formOpen.set(true);
@@ -152,6 +155,7 @@ export class RepositoriesTabComponent implements OnChanges {
     // The API refuses these fields from anyone but a Logos admin.
     if (this.isLogosAdmin) {
       agentSettings.agent_egress_hosts = parseHosts(this.formEgressHosts());
+      agentSettings.agent_egress_unrestricted = this.formEgressUnrestricted();
       agentSettings.agent_may_comment = this.formMayComment();
     }
 
