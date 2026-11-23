@@ -175,7 +175,7 @@
                     data-testid="batch-support"
                   >{{ batchLabel(conn) }}</span>
                   <span class="conn-key">{{
-                    conn.api_key ? conn.api_key.slice(0, 6) + '…' : '-'
+                    conn.api_key_hint || '-'
                   }}</span>
                   <div class="conn-actions">
                     <button
@@ -306,19 +306,23 @@
         <p class="field-hint">Default endpoint of {{ addCloudProviderType() }}. Change it for a proxy or a regional endpoint.</p>
       }
     </div>
-    <div class="form-field">
-      <label class="field-label" for="add-key">API Key</label>
-      <input
-        id="add-key"
-        class="field-input"
-        type="text"
-        placeholder="sk-..."
-        [value]="addApiKey()"
-        (input)="addApiKey.set($any($event.target).value)"
-        [disabled]="addLoading()"
-        autocomplete="off"
-      />
-    </div>
+    @if (addProviderType() === 'cloud') {
+      <div class="form-field">
+        <label class="field-label" for="add-key">API Key</label>
+        <input
+          id="add-key"
+          class="field-input"
+          type="password"
+          placeholder="sk-..."
+          [value]="addApiKey()"
+          (input)="addApiKey.set($any($event.target).value)"
+          [disabled]="addLoading()"
+          autocomplete="new-password"
+        />
+      </div>
+    } @else {
+      <p class="field-hint">After adding this worker, open Edit Provider and rotate its key to provision it.</p>
+    }
     <p class="form-section-label form-section-label--mt">Auth</p>
     <div class="form-row">
       <div class="form-field">
@@ -375,46 +379,46 @@
   </div>
 </app-modal-form>
 
-<!-- ── Created Provider API Key Dialog ─────────────────────────────────────── -->
-<app-modal-form
-  [visible]="createdKeyOpen()"
-  (visibleChange)="$event || closeCreatedKeyDialog()"
-  title="Provider created"
->
-  <div class="form-body">
-    <p class="created-key-intro">
-      <strong>{{ createdKeyName() }}</strong> is a Logos worker node. Authenticate it
-      with the shared key below — it is shown only now, so copy it to your worker
-      configuration.
-    </p>
-    <div class="form-field">
-      <label class="field-label" for="created-key">Shared API Key</label>
-      <div class="created-key-row">
-        <input
-          id="created-key"
-          class="field-input"
-          type="text"
-          readonly
-          [value]="createdKey()"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        <button class="btn-secondary" type="button" (click)="copyCreatedKey()">
-          @if (createdKeyCopied()) {
-            <i class="pi pi-check" aria-hidden="true"></i> Copied!
-          } @else {
-            <i class="pi pi-copy" aria-hidden="true"></i> Copy
-          }
-        </button>
+@if (rotatedKey(); as key) {
+  <app-modal-form
+    [visible]="true"
+    (visibleChange)="$event || discardWorkerKey()"
+    title="Worker key rotated"
+  >
+    <div class="form-body">
+      <p class="rotated-key-intro">
+        Copy the new key for <strong>{{ key.name }}</strong> before closing this dialog.
+        Set the worker’s LOGOS_API_KEY deployment secret and redeploy the worker.
+      </p>
+      <div class="form-field">
+        <label class="field-label" for="rotated-key">Shared API Key</label>
+        <div class="rotated-key-row">
+          <input
+            id="rotated-key"
+            class="field-input"
+            type="text"
+            readonly
+            [value]="key.value"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="btn-secondary" type="button" (click)="copyRotatedKey()">
+            @if (rotatedKeyCopied()) {
+              <i class="pi pi-check" aria-hidden="true"></i> Copied!
+            } @else {
+              <i class="pi pi-copy" aria-hidden="true"></i> Copy
+            }
+          </button>
+        </div>
       </div>
     </div>
-  </div>
-  <div class="modal-footer" modal-footer>
-    <button class="btn-primary" type="button" (click)="closeCreatedKeyDialog()">
-      Done
-    </button>
-  </div>
-</app-modal-form>
+    <div class="modal-footer" modal-footer>
+      <button class="btn-primary" type="button" (click)="discardWorkerKey()">
+        Done
+      </button>
+    </div>
+  </app-modal-form>
+}
 
 <!-- ── Edit Provider Dialog ───────────────────────────────────────────────── -->
 <app-modal-form
@@ -485,19 +489,28 @@
         <p class="field-hint">Default endpoint of {{ editCloudProviderType() }}. Change it for a proxy or a regional endpoint.</p>
       }
     </div>
-    <div class="form-field">
-      <label class="field-label" for="edit-key">API Key</label>
-      <input
-        id="edit-key"
-        class="field-input"
-        type="text"
-        placeholder="sk-..."
-        [value]="editApiKey()"
-        (input)="editApiKey.set($any($event.target).value)"
-        [disabled]="editLoading()"
-        autocomplete="off"
-      />
-    </div>
+    @if (editProviderType() === 'cloud') {
+      <div class="form-field">
+        <label class="field-label" for="edit-key">Replacement API Key</label>
+        <input
+          id="edit-key"
+          class="field-input"
+          type="password"
+          [placeholder]="editTarget()?.api_key_hint || 'No key configured'"
+          [value]="editApiKey()"
+          (input)="editApiKey.set($any($event.target).value)"
+          [disabled]="editLoading()"
+          autocomplete="new-password"
+        />
+        <p class="field-hint">Leave blank to keep the current key.</p>
+      </div>
+    } @else if (editTarget()?.provider_type === 'logosnode') {
+      <div class="form-field">
+        <span class="field-label">Worker key</span>
+        <p class="field-hint">Rotation invalidates the current key immediately. Copy the replacement and redeploy the worker.</p>
+        <button class="btn-secondary" type="button" [disabled]="editLoading()" (click)="rotateWorkerKey()">Rotate worker key</button>
+      </div>
+    }
     <p class="form-section-label form-section-label--mt">Auth</p>
     <div class="form-row">
       <div class="form-field">
@@ -589,12 +602,12 @@
       <input
         id="conn-key"
         class="field-input"
-        type="text"
+        type="password"
         placeholder="sk-..."
         [value]="connectApiKey()"
         (input)="connectApiKey.set($any($event.target).value)"
         [disabled]="connectLoading()"
-        autocomplete="off"
+        autocomplete="new-password"
       />
     </div>
     @if (connectError()) {
@@ -646,16 +659,16 @@
       />
     </div>
     <div class="form-field">
-      <label class="field-label" for="editconn-key">API Key</label>
+      <label class="field-label" for="editconn-key">Replacement API Key</label>
       <input
         id="editconn-key"
         class="field-input"
-        type="text"
-        placeholder="sk-..."
+        type="password"
+        [placeholder]="editConnModel()?.api_key_hint || 'No key configured'"
         [value]="editConnApiKey()"
         (input)="editConnApiKey.set($any($event.target).value)"
         [disabled]="editConnLoading()"
-        autocomplete="off"
+        autocomplete="new-password"
       />
     </div>
     @if (editConnError()) {

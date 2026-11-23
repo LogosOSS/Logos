@@ -8,6 +8,9 @@ A worker node runs local vLLM models. It opens an outbound connection to the
 Logos orchestrator over a secure WebSocket. It does not need an inbound
 firewall rule or its own TLS certificate.
 
+Use the [worker key procedure](../roles/logos-admin.md#provision-a-worker-key) to provision a worker from the web application.
+For the root-only API enrollment procedure, follow these steps.
+
 1. Register the provider with the Logos API.
 2. Save the `provider_id` and the `shared_key` of the provider.
 3. On the worker host, go to the worker directory. In a repository checkout,

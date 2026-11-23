@@ -30,6 +30,7 @@ import org.springframework.web.client.HttpClientErrorException;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import static org.hamcrest.Matchers.containsString;
@@ -106,7 +107,54 @@ class ProviderControllerTest {
            .andExpect(jsonPath("$[0].id").value(6001))
            .andExpect(jsonPath("$[0].name").value("openai-provider"))
            .andExpect(jsonPath("$[0].authentication_configured").doesNotExist())
-           .andExpect(jsonPath("$[0].api_key").value("stored-provider-secret"));
+           .andExpect(jsonPath("$[0].api_key").doesNotExist())
+           .andExpect(jsonPath("$[0].api_key_hint").value("••••ret"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"a", "ab", "abc", "🙂bc"})
+    void shortKeysHaveNoVisibleSuffix(String key) throws Exception {
+        jdbc.update("UPDATE providers SET api_key = ? WHERE id = 6001", key);
+        mvc.perform(post("/logosdb/get_providers").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+           .andExpect(jsonPath("$[0].api_key_hint").value("••••"));
+    }
+
+    @Test
+    void rotateWorkerKeyRequiresWorkerAndAdminAndReplacesTheAuthenticationKey() throws Exception {
+        String url = "/logosdb/providers/6001/rotate_worker_key";
+        mvc.perform(post(url).with(TestJwt.logosAdmin())).andExpect(status().isBadRequest());
+        jdbc.update("UPDATE providers SET provider_type = 'logosnode', api_key = 'synthetic-old' WHERE id = 6001");
+        mvc.perform(post(url).with(TestJwt.adminUser())).andExpect(status().isForbidden());
+        String body = mvc.perform(post(url).with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk())
+            .andExpect(header().string("Cache-Control", containsString("no-store")))
+            .andExpect(jsonPath("$.api_key").value(org.hamcrest.Matchers.matchesPattern("[A-Za-z0-9_-]{64}")))
+            .andReturn().getResponse().getContentAsString();
+        String replacement = new com.fasterxml.jackson.databind.ObjectMapper().readTree(body).get("api_key").asText();
+        assertEquals(replacement, jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+        mvc.perform(post("/logosdb/get_providers").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+           .andExpect(jsonPath("$[0].api_key").doesNotExist())
+           .andExpect(jsonPath("$[0].api_key_hint").value("••••" + replacement.substring(replacement.length() - 3)));
+    }
+
+    @Test
+    void cloudKeysSurviveUnrelatedEditsAndAcceptReplacements() throws Exception {
+        jdbc.update("UPDATE providers SET api_key = 'synthetic-original' WHERE id = 6001");
+        jdbc.update("UPDATE model_provider SET api_key = 'synthetic-override' WHERE id = 7001");
+        mvc.perform(post("/logosdb/update_provider").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001,\"provider_name\":\"renamed\"}"))
+           .andExpect(status().isOk());
+        mvc.perform(post("/logosdb/connect_model_provider").with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"provider_id\":6001,\"model_id\":5001,\"endpoint\":\"/new\"}"))
+           .andExpect(status().isOk());
+        assertEquals("synthetic-original", jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+        assertEquals("synthetic-override", jdbc.queryForObject("SELECT api_key FROM model_provider WHERE id = 7001", String.class));
+        mvc.perform(post("/logosdb/update_provider").with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"provider_id\":6001,\"api_key\":\"synthetic-replacement\"}"))
+           .andExpect(status().isOk()).andExpect(jsonPath("$.api_key").doesNotExist());
+        assertEquals("synthetic-replacement", jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
     }
 
     @Test
@@ -157,7 +205,7 @@ class ProviderControllerTest {
     }
 
     @Test
-    void addProvider_logosnodeGeneratesApiKeyWhenAbsent() throws Exception {
+    void addProvider_logosnodeWaitsForProvisioningWhenKeyIsAbsent() throws Exception {
         mvc.perform(post("/logosdb/add_provider")
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
@@ -166,14 +214,13 @@ class ProviderControllerTest {
                     + "\"auth_name\":\"\",\"auth_format\":\"{}\"}"))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.result").value("Created Provider."))
-           .andExpect(jsonPath("$.api_key")
-               .value(org.hamcrest.Matchers.matchesPattern("[A-Za-z0-9_-]{64}")));
+           .andExpect(jsonPath("$.api_key").doesNotExist());
         assertNull(jdbc.queryForObject(
-            "SELECT parallel_capacity FROM providers WHERE name = 'local-node'", Integer.class));
+            "SELECT api_key FROM providers WHERE name = 'local-node'", String.class));
     }
 
     @Test
-    void addProvider_logosnodeEchoesExplicitlyProvidedKey() throws Exception {
+    void addProvider_logosnodeKeepsExplicitlyProvidedKeyPrivate() throws Exception {
         mvc.perform(post("/logosdb/add_provider")
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
@@ -181,7 +228,7 @@ class ProviderControllerTest {
                     + "\"provider_type\":\"logosnode\",\"privacy_level\":\"LOCAL\","
                     + "\"auth_name\":\"\",\"auth_format\":\"{}\",\"api_key\":\"my-shared-key\"}"))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$.api_key").value("my-shared-key"));
+           .andExpect(jsonPath("$.api_key").doesNotExist());
     }
 
     @Test
@@ -381,7 +428,8 @@ class ProviderControllerTest {
            .andExpect(jsonPath("$").isArray())
            .andExpect(jsonPath("$[0].model_id").value(5001))
            .andExpect(jsonPath("$[0].authentication_configured").doesNotExist())
-           .andExpect(jsonPath("$[0].api_key").value("stored-model-secret"));
+           .andExpect(jsonPath("$[0].api_key").doesNotExist())
+           .andExpect(jsonPath("$[0].api_key_hint").value("••••ret"));
     }
 
     @Test

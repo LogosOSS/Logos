@@ -54,6 +54,8 @@ class ExportImportControllerTest {
 
     @Test
     void export_logosAdminReturnsAllTables() throws Exception {
+        jdbc.update("UPDATE providers SET api_key = 'synthetic-worker' WHERE id = 6001");
+        jdbc.update("UPDATE model_provider SET api_key = 'synthetic-override' WHERE id = 7001");
         mvc.perform(post("/logosdb/export")
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
@@ -63,6 +65,8 @@ class ExportImportControllerTest {
            .andExpect(jsonPath("$.result.users").isArray())
            .andExpect(jsonPath("$.result.models").isArray())
            .andExpect(jsonPath("$.result.providers").isArray())
+           .andExpect(jsonPath("$.result.providers[*].api_key").isEmpty())
+           .andExpect(jsonPath("$.result.model_provider[*].api_key").isEmpty())
            .andExpect(jsonPath("$.result.team_repositories").isArray());
     }
 

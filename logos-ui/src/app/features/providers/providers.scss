@@ -239,7 +239,7 @@
   &:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
 }
 
-.created-key-intro {
+.rotated-key-intro {
   margin: 0 0 4px;
   color: rgb(var(--color-typography-300));
   font-size: var(--font-size-sm);
@@ -248,7 +248,7 @@
   strong { color: rgb(var(--color-typography-0)); }
 }
 
-.created-key-row {
+.rotated-key-row {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;

@@ -27,7 +27,7 @@ const makeProvider = (overrides: Partial<Provider> = {}): Provider => ({
   id: 7,
   name: 'Hetzner',
   base_url: 'https://inference.hetzner.com/api/v1',
-  api_key: 'hz-secret',
+  api_key_hint: '••••ret',
   auth_name: '',
   auth_format: '',
   provider_type: 'cloud',
@@ -69,6 +69,7 @@ describe('Providers', () => {
     getProviderModels = vi.fn().mockResolvedValue([]);
     const providerService = {
       getProviders: vi.fn().mockResolvedValue([makeProvider()]),
+      rotateWorkerKey: vi.fn().mockResolvedValue({ api_key: 'synthetic-worker-replacement' }),
       addProvider,
       updateProvider,
       refreshModels,
@@ -93,6 +94,32 @@ describe('Providers', () => {
     fixture = TestBed.createComponent(Providers);
     component = fixture.componentInstance;
     await component.fetchProviders();
+  });
+
+  it('keeps the stored cloud key until a replacement is entered', async () => {
+    component.openEditDialog(makeProvider());
+    expect(component.editApiKey()).toBe('');
+    await component.submitEdit();
+    expect(updateProvider.mock.calls[0][0].api_key).toBeUndefined();
+    component.openEditDialog(makeProvider());
+    component.editApiKey.set('synthetic-new-key');
+    await component.submitEdit();
+    expect(updateProvider.mock.calls[1][0].api_key).toBe('synthetic-new-key');
+  });
+
+  it('discards the rotated worker key when the dialog closes', async () => {
+    component.openEditDialog(makeProvider({ provider_type: 'logosnode' }));
+    await component.rotateWorkerKey();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(document.querySelector<HTMLInputElement>('#rotated-key')?.value).toBe('synthetic-worker-replacement');
+    component.discardWorkerKey();
+    fixture.detectChanges();
+    expect(component.rotatedKey()).toBeNull();
+    await fixture.whenStable();
+    expect(document.querySelector('#rotated-key')).toBeNull();
+    component.openEditDialog(makeProvider({ provider_type: 'logosnode' }));
+    expect(component.editApiKey()).toBe('');
   });
 
   describe('the cloud provider type field', () => {
@@ -451,7 +478,7 @@ describe('Providers', () => {
       model_id: 92,
       model_name: 'gpt-5.6-luna',
       endpoint: 'https://res.openai.azure.com/openai/deployments/gpt-5.6-luna/responses',
-      api_key: null,
+      api_key_hint: null,
       ...overrides,
     });
 

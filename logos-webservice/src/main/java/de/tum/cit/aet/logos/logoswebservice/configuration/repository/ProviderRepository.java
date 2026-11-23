@@ -1,14 +1,22 @@
 package de.tum.cit.aet.logos.logoswebservice.configuration.repository;
 
 import java.util.List;
+import java.util.Optional;
+
+import jakarta.persistence.LockModeType;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.repository.query.Param;
 
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.Provider;
 
 public interface ProviderRepository extends JpaRepository<Provider, Integer> {
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Provider p where p.id = :id")
+    Optional<Provider> findForUpdate(@Param("id") Integer id);
 
     List<Provider> findByCloudProviderTypeIsNotNull();
 

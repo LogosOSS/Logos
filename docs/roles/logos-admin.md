@@ -402,10 +402,16 @@ Select **Add Provider**. The dialog asks for the classification first:
 4. Check the **Base URL**. For OpenAI, Anthropic, DeepSeek and Groq, the dialog
    proposes the public endpoint of the vendor. Replace it for a proxy or a
    regional endpoint. A URL that you typed stays when you change the vendor.
-5. Enter the **Name** and the **API Key**. Leave **Header Name** and **Format**
+5. Enter the **Name**. For a cloud provider, enter its **API Key**. Leave **Header Name** and **Format**
    empty to use the vendor default that the placeholders show.
 
 ![Add Provider dialog with Anthropic selected](/img/roles/logos-admin-add-provider.png)
+
+To replace a cloud key, select **Edit Provider** and enter the new value in **Replacement API Key**.
+Leave the field empty to keep the stored key.
+The field can show up to the last 3 characters of the stored key.
+
+![Edit Provider dialog with a masked cloud key](/img/roles/logos-admin-edit-cloud-key.png)
 
 Expand a provider to see its connected models. Next to the endpoint, each model
 shows whether its batches can use the provider's Batch API: **Batch**, **No
@@ -414,6 +420,23 @@ names the batch deployment or the reason for a refusal. See
 [Batch status of a model](../batch-processing.md#batch-status-of-a-model).
 
 ![Providers page — connected models with their batch status](/img/roles/logos-admin-provider-connections.png)
+
+### Provision a worker key
+
+1. Open **Edit Provider** for the worker node.
+2. Select **Rotate worker key**. The previous key immediately stops working for new authentication requests.
+
+![Edit Provider dialog with the worker key rotation action](/img/roles/logos-admin-rotate-worker-key.png)
+
+3. Select **Copy** in **Worker key rotated** before you close the dialog.
+4. Set the deployment secret `LOGOS_API_KEY` for this worker to the new value.
+5. Recreate the worker with the updated environment. Recreate its node manager if the worker uses one.
+6. Check that the worker connects to Logos.
+
+![One-time worker key dialog with a synthetic example](/img/roles/logos-admin-worker-key-created.png)
+
+If you lose the new value, rotate the key again.
+The management export omits provider and model connection keys. Provision them again after you restore an export.
 
 ### Node models
 

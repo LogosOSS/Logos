@@ -51,6 +51,12 @@ export class ProviderManagementService {
     }));
   }
 
+  rotateWorkerKey(id: number): Promise<{ api_key: string }> {
+    return firstValueFrom(this.http.post<{ api_key: string }>(
+      `/api/logosdb/providers/${id}/rotate_worker_key`, {},
+    ));
+  }
+
   deleteProvider(id: number): Promise<void> {
     return firstValueFrom(this.http.post<void>('/api/logosdb/delete_provider', { provider_id: id }));
   }
