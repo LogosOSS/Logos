@@ -1203,7 +1203,9 @@ async def next_queued_session(*, include_triggered: bool = True) -> dict[str, An
     return dict(row) if row else None
 
 
-async def claim_session(session_id: int, *, trigger_quota: int | None = None) -> dict[str, Any] | None:
+async def claim_session(
+    session_id: int, *, trigger_quota: int | None = None, memory_mb: int | None = None
+) -> dict[str, Any] | None:
     """Take this exact queued session, or nothing.
 
     Admission measures the lane of the session it intends to start, and the
@@ -1223,6 +1225,10 @@ async def claim_session(session_id: int, *, trigger_quota: int | None = None) ->
     names exactly the branch the claim checks; the lock is held to the
     end of this transaction, and the check below re-reads the branch only
     after the previous holder has committed.
+
+    ``memory_mb`` is written in the same transaction: from the moment the
+    row is ``starting`` the memory budget counts what the session's
+    containers will actually get.
     """
     async with sessionmaker()() as db:
         if trigger_quota is not None:
@@ -1295,8 +1301,11 @@ async def claim_session(session_id: int, *, trigger_quota: int | None = None) ->
             await db.rollback()
             return None
         await db.execute(
-            text("UPDATE agent_sessions SET status = 'starting' WHERE id = :session_id"),
-            {"session_id": session_id},
+            text(
+                "UPDATE agent_sessions SET status = 'starting', "
+                "memory_mb = COALESCE(CAST(:memory_mb AS INTEGER), memory_mb) WHERE id = :session_id"
+            ),
+            {"session_id": session_id, "memory_mb": memory_mb},
         )
         row = (
             (await db.execute(text(_SESSION_SELECT + " WHERE s.id = :session_id"), {"session_id": session_id}))
@@ -1637,6 +1646,15 @@ async def count_sessions_by_status() -> dict[str, int]:
             .all()
         )
     return {r["status"]: int(r["n"]) for r in rows}
+
+
+async def session_memory_mb(session_id: int) -> int | None:
+    """The memory limit a session was started with, or None when it recorded none."""
+    async with sessionmaker()() as db:
+        value = (
+            await db.execute(text("SELECT memory_mb FROM agent_sessions WHERE id = :id"), {"id": session_id})
+        ).scalar_one_or_none()
+    return int(value) if value else None
 
 
 async def reserved_memory_mb(default_mb: int) -> int:

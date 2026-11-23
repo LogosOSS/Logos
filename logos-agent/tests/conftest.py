@@ -23,6 +23,11 @@ def no_memory_budget(monkeypatch):
         return None
 
     monkeypatch.setattr(memory_budget, "establish", establish)
+
+    async def no_recorded_memory(_session_id):
+        return None
+
+    monkeypatch.setattr(db, "session_memory_mb", no_recorded_memory)
     memory_budget.set_for_tests(None)
     yield
     memory_budget.set_for_tests(None)

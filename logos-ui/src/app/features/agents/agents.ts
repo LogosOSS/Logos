@@ -350,7 +350,7 @@ export class Agents implements OnInit {
       const state = await this.agentService.getControls();
       this.controls.set(state);
       if (!this.controlBusy()) {
-        this.limitDraft.set(String(state.max_parallel_override ?? ''));
+        this.limitDraft.set('');
         this.pauseReason.set(state.mode_reason);
       }
     } catch {
@@ -438,7 +438,7 @@ export class Agents implements OnInit {
       if (!Number.isFinite(parsed)) {
         // Nothing to send: an unparseable field is a typo, not an
         // instruction, and null would silently mean "no change".
-        this.limitDraft.set(String(this.controls()?.max_parallel_override ?? ''));
+        this.limitDraft.set('');
         return;
       }
       const available = this.controls()?.max_parallel_available ?? 100;
@@ -451,7 +451,7 @@ export class Agents implements OnInit {
     try {
       const state = await this.agentService.setControls(body);
       this.controls.set(state);
-      this.limitDraft.set(String(state.max_parallel_override ?? ''));
+      this.limitDraft.set('');
       await this.refresh({ quiet: true });
     } catch (err: unknown) {
       this.error.set(this.messageOf(err, 'Could not change the session limit.'));

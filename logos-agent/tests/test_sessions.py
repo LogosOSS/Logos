@@ -5356,7 +5356,7 @@ class TestAdmissionMeasuresTheRightLane:
         async def claim(_limit, *, include_triggered: bool = True):
             return []
 
-        async def claim_session(_session_id, *, trigger_quota=None):
+        async def claim_session(_session_id, *, trigger_quota=None, memory_mb=None):
             return None
 
         async def none(_status):
@@ -5478,7 +5478,7 @@ def _claim_one(fake_claim):
     existing fakes honest without each of them growing a second one.
     """
 
-    async def claim_session(_session_id: int, *, trigger_quota=None):
+    async def claim_session(_session_id: int, *, trigger_quota=None, memory_mb=None):
         taken = await fake_claim(1)
         return taken[0] if taken else None
 
@@ -5718,7 +5718,7 @@ class TestAPausedSessionThatCannotComeBack:
         async def peek(*, include_triggered: bool = True):
             return {"id": 37, "model": None, "workspace_id": 1}
 
-        async def claim_session(session_id, *, trigger_quota=None):
+        async def claim_session(session_id, *, trigger_quota=None, memory_mb=None):
             admitted.append(session_id)
             return None
 

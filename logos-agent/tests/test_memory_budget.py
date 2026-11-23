@@ -163,3 +163,57 @@ class TestMemoryAdmission:
 
         assert docker_engine._memory_bytes(None) == 4096 * 1024 * 1024
         assert docker_engine._memory_bytes(1024) == 1024 * 1024 * 1024
+
+
+class TestCeilingOfOne:
+    def test_the_automation_may_take_the_only_place_while_no_person_waits(self):
+        from app import triggers
+
+        assert triggers.max_active_sessions(1) == 1
+        assert triggers.max_active_sessions(1, person_waiting=True) == 0
+        assert triggers.max_active_sessions(0) == 0
+        assert triggers.max_active_sessions(5) == 4
+
+
+class TestMemoryAfterRestart:
+    async def test_a_miss_reads_the_recorded_memory_of_the_row(self, monkeypatch):
+        monkeypatch.setattr(sessions, "_session_memory", {})
+
+        async def recorded(session_id):
+            return 1024 if session_id == 9 else None
+
+        monkeypatch.setattr(sessions.db, "session_memory_mb", recorded)
+
+        assert await sessions._session_memory_mb(9) == 1024
+        assert sessions._session_memory[9] == 1024
+        assert await sessions._session_memory_mb(10) is None
+
+
+class TestHeldMemory:
+    async def test_a_screenshot_container_holds_memory_that_admission_counts(self, monkeypatch):
+        configured(monkeypatch, session_memory_mb=4096)
+        memory_budget.set_for_tests(budget(8192))
+        monkeypatch.setattr(sessions, "_held_memory", {})
+
+        async def reserved(_default_mb):
+            return 4096
+
+        monkeypatch.setattr(sessions.db, "reserved_memory_mb", reserved)
+        manager = sessions.SessionManager()
+
+        assert await manager._hold_memory(3, 4096, timeout_s=0) is True
+        assert await sessions.reserved_memory_mb() == 8192
+        assert await sessions.memory_admission_block(controls.Controls(session_memory_override=1024))
+
+    async def test_without_room_the_hold_gives_up(self, monkeypatch):
+        configured(monkeypatch, session_memory_mb=4096)
+        memory_budget.set_for_tests(budget(8192))
+        monkeypatch.setattr(sessions, "_held_memory", {})
+
+        async def reserved(_default_mb):
+            return 6144
+
+        monkeypatch.setattr(sessions.db, "reserved_memory_mb", reserved)
+
+        assert await sessions.SessionManager()._hold_memory(3, 4096, timeout_s=0, poll_s=0) is False
+        assert sessions._held_memory == {}

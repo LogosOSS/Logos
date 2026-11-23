@@ -197,18 +197,26 @@ def _footer(session_id: int, session: dict[str, Any] | None) -> str:
     return disclosure.footer(model=model, session_id=session_id)
 
 
+# Memory held by containers of finished sessions: the screenshots that run
+# after a session has settled. The rows no longer count, so these do.
+_held_memory: dict[int, int] = {}
+
+
+async def reserved_memory_mb() -> int:
+    """The memory live sessions and the held containers of finished ones reserve."""
+    return await db.reserved_memory_mb(settings.session_memory_mb) + sum(_held_memory.values())
+
+
 async def memory_admission_block(control: controls.Controls) -> str:
     """Why the host's memory budget has no room for one more session, or an empty string."""
     budget = memory_budget.current()
     if budget is None:
         return ""
-    reserved = await db.reserved_memory_mb(settings.session_memory_mb)
-    return budget.admission_block(reserved_mb=reserved, session_mb=control.session_memory_mb)
+    return budget.admission_block(reserved_mb=await reserved_memory_mb(), session_mb=control.session_memory_mb)
 
 
-# The memory each session of this process was started with. Its helpers get
-# the same limit. A session this process did not start (one it found after a
-# restart) is absent, and its helpers get the configured default.
+# The memory each session was started with, from the claim or, after a
+# restart, from its row. Its helpers get the same limit.
 _session_memory: dict[int, int] = {}
 
 
@@ -219,8 +227,13 @@ def _remember_memory(session: dict[str, Any]) -> None:
 
 
 async def _session_memory_mb(session_id: int) -> int | None:
-    """The memory a session was started with, or None for the configured default."""
-    return _session_memory.get(session_id)
+    """The memory a session was started with, or None for a row that recorded none."""
+    if session_id in _session_memory:
+        return _session_memory[session_id]
+    value = await db.session_memory_mb(session_id)
+    if value:
+        _session_memory[session_id] = int(value)
+    return value
 
 
 def cache_volume_for(workspace: dict[str, Any]) -> str:
@@ -657,6 +670,9 @@ class SessionManager:
         occupying: list[tuple[SessionStatus, dict[str, Any]]] = []
         for status in (SessionStatus.STARTING, SessionStatus.RUNNING, SessionStatus.PAUSED, SessionStatus.FINALIZING):
             for session in await db.sessions_in_status(status):
+                # Its helpers keep the memory it was started with across a
+                # restart of the runner.
+                _remember_memory(session)
                 occupying.append((status, session))
 
         for status, session in occupying:
@@ -1153,7 +1169,8 @@ class SessionManager:
             # in it: with its quota used up, only work a person queued is
             # claimable. The quota is about what is *running*, so the
             # backlog behind it stays queued and visible.
-            quota = triggers.max_active_sessions(control.max_parallel)
+            person_waiting = await db.next_queued_session(include_triggered=False) is not None
+            quota = triggers.max_active_sessions(control.max_parallel, person_waiting=person_waiting)
             triggered = await db.count_active_trigger_sessions()
             include_triggered = triggered < quota
             candidate = await db.next_queued_session(include_triggered=include_triggered)
@@ -1190,20 +1207,16 @@ class SessionManager:
             # taken in the same statement: this one was read before the
             # capacity call above, and another scheduler could have used the
             # room in between.
-            taken = await db.claim_session(int(candidate["id"]), trigger_quota=quota)
+            # The memory is written by the claim itself, so the next admission
+            # counts it, and kept for the session's life: a later change of
+            # the per-session memory applies to sessions started later.
+            taken = await db.claim_session(
+                int(candidate["id"]), trigger_quota=quota, memory_mb=control.session_memory_mb
+            )
             if taken:
                 self._spend_capacity_sample(reading)
-                # Recorded inside the admission lock, so the next admission
-                # counts it, and kept for the session's life: a later change
-                # of the per-session memory applies to sessions started later.
                 taken = {**taken, "memory_mb": control.session_memory_mb}
                 _remember_memory(taken)
-                try:
-                    await db.update_session(int(taken["id"]), memory_mb=control.session_memory_mb)
-                except Exception as exc:  # noqa: BLE001 - the session still runs with its limit
-                    # Unrecorded, the row counts with the configured default
-                    # in the budget until it finishes.
-                    logger.warning("could not record the memory of session %s: %s", taken["id"], exc)
             claimed = [taken] if taken else []
             # The claim is what makes these rows this pass's to launch, so
             # the launch record is taken here rather than inside _launch:
@@ -3918,8 +3931,42 @@ class SessionManager:
             )
             return
 
-        for name in await self._take_screenshots(session_id, paths):
-            await db.add_event(session_id, EventKind.SCREENSHOT, {"name": name})
+        memory = await _session_memory_mb(session_id) or settings.session_memory_mb
+        if not await self._hold_memory(session_id, memory):
+            await db.add_event(
+                session_id,
+                EventKind.SCREENSHOT,
+                {"status": "skipped", "reason": "the memory budget had no room for the screenshot container"},
+            )
+            return
+        try:
+            for name in await self._take_screenshots(session_id, paths):
+                await db.add_event(session_id, EventKind.SCREENSHOT, {"name": name})
+        finally:
+            _held_memory.pop(session_id, None)
+
+    async def _hold_memory(
+        self, session_id: int, memory_mb: int, *, timeout_s: float = 600, poll_s: float = 10
+    ) -> bool:
+        """Reserve memory for a container that runs after its session settled.
+
+        Taken under the admission lock, so a session admitted at the same
+        moment counts it. Waits while the budget is full and gives up after
+        ``timeout_s``.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        while True:
+            async with self._admission_lock:
+                budget = memory_budget.current()
+                if budget is None or not budget.admission_block(
+                    reserved_mb=await reserved_memory_mb(), session_mb=memory_mb
+                ):
+                    _held_memory[session_id] = memory_mb
+                    return True
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(poll_s)
 
     async def _wait_dev_ready(self, *, timeout_s: float = 5 * 60, poll_s: float = 5.0) -> bool:
         """Wait until the dev environment serves the freshly deployed revision.

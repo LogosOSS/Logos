@@ -545,6 +545,19 @@ describe('Agents', () => {
       expect(component.error()).toContain('512 MB');
     });
 
+    it('shows the ceiling in force, not a stored override the budget clamps', async () => {
+      agentService.getControls = async () => ({
+        ...(await new FakeAgentService().getControls()),
+        max_parallel: 1,
+        max_parallel_override: 4,
+        max_parallel_available: 1,
+      });
+      await component.refresh();
+
+      expect(component.limitShown()).toBe(1);
+      expect(component.limitCeiling()).toBe(1);
+    });
+
     it('lowers the ceiling below the maximum and clears it at the maximum', async () => {
       await component.applyLimit('1');
       await component.applyLimit('5');

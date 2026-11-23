@@ -13,6 +13,9 @@ from app import db
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+# Taken before the shared fixture stubs it for the tests without a database.
+REAL_SESSION_MEMORY_MB = db.session_memory_mb
+
 pytestmark = pytest.mark.skipif(
     not os.getenv("SECURITY_TEST_DATABASE_URL"), reason="PostgreSQL integration URL not set"
 )
@@ -171,3 +174,14 @@ async def test_reserved_memory_counts_sessions_that_hold_a_container(database):
 
     # starting 2048 + running, paused and finalizing at the default of 1024.
     assert await db.reserved_memory_mb(1024) == 2048 + 3 * 1024
+
+
+async def test_the_claim_records_the_memory_of_the_session(database):
+    session_id = await db.create_session(**_session(repo_slug=None, repo_url=None, team_repository_id=None))
+
+    claimed = await db.claim_session(session_id, trigger_quota=1, memory_mb=2048)
+
+    assert claimed["status"] == "starting"
+    assert claimed["memory_mb"] == 2048
+    assert await REAL_SESSION_MEMORY_MB(session_id) == 2048
+    assert await db.reserved_memory_mb(4096) == 2048

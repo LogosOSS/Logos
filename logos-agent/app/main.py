@@ -53,7 +53,9 @@ from .schemas import (
     WorkspaceCreate,
 )
 from .security_models import AssessmentAction, IncidentInput, RepositoryInput
-from .sessions import artifact_dir, cache_volume_for, manager, memory_admission_block, resumption_base
+from .sessions import artifact_dir, cache_volume_for, manager, memory_admission_block
+from .sessions import reserved_memory_mb as sessions_reserved_memory_mb
+from .sessions import resumption_base
 
 logging.basicConfig(
     level=logging.INFO,
@@ -287,7 +289,7 @@ async def _control_state(state: controls.Controls) -> ControlState:
     reserved = 0
     if budget is not None:
         try:
-            reserved = await db.reserved_memory_mb(settings.session_memory_mb)
+            reserved = await sessions_reserved_memory_mb()
         except Exception as exc:  # noqa: BLE001 - the page still shows the controls
             logger.info("could not read the reserved session memory: %s", exc)
     return ControlState(

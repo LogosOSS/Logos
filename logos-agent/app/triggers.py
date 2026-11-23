@@ -140,7 +140,7 @@ def _next_auto_name(existing: set[str]) -> str:
     return f"auto-{index}"
 
 
-def max_active_sessions(ceiling: int | None = None) -> int:
+def max_active_sessions(ceiling: int | None = None, *, person_waiting: bool = False) -> int:
     """How many self-queued sessions may be active at once.
 
     Derived rather than configured: the ceiling in force, less a fifth of
@@ -152,11 +152,19 @@ def max_active_sessions(ceiling: int | None = None) -> int:
 
     It follows the *current* ceiling rather than the configured one, so
     lowering the limit during an incident lowers this with it.
+
+    A ceiling of one has no place to keep: reserving it would stop the
+    automation altogether, also on an idle host (a small memory budget gives
+    exactly this ceiling). There the automation may take the one place
+    while no person's work waits for it.
     """
     limit = settings.max_parallel_sessions if ceiling is None else ceiling
-    # Never below zero: a ceiling of one means the one place is a person's,
-    # and a ceiling of zero means nothing runs at all — including this.
-    return max(0, limit - max(1, limit // 5))
+    # Never below zero: a ceiling of zero means nothing runs at all —
+    # including this.
+    quota = max(0, limit - max(1, limit // 5))
+    if quota == 0 and limit > 0 and not person_waiting:
+        return limit
+    return quota
 
 
 def queue_workspace_limit() -> int:
