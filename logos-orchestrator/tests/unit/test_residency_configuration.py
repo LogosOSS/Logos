@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from logos.capacity.capacity_planner import CapacityPlanner
-from logos.logosnode_registry import LogosNodeRuntimeRegistry
+from logos.logosnode_registry import LogosNodeRuntimeRegistry, ProviderSession
 from logos.pipeline.correcting_scheduler import ClassificationCorrectingScheduler
 from logos.queue import PriorityQueueManager
 from logos.residency_policy import configured_residency_policy
@@ -42,16 +42,16 @@ async def test_components_share_startup_policy(monkeypatch, raw, expected):
     assert planner.residency_policy == expected
     assert planner._uses_demand_ordering() == scheduler._uses_ettft_routing() == (expected != "simple")
     assert planner._drains_before_sleep() == (expected != "simple")
-    assert await _selected_lane(registry) == ("a" if expected == "simple" else "b")
+    assert await _selected_lane(registry) == ("b" if expected == "simple" else "a")
 
 
 async def _selected_lane(registry):
-    session = MagicMock()
+    session = ProviderSession(1, "worker", MagicMock())
     session.capabilities_models = ["model"]
     session.latest_runtime = {
         "lanes": [
-            {"lane_id": "b", "model": "model", "runtime_state": "loaded", "active_requests": 0},
-            {"lane_id": "a", "model": "model", "runtime_state": "running", "active_requests": 4},
+            {"lane_id": "b", "model": "model", "runtime_state": "loaded", "active_requests": 2, "num_parallel": 8},
+            {"lane_id": "a", "model": "model", "runtime_state": "running", "active_requests": 1, "num_parallel": 1},
         ]
     }
     registry._get_active_session = AsyncMock(return_value=session)
@@ -68,7 +68,7 @@ async def test_missing_component_attributes_use_simple(monkeypatch):
     assert not planner._uses_demand_ordering()
     assert not planner._drains_before_sleep()
     assert not scheduler._uses_ettft_routing()
-    assert await _selected_lane(registry) == "a"
+    assert await _selected_lane(registry) == "b"
 
 
 def test_invalid_policy_warning_names_simple(monkeypatch, caplog):

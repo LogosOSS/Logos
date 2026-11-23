@@ -29,13 +29,15 @@ import math
 import os
 import random
 import time
+from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Tuple
 
 from logos import perf_trace
 from logos.benchmarks.reservations import benchmark_reservations
-from logos.context_budget import estimate_prompt_tokens
+from logos.context_budget import estimate_prompt_tokens, required_context_tokens
 from logos.monitoring import prometheus_metrics as prom
 from logos.queue.priority_queue import Priority
+from logos.request_content import is_multipart_payload
 from logos.residency_policy import DEFAULT_RESIDENCY_POLICY, configured_residency_policy
 from logos.sdi.models import ModelSchedulerView
 from logos.terminal_logging import style_model, style_provider
@@ -235,6 +237,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
 
         with perf_trace.phase(request.request_id, "schedule.tokens"):
             input_tokens = estimate_prompt_tokens(request.payload)
+            context_tokens = self._simple_context_tokens(request, input_tokens)
         classified = request.classified_models or []
         named_model_peers = self._named_model_peer_ranking(classified, self._ettft_enabled)
         with perf_trace.phase(request.request_id, "schedule.score"):
@@ -250,7 +253,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
 
         # Try immediate selection
         with perf_trace.phase(request.request_id, "schedule.reserve"):
-            best = self._try_immediate_select(scored, request.request_id)
+            best = self._try_immediate_select(scored, request.request_id, affinity, context_tokens)
         if best is not None:
             model_id, provider_id, provider_type, score, priority_int, ettft = best
             self._record_affinity(request, model_id, provider_id, provider_type, affinity)
@@ -324,7 +327,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         )
         lc_model_id, lc_provider_id, _, _, _, lc_ettft = logosnode_candidate
         self._record_scheduling_metrics(lc_model_id, lc_provider_id, lc_ettft)
-        result = await self._queue_and_wait(logosnode_candidate, request)
+        result = await self._queue_and_wait(logosnode_candidate, request, context_tokens)
         if result is not None:
             result.routing_candidates = routing_candidates
             self._record_affinity(request, result.model_id, result.provider_id, result.provider_type, affinity)
@@ -367,11 +370,12 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         candidates = [c for c in (request.classified_models or []) if c[0] == model_id]
         if not candidates:
             return None
+        input_tokens = estimate_prompt_tokens(request.payload)
         scored = self._compute_candidate_scores(
             candidates,
             deployments,
             None,
-            input_tokens=estimate_prompt_tokens(request.payload),
+            input_tokens=input_tokens,
             request_id=request.request_id,
         )
         ready = [
@@ -383,7 +387,9 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         if not ready:
             return None
         routing_candidates = self._snapshot_candidates(scored)
-        best = self._try_immediate_select(ready, request.request_id)
+        best = self._try_immediate_select(
+            ready, request.request_id, context_tokens=self._simple_context_tokens(request, input_tokens)
+        )
         if best is None:
             logger.info(
                 "Reroute of request %s found no free slot on another deployment; " "keeps its reservation on worker=%s",
@@ -1089,7 +1095,37 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             order.append(remaining.pop(picked))
         return order
 
-    def _try_immediate_select(self, scored: list, request_id: str):
+    def _simple_context_tokens(self, request: SchedulingRequest, input_tokens: int) -> int:
+        if self._uses_ettft_routing() or is_multipart_payload(request.payload):
+            return 0
+        return required_context_tokens(request.payload, prompt_tokens=input_tokens) or 0
+
+    def _order_simple_peers(self, scored: list, affinity: dict[int, int], context_tokens: int) -> list:
+        ordered = sorted(scored, key=self._simple_candidate_key)
+        # Only exchange positions occupied by ready replicas of the same scored
+        # model. Classification, cloud ordering and cold placement stay intact.
+        groups = defaultdict(list)
+        for index, (mid, _pid, ptype, score, _priority, estimate) in enumerate(ordered):
+            if ptype == "logosnode" and estimate.tier in {ReadinessTier.WARM, ReadinessTier.BUSY}:
+                groups[mid, score].append(index)
+        for (mid, _score), indices in groups.items():
+            if len(indices) < 2:
+                continue
+            peers = sorted(
+                (ordered[i] for i in indices),
+                key=lambda peer: (
+                    self._warm_lane_rank(mid, peer[1], context_tokens),
+                    affinity.get(mid) != peer[1],
+                    peer[1],
+                ),
+            )
+            for i, peer in zip(indices, peers):
+                ordered[i] = peer
+        return ordered
+
+    def _try_immediate_select(
+        self, scored: list, request_id: str, affinity: dict[int, int] | None = None, context_tokens: int = 0
+    ):
         """Try to reserve capacity on the best available candidate.
 
         Returns the winning tuple or None if no candidate can be reserved
@@ -1108,7 +1144,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         scored = (
             self._weighted_shuffle_tied(scored)
             if self._uses_ettft_routing()
-            else sorted(scored, key=self._simple_candidate_key)
+            else self._order_simple_peers(scored, affinity or {}, context_tokens)
         )
         for idx, (
             model_id,
@@ -1138,6 +1174,12 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                     )
                     return None
 
+                if (
+                    not self._uses_ettft_routing()
+                    and context_tokens
+                    and context_tokens > self._logosnode.unqueued_context_limit(model_id, provider_id)
+                ):
+                    continue
                 try:
                     reserved = self._logosnode.try_reserve_capacity(model_id, provider_id, request_id)
                 except (KeyError, Exception):
@@ -1148,6 +1190,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                     )
                     continue
                 if reserved:
+                    if not self._uses_ettft_routing():
+                        self._logosnode.book_warm_lane(model_id, provider_id, request_id, context_tokens)
                     logger.info(
                         "Reserved logosnode model=%s worker=%s " "(score=%.2f, tier=%s, wait=%.1fs)",
                         style_model(self._logosnode.get_model_name(model_id, provider_id) or model_id),
@@ -1222,7 +1266,9 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         pending.add(task)
         task.add_done_callback(pending.discard)
 
-    async def _queue_and_wait(self, best_scored: tuple, request: SchedulingRequest) -> Optional[SchedulingResult]:
+    async def _queue_and_wait(
+        self, best_scored: tuple, request: SchedulingRequest, context_tokens: int = 0
+    ) -> Optional[SchedulingResult]:
         """Queue on the best-scored candidate and wait for release."""
         model_id, provider_id, provider_type, score, priority_int, ettft = best_scored
         priority = Priority.from_int(priority_int)
@@ -1244,6 +1290,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             priority,
             is_cold_at_queue=is_cold_at_queue,
             provider_affinity=request.required_provider_id,
+            context_tokens=context_tokens,
+            allowed_provider_ids=frozenset(d["provider_id"] for d in request.deployments if d["model_id"] == model_id),
             raw_priority=priority_int,
             role_rank=request.role_rank,
             api_key_id=request.api_key_id,
@@ -1318,6 +1366,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
 
             return result
         except asyncio.TimeoutError:
+            if not self._uses_ettft_routing():
+                self._logosnode.cancel_warm_booking(request.request_id)
             benchmark_reservations.finish_request(request.request_id)
             self._queue_mgr.remove(entry_id)
             raise QueueTimeoutError(
@@ -1327,6 +1377,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 timeout_s=timeout,
             )
         except asyncio.CancelledError:
+            if not self._uses_ettft_routing():
+                self._logosnode.cancel_warm_booking(request.request_id)
             benchmark_reservations.finish_request(request.request_id)
             self._queue_mgr.remove(entry_id)
             raise

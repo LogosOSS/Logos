@@ -450,6 +450,8 @@ class LogosNodeSchedulingDataFacade:
             tracking_data = self._request_tracking.pop(request_id)
             model_id = tracking_data["model_id"]
             provider_id = provider_id if provider_id is not None else tracking_data.get("provider_id")
+            if self._runtime_registry:
+                self._runtime_registry.release_warm_lane(provider_id, request_id)
             queue_wait_ms = (time.time() - tracking_data["arrival_time"]) * 1000 - duration_ms
             provider = self._get_provider_for_model(model_id, provider_id)
             model_name = provider._model_id_to_name.get(model_id)
@@ -497,6 +499,35 @@ class LogosNodeSchedulingDataFacade:
         except KeyError:
             return False
         return provider._is_model_lane_ready(model_id)
+
+    def unqueued_context_limit(self, model_id: int, provider_id: int) -> float:
+        if self._runtime_registry:
+            return self._runtime_registry.unqueued_context_limit(
+                provider_id, self.get_model_name(model_id, provider_id)
+            )
+        return float("inf")
+
+    def warm_lane_rank(self, model_id: int, provider_id: int, context_tokens: int = 0):
+        if self._runtime_registry:
+            return self._runtime_registry.warm_lane_rank(
+                provider_id, self.get_model_name(model_id, provider_id), context_tokens
+            )
+        return None
+
+    def book_warm_lane(self, model_id: int, provider_id: int, request_id: str, context_tokens: int = 0) -> None:
+        if self._runtime_registry:
+            self._runtime_registry.book_warm_lane(
+                provider_id, self.get_model_name(model_id, provider_id), request_id, context_tokens
+            )
+
+    def book_queued_warm_lane(self, model_id: int, provider_id: int, request_id: str, context_tokens: int = 0) -> None:
+        self.book_warm_lane(model_id, provider_id, request_id, context_tokens)
+        self._get_provider_for_model(model_id, provider_id).spend_queue_budget(model_id)
+
+    def cancel_warm_booking(self, request_id: str) -> None:
+        if self._runtime_registry:
+            for pid in self._providers:
+                self._runtime_registry.release_warm_lane(pid, request_id)
 
     def try_reserve_capacity(self, model_id: int, provider_id: int, request_id: str) -> bool:
         provider = self._get_provider_for_model(model_id, provider_id)

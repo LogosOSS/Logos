@@ -35,7 +35,7 @@ def _scheduler(scored):
         scheduler.calls["scores"].append([d["provider_id"] for d in deployments])
         return [s for s in scored if s[1] in {d["provider_id"] for d in deployments}]
 
-    def select(ready, request_id):  # noqa: ARG001
+    def select(ready, request_id, **kwargs):  # noqa: ARG001
         scheduler.calls["selected"].append([s[1] for s in ready])
         return ready[0] if ready else None
 
@@ -113,7 +113,7 @@ def test_a_full_alternative_keeps_the_original_reservation():
     # the time it is reserved. The request must still hold its original
     # reservation, or it would later be forwarded without capacity accounting.
     scheduler = _scheduler([(MODEL_ID, WARM, "logosnode", 1.0, 1, _ettft(ReadinessTier.WARM))])
-    scheduler._try_immediate_select = lambda ready, request_id: None  # noqa: ARG005
+    scheduler._try_immediate_select = lambda ready, request_id, **kwargs: None  # noqa: ARG005
 
     assert scheduler.try_reroute(_request([STUCK, WARM]), MODEL_ID, STUCK) is None
     assert scheduler.calls["released"] == []
