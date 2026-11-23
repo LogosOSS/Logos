@@ -268,6 +268,40 @@ class TeamRepoLinkControllerTest {
     }
 
     @Test
+    void sandboxPermissions_doNotFollowARepositoryChangeEvenWhenTheDialogResendsThem() throws Exception {
+        MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("""
+                    {"repo_url":"https://github.com/team/granted-first",
+                     "agent_egress_hosts":["github.com"],"agent_may_comment":true}
+                    """))
+            .andExpect(status().isOk())
+            .andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        String url = "/admin/teams/2001/repositories/" + id;
+
+        // The full payload the Logos admin edit dialog sends: a new URL plus
+        // the permissions it currently shows.
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("""
+                    {"repo_url":"https://github.com/team/moved-elsewhere","branch":"main","paths":[],
+                     "agent_enabled":false,"agent_instructions":"","verification_command":"",
+                     "agent_egress_hosts":["github.com"],"agent_may_comment":true}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.repo_slug").value("team/moved-elsewhere"))
+            .andExpect(jsonPath("$.agent_egress_hosts.length()").value(0))
+            .andExpect(jsonPath("$.agent_may_comment").value(false));
+
+        // A separate grant for the new repository applies.
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"agent_egress_hosts\":[\"github.com\"],\"agent_may_comment\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_hosts[0]").value("github.com"))
+            .andExpect(jsonPath("$.agent_may_comment").value(true));
+    }
+
+    @Test
     void sandboxPermissions_rejectsInvalidHostsWithTheEntry() throws Exception {
         MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
                 .with(TestJwt.logosAdmin()).contentType("application/json")

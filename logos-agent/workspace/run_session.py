@@ -1547,11 +1547,22 @@ def _checkout_comparison(base_branch: str, branch: str, branch_sha: str) -> tupl
     is authoritative when one exists. Otherwise the runner can retain the
     original target across a successful push whose PR creation failed.
     """
-    if not branch_sha:
-        return require_checkout_ref("HEAD"), base_branch
     target = ""
+    if not branch_sha:
+        if _base_remote(base_branch, branch) != "push":
+            return require_checkout_ref("HEAD"), base_branch
+        # New work started from an earlier agent branch that exists only on
+        # the fork: the pull request cannot target that branch on the
+        # repository, so it targets the repository's branch, compared from
+        # where the two lines meet.
+        target = (
+            os.environ.get("LOGOS_SESSION_REPOSITORY_BRANCH", "").strip()
+            or os.environ.get("LOGOS_SESSION_PR_BASE_BRANCH", "").strip()
+            or _remote_default_branch()
+            or ""
+        )
     slug = os.environ.get("LOGOS_REPO_SLUG", "").strip()
-    if slug:
+    if slug and branch_sha:
         response = run(
             ["gh", "pr", "list", "--repo", slug, "--head", branch, "--state", "open", "--json", "baseRefName"],
             cwd=CHECKOUT,
@@ -1577,7 +1588,7 @@ def _checkout_comparison(base_branch: str, branch: str, branch_sha: str) -> tupl
         raise RuntimeError("could not establish the comparison branch for the existing session branch")
     run(["git", "check-ref-format", f"refs/heads/{target}"], cwd=CHECKOUT, quiet=True)
     run(["git", "fetch", "--depth", "50", "origin", f"{target}:refs/remotes/origin/{target}"], cwd=CHECKOUT)
-    _deepen_until_merge_base(target, base_branch)
+    _deepen_until_merge_base(target, base_branch, _base_remote(base_branch, branch))
     comparison = run(["git", "merge-base", f"origin/{target}", "HEAD"], cwd=CHECKOUT, quiet=True).stdout.strip()
     return comparison, target
 

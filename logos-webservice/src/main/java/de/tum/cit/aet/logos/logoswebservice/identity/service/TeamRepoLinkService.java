@@ -121,6 +121,7 @@ public class TeamRepoLinkService {
         TeamRepoLink link = existing.get();
         String previousSlug = link.getRepoSlug();
         String conflictSlug = previousSlug;
+        boolean repositoryChanged = false;
         if (body.repoUrl() != null) {
             String url = requireUrl(body.repoUrl());
             String slug = parseGithubSlug(url)
@@ -138,7 +139,11 @@ public class TeamRepoLinkService {
             // coverage for the new URL.
             if (!slug.equals(previousSlug)) {
                 // Network access and commenting were granted for the previous
-                // repository; they do not carry over to another one.
+                // repository; they do not carry over to another one, not even
+                // when the same request repeats them (the edit dialog sends
+                // its current values). The new repository needs a grant of
+                // its own, in a later request.
+                repositoryChanged = true;
                 link.setAgentEgressHosts(List.of());
                 link.setAgentMayComment(false);
                 analysisRepository.deleteByTeamRepositoryId(linkId);
@@ -156,7 +161,9 @@ public class TeamRepoLinkService {
             link.setPaths(normalizePaths(body.paths()));
         }
         configureAgent(link, body.agentEnabled(), body.agentInstructions(), body.verificationCommand());
-        configureSandbox(link, body.agentEgressHosts(), body.agentMayComment());
+        if (!repositoryChanged) {
+            configureSandbox(link, body.agentEgressHosts(), body.agentMayComment());
+        }
         link.setUpdatedAt(Instant.now());
         return Optional.of(toMap(saveLink(link, conflictSlug)));
     }

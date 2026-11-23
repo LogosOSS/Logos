@@ -160,7 +160,9 @@ port, a path, an IP address, `localhost` and a top-level wildcard such as
 internal addresses.
 
 Changing the repository URL of a link resets both settings, because they
-were granted for the previous repository.
+were granted for the previous repository. Logos ignores the two settings in
+the same save. To grant them for the new repository, edit the link again
+after the save.
 
 Every session on a linked repository also gets the following, independent of
 the two settings:
