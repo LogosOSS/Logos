@@ -55,7 +55,7 @@ def runner(monkeypatch):
     async def queued(*, include_triggered=True):
         return next((dict(row) for row in h.rows.values() if row["status"] == SessionStatus.QUEUED.value), None)
 
-    async def claim(sid, *, trigger_quota):
+    async def claim(sid, *, trigger_quota, memory_mb=None):
         row = h.rows[sid]
         if row["status"] != SessionStatus.QUEUED.value:
             return None

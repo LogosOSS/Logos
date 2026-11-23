@@ -154,6 +154,29 @@ workspaces are reused or re-pointed before any queue-only workspace is
 created; a queued session still waits for a real execution slot before it
 starts.
 
+### Memory Budget
+
+The capacity signal says whether the serving fleet has room, not whether the
+host that runs the containers has. Sessions are therefore also admitted
+against a **memory budget**: the memory all sessions together may claim,
+`LOGOS_AGENT_MEMORY_BUDGET_MB`, or by default `LOGOS_AGENT_HOST_MEMORY_SHARE`
+(50 %) of the memory the Docker host reports. An operator sets the **memory
+per session** on the Agents page (default `LOGOS_AGENT_SESSION_MEMORY_MB`).
+The parallel ceiling follows from it, the budget divided by the memory per
+session and never above `MAX_PARALLEL_SESSIONS`, and the slider can only
+lower it. Each session keeps the memory it was started with, and its helper
+containers get the same limit; a new session starts only while the memory
+that starting, running, paused and finalizing sessions reserved, plus its
+own, fits in the budget (`app/memory_budget.py`).
+
+If Docker cleanup fails, a container keeps its reservation until Docker
+confirms it has stopped. On restart the runner inventories managed containers
+before starting the scheduler. For a leftover container that still runs after
+its session ended, the runner restores the reservation from its Docker memory
+limit. Startup fails if the inventory or a required limit is unavailable, or
+if a helper from an active session is still running when recovery would
+repeat its work.
+
 Workspaces the runner creates for triggered work are named after it —
 `issue-812-oom-on-startup`, `pr-772-add-an-agent-runner` — which is also what
 appears in the branch (`logos/agent/issue-812-oom-on-startup/session-42`) and
@@ -355,7 +378,9 @@ unused and can be removed.
 | `LOGOS_AGENT_MAX_QUEUE_WORKSPACES` | `0` (= 5× parallel) | Cap on live workspaces holding waiting triggered work |
 | `LOGOS_AGENT_START_BELOW_LOAD` | `0.60` | Start only below this load |
 | `LOGOS_AGENT_PAUSE_ABOVE_LOAD` | `0.85` | Pause at or above this load |
-| `LOGOS_AGENT_SESSION_MEMORY_MB` | `4096` | Per-session memory ceiling |
+| `LOGOS_AGENT_SESSION_MEMORY_MB` | `4096` | Default memory of one session; the Agents page can change it at runtime |
+| `LOGOS_AGENT_MEMORY_BUDGET_MB` | `0` (= host share) | Memory all sessions together may claim |
+| `LOGOS_AGENT_HOST_MEMORY_SHARE` | `0.5` | Share of the Docker host's memory used as the budget when no budget is set |
 | `LOGOS_AGENT_SESSION_CPUS` | `2` | Per-session CPU ceiling |
 | `LOGOS_AGENT_SESSION_TIMEOUT_S` | `0` | Wall-clock ceiling per session; `0` is none, which is the default |
 | `LOGOS_AGENT_SESSION_MODEL_URL` | `http://logos-agent-gateway` | Where sessions send model traffic — a gateway that exposes only the orchestrator's `/v1` model surface, so a session never reaches the rest of the internal network |

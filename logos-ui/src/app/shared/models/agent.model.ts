@@ -111,9 +111,21 @@ export interface AgentControls {
   admits_new_sessions: boolean;
   /** The ceiling in force right now. */
   max_parallel: number;
-  /** Null when the deployment's configured ceiling applies. */
+  /** Null when the ceiling is the maximum the memory budget allows. */
   max_parallel_override: number | null;
   max_parallel_configured: number;
+  /** The most sessions at once with the current memory per session. */
+  max_parallel_available: number;
+  /** The memory limit of a session started now, in MB. */
+  session_memory_mb: number;
+  /** Null when the deployment's default memory per session applies. */
+  session_memory_override: number | null;
+  session_memory_configured: number;
+  /** The memory all sessions together may use, in MB; null without a budget. */
+  memory_budget_mb: number | null;
+  host_memory_mb: number | null;
+  /** What running, paused and starting sessions have reserved, in MB. */
+  memory_reserved_mb: number;
   updated_by: string;
 }
 

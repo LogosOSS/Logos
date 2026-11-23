@@ -806,15 +806,38 @@ For each session, it shows the work, the state and the pull request. Every
 Logos Admin can open the page. The **Agents** entry in the sidebar shows only
 if the deployment runs the optional agent stack.
 
+![Agent Sessions page](/img/roles/logos-admin-agents.png)
+
+The page has these parts, from top to bottom:
+
+- **Status tiles.** **Runner** shows the mode of the runner. **Sessions** shows
+  the running sessions and the limit, and the sessions that wait. **Memory**
+  shows the memory that the sessions reserve and the memory budget of the
+  host. **Platform capacity** shows if a new session can start, and the reason.
+- **Runner controls.** In **Mode**, select **Run**, **Stop new sessions** or
+  **Pause everything**. **Stop new sessions** lets the running sessions
+  finish. **Pause everything** pauses the running sessions and gives the
+  capacity back to the platform. **Reason** is an optional note for the
+  change.
+- **Memory per session (MB)** sets the memory limit of each new session. A
+  running session keeps its memory limit.
+- **Sessions at once** sets the maximum number of sessions that run at the
+  same time. The maximum is the number of sessions that the memory budget
+  holds. You can only set a lower value. The value 0 starts no new session.
+- **Session lists.** **Active**, **Queue** and **Finished** show the
+  sessions. Select a session to show its details and its transcript. Use the
+  arrows of a queued session to change its position in the queue.
+- **Automatic work**, **Workspaces** and **What every session is told** are
+  at the bottom of the page.
+
 Repository analyses of the linked repositories of the teams also run here.
 Each night, they run again for repositories that have new commits. **Analyze
-all repositories** immediately queues an analysis for every linked repository,
-also if there are no new commits. Use it, for example, after an improvement of
-the analysis. It does not change repositories that already have an analysis
-that is queued or that runs. The results go to the teams as proposals on their
-**Workflows** tab ([Team detail](app-admin.md#workflows)).
-
-![Agent Sessions page](/img/roles/logos-admin-agents.png)
+all repositories** in **Automatic work** immediately queues an analysis for
+every linked repository, also if there are no new commits. Use it, for
+example, after an improvement of the analysis. It does not change repositories
+that already have an analysis that is queued or that runs. The results go to
+the teams as proposals on their **Workflows** tab
+([Team detail](app-admin.md#workflows)).
 
 ### Start a Session
 
@@ -839,9 +862,9 @@ only for the platform repository. A note below the check boxes gives this
 reason.
 
 The session list and the session details show the repository of a session on
-a linked repository. In the session list, the repository shows next to the
-workspace, for example `docs-example/sample-app` in the **Finished** section
-of the **Agent Sessions** page image.
+a linked repository. In the session list, the repository shows below the task,
+next to the workspace. For example, see `docs-example/sample-app` in the
+**Finished** section of the **Agent Sessions** page image.
 
 A Logos Admin also sets the network access and the comment permission of each
 linked repository. Edit the repository link on the **Repositories** tab of the

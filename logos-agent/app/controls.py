@@ -30,7 +30,7 @@ import logging
 import time
 from dataclasses import dataclass, replace
 
-from . import db
+from . import db, memory_budget
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,8 @@ class Controls:
     mode_reason: str = ""
     # None means "whatever the environment configured".
     max_parallel_override: int | None = None
+    # The memory of one session; None means LOGOS_AGENT_SESSION_MEMORY_MB.
+    session_memory_override: int | None = None
     updated_by: str = ""
 
     @property
@@ -62,8 +64,21 @@ class Controls:
         return self.mode == PAUSED
 
     @property
+    def session_memory_mb(self) -> int:
+        """The memory limit a session started now gets."""
+        return settings.session_memory_mb if self.session_memory_override is None else self.session_memory_override
+
+    @property
+    def max_parallel_available(self) -> int:
+        """The most sessions that may run at once: what the memory budget holds, within the configured cap."""
+        memory = memory_budget.ceiling(self.session_memory_mb)
+        return settings.max_parallel_sessions if memory is None else min(settings.max_parallel_sessions, memory)
+
+    @property
     def max_parallel(self) -> int:
-        return settings.max_parallel_sessions if self.max_parallel_override is None else self.max_parallel_override
+        """The ceiling in force. An operator can lower it, never raise it above what is available."""
+        available = self.max_parallel_available
+        return available if self.max_parallel_override is None else min(self.max_parallel_override, available)
 
     @property
     def _reason_suffix(self) -> str:
@@ -76,6 +91,9 @@ class Controls:
         if self.mode == DRAINING:
             return f"the runner is draining: no new sessions{self._reason_suffix}"
         if self.max_parallel <= 0:
+            budget = memory_budget.current()
+            if budget is not None and budget.ceiling(self.session_memory_mb) <= 0:
+                return f"the memory budget holds no session: {budget.describe(self.session_memory_mb)}"
             return "the parallel ceiling is set to zero"
         return ""
 
@@ -131,18 +149,21 @@ async def current() -> Controls:
         _cached = DEFAULT
         return _cached
     override = row.get("max_parallel")
+    memory = row.get("session_memory_mb")
     mode = str(row.get("mode") or RUNNING)
     fresh = Controls(
         mode=mode if mode in MODES else RUNNING,
         mode_reason=str(row.get("mode_reason") or ""),
         max_parallel_override=int(override) if override is not None else None,
+        session_memory_override=int(memory) if memory is not None else None,
         updated_by=str(row.get("updated_by") or ""),
     )
     if fresh != _cached:
         logger.info(
-            "runner controls: %s, max parallel=%s%s",
+            "runner controls: %s, max parallel=%s, %s MB per session%s",
             fresh.mode,
             fresh.max_parallel,
+            fresh.session_memory_mb,
             f" (set by {fresh.updated_by})" if fresh.updated_by else "",
         )
     _cached = fresh
@@ -160,6 +181,12 @@ async def set_mode(*, mode: str, reason: str, by: str) -> Controls:
 async def set_max_parallel(*, limit: int | None, by: str) -> Controls:
     """Set or clear the runtime ceiling on concurrent sessions."""
     await db.set_controls(max_parallel=limit, clear_max_parallel=limit is None, updated_by=by)
+    return await _refresh()
+
+
+async def set_session_memory(*, memory_mb: int | None, by: str) -> Controls:
+    """Set or clear the memory of one session. Sessions already started keep theirs."""
+    await db.set_controls(session_memory_mb=memory_mb, clear_session_memory_mb=memory_mb is None, updated_by=by)
     return await _refresh()
 
 
@@ -189,4 +216,5 @@ __all__ = [
     "replace",
     "set_max_parallel",
     "set_mode",
+    "set_session_memory",
 ]
