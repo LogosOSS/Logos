@@ -248,6 +248,9 @@ class ControlState(BaseModel):
     max_parallel: int
     max_parallel_override: int | None = None
     max_parallel_configured: int
+    # What the host's memory budget allows, or null without a budget. The
+    # ceiling in force never exceeds it.
+    max_parallel_memory: int | None = None
     updated_by: str = ""
 
 

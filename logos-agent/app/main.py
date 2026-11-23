@@ -23,6 +23,7 @@ from . import (
     db,
     docker_engine,
     github,
+    memory_budget,
     model_policy,
     pulse,
     repository_context,
@@ -90,6 +91,7 @@ async def lifespan(_app: FastAPI):
             "account without 'workflow' scope as LOGOS_AGENT_SESSION_GITHUB_TOKEN to "
             "keep that out of the agent's reach."
         )
+    await memory_budget.establish()
     await manager.start()
     triggers.poller.on_queued = manager.scheduler_pass
     await triggers.poller.start()
@@ -285,6 +287,7 @@ def _control_state(state: controls.Controls) -> ControlState:
         max_parallel=state.max_parallel,
         max_parallel_override=state.max_parallel_override,
         max_parallel_configured=settings.max_parallel_sessions,
+        max_parallel_memory=memory_budget.ceiling(),
         updated_by=state.updated_by,
     )
 

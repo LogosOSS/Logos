@@ -30,7 +30,7 @@ import logging
 import time
 from dataclasses import dataclass, replace
 
-from . import db
+from . import db, memory_budget
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,11 @@ class Controls:
 
     @property
     def max_parallel(self) -> int:
-        return settings.max_parallel_sessions if self.max_parallel_override is None else self.max_parallel_override
+        chosen = settings.max_parallel_sessions if self.max_parallel_override is None else self.max_parallel_override
+        # An override lowers the ceiling during an incident; it cannot raise
+        # it above what the host's memory holds.
+        memory = memory_budget.ceiling()
+        return chosen if memory is None else min(chosen, memory)
 
     @property
     def _reason_suffix(self) -> str:
@@ -76,6 +80,9 @@ class Controls:
         if self.mode == DRAINING:
             return f"the runner is draining: no new sessions{self._reason_suffix}"
         if self.max_parallel <= 0:
+            budget = memory_budget.current()
+            if budget is not None and budget.ceiling <= 0:
+                return f"the memory budget holds no session: {budget.describe()}"
             return "the parallel ceiling is set to zero"
         return ""
 

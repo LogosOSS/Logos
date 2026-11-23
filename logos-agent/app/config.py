@@ -170,6 +170,11 @@ class Settings:
     # agent itself never runs there.
     session_egress_network: str = os.getenv("LOGOS_AGENT_SESSION_EGRESS_NETWORK", "logos-agent-egress-net")
     session_memory_mb: int = _int("LOGOS_AGENT_SESSION_MEMORY_MB", 4096)
+    # The memory all sessions together may claim (see app/memory_budget.py).
+    # Zero derives it as host_memory_share of the Docker host's memory. The
+    # parallel ceiling never exceeds this budget divided by session_memory_mb.
+    memory_budget_mb: int = _int("LOGOS_AGENT_MEMORY_BUDGET_MB", 0)
+    host_memory_share: float = _float("LOGOS_AGENT_HOST_MEMORY_SHARE", 0.5)
     session_cpus: float = _float("LOGOS_AGENT_SESSION_CPUS", 2.0)
     session_pids_limit: int = _int("LOGOS_AGENT_SESSION_PIDS_LIMIT", 512)
     # The unprivileged user the session image runs as. The runner creates the
