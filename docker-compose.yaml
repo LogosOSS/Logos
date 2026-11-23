@@ -244,6 +244,7 @@ services:
       LOGOS_MAINTENANCE_TIMEZONE: "${LOGOS_MAINTENANCE_TIMEZONE:-Europe/Berlin}"
       # Leave empty on Dev to keep its fixed pilot workload. Opt in on Prod only.
       LOGOS_NIGHTLY_REQUEST_USERNAME: "${LOGOS_NIGHTLY_REQUEST_USERNAME:-}"
+      LOGOS_NIGHTLY_MAX_PAIRS: "${LOGOS_NIGHTLY_MAX_PAIRS:-2}"
       LOGOS_CALIB_SLEEP_LEVEL: "${LOGOS_CALIB_SLEEP_LEVEL:-1}"
       # Nightly benchmarks are opt-in per model/worker in the administration UI.
       # The schedule is persisted in PostgreSQL (Europe/Berlin, starts 05:00–07:50).

@@ -60,7 +60,7 @@ Select **Performance → Analysis** for **Charts and comparison** or **Run detai
 
 ## Automatic Pair Rotation
 
-Each night admits at most 2 enabled model/worker pairs, one after the other.
+Each night admits at most 2 enabled model/worker pairs, one after the other. `LOGOS_NIGHTLY_MAX_PAIRS` changes this limit.
 Pairs without a previous attempt come first, followed by the oldest previous attempt.
 The pair ID determines the initial order when previous attempt dates match.
 After a restored round, the pair waits behind the other admitted pair.
