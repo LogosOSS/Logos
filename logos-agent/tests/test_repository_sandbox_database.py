@@ -35,6 +35,7 @@ async def database(monkeypatch):
                 id SERIAL PRIMARY KEY, team_id integer, repo_url text, repo_slug text, branch text,
                 agent_enabled boolean NOT NULL DEFAULT TRUE, agent_instructions text, verification_command text,
                 agent_egress_hosts jsonb NOT NULL DEFAULT '[]'::jsonb,
+                agent_egress_unrestricted boolean NOT NULL DEFAULT FALSE,
                 agent_may_comment boolean NOT NULL DEFAULT FALSE)"""))
             await conn.execute(text("""CREATE TABLE agent_workspaces (
                 id SERIAL PRIMARY KEY, name text UNIQUE, base_branch text, volume_name text,
@@ -102,8 +103,30 @@ async def test_grants_follow_the_link_only_while_it_names_the_sessions_repositor
     async with database.begin() as conn:
         await conn.execute(text("UPDATE team_repositories SET repo_slug = 'o/b' WHERE id = 1"))
 
-    assert await db.sandbox_permissions(1, "o/a") == {"agent_egress_hosts": [], "agent_may_comment": False}
+    assert await db.sandbox_permissions(1, "o/a") == {
+        "agent_egress_hosts": [],
+        "agent_egress_unrestricted": False,
+        "agent_may_comment": False,
+    }
     assert (await db.egress_grant(session_id))["hosts"] == []
+
+
+async def test_unrestricted_access_follows_the_link_only_while_it_names_the_sessions_repository(database):
+    session_id = await db.create_session(**_session())
+    await db.update_session(session_id, status="running", egress_token_hash="h")
+    assert (await db.egress_grant(session_id))["unrestricted"] is False
+
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE team_repositories SET agent_egress_unrestricted = TRUE WHERE id = 1"))
+
+    assert (await db.sandbox_permissions(1, "o/a"))["agent_egress_unrestricted"] is True
+    assert (await db.egress_grant(session_id))["unrestricted"] is True
+
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE team_repositories SET repo_slug = 'o/b' WHERE id = 1"))
+
+    assert (await db.sandbox_permissions(1, "o/a"))["agent_egress_unrestricted"] is False
+    assert (await db.egress_grant(session_id))["unrestricted"] is False
 
 
 async def test_an_idle_workspace_moves_to_the_new_repositorys_branch(database):

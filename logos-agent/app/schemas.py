@@ -105,6 +105,7 @@ class CodingRepository(BaseModel):
     branch: str
     verification_command: str | None = None
     agent_egress_hosts: list[str] = Field(default_factory=list)
+    agent_egress_unrestricted: bool = False
     agent_may_comment: bool = False
 
 

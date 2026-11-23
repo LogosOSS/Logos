@@ -45,7 +45,9 @@
               </a>
               <span class="repo-url">{{ repo.repo_url }}</span>
               <span class="repo-url">Coding agent: {{ repo.agent_enabled ? 'Enabled' : 'Off' }}</span>
-              @if (hostCount(repo) > 0) {
+              @if (repo.agent_egress_unrestricted) {
+                <span class="repo-url">Network: Any public host</span>
+              } @else if (hostCount(repo) > 0) {
                 <span class="repo-url" [title]="repo.agent_egress_hosts!.join(', ')">
                   Network: {{ hostCount(repo) }} {{ hostCount(repo) === 1 ? 'host' : 'hosts' }}
                 </span>
@@ -217,16 +219,32 @@
       </div>
       @if (isLogosAdmin) {
         <div class="form-field">
+          <label class="field-label" for="repo-egress-unrestricted">
+            <input id="repo-egress-unrestricted" type="checkbox"
+              aria-describedby="repo-egress-unrestricted-hint"
+              [checked]="formEgressUnrestricted()"
+              (change)="formEgressUnrestricted.set($any($event.target).checked)"
+              [disabled]="formLoading()" />
+            Allow unrestricted internet access (HTTPS to any public host)
+          </label>
+          <p class="field-hint" id="repo-egress-unrestricted-hint">
+            Sessions read issues and comments that anyone can write. With this option, such text can make
+            the agent send repository content or session data to any server. Use it only when a host list
+            is not practical.
+          </p>
+        </div>
+        <div class="form-field">
           <label class="field-label" for="repo-egress-hosts">Allowed network hosts</label>
           <textarea id="repo-egress-hosts" class="field-input field-textarea" rows="3"
             autocomplete="off" spellcheck="false"
             placeholder="github.com&#10;*.githubusercontent.com"
             [value]="formEgressHosts()"
             (input)="formEgressHosts.set($any($event.target).value)"
-            [disabled]="formLoading()"></textarea>
+            [disabled]="formLoading() || formEgressUnrestricted()"></textarea>
           <p class="field-hint">
             One host per line. HTTPS hosts that agent sessions for this repository may reach,
             for example to download toolchains. Leave empty for no internet access.
+            Not used while unrestricted internet access is on.
             Private and internal addresses are always blocked.
           </p>
         </div>
@@ -244,7 +262,9 @@
           <span class="field-label">Agent sandbox permissions</span>
           <p class="field-hint">
             Network access:
-            @if ((formEditing()?.agent_egress_hosts ?? []).length === 0) {
+            @if (formEditing()?.agent_egress_unrestricted) {
+              any public HTTPS host
+            } @else if ((formEditing()?.agent_egress_hosts ?? []).length === 0) {
               none
             } @else {
               {{ formEditing()!.agent_egress_hosts!.join(', ') }}

@@ -104,7 +104,7 @@ public class TeamRepoLinkService {
         link.setBranch(normalizeBranch(body.branch()));
         link.setPaths(normalizePaths(body.paths()));
         configureAgent(link, body.agentEnabled(), body.agentInstructions(), body.verificationCommand());
-        configureSandbox(link, body.agentEgressHosts(), body.agentMayComment());
+        configureSandbox(link, body.agentEgressHosts(), body.agentEgressUnrestricted(), body.agentMayComment());
         link.setCreatedAt(now);
         link.setUpdatedAt(now);
         return toMap(saveLink(link, slug));
@@ -145,6 +145,7 @@ public class TeamRepoLinkService {
                 // its own, in a later request.
                 repositoryChanged = true;
                 link.setAgentEgressHosts(List.of());
+                link.setAgentEgressUnrestricted(false);
                 link.setAgentMayComment(false);
                 analysisRepository.deleteByTeamRepositoryId(linkId);
                 cancelOrphanedAnalysisSessions(linkId);
@@ -162,7 +163,7 @@ public class TeamRepoLinkService {
         }
         configureAgent(link, body.agentEnabled(), body.agentInstructions(), body.verificationCommand());
         if (!repositoryChanged) {
-            configureSandbox(link, body.agentEgressHosts(), body.agentMayComment());
+            configureSandbox(link, body.agentEgressHosts(), body.agentEgressUnrestricted(), body.agentMayComment());
         }
         link.setUpdatedAt(Instant.now());
         return Optional.of(toMap(saveLink(link, conflictSlug)));
@@ -261,8 +262,10 @@ public class TeamRepoLinkService {
         }
     }
 
-    private static void configureSandbox(TeamRepoLink link, List<String> egressHosts, Boolean mayComment) {
+    private static void configureSandbox(
+        TeamRepoLink link, List<String> egressHosts, Boolean egressUnrestricted, Boolean mayComment) {
         if (egressHosts != null) link.setAgentEgressHosts(normalizeEgressHosts(egressHosts));
+        if (egressUnrestricted != null) link.setAgentEgressUnrestricted(egressUnrestricted);
         if (mayComment != null) link.setAgentMayComment(mayComment);
     }
 
@@ -396,6 +399,7 @@ public class TeamRepoLinkService {
         m.put("agent_instructions", link.getAgentInstructions());
         m.put("verification_command", link.getVerificationCommand());
         m.put("agent_egress_hosts", List.copyOf(link.getAgentEgressHosts()));
+        m.put("agent_egress_unrestricted", link.isAgentEgressUnrestricted());
         m.put("agent_may_comment", link.isAgentMayComment());
         m.put("paths", link.getPaths());
         m.put("created_at", link.getCreatedAt() != null ? link.getCreatedAt().toString() : null);

@@ -368,6 +368,7 @@ def _coding_repository_fields(row: dict) -> dict:
         "branch": str(row.get("branch") or "main"),
         "verification_command": row.get("verification_command"),
         "agent_egress_hosts": [str(host) for host in hosts],
+        "agent_egress_unrestricted": bool(row.get("agent_egress_unrestricted")),
         "agent_may_comment": bool(row.get("agent_may_comment")),
     }
 

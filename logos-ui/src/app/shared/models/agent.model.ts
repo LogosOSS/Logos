@@ -159,6 +159,8 @@ export interface AgentRepository {
   verification_command: string | null;
   /** HTTPS hosts sessions for this repository may reach; empty means no internet. */
   agent_egress_hosts: string[];
+  /** Whether sessions may reach any public HTTPS host instead of only the listed ones. */
+  agent_egress_unrestricted: boolean;
   /** Whether the agent may comment on issues and pull requests during a session. */
   agent_may_comment: boolean;
 }

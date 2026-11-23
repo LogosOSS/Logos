@@ -176,11 +176,35 @@ describe('RepositoriesTabComponent', () => {
     await component.submitForm();
     const payload = updateTeamRepository.mock.calls[0][2];
     expect(payload).not.toHaveProperty('agent_egress_hosts');
+    expect(payload).not.toHaveProperty('agent_egress_unrestricted');
     expect(payload).not.toHaveProperty('agent_may_comment');
     component.openCreate();
     component.formUrl.set('https://github.com/ls1intum/Artemis');
     await component.submitForm();
     expect(createTeamRepository.mock.calls[0][1]).not.toHaveProperty('agent_egress_hosts');
+  });
+
+  it('sends unrestricted internet access as an explicit Logos admin choice', async () => {
+    const component = setup();
+    component.isLogosAdmin = true;
+    component.openEdit({
+      ...sample,
+      agent_enabled: true,
+      verification_command: 'make check',
+      agent_egress_hosts: ['github.com'],
+      agent_egress_unrestricted: false,
+    });
+    expect(component.formEgressUnrestricted()).toBe(false);
+    component.formEgressUnrestricted.set(true);
+    await component.submitForm();
+    expect(updateTeamRepository).toHaveBeenCalledWith(7, 11, expect.objectContaining({
+      agent_egress_hosts: ['github.com'],
+      agent_egress_unrestricted: true,
+    }));
+    component.openEdit({ ...sample, agent_egress_unrestricted: true });
+    expect(component.formEgressUnrestricted()).toBe(true);
+    component.openCreate();
+    expect(component.formEgressUnrestricted()).toBe(false);
   });
 
   it('resets the sandbox permissions for a new link and counts hosts', () => {
