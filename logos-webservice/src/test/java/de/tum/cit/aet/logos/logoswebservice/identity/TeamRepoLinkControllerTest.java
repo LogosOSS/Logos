@@ -662,6 +662,32 @@ class TeamRepoLinkControllerTest {
     }
 
     @Test
+    void ownerOptOutSkipsBulkAndCancelsOnlyQueuedAutomaticAnalysis() throws Exception {
+        String base = "/admin/teams/2001/repositories";
+        MvcResult result = mvc.perform(post(base).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/example/analysis-choice\"}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.automatic_workflow_analysis").value(true)).andReturn();
+        int id = mapper.readTree(result.getResponse().getContentAsString()).get("id").asInt();
+        String link = base + "/" + id;
+        String disabled = "{\"automatic_workflow_analysis\":false}";
+        mvc.perform(post("/admin/repositories/analyze").with(TestJwt.logosAdmin())).andExpect(status().isOk());
+        mvc.perform(patch(link).with(TestJwt.adminUser()).contentType("application/json").content(disabled))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.automatic_workflow_analysis").value(false));
+        assertEquals("cancelled", jdbc.queryForObject("SELECT status FROM agent_sessions WHERE team_repository_id = ?",
+            String.class, id));
+        assertEquals("skipped", jdbc.queryForObject("SELECT status FROM ai_workflow_analyses WHERE team_repository_id = ?",
+            String.class, id));
+        mvc.perform(post("/admin/repositories/analyze").with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.queued").value(0)).andExpect(jsonPath("$.skipped").value(1));
+        mvc.perform(post(link + "/analyze/agent").with(TestJwt.adminUser()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("queued"));
+        mvc.perform(patch(link).with(TestJwt.adminUser()).contentType("application/json").content(disabled))
+            .andExpect(status().isOk());
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM agent_sessions WHERE team_repository_id = ? AND status = 'queued'",
+            Integer.class, id));
+    }
+
+    @Test
     void reanalysis_showsTheLastReviewedDecisionAndRefusesEditsToSupersededRows() throws Exception {
         MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
                 .with(TestJwt.logosAdmin())

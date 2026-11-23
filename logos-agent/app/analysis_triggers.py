@@ -217,11 +217,12 @@ class AnalysisPoller:
                         SELECT tr.id, tr.team_id, tr.repo_url, tr.repo_slug, tr.branch, tr.paths,
                                (SELECT a.commit_sha FROM ai_workflow_analyses a
                                  WHERE a.team_repository_id = tr.id
-                                   AND a.status IN ('succeeded', 'skipped')
+                                   AND a.status IN ('succeeded', 'skipped') AND a.commit_sha IS NOT NULL
                                  ORDER BY a.finished_at DESC NULLS LAST, a.id DESC
                                  LIMIT 1) AS last_commit
                           FROM team_repositories tr
-                         WHERE EXISTS (
+                         WHERE tr.automatic_workflow_analysis
+                           AND EXISTS (
                                  SELECT 1 FROM ai_workflow_analyses a
                                   WHERE a.team_repository_id = tr.id
                                     AND a.status = 'succeeded'
@@ -322,7 +323,8 @@ class AnalysisPoller:
                         SELECT tr.id, tr.team_id, tr.repo_url, tr.repo_slug,
                                tr.branch, tr.paths
                           FROM team_repositories tr
-                         WHERE NOT EXISTS (
+                         WHERE tr.automatic_workflow_analysis
+                           AND NOT EXISTS (
                                  SELECT 1 FROM ai_workflow_analyses a
                                   WHERE a.team_repository_id = tr.id
                                     AND a.status = 'succeeded'
@@ -365,7 +367,7 @@ class AnalysisPoller:
         # before any session exists.
         analysis_id = await self._insert_queued_analysis(team_id, link_id)
         if analysis_id is None:
-            logger.info("analysis of %s already queued or running; not queueing another", repo_slug)
+            logger.info("analysis of %s disabled or already in flight", repo_slug)
             return None
 
         workspace_id = await self._ensure_workspace(team_id, link_id, branch)
@@ -397,13 +399,12 @@ class AnalysisPoller:
                 repo_url=repo_url,
                 repo_slug=repo_slug,
                 team_repository_id=link_id,
+                automatic_analysis_id=analysis_id,
             )
         except ValueError as exc:
             logger.warning("could not queue analysis for team_repository %s: %s", link_id, exc)
             await self._drop_queued_analysis(analysis_id)
             return None
-
-        await self._attach_session(analysis_id, session_id)
 
         self._queued_total += 1
         logger.info("queued analysis session %s for %s", session_id, repo_slug)
@@ -452,33 +453,28 @@ class AnalysisPoller:
                     await conn.execute(
                         text("""
                             INSERT INTO ai_workflow_analyses
-                                (team_id, team_repository_id, status, source, started_at)
-                            VALUES
-                                (:team_id, :repo_id, 'queued', 'agent', :now)
+                                (team_id, team_repository_id, status, source, started_at, automatically_queued)
+                            SELECT :team_id, id, 'queued', 'agent', :now, TRUE
+                              FROM (SELECT id FROM team_repositories
+                                     WHERE id = :repo_id AND automatic_workflow_analysis FOR UPDATE) link
                             RETURNING id
                             """),
                         {"team_id": team_id, "repo_id": link_id, "now": datetime.now(timezone.utc)},
                     )
-                ).scalar_one()
+                ).scalar_one_or_none()
             except IntegrityError:
                 await conn.rollback()
                 return None
             await conn.commit()
-        return int(analysis_id)
-
-    async def _attach_session(self, analysis_id: int, session_id: int) -> None:
-        async with db.sessionmaker()() as conn:
-            await conn.execute(
-                text("UPDATE ai_workflow_analyses SET agent_session_id = :session_id WHERE id = :id"),
-                {"session_id": session_id, "id": analysis_id},
-            )
-            await conn.commit()
+        return int(analysis_id) if analysis_id is not None else None
 
     async def _drop_queued_analysis(self, analysis_id: int) -> None:
         """Release a claimed slot whose session could not be created."""
         async with db.sessionmaker()() as conn:
             await conn.execute(
-                text("DELETE FROM ai_workflow_analyses WHERE id = :id AND agent_session_id IS NULL"),
+                text(
+                    "DELETE FROM ai_workflow_analyses WHERE id = :id AND status = 'queued' AND agent_session_id IS NULL"
+                ),
                 {"id": analysis_id},
             )
             await conn.commit()

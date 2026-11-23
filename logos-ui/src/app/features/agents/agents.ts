@@ -89,6 +89,22 @@ export class Agents implements OnInit {
 
   /** The template binds a numeric workspace id to the select's string value. */
   readonly String = String;
+  readonly isActive = isActive;
+  private lastSessionRequest = signal(0);
+  private refreshSequence = 0;
+  private appliedSequence = 0;
+  private readonly mib = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+
+  formatRam(bytes: number | null | undefined): string {
+    if (bytes == null) return 'Unavailable';
+    const value = bytes / 1024 ** 2;
+    return value > 0 && value < 0.1 ? '<0.1 MiB' : this.mib.format(value) + ' MiB';
+  }
+
+  liveRam(session: AgentSession): number | null {
+    // Expire the last response if polling stalls while the page stays open.
+    return this.now() - this.lastSessionRequest() < 3 * POLL_MS ? session.memory_current_bytes ?? null : null;
+  }
 
   // ── data ─────────────────────────────────────────────────────────────────
   sessions = signal<AgentSession[]>([]);
@@ -317,10 +333,15 @@ export class Agents implements OnInit {
   async refresh(options: { quiet?: boolean } = {}): Promise<void> {
     if (!options.quiet) this.loading.set(true);
     try {
+      const sequence = ++this.refreshSequence;
+      const requestedAt = Date.now();
       const [sessions, workspaces] = await Promise.all([
         this.agentService.getSessions(),
         this.agentService.getWorkspaces(),
       ]);
+      if (sequence < this.appliedSequence) return;
+      this.appliedSequence = sequence;
+      this.lastSessionRequest.set(requestedAt);
       this.sessions.set(sessions);
       this.workspaces.set(workspaces);
       this.error.set(null);
@@ -388,7 +409,7 @@ export class Agents implements OnInit {
   });
 
   /**
-   * Set the memory of each session started from now on, in MB. An empty
+   * Set the memory of each session started from now on, in MiB. An empty
    * field goes back to the deployment's default. Sessions already running
    * keep the memory they were started with.
    */
@@ -402,7 +423,7 @@ export class Agents implements OnInit {
       const parsed = Number(trimmed);
       if (!Number.isFinite(parsed) || parsed < 512) {
         this.memoryDraft.set('');
-        this.error.set('The memory per session must be at least 512 MB.');
+        this.error.set('The memory per session must be at least 512 MiB.');
         return;
       }
       body = { session_memory_mb: Math.round(parsed) };
@@ -902,7 +923,7 @@ export class Agents implements OnInit {
     this.formModel.set(name || null);
   }
 
-  /** Queue an analysis of every linked team repository, regardless of commit. */
+  /** Queue an analysis of linked team repositories with automatic analysis enabled. */
   async analyzeAllRepositories(): Promise<void> {
     if (this.analyzingAll()) return;
     this.analyzingAll.set(true);

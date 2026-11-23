@@ -160,7 +160,7 @@ async def current() -> Controls:
     )
     if fresh != _cached:
         logger.info(
-            "runner controls: %s, max parallel=%s, %s MB per session%s",
+            "runner controls: %s, max parallel=%s, %s MiB per session%s",
             fresh.mode,
             fresh.max_parallel,
             fresh.session_memory_mb,

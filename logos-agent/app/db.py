@@ -683,6 +683,7 @@ async def create_session(
     verification_command: str | None = None,
     repo_base_branch: str | None = None,
     point_workspace_at: str | None = None,
+    automatic_analysis_id: int | None = None,
 ) -> int:
     """Queue a session. Returns its id.
 
@@ -695,6 +696,15 @@ async def create_session(
     workspace idle — whichever path inserts the session.
     """
     async with sessionmaker()() as db:
+        if automatic_analysis_id is not None:
+            # An owner can disable analysis while the poller prepares its workspace.
+            # Hold the same link lock as that edit through session creation and attachment.
+            eligible = await db.scalar(
+                text("SELECT id FROM team_repositories WHERE id = :id AND automatic_workflow_analysis FOR UPDATE"),
+                {"id": team_repository_id},
+            )
+            if eligible is None:
+                raise ValueError("automatic workflow analysis is disabled or the link was removed")
         # Lock the workspace row before inserting. delete_workspace takes
         # the same lock before it counts active sessions and deletes, so
         # the two transactions are serialized on the row: either the delete
@@ -790,6 +800,17 @@ async def create_session(
                 },
             )
         ).scalar_one()
+        if automatic_analysis_id is not None:
+            attached = await db.scalar(
+                text("""
+                    UPDATE ai_workflow_analyses SET agent_session_id = :session
+                     WHERE id = :analysis AND team_repository_id = :repo AND automatically_queued
+                       AND status = 'queued' AND agent_session_id IS NULL RETURNING id
+                    """),
+                {"analysis": automatic_analysis_id, "repo": team_repository_id, "session": session_id},
+            )
+            if attached is None:
+                raise ValueError("automatic analysis is no longer queued")
         await db.commit()
     return int(session_id)
 
@@ -992,7 +1013,7 @@ _SESSION_SELECT = """
            s.reply_target, s.reaction_target,
            s.priority, s.priority_reason, s.environment_notes,
            s.repo_url, s.repo_slug, s.team_repository_id, s.verification_command, s.repo_base_branch,
-           s.push_repo_slug, s.memory_mb,
+           s.push_repo_slug, s.memory_mb, s.memory_peak_bytes,
            t.name AS team_name,
            COALESCE(s.tokens_in, 0) AS tokens_in,
            COALESCE(s.tokens_out, 0) AS tokens_out,
@@ -1648,6 +1669,19 @@ async def count_sessions_by_status() -> dict[str, int]:
             .all()
         )
     return {r["status"]: int(r["n"]) for r in rows}
+
+
+async def record_memory_peaks(samples: dict[int, int]) -> None:
+    """Only a higher observed total writes the row, even across runner restarts."""
+    async with sessionmaker()() as conn:
+        await conn.execute(
+            text("""
+                UPDATE agent_sessions SET memory_peak_bytes = :usage
+                 WHERE id = :id AND (memory_peak_bytes IS NULL OR memory_peak_bytes < :usage)
+                """),
+            [{"id": session_id, "usage": usage} for session_id, usage in samples.items()],
+        )
+        await conn.commit()
 
 
 async def session_memory_mb(session_id: int) -> int | None:

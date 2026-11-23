@@ -45,6 +45,7 @@ from . import (
     github,
     github_broker,
     memory_budget,
+    memory_usage,
     model_policy,
     repository_context,
     triggers,
@@ -603,6 +604,7 @@ class SessionManager:
         self._last_helper_output: dict[int, str] = {}
         self._scheduler_task: asyncio.Task | None = None
         self._capacity_watch_task: asyncio.Task | None = None
+        self._memory_task: asyncio.Task | None = None
         self._maintenance_task: asyncio.Task | None = None
         self._github_broker_task: asyncio.Task | None = None
         self._yield_lock = asyncio.Lock()
@@ -652,6 +654,7 @@ class SessionManager:
         await self.resume_retries()
         self._scheduler_task = asyncio.create_task(self._scheduler_loop(), name="agent-scheduler")
         self._capacity_watch_task = asyncio.create_task(self._capacity_watch_loop(), name="agent-capacity-watch")
+        self._memory_task = asyncio.create_task(memory_usage.monitor(), name="agent-memory-usage")
         self._maintenance_task = asyncio.create_task(self._maintenance_loop(), name="agent-maintenance")
         self._github_broker_task = asyncio.create_task(self._github_broker_loop(), name="agent-github-broker")
 
@@ -659,6 +662,7 @@ class SessionManager:
         self._stopping.set()
         await cancel_and_wait(self._scheduler_task)
         await cancel_and_wait(self._capacity_watch_task)
+        await cancel_and_wait(self._memory_task)
         await cancel_and_wait(self._maintenance_task)
         await cancel_and_wait(self._github_broker_task)
         await self._stand_down()

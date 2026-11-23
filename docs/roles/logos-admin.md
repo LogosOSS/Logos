@@ -819,7 +819,7 @@ The page has these parts, from top to bottom:
   finish. **Pause everything** pauses the running sessions and gives the
   capacity back to the platform. **Reason** is an optional note for the
   change.
-- **Memory per session (MB)** sets the memory limit of each new session. A
+- **Memory per session (MiB)** sets the memory limit of each new session. A
   running session keeps its memory limit.
 - **Sessions at once** sets the maximum number of sessions that run at the
   same time. The maximum is the number of sessions that the memory budget
@@ -827,13 +827,17 @@ The page has these parts, from top to bottom:
 - **Session lists.** **Active**, **Queue** and **Finished** show the
   sessions. Select a session to show its details and its transcript. Use the
   arrows of a queued session to change its position in the queue.
+  **RAM now** shows the latest total for the session containers, including helpers and file cache.
+  The runner samples about every 2 seconds. A short peak between samples can be higher.
+  **Observed peak** keeps the highest sample after the session ends or the runner restarts.
+  **Unavailable** means there is no measurement. **Limit** shows the limit per container at the start of the session.
 - **Automatic work**, **Workspaces** and **What every session is told** are
   at the bottom of the page.
 
 Repository analyses of the linked repositories of the teams also run here.
 Each night, they run again for repositories that have new commits. **Analyze
-all repositories** in **Automatic work** immediately queues an analysis for
-every linked repository, also if there are no new commits. Use it, for
+enabled repositories** in **Automatic work** immediately queues an analysis for
+every repository with **Automatic workflow analysis** enabled, even if there are no new commits. Use it, for
 example, after an improvement of the analysis. It does not change repositories
 that already have an analysis that is queued or that runs. The results go to
 the teams as proposals on their **Workflows** tab

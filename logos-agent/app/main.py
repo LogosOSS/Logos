@@ -24,6 +24,7 @@ from . import (
     docker_engine,
     github,
     memory_budget,
+    memory_usage,
     model_policy,
     pulse,
     repository_context,
@@ -341,7 +342,7 @@ async def update_controls(body: ControlUpdate, principal: Principal = Depends(re
     if body.clear_session_memory_mb or body.session_memory_mb is not None:
         memory = None if body.clear_session_memory_mb else body.session_memory_mb
         state = await controls.set_session_memory(memory_mb=memory, by=principal.username)
-        logger.info("%s set the memory per session to %s", principal.username, f"{memory} MB" if memory else "default")
+        logger.info("%s set the memory per session to %s", principal.username, f"{memory} MiB" if memory else "default")
     # A pause takes effect on the next pass anyway; running one now means the
     # operator sees it happen instead of waiting a tick for it.
     manager.request_scheduler_pass()
@@ -774,7 +775,13 @@ async def session_pull_request(session_id: int, _: Principal = Depends(require_a
 def _summary_fields(row: dict) -> dict:
     """Project a database row onto the response model's fields."""
     keys = set(SessionSummary.model_fields)
-    return {k: v for k, v in row.items() if k in keys}
+    fields = {k: v for k, v in row.items() if k in keys}
+    live = memory_usage.current(row["id"], row["status"])
+    fields["memory_current_bytes"] = live
+    if live is not None:
+        # The sampler may commit a newer peak after this request's SELECT.
+        fields["memory_peak_bytes"] = max(live, row.get("memory_peak_bytes") or 0)
+    return fields
 
 
 @app.post("/security/scans/trivy", tags=["security"])

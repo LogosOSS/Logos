@@ -9,7 +9,7 @@ import os
 import uuid
 
 import pytest
-from app import db
+from app import analysis_triggers, db
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -35,7 +35,8 @@ async def database(monkeypatch):
         async with engine.begin() as conn:
             await conn.execute(text("CREATE TABLE teams (id SERIAL PRIMARY KEY, name text)"))
             await conn.execute(text("""CREATE TABLE team_repositories (
-                id SERIAL PRIMARY KEY, team_id integer, repo_url text, repo_slug text, branch text,
+                id SERIAL PRIMARY KEY, team_id integer, repo_url text, repo_slug text, branch text, paths jsonb,
+                automatic_workflow_analysis boolean NOT NULL DEFAULT TRUE,
                 agent_enabled boolean NOT NULL DEFAULT TRUE, agent_instructions text, verification_command text,
                 agent_egress_hosts jsonb NOT NULL DEFAULT '[]'::jsonb,
                 agent_egress_unrestricted boolean NOT NULL DEFAULT FALSE,
@@ -53,8 +54,13 @@ async def database(monkeypatch):
                 trigger_kind text, trigger_ref text, reply_target text, reaction_target text,
                 priority integer, priority_reason text, environment_notes text,
                 repo_url text, repo_slug text, team_repository_id integer, verification_command text,
-                repo_base_branch text, push_repo_slug text, egress_token_hash text, memory_mb integer,
+                repo_base_branch text, push_repo_slug text, egress_token_hash text,
+                memory_mb integer, memory_peak_bytes bigint,
                 tokens_in bigint, tokens_out bigint, cost_usd numeric)"""))
+            await conn.execute(text("""CREATE TABLE ai_workflow_analyses (
+                id SERIAL PRIMARY KEY, team_id integer, team_repository_id integer, status text, source text,
+                commit_sha text, started_at timestamptz, finished_at timestamptz, automatically_queued boolean,
+                agent_session_id integer)"""))
             await conn.execute(text("CREATE TABLE agent_events (id SERIAL PRIMARY KEY, session_id integer, kind text)"))
             await conn.execute(text("""INSERT INTO team_repositories (team_id, repo_url, repo_slug, branch,
                 agent_egress_hosts, agent_may_comment)
@@ -200,3 +206,40 @@ async def test_a_cancellation_can_only_transfer_the_reservation_it_read(database
         session_id, db.SessionStatus.CANCELLED, expected_status=db.SessionStatus.STARTING
     )
     assert await db.reserved_memory_mb(1024) == 0
+
+
+async def test_peak_is_nullable_and_only_increases_across_sessions_and_status_changes(database):
+    session_id = await db.create_session(**_session())
+    assert (await db.get_session(session_id))["memory_peak_bytes"] is None
+    await asyncio.gather(db.record_memory_peaks({session_id: 2**32}), db.record_memory_peaks({session_id: 100}))
+    await db.update_session(session_id, status="succeeded")
+    assert (await db.list_sessions())[0]["memory_peak_bytes"] == 2**32
+
+
+async def test_automatic_analysis_rechecks_opt_out_after_selection_and_before_attach(database):
+    poller = analysis_triggers.AnalysisPoller()
+    (link,) = await poller._links_needing_analysis()
+    analysis_id = await poller._insert_queued_analysis(1, link["id"])
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE team_repositories SET automatic_workflow_analysis = FALSE WHERE id = 1"))
+    with pytest.raises(ValueError, match="automatic workflow analysis"):
+        await db.create_session(**_session(), automatic_analysis_id=analysis_id)
+    await poller._drop_queued_analysis(analysis_id)
+    assert await db.list_sessions() == []
+    assert await poller._queue(link) is None
+    assert await poller._links_needing_analysis() == []
+    async with database.begin() as conn:
+        await conn.execute(
+            text("INSERT INTO ai_workflow_analyses (team_repository_id, status) VALUES (1, 'succeeded')")
+        )
+    assert await poller._links_for_nightly() == []
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE team_repositories SET automatic_workflow_analysis = TRUE WHERE id = 1"))
+    (nightly,) = await poller._links_for_nightly()
+    session_id = await poller._queue(nightly)
+    assert session_id is not None
+    async with database.begin() as conn:
+        assert (
+            await conn.scalar(text("SELECT agent_session_id FROM ai_workflow_analyses WHERE automatically_queued"))
+            == session_id
+        )

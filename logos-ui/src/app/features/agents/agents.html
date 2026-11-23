@@ -77,13 +77,13 @@
               {{ ctl.memory_reserved_mb | number }}<span class="tile__of">
                 / {{ ctl.memory_budget_mb | number }}</span
               >
-              <span class="tile__unit">MB</span>
+              <span class="tile__unit">MiB</span>
             </span>
             <span
               class="meter"
               role="img"
               [attr.aria-label]="
-                ctl.memory_reserved_mb + ' of ' + ctl.memory_budget_mb + ' MB reserved'
+                ctl.memory_reserved_mb + ' of ' + ctl.memory_budget_mb + ' MiB reserved'
               "
             >
               <span class="meter__fill" [style.width.%]="memoryPercent()"></span>
@@ -91,12 +91,12 @@
             <span class="tile__hint">
               Reserved by sessions
               @if (ctl.host_memory_mb !== null) {
-                · {{ ctl.host_memory_mb | number }} MB on the host
+                · {{ ctl.host_memory_mb | number }} MiB on the host
               }
             </span>
           } @else {
             <span class="tile__value">
-              {{ ctl.session_memory_mb | number }} <span class="tile__unit">MB per session</span>
+              {{ ctl.session_memory_mb | number }} <span class="tile__unit">MiB per session</span>
             </span>
             <span class="tile__hint">The host's memory is unknown</span>
           }
@@ -374,7 +374,7 @@
       <div class="controls__limits">
         <div class="control">
           <label class="field__label" for="agent-session-memory">
-            Memory per session (MB)
+            Memory per session (MiB)
             @if (ctl.session_memory_override === null) {
               <span class="field__optional">(default)</span>
             }
@@ -400,20 +400,20 @@
                 [disabled]="controlBusy()"
                 title="Go back to the memory this deployment was configured with"
               >
-                Reset to {{ ctl.session_memory_configured }} MB
+                Reset to {{ ctl.session_memory_configured }} MiB
               </button>
             }
           </div>
           <span class="field__hint">
             @if (ctl.memory_budget_mb !== null) {
-              Sessions may use {{ ctl.memory_budget_mb | number }} MB together
+              Sessions may use {{ ctl.memory_budget_mb | number }} MiB together
               @if (ctl.host_memory_mb !== null) {
-                of {{ ctl.host_memory_mb | number }} MB on the host
+                of {{ ctl.host_memory_mb | number }} MiB on the host
               }
-              ({{ ctl.memory_reserved_mb | number }} MB in use), so up to
+              ({{ ctl.memory_reserved_mb | number }} MiB reserved), so up to
               {{ ctl.max_parallel_available }}
               {{ ctl.max_parallel_available === 1 ? 'session' : 'sessions' }} of
-              {{ ctl.session_memory_mb | number }} MB.
+              {{ ctl.session_memory_mb | number }} MiB.
             } @else {
               The host's memory is unknown; only the configured ceiling of
               {{ ctl.max_parallel_configured }} applies.
@@ -559,6 +559,19 @@
               }
             </span>
           </span>
+          @if (session.status !== 'queued') {
+            <span class="session__memory">
+              @if (isActive(session.status)) {
+                <span>RAM now <strong>{{ formatRam(liveRam(session)) }}</strong></span>
+              }
+              <span title="Highest sampled total across session containers, including helpers and file cache. Brief spikes can fall between samples.">
+                Observed peak <strong>{{ formatRam(session.memory_peak_bytes) }}</strong>
+              </span>
+              @if (session.memory_mb != null) {
+                <span>Limit <strong>{{ session.memory_mb | number }} MiB</strong></span>
+              }
+            </span>
+          }
           <i class="pi pi-chevron-down session__chevron" aria-hidden="true"></i>
         </button>
 
@@ -712,6 +725,13 @@
             </div>
           </dl>
 
+          @if (session.status !== 'queued') {
+            <p class="field__hint">
+              RAM includes file cache in the session’s agent and helper containers.
+              The runner samples about every 2 seconds. Brief peaks can fall between samples.
+            </p>
+          }
+
           @if (session.error) {
             <app-error-message variant="banner" [message]="session.error" />
           }
@@ -792,9 +812,8 @@
         <i class="pi pi-sparkles" aria-hidden="true"></i>
         <div>
           <p class="info-row__text">
-            Linked team repositories are re-analysed every night when their branch has new commits;
-            unchanged repositories are skipped. Results arrive as proposals on each team's Workflows
-            tab.
+            Repositories with automatic workflow analysis enabled are checked nightly for new commits.
+            Analyze them now to send fresh proposals to each team's Workflows tab.
           </p>
           <div class="info-row__actions">
             <button
@@ -808,7 +827,7 @@
               } @else {
                 <i class="pi pi-sparkles" aria-hidden="true"></i>
               }
-              Analyze all repositories
+              Analyze enabled repositories
             </button>
             @if (analyzeAllMessage(); as msg) {
               <span class="field__hint" role="status">{{ msg }}</span>

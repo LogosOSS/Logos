@@ -168,6 +168,9 @@ class SessionSummary(BaseModel):
     # What the agent reported spending, in US dollars — the currency
     # Claude Code reports. Authoritative accounting stays in the request log.
     cost_usd: float
+    memory_mb: int | None = None  # Per-container limit at admission, in MiB.
+    memory_current_bytes: int | None = None
+    memory_peak_bytes: int | None = None
     screenshot_count: int = 0
     # Set when the runner queued this session itself in response to the
     # repository: what kind of event it was ('issue', 'review') and which one
@@ -276,7 +279,7 @@ class ControlUpdate(BaseModel):
     # Null clears the override and the configured ceiling applies again.
     max_parallel: int | None = Field(default=None, ge=0, le=100)
     clear_max_parallel: bool = False
-    # The memory limit of each session started from now on, in MB. Null
+    # The memory limit of each session started from now on, in MiB. Null
     # with clear_session_memory_mb goes back to the deployment's default.
     session_memory_mb: int | None = Field(default=None, ge=512, le=1_048_576)
     clear_session_memory_mb: bool = False

@@ -227,6 +227,41 @@ describe('Agents', () => {
         fixture.nativeElement.querySelectorAll('.session__timing') as NodeListOf<HTMLElement>,
       ).map((element) => element.textContent!.trim());
 
+    it('refreshes RAM on polls and keeps only the observed peak for finished sessions', async () => {
+      const row = makeSession({ status: 'starting', memory_mb: 2048, memory_current_bytes: 1048576,
+        memory_peak_bytes: 2 * 1048576 });
+      agentService.sessions = [row, makeSession({ id: 22, status: 'failed' })];
+      await component.refresh();
+      fixture.detectChanges();
+      const readings = () => [...fixture.nativeElement.querySelectorAll('.session__memory')]
+        .map((el: HTMLElement) => el.textContent!.replace(/\s+/g, ' ').trim());
+      expect(readings()[0]).toContain('RAM now 1 MiB');
+      expect(readings()[1]).toBe('Observed peak Unavailable');
+
+      agentService.sessions = [{ ...row, status: 'paused', memory_current_bytes: 0 }];
+      await vi.advanceTimersByTimeAsync(4000);
+      fixture.detectChanges();
+      expect(readings()[0]).toContain('RAM now 0 MiB');
+
+      agentService.sessions = [{ ...row, status: 'succeeded' }];
+      await vi.advanceTimersByTimeAsync(4000);
+      fixture.detectChanges();
+      expect(readings()[0]).not.toContain('RAM now');
+      expect(readings()[0]).toContain('Observed peak 2 MiB');
+      expect(readings()[0]).toContain('Limit 2,048 MiB');
+    });
+
+    it('expires RAM now while the session list cannot refresh', async () => {
+      agentService.sessions = [makeSession({ status: 'running', memory_current_bytes: 1048576, memory_peak_bytes: 1048576 })];
+      await component.refresh();
+      vi.spyOn(agentService, 'getSessions').mockRejectedValue(new Error('offline'));
+      await vi.advanceTimersByTimeAsync(12000);
+      fixture.detectChanges();
+      const memory = fixture.nativeElement.querySelector('.session__memory').textContent;
+      expect(memory).toContain('RAM now Unavailable');
+      expect(memory).toContain('Observed peak 1 MiB');
+    });
+
     it('updates queue waits and running durations every second between server polls', async () => {
       agentService.sessions = [
         makeSession({
@@ -538,11 +573,11 @@ describe('Agents', () => {
       expect(component.memoryPercent()).toBe(100);
     });
 
-    it('refuses less than 512 MB without sending anything', async () => {
+    it('refuses less than 512 MiB without sending anything', async () => {
       await component.applyMemory('100');
 
       expect(agentService.controlBodies).toEqual([]);
-      expect(component.error()).toContain('512 MB');
+      expect(component.error()).toContain('512 MiB');
     });
 
     it('shows the ceiling in force, not a stored override the budget clamps', async () => {

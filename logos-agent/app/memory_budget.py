@@ -51,10 +51,10 @@ class Budget:
         return max(0, self.budget_mb // session_mb)
 
     def describe(self, session_mb: int | None = None) -> str:
-        host = f" of {self.host_mb} MB on the host" if self.host_mb is not None else ""
-        text = f"{self.budget_mb} MB{host} ({self.source})"
+        host = f" of {self.host_mb} MiB on the host" if self.host_mb is not None else ""
+        text = f"{self.budget_mb} MiB{host} ({self.source})"
         if session_mb is not None:
-            text += f" holds {self.ceiling(session_mb)} session(s) of {session_mb} MB"
+            text += f" holds {self.ceiling(session_mb)} session(s) of {session_mb} MiB"
         return text
 
     def admission_block(self, *, reserved_mb: int, session_mb: int) -> str:
@@ -62,8 +62,8 @@ class Budget:
         if reserved_mb + session_mb <= self.budget_mb:
             return ""
         return (
-            f"the memory budget is used: {reserved_mb} of {self.budget_mb} MB are reserved, "
-            f"a new session needs {session_mb} MB"
+            f"the memory budget is used: {reserved_mb} of {self.budget_mb} MiB are reserved, "
+            f"a new session needs {session_mb} MiB"
         )
 
 

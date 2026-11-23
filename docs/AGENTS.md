@@ -358,7 +358,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-security-intake.png` | `tobias.wasner` | `/agents/security` — Report an important incident expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-evidence.png` | `tobias.wasner` | `/agents/security` — Evidence & history expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-confirm.png` | `tobias.wasner` | `/agents/security` — Confirm resolved form; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
-| `logos-admin-agents.png` | `tobias.wasner` | `/agents` (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#agent-sessions` |
+| `logos-admin-agents.png` | `tobias.wasner` | `/agents` — current RAM, observed peak, and container limit (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#agent-sessions` |
 | `logos-admin-agents-new-session.png` | `tobias.wasner` | `/agents` — **New session**, **Repository** `docs-example/sample-app (develop)` selected (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#start-a-session` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |
 | `app-admin-models.png` | `alexandra.szuminska` | `/models` | `roles/app-admin.md` |
@@ -368,7 +368,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `team-detail-members.png` | same | `/teams/<id>` — **Members** | same |
 | `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys** | same |
 | `team-detail-repositories.png` | owner or `logos_admin` | `/teams/<id>` — **Repositories** | same |
-| `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled | `roles/app-admin.md#enable-the-coding-agent` |
+| `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled and automatic workflow analysis off | `roles/app-admin.md#enable-the-coding-agent` |
 | `team-detail-workflows.png` | owner or `logos_admin` | `/teams/<id>` — **Workflows** | same |
 | `team-detail-models.png` | owner or `logos_admin` | `/teams/<id>` — **Models** | same |
 | `team-detail-activity.png` | owner or `logos_admin` | `/teams/<id>` — **Activity** | same |
