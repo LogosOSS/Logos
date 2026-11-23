@@ -7,7 +7,7 @@
 # Resolve the same Maven toolchain and project dependencies as the application
 # image while build-time network access is available. Running test-compile
 # warms compiler/plugin dependencies that dependency:go-offline can miss.
-FROM maven:3.10-eclipse-temurin-25@sha256:37ecd7dbbe926e9b69586747a25164c0f3b764455072322d25cc7724ee9e1b64 AS java-verification
+FROM maven:3-eclipse-temurin-26@sha256:69a6c37f0a91fca2c9d0cdd684c9c0ea7b1bc00d4196749c24440b2e02ad163d AS java-verification
 COPY logos-webservice/install-temurin.sh /tmp/install-temurin.sh
 RUN sh /tmp/install-temurin.sh jdk && rm /tmp/install-temurin.sh
 ENV JAVA_VERSION=jdk-25.0.5.1+2

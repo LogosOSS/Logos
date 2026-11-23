@@ -1,9 +1,9 @@
 # Both compiler and runtime use the same verified Temurin security release.
-FROM maven:3.10-eclipse-temurin-25@sha256:37ecd7dbbe926e9b69586747a25164c0f3b764455072322d25cc7724ee9e1b64 AS java-runtime
+FROM maven:3-eclipse-temurin-26@sha256:69a6c37f0a91fca2c9d0cdd684c9c0ea7b1bc00d4196749c24440b2e02ad163d AS java-runtime
 COPY install-temurin.sh /tmp/install-temurin.sh
 RUN sh /tmp/install-temurin.sh jre
 
-FROM maven:3.10-eclipse-temurin-25@sha256:37ecd7dbbe926e9b69586747a25164c0f3b764455072322d25cc7724ee9e1b64 AS builder
+FROM maven:3-eclipse-temurin-26@sha256:69a6c37f0a91fca2c9d0cdd684c9c0ea7b1bc00d4196749c24440b2e02ad163d AS builder
 # Official Temurin archives carry the patch before the base images are rebuilt.
 COPY install-temurin.sh /tmp/install-temurin.sh
 RUN sh /tmp/install-temurin.sh jdk && rm /tmp/install-temurin.sh
