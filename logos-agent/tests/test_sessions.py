@@ -5378,6 +5378,75 @@ class TestAdmissionMeasuresTheRightLane:
         assert lanes[0] == policy.local_deployments
         assert lanes[-1] == frozenset({("15", "2")})
 
+    async def test_an_unrelated_model_without_telemetry_does_not_hold_back_the_default(self, monkeypatch):
+        """A queued session on the default alias starts while another lane of the key is unknown."""
+        from app import capacity, model_policy, sessions
+
+        healthy = frozenset({("15", "1")})
+        policy = model_policy.ModelPolicy(
+            local_models=frozenset({"big-model", "local-most-powerful", "embedder"}),
+            offered=("big-model", "embedder"),
+            local_deployments=frozenset({("15", "1"), ("15", "2")}),
+            deployments_by_model={
+                "big-model": healthy,
+                "local-most-powerful": healthy,
+                "embedder": frozenset({("15", "2")}),
+            },
+            canonical_names={"local-most-powerful": "big-model"},
+            ok=True,
+            unknown=False,
+            detail="two local models",
+        )
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, default_model=""))
+        claimed: list = []
+
+        async def refresh():
+            return policy
+
+        async def read_load(timeout_s: float = 5.0, lane=None, ours=None, own_api_key_id=None):
+            if lane == healthy:
+                return capacity.Reading(
+                    load=0.0, busy_slots=0, total_slots=20, queue_total=0, ok=True, dynamic=True, available_slots=3
+                )
+            return capacity.Reading(
+                load=1.0,
+                busy_slots=0,
+                total_slots=0,
+                queue_total=0,
+                ok=False,
+                dynamic=True,
+                detail="no fresh engine-capacity observation for the runner's models",
+            )
+
+        async def peek(*, include_triggered: bool = True):
+            return {"id": 7, "model": None, "workspace_id": 1}
+
+        async def claim_session(session_id, *, trigger_quota=None):
+            claimed.append(session_id)
+            return None
+
+        async def none(_status):
+            return []
+
+        monkeypatch.setattr(model_policy, "refresh", refresh)
+        monkeypatch.setattr(model_policy, "_current", policy)
+        monkeypatch.setattr(capacity, "read_load", read_load)
+        monkeypatch.setattr(sessions.db, "next_queued_session", peek)
+        monkeypatch.setattr(sessions.db, "claim_session", claim_session)
+        monkeypatch.setattr(sessions.db, "sessions_in_status", none)
+
+        async def no_triggers():
+            return 0
+
+        monkeypatch.setattr(sessions.db, "count_active_trigger_sessions", no_triggers)
+        manager = sessions.SessionManager()
+        monkeypatch.setattr(manager, "_capacity_sample_available", lambda _reading: True)
+
+        await manager.scheduler_pass()
+
+        assert policy.resolve(None) == "local-most-powerful"
+        assert claimed == [7]
+
     async def test_nothing_queued_means_nothing_measured_twice(self, monkeypatch):
         from app import capacity, sessions
 
