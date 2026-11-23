@@ -49,7 +49,9 @@ services:
 
   # One-shot: bring the schema up to the same revision the webservice would.
   migrate:
-    image: liquibase/liquibase:5.0
+    build:
+      context: ../../../logos-webservice
+      target: e2e-migrate
     depends_on:
       logos-db:
         condition: service_healthy
