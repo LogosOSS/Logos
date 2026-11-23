@@ -76,3 +76,94 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+  - package-ecosystem: "maven"
+    directory: "/logos-webservice"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      webservice-maven:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "uv"
+    directory: "/logos-node-manager"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      node-manager-python:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # The documentation build has its own lockfile and TypeScript constraints.
+  - package-ecosystem: "npm"
+    directory: "/docs"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      docs-npm:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # CI regenerates the platform-specific hash locks from these inputs.
+  - package-ecosystem: "pip"
+    directories:
+      - "/logos-workernode"
+      - "/e2e"
+      - "/benchmarks"
+      - "/benchmarks/gateway_concurrency"
+      - "/tools/pre-commit"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      python-requirements:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/agent-gateway"
+      - "/db"
+      - "/e2e/harness/nodesim"
+      - "/logos-agent"
+      - "/logos-agent/workspace"
+      - "/logos-node-manager"
+      - "/logos-node-manager/tests/smoke/dummy-worker"
+      - "/logos-orchestrator"
+      - "/logos-ui"
+      - "/logos-webservice"
+      - "/logos-workernode"
+      - "/rate-limit-gateway"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    ignore:
+      # The current Python image line has matching native wheels and lockfiles.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+    groups:
+      base-images:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "docker-compose"
+    directories:
+      - "/"
+      - "/benchmarks/gateway_concurrency"
+      - "/e2e/harness/stack"
+      - "/logos-node-manager"
+      - "/logos-node-manager/tests/smoke"
+      - "/logos-workernode"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    ignore:
+      - dependency-name: "ghcr.io/logososs/*"
+    groups:
+      compose-images:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

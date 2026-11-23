@@ -52,10 +52,28 @@ jobs:
           version: "0.13.6"
 
       - name: Check the dependency locks
+        id: check-locks
         # Every lock derived from logos-workernode/requirements.txt (vLLM
         # image, standalone worker, e2e) must match its inputs, including the
         # vLLM pin in the Dockerfile; a stale lock fails here.
         run: scripts/lock-requirements.sh --check
+
+      - name: Prepare the updated hash locks for a Dependabot PR
+        id: lock-patch
+        if: failure() && steps.check-locks.outcome == 'failure' && github.event.pull_request.user.login == 'dependabot[bot]'
+        run: |
+          scripts/lock-requirements.sh
+          git diff -- '*.lock' > "$RUNNER_TEMP/requirements-locks.patch"
+          if test -s "$RUNNER_TEMP/requirements-locks.patch"; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload the requirements lock patch
+        if: failure() && steps.lock-patch.outputs.ready == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: requirements-locks
+          path: ${{ runner.temp }}/requirements-locks.patch
 
       - name: Install Dependencies
         # Exactly the locked versions (uv.lock), including the dev extra with
