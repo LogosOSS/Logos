@@ -5,11 +5,11 @@
 httpx==0.28.1
 # --logos-config capabilities filter
 pyyaml==6.0.3
-numpy==2.5.4
+numpy==2.5.5
 matplotlib==3.11.2
 
 # prepare_benchmark.py only
-datasets==5.1.0
+datasets==5.2.0
 
 # Hardware energy counter on the GPU nodes (the remote poller falls back to
 # nvidia-smi without it). Pure Python, so it installs anywhere.
