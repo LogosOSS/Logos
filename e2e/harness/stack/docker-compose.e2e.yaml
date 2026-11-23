@@ -49,7 +49,7 @@ services:
 
   # One-shot: bring the schema up to the same revision the webservice would.
   migrate:
-    image: liquibase/liquibase:4.33
+    image: liquibase/liquibase:5.0
     depends_on:
       logos-db:
         condition: service_healthy
