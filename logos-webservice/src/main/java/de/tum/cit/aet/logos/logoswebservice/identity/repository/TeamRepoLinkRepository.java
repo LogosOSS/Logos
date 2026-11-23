@@ -26,6 +26,10 @@ public interface TeamRepoLinkRepository extends JpaRepository<TeamRepoLink, Inte
     Optional<TeamRepoLink> findByIdAndTeamIdForUpdate(@Param("id") Integer id,
                                                       @Param("teamId") Integer teamId);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT l FROM TeamRepoLink l WHERE l.id = :id AND l.automaticWorkflowAnalysis = true")
+    Optional<TeamRepoLink> lockForAutomaticAnalysis(@Param("id") Integer id);
+
     boolean existsByTeamIdAndRepoSlug(Integer teamId, String repoSlug);
 
     boolean existsByTeamIdAndRepoSlugAndIdNot(Integer teamId, String repoSlug, Integer id);

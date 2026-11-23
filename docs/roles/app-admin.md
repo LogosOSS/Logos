@@ -98,12 +98,10 @@ providers serve. The **Models** page shows the models that you can use now.
 
 This tab shows the GitHub repositories that contain the applications of the
 team. Owners link a repository URL, a branch and optional path filters. For
-private repositories, owners can paste a read-only deploy key. LogosOSSAgent
-finds a newly linked repository automatically within a few minutes. To start
-an analysis sooner, queue it on the same tab. You can queue only one analysis
-at a time. Logos refuses a second request while an analysis is queued or runs.
-Each night, LogosOSSAgent analyzes again each repository whose branch has new
-commits. It does not analyze a repository that has no change.
+private repositories, owners can paste a read-only deploy key. Only one workflow analysis per repository can be in progress at a time.
+**Automatic workflow analysis** is on by default. It includes the repository in the first analysis, nightly checks for new commits, and bulk analyses.
+Clear the checkbox to cancel queued automatic analyses. Analyses that already started can finish.
+Use **Queue agent analysis** to request one analysis at any time. The coding agent has a separate setting.
 
 ![Team detail — Repositories](/img/roles/team-detail-repositories.png)
 
@@ -121,6 +119,7 @@ files and create pull requests after a repository owner requests work on GitHub.
 
 ![Team detail — Repository coding agent settings](/img/roles/team-detail-repository-agent.png)
 
+The example enables the coding agent and disables **Automatic workflow analysis**.
 The **Branch** is the base for new issue work. The command runs without
 credentials or internet access. The required tools and dependencies must exist
 in the agent image or in the workspace cache (see below). A failed command

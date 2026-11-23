@@ -15,6 +15,7 @@ import {
   AgentTriggers,
   AgentWorkspace,
   CreateSessionRequest,
+  SessionMessages,
   isActive,
 } from '../../shared/models/agent.model';
 import { Agents, scaleSlotCounts } from './agents';
@@ -92,6 +93,10 @@ class FakeAgentService {
 
   async getEvents(): Promise<[]> {
     return [];
+  }
+
+  async getMessages(_id: number): Promise<SessionMessages> {
+    return { messages: [], omitted: 0 };
   }
 
   async *streamEvents(): AsyncGenerator<never> {
@@ -214,6 +219,44 @@ describe('Agents', () => {
     vi.useRealTimers();
   });
 
+  it('renders typed messages with safe text, lists, code, and a separate diagnostic log', async () => {
+    const session = makeSession({ status: 'running' });
+    agentService.sessions = [session];
+    const source = { id: 'message-a', actor: 'main', truncated: false, text: 'Summary\n\n- One\n- Two\n\n```html\n<img src=x>\n```' };
+    const read = vi.spyOn(agentService, 'getMessages').mockResolvedValue({ messages: [source], omitted: 0 });
+    await component.refresh();
+    await component.select(session);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.agent-message p')?.textContent).toBe('Summary');
+    expect(root.querySelectorAll('.agent-message li').length).toBe(2);
+    expect(root.querySelector('.agent-message code')?.textContent).toBe('<img src=x>');
+    expect(root.querySelector('.agent-message img')).toBeNull();
+    expect(root.querySelector('details.diagnostics')?.hasAttribute('open')).toBe(false);
+    read.mockResolvedValue({ messages: [source, { ...source, id: 'message-b', actor: 'child-12345678', text: '2. Verify' }], omitted: 0 });
+    await component.refresh();
+    fixture.detectChanges();
+    expect(root.querySelectorAll('.agent-message').length).toBe(2);
+    expect(root.querySelectorAll('.agent-message header')[1].textContent).toContain('Subagent');
+    expect(root.querySelector('.agent-message ol')?.getAttribute('start')).toBe('2');
+  });
+
+  it('keeps legacy output in diagnostics and discards message reads from a previous selection', async () => {
+    const [first, second] = [makeSession({ id: 1 }), makeSession({ id: 2 })];
+    agentService.sessions = [first, second];
+    await component.refresh();
+    let finish!: (data: SessionMessages) => void;
+    vi.spyOn(agentService, 'getMessages').mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pending = component.select(first);
+    await component.select(second);
+    finish({ messages: [{ id: 'old', actor: 'main', text: 'Previous', truncated: false }], omitted: 0 });
+    await pending;
+    component.events.set([{ id: 1, session_id: 2, ts: '', kind: 'log', payload: { lines: ['legacy stdout'] } }]);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.agent-message')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.diagnostics pre').textContent).toContain('legacy stdout');
+  });
+
   describe('session timings', () => {
     beforeEach(async () => {
       vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
@@ -226,6 +269,71 @@ describe('Agents', () => {
       Array.from(
         fixture.nativeElement.querySelectorAll('.session__timing') as NodeListOf<HTMLElement>,
       ).map((element) => element.textContent!.trim());
+
+    it('refreshes RAM on polls and keeps only the observed peak for finished sessions', async () => {
+      const row = makeSession({ status: 'starting', memory_mb: 2048, memory_current_bytes: 1048576,
+        memory_peak_bytes: 2 * 1048576 });
+      agentService.sessions = [row, makeSession({ id: 22, status: 'failed' })];
+      await component.refresh();
+      fixture.detectChanges();
+      const readings = () => [...fixture.nativeElement.querySelectorAll('.session__memory')]
+        .map((el: HTMLElement) => el.textContent!.replace(/\s+/g, ' ').trim());
+      expect(readings()[0]).toContain('RAM now 1 MiB');
+      expect(readings()[1]).toBe('Observed peak Unavailable');
+
+      agentService.sessions = [{ ...row, status: 'paused', memory_current_bytes: 0 }];
+      await vi.advanceTimersByTimeAsync(4000);
+      fixture.detectChanges();
+      expect(readings()[0]).toContain('RAM now 0 MiB');
+
+      agentService.sessions = [{ ...row, status: 'succeeded' }];
+      await vi.advanceTimersByTimeAsync(4000);
+      fixture.detectChanges();
+      expect(readings()[0]).not.toContain('RAM now');
+      expect(readings()[0]).toContain('Observed peak 2 MiB');
+      expect(readings()[0]).toContain('Limit 2,048 MiB');
+    });
+
+    it('counts distinct agents and shows a self-reported countdown in active minutes', async () => {
+      const row = makeSession({ status: 'running', active_seconds: 1200, active_since: new Date().toISOString(),
+        progress_percent: 40, progress_active_s: 1200, progress_reported_at: new Date().toISOString(), subagent_count: 1 });
+      agentService.sessions = [row];
+      await component.refresh();
+      fixture.detectChanges();
+      const list = () => fixture.nativeElement.querySelector('.session__head').textContent;
+      expect(list()).toContain('2x');
+      expect(list()).toContain('About 30 min of active work left');
+      await vi.advanceTimersByTimeAsync(61000);
+      expect(component.progressEta(row)).toBe('About 29 min of active work left');
+      const paused = { ...row, status: 'paused' as const, active_seconds: 1320, active_since: null };
+      expect(component.progressEta(paused)).toBe('About 28 min of active work left');
+      await vi.advanceTimersByTimeAsync(61000);
+      expect(component.progressEta(paused)).toBe('About 28 min of active work left');
+      expect(component.progressEta({ ...paused, active_seconds: 2400 })).toBe('Awaiting updated estimate');
+      expect(component.progressEta({ ...paused, progress_percent: 99 })).toBe('Awaiting updated estimate');
+      for (const progress_percent of [null, 0, 100]) expect(component.progressEta({ ...row, progress_percent })).toBe('');
+      agentService.sessions = [{ ...row, subagent_count: 2, status: 'succeeded' }];
+      await component.refresh();
+      fixture.detectChanges();
+      expect(list()).toContain('3x');
+      expect(list()).not.toContain('active work left');
+      agentService.sessions = [makeSession({ subagent_count: null })];
+      await component.refresh();
+      fixture.detectChanges();
+      expect(list()).not.toContain('Agent estimate');
+      expect(list()).not.toContain('2x');
+    });
+
+    it('expires RAM now while the session list cannot refresh', async () => {
+      agentService.sessions = [makeSession({ status: 'running', memory_current_bytes: 1048576, memory_peak_bytes: 1048576 })];
+      await component.refresh();
+      vi.spyOn(agentService, 'getSessions').mockRejectedValue(new Error('offline'));
+      await vi.advanceTimersByTimeAsync(12000);
+      fixture.detectChanges();
+      const memory = fixture.nativeElement.querySelector('.session__memory').textContent;
+      expect(memory).toContain('RAM now Unavailable');
+      expect(memory).toContain('Observed peak 1 MiB');
+    });
 
     it('updates queue waits and running durations every second between server polls', async () => {
       agentService.sessions = [
@@ -538,11 +646,11 @@ describe('Agents', () => {
       expect(component.memoryPercent()).toBe(100);
     });
 
-    it('refuses less than 512 MB without sending anything', async () => {
+    it('refuses less than 512 MiB without sending anything', async () => {
       await component.applyMemory('100');
 
       expect(agentService.controlBodies).toEqual([]);
-      expect(component.error()).toContain('512 MB');
+      expect(component.error()).toContain('512 MiB');
     });
 
     it('shows the ceiling in force, not a stored override the budget clamps', async () => {

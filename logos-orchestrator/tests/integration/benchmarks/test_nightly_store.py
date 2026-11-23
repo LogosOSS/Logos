@@ -769,3 +769,44 @@ async def test_failed_adoption_alert_is_delivered_even_with_pending_worker_recov
     assert payload["model_id"] == 11 and payload["benchmark_id"] == 164
     assert recipients == [{"kind": "role", "role": "logos_admin"}]
     assert emit.await_args.kwargs["event_key"] == "nightly-adoption-failed:31:164"
+
+
+async def test_manual_starts_share_admission_but_exclude_same_worker_and_automatic_dispatch(database, monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from logos.benchmarks.maintenance import AUTOMATIC_CALIBRATION, MaintenanceCoordinator
+    from logos.logosnode_registry import MaintenanceBusyError
+
+    monkeypatch.setenv("LOGOS_MAINTENANCE_MAX_NODES", "1")
+    service = MaintenanceCoordinator(MagicMock())
+    sent, finish = asyncio.Event(), asyncio.Event()
+
+    async def wait_for_ack(callback):
+        callback(None)
+        sent.set()
+        await finish.wait()
+
+    async def dispatch(callback):
+        callback(None)
+        return "started"
+
+    first = asyncio.create_task(service.start_calibration(1, wait_for_ack))
+    await asyncio.wait_for(sent.wait(), 5)
+    try:
+        assert await service.start_calibration(2, dispatch) == "started"
+        with pytest.raises(MaintenanceBusyError):
+            await service.start_calibration(1, dispatch)
+        assert not store.claim_calibration(1, "other-replica")
+        with store.cluster_lock() as exclusive:
+            assert exclusive is None
+    finally:
+        finish.set()
+        await first
+    assert {row["provider_id"] for row in store.calibration_claims() if row["confirmed"]} == {1, 2}
+    context = AUTOMATIC_CALIBRATION.set(True)
+    try:
+        with pytest.raises(MaintenanceBusyError):
+            await service.start_calibration(3, dispatch)
+    finally:
+        AUTOMATIC_CALIBRATION.reset(context)

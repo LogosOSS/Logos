@@ -49,6 +49,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from session_activity import SessionActivity, redact_output
+
 WORKSPACE = Path("/workspace")
 CHECKOUT = WORKSPACE / "repo"
 SSH_KNOWN_HOSTS = Path("/logos/ssh_known_hosts")
@@ -114,15 +116,7 @@ def _redact(cmd: list[str]) -> list[str]:
     readable by the agent itself, so a token must never reach it — neither in
     a URL nor in a bare argument.
     """
-    token = os.environ.get("GITHUB_TOKEN", "")
-
-    def scrub(part: str) -> str:
-        if token and token in part:
-            part = part.replace(token, "***")
-        # Generic credential-in-URL shape: https://user:password@host
-        return re.sub(r"(://[^/:\s]+:)[^@\s]+(@)", r"\1***\2", part)
-
-    return [scrub(c) for c in cmd]
+    return [redact_output(part) for part in cmd]
 
 
 def _without_auto_maintenance(cmd: list[str]) -> list[str]:
@@ -851,6 +845,11 @@ def _agent_command(prompt: str, *, resuming: bool) -> list[str]:
         "--permission-mode",
         "bypassPermissions",
     ]
+    hook = {"type": "command", "command": "python3 /usr/local/lib/session_activity.py", "timeout": 3}
+    cmd += [
+        "--settings",
+        json.dumps({"hooks": {name: [{"hooks": [hook]}] for name in ("PostToolUse", "PostToolUseFailure")}}),
+    ]
     if resuming:
         # Same conversation, same working directory: the agent keeps what it
         # has already read and done instead of starting the task again.
@@ -879,7 +878,7 @@ def _pauses_so_far() -> int:
         return 0
 
 
-def _drive_agent(cmd: list[str]) -> tuple[int, dict[str, object], bool, bool]:
+def _drive_agent(cmd: list[str], activity: SessionActivity | None = None) -> tuple[int, dict[str, object], bool, bool]:
     """Run one invocation.
 
     Returns its exit code, its usage, whether it was cut off, and whether
@@ -891,6 +890,7 @@ def _drive_agent(cmd: list[str]) -> tuple[int, dict[str, object], bool, bool]:
     pauses_before = _pauses_so_far()
     process = subprocess.Popen(cmd, cwd=CHECKOUT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert process.stdout is not None
+    root = ""
     for line in process.stdout:
         line = line.rstrip("\n")
         if not line:
@@ -902,8 +902,19 @@ def _drive_agent(cmd: list[str]) -> tuple[int, dict[str, object], bool, bool]:
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
-            print(line, flush=True)
+            print(redact_output(line), flush=True)
             continue
+        if not isinstance(event, dict):
+            continue
+        if (
+            not root
+            and event.get("type") == "system"
+            and event.get("subtype") == "init"
+            and not event.get("parent_tool_use_id")
+        ):
+            root = event.get("session_id") or ""
+        if activity is not None:
+            activity.observe(event, root)
         _render_event(event)
         if event.get("type") == "result":
             usage = event
@@ -927,6 +938,7 @@ def run_agent(task: str) -> dict[str, object]:
     threw away everything it had done: hours of work, uncommitted, in a
     checkout the next session resets.
     """
+    activity = SessionActivity()
     prompt = build_prompt(task)
     started = time.monotonic()
     # A conversation restored by the preparation phase is this workspace's
@@ -966,7 +978,7 @@ def run_agent(task: str) -> dict[str, object]:
         # review that just came in — into the conversation that did the
         # earlier rounds. A later run carries only "you were cut off".
         text = CONTINUE_PROMPT if attempt > 0 else prompt
-        code, run_usage, interrupted, frozen = _drive_agent(_agent_command(text, resuming=resuming))
+        code, run_usage, interrupted, frozen = _drive_agent(_agent_command(text, resuming=resuming), activity)
         run_in, run_out, run_cost = usage_totals(run_usage)
         if not run_usage:
             # Cut off before it could report: what the assistant events
@@ -1087,9 +1099,9 @@ def _render_event(event: dict) -> None:
         message = (event.get("message") or {}) if isinstance(event.get("message"), dict) else {}
         for block in message.get("content") or []:
             if block.get("type") == "text" and block.get("text", "").strip():
-                print(block["text"].strip(), flush=True)
+                print(redact_output(block["text"].strip()), flush=True)
             elif block.get("type") == "tool_use":
-                print(_tool_line(block), flush=True)
+                print(redact_output(_tool_line(block)), flush=True)
         _report_usage(message)
     elif kind == "result":
         subtype = event.get("subtype", "")

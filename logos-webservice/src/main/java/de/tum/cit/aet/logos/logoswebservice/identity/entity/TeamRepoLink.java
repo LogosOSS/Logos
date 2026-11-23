@@ -47,6 +47,9 @@ public class TeamRepoLink {
     @Column(nullable = false)
     private boolean agentEnabled;
 
+    @Column(nullable = false)
+    private boolean automaticWorkflowAnalysis = true;
+
     @Column(columnDefinition = "text")
     private String agentInstructions;
 
@@ -75,6 +78,8 @@ public class TeamRepoLink {
     @Column(nullable = false)
     private Instant updatedAt;
 
+    public boolean isAutomaticWorkflowAnalysis() { return automaticWorkflowAnalysis; }
+    public void setAutomaticWorkflowAnalysis(boolean value) { automaticWorkflowAnalysis = value; }
     public boolean isAgentEnabled() { return agentEnabled; }
     public String getAgentInstructions() { return agentInstructions; }
     public String getVerificationCommand() { return verificationCommand; }

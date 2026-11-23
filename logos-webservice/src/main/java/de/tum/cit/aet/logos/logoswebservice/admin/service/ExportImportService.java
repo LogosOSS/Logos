@@ -215,6 +215,12 @@ public class ExportImportService {
             if ("models".equals(table) && copy.get("profile_ratings") == null) {
                 copy.put("profile_ratings", Map.of());
             }
+            if ("team_repositories".equals(table)) {
+                copy.putIfAbsent("automatic_workflow_analysis", true);
+            }
+            if ("ai_workflow_analyses".equals(table)) {
+                copy.putIfAbsent("automatically_queued", false);
+            }
             if ("ai_llm_call_recommendations".equals(table)) {
                 // Dumps taken before the sla → slo column rename still carry the
                 // old key names; jsonb_populate_recordset drops unknown keys,

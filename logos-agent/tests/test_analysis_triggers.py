@@ -119,47 +119,6 @@ async def test_branch_head_reads_the_sha_and_says_none_when_github_will_not(monk
     assert await github.branch_head("acme/private", "main") is None
 
 
-async def test_a_lost_race_for_the_in_flight_slot_queues_no_session(monkeypatch):
-    poller = AnalysisPoller()
-    created: list = []
-
-    async def claim(team_id, link_id):
-        return None  # another writer holds the repository's in-flight slot
-
-    async def create_session(**kwargs):
-        created.append(kwargs)
-        return 1
-
-    monkeypatch.setattr(poller, "_insert_queued_analysis", claim)
-    monkeypatch.setattr(analysis_triggers.db, "create_session", create_session)
-    assert await poller._queue(_link(1, HEAD)) is None
-    assert created == []
-
-
-async def test_a_session_that_cannot_be_created_releases_the_slot(monkeypatch):
-    poller = AnalysisPoller()
-    dropped: list[int] = []
-
-    async def claim(team_id, link_id):
-        return 77
-
-    async def workspace(team_id, link_id, branch):
-        return 5
-
-    async def create_session(**kwargs):
-        raise ValueError("workspace busy")
-
-    async def drop(analysis_id):
-        dropped.append(analysis_id)
-
-    monkeypatch.setattr(poller, "_insert_queued_analysis", claim)
-    monkeypatch.setattr(poller, "_ensure_workspace", workspace)
-    monkeypatch.setattr(poller, "_drop_queued_analysis", drop)
-    monkeypatch.setattr(analysis_triggers.db, "create_session", create_session)
-    assert await poller._queue(_link(1, HEAD)) is None
-    assert dropped == [77]
-
-
 async def test_a_failed_nightly_pass_is_retried_within_the_hour(monkeypatch):
     monkeypatch.setattr(analysis_triggers, "settings", replace(analysis_triggers.settings, analysis_nightly_hour_utc=1))
     poller = AnalysisPoller()

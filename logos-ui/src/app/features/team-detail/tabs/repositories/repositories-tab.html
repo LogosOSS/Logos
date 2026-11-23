@@ -72,6 +72,9 @@
           </div>
           <div class="cell-analysis" role="cell" data-label="Analysis">
             {{ analysisLabel(repo) }}
+            @if (repo.automatic_workflow_analysis === false) {
+              <small class="analysis-setting">Automatic analysis off</small>
+            }
           </div>
           <div class="cell-actions" role="cell" data-label="">
             @if (canEdit) {
@@ -180,6 +183,18 @@
         [disabled]="formLoading()"
       />
       <p class="field-hint">Comma-separated subtrees that contain LLM calls. Leave blank for the whole repository.</p>
+    </div>
+    <div class="form-field">
+      <label class="field-label" for="repo-automatic-analysis">
+        <input id="repo-automatic-analysis" type="checkbox" [checked]="formAutomaticAnalysis()"
+          (change)="formAutomaticAnalysis.set($any($event.target).checked)" [disabled]="formLoading()"
+          aria-describedby="repo-automatic-analysis-hint" />
+        Automatic workflow analysis
+      </label>
+      <p class="field-hint" id="repo-automatic-analysis-hint">
+        Analyze this repository after linking, on nightly changes, and in bulk runs.
+        Turning this off cancels queued automatic analyses. You can still queue an analysis for this repository.
+      </p>
     </div>
     <div class="form-field">
       <label class="field-label" for="repo-agent-enabled">
