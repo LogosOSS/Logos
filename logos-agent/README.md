@@ -333,12 +333,19 @@ labels things differently.
 
 ## Configuration
 
-Two variables are required — a Logos key and a GitHub token. Everything else
-has a default that is right for this deployment.
+A GitHub token and the stack's existing `LOGOS_INTERNAL_SECRET` are required.
+No static model API key is needed. The webservice migration provisions a
+low-priority internal agent identity; the gateway obtains a fresh 60-second
+inference token for each model request. Already admitted streams may finish
+after token expiry. Tokens and the internal secret never enter session
+containers. Disabling the internal identity revokes new requests immediately.
+Upgrade the webservice (database migration), orchestrator, runner and gateway
+together. Existing `LOGOS_AGENT_API_KEY` environment/repository secrets are
+unused and can be removed.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LOGOS_AGENT_API_KEY` | — | Logos key sessions call models with. **Required.** |
+| `LOGOS_INTERNAL_SECRET` | — | Existing internal trust root, shared by orchestrator, runner and model gateway. **Required.** |
 | `LOGOS_AGENT_GITHUB_TOKEN` | — | The agent account's token. **Required.** |
 | `LOGOS_AGENT_GITHUB_LOGIN` | `LogosOSSAgent` | The account every token must belong to |
 | `LOGOS_AGENT_DEFAULT_MODEL` | — | Model when a session does not name one. Optional: with exactly one local model reachable, that one is the default |
@@ -399,24 +406,16 @@ so a session must never reach one — not by naming a cloud model, not through
 an alias of one, and not because the agent key was granted a cloud provider
 by mistake.
 
-The boundary is the platform's own key scoping: a Logos key reaches exactly
-the deployments its permissions grant, and the gateway replaces whatever
-credential a session sends with that key. **Give the agent key local
-providers only.**
+The managed identity can reach only registered `logosnode` providers and their
+models. User/team grants cannot extend it to cloud. When the same model is
+served locally and in the cloud, only the local deployment is eligible.
+The gateway overwrites client authorization and strips alternative key headers.
 
-The runner refuses to assume that was done. It reads what the key can
-actually reach and gates on the answer:
-
-| What it reads | What happens |
-|---|---|
-| every reachable deployment is local | sessions run; those models are what the UI offers |
-| any reachable deployment is a cloud provider | **no session starts at all**, and the reason names the models that would have cost money |
-| the key does not resolve, or the database cannot be read | unknown — treated as unsafe |
-
-It is re-established on every scheduler pass, not once at startup: permissions
-are data, and a key can be granted a cloud provider at any time. A model that
-is served both locally and in the cloud counts as cloud — the scheduler may
-route to either.
+The runner checks the identity and available models at startup and on every
+scheduler pass. A missing/disabled identity, missing internal secret, or
+unreadable database blocks sessions. No local deployment means no session can
+start. The identity keeps a stable id for accounting and LOW queue priority;
+its settings can carry the usual local rate/token/budget limits.
 
 ## Working with it like a colleague
 

@@ -150,40 +150,47 @@ class TestRefusalWording:
 
 class TestLoad:
     @pytest.mark.asyncio
-    async def test_an_unconfigured_key_yields_an_unknown_policy(self, monkeypatch):
-        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, agent_api_key=""))
+    async def test_missing_internal_secret_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, internal_secret=""))
         policy = await model_policy.load()
-        assert not policy.ok
-        assert policy.unknown
+        assert not policy.ok and policy.unknown
 
     @pytest.mark.asyncio
-    async def test_a_key_the_platform_does_not_know_yields_unknown(self, monkeypatch):
-        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, agent_api_key="lg-nope"))
+    async def test_missing_or_revoked_identity_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, internal_secret="internal"))
 
-        async def no_such_key(_key: str) -> bool:
-            return False
+        async def no_identity():
+            return None
 
-        monkeypatch.setattr(model_policy.db, "agent_key_exists", no_such_key)
+        monkeypatch.setattr(model_policy.db, "agent_key_id", no_identity)
         policy = await model_policy.load()
-        assert not policy.ok
-        assert policy.unknown
-        assert "not an active key" in policy.detail
+        assert not policy.ok and policy.unknown
+        assert "missing or disabled" in policy.detail
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_database_is_not_permission(self, monkeypatch):
-        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, agent_api_key="lg-key"))
+    async def test_no_static_api_key_needed(self, monkeypatch):
+        monkeypatch.delenv("LOGOS_AGENT_API_KEY", raising=False)
+        monkeypatch.setattr(
+            model_policy, "settings", replace(model_policy.settings, internal_secret="internal", default_model="")
+        )
 
-        async def key_exists(_key: str) -> bool:
-            return True
+        async def rows():
+            return [deployment("local-model", "logosnode")]
 
-        async def boom(_key: str):
+        monkeypatch.setattr(model_policy.db, "reachable_deployments", rows)
+        policy = await model_policy.load()
+        assert policy.ok and policy.allows("local-model")
+
+    @pytest.mark.asyncio
+    async def test_unreadable_database_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, internal_secret="internal"))
+
+        async def boom():
             raise RuntimeError("connection refused")
 
-        monkeypatch.setattr(model_policy.db, "agent_key_exists", key_exists)
         monkeypatch.setattr(model_policy.db, "reachable_deployments", boom)
         policy = await model_policy.load()
-        assert not policy.ok
-        assert policy.unknown
+        assert not policy.ok and policy.unknown
 
 
 class TestTheLane:

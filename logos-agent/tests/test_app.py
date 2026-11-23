@@ -9,7 +9,6 @@ tests import the app and inspect what it built.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -267,7 +266,7 @@ class TestTheEndpointsThatCombineModules:
             assert discount_own is False
             return capacity.Reading(load=0.1, busy_slots=2, total_slots=20, queue_total=0, ok=True, own_slots=1)
 
-        async def key_id(_key):
+        async def key_id():
             return 7
 
         monkeypatch.setattr(db, "count_sessions_by_status", counts)
@@ -592,7 +591,6 @@ class TestTheSchedulerPassAnEndpointStarts:
         async def get_session(session_id):
             return {**TestRunningWorkAgain.ROW, "id": session_id, "status": "queued"}
 
-        monkeypatch.setattr(main, "settings", replace(main.settings, agent_api_key="a-key"))
         monkeypatch.setattr(db, "get_workspace", get_workspace)
         monkeypatch.setattr(model_policy, "refresh", refresh)
         monkeypatch.setattr(db, "create_session", create_session)

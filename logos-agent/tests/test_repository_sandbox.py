@@ -597,7 +597,6 @@ class TestManualLinkedSessions:
 
             return {**TestRunningWorkAgain.ROW, "id": session_id, "status": "queued"}
 
-        monkeypatch.setattr(main, "settings", replace(main.settings, agent_api_key="a-key"))
         monkeypatch.setattr(db, "get_workspace", get_workspace)
         monkeypatch.setattr(main.model_policy, "refresh", refresh)
         monkeypatch.setattr(db, "coding_repository", coding_repository)
