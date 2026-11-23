@@ -4078,7 +4078,18 @@ class SessionManager:
         status = SessionStatus(session["status"])
         if status in (SessionStatus.SUCCEEDED, SessionStatus.FAILED, SessionStatus.CANCELLED):
             return False
+        # The row stops counting in the memory budget the moment it is
+        # cancelled, but its containers hold their memory until they are
+        # stopped. Held here first, so no admission in between can hand that
+        # memory to another session.
+        if status != SessionStatus.QUEUED:
+            _held_memory[session_id] = int(session.get("memory_mb") or settings.session_memory_mb)
+        try:
+            return await self._cancel(session_id, session)
+        finally:
+            _held_memory.pop(session_id, None)
 
+    async def _cancel(self, session_id: int, session: dict[str, Any]) -> bool:
         container_id = session.get("container_id")
         # Claim the terminal state before any container I/O: stopping the
         # container is what produces the exit the supervisor settles, and

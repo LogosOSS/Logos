@@ -217,3 +217,55 @@ class TestHeldMemory:
 
         assert await sessions.SessionManager()._hold_memory(3, 4096, timeout_s=0, poll_s=0) is False
         assert sessions._held_memory == {}
+
+
+class TestCancellation:
+    async def test_a_cancelled_session_holds_its_memory_until_its_container_is_stopped(self, monkeypatch):
+        configured(monkeypatch, session_memory_mb=4096)
+        monkeypatch.setattr(sessions, "_held_memory", {})
+        held_while_stopping = []
+
+        async def get_session(_session_id):
+            return {"id": 7, "status": "running", "container_id": "c7", "memory_mb": 2048}
+
+        async def moved(*_args, **_kwargs):
+            return True
+
+        async def nothing(*_args, **_kwargs):
+            return None
+
+        async def stop(container_id, **_kwargs):
+            held_while_stopping.append(dict(sessions._held_memory))
+
+        monkeypatch.setattr(sessions.db, "get_session", get_session)
+        monkeypatch.setattr(sessions.db, "transition_session", moved)
+        monkeypatch.setattr(sessions.db, "add_event", nothing)
+        monkeypatch.setattr(sessions.docker_engine, "unpause_container", nothing)
+        monkeypatch.setattr(sessions.docker_engine, "stop_container", stop)
+        monkeypatch.setattr(sessions.docker_engine, "remove_container", nothing)
+
+        assert await sessions.SessionManager().cancel(7) is True
+
+        assert held_while_stopping == [{7: 2048}]
+        assert sessions._held_memory == {}
+
+    async def test_a_queued_session_holds_nothing(self, monkeypatch):
+        monkeypatch.setattr(sessions, "_held_memory", {})
+        seen = []
+
+        async def get_session(_session_id):
+            return {"id": 8, "status": "queued", "container_id": None}
+
+        async def moved(*_args, **_kwargs):
+            seen.append(dict(sessions._held_memory))
+            return True
+
+        async def nothing(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(sessions.db, "get_session", get_session)
+        monkeypatch.setattr(sessions.db, "transition_session", moved)
+        monkeypatch.setattr(sessions.db, "add_event", nothing)
+
+        assert await sessions.SessionManager().cancel(8) is True
+        assert seen == [{}]
