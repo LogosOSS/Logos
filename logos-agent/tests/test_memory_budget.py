@@ -1,6 +1,9 @@
 import asyncio
 from dataclasses import replace
+from functools import partial
+from unittest.mock import AsyncMock
 
+import pytest
 from app import controls, docker_engine, memory_budget, sessions
 
 # Taken before the shared fixture replaces it for every other test.
@@ -294,6 +297,54 @@ class TestCancellation:
 
         assert list(sessions._held_memory) == [winner]
 
+    async def test_a_helper_that_failed_to_stop_keeps_the_hold(self, monkeypatch):
+        monkeypatch.setattr(sessions, "_held_memory", {})
+        memory_budget.set_for_tests(budget(5800))
+        manager = sessions.SessionManager()
+        helper = sessions._Helper()
+        helper.container_id = "helper-7"
+        helper.created.set()
+        helper.started.set()
+        helper_inspected = asyncio.Event()
+        helper_stopped = asyncio.Event()
+        inspected = []
+
+        async def moved(*_args, **_kwargs):
+            # The finalizer registered its helper while the cancellation was claiming the row.
+            manager._helpers[7] = helper
+            return True
+
+        async def refuse(container_id, **_kwargs):
+            if container_id == helper.container_id:
+                raise OSError("helper is still running")
+
+        async def state(container_id):
+            inspected.append(container_id)
+            if container_id != helper.container_id:
+                return "gone", None
+            if not helper_inspected.is_set():
+                helper_inspected.set()
+                return "running", None
+            await helper_stopped.wait()
+            return "exited", 0
+
+        self._wire(monkeypatch, status="finalizing", stop=refuse)
+        monkeypatch.setattr(sessions.db, "transition_session", moved)
+        monkeypatch.setattr(sessions.db, "reserved_memory_mb", AsyncMock(return_value=0))
+        monkeypatch.setattr(sessions.docker_engine, "remove_container", refuse)
+        monkeypatch.setattr(sessions.docker_engine, "container_state", state)
+        monkeypatch.setattr(sessions, "_release_when_stopped", partial(sessions._release_when_stopped, poll_s=0))
+
+        assert await manager.cancel(7)
+        try:
+            await asyncio.wait_for(helper_inspected.wait(), timeout=1)
+            assert await sessions.memory_admission_block(controls.Controls(session_memory_override=4096))
+        finally:
+            helper_stopped.set()
+            await asyncio.gather(*sessions._release_tasks)
+        assert "c7" in inspected
+        assert await sessions.memory_admission_block(controls.Controls(session_memory_override=4096)) == ""
+
     async def test_a_queued_session_holds_nothing(self, monkeypatch):
         monkeypatch.setattr(sessions, "_held_memory", {})
         seen = []
@@ -309,6 +360,64 @@ class TestCancellation:
         assert seen == [{}]
 
 
+class TestHoldLifetime:
+    async def test_a_helper_that_outlives_its_own_cleanup_remains_reserved(self, monkeypatch):
+        manager = sessions.SessionManager()
+        monkeypatch.setattr(sessions, "_held_memory", {})
+        monkeypatch.setattr(sessions, "_session_memory", {7: 3072})
+        monkeypatch.setattr(sessions.docker_engine, "create_session_container", AsyncMock(return_value="helper"))
+        monkeypatch.setattr(sessions.docker_engine, "start_container", AsyncMock())
+        monkeypatch.setattr(sessions.docker_engine, "wait_container", AsyncMock(side_effect=OSError("wait failed")))
+        monkeypatch.setattr(sessions.docker_engine, "remove_container", AsyncMock(side_effect=OSError))
+        state = AsyncMock(side_effect=[("paused", None), ("gone", None)])
+        monkeypatch.setattr(sessions.docker_engine, "container_state", state)
+        monkeypatch.setattr(sessions, "_release_when_stopped", partial(sessions._release_when_stopped, poll_s=0))
+
+        with pytest.raises(OSError, match="wait failed"):
+            await manager._run_helper(
+                phase="prepare", session_id=7, env={}, workspace_volume="volume", artifact_host_path="/artifacts/7"
+            )
+        assert 7 not in manager._helpers
+        assert sum(sessions._held_memory.values()) == 3072
+        await asyncio.gather(*sessions._release_tasks)
+        assert state.await_count == 2
+        assert sessions._held_memory == {}
+
+    async def test_a_running_container_keeps_its_hold_past_any_deadline(self, monkeypatch):
+        monkeypatch.setattr(sessions, "_held_memory", {})
+        states = iter(["running", "paused", "unknown", "running", "unknown", "exited"])
+        checks = []
+        now = 0
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "time", lambda: now)
+        token = sessions._hold(2048)
+
+        async def state(_container_id):
+            nonlocal now
+            now += 601
+            checks.append((next(states), token in sessions._held_memory))
+            return checks[-1][0], None
+
+        monkeypatch.setattr(sessions.docker_engine, "container_state", state)
+        await sessions._release_when_stopped(token, "c1", poll_s=0)
+
+        assert checks == [(s, True) for s in ("running", "paused", "unknown", "running", "unknown", "exited")]
+        assert sessions._held_memory == {}
+
+    async def test_a_container_that_cannot_be_inspected_is_given_up_on(self, monkeypatch):
+        monkeypatch.setattr(sessions, "_held_memory", {})
+
+        async def broken(_container_id):
+            raise OSError("docker is gone")
+
+        monkeypatch.setattr(sessions.docker_engine, "container_state", broken)
+        token = sessions._hold(2048)
+
+        await sessions._release_when_stopped(token, "c1", unknown_timeout_s=0, poll_s=0)
+
+        assert sessions._held_memory == {}
+
+
 class TestSettlement:
     async def test_a_session_settled_with_its_container_running_keeps_its_memory_until_it_stops(self, monkeypatch):
         monkeypatch.setattr(sessions, "_held_memory", {})
@@ -318,16 +427,20 @@ class TestSettlement:
         async def get_session(session_id):
             return {"id": session_id, "status": "running", "container_id": "c5", "memory_mb": 3072}
 
-        async def outcome(self, session_id, *, exit_code, error):
+        async def event(*_args):
             held_during_outcome.append(sum(sessions._held_memory.values()))
 
         async def state(_container_id):
             return next(states), None
 
         monkeypatch.setattr(sessions.db, "get_session", get_session)
-        monkeypatch.setattr(sessions.SessionManager, "_settle_outcome", outcome)
+        monkeypatch.setattr(sessions.SessionManager, "serve_github_requests", AsyncMock())
+        monkeypatch.setattr(sessions.SessionManager, "_post_reply", AsyncMock())
+        monkeypatch.setattr(sessions.db, "transition_session", AsyncMock(return_value=True))
+        monkeypatch.setattr(sessions.db, "add_event", event)
+        monkeypatch.setattr(sessions.docker_engine, "remove_container", AsyncMock(side_effect=OSError))
         monkeypatch.setattr(sessions.docker_engine, "container_state", state)
-        monkeypatch.setattr(sessions, "_release_when_stopped", _fast(sessions._release_when_stopped))
+        monkeypatch.setattr(sessions, "_release_when_stopped", partial(sessions._release_when_stopped, poll_s=0))
 
         await sessions.SessionManager()._settle(5, exit_code=None, error="supervision failed")
         assert sum(sessions._held_memory.values()) == 3072
@@ -335,10 +448,3 @@ class TestSettlement:
 
         assert held_during_outcome == [3072]
         assert sessions._held_memory == {}
-
-
-def _fast(release):
-    async def quick(token, container_id, **_kwargs):
-        await release(token, container_id, poll_s=0)
-
-    return quick

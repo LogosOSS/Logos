@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -2825,14 +2826,32 @@ class TestScreenshotOrchestration:
         return sessions
 
     async def test_screenshots_are_captured_in_settlement_without_a_deploy(self, monkeypatch, tmp_path):
-        from app import sessions
+        from app import controls, memory_budget, sessions
 
         self._patch_base(monkeypatch, tmp_path)
+        row = {**self.SESSION_ROW, "memory_mb": 4096}
+        memory_budget.set_for_tests(memory_budget.Budget(5800, None, "test"))
+        monkeypatch.setattr(sessions, "_held_memory", {})
+        manager = sessions.SessionManager()
+        monkeypatch.setattr(sessions.db, "session_memory_mb", self._async_value(4096))
+        monkeypatch.setattr(sessions, "_session_memory", {})
+        # Fail on the first admission attempt if settlement retained the only slot.
+        monkeypatch.setattr(manager, "_hold_memory", partial(manager._hold_memory, timeout_s=0))
+
+        async def transition(_sid, status, **_fields):
+            row["status"] = status.value
+            return True
+
+        async def reserved(_default_mb):
+            return 0 if row["status"] == "succeeded" else 4096
+
         created: list = []
         removed: list = []
         events: list = []
 
         async def fake_create(**kwargs):
+            assert row["status"] == "succeeded" and "cid-7" in removed
+            assert await sessions.reserved_memory_mb() == 4096
             created.append(kwargs)
             return f"cid-shot-{len(created)}"
 
@@ -2840,6 +2859,9 @@ class TestScreenshotOrchestration:
             return 0
 
         async def fake_remove(cid, **_kwargs):
+            if cid == "cid-7":
+                assert row["status"] == "succeeded"
+                assert await sessions.memory_admission_block(controls.Controls(session_memory_override=4096))
             removed.append(cid)
 
         async def fake_start(_cid):
@@ -2852,11 +2874,14 @@ class TestScreenshotOrchestration:
         monkeypatch.setattr(sessions.docker_engine, "start_container", fake_start)
         monkeypatch.setattr(sessions.docker_engine, "wait_container", fake_wait)
         monkeypatch.setattr(sessions.docker_engine, "remove_container", fake_remove)
-        monkeypatch.setattr(sessions.db, "get_session", self._async_value(self.SESSION_ROW))
-        monkeypatch.setattr(sessions.db, "transition_session", self._async_value(True))
+        monkeypatch.setattr(sessions.db, "get_session", self._async_value(row))
+        monkeypatch.setattr(sessions.db, "transition_session", transition)
         monkeypatch.setattr(sessions.db, "add_event", fake_event)
 
-        await sessions.manager._settle(7, exit_code=0, error=None)
+        monkeypatch.setattr(sessions.db, "reserved_memory_mb", reserved)
+
+        await manager._settle(7, exit_code=0, error=None)
+        assert await sessions.reserved_memory_mb() == 0
 
         base = sessions.settings.dev_base_url.rstrip("/")
         # One one-shot container per requested page, pointed at the session's

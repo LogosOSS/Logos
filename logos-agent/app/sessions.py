@@ -220,37 +220,59 @@ def _release(token: object | None) -> None:
 
 
 async def _release_when_stopped(
-    token: object | None, container_id: str | None, *, timeout_s: float = 600, poll_s: float = 5
+    token: object | None,
+    container_id: str | None,
+    *,
+    helper: _Helper | None = None,
+    unknown_timeout_s: float = 600,
+    poll_s: float = 5,
 ) -> None:
-    """Give a hold back once its container no longer uses memory.
+    """Give a hold back once none of its containers uses memory any more.
 
-    A container that cannot be inspected for ``timeout_s`` is given up on,
-    so a broken Docker call cannot keep the budget occupied for good.
+    A container Docker reports as running or paused keeps the hold, however
+    long that takes: the memory is in use. Only a container that cannot be
+    inspected at all for ``unknown_timeout_s`` is given up on, so a broken
+    Docker call cannot occupy the budget for good.
     """
     if token is None:
         return
     try:
         if container_id:
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + timeout_s
-            while loop.time() < deadline:
-                try:
-                    state, _ = await docker_engine.container_state(container_id)
-                except Exception as exc:  # noqa: BLE001 - keep waiting until the deadline
-                    logger.info("could not inspect container %s: %s", container_id, exc)
-                    state = "unknown"
-                if state not in _LIVE_CONTAINER_STATES and state != "unknown":
-                    return
-                await asyncio.sleep(poll_s)
-            logger.warning("container %s still holds memory after %ss; releasing its hold", container_id, timeout_s)
+            await _wait_for_container_stop(container_id, unknown_timeout_s, poll_s)
+        if helper is not None:
+            helper_id = await helper.started_container()
+            if helper_id:
+                await _wait_for_container_stop(helper_id, unknown_timeout_s, poll_s)
     finally:
         _release(token)
+
+
+async def _wait_for_container_stop(container_id: str, unknown_timeout_s: float, poll_s: float) -> None:
+    loop = asyncio.get_running_loop()
+    unknown_since: float | None = None
+    while True:
+        try:
+            state, _ = await docker_engine.container_state(container_id)
+        except Exception as exc:
+            logger.info("could not inspect container %s: %s", container_id, exc)
+            state = "unknown"
+        if state in _LIVE_CONTAINER_STATES:
+            unknown_since = None
+        elif state == "unknown":
+            if unknown_since is None:
+                unknown_since = loop.time()
+            if loop.time() - unknown_since >= unknown_timeout_s:
+                logger.warning("container %s could not be inspected for %ss", container_id, unknown_timeout_s)
+                return
+        else:
+            return
+        await asyncio.sleep(poll_s)
 
 
 _release_tasks: set[asyncio.Task] = set()
 
 
-def _release_in_background(token: object | None, container_id: str | None) -> None:
+def _release_in_background(token: object | None, container_id: str | None, helper: _Helper | None = None) -> None:
     """Release a hold once its container stopped, without making the caller wait for it.
 
     The caller may be a settlement that runs under the admission lock (a
@@ -259,7 +281,10 @@ def _release_in_background(token: object | None, container_id: str | None) -> No
     """
     if token is None:
         return
-    task = asyncio.get_running_loop().create_task(_release_when_stopped(token, container_id))
+    if not container_id and helper is None:
+        _release(token)
+        return
+    task = asyncio.create_task(_release_when_stopped(token, container_id, helper=helper))
     _release_tasks.add(task)
     task.add_done_callback(_release_tasks.discard)
 
@@ -476,6 +501,13 @@ class _Helper:
         self.container_id: str | None = None
         self.created = asyncio.Event()
         self.started = asyncio.Event()
+
+    async def started_container(self) -> str | None:
+        """Wait for any in-flight create and start before attempting to stop or inspect the helper."""
+        await self.created.wait()
+        if self.container_id:
+            await self.started.wait()
+        return self.container_id
 
 
 class _Launch:
@@ -1950,6 +1982,7 @@ class SessionManager:
         self._helpers[session_id] = helper
         try:
             try:
+                memory_mb = await _session_memory_mb(session_id)
                 container_id = await docker_engine.create_session_container(
                     name=f"logos-agent-{phase}-{session_id}",
                     image=settings.workspace_image,
@@ -1964,7 +1997,7 @@ class SessionManager:
                     # Only verification reads the workspace cache, read-only;
                     # credential-bearing helpers never mount it.
                     cache_volume=cache_volume if phase == "verify" else None,
-                    memory_mb=await _session_memory_mb(session_id),
+                    memory_mb=memory_mb,
                 )
                 helper.container_id = container_id
             finally:
@@ -2005,12 +2038,19 @@ class SessionManager:
                 )
             return code
         finally:
-            self._helpers.pop(session_id, None)
-            if helper.container_id:
-                try:
-                    await docker_engine.remove_container(helper.container_id)
-                except Exception:
-                    logger.warning("could not remove %s helper container for session %s", phase, session_id)
+            remaining = helper.container_id
+            try:
+                if remaining:
+                    await docker_engine.remove_container(remaining)
+                    remaining = None
+            except Exception:
+                logger.warning("could not remove %s helper container for session %s", phase, session_id)
+            finally:
+                if self._helpers.get(session_id) is helper:
+                    self._helpers.pop(session_id)
+                    if remaining:
+                        # Cancellation has not assumed this helper's reservation.
+                        _release_in_background(_hold(memory_mb or settings.session_memory_mb), remaining)
 
     @staticmethod
     async def _what_it_printed(container_id: str, *, lines: int = 12) -> str:
@@ -2945,22 +2985,6 @@ class SessionManager:
         supervision error settles a container that may still run). Its
         memory is held until the container is seen stopped.
         """
-        try:
-            row = await db.get_session(session_id)
-        except Exception:  # noqa: BLE001 - the settlement reads it again
-            row = None
-        # Taken before the transition, synchronously, for the same reason as
-        # in cancel(); a failed launch settles under the admission lock.
-        token = None
-        if row and row.get("status") not in {state.value for state in TERMINAL_STATUSES}:
-            token = _hold(_memory_of(row))
-        try:
-            await self._settle_outcome(session_id, exit_code=exit_code, error=error)
-        finally:
-            _release_in_background(token, (row or {}).get("container_id"))
-
-    async def _settle_outcome(self, session_id: int, *, exit_code: int | None, error: str | None) -> None:
-        """Record the outcome of a finished session and clean up after it."""
         # A request written just before the agent exited — a release note on
         # an issue it gave up — is still carried out.
         try:
@@ -3042,30 +3066,39 @@ class SessionManager:
         if result.get("pr_url"):
             fields["pr_url"] = str(result["pr_url"])
 
-        moved = await db.transition_session(
-            session_id,
-            SessionStatus.SUCCEEDED if succeeded else SessionStatus.FAILED,
-            **fields,
-        )
-        if not moved:
-            # A competing actor reached the terminal row first — most often a
-            # cancel winning against a settlement that restart reconciliation
-            # kicks off for an exited container. The session already belongs
-            # to that actor: give the container back, but emit no status
-            # event, dispatch no deploy, and take no screenshots for a
-            # session whose state is already final.
-            logger.warning(
-                "settlement of session %s lost the race to another transition; only cleaning up",
-                session_id,
+        # The finalizing row covers its helpers. Transfer the agent's memory just
+        # before the terminal transition, including on a supervision error.
+        row = await db.get_session(session_id)
+        container_id = (row or {}).get("container_id")
+        token = _hold(_memory_of(row)) if container_id else None
+        try:
+            moved = await db.transition_session(
+                session_id, SessionStatus.SUCCEEDED if succeeded else SessionStatus.FAILED, **fields
             )
-            await self._cleanup_container(session_id)
-            return
+            if moved:
+                await self._record_outcome(session_id, succeeded, fields, result)
+            else:
+                logger.warning("settlement of session %s lost the terminal transition; only cleaning up", session_id)
+            if await self._cleanup_container(session_id) == container_id:
+                container_id = None  # Removal confirmed. Screenshots may use this memory immediately.
+        finally:
+            _release_in_background(token, container_id)
+
+        if moved and succeeded:
+            # Keep dispatch, the wait for that deployment and its screenshots together.
+            async with self._deploy_screenshot_lock:
+                deploy, after_run_id = await self._maybe_deploy(session_id, result)
+                await self._capture_screenshots(session_id, deploy, after_run_id)
+
+    async def _record_outcome(
+        self, session_id: int, succeeded: bool, fields: dict[str, Any], result: dict[str, Any]
+    ) -> None:
         await db.add_event(
             session_id,
             EventKind.STATUS,
             {
                 "status": "succeeded" if succeeded else "failed",
-                "exit_code": exit_code,
+                "exit_code": fields["exit_code"],
                 "error": fields.get("error"),
             },
         )
@@ -3123,25 +3156,6 @@ class SessionManager:
         # partial answer beats silence on a thread where a person is
         # waiting.
         await self._post_reply(session_id)
-
-        deploy: str | None = None
-        after_run_id: int | None = None
-        if succeeded:
-            # Hold the shared-environment lock across the whole
-            # dispatch-to-screenshot sequence, so a second settling session
-            # cannot dispatch in the middle of this one's wait or photograph
-            # this one's deploy (see the lock in __init__).
-            async with self._deploy_screenshot_lock:
-                deploy, after_run_id = await self._maybe_deploy(session_id, result)
-
-                # Give the container back before the post-deploy wait: a
-                # deploy can take minutes, and the capacity a session holds
-                # is worth reclaiming without waiting for its screenshots.
-                await self._cleanup_container(session_id)
-
-                await self._capture_screenshots(session_id, deploy, after_run_id)
-        else:
-            await self._cleanup_container(session_id)
 
     @staticmethod
     async def _still_wanted(workspace: dict[str, Any]) -> bool:
@@ -4123,16 +4137,18 @@ class SessionManager:
                         logger.warning("could not remove the screenshot container for session %s", session_id)
         return taken
 
-    async def _cleanup_container(self, session_id: int) -> None:
+    async def _cleanup_container(self, session_id: int) -> str | None:
         session = await db.get_session(session_id)
         container_id = (session or {}).get("container_id")
         if container_id:
             try:
                 await docker_engine.remove_container(container_id)
+                return container_id
             except Exception:
                 # Another actor (usually the cancel this cleanup races) may
                 # already have removed it.
                 logger.debug("could not remove the container of session %s", session_id)
+        return None
 
     async def _relinquish_container(self, container_id: str) -> None:
         """Give a container back that a lost transition no longer owns.
@@ -4174,66 +4190,61 @@ class SessionManager:
         # never neither. No lock here — a failed launch settles while the
         # scheduler holds the admission lock.
         token = _hold(_memory_of(session)) if status != SessionStatus.QUEUED else None
-        try:
-            return await self._cancel(session_id, session)
-        finally:
-            _release_in_background(token, session.get("container_id"))
-
-    async def _cancel(self, session_id: int, session: dict[str, Any]) -> bool:
         container_id = session.get("container_id")
+        helper = None
         # Claim the terminal state before any container I/O: stopping the
         # container is what produces the exit the supervisor settles, and
         # that settle must lose this race — otherwise the cancellation lands
         # as FAILED or SUCCEEDED, complete with the deploy and screenshot
         # side effects of a finished session.
-        moved = await db.transition_session(session_id, SessionStatus.CANCELLED, finished_at=datetime.now(timezone.utc))
-        if not moved:
-            return False
+        try:
+            moved = await db.transition_session(
+                session_id, SessionStatus.CANCELLED, finished_at=datetime.now(timezone.utc)
+            )
+            if not moved:
+                _release(token)
+                token = None
+                return False
 
-        # Mark an in-flight launch in the same step as the transition, before
-        # any further await: from here on the launch observes the
-        # cancellation at its next phase boundary and starts nothing. Every
-        # await between the transition and this line would be another
-        # scheduling point in which a racing launch could still reach a
-        # container. Marked, not removed, because a launch that has not
-        # started yet has to find this record rather than take a fresh,
-        # uncancelled one — its own cleanup removes it, and so does the wait
-        # below.
-        launch = self._launches.get(session_id)
-        if launch is not None:
-            launch.cancelled = True
-        await db.add_event(session_id, EventKind.STATUS, {"status": "cancelled"})
+            # Mark an in-flight launch in the same step as the transition, before
+            # any further await: from here on the launch observes the
+            # cancellation at its next phase boundary and starts nothing. Every
+            # await between the transition and this line would be another
+            # scheduling point in which a racing launch could still reach a
+            # container. Marked, not removed, because a launch that has not
+            # started yet has to find this record rather than take a fresh,
+            # uncancelled one — its own cleanup removes it, and so does the wait
+            # below.
+            launch = self._launches.get(session_id)
+            if launch is not None:
+                launch.cancelled = True
+            # A helper can register while the transition awaits the database.
+            helper = self._helpers.pop(session_id, None)
+            try:
+                await db.add_event(session_id, EventKind.STATUS, {"status": "cancelled"})
+            finally:
+                await self._stop_cancelled_session(session_id, container_id, helper, launch)
+            return True
+        finally:
+            _release_in_background(token, container_id, helper)
+
+    async def _stop_cancelled_session(
+        self, session_id: int, container_id: str | None, helper: _Helper | None, launch: _Launch | None
+    ) -> None:
         # The credential-bearing helper first: a finalizer mid-push would
         # otherwise keep committing, pushing, or opening a pull request after
         # the API has already reported the session cancelled. It is tracked
         # per session rather than read from the supervisor because restart
         # reconciliation finalizes without one.
-        helper = self._helpers.pop(session_id, None)
         if helper is not None:
-            # Wait for the create to settle before anything else: a cancel
-            # that lands while the create request is in flight must not
-            # report success before the credential-bearing container is
-            # known to exist — and the helper must never start one.
-            await helper.created.wait()
-            if helper.container_id is not None:
-                # Wait for the in-flight start to settle before stopping: a
-                # stop that lands first is a 304 no-op, and the pending
-                # start would complete after this returns — a
-                # credential-bearing container, running, with no one left
-                # to stop it. Settled, the stop is a real stop (or a 304
-                # for a container the helper was cancelled before starting,
-                # which is the desired state), and the force-remove after
-                # it makes the cancellation final, so a success here can
-                # never be followed by a running helper. The helper's own
-                # cleanup removes the container as well; it tolerates the
-                # one that is already gone.
-                await helper.started.wait()
+            helper_id = await helper.started_container()
+            if helper_id:
                 try:
-                    await docker_engine.stop_container(helper.container_id, timeout_s=5)
+                    await docker_engine.stop_container(helper_id, timeout_s=5)
                 except Exception:
                     logger.warning("could not stop the helper of cancelled session %s", session_id)
                 try:
-                    await docker_engine.remove_container(helper.container_id)
+                    await docker_engine.remove_container(helper_id)
                 except Exception:
                     logger.warning("could not remove the helper of cancelled session %s", session_id)
         if launch is not None:
@@ -4277,7 +4288,6 @@ class SessionManager:
                 await docker_engine.remove_container(container_id)
             except Exception:
                 logger.warning("could not remove the container of cancelled session %s", session_id)
-        return True
 
 
 manager = SessionManager()
