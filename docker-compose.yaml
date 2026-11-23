@@ -641,9 +641,7 @@ services:
       KEYCLOAK_ROLES_LOGOS_ADMIN: "${KEYCLOAK_ROLES_LOGOS_ADMIN:-itg-admin}"
       LOGOS_AGENT_REQUIRED_ROLE: "${LOGOS_AGENT_REQUIRED_ROLE:-logos_admin}"
 
-      # The Logos key sessions call models with. Give it LOW priority so agent
-      # traffic never outranks a user at the scheduler.
-      LOGOS_AGENT_API_KEY: "${LOGOS_AGENT_API_KEY:-}"
+      # Optional default among the managed identity's locally served models.
       LOGOS_AGENT_DEFAULT_MODEL: "${LOGOS_AGENT_DEFAULT_MODEL:-}"
 
       # Sessions run in this image, on this network, under these ceilings.
@@ -771,12 +769,9 @@ services:
     depends_on:
       - logos-orchestrator
     environment:
-      # The Logos key the gateway injects into the agent's model calls. The
-      # image ships the configuration as a template, and its entrypoint runs
-      # envsubst at container start, so the key enters the running
-      # configuration here and never has to be passed to a session
-      # container — nor does it sit in an image layer.
-      LOGOS_AGENT_API_KEY: "${LOGOS_AGENT_API_KEY:-}"
+      # Existing internal trust root; only short-lived inference tokens are
+      # forwarded, never this secret or credentials to session containers.
+      LOGOS_INTERNAL_SECRET: "${LOGOS_INTERNAL_SECRET:-}"
     networks:
       - internal
       - agent

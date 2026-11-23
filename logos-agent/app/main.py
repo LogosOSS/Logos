@@ -230,7 +230,7 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     # Admission uses the measured figure (who filled the lane does not
     # matter). Own-slot colouring on the page still needs the per-key split,
     # so the key is passed with discount_own=False.
-    own_key = await db.agent_key_id(settings.agent_api_key)
+    own_key = await db.agent_key_id()
     reading = await capacity.read_load(
         lane=model_policy.current().lane(),
         own_api_key_id=own_key,
@@ -418,11 +418,6 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Deploys are disabled on this runner (LOGOS_AGENT_DEPLOY_ENABLED)",
-        )
-    if not settings.agent_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="LOGOS_AGENT_API_KEY is not configured; sessions have no way to reach a model",
         )
     # Refuse a model that is not served locally at the point where a person
     # asks for it, rather than accepting the session and failing it later:

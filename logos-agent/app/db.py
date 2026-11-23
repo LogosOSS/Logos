@@ -54,98 +54,38 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# --- what the agent key may reach -----------------------------------------
-
-# Which model deployments the runner's own Logos key is permitted to use, and
-# what kind of provider serves each. The permission rules are the platform's,
-# not this service's: the CTEs mirror the orchestrator's
-# `DBManager.get_deployments_for_api_key` exactly — a key with custom
-# permissions is scoped by its own grants, otherwise by its team's — so the
-# runner sees the same deployments a request with that key would be routed
-# to. `app/model_policy.py` turns the rows into the local-only decision;
-# duplicating the rules there instead of here would put the permission logic
-# two joins away from the tables it is about.
-_REACHABLE_DEPLOYMENTS = """
-    WITH key_info AS (
-        SELECT ak.id AS aki,
-               ak.team_id AS tid,
-               ak.use_custom_permissions AS custom
-          FROM api_keys ak
-         WHERE ak.key_value = :key_value
-           AND ak.is_active = true
-    ),
-    effective_providers AS (
-        SELECT akpp.provider_id
-          FROM api_key_provider_permissions akpp, key_info ki
-         WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-        UNION
-        SELECT tpp.provider_id
-          FROM team_provider_permissions tpp, key_info ki
-         WHERE tpp.team_id = ki.tid AND ki.custom = false
-    ),
-    effective_models AS (
-        SELECT akmp.model_id
-          FROM api_key_model_permissions akmp, key_info ki
-         WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-        UNION
-        SELECT tmp.model_id
-          FROM team_model_permissions tmp, key_info ki
-         WHERE tmp.team_id = ki.tid AND ki.custom = false
-    )
-    SELECT m.id AS model_id,
-           m.name AS model_name,
-           p.id AS provider_id,
-           p.provider_type AS provider_type,
-           (SELECT string_agg(a.alias, ',' ORDER BY a.alias)
-              FROM model_aliases a
-             WHERE a.model_id = m.id) AS aliases
-      FROM models m
-      JOIN model_provider mp ON m.id = mp.model_id
-      JOIN providers p ON mp.provider_id = p.id
-      JOIN effective_models em ON m.id = em.model_id
-      JOIN effective_providers ep ON p.id = ep.provider_id
-     ORDER BY m.name, p.id
-"""
+# --- the managed local-only agent identity -------------------------------
 
 
-async def agent_key_exists(key_value: str) -> bool:
-    """Whether the runner's Logos key is an active key of this platform.
+async def agent_key_id() -> int | None:
+    """Stable accounting id; revocation is shared by runner and issuer."""
+    async with sessionmaker()() as db:
+        value = (
+            await db.execute(text("SELECT id FROM api_keys WHERE internal_service = 'agent' AND is_active = true"))
+        ).scalar_one_or_none()
+    return int(value) if value is not None else None
 
-    A key that does not resolve has no permissions to read, which is not the
-    same as having none: the difference decides whether the model policy is
-    'nothing reachable' or 'unknown', and only the first is safe to run on.
+
+async def reachable_deployments() -> list[dict[str, Any]]:
+    """Same local-only scope as DBManager.get_deployments_for_api_key.
+
+    Explicit user/team grants cannot extend this service identity to cloud.
+    Even a model offered by both provider types reaches only its local copy.
     """
     async with sessionmaker()() as db:
-        row = (
-            await db.execute(
-                text("SELECT 1 FROM api_keys WHERE key_value = :key_value AND is_active = true"),
-                {"key_value": key_value},
-            )
-        ).first()
-    return row is not None
-
-
-async def agent_key_id(key_value: str) -> int | None:
-    """The platform id of the runner's key, or ``None`` if it does not resolve.
-
-    The orchestrator splits a model's in-flight requests by this id, so the
-    runner discounts the requests its own sessions — and the subagents those
-    sessions start — are actually making, rather than guessing one per session.
-    """
-    async with sessionmaker()() as db:
-        row = (
-            await db.execute(
-                text("SELECT id FROM api_keys WHERE key_value = :key_value AND is_active = true"),
-                {"key_value": key_value},
-            )
-        ).first()
-    return int(row[0]) if row is not None else None
-
-
-async def reachable_deployments(key_value: str) -> list[dict[str, Any]]:
-    """Every model deployment the given Logos key is permitted to use."""
-    async with sessionmaker()() as db:
-        rows = (await db.execute(text(_REACHABLE_DEPLOYMENTS), {"key_value": key_value})).mappings().all()
+        rows = (await db.execute(text("""
+            SELECT m.id AS model_id, m.name AS model_name,
+                   p.id AS provider_id, p.provider_type,
+                   (SELECT string_agg(a.alias, ',' ORDER BY a.alias)
+                    FROM model_aliases a WHERE a.model_id = m.id) AS aliases
+            FROM models m
+            JOIN model_provider mp ON mp.model_id = m.id
+            JOIN providers p ON p.id = mp.provider_id
+            WHERE p.provider_type = 'logosnode'
+              AND EXISTS (SELECT 1 FROM api_keys
+                          WHERE internal_service = 'agent' AND is_active = true)
+            ORDER BY m.name, p.id
+        """))).mappings().all()
     return [dict(row) for row in rows]
 
 

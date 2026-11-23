@@ -128,6 +128,7 @@ class ApiKey(Base):
     is_active = Column(Boolean, nullable=False, default=True)
 
     use_custom_permissions = Column(Boolean, nullable=False, default=False)
+    internal_service = Column(Text, unique=True)
 
     team = relationship("Team")
     user = relationship("User")

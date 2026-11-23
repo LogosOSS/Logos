@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="086-agent-service-identity" author="logos">
+        <sql><![CDATA[
+            ALTER TABLE api_keys ADD COLUMN internal_service TEXT UNIQUE;
+            ALTER TABLE api_keys ADD CONSTRAINT api_keys_internal_service_scope CHECK (
+                internal_service IS NULL OR (
+                    internal_service = 'agent' AND team_id IS NULL AND user_id IS NULL
+                    AND key_type = 'application' AND default_priority = 1
+                    AND use_custom_permissions = true
+                )
+            );
+            INSERT INTO api_keys (key_value, name, key_type, environment, default_priority,
+                                  use_custom_permissions, internal_service)
+            VALUES ('internal-agent-' || gen_random_uuid()::text, 'Logos internal agent',
+                    'application', 'agent', 1, true, 'agent');
+        ]]></sql>
+        <!-- Retain the identity and its request history on rollback, but revoke access. -->
+        <rollback><sql><![CDATA[
+            UPDATE api_keys SET is_active = false WHERE internal_service = 'agent';
+            ALTER TABLE api_keys DROP CONSTRAINT api_keys_internal_service_scope;
+            ALTER TABLE api_keys DROP COLUMN internal_service;
+        ]]></sql></rollback>
+    </changeSet>
+</databaseChangeLog>
