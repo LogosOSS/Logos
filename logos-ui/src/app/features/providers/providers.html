@@ -379,6 +379,46 @@
   </div>
 </app-modal-form>
 
+<ng-template #keyActions let-provider="provider" let-connection="connection">
+  <div class="form-field">
+    <span class="field-label">API Key</span>
+    <div class="key-value-row">
+      <code>{{ (connection ? connection.api_key_hint : provider.api_key_hint) || 'No key configured' }}</code>
+      <button class="btn-secondary" type="button" [disabled]="editLoading() || editConnLoading()" (click)="requestRotation(provider, connection)">
+        <i class="pi pi-refresh" aria-hidden="true"></i> Rotate
+      </button>
+    </div>
+  </div>
+</ng-template>
+
+@if (rotation(); as target) {
+  <app-modal-confirm
+    [visible]="true"
+    (visibleChange)="$event || closeRotation()"
+    [title]="'Rotate API key for ' + (target.connection?.model_name || target.provider.name) + '?'"
+    [message]="target.provider.provider_type === 'logosnode'
+      ? 'This immediately invalidates the current key. Copy the new key and redeploy the worker.'
+      : 'Enter the new key issued by your cloud provider.'"
+    icon="pi-refresh"
+    confirmLabel="Rotate"
+    [loading]="rotationLoading()"
+    [confirmDisabled]="target.provider.provider_type === 'cloud' && !replacementKey().trim()"
+    (confirmed)="confirmRotation()"
+  >
+    @if (target.provider.provider_type === 'cloud') {
+      <div modal-details class="form-field replacement-field">
+        <label class="field-label" for="replacement-key">New API key</label>
+        <input id="replacement-key" class="field-input" type="password" autocomplete="new-password"
+          [disabled]="rotationLoading()" [value]="replacementKey()"
+          (input)="replacementKey.set($any($event.target).value)" />
+      </div>
+    }
+    @if (rotationError()) {
+      <app-error-message modal-error [message]="rotationError()" />
+    }
+  </app-modal-confirm>
+}
+
 @if (rotatedKey(); as key) {
   <app-modal-form
     [visible]="true"
@@ -422,7 +462,7 @@
 
 <!-- ── Edit Provider Dialog ───────────────────────────────────────────────── -->
 <app-modal-form
-  [visible]="editTarget() !== null"
+  [visible]="editTarget() !== null && !rotation()"
   (visibleChange)="$event || closeEditDialog()"
   title="Edit Provider"
 >
@@ -489,27 +529,12 @@
         <p class="field-hint">Default endpoint of {{ editCloudProviderType() }}. Change it for a proxy or a regional endpoint.</p>
       }
     </div>
-    @if (editProviderType() === 'cloud') {
-      <div class="form-field">
-        <label class="field-label" for="edit-key">Replacement API Key</label>
-        <input
-          id="edit-key"
-          class="field-input"
-          type="password"
-          [placeholder]="editTarget()?.api_key_hint || 'No key configured'"
-          [value]="editApiKey()"
-          (input)="editApiKey.set($any($event.target).value)"
-          [disabled]="editLoading()"
-          autocomplete="new-password"
-        />
-        <p class="field-hint">Leave blank to keep the current key.</p>
-      </div>
-    } @else if (editTarget()?.provider_type === 'logosnode') {
-      <div class="form-field">
-        <span class="field-label">Worker key</span>
-        <p class="field-hint">Rotation invalidates the current key immediately. Copy the replacement and redeploy the worker.</p>
-        <button class="btn-secondary" type="button" [disabled]="editLoading()" (click)="rotateWorkerKey()">Rotate worker key</button>
-      </div>
+    @if (editTarget(); as provider) {
+      @if (editProviderType() === provider.provider_type) {
+        <ng-container *ngTemplateOutlet="keyActions; context: { provider }" />
+      } @else {
+        <p class="field-hint">Save the provider type before you rotate its key.</p>
+      }
     }
     <p class="form-section-label form-section-label--mt">Auth</p>
     <div class="form-row">
@@ -639,7 +664,7 @@
 
 <!-- ── Edit Connection Dialog ─────────────────────────────────────────────── -->
 <app-modal-form
-  [visible]="editConnModel() !== null"
+  [visible]="editConnModel() !== null && !rotation()"
   (visibleChange)="$event || closeEditConnDialog()"
   title="Edit Connection"
 >
@@ -658,19 +683,11 @@
         autocomplete="off"
       />
     </div>
-    <div class="form-field">
-      <label class="field-label" for="editconn-key">Replacement API Key</label>
-      <input
-        id="editconn-key"
-        class="field-input"
-        type="password"
-        [placeholder]="editConnModel()?.api_key_hint || 'No key configured'"
-        [value]="editConnApiKey()"
-        (input)="editConnApiKey.set($any($event.target).value)"
-        [disabled]="editConnLoading()"
-        autocomplete="new-password"
-      />
-    </div>
+    @if (editConnProvider(); as provider) {
+      @if (editConnModel(); as connection) {
+        <ng-container *ngTemplateOutlet="keyActions; context: { provider, connection }" />
+      }
+    }
     @if (editConnError()) {
       <app-error-message [message]="editConnError()!" />
     }

@@ -57,6 +57,12 @@ export class ProviderManagementService {
     ));
   }
 
+  replaceCloudKey(id: number, apiKey: string, modelId?: number): Promise<{ api_key_hint: string }> {
+    return firstValueFrom(this.http.post<{ api_key_hint: string }>(
+      `/api/logosdb/providers/${id}/replace_cloud_key`, { api_key: apiKey, model_id: modelId },
+    ));
+  }
+
   deleteProvider(id: number): Promise<void> {
     return firstValueFrom(this.http.post<void>('/api/logosdb/delete_provider', { provider_id: id }));
   }

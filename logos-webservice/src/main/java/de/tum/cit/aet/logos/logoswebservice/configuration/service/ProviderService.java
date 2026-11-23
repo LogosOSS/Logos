@@ -126,6 +126,29 @@ public class ProviderService {
     }
 
     @Transactional
+    public Map<String, String> replaceCloudKey(int providerId, Integer modelId, String key) {
+        if (key == null || key.isBlank()) throw new IllegalArgumentException("A replacement key is required.");
+        Provider provider = providerRepository.findForUpdate(providerId)
+            .orElseThrow(() -> new NotFoundException("Provider not found"));
+        if (provider.getProviderType() != ProviderType.cloud) {
+            throw new IllegalArgumentException("Select a cloud provider to replace its key.");
+        }
+        if (modelId == null) {
+            provider.setApiKey(key);
+            auditLog.record("provider.updated", "provider", providerId, null,
+                providerSnapshot(provider, false), providerSnapshot(provider, true));
+        } else {
+            ModelProvider connection = modelProviderRepository.findByModelIdAndProviderId(modelId, providerId)
+                .orElseThrow(() -> new NotFoundException("Connection not found"));
+            connection.setApiKey(key);
+            auditLog.record("model_provider.updated", "model_provider", connection.getId(), null,
+                Map.of(), Map.of("api_key_replaced", true));
+        }
+        orchestratorNotificationService.notifyRefresh(false, modelId == null);
+        return Map.of("api_key_hint", keyHint(key));
+    }
+
+    @Transactional
     public Map<String, Object> updateProvider(UpdateProviderRequestDTO req) {
         Provider p = providerRepository.findForUpdate(req.providerId())
             .orElseThrow(() -> new IllegalArgumentException("Provider not found: " + req.providerId()));

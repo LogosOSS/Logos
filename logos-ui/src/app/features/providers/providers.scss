@@ -239,6 +239,17 @@
   &:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
 }
 
+.key-value-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.replacement-field {
+  width: 100%;
+  text-align: left;
+}
+
 .rotated-key-intro {
   margin: 0 0 4px;
   color: rgb(var(--color-typography-300));

@@ -158,6 +158,25 @@ class ProviderControllerTest {
     }
 
     @Test
+    void rotationChangesOnlyTheSelectedCloudCredential() throws Exception {
+        String url = "/logosdb/providers/6001/replace_cloud_key";
+        String body = "{\"api_key\":\"synthetic-model-new\",\"model_id\":5001}";
+        mvc.perform(post(url).with(TestJwt.adminUser()).contentType("application/json").content(body))
+           .andExpect(status().isForbidden());
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json").content(body))
+           .andExpect(status().isOk()).andExpect(jsonPath("$.api_key_hint").value("••••new"))
+           .andExpect(jsonPath("$.api_key").doesNotExist());
+        assertNull(jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"api_key\":\"synthetic-provider-old\"}"))
+           .andExpect(status().isOk()).andExpect(jsonPath("$.api_key_hint").value("••••old"));
+        assertEquals("synthetic-provider-old", jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+        assertEquals("synthetic-model-new", jdbc.queryForObject("SELECT api_key FROM model_provider WHERE id = 7001", String.class));
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json").content("{}"))
+           .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void getProviders_requiresAuthentication() throws Exception {
         mvc.perform(post("/logosdb/get_providers")
                 .contentType("application/json")

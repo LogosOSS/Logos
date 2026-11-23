@@ -34,6 +34,7 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.dto.LaneLoadStatusRequ
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.LockLaneRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.NodeConfigRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReplaceNodeConfigRequestDTO;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReplaceCloudKeyRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseCalibrationClaimRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseRecoveryRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ReleaseNodeMaintenanceRequestDTO;
@@ -109,6 +110,12 @@ public class ProviderController {
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> rotateWorkerKey(@PathVariable int providerId) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(providerService.rotateWorkerKey(providerId));
+    }
+
+    @PostMapping("/providers/{providerId}/replace_cloud_key")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> replaceCloudKey(@PathVariable int providerId, @RequestBody ReplaceCloudKeyRequestDTO req) {
+        return ResponseEntity.ok(providerService.replaceCloudKey(providerId, req.modelId(), req.apiKey()));
     }
 
     @PostMapping("/delete_provider")

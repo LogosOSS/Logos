@@ -53,6 +53,7 @@ describe('Providers', () => {
   let component: Providers;
   let addProvider: ReturnType<typeof vi.fn>;
   let updateProvider: ReturnType<typeof vi.fn>;
+  let replaceCloudKey: ReturnType<typeof vi.fn>;
   let refreshModels: ReturnType<typeof vi.fn>;
   let modelSyncStatus: ReturnType<typeof vi.fn>;
   let getModels: ReturnType<typeof vi.fn>;
@@ -67,7 +68,9 @@ describe('Providers', () => {
     modelSyncStatus = vi.fn().mockResolvedValue({ running: false });
     getModels = vi.fn().mockResolvedValue([]);
     getProviderModels = vi.fn().mockResolvedValue([]);
+    replaceCloudKey = vi.fn().mockResolvedValue({ api_key_hint: '••••new' });
     const providerService = {
+      replaceCloudKey,
       getProviders: vi.fn().mockResolvedValue([makeProvider()]),
       rotateWorkerKey: vi.fn().mockResolvedValue({ api_key: 'synthetic-worker-replacement' }),
       addProvider,
@@ -96,20 +99,41 @@ describe('Providers', () => {
     await component.fetchProviders();
   });
 
-  it('keeps the stored cloud key until a replacement is entered', async () => {
+  it('shows the cloud key hint as text and saves other settings independently', async () => {
     component.openEditDialog(makeProvider());
-    expect(component.editApiKey()).toBe('');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(document.querySelector('.key-value-row code')?.textContent).toBe('••••ret');
+    expect(document.querySelector('#replacement-key')).toBeNull();
     await component.submitEdit();
     expect(updateProvider.mock.calls[0][0].api_key).toBeUndefined();
-    component.openEditDialog(makeProvider());
-    component.editApiKey.set('synthetic-new-key');
-    await component.submitEdit();
-    expect(updateProvider.mock.calls[1][0].api_key).toBe('synthetic-new-key');
+    expect(replaceCloudKey).not.toHaveBeenCalled();
+  });
+
+  it('only replaces a cloud key on explicit confirmation and preserves pending edits', async () => {
+    const provider = makeProvider();
+    component.openEditDialog(provider);
+    component.editName.set('Unsaved name');
+    component.requestRotation(provider);
+    await component.confirmRotation();
+    component.replacementKey.set('synthetic-cancelled');
+    component.closeRotation();
+    expect(replaceCloudKey).not.toHaveBeenCalled();
+    component.requestRotation(provider);
+    expect(component.replacementKey()).toBe('');
+    component.replacementKey.set('synthetic-new');
+    await component.confirmRotation();
+    expect(replaceCloudKey).toHaveBeenCalledWith(provider.id, 'synthetic-new', undefined);
+    expect(updateProvider).not.toHaveBeenCalled();
+    expect(component.editName()).toBe('Unsaved name');
+    expect(component.editTarget()?.api_key_hint).toBe('••••new');
+    expect(component.replacementKey()).toBe('');
   });
 
   it('discards the rotated worker key when the dialog closes', async () => {
     component.openEditDialog(makeProvider({ provider_type: 'logosnode' }));
-    await component.rotateWorkerKey();
+    component.requestRotation(component.editTarget()!);
+    await component.confirmRotation();
     fixture.detectChanges();
     await fixture.whenStable();
     expect(document.querySelector<HTMLInputElement>('#rotated-key')?.value).toBe('synthetic-worker-replacement');
@@ -119,7 +143,7 @@ describe('Providers', () => {
     await fixture.whenStable();
     expect(document.querySelector('#rotated-key')).toBeNull();
     component.openEditDialog(makeProvider({ provider_type: 'logosnode' }));
-    expect(component.editApiKey()).toBe('');
+    expect(component.rotatedKey()).toBeNull();
   });
 
   describe('the cloud provider type field', () => {

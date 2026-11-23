@@ -407,11 +407,16 @@ Select **Add Provider**. The dialog asks for the classification first:
 
 ![Add Provider dialog with Anthropic selected](/img/roles/logos-admin-add-provider.png)
 
-To replace a cloud key, select **Edit Provider** and enter the new value in **Replacement API Key**.
-Leave the field empty to keep the stored key.
-The field can show up to the last 3 characters of the stored key.
+Open **Edit Provider** to see the masked key. The key can show up to its last 3 characters.
+You can save changes to the provider without changing its key.
 
-![Edit Provider dialog with a masked cloud key](/img/roles/logos-admin-edit-cloud-key.png)
+![Edit Provider with the masked key and Rotate button](/img/roles/logos-admin-edit-cloud-key.png)
+
+To replace the key, select **Rotate**. Enter the key from the cloud provider in **New API key**.
+Select **Rotate** to apply it, or **Cancel** to keep the current key.
+Use the same steps in **Edit Connection** for a key specific to one model.
+
+![Cloud rotation dialog with an empty New API key field](/img/roles/logos-admin-rotate-cloud-key.png)
 
 Expand a provider to see its connected models. Next to the endpoint, each model
 shows whether its batches can use the provider's Batch API: **Batch**, **No
@@ -424,14 +429,15 @@ names the batch deployment or the reason for a refusal. See
 ### Provision a worker key
 
 1. Open **Edit Provider** for the worker node.
-2. Select **Rotate worker key**. The previous key immediately stops working for new authentication requests.
+2. Select **Rotate** next to the masked key.
+3. Confirm with **Rotate**. The previous key immediately stops working for new authentication requests.
 
-![Edit Provider dialog with the worker key rotation action](/img/roles/logos-admin-rotate-worker-key.png)
+![Worker key rotation confirmation](/img/roles/logos-admin-rotate-worker-key.png)
 
-3. Select **Copy** in **Worker key rotated** before you close the dialog.
-4. Set the deployment secret `LOGOS_API_KEY` for this worker to the new value.
-5. Recreate the worker with the updated environment. Recreate its node manager if the worker uses one.
-6. Check that the worker connects to Logos.
+4. Select **Copy** in **Worker key rotated** before you close the dialog.
+5. Set the deployment secret `LOGOS_API_KEY` for this worker to the new value.
+6. Recreate the worker with the updated environment. Recreate its node manager if the worker uses one.
+7. Check that the worker connects to Logos.
 
 ![One-time worker key dialog with a synthetic example](/img/roles/logos-admin-worker-key-created.png)
 

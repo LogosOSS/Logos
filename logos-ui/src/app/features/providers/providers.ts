@@ -243,7 +243,6 @@ export class Providers implements OnInit, OnDestroy {
   onEditProviderTypeChange(type: ProviderType): void {
     const previous = this.suggestedBaseUrl(this.editProviderType(), this.editCloudProviderType());
     this.editProviderType.set(type);
-    this.editApiKey.set('');
     const { cloud, privacy } = this.coercedForType(
       type,
       this.editCloudProviderType(),
@@ -301,6 +300,10 @@ export class Providers implements OnInit, OnDestroy {
   addLoading = signal(false);
   addError = signal('');
 
+  rotation = signal<{ provider: Provider; connection?: ModelConnection } | null>(null);
+  replacementKey = signal('');
+  rotationLoading = signal(false);
+  rotationError = signal('');
   rotatedKey = signal<{ name: string; value: string } | null>(null);
   rotatedKeyCopied = signal(false);
 
@@ -308,7 +311,6 @@ export class Providers implements OnInit, OnDestroy {
   editTarget = signal<Provider | null>(null);
   editName = signal('');
   editBaseUrl = signal('');
-  editApiKey = signal('');
   editAuthName = signal('');
   editAuthFormat = signal('');
   editProviderType = signal<ProviderType>('cloud');
@@ -329,7 +331,6 @@ export class Providers implements OnInit, OnDestroy {
   editConnProvider = signal<Provider | null>(null);
   editConnModel = signal<ModelConnection | null>(null);
   editConnEndpoint = signal('');
-  editConnApiKey = signal('');
   editConnLoading = signal(false);
   editConnError = signal('');
 
@@ -621,22 +622,53 @@ export class Providers implements OnInit, OnDestroy {
     }
   }
 
-  async rotateWorkerKey(): Promise<void> {
-    const provider = this.editTarget();
-    if (provider?.provider_type !== 'logosnode' || this.editLoading()) return;
-    this.editLoading.set(true);
-    this.editError.set('');
+  requestRotation(provider: Provider, connection?: ModelConnection): void {
+    this.replacementKey.set('');
+    this.rotationError.set('');
+    this.rotation.set({ provider, connection });
+  }
+
+  closeRotation(): void {
+    if (this.rotationLoading()) return;
+    this.replacementKey.set('');
+    this.rotation.set(null);
+  }
+
+  async confirmRotation(): Promise<void> {
+    const target = this.rotation();
+    if (!target || this.rotationLoading()) return;
+    const { provider, connection } = target;
+    const worker = provider.provider_type === 'logosnode';
+    const replacement = this.replacementKey().trim();
+    if (!worker && !replacement) return;
+    this.rotationLoading.set(true);
+    this.rotationError.set('');
     try {
-      const response = await this.providerService.rotateWorkerKey(provider.id);
-      if (this.editTarget() !== provider) return;
-      this.editTarget.set(null);
-      this.rotatedKeyCopied.set(false);
-      this.rotatedKey.set({ name: provider.name, value: response.api_key });
-      await this.fetchProviders();
+      if (worker) {
+        const response = await this.providerService.rotateWorkerKey(provider.id);
+        if (this.rotation() !== target) return;
+        this.editTarget.set(null);
+        this.rotatedKeyCopied.set(false);
+        this.rotatedKey.set({ name: provider.name, value: response.api_key });
+      } else {
+        const { api_key_hint } = await this.providerService.replaceCloudKey(provider.id, replacement, connection?.model_id);
+        if (this.rotation() !== target) return;
+        if (connection) {
+          this.editConnModel.set({ ...connection, api_key_hint });
+        } else {
+          this.editTarget.set({ ...provider, api_key_hint });
+        }
+      }
+      this.rotation.set(null);
+      this.replacementKey.set('');
+      if (connection) await this.loadProviderModels(provider.id);
+      else await this.fetchProviders();
     } catch {
-      this.editError.set('Could not confirm rotation. Rotate again if the replacement key was lost.');
+      this.rotationError.set(worker
+        ? 'Could not confirm rotation. Rotate again if the replacement key was lost.'
+        : 'Could not replace the key. Please try again.');
     } finally {
-      this.editLoading.set(false);
+      this.rotationLoading.set(false);
     }
   }
 
@@ -652,6 +684,8 @@ export class Providers implements OnInit, OnDestroy {
   }
 
   discardWorkerKey(): void {
+    this.rotation.set(null);
+    this.replacementKey.set('');
     this.rotatedKey.set(null);
     this.rotatedKeyCopied.set(false);
     this.editTarget.set(null);
@@ -662,7 +696,6 @@ export class Providers implements OnInit, OnDestroy {
     this.editTarget.set(provider);
     this.editName.set(provider.name);
     this.editBaseUrl.set(provider.base_url ?? '');
-    this.editApiKey.set('');
     this.editAuthName.set(provider.auth_name ?? '');
     this.editAuthFormat.set(provider.auth_format ?? '');
     this.editProviderType.set(provider.provider_type);
@@ -690,7 +723,6 @@ export class Providers implements OnInit, OnDestroy {
       provider_id: target.id,
       name: this.editName().trim() || undefined,
       base_url: this.editBaseUrl().trim(),
-      api_key: this.editApiKey().trim() || undefined,
       auth_name: this.editAuthName().trim(),
       auth_format: this.editAuthFormat().trim(),
       provider_type: this.editProviderType(),
@@ -751,7 +783,6 @@ export class Providers implements OnInit, OnDestroy {
     this.editConnProvider.set(provider);
     this.editConnModel.set(conn);
     this.editConnEndpoint.set(conn.endpoint ?? '');
-    this.editConnApiKey.set('');
     this.editConnError.set('');
   }
 
@@ -772,7 +803,6 @@ export class Providers implements OnInit, OnDestroy {
         provider.id,
         conn.model_id,
         this.editConnEndpoint().trim() || undefined,
-        this.editConnApiKey().trim() || undefined,
       );
       await this.loadProviderModels(provider.id);
       this.editConnProvider.set(null);
