@@ -1,9 +1,11 @@
 version: 2
 
-# Every ecosystem follows the same grouping: minor and patch updates arrive as
-# one pull request per ecosystem, each major update as its own pull request. A
-# breaking major then fails alone instead of blocking the routine updates
-# grouped with it.
+# Actions and the Python hooks they execute share a CI tooling update.
+multi-ecosystem-groups:
+  ci-tooling:
+    schedule:
+      interval: "weekly"
+
 updates:
   # The logos services are uv projects. The ecosystem is "uv" rather than "pip"
   # deliberately: these images install with `uv sync --locked`, so a bump that
@@ -13,17 +15,19 @@ updates:
   # packages that pin each other exactly must not both be declared in
   # pyproject.toml: declare the top-most one and let uv.lock carry the rest.
   - package-ecosystem: "uv"
-    directory: "logos-agent"
+    directories:
+      - "/logos-agent"
+      - "/logos-node-manager"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 2
     groups:
-      logos-agent-python-dependencies:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
+      agent-and-node-manager:
+        patterns: ["*"]
+      service-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
   - package-ecosystem: "uv"
     directory: "logos-orchestrator"
     schedule:
@@ -37,12 +41,11 @@ updates:
           - "version-update:semver-minor"
     groups:
       logos-orchestrator-python-dependencies:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
+        patterns: ["*"]
+      orchestrator-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
   - package-ecosystem: "npm"
     directories:
       - "logos-ui"
@@ -55,27 +58,23 @@ updates:
         update-types: ["version-update:semver-major"]
     groups:
       npm-dependencies:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
+        patterns: ["*"]
+      ui-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
   - package-ecosystem: "github-actions"
     # The second entry is for the actions that the workflows share: they pin the actions that they use as well.
     directories:
       - "/"
       - "/.github/actions/*"
-    schedule:
-      interval: "weekly"
-    groups:
-      github-actions:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
+    patterns: ["*"]
+    multi-ecosystem-group: ci-tooling
+
+  - package-ecosystem: "pip"
+    directory: "/tools/pre-commit"
+    patterns: ["*"]
+    multi-ecosystem-group: ci-tooling
 
   - package-ecosystem: "maven"
     directory: "/logos-webservice"
@@ -85,17 +84,9 @@ updates:
     groups:
       webservice-maven:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
-
-  - package-ecosystem: "uv"
-    directory: "/logos-node-manager"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 2
-    groups:
-      node-manager-python:
+      maven-security:
+        applies-to: security-updates
         patterns: ["*"]
-        update-types: ["minor", "patch"]
 
   # The documentation build has its own lockfile and TypeScript constraints.
   - package-ecosystem: "npm"
@@ -106,7 +97,9 @@ updates:
     groups:
       docs-npm:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
+      docs-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   # CI regenerates the platform-specific hash locks from these inputs.
   - package-ecosystem: "pip"
@@ -115,14 +108,18 @@ updates:
       - "/e2e"
       - "/benchmarks"
       - "/benchmarks/gateway_concurrency"
-      - "/tools/pre-commit"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 2
     groups:
+      # The worker image also resolves vLLM's FastAPI constraint.
+      fastapi:
+        patterns: ["fastapi"]
       python-requirements:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: "docker"
     directories:
@@ -146,9 +143,16 @@ updates:
       - dependency-name: "python"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
+      # Each database engine or migration tool has its own major-upgrade decision.
+      base-images-migrations:
+        patterns: ["postgres", "redis", "liquibase/liquibase"]
+        group-by: dependency-name
+        update-types: ["major"]
       base-images:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
+      base-image-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: "docker-compose"
     directories:
@@ -164,6 +168,13 @@ updates:
     ignore:
       - dependency-name: "ghcr.io/logososs/*"
     groups:
+      # Each database engine or migration tool has its own major-upgrade decision.
+      compose-images-migrations:
+        patterns: ["postgres", "redis", "liquibase/liquibase"]
+        group-by: dependency-name
+        update-types: ["major"]
       compose-images:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
+      compose-security:
+        applies-to: security-updates
+        patterns: ["*"]

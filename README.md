@@ -176,9 +176,15 @@ page covers SSH and database access to `logos-test.aet.cit.tum.de`.
 ### Reviewing dependency updates
 
 Dependabot checks Maven (including the Spring Boot parent), uv projects, pip inputs, the UI and documentation npm
-manifests, GitHub Actions, Dockerfiles and Compose images weekly. Minor and patch updates are grouped. Maven also
-submits its resolved graph when the POM changes on `main`, so GitHub can match advisories against BOM-managed versions.
-The repository's `file:` dependency under `docs/vendor` is maintained in tree.
+manifests, GitHub Actions, Dockerfiles and Compose images weekly. Routine groups include major, minor and patch
+versions. The agent and node manager share a uv group. GitHub Actions and the pre-commit hooks share a CI tooling PR.
+The orchestrator and UI keep their own SQLAlchemy and TypeScript compatibility rules. FastAPI has a separate pip
+group because the worker image must also satisfy vLLM's requirements. PostgreSQL, Redis and Liquibase image majors
+are reviewed by dependency so a migration can proceed on its own timeline. Security updates have separate groups
+in the service, application and image configurations.
+
+Maven submits its resolved graph when the POM changes on `main`, so GitHub can match advisories against BOM-managed
+versions. The repository's `file:` dependency under `docs/vendor` is maintained in tree.
 
 For pip input changes, the Test job checks the worker image, standalone worker, E2E, benchmark and hook hash locks.
 If a Dependabot change resolves and needs new locks, download the `requirements-locks` artifact on that PR head,
