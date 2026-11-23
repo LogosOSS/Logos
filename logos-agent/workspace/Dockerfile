@@ -192,6 +192,11 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 agent \
 COPY --chown=agent:agent logos-agent/workspace/run_session.py /usr/local/lib/run_session.py
 COPY --chown=agent:agent logos-agent/workspace/verify_checkout.py /usr/local/lib/verify_checkout.py
 COPY --chown=agent:agent logos-agent/workspace/screenshot.js /usr/local/lib/screenshot.js
+# `logos-github`: how a session of a linked repository asks the runner to
+# read or comment on GitHub, since the session holds no credential.
+COPY logos-agent/workspace/logos_github.py /usr/local/lib/logos_github.py
+RUN printf '#!/bin/sh\nexec python3 /usr/local/lib/logos_github.py "$@"\n' > /usr/local/bin/logos-github \
+  && chmod 0755 /usr/local/bin/logos-github && chmod 0644 /usr/local/lib/logos_github.py
 
 USER agent
 WORKDIR /workspace

@@ -364,6 +364,28 @@ def _clear_checkout() -> None:
         CHECKOUT.unlink()
 
 
+def _push_remote() -> str:
+    """The remote the session branch lives on.
+
+    ``origin`` when the agent account may push to the repository. When it
+    may not, the runner names the account's own fork, and the branch is
+    pushed there and proposed to the repository from it.
+    """
+    return "push" if os.environ.get("LOGOS_PUSH_REPO_URL", "").strip() else "origin"
+
+
+def _add_push_remote() -> None:
+    url = os.environ.get("LOGOS_PUSH_REPO_URL", "").strip()
+    if url:
+        run(["git", "remote", "add", "push", url], cwd=CHECKOUT, quiet=True)
+
+
+def _pull_request_head(branch: str) -> str:
+    """How the pull request names its head: ``owner:branch`` from a fork."""
+    slug = os.environ.get("LOGOS_PUSH_REPO_SLUG", "").strip()
+    return f"{slug.split('/', 1)[0]}:{branch}" if slug else branch
+
+
 def _rebuild_git_metadata(repo_url: str) -> None:
     """Replace all agent-owned Git metadata before authenticated operations.
 
@@ -380,6 +402,7 @@ def _rebuild_git_metadata(repo_url: str) -> None:
         shutil.rmtree(git_dir)
     run(["git", "init", "--quiet"], cwd=CHECKOUT, quiet=True)
     run(["git", "remote", "add", "origin", repo_url], cwd=CHECKOUT, quiet=True)
+    _add_push_remote()
 
 
 def _remote_default_branch() -> str | None:
@@ -402,7 +425,7 @@ _DEEPEN_STEP = 250
 _MAX_HISTORY_DEPTH = 5000
 
 
-def _deepen_until_merge_base(default: str, base: str) -> None:
+def _deepen_until_merge_base(default: str, base: str, base_remote: str = "origin") -> None:
     """Make `git merge-base origin/<default> HEAD` resolvable, or fail.
 
     A reviewing session is handed a diff against the default branch
@@ -436,7 +459,7 @@ def _deepen_until_merge_base(default: str, base: str) -> None:
         # tracks a single branch, so a bare `fetch --deepen` grows only that
         # one, and a single fetch naming both stops deepening the second line
         # once the first has reached the commits they share.
-        run(["git", "fetch", f"--deepen={_DEEPEN_STEP}", "origin", base], cwd=CHECKOUT)
+        run(["git", "fetch", f"--deepen={_DEEPEN_STEP}", base_remote, base], cwd=CHECKOUT)
         run(
             ["git", "fetch", f"--deepen={_DEEPEN_STEP}", "origin", f"{default}:refs/remotes/origin/{default}"],
             cwd=CHECKOUT,
@@ -484,25 +507,31 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     # the checkout is the code under discussion and there is nothing here to
     # push back to.
     reading = base_branch.startswith("refs/")
+    # Work continued on the session's own branch, when that branch lives on
+    # the agent account's fork rather than on the repository.
+    forked_base = _push_remote() == "push" and base_branch == branch
+    base_remote = "push" if forked_base else "origin"
     cloned = not (CHECKOUT / ".git").is_dir()
     if cloned:
         log(f"cloning {repo_url} at {base_branch}")
         CHECKOUT.parent.mkdir(parents=True, exist_ok=True)
         _clear_checkout()
         clone = ["git", "clone", "--depth", "50"]
-        if not reading:
+        if not reading and not forked_base:
             # A ref is not a branch name; the clone takes the default head
             # and the fetch below moves it to what was asked for.
             clone += ["--branch", base_branch]
         run([*clone, repo_url, str(CHECKOUT)])
+        _add_push_remote()
     else:
         log("reusing existing checkout; rebuilding trusted git metadata")
         _rebuild_git_metadata(repo_url)
-    if reading or not cloned:
-        run(["git", "fetch", "--depth", "50", "origin", base_branch], cwd=CHECKOUT)
+    if reading or not cloned or forked_base:
+        run(["git", "fetch", "--depth", "50", base_remote, base_branch], cwd=CHECKOUT)
         # Discard whatever a previous session left behind: a session starts
         # from the base it was given, never from another session's leftovers.
-        run(["git", "reset", "--hard", "FETCH_HEAD" if reading else f"origin/{base_branch}"], cwd=CHECKOUT)
+        exact = reading or forked_base
+        run(["git", "reset", "--hard", "FETCH_HEAD" if exact else f"origin/{base_branch}"], cwd=CHECKOUT)
         run(["git", "clean", "-fdx"], cwd=CHECKOUT, check=False)
 
     # The task a reviewing agent is given tells it to run
@@ -537,7 +566,7 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     # alone is still a usable working copy, and there is nothing to deepen
     # toward.
     if default_available:
-        _deepen_until_merge_base(default, base_branch)
+        _deepen_until_merge_base(default, base_branch, base_remote)
 
 
 def agent_login() -> str:
@@ -624,7 +653,7 @@ def _prepared_branch_sha() -> str:
 def _remote_branch_sha(branch: str) -> str:
     """Read an exact branch tip, distinguishing absence from a fetch failure."""
     ref = f"refs/heads/{branch}"
-    process = run(["git", "ls-remote", "--exit-code", "origin", ref], cwd=CHECKOUT, check=False, quiet=True)
+    process = run(["git", "ls-remote", "--exit-code", _push_remote(), ref], cwd=CHECKOUT, check=False, quiet=True)
     if process.returncode == 2:
         return ""
     if process.returncode != 0:
@@ -664,13 +693,20 @@ def finalize_checkout(repo_url: str, base_branch: str, branch: str, token: str) 
     # trusted baseline from the remote instead of trusting its local name.
     _rebuild_git_metadata(repo_url)
     _install_git_askpass(token)
-    run(["git", "fetch", "--depth", "50", "origin", baseline], cwd=CHECKOUT)
+    fetched = run(["git", "fetch", "--depth", "50", "origin", baseline], cwd=CHECKOUT, check=False)
+    if fetched.returncode != 0 and _push_remote() == "push":
+        # Continued work on the fork: the prepared commit lives there.
+        run(["git", "fetch", "--depth", "50", "push", baseline], cwd=CHECKOUT)
+    elif fetched.returncode != 0:
+        raise RuntimeError("could not fetch the prepared checkout SHA")
     if _ref_sha("FETCH_HEAD") != baseline:
         raise RuntimeError("the fetched commit does not match the prepared checkout SHA")
     run(["git", "update-ref", f"refs/heads/{branch}", baseline], cwd=CHECKOUT, quiet=True)
     if _remote_branch_sha(branch):
+        # Kept under refs/remotes/origin/ whichever remote holds it: the
+        # lease check reads the published tip from there.
         run(
-            ["git", "fetch", "--depth", "50", "origin", f"{branch}:refs/remotes/origin/{branch}"],
+            ["git", "fetch", "--depth", "50", _push_remote(), f"{branch}:refs/remotes/origin/{branch}"],
             cwd=CHECKOUT,
             quiet=True,
         )
@@ -1257,7 +1293,7 @@ def commit_and_push(branch: str, task: str) -> int:
     log(f"committing {len(files)} changed file(s)")
     run(["git", "commit", "-m", _commit_subject(task)], cwd=CHECKOUT)
     expected = _prepared_branch_sha()
-    run(["git", "push", f"--force-with-lease=refs/heads/{branch}:{expected}", "origin", branch], cwd=CHECKOUT)
+    run(["git", "push", f"--force-with-lease=refs/heads/{branch}:{expected}", _push_remote(), branch], cwd=CHECKOUT)
     return len(files)
 
 
@@ -1323,10 +1359,8 @@ def _closed_issues(closes: str) -> str:
     the change does belongs in the commit subject; why it was made belongs to
     whoever picks it up.
     """
-    number = closes.strip().lstrip("#")
-    if not number.isdigit():
-        return ""
-    return f"closes #{number}"
+    numbers = [part.strip().lstrip("#") for part in closes.split(",")]
+    return "\n".join(f"closes #{number}" for number in numbers if number.isdigit())
 
 
 def _pull_request_body() -> str:
@@ -1345,6 +1379,10 @@ def _pull_request_body() -> str:
             body += f"\n\n```text\n{output}\n```"
         if verification != "passed":
             body += "\n\nDraft: fix the reported failure or unavailable dependencies before requesting review."
+    disclosure = os.environ.get("LOGOS_SESSION_DISCLOSURE", "").strip()
+    if disclosure:
+        # Which model wrote the change, set by the runner for every session.
+        body = f"{body.rstrip()}\n\n{disclosure}".lstrip()
     return body
 
 
@@ -1366,7 +1404,7 @@ def open_pull_request(branch: str, base_branch: str, task: str) -> str | None:
         "--base",
         base_branch,
         "--head",
-        branch,
+        _pull_request_head(branch),
         "--title",
         title,
         # Present rather than absent: `gh` prompts for a body it was
@@ -1394,7 +1432,7 @@ def open_pull_request(branch: str, base_branch: str, task: str) -> str | None:
         # request keeps the first run's words: the one titled "Refuse X" that,
         # after its second round, is the one that serves X.
         existing = run(
-            ["gh", "pr", "view", branch, "--repo", slug, "--json", "number", "url"],
+            ["gh", "pr", "view", _pull_request_head(branch), "--repo", slug, "--json", "number", "url"],
             cwd=CHECKOUT,
             check=False,
             quiet=True,

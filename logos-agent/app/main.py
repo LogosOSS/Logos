@@ -25,6 +25,7 @@ from . import (
     github,
     model_policy,
     pulse,
+    repository_context,
     security_incidents,
     security_scans,
     security_store,
@@ -36,6 +37,7 @@ from .config import settings
 from .schemas import (
     TERMINAL_STATUSES,
     CapacityState,
+    CodingRepository,
     ControlState,
     ControlUpdate,
     EventKind,
@@ -50,7 +52,7 @@ from .schemas import (
     WorkspaceCreate,
 )
 from .security_models import AssessmentAction, IncidentInput, RepositoryInput
-from .sessions import artifact_dir, manager
+from .sessions import artifact_dir, cache_volume_for, manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -349,6 +351,27 @@ async def get_triggers(_: Principal = Depends(require_agent_operator)) -> dict[s
 # --- workspaces -----------------------------------------------------------
 
 
+@app.get("/repositories", response_model=list[CodingRepository], tags=["workspaces"])
+async def list_coding_repositories(_: Principal = Depends(require_agent_operator)) -> list[CodingRepository]:
+    """Linked team repositories a session can be started for."""
+    return [CodingRepository(**_coding_repository_fields(row)) for row in await db.enabled_coding_repositories()]
+
+
+def _coding_repository_fields(row: dict) -> dict:
+    hosts = row.get("agent_egress_hosts") or []
+    if isinstance(hosts, str):
+        hosts = json.loads(hosts)
+    return {
+        "id": int(row["id"]),
+        "team_id": int(row["team_id"]),
+        "repo_slug": str(row["repo_slug"]),
+        "branch": str(row.get("branch") or "main"),
+        "verification_command": row.get("verification_command"),
+        "agent_egress_hosts": [str(host) for host in hosts],
+        "agent_may_comment": bool(row.get("agent_may_comment")),
+    }
+
+
 @app.get("/workspaces", response_model=list[Workspace], tags=["workspaces"])
 async def list_workspaces(_: Principal = Depends(require_agent_operator)) -> list[Workspace]:
     return [Workspace(**row) for row in await db.list_workspaces()]
@@ -387,6 +410,7 @@ async def delete_workspace(workspace_id: int, _: Principal = Depends(require_age
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     await docker_engine.remove_volume(workspace["volume_name"], force=True)
+    await docker_engine.remove_volume(cache_volume_for(workspace), force=True)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -432,15 +456,46 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
     if not policy.allows(body.model):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=policy.refusal(body.model))
 
+    task = body.task
+    target: dict = {}
+    if body.team_repository_id is not None:
+        link = await db.coding_repository(body.team_repository_id)
+        if link is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No linked repository with the coding agent enabled has this id",
+            )
+        if body.deploy_to_dev or body.screenshot_paths:
+            # The dev deployment and its screenshots belong to the platform's
+            # own repository; a linked repository has neither.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Deploys and screenshots are only available for the platform repository",
+            )
+        # The same task a triggered session for this repository gets: the
+        # request, followed by the repository's build command and the
+        # instructions its team wrote.
+        with repository_context.scope(link):
+            task = await conventions.for_task(body.task)
+        target = {
+            "repo_url": link["repo_url"],
+            "repo_slug": link["repo_slug"],
+            "team_repository_id": int(link["id"]),
+            "verification_command": link.get("verification_command"),
+            "repo_base_branch": link.get("branch") or "main",
+        }
+    await _point_workspace_at(workspace, target.get("repo_slug"), target.get("repo_base_branch") or "main")
+
     try:
         session_id = await db.create_session(
             workspace_id=body.workspace_id,
-            task=body.task,
+            task=task,
             model=body.model,
             created_by=principal.username,
             open_pull_request=body.open_pull_request,
             deploy_to_dev=body.deploy_to_dev,
             screenshot_paths=body.screenshot_paths,
+            **target,
         )
     except ValueError as exc:
         # The workspace was deleted between the 404 check above and the
@@ -455,6 +510,26 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
     row = await db.get_session(session_id)
     assert row is not None
     return SessionSummary(**_summary_fields(row))
+
+
+async def _point_workspace_at(workspace: dict, repo_slug: str | None, branch: str) -> None:
+    """Move an idle workspace that worked on another repository to this one.
+
+    The workspace's base branch is what the checkout is reset to. One that
+    last served a different repository would otherwise be prepared from a
+    branch that repository may not have. A workspace with work in flight is
+    left alone: re-pointing it would move the base of that work.
+    """
+    state = await db.workspace_target(int(workspace["id"]))
+    if (state["repo_slug"] or "").lower() == (repo_slug or "").lower():
+        return
+    if state["busy"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This workspace has work in flight for another repository; choose or create another workspace",
+        )
+    if workspace.get("base_branch") != branch:
+        await db.set_workspace_base_branch(int(workspace["id"]), branch)
 
 
 @app.get("/sessions/{session_id}", response_model=SessionSummary, tags=["sessions"])

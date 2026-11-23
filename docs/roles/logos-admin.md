@@ -655,6 +655,24 @@ that is queued or that runs. The results go to the teams as proposals on their
 
 ![Agent Sessions page](/img/roles/logos-admin-agents.png)
 
+### Start a Session
+
+Select **New session** to queue a manual session. In **Repository**, select
+the repository that the agent changes:
+
+- **LogosOSS/Logos (platform repository)** is the default.
+- Each linked team repository with the coding agent enabled shows as
+  `owner/name (branch)`.
+
+For a linked repository, the session works on that repository and its branch.
+**Deploy to the dev environment afterwards** and **Screenshot paths** are
+available only for the platform repository. The session list and the session
+details show the repository of a session on a linked repository.
+
+A Logos Admin also sets the network hosts and the comment permission of each
+linked repository. Edit the repository link on the **Repositories** tab of the
+team ([Agent Sandbox Permissions](app-admin.md#agent-sandbox-permissions)).
+
 ## My Workspace
 
 This page is the developer view of the signed-in user. It shows the teams of

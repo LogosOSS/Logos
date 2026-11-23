@@ -81,6 +81,9 @@ INTERRUPTION_FILE = "interruptions"
 # with it, because the agent is the only one that knows what the change is —
 # and because a commit subject derived from the task reads like the task.
 COMMIT_FILE = "commit.txt"
+# Issues the agent asks its pull request to close, one number per line. The
+# runner keeps only open issues assigned to the agent account.
+CLOSES_FILE = "closes.txt"
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,10 @@ class Settings:
     # injects the model credential — the container sends none of its own.
     # The default is the compose service name of that gateway.
     session_model_url: str = os.getenv("LOGOS_AGENT_SESSION_MODEL_URL", "http://logos-agent-gateway")
+    # The allowlisting HTTPS proxy on the session network (app/egress_proxy).
+    # Sessions of a linked repository reach the hosts an administrator
+    # allowed for it through this address; empty turns the route off.
+    egress_proxy_url: str = os.getenv("LOGOS_AGENT_EGRESS_PROXY_URL", "http://logos-agent-egress-proxy:3128")
     # Shared orchestrator internal secret. Capacity reads present it instead
     # of a Logos key: the scheduler_state payload carries cluster internals
     # (queue depth, lane state) that a user key must not be able to read.

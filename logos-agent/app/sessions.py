@@ -24,11 +24,12 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -38,8 +39,11 @@ from . import (
     controls,
     conventions,
     db,
+    disclosure,
     docker_engine,
+    egress_proxy,
     github,
+    github_broker,
     model_policy,
     repository_context,
     triggers,
@@ -47,7 +51,15 @@ from . import (
 )
 from .artifacts import read_artifact_text
 from .asyncio_tasks import cancel_and_wait
-from .config import INTERRUPTION_FILE, REPLY_DIR, REPLY_FILE, REVIEW_COMMENTS_FILE, REVIEWED_SHA_FILE, settings
+from .config import (
+    CLOSES_FILE,
+    INTERRUPTION_FILE,
+    REPLY_DIR,
+    REPLY_FILE,
+    REVIEW_COMMENTS_FILE,
+    REVIEWED_SHA_FILE,
+    settings,
+)
 from .schemas import TERMINAL_STATUSES, EventKind, SessionStatus
 
 logger = logging.getLogger(__name__)
@@ -68,6 +80,8 @@ LOG_QUEUE_MAX = 2000
 # before Docker stops waiting.
 STAND_DOWN_S = 20.0
 MAINTENANCE_INTERVAL_S = 15.0
+# How often running sessions' GitHub requests are looked for (github_broker).
+GITHUB_BROKER_INTERVAL_S = 3.0
 
 # What the agent phase prints when it wants its spending known — the only
 # channel it has, holding no credential and reaching nothing but the model
@@ -170,6 +184,45 @@ _MAX_ATTEMPTS_PER_REQUEST = 3
 # swept away. It covers the gap between a session being queued into a fresh
 # workspace and being claimed, in which neither is active yet.
 _WORKSPACE_IDLE_GRACE = timedelta(minutes=10)
+
+
+def _footer(session_id: int, session: dict[str, Any] | None) -> str:
+    """The model disclosure for text a session publishes.
+
+    The launch records the model the session was actually driven by; a row
+    from before that record falls back to what the policy resolves now.
+    """
+    model = str((session or {}).get("model") or "").strip() or model_policy.current().resolve(None)
+    return disclosure.footer(model=model, session_id=session_id)
+
+
+def cache_volume_for(workspace: dict[str, Any]) -> str:
+    """The workspace's cache volume: toolchains and downloads kept between its sessions."""
+    return f"logos_agent_cache_{workspace['name']}"
+
+
+def _proxy_url(base: str, session_id: int, token: str) -> str:
+    """The proxy address with the session's credentials in it."""
+    parts = urlsplit(base)
+    netloc = f"session-{session_id}:{quote(token, safe='')}@{parts.hostname}"
+    if parts.port:
+        netloc += f":{parts.port}"
+    return f"{parts.scheme or 'http'}://{netloc}"
+
+
+def _fork_environment(push_repo_slug: str | None) -> dict[str, str]:
+    """The finalizer's view of a fork the session pushes to, if any."""
+    if not push_repo_slug:
+        return {}
+    return {
+        "LOGOS_PUSH_REPO_URL": f"https://github.com/{push_repo_slug}.git",
+        "LOGOS_PUSH_REPO_SLUG": push_repo_slug,
+    }
+
+
+def _uses_repository_sandbox(session: dict[str, Any]) -> bool:
+    """Whether a session works on a linked repository (cache, proxy, GitHub requests)."""
+    return bool(session.get("repo_slug")) and session.get("team_repository_id") is not None
 
 
 def container_name(session_id: int) -> str:
@@ -385,6 +438,7 @@ class SessionManager:
         self._scheduler_task: asyncio.Task | None = None
         self._capacity_watch_task: asyncio.Task | None = None
         self._maintenance_task: asyncio.Task | None = None
+        self._github_broker_task: asyncio.Task | None = None
         self._yield_lock = asyncio.Lock()
         self._capacity_quiet_since: float | None = None
         self._capacity_quiet_sample: tuple = ()
@@ -433,12 +487,14 @@ class SessionManager:
         self._scheduler_task = asyncio.create_task(self._scheduler_loop(), name="agent-scheduler")
         self._capacity_watch_task = asyncio.create_task(self._capacity_watch_loop(), name="agent-capacity-watch")
         self._maintenance_task = asyncio.create_task(self._maintenance_loop(), name="agent-maintenance")
+        self._github_broker_task = asyncio.create_task(self._github_broker_loop(), name="agent-github-broker")
 
     async def stop(self) -> None:
         self._stopping.set()
         await cancel_and_wait(self._scheduler_task)
         await cancel_and_wait(self._capacity_watch_task)
         await cancel_and_wait(self._maintenance_task)
+        await cancel_and_wait(self._github_broker_task)
         await self._stand_down()
         for task in list(self._supervisors.values()):
             task.cancel()
@@ -758,6 +814,51 @@ class SessionManager:
                 await asyncio.wait_for(self._stopping.wait(), timeout=MAINTENANCE_INTERVAL_S)
             except asyncio.TimeoutError:
                 pass
+
+    async def _github_broker_loop(self) -> None:
+        """Answer the GitHub requests of running sessions within seconds.
+
+        Its own loop: an agent waiting for "did my claim go through" should
+        not wait for the maintenance cadence, and a slow GitHub answer must
+        not delay capacity decisions.
+        """
+        while not self._stopping.is_set():
+            try:
+                await self.serve_github_requests(await db.sessions_in_status(SessionStatus.RUNNING))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("answering GitHub requests of sessions failed")
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=GITHUB_BROKER_INTERVAL_S)
+            except asyncio.TimeoutError:
+                pass
+
+    async def serve_github_requests(self, sessions: list[dict[str, Any]]) -> None:
+        """Carry out what the given sessions asked of GitHub (see github_broker)."""
+        for session in sessions:
+            link = session.get("team_repository_id")
+            if link is None or not session.get("repo_slug"):
+                # The platform repository's sessions answer through the
+                # runner's settlement only, as they always have.
+                continue
+            sid = int(session["id"])
+            permissions = await db.sandbox_permissions(int(link))
+
+            async def record(line: str, sid: int = sid) -> None:
+                await db.add_event(sid, EventKind.LOG, {"lines": [line]})
+
+            try:
+                with repository_context.scope(session):
+                    await github_broker.process(
+                        session,
+                        artifacts=artifact_dir(sid),
+                        state=state_dir(sid),
+                        may_comment=bool(permissions["agent_may_comment"]),
+                        record=record,
+                    )
+            except Exception:
+                logger.exception("could not answer the GitHub requests of session %s", sid)
 
     def _observe_capacity(self, reading: capacity.Reading) -> None:
         """Track continuous quiet time without treating pacing as saturation."""
@@ -1303,12 +1404,28 @@ class SessionManager:
         if not policy.allows(session.get("model")):
             await self._settle(sid, exit_code=None, error=policy.refusal(session.get("model")))
             return
+        # What the session will actually be driven by, recorded on the row:
+        # everything it publishes names this model, and "the default" says
+        # nothing once the default has changed.
+        resolved = policy.resolve(session.get("model"))
+        if resolved and resolved != session.get("model"):
+            session = {**session, "model": resolved}
+            try:
+                await db.update_session(sid, model=resolved)
+            except Exception as exc:
+                # Publishing falls back to the policy's default; the launch
+                # does not fail over a record.
+                logger.info("could not record the model of session %s: %s", sid, exc)
 
         container_id: str | None = None
         try:
             await docker_engine.ensure_volume(
                 workspace["volume_name"], labels={"logos.agent.workspace": workspace["name"]}
             )
+            if _uses_repository_sandbox(session):
+                await docker_engine.ensure_volume(
+                    cache_volume_for(workspace), labels={"logos.agent.workspace-cache": workspace["name"]}
+                )
             # The state the runner writes for a session (the pause mark) must
             # reach the child container, and a bind source is resolved on the
             # daemon host — so it is backed by a named volume, whose
@@ -1375,8 +1492,25 @@ class SessionManager:
             # Kept on the row as well as handed over: these are editable,
             # so "the exact prompt this session was given" stops being true
             # the moment somebody edits them. The page reads it from here.
+            sandboxed = _uses_repository_sandbox(session) and session.get("trigger_kind") != "analysis"
+            permissions = (
+                await db.sandbox_permissions(int(session["team_repository_id"]))
+                if sandboxed
+                else {"agent_egress_hosts": [], "agent_may_comment": False}
+            )
+            egress_token = ""
+            if sandboxed and settings.egress_proxy_url:
+                # The session's credential at the egress proxy. Only its hash
+                # is stored; the proxy accepts it while the session runs and
+                # applies the repository's live host list.
+                egress_token = secrets.token_urlsafe(32)
+                await db.update_session(sid, egress_token_hash=egress_proxy.token_hash(egress_token))
             notes = (
-                conventions.GENERIC_ENVIRONMENT_NOTES
+                conventions.repository_environment_notes(
+                    egress_hosts=permissions["agent_egress_hosts"] if egress_token else [],
+                    may_comment=bool(permissions["agent_may_comment"]),
+                    sandboxed=sandboxed,
+                )
                 if session.get("repo_slug") and session.get("trigger_kind") != "analysis"
                 else (await conventions.current()).environment_notes
             )
@@ -1394,6 +1528,8 @@ class SessionManager:
                     continuing=continuing,
                     images=images,
                     notes=notes,
+                    egress_token=egress_token,
+                    sandboxed=sandboxed,
                 ),
                 workspace_volume=workspace["volume_name"],
                 artifact_host_path=artifact_host_path,
@@ -1404,6 +1540,7 @@ class SessionManager:
                 # directory the child mounts read-only.
                 state_host_path=state_host_path,
                 session_id=sid,
+                cache_volume=cache_volume_for(workspace) if sandboxed else None,
             )
             # Boundary: the container exists but has not run. Give it back
             # rather than starting an agent for a cancelled session.
@@ -1535,6 +1672,8 @@ class SessionManager:
         continuing: bool = False,
         images: list[str] | None = None,
         notes: str = "",
+        egress_token: str = "",
+        sandboxed: bool = False,
     ) -> dict[str, str]:
         """The environment the untrusted agent phase runs with.
 
@@ -1589,6 +1728,20 @@ class SessionManager:
             # to anything else in the container that wants it.
             "LOGOS_SESSION_REPLY_FILE": f"/artifacts/{REPLY_FILE}",
         }
+        if sandboxed:
+            # Toolchains and downloads that outlive this session, kept per
+            # workspace on a volume of their own.
+            env["LOGOS_CACHE_DIR"] = "/cache"
+        if egress_token:
+            proxy = _proxy_url(settings.egress_proxy_url, int(session["id"]), egress_token)
+            gateway = urlsplit(settings.session_model_url).hostname or ""
+            # The model gateway is reached directly, as before; everything
+            # else goes through the allowlisting proxy, which refuses hosts
+            # the repository was not granted.
+            bypass = ",".join(host for host in (gateway, "localhost", "127.0.0.1") if host)
+            for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+                env[key] = proxy
+            env["NO_PROXY"] = env["no_proxy"] = bypass
         if model:
             for key in (
                 "ANTHROPIC_MODEL",
@@ -1607,6 +1760,7 @@ class SessionManager:
         env: dict[str, str],
         workspace_volume: str,
         artifact_host_path: str,
+        cache_volume: str | None = None,
     ) -> int | None:
         """Run one trusted one-shot helper container to completion, remove it.
 
@@ -1671,6 +1825,9 @@ class SessionManager:
                     labels={"logos.agent.helper": phase},
                     ssh_known_hosts_host_path=known_hosts_host_path,
                     ssh_key_host_path=ssh_key_host_path,
+                    # Only verification reads the workspace cache, read-only;
+                    # credential-bearing helpers never mount it.
+                    cache_volume=cache_volume if phase == "verify" else None,
                 )
                 helper.container_id = container_id
             finally:
@@ -1739,6 +1896,34 @@ class SessionManager:
         return " / ".join(kept)
 
     @staticmethod
+    async def _push_environment(session: dict[str, Any]) -> dict[str, str]:
+        """Settle where a linked repository's session pushes, before its checkout.
+
+        The repository itself when the agent account may push to it, else the
+        account's own fork. Recorded on the row so that finalization, pull
+        request look-ups and later sessions agree on it.
+        """
+        if (
+            not _uses_repository_sandbox(session)
+            or session.get("no_push")
+            or str(session.get("trigger_kind") or "") == "analysis"
+            or not settings.session_github_token
+        ):
+            return {}
+        with repository_context.scope(session):
+            target = await github.push_target(str(session["repo_slug"]), settings.github_login)
+        fork = "" if target.lower() == str(session["repo_slug"]).lower() else target
+        await db.update_session(int(session["id"]), push_repo_slug=fork or None)
+        session["push_repo_slug"] = fork or None
+        if fork:
+            await db.add_event(
+                int(session["id"]),
+                EventKind.LOG,
+                {"lines": [f"[github] the agent account cannot push to {session['repo_slug']}; using its fork {fork}"]},
+            )
+        return _fork_environment(fork)
+
+    @staticmethod
     async def _continues_earlier_work(session: dict[str, Any], branch: str) -> bool:
         """Whether this session carries on what this workspace was doing.
 
@@ -1797,6 +1982,7 @@ class SessionManager:
             "LOGOS_REPO_URL": session.get("repo_url") or settings.repo_url,
             "LOGOS_REPO_SLUG": session.get("repo_slug") or settings.repo_slug,
             "LOGOS_ARTIFACT_DIR": "/artifacts",
+            **(await self._push_environment(session)),
             # The account the session's commits belong to. The helper
             # configures git with it, and the finalizer refuses to push if
             # the token turns out to be somebody else's.
@@ -1964,6 +2150,7 @@ class SessionManager:
             },
             workspace_volume=workspace["volume_name"],
             artifact_host_path=artifact_host_path,
+            cache_volume=cache_volume_for(workspace) if _uses_repository_sandbox(row) else None,
         )
         output = self._last_helper_output.pop(session_id, "")
         status = "passed" if code == 0 else "failed"
@@ -1982,6 +2169,45 @@ class SessionManager:
             "LOGOS_SESSION_VERIFICATION": status,
             "LOGOS_SESSION_VERIFICATION_OUTPUT": output[-4000:],
         }
+
+    async def _claimed_issues(self, session_id: int, session: dict[str, Any]) -> list[str]:
+        """Issues the agent asks its pull request to close, that are its own to close.
+
+        The agent names them in ``closes.txt``; a name alone is not an
+        authorization, so only open issues currently assigned to the agent
+        account are kept — the ones it was given or claimed through the
+        repository's own process.
+        """
+        try:
+            text = read_artifact_text(artifact_dir(session_id), CLOSES_FILE, limit=4096)
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            logger.info("could not read the issues session %s wants to close: %s", session_id, exc)
+            return []
+        numbers = list(dict.fromkeys(re.findall(r"#?(\d{1,9})\b", text)))[:50]
+        kept: list[str] = []
+        with repository_context.scope(session):
+            for number in numbers:
+                try:
+                    issue = await github.issue_summary(int(number))
+                except github.GitHubError as exc:
+                    logger.info("session %s: could not read #%s: %s", session_id, number, exc)
+                    continue
+                login = settings.github_login.lower()
+                if (
+                    not issue["is_pull_request"]
+                    and issue["state"] == "open"
+                    and login in {assignee.lower() for assignee in issue["assignees"]}
+                ):
+                    kept.append(number)
+                else:
+                    await db.add_event(
+                        session_id,
+                        EventKind.LOG,
+                        {"lines": [f"[github] not closing #{number}: it is not an open issue assigned to {login}"]},
+                    )
+        return kept
 
     async def _finalize(self, session_id: int) -> bool:
         """Phase three: commit, push, and open the pull request, if asked.
@@ -2029,6 +2255,9 @@ class SessionManager:
             number = repository_context.local_ref(str(session.get("trigger_ref") or "")).removeprefix("issue-")
             if number.isdigit():
                 closes = number
+        if session.get("open_pull_request") and _uses_repository_sandbox(session):
+            claimed = await self._claimed_issues(session_id, session)
+            closes = ",".join(dict.fromkeys([*([closes] if closes else []), *claimed]))
         env = {
             "LOGOS_SESSION_PHASE": "finalize",
             "LOGOS_SESSION_ID": str(session_id),
@@ -2047,6 +2276,7 @@ class SessionManager:
             "LOGOS_REPO_URL": session.get("repo_url") or settings.repo_url,
             "LOGOS_REPO_SLUG": session.get("repo_slug") or settings.repo_slug,
             "LOGOS_ARTIFACT_DIR": "/artifacts",
+            **_fork_environment(session.get("push_repo_slug")),
             "LOGOS_AGENT_GITHUB_LOGIN": settings.github_login,
             # Whether this session's work may include CI workflow files. With
             # a separate session token GitHub decides — a token without
@@ -2059,6 +2289,9 @@ class SessionManager:
             # sentence about the request beats a commit titled after the
             # first line of its task.
             "LOGOS_SESSION_SUBJECT": _fallback_subject(session),
+            # The model disclosure the pull request description ends with;
+            # written by the runner so the agent cannot change it.
+            "LOGOS_SESSION_DISCLOSURE": _footer(session_id, session),
         }
         if session.get("repo_slug"):
             env["LOGOS_VERIFICATION_MODE"] = "repository"
@@ -2557,6 +2790,14 @@ class SessionManager:
 
     async def _settle(self, session_id: int, *, exit_code: int | None, error: str | None) -> None:
         """Record the outcome of a finished session and clean up after it."""
+        # A request written just before the agent exited — a release note on
+        # an issue it gave up — is still carried out.
+        try:
+            finished = await db.get_session(session_id)
+            if finished and finished.get("status") == SessionStatus.RUNNING.value:
+                await self.serve_github_requests([finished])
+        except Exception as exc:
+            logger.info("could not look for last GitHub requests of session %s: %s", session_id, exc)
         if exit_code == 0 and not error:
             # A clean agent exit is not yet a finished session: the agent
             # phase carried no GitHub credential, so the trusted finalizer
@@ -2792,6 +3033,7 @@ class SessionManager:
             # would leave a volume nothing knows about.
             try:
                 await docker_engine.remove_volume(str(volume), force=True)
+                await docker_engine.remove_volume(cache_volume_for(workspace), force=True)
             except Exception as exc:
                 logger.warning("could not remove the volume of finished workspace '%s': %s", name, exc)
                 continue
@@ -2900,7 +3142,9 @@ class SessionManager:
         try:
             url = ""
             if not await github.pull_review_contains(number, marker):
-                url = await github.create_pull_review(number, review_body, comments, commit_id=commit_id)
+                url = await github.create_pull_review(
+                    number, review_body, comments, commit_id=commit_id, footer=_footer(session_id, session)
+                )
         except github.GitHubError as exc:
             if exc.status == 422:
                 logger.info("session %s: GitHub refused the inline comments, posting them as text: %s", session_id, exc)
@@ -3040,7 +3284,7 @@ class SessionManager:
                         logger.info("session %s found its answer chunk %s already at %s", session_id, index, target)
                         continue
                 chunk += "\n\n" + marker
-                url = await self._send_reply(target, chunk)
+                url = await self._send_reply(target, chunk, footer=_footer(session_id, session))
         except Exception as exc:
             # Counted, not given up on: the next scheduler pass resumes
             # after the chunks whose marks it finds, and tries again until
@@ -3285,7 +3529,7 @@ class SessionManager:
                 logger.info("session %s found its answer to comment %s already in the thread", session_id, comment_id)
                 continue
             body = self._truncate_reply(per_comment[comment_id]) + "\n\n" + marker
-            url = await github.reply_to_review_comment(number, comment_id, body)
+            url = await github.reply_to_review_comment(number, comment_id, body, footer=_footer(session_id, session))
             state["replied"].append(comment_id)
             self._write_review_reply_state(state_path, state)
             await db.add_event(session_id, EventKind.PULL_REQUEST, {"url": url, "reply": True, "comment": comment_id})
@@ -3305,7 +3549,9 @@ class SessionManager:
                 self._write_review_reply_state(state_path, state)
                 logger.info("session %s found its summary already on pull request %s", session_id, number)
             else:
-                url = await github.post_issue_comment(number, self._truncate_reply(summary) + "\n\n" + marker)
+                url = await github.post_issue_comment(
+                    number, self._truncate_reply(summary) + "\n\n" + marker, footer=_footer(session_id, session)
+                )
                 state["summary_posted"] = True
                 self._write_review_reply_state(state_path, state)
                 await db.add_event(session_id, EventKind.PULL_REQUEST, {"url": url, "reply": True})
@@ -3413,7 +3659,7 @@ class SessionManager:
         path.write_text(json.dumps(state))
 
     @staticmethod
-    async def _send_reply(target: str, body: str) -> str:
+    async def _send_reply(target: str, body: str, *, footer: str) -> str:
         """Post one answer where its question was asked.
 
         ``target`` is what the trigger recorded: ``issue:<n>`` for a thread,
@@ -3423,10 +3669,10 @@ class SessionManager:
         """
         kind, _, rest = target.partition(":")
         if kind == "issue":
-            return await github.post_issue_comment(int(rest), body)
+            return await github.post_issue_comment(int(rest), body, footer=footer)
         if kind == "review_comment":
             number, _, comment_id = rest.partition(":")
-            return await github.reply_to_review_comment(int(number), int(comment_id), body)
+            return await github.reply_to_review_comment(int(number), int(comment_id), body, footer=footer)
         raise ValueError(f"unknown reply target '{target}'")
 
     def _read_result(self, session_id: int) -> dict[str, Any]:

@@ -414,14 +414,126 @@ async def get_workspace(workspace_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+_CODING_REPOSITORY_COLUMNS = """
+    id, team_id, repo_url, repo_slug, branch, agent_instructions, verification_command,
+    agent_egress_hosts, agent_may_comment
+"""
+
+
 async def enabled_coding_repositories() -> list[dict[str, Any]]:
     """Linked repositories whose teams opted into coding work."""
     async with sessionmaker()() as db:
-        rows = (await db.execute(text("""
-            SELECT id, repo_url, repo_slug, branch, agent_instructions, verification_command
-              FROM team_repositories WHERE agent_enabled = TRUE ORDER BY id
-        """))).mappings()
+        rows = (
+            await db.execute(
+                text(
+                    f"SELECT {_CODING_REPOSITORY_COLUMNS} FROM team_repositories WHERE agent_enabled = TRUE ORDER BY id"
+                )
+            )
+        ).mappings()
         return [dict(row) for row in rows]
+
+
+async def coding_repository(link_id: int) -> dict[str, Any] | None:
+    """One linked repository with coding work enabled, or None."""
+    async with sessionmaker()() as db:
+        row = (
+            (
+                await db.execute(
+                    text(
+                        f"SELECT {_CODING_REPOSITORY_COLUMNS} FROM team_repositories "
+                        "WHERE id = :id AND agent_enabled = TRUE"
+                    ),
+                    {"id": link_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    return dict(row) if row else None
+
+
+async def sandbox_permissions(link_id: int | None) -> dict[str, Any]:
+    """What sessions of a linked repository may do beyond the default sandbox.
+
+    Read live rather than copied onto the session: a permission an
+    administrator withdraws must stop applying to work that is already
+    queued or running.
+    """
+    none: dict[str, Any] = {"agent_egress_hosts": [], "agent_may_comment": False}
+    if link_id is None:
+        return none
+    async with sessionmaker()() as db:
+        row = (
+            (
+                await db.execute(
+                    text("""
+                    SELECT agent_egress_hosts, agent_may_comment
+                      FROM team_repositories WHERE id = :id AND agent_enabled = TRUE
+                    """),
+                    {"id": link_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    if row is None:
+        return none
+    hosts = row["agent_egress_hosts"]
+    if isinstance(hosts, str):
+        hosts = json.loads(hosts)
+    return {
+        "agent_egress_hosts": [str(host) for host in hosts or []],
+        "agent_may_comment": bool(row["agent_may_comment"]),
+    }
+
+
+async def egress_grant(session_id: int) -> dict[str, Any] | None:
+    """What the egress proxy needs to decide about one session's connection."""
+    async with sessionmaker()() as db:
+        row = (
+            (
+                await db.execute(
+                    text("""
+                    SELECT s.status, s.egress_token_hash, tr.agent_egress_hosts
+                      FROM agent_sessions s
+                      LEFT JOIN team_repositories tr
+                        ON tr.id = s.team_repository_id AND tr.agent_enabled = TRUE
+                     WHERE s.id = :id
+                    """),
+                    {"id": session_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    if row is None:
+        return None
+    hosts = row["agent_egress_hosts"] or []
+    if isinstance(hosts, str):
+        hosts = json.loads(hosts)
+    return {"status": row["status"], "token_hash": row["egress_token_hash"], "hosts": [str(h) for h in hosts]}
+
+
+async def workspace_target(workspace_id: int) -> dict[str, Any]:
+    """Which repository a workspace last worked on, and whether it is busy."""
+    async with sessionmaker()() as db:
+        row = (
+            (
+                await db.execute(
+                    text("""
+                    SELECT (SELECT s.repo_slug FROM agent_sessions s WHERE s.workspace_id = :id
+                             ORDER BY s.id DESC LIMIT 1) AS repo_slug,
+                           EXISTS (SELECT 1 FROM agent_sessions s WHERE s.workspace_id = :id
+                                    AND s.status IN ('queued', 'starting', 'running', 'paused', 'finalizing'))
+                             AS busy
+                    """),
+                    {"id": workspace_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    return {"repo_slug": row["repo_slug"] if row else None, "busy": bool(row and row["busy"])}
 
 
 async def repository_comments_scanned_at(repository_id: int) -> datetime | None:
@@ -492,7 +604,9 @@ async def disposable_workspaces(idle_before: datetime) -> list[dict[str, Any]]:
                     text("""
                     SELECT w.id, w.name, w.volume_name, w.base_branch,
                            (SELECT s.repo_slug FROM agent_sessions s WHERE s.workspace_id = w.id
-                            ORDER BY s.id DESC LIMIT 1) AS repo_slug
+                            ORDER BY s.id DESC LIMIT 1) AS repo_slug,
+                           (SELECT s.push_repo_slug FROM agent_sessions s WHERE s.workspace_id = w.id
+                            ORDER BY s.id DESC LIMIT 1) AS push_repo_slug
                       FROM agent_workspaces w
                      WHERE w.ephemeral = TRUE
                        AND w.archived_at IS NULL
@@ -1475,6 +1589,14 @@ async def update_session(session_id: int, **fields: Any) -> None:
         # The text this session was handed, as opposed to the text sessions
         # are handed now — the instructions are editable.
         "environment_notes",
+        # The model the session is driven by, once the launch has resolved
+        # "no model named" to the actual default.
+        "model",
+        # The hash of the token the session's egress proxy credentials carry.
+        "egress_token_hash",
+        # Where the session's branch is pushed when the agent account cannot
+        # push to the repository itself: its own fork.
+        "push_repo_slug",
         # The commit whose checks somebody still has to look at, and whether
         # anybody still owes that.
         "checks_sha",

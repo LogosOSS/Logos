@@ -304,6 +304,19 @@
       <h2 class="card__title">Start a session</h2>
 
       <label class="field">
+        <span class="field__label">Repository</span>
+        <app-select
+          [options]="repositoryOptions()"
+          [value]="formRepositoryId() !== null ? String(formRepositoryId()) : null"
+          (valueChange)="selectRepositoryById($event ?? '')"
+          ariaLabel="Repository"
+        />
+        <span class="field__hint">
+          Linked team repositories appear here when a team enables the coding agent for them.
+        </span>
+      </label>
+
+      <label class="field">
         <span class="field__label">Workspace</span>
         @if (workspaceOptions().length > 0) {
           <app-select
@@ -380,6 +393,7 @@
           placeholder="/dashboard /models"
           [ngModel]="formScreenshots()"
           (ngModelChange)="formScreenshots.set($event)"
+          [disabled]="linkedRepositorySelected()"
         />
         <span class="field__hint">Pages on the dev environment to capture after deploying.</span>
       </label>
@@ -398,10 +412,16 @@
             type="checkbox"
             [ngModel]="formDeploy()"
             (ngModelChange)="formDeploy.set($event)"
+            [disabled]="linkedRepositorySelected()"
           />
           <span>Deploy to the dev environment afterwards</span>
         </label>
       </div>
+      @if (linkedRepositorySelected()) {
+        <p class="field__hint">
+          Deploy to dev and screenshots are available only for the platform repository.
+        </p>
+      }
 
       @if (formError(); as message) {
         <div class="alert alert--error" role="alert">{{ message }}</div>
@@ -476,6 +496,11 @@
             <span class="session__workspace" title="The working copy this session runs in">
               <i class="pi pi-folder" aria-hidden="true"></i> {{ session.workspace_name }}
             </span>
+            @if (session.repo_slug) {
+              <span class="session__workspace" title="The repository this session works on">
+                <i class="pi pi-github" aria-hidden="true"></i> {{ session.repo_slug }}
+              </span>
+            }
           }
           <span class="session__timings">
             <span class="session__timing" title="Time waiting before the session started">
@@ -578,6 +603,20 @@
                 }
               </dd>
             </div>
+            @if (session.trigger_kind !== 'analysis' && session.repo_slug) {
+              <div>
+                <dt>Repository</dt>
+                <dd>
+                  <a
+                    [href]="'https://github.com/' + session.repo_slug"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {{ session.repo_slug }}
+                  </a>
+                </dd>
+              </div>
+            }
             <div>
               <dt>Branch</dt>
               <dd>{{ session.branch_name ?? '—' }}</dd>

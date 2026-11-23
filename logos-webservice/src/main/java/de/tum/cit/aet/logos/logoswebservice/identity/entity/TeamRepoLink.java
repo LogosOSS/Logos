@@ -1,6 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.identity.entity;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.hibernate.annotations.JdbcTypeCode;
@@ -52,6 +53,15 @@ public class TeamRepoLink {
     @Column(columnDefinition = "text")
     private String verificationCommand;
 
+    /** HTTPS hosts that agent sessions for this repository may reach through the egress proxy. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "jsonb", nullable = false)
+    private List<String> agentEgressHosts = new ArrayList<>();
+
+    /** Whether the agent may comment on issues and pull requests while a session runs. */
+    @Column(nullable = false)
+    private boolean agentMayComment;
+
     @Column(nullable = false)
     private Instant createdAt;
 
@@ -64,6 +74,10 @@ public class TeamRepoLink {
     public void setAgentEnabled(boolean value) { agentEnabled = value; }
     public void setAgentInstructions(String value) { agentInstructions = value; }
     public void setVerificationCommand(String value) { verificationCommand = value; }
+    public List<String> getAgentEgressHosts() { return agentEgressHosts == null ? List.of() : agentEgressHosts; }
+    public void setAgentEgressHosts(List<String> value) { agentEgressHosts = value == null ? new ArrayList<>() : new ArrayList<>(value); }
+    public boolean isAgentMayComment() { return agentMayComment; }
+    public void setAgentMayComment(boolean value) { agentMayComment = value; }
 
     public Integer getId() { return id; }
     public Integer getTeamId() { return teamId; }
