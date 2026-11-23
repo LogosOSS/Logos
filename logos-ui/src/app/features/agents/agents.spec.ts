@@ -10,9 +10,11 @@ import {
   AgentControls,
   AgentInstructions,
   AgentModels,
+  AgentRepository,
   AgentSession,
   AgentTriggers,
   AgentWorkspace,
+  CreateSessionRequest,
   isActive,
 } from '../../shared/models/agent.model';
 import { Agents, scaleSlotCounts } from './agents';
@@ -73,6 +75,28 @@ class FakeAgentService {
   sessionCalls = 0;
   capacityCalls = 0;
   instructionBodies: Record<string, unknown>[] = [];
+  repositories: AgentRepository[] = [];
+  repositoriesFail = false;
+  workspaces: AgentWorkspace[] = [];
+  createBodies: CreateSessionRequest[] = [];
+
+  async getRepositories(): Promise<AgentRepository[]> {
+    if (this.repositoriesFail) throw new Error('not found');
+    return this.repositories;
+  }
+
+  async createSession(body: CreateSessionRequest): Promise<AgentSession> {
+    this.createBodies.push(body);
+    return makeSession({ id: 99, status: 'queued', task: body.task });
+  }
+
+  async getEvents(): Promise<[]> {
+    return [];
+  }
+
+  async *streamEvents(): AsyncGenerator<never> {
+    // No events: the tests read the request, not the transcript.
+  }
 
   async getInstructions(): Promise<AgentInstructions> {
     return {
@@ -101,7 +125,7 @@ class FakeAgentService {
   }
 
   async getWorkspaces(): Promise<AgentWorkspace[]> {
-    return [];
+    return this.workspaces;
   }
 
   async getCapacity(): Promise<AgentCapacity> {
@@ -373,6 +397,99 @@ describe('Agents', () => {
           makeSession({ trigger_kind: 'issue', repo_slug: 'LogosOSS/Logos' }),
         ),
       ).toBeNull();
+    });
+  });
+
+  describe('the repository of a new session', () => {
+    const linked: AgentRepository = {
+      id: 5,
+      team_id: 2,
+      repo_slug: 'ls1intum/artemis',
+      branch: 'develop',
+      verification_command: './gradlew test',
+      agent_egress_hosts: ['github.com'],
+      agent_may_comment: false,
+    };
+    const workspace: AgentWorkspace = {
+      id: 3,
+      name: 'feature-work',
+      base_branch: 'main',
+      volume_name: 'agent-ws-3',
+      created_by: 'tester',
+      created_at: '2026-09-02T10:00:00Z',
+      active_sessions: 0,
+    };
+
+    beforeEach(async () => {
+      agentService.repositories = [linked];
+      agentService.workspaces = [workspace];
+      await component.refresh();
+      component.formTask.set('Fix the failing build on develop');
+    });
+
+    it('offers the platform repository first, then the enabled linked repositories', () => {
+      expect(component.repositoryOptions()).toEqual([
+        { value: '', label: 'LogosOSS/Logos (platform repository)' },
+        { value: '5', label: 'ls1intum/artemis (develop)' },
+      ]);
+      expect(component.formRepositoryId()).toBeNull();
+    });
+
+    it('keeps only the platform repository when the list cannot be read', async () => {
+      agentService.repositoriesFail = true;
+      await component.refresh();
+      expect(component.repositoryOptions()).toEqual([
+        { value: '', label: 'LogosOSS/Logos (platform repository)' },
+      ]);
+      expect(component.error()).toBeNull();
+    });
+
+    it('sends no linked repository for the platform repository', async () => {
+      component.formDeploy.set(true);
+      component.formScreenshots.set('/dashboard /models');
+      await component.submit();
+      expect(agentService.createBodies[0]).toEqual(expect.objectContaining({
+        workspace_id: 3,
+        team_repository_id: null,
+        deploy_to_dev: true,
+        screenshot_paths: ['/dashboard', '/models'],
+      }));
+    });
+
+    it('turns off deploy and screenshots for a linked repository', async () => {
+      component.formDeploy.set(true);
+      component.formScreenshots.set('/dashboard');
+      component.selectRepositoryById('5');
+      expect(component.linkedRepositorySelected()).toBe(true);
+      expect(component.formDeploy()).toBe(false);
+      expect(component.formScreenshots()).toBe('');
+      await component.submit();
+      expect(agentService.createBodies[0]).toEqual(expect.objectContaining({
+        team_repository_id: 5,
+        deploy_to_dev: false,
+        screenshot_paths: [],
+      }));
+    });
+
+    it('falls back to the platform repository when the selected one is gone', async () => {
+      component.selectRepositoryById('5');
+      agentService.repositories = [];
+      await component.refresh();
+      expect(component.formRepositoryId()).toBeNull();
+    });
+
+    it('shows the repository of a session on a linked repository', async () => {
+      agentService.sessions = [
+        makeSession({ id: 7, status: 'running', repo_slug: 'ls1intum/artemis' }),
+        makeSession({ id: 8, status: 'running', workspace_name: 'other-work', repo_slug: null }),
+      ];
+      await component.refresh();
+      fixture.detectChanges();
+      const rows = Array.from(
+        (fixture.nativeElement as HTMLElement).querySelectorAll('.session'),
+      ).map((row) => row.textContent ?? '');
+      expect(rows[0]).toContain('ls1intum/artemis');
+      expect(rows[1]).not.toContain('ls1intum/artemis');
     });
   });
 

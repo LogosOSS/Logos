@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import attachments, repository_context
+from . import attachments, disclosure, repository_context
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -1021,6 +1021,55 @@ async def fetch_image(url: str, *, max_bytes: int) -> tuple[bytes, str] | None:
     return None
 
 
+FORK_READY_TIMEOUT_S = 120.0
+
+
+async def push_target(repo_slug: str, login: str) -> str:
+    """Where the agent account pushes work on ``repo_slug``.
+
+    The repository itself when the account may push to it. Otherwise the
+    account's own fork, created when it does not exist yet: the way an
+    outside contributor proposes a change. A repository of the fork's name
+    that is not a fork of ``repo_slug`` is refused rather than pushed to.
+    """
+    repository = await _get(f"/repos/{repo_slug}")
+    if (repository.get("permissions") or {}).get("push"):
+        return str(repository.get("full_name") or repo_slug)
+    upstream = str(repository.get("full_name") or repo_slug)
+    name = upstream.split("/", 1)[1]
+    try:
+        fork = await _get(f"/repos/{login}/{name}")
+    except GitHubError as exc:
+        if exc.status != 404:
+            raise
+        fork = await _create_fork(upstream)
+    parent = str((fork.get("parent") or {}).get("full_name") or "")
+    if not fork.get("fork") or parent.lower() != upstream.lower():
+        raise GitHubError(f"{login}/{name} exists and is not a fork of {upstream}; refusing to push there")
+    return str(fork["full_name"])
+
+
+async def _create_fork(upstream: str) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{_API}/repos/{upstream}/forks", headers=_headers(), json={"default_branch_only": True}
+        )
+    if response.status_code not in (200, 202):
+        raise GitHubError(f"forking {upstream} failed ({response.status_code}): {response.text[:200]}")
+    full_name = str(response.json().get("full_name") or "")
+    if not full_name:
+        raise GitHubError(f"forking {upstream} returned no repository name")
+    # GitHub creates forks asynchronously: wait until the fork answers.
+    deadline = asyncio.get_running_loop().time() + FORK_READY_TIMEOUT_S
+    while True:
+        try:
+            return await _get(f"/repos/{full_name}")
+        except GitHubError as exc:
+            if exc.status != 404 or asyncio.get_running_loop().time() > deadline:
+                raise
+        await asyncio.sleep(3.0)
+
+
 async def open_pull_request_for(branch: str) -> dict[str, Any] | None:
     """The open pull request whose head is this branch, if there is one.
 
@@ -1031,7 +1080,9 @@ async def open_pull_request_for(branch: str) -> dict[str, Any] | None:
     """
     if not branch:
         return None
-    owner = _repo_slug().split("/", 1)[0]
+    # From a fork, the head is named by the fork's owner.
+    target = repository_context.current() or {}
+    owner = str(target.get("push_repo_slug") or _repo_slug()).split("/", 1)[0]
     try:
         payload = await _get(
             f"/repos/{_repo_slug()}/pulls",
@@ -1327,17 +1378,93 @@ async def react(path: str, content: str = REACTION_QUEUED) -> bool:
     raise GitHubError(f"reaction on {path} failed ({response.status_code}): {response.text[:200]}")
 
 
-async def post_issue_comment(number: int, body: str) -> str:
-    """Answer in an issue or pull-request thread. Returns the comment url."""
+async def post_issue_comment(number: int, body: str, *, footer: str) -> str:
+    """Answer in an issue or pull-request thread. Returns the comment url.
+
+    ``footer`` is the model disclosure every agent text carries; it is
+    required so that no caller can publish without it.
+    """
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             f"{_API}/repos/{_repo_slug()}/issues/{number}/comments",
             headers=_headers(),
-            json={"body": body},
+            json={"body": disclosure.disclose(body, footer)},
         )
     if response.status_code != 201:
         raise GitHubError(f"comment on #{number} failed ({response.status_code}): {response.text[:200]}")
     return str(response.json().get("html_url") or "")
+
+
+def _login_of(item: Any) -> str:
+    return str(((item or {}).get("user") or {}).get("login") or "")
+
+
+async def issue_summary(number: int) -> dict[str, Any]:
+    """An issue's state, kind and assignees, without its conversation."""
+    issue = await _get(f"/repos/{_repo_slug()}/issues/{number}")
+    return {
+        "number": int(issue.get("number") or number),
+        "state": str(issue.get("state") or ""),
+        "is_pull_request": "pull_request" in issue,
+        "assignees": [str(a.get("login") or "") for a in issue.get("assignees") or []],
+    }
+
+
+async def issue_snapshot(number: int, *, max_body_chars: int = 20000) -> dict[str, Any]:
+    """An issue or pull request of the repository and its conversation.
+
+    What a session asks for before it acts on an issue: its state, labels
+    and assignees, and what has been said under it. Bodies are bounded so
+    that one long thread cannot fill the session's response file.
+    """
+    issue = await _get(f"/repos/{_repo_slug()}/issues/{number}")
+    comments, incomplete = await _get_all_bounded(f"/repos/{_repo_slug()}/issues/{number}/comments")
+    return {
+        "number": int(issue.get("number") or number),
+        "title": str(issue.get("title") or ""),
+        "state": str(issue.get("state") or ""),
+        "is_pull_request": "pull_request" in issue,
+        "author": _login_of(issue),
+        "labels": [str(label.get("name") or "") for label in issue.get("labels") or []],
+        "assignees": [str(a.get("login") or "") for a in issue.get("assignees") or []],
+        "body": str(issue.get("body") or "")[:max_body_chars],
+        "comments": [
+            {
+                "author": _login_of(comment),
+                "created_at": str(comment.get("created_at") or ""),
+                "body": str(comment.get("body") or "")[:max_body_chars],
+            }
+            for comment in comments[-100:]
+        ],
+        "comments_incomplete": incomplete or len(comments) > 100,
+    }
+
+
+async def list_issues(
+    *, labels: list[str], state: str, assignee: str | None, page: int, per_page: int = 100
+) -> list[dict[str, Any]]:
+    """One page of the repository's issues and pull requests, newest first."""
+    params: dict[str, Any] = {"state": state, "per_page": per_page, "page": page}
+    if labels:
+        params["labels"] = ",".join(labels)
+    if assignee:
+        params["assignee"] = assignee
+    payload = await _get(f"/repos/{_repo_slug()}/issues", params)
+    if not isinstance(payload, list):
+        raise GitHubError("the issue listing did not answer with a list")
+    return [
+        {
+            "number": int(item.get("number") or 0),
+            "title": str(item.get("title") or ""),
+            "state": str(item.get("state") or ""),
+            "is_pull_request": "pull_request" in item,
+            "labels": [str(label.get("name") or "") for label in item.get("labels") or []],
+            "assignees": [str(a.get("login") or "") for a in item.get("assignees") or []],
+            "comments": int(item.get("comments") or 0),
+            "updated_at": str(item.get("updated_at") or ""),
+        }
+        for item in payload
+    ]
 
 
 async def issue_comment_contains(number: int, marker: str) -> bool:
@@ -1357,7 +1484,7 @@ async def issue_comment_contains(number: int, marker: str) -> bool:
     return any(_is_our_marker(c, marker) for c in comments)
 
 
-async def reply_to_review_comment(number: int, comment_id: int, body: str) -> str:
+async def reply_to_review_comment(number: int, comment_id: int, body: str, *, footer: str) -> str:
     """Answer inside an inline review thread. Returns the comment url.
 
     The reply lands in the thread the question was asked in, which is where
@@ -1368,7 +1495,7 @@ async def reply_to_review_comment(number: int, comment_id: int, body: str) -> st
         response = await client.post(
             f"{_API}/repos/{_repo_slug()}/pulls/{number}/comments/{comment_id}/replies",
             headers=_headers(),
-            json={"body": body},
+            json={"body": disclosure.disclose(body, footer)},
         )
     if response.status_code != 201:
         raise GitHubError(
@@ -1377,7 +1504,9 @@ async def reply_to_review_comment(number: int, comment_id: int, body: str) -> st
     return str(response.json().get("html_url") or "")
 
 
-async def create_pull_review(number: int, body: str, comments: list[dict[str, Any]], *, commit_id: str) -> str:
+async def create_pull_review(
+    number: int, body: str, comments: list[dict[str, Any]], *, commit_id: str, footer: str
+) -> str:
     """Post a review that only comments: a summary and its inline comments.
 
     Each comment is ``{"path", "line", "body"}`` on the new side of the
@@ -1393,9 +1522,17 @@ async def create_pull_review(number: int, body: str, comments: list[dict[str, An
             json={
                 "commit_id": commit_id,
                 "event": "COMMENT",
-                "body": body,
+                "body": disclosure.disclose(body, footer),
+                # Each inline comment is read on its own in the diff view, so
+                # each one names the model too.
                 "comments": [
-                    {"path": c["path"], "line": c["line"], "side": "RIGHT", "body": c["body"]} for c in comments
+                    {
+                        "path": c["path"],
+                        "line": c["line"],
+                        "side": "RIGHT",
+                        "body": disclosure.disclose(c["body"], footer),
+                    }
+                    for c in comments
                 ],
             },
         )

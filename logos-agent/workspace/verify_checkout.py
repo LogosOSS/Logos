@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 
 CHECKOUT = Path("/workspace/repo")
 CACHE = Path("/opt/logos-verification")
+WORKSPACE_CACHE = Path("/cache")
 SERVICES = ("logos-webservice", "logos-ui")
 COMMAND_TIMEOUT = 1800
 
@@ -209,6 +210,10 @@ def verify_repository(command: str, checkout: Path, tree: str) -> None:
             local_maven = home / ".m2" / "repository"
             local_maven.parent.mkdir()
             shutil.copytree(maven_cache, local_maven)
+        if WORKSPACE_CACHE.is_dir():
+            # The workspace cache of a linked repository, mounted read-only:
+            # toolchains and dependencies the agent phase downloaded.
+            environment["LOGOS_CACHE_DIR"] = str(WORKSPACE_CACHE)
         _run(["/bin/sh", "-ec", command], exported, environment)
 
 
