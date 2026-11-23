@@ -593,6 +593,110 @@ If you change the global arguments, then every model of the node is measured aga
 in the next calibration window. The worker uses a new GPU poll interval after the next start.
 You can save the settings if the worker is offline. The worker applies them when it connects.
 
+## Deployments
+
+The page **Deployments** deploys Logos from Logos. It is for Logos admins only. A
+deployer on each host takes the orders. A Logos deploys only itself: use the page
+of Prod to deploy Prod, the page of Dev to deploy Dev, and the page of Test to
+deploy Test. See [Deployments from Logos](../deployment.md#deployments-from-logos)
+to install the deployers.
+
+If no deployer is set up, the page says so, and the button **Deploy** is off.
+
+![Deployments page](/img/roles/logos-admin-deployments.png)
+
+The page has these parts:
+
+* **Current deployment.** The deployment that runs now, with one row for each
+  node. Each row shows how far the node is: Pull, Drain, Swap and Verify. A node
+  is *Waiting for the core*, *Waiting for the deployer*, *Running*,
+  *Succeeded*, *Unchanged*, *Rolled back*, *Failed* or *Not started*. Click
+  **View details** to open the page of the deployment. Click **Abandon deployment**
+  to stop the next steps of a deployment that this Logos started. Without a
+  running deployment, the part shows the last one.
+* **New deployment.** Enter an image tag and click **Deploy**.
+  Prod shows a red banner. When you click **Deploy** on Prod, a dialog asks you
+  to confirm: click **Deploy** in the dialog to start, or **Cancel** to not
+  start. Dev and Test start at once. The button is off, with a reason, when the
+  core deployer is not online or a deployment runs.
+* **History.** The latest 50 deployments, each with its number, the person who
+  started it and the time. Filter them by status. Click a row to open its page.
+* **Page of a deployment.** Click a row of the history, or **View details**, to open
+  it. The page shows the status, the events of each node and, for a
+  failed part, the end of the container log. A running deployment updates itself.
+* **Deployers.** The deployers of this Logos, when each was seen, and its
+  version. A worker appears in this list when its node manager asks Logos for
+  orders for the first time. It uses its worker key. Click **Add a core
+  deployer** to make the core deployer. Logos shows its key once.
+
+### Start a deployment
+
+1. Enter an image tag in **Image tag**. The list suggests `latest` and the tags
+   of the last deployments.
+2. Click **Deploy**.
+3. On a protected Logos, a dialog asks you to confirm. Click **Deploy** in the
+   dialog to start. Click **Cancel** to not start.
+4. Logos opens the page of the new deployment.
+
+![Confirmation dialog of a protected Logos](/img/roles/logos-admin-deployments-confirm.png)
+
+A protected Logos shows the red banner **Deployments on this Logos affect live
+users**. It accepts only `latest` and release versions such as `1.0.2`. Prod is
+protected. Dev and Test are not, so they start at once.
+
+### Follow a deployment
+
+The core goes first. If the core succeeded, all GPU workers start. The
+orchestrator keeps only one worker out of service at a time. The bar of a node
+has four parts: **Pull**, **Drain**, **Swap** and **Verify**. The bar shows how
+far the node is.
+
+![Current deployment with a worker that drains](/img/roles/logos-admin-deployments-running.png)
+
+In the figure, the core succeeded. The worker waits in the part **Drain** until
+the requests of its node end. The page updates itself.
+
+Click **Abandon deployment** to stop the steps that did not start. A host that
+got its order finishes it. A node that runs the new image keeps it.
+
+### Read the result
+
+Click a row of the history, or **View details**, to open the page of a
+deployment. The page shows the events of each node in the order that they
+happened.
+
+![Page of a deployment that succeeded](/img/roles/logos-admin-deployment-detail.png)
+
+If the node takes its compose file from the image of the tag, the first event
+names the file. The next events show the pull, the drain, the swap and the
+check. For a worker, the events also show how long the node waited for its
+requests.
+
+If the new container of a worker does not come up, the node manager starts the
+previous version again. The node then has the status **Rolled back**. The page
+shows the reason and the end of the container log of the new container.
+
+![Page of a deployment that was rolled back](/img/roles/logos-admin-deployment-rolled-back.png)
+
+If the core fails, the workers do not start. They have the status **Not
+started**. A core deployment has no automatic rollback. Fix the cause and deploy
+again.
+
+### Add a core deployer
+
+1. In the part **Deployers**, click **Add a core deployer**.
+2. Enter the name of the core host.
+3. Click **Make the deployer**.
+4. Copy the key. Logos shows the key one time.
+5. Click **I have copied the key**.
+
+![Dialog with the key of a new core deployer](/img/roles/logos-admin-deployer-key.png)
+
+Store the key as the secret `LOGOS_DEPLOYER_KEY` of the core host. If you lose a
+key, click **New key** for the deployer. The old key stops at once. A worker
+needs no key. It appears in the list when its node manager asks Logos for
+orders.
+
 ## Policies
 
 Policies are the rules that decide which models a team or an API key can use.

@@ -90,6 +90,9 @@ jobs:
             | to_entries[]
             | "\(.key)=\(.value | @json)"
           ' >> .env
+          echo "NODE_MANAGER_COMPOSE_FROM_TAG=true" >> .env
+          echo "NODE_MANAGER_SELF_UPDATE=true" >> .env
+          echo "LOGOS_DEPLOYMENTS_PROTECTED=false" >> .env
 
           python3 scripts/write-deployment-secrets.py "$DEPLOY_TARGET" >> .env
         env:
@@ -101,6 +104,7 @@ jobs:
           DEPLOY_SECRET_LOGOS_AGENT_SESSION_GITHUB_TOKEN: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_AGENT_SESSION_GITHUB_TOKEN || '' }}
           DEPLOY_SECRET_LOGOS_API_KEY: ${{ matrix.compose-file != './docker-compose.yaml' && secrets.LOGOS_API_KEY || '' }}
           DEPLOY_SECRET_LOGOS_DB_PASSWORD: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_DB_PASSWORD || '' }}
+          DEPLOY_SECRET_LOGOS_DEPLOYER_KEY: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_DEPLOYER_KEY || '' }}
           DEPLOY_SECRET_LOGOS_INTERNAL_SECRET: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_INTERNAL_SECRET || '' }}
           DEPLOY_SECRET_LOGOS_REDIS_PASSWORD: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_REDIS_PASSWORD || '' }}
           DEPLOY_SECRET_LOGOS_REPO_CREDENTIALS_KEY: ${{ matrix.compose-file == './docker-compose.yaml' && secrets.LOGOS_REPO_CREDENTIALS_KEY || '' }}
@@ -206,3 +210,29 @@ jobs:
             if grep -q '^COMPOSE_PROFILES=.*agent' ${{ matrix.base-path }}/.env; then
               docker pull "ghcr.io/logososs/logos-agent-workspace:$WORKSPACE_IMAGE_TAG"
             fi
+
+      # The condition of a step cannot read a secret, so this step turns "the host has a key" into an output. The
+      # output says true or false. It never holds the key.
+      - name: Check for a deployer key
+        id: deployer-key
+        env:
+          HAS_KEY: ${{ secrets.LOGOS_DEPLOYER_KEY != '' }}
+        run: echo "present=$HAS_KEY" >> "$GITHUB_OUTPUT"
+
+      # The deployer of a core host obeys Logos. This workflow is the way to deploy when Logos cannot deploy itself, so it
+      # also installs or updates the deployer, and it does so after the services: a problem with the deployer must not
+      # stop the deployment. It runs only on a host that has a deployer key (the secret LOGOS_DEPLOYER_KEY): without the
+      # key the deployer would take no orders. The deployer gets the tag that this workflow deploys.
+      # NODE_MANAGER_IMAGE_TAG, set in the environment, keeps it on another tag.
+      - name: Install or update the deployer
+        if: ${{ steps.deployer-key.outputs.present == 'true' }}
+        uses: ./.github/actions/install-core-deployer
+        with:
+          host: ${{ vars.VM_HOST }}
+          username: ${{ vars.VM_USERNAME }}
+          key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          proxy-host: ${{ vars.DEPLOYMENT_GATEWAY_HOST }}
+          proxy-username: ${{ vars.DEPLOYMENT_GATEWAY_USER }}
+          proxy-key: ${{ secrets.DEPLOYMENT_GATEWAY_SSH_KEY }}
+          proxy-port: ${{ vars.DEPLOYMENT_GATEWAY_PORT }}
+          base-path: ${{ matrix.base-path }}
