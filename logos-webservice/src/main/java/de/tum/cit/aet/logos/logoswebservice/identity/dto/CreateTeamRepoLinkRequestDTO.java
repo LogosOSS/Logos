@@ -6,6 +6,7 @@ public record CreateTeamRepoLinkRequestDTO(
     String repoUrl,
     String branch,
     List<String> paths,
+    Boolean automaticWorkflowAnalysis,
     Boolean agentEnabled,
     String agentInstructions,
     String verificationCommand,

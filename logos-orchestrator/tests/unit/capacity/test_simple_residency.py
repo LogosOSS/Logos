@@ -9,6 +9,7 @@ import pytest
 from logos import CapacityPlanner
 from logos.queue import Priority, PriorityQueueManager
 from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
+from logos.sdi.models import ModelProfile
 
 from .test_best_first_scenarios import _lane
 from .test_queued_residency_fairness import _MockProvider, _planner, _profile, _two_gpu_snapshot
@@ -222,3 +223,76 @@ def test_simple_fifo_across_workers_does_not_follow_provider_iteration_order():
     planner._facade.get_oldest_queued_at_by_model_name = lambda model, pid: {"old": 10, "new": 20}[model]
     actions = planner._compute_simple_cycle_actions([1, 2], set(), {}, {})
     assert [(a.model_name, a.provider_id) for a in actions if a.action == "load"] == [("old", 2), ("new", 1)]
+
+
+@pytest.mark.parametrize(
+    "engine,mode,device",
+    [
+        ("mlx", "metal", {"kind": "metal", "device_id": "0", "extra": {"unified_memory": True}}),
+        (
+            "vllm",
+            "cuda",
+            {"kind": "nvidia", "device_id": "GPU-a", "extra": {"index": 0}, "health": "degraded"},
+        ),
+    ],
+)
+def test_ordinary_cold_load_uses_memory_readings_with_empty_restore_pool(engine, mode, device):
+    model = "org/model"
+    profile = ModelProfile(model_name=model, engine=engine, residency_source="calibrated", loaded_vram_mb=20_000)
+    provider = _MockProvider(
+        1, "worker", profiles={model: profile}, capabilities=[model], available_vram_mb=48_000, queue_depths={model: 1}
+    )
+    planner = _simple(provider, arrivals={model: 10})
+    planner._registry.peek_runtime_snapshot.return_value = {
+        "runtime": {
+            "lanes": [],
+            "devices": {
+                "mode": mode,
+                "devices": [{**device, "memory_total_mb": 49_000, "memory_free_mb": 48_000}],
+            },
+            "restore_gpu_pool_by_model": {model: []},
+        }
+    }
+    actions = planner._compute_simple_cycle_actions([1], set(), {}, {})
+    admitted = planner._validate_vram_budget(actions)
+    assert [(a.action, a.model_name, a.restore, a.params["gpu_devices"]) for a in admitted] == [
+        ("load", model, False, "0")
+    ]
+
+
+@pytest.mark.parametrize("pool,free1,expected", [([0, 1], 49136, ["1"]), ([0], 49136, []), ([0, 1], 20945, [])])
+async def test_simple_cycle_dispatches_one_feasible_saved_lane_for_waiting_requests(pool, free1, expected):
+    from unittest.mock import AsyncMock
+
+    model, lane_id = "org/embed", "planner-org_embed"
+    provider = _MockProvider(
+        1,
+        "worker",
+        profiles={model: _profile(20000)},
+        capabilities=[model],
+        available_vram_mb=20945 + free1,
+        queue_depths={model: 14},
+    )
+    fixture = _simple(provider, arrivals={model: 10})
+    planner = CapacityPlanner(
+        logosnode_facade=fixture._facade, logosnode_registry=fixture._registry, demand_tracker=fixture._demand
+    )
+    planner._residency_policy = "simple"
+    snapshot = _two_gpu_snapshot(free0=20945, free1=free1, total=49136)
+    runtime = snapshot["runtime"]
+    runtime["restore_gpu_pool_by_model"] = {model: pool}
+    runtime["startup_gmu_by_model"] = {model: {"gpu_memory_utilization": 0.5}}
+    for device in runtime["devices"]["devices"]:
+        device["name"] = "Card A"
+    planner._registry.peek_runtime_snapshot.return_value = snapshot
+    planner.apply_lane_lock(
+        1,
+        lane_id,
+        True,
+        1,
+        {lane_id: {"lane_config": {"model": model, "gpu_devices": "0", "lane_id": lane_id}, "sleeping": False}},
+    )
+    planner._execute_action_with_confirmation = AsyncMock(return_value=True)
+    await planner._run_cycle()
+    calls = [c.args[0] for c in planner._execute_action_with_confirmation.await_args_list]
+    assert [(a.lane_id, a.params["gpu_devices"]) for a in calls] == [(lane_id, gpu) for gpu in expected]

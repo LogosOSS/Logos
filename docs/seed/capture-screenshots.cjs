@@ -544,6 +544,18 @@ const SHOTS = [
     },
   },
   {
+    file: "roles/logos-admin-agents-messages.png",
+    user: ADMIN,
+    full: true,
+    needs: AGENT_API,
+    go: async (p) => {
+      await p.goto(BASE + "/agents");
+      const session = p.locator("li.session").filter({ hasText: "Fix the flaky login spec" });
+      await session.locator(".session__head").click();
+      await session.locator(".agent-message code").waitFor();
+    },
+  },
+  {
     file: "roles/logos-admin-agents-new-session.png",
     user: ADMIN,
     full: true,

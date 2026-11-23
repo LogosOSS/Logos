@@ -676,6 +676,4 @@ websockets==17.4 \
     --hash=sha256:f5b1d315a615cec81a79e2ce3a94221dc5c23e7fd4012897085d3b5e5a5638d0 \
     --hash=sha256:f5f06f59e19aa0770aaf651ce91c196fa620b35aed49a7e6c36e7335f3f83db7 \
     --hash=sha256:fcac44d917672ad6257ad64b80b5168306f168a78cab5c0612e4c699caed18cf
-    # via
-    #   -r worker-requirements.txt
-    #   logos-e2e (pyproject.toml)
+    # via -r worker-requirements.txt

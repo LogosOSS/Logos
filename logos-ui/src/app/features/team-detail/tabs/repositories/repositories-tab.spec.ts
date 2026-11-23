@@ -73,6 +73,7 @@ describe('RepositoriesTabComponent', () => {
     component.formPaths.set('src/ai, services/llm');
     await component.submitForm();
     expect(createTeamRepository).toHaveBeenCalledWith(7, {
+      automatic_workflow_analysis: true,
       agent_enabled: false,
       agent_instructions: '',
       verification_command: '',
@@ -86,10 +87,12 @@ describe('RepositoriesTabComponent', () => {
   it('updates an existing link', async () => {
     const component = setup();
     component.openEdit(sample);
+    component.formAutomaticAnalysis.set(false);
     component.formBranch.set('release');
     component.formPaths.set('');
     await component.submitForm();
     expect(updateTeamRepository).toHaveBeenCalledWith(7, 11, {
+      automatic_workflow_analysis: false,
       agent_enabled: false,
       agent_instructions: '',
       verification_command: '',

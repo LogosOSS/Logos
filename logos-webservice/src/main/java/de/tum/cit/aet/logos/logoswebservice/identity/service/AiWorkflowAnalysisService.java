@@ -12,7 +12,6 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -432,60 +431,50 @@ public class AiWorkflowAnalysisService {
      * row in {@code queued} status.
      */
     public Map<String, Object> queueAgentAnalysis(int teamId, int linkId) {
-        TeamRepoLink link = requireLink(teamId, linkId);
-        Map<String, Object> queued = queueUnlessInFlight(teamId, link);
-        if (queued == null) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                "An analysis of " + link.getRepoSlug() + " is already queued or running");
+        if (!teamExists(teamId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Team not found");
         }
-        return queued;
+        return tx.execute(status -> {
+            TeamRepoLink link = repoLinkRepository.findByIdAndTeamIdForUpdate(linkId, teamId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Repository link not found"));
+            try {
+                return queue(teamId, link, false);
+            } catch (DuplicateKeyException e) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "An analysis of " + link.getRepoSlug() + " is already queued or running");
+            }
+        });
     }
 
-    /**
-     * Queue an analysis of every linked repository that has none in flight.
-     * A manual run always analyses: it is how an admin gets fresh results
-     * after the analysis task itself changed, even on an unchanged commit.
-     */
+    /** Each repository gets its own transaction and the same lock as a settings edit. */
     public Map<String, Object> queueAllAgentAnalyses() {
-        List<String> queued = new ArrayList<>();
-        List<String> inFlight = new ArrayList<>();
-        for (TeamRepoLink link : repoLinkRepository.findAll(Sort.by("id"))) {
-            if (queueUnlessInFlight(link.getTeamId(), link) == null) {
-                inFlight.add(link.getRepoSlug());
+        int queued = 0;
+        int inFlight = 0;
+        int skipped = 0;
+        for (int id : jdbc.queryForList("SELECT id FROM team_repositories ORDER BY id", Integer.class)) {
+            try {
+                boolean added = Boolean.TRUE.equals(tx.execute(status ->
+                    repoLinkRepository.lockForAutomaticAnalysis(id).map(link -> {
+                        queue(link.getTeamId(), link, true);
+                        return true;
+                    }).orElse(false)));
+                if (added) queued++;
+                else skipped++;
             }
-            else {
-                queued.add(link.getRepoSlug());
+            catch (DuplicateKeyException e) {
+                inFlight++;
             }
         }
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("queued", queued.size());
-        result.put("already_in_flight", inFlight.size());
-        result.put("message", queued.size() + " analyses queued, " + inFlight.size() + " already in flight");
-        return result;
+        return Map.of("queued", queued, "already_in_flight", inFlight, "skipped", skipped,
+            "message", queued + " analyses queued, " + inFlight + " already in flight, " + skipped + " skipped");
     }
 
-    /**
-     * Queue one analysis in its own transaction, or return null when one is
-     * already queued or running. The queued analysis row goes in first: the
-     * partial unique index on in-flight analyses (Liquibase 050) admits one per
-     * repository across this, the bulk path and the agent runner's nightly
-     * pass, and a refused insert rolls back before any session exists.
-     */
-    private Map<String, Object> queueUnlessInFlight(int teamId, TeamRepoLink link) {
-        try {
-            return tx.execute(status -> queue(teamId, link));
-        }
-        catch (DuplicateKeyException e) {
-            return null;
-        }
-    }
-
-    private Map<String, Object> queue(int teamId, TeamRepoLink link) {
+    private Map<String, Object> queue(int teamId, TeamRepoLink link, boolean automatic) {
         Integer analysisId = jdbc.queryForObject("""
-            INSERT INTO ai_workflow_analyses (team_id, team_repository_id, status, source, started_at)
-            VALUES (?, ?, 'queued', 'agent', CURRENT_TIMESTAMP)
+            INSERT INTO ai_workflow_analyses (team_id, team_repository_id, status, source, started_at, automatically_queued)
+            VALUES (?, ?, 'queued', 'agent', CURRENT_TIMESTAMP, ?)
             RETURNING id
-            """, Integer.class, teamId, link.getId());
+            """, Integer.class, teamId, link.getId(), automatic);
         int workspaceId = ensureAnalysisWorkspace(teamId, link);
 
         String pathsLabel = formatPaths(link.getPaths());

@@ -4,7 +4,6 @@
 .agents {
   padding: 36px 32px 48px;
   width: 100%;
-  max-width: 1200px;
   min-width: 0;
   box-sizing: border-box;
 
@@ -478,7 +477,8 @@
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas:
     'task chevron'
-    'meta chevron';
+    'meta chevron'
+    'memory chevron';
   align-items: center;
   gap: 6px 12px;
   flex: 1 1 auto;
@@ -516,6 +516,28 @@
   min-width: 0;
   font-size: var(--font-size-sm);
   color: rgb(var(--color-typography-700));
+}
+
+.session__memory {
+  grid-area: memory;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  color: rgb(var(--color-typography-700));
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+
+  strong {
+    color: rgb(var(--color-typography-0));
+    font-weight: var(--font-weight-medium);
+  }
+}
+
+.session__activity {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
 }
 
 .session__tag {
@@ -714,6 +736,8 @@
 .prompt__text {
   margin: 8px 0;
 }
+
+.diagnostics .transcript { margin-top: 8px; }
 
 .screenshots {
   display: grid;

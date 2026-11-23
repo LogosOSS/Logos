@@ -95,4 +95,7 @@
     <include file="liquibase/changelog/088_agent_unrestricted_egress.xml"/>
     <include file="liquibase/changelog/089_deployments.xml"/>
     <include file="liquibase/changelog/090_agent_session_memory.xml"/>
+    <include file="liquibase/changelog/091_agent_observed_memory.xml"/>
+    <include file="liquibase/changelog/092_automatic_workflow_analysis.xml"/>
+    <include file="liquibase/changelog/093_agent_activity.xml"/>
 </databaseChangeLog>

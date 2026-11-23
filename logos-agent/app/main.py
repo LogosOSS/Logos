@@ -6,13 +6,15 @@ health check requires a Keycloak token carrying the operator role.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
 
 from . import (
@@ -24,6 +26,7 @@ from . import (
     docker_engine,
     github,
     memory_budget,
+    memory_usage,
     model_policy,
     pulse,
     repository_context,
@@ -47,6 +50,7 @@ from .schemas import (
     QueueMove,
     SessionCreate,
     SessionEvent,
+    SessionMessages,
     SessionStatus,
     SessionSummary,
     Workspace,
@@ -341,7 +345,7 @@ async def update_controls(body: ControlUpdate, principal: Principal = Depends(re
     if body.clear_session_memory_mb or body.session_memory_mb is not None:
         memory = None if body.clear_session_memory_mb else body.session_memory_mb
         state = await controls.set_session_memory(memory_mb=memory, by=principal.username)
-        logger.info("%s set the memory per session to %s", principal.username, f"{memory} MB" if memory else "default")
+        logger.info("%s set the memory per session to %s", principal.username, f"{memory} MiB" if memory else "default")
     # A pause takes effect on the next pass anyway; running one now means the
     # operator sees it happen instead of waiting a tick for it.
     manager.request_scheduler_pass()
@@ -610,6 +614,8 @@ async def retry_session(session_id: int, principal: Principal = Depends(require_
             team_repository_id=row.get("team_repository_id"),
             verification_command=row.get("verification_command"),
             repo_base_branch=row.get("repo_base_branch"),
+            automatic_analysis=False if row.get("trigger_kind") == "analysis" else None,
+            retry_analysis_session_id=session_id if row.get("trigger_kind") == "analysis" else None,
             point_workspace_at=resumption_base(row),
         )
     except ValueError as exc:
@@ -648,6 +654,30 @@ async def move_session_in_queue(
         )
     logger.info("session %s moved %s in the queue by %s", session_id, body.move, principal.username)
     return SessionSummary(**_summary_fields(moved))
+
+
+@app.get("/sessions/{session_id}/messages", response_model=SessionMessages, tags=["sessions"])
+async def session_messages(
+    session_id: int, request: Request, response: Response, _: Principal = Depends(require_agent_operator)
+) -> SessionMessages | Response:
+    if await db.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        data = await asyncio.to_thread(read_artifact, artifact_dir(session_id), "messages.json", limit=512 * 1024)
+    except FileNotFoundError:
+        return SessionMessages()
+    except OSError:
+        raise HTTPException(status_code=503, detail="Session messages could not be read")
+    etag = '"' + hashlib.sha256(data).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache", "Vary": "Authorization"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    try:
+        messages = SessionMessages.model_validate_json(data, strict=True)
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Session messages could not be read")
+    response.headers.update(headers)
+    return messages
 
 
 @app.get("/sessions/{session_id}/events", response_model=list[SessionEvent], tags=["sessions"])
@@ -774,7 +804,13 @@ async def session_pull_request(session_id: int, _: Principal = Depends(require_a
 def _summary_fields(row: dict) -> dict:
     """Project a database row onto the response model's fields."""
     keys = set(SessionSummary.model_fields)
-    return {k: v for k, v in row.items() if k in keys}
+    fields = {k: v for k, v in row.items() if k in keys}
+    live = memory_usage.current(row["id"], row["status"])
+    fields["memory_current_bytes"] = live
+    if live is not None:
+        # The sampler may commit a newer peak after this request's SELECT.
+        fields["memory_peak_bytes"] = max(live, row.get("memory_peak_bytes") or 0)
+    return fields
 
 
 @app.post("/security/scans/trivy", tags=["security"])

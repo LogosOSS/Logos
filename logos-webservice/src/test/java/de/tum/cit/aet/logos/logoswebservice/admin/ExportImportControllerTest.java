@@ -217,6 +217,14 @@ class ExportImportControllerTest {
         java.util.Map<String, Object> tableData =
             (java.util.Map<String, Object>) exportEnvelope.get("result");
 
+        @SuppressWarnings("unchecked")
+        var repositories = (java.util.List<java.util.Map<String, Object>>) tableData.get("team_repositories");
+        for (var repo : repositories) {
+            int id = ((Number) repo.get("id")).intValue();
+            if (id == repoA) repo.remove("automatic_workflow_analysis");
+            if (id == repoB) repo.put("automatic_workflow_analysis", false);
+        }
+
         // Imported analysis for repo A reuses the local session id that still
         // analyzes repo B — must be cleared on import.
         @SuppressWarnings("unchecked")
@@ -256,6 +264,13 @@ class ExportImportControllerTest {
                 .content(importBody))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.result").value("Import successful"));
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
+            "SELECT automatic_workflow_analysis FROM team_repositories WHERE id = ?", Boolean.class, repoA)).isTrue();
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
+            "SELECT automatic_workflow_analysis FROM team_repositories WHERE id = ?", Boolean.class, repoB)).isFalse();
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
+            "SELECT automatically_queued FROM ai_workflow_analyses WHERE id = 9002", Boolean.class)).isFalse();
 
         Integer restoredB = jdbc.queryForObject(
             "SELECT team_repository_id FROM agent_sessions WHERE id = ?", Integer.class, sessionId);

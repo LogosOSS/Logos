@@ -548,12 +548,21 @@ async def wait_container(container_id: str, timeout_s: int) -> int | None:
         return None
 
 
-async def list_managed_containers() -> list[dict[str, Any]]:
+async def container_memory_usage(container_id: str) -> int | None:
+    """Bytes charged to the Linux memory cgroup, including file cache."""
+    response = await _request(
+        "GET", f"/containers/{container_id}/stats", params={"stream": "false", "one-shot": "true"}, timeout=2
+    )
+    usage = (response.json().get("memory_stats") or {}).get("usage")
+    return usage if type(usage) is int and usage >= 0 else None
+
+
+async def list_managed_containers(*, all_states: bool = True) -> list[dict[str, Any]]:
     """Every container this service owns, including ones it has forgotten.
 
     Used on startup to reconcile: a restart of the runner must not orphan
     running sessions, and must not leave dead ones marked running.
     """
     filters = json.dumps({"label": ["logos.agent.managed=true"]})
-    response = await _request("GET", "/containers/json", params={"all": "true", "filters": filters})
+    response = await _request("GET", "/containers/json", params={"all": str(all_states).lower(), "filters": filters})
     return response.json()

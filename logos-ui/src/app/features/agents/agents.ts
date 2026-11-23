@@ -22,12 +22,14 @@ import {
   AgentRepository,
   AgentSession,
   AgentSessionStatus,
+  SessionMessages,
   AgentTriggers,
   AgentWorkspace,
   isActive,
 } from '../../shared/models/agent.model';
 import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
 import { ErrorMessageComponent } from '../../shared/components/error-message/error-message';
+import { SessionMessagesComponent } from './session-messages';
 
 /** How often the list and the open session are refreshed while work is live. */
 const POLL_MS = 4000;
@@ -74,7 +76,7 @@ export function scaleSlotCounts(parts: number[], limit: number): number[] {
 @Component({
   selector: 'app-agents',
   standalone: true,
-  imports: [CommonModule, FormsModule, SelectComponent, ErrorMessageComponent, RouterLink],
+  imports: [CommonModule, FormsModule, SelectComponent, ErrorMessageComponent, RouterLink, SessionMessagesComponent],
   templateUrl: './agents.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './agents.scss',
@@ -89,6 +91,22 @@ export class Agents implements OnInit {
 
   /** The template binds a numeric workspace id to the select's string value. */
   readonly String = String;
+  readonly isActive = isActive;
+  private lastSessionRequest = signal(0);
+  private refreshSequence = 0;
+  private appliedSequence = 0;
+  private readonly mib = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+
+  formatRam(bytes: number | null | undefined): string {
+    if (bytes == null) return 'Unavailable';
+    const value = bytes / 1024 ** 2;
+    return value > 0 && value < 0.1 ? '<0.1 MiB' : this.mib.format(value) + ' MiB';
+  }
+
+  liveRam(session: AgentSession): number | null {
+    // Expire the last response if polling stalls while the page stays open.
+    return this.now() - this.lastSessionRequest() < 3 * POLL_MS ? session.memory_current_bytes ?? null : null;
+  }
 
   // ── data ─────────────────────────────────────────────────────────────────
   sessions = signal<AgentSession[]>([]);
@@ -107,6 +125,11 @@ export class Agents implements OnInit {
   // ── selected session ─────────────────────────────────────────────────────
   selectedId = signal<number | null>(null);
   events = signal<AgentEvent[]>([]);
+  messageSnapshot = signal<SessionMessages | null>(null);
+  messageError = signal(false);
+  private messageRequest: object | null = null;
+  private messageReadAt = 0;
+  private messagesFinal = false;
   private lastEventId = 0;
 
   selected = computed(() => {
@@ -317,10 +340,15 @@ export class Agents implements OnInit {
   async refresh(options: { quiet?: boolean } = {}): Promise<void> {
     if (!options.quiet) this.loading.set(true);
     try {
+      const sequence = ++this.refreshSequence;
+      const requestedAt = Date.now();
       const [sessions, workspaces] = await Promise.all([
         this.agentService.getSessions(),
         this.agentService.getWorkspaces(),
       ]);
+      if (sequence < this.appliedSequence) return;
+      this.appliedSequence = sequence;
+      this.lastSessionRequest.set(requestedAt);
       this.sessions.set(sessions);
       this.workspaces.set(workspaces);
       this.error.set(null);
@@ -329,7 +357,7 @@ export class Agents implements OnInit {
       }
       await this.loadCapacity();
       if (!options.quiet) await this.loadModelsAndTriggers();
-      if (this.selectedId() !== null) await this.loadEvents();
+      if (this.selectedId() !== null) await Promise.all([this.loadEvents(), this.loadMessages()]);
     } catch {
       this.error.set('Could not reach the agent runner.');
     } finally {
@@ -388,7 +416,7 @@ export class Agents implements OnInit {
   });
 
   /**
-   * Set the memory of each session started from now on, in MB. An empty
+   * Set the memory of each session started from now on, in MiB. An empty
    * field goes back to the deployment's default. Sessions already running
    * keep the memory they were started with.
    */
@@ -402,7 +430,7 @@ export class Agents implements OnInit {
       const parsed = Number(trimmed);
       if (!Number.isFinite(parsed) || parsed < 512) {
         this.memoryDraft.set('');
-        this.error.set('The memory per session must be at least 512 MB.');
+        this.error.set('The memory per session must be at least 512 MiB.');
         return;
       }
       body = { session_memory_mb: Math.round(parsed) };
@@ -492,6 +520,11 @@ export class Agents implements OnInit {
 
   // ── session selection ────────────────────────────────────────────────────
   async select(session: AgentSession): Promise<void> {
+    this.messageRequest = null;
+    this.messageReadAt = 0;
+    this.messagesFinal = false;
+    this.messageSnapshot.set(null);
+    this.messageError.set(false);
     if (this.selectedId() === session.id) {
       this.selectedId.set(null);
       this.events.set([]);
@@ -504,7 +537,7 @@ export class Agents implements OnInit {
     this.lastEventId = 0;
     this.stopStream();
     this.resetScreenshots();
-    await this.loadEvents();
+    await Promise.all([this.loadEvents(), this.loadMessages()]);
     // The load is asynchronous, and the selection may have moved on while
     // it ran. Opening the stream anyway would leave a connection nobody
     // holds the handle to — untracked, unabortable, and read by the server
@@ -540,6 +573,7 @@ export class Agents implements OnInit {
           this.lastEventId = event.id;
           this.events.update((existing) => [...existing, event]);
           if (event.kind === 'screenshot') void this.loadScreenshots();
+          if (event.kind === 'log' && Date.now() - this.messageReadAt >= 500) void this.loadMessages();
         }
       } catch {
         // Aborted, refused, or dropped: the poll keeps the page correct, so
@@ -713,6 +747,28 @@ export class Agents implements OnInit {
       void this.loadScreenshots();
     } catch {
       /* transient; the next poll retries */
+    }
+  }
+
+  private async loadMessages(): Promise<void> {
+    const id = this.selectedId();
+    if (id === null || this.messageRequest || this.messagesFinal) return;
+    const session = this.selected();
+    const terminal = !!session && !isActive(session.status);
+    const request = {};
+    this.messageRequest = request;
+    this.messageReadAt = Date.now();
+    try {
+      const snapshot = await this.agentService.getMessages(id);
+      if (this.messageRequest === request) {
+        this.messageSnapshot.set(snapshot);
+        this.messagesFinal = terminal;
+        this.messageError.set(false);
+      }
+    } catch {
+      if (this.messageRequest === request) this.messageError.set(true);
+    } finally {
+      if (this.messageRequest === request) this.messageRequest = null;
     }
   }
 
@@ -902,7 +958,7 @@ export class Agents implements OnInit {
     this.formModel.set(name || null);
   }
 
-  /** Queue an analysis of every linked team repository, regardless of commit. */
+  /** Queue an analysis of linked team repositories with automatic analysis enabled. */
   async analyzeAllRepositories(): Promise<void> {
     if (this.analyzingAll()) return;
     this.analyzingAll.set(true);
@@ -962,6 +1018,23 @@ export class Agents implements OnInit {
 
   finishedAgo(session: AgentSession): string {
     return session.finished_at ? this.elapsed(session.finished_at) : '—';
+  }
+
+  reportAge(session: AgentSession): string {
+    return session.progress_reported_at ? this.elapsed(session.progress_reported_at) : '—';
+  }
+
+  progressEta(session: AgentSession): string {
+    const percent = session.progress_percent;
+    const atReport = session.progress_active_s;
+    if (!percent || percent >= 100 || atReport == null || atReport <= 0 ||
+        (session.status !== 'running' && session.status !== 'paused')) return '';
+    const currentInterval = session.active_since && session.status === 'running'
+      ? Math.max(0, (this.now() - Date.parse(session.active_since)) / 1000) : 0;
+    const since = Math.max(0, (session.active_seconds ?? 0) + currentInterval - atReport);
+    const remaining = atReport * (100 - percent) / percent - since;
+    if (remaining <= 0 || since >= 2 * 600) return 'Awaiting updated estimate';
+    return `About ${Math.ceil(remaining / 60)} min of active work left`;
   }
 
   private elapsed(start: string, end: string | null = null): string {

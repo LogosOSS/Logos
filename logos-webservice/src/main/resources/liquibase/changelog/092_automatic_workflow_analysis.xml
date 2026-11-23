@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="092-automatic-workflow-analysis" author="LogosOSS">
+        <sql>
+            ALTER TABLE team_repositories ADD COLUMN automatic_workflow_analysis BOOLEAN NOT NULL DEFAULT TRUE;
+            ALTER TABLE ai_workflow_analyses ADD COLUMN automatically_queued BOOLEAN NOT NULL DEFAULT FALSE;
+            UPDATE ai_workflow_analyses a SET automatically_queued = TRUE
+              FROM agent_sessions s WHERE s.id = a.agent_session_id
+               AND s.team_repository_id = a.team_repository_id AND s.trigger_kind = 'analysis'
+               AND s.created_by = 'logos-agent (analysis)' AND s.status = 'queued';
+        </sql>
+        <rollback>
+            <sql>
+                ALTER TABLE ai_workflow_analyses DROP COLUMN automatically_queued;
+                ALTER TABLE team_repositories DROP COLUMN automatic_workflow_analysis;
+            </sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>
