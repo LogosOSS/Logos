@@ -114,6 +114,41 @@ class TestDefaultModel:
         assert "Name one" in policy.refusal(None)
         assert policy.allows("Llama-3-70B")
 
+    def test_without_configuration_the_most_powerful_alias_is_the_default(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, default_model=""))
+        policy = model_policy.evaluate(
+            [
+                deployment("Qwen3-8B", "logosnode"),
+                deployment("Qwen3.8-27B", "logosnode", aliases="local-most-powerful"),
+            ]
+        )
+        assert policy.default_model == "local-most-powerful"
+        assert policy.allows(None)
+        assert policy.canonical(policy.resolve(None)) == "Qwen3.8-27B"
+        # Capacity is read on the model the alias points at, not on every lane.
+        assert policy.lane(policy.resolve(None)) == policy.lane("Qwen3.8-27B")
+
+    def test_the_alias_of_a_cloud_model_is_no_default(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, default_model=""))
+        policy = model_policy.evaluate(
+            [
+                deployment("Qwen3-8B", "logosnode"),
+                deployment("Llama-3-70B", "logosnode"),
+                deployment("gpt-4o", "azure", aliases="local-most-powerful"),
+            ]
+        )
+        assert policy.default_model == ""
+
+    def test_a_configured_default_wins_over_the_alias(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, default_model="Qwen3-8B"))
+        policy = model_policy.evaluate(
+            [
+                deployment("Qwen3-8B", "logosnode"),
+                deployment("Qwen3.8-27B", "logosnode", aliases="local-most-powerful"),
+            ]
+        )
+        assert policy.default_model == "Qwen3-8B"
+
     def test_a_configured_default_wins(self, monkeypatch):
         monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, default_model="Llama-3-70B"))
         policy = model_policy.evaluate(
