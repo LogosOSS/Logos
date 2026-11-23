@@ -248,9 +248,19 @@ class ControlState(BaseModel):
     max_parallel: int
     max_parallel_override: int | None = None
     max_parallel_configured: int
-    # What the host's memory budget allows, or null without a budget. The
-    # ceiling in force never exceeds it.
-    max_parallel_memory: int | None = None
+    # The most sessions that may run at once with the current memory per
+    # session: what the host's memory budget holds, within the configured
+    # cap. The ceiling in force never exceeds it; an operator can lower it.
+    max_parallel_available: int = 0
+    # The memory limit of a session started now, and the deployment's default.
+    session_memory_mb: int = 0
+    session_memory_override: int | None = None
+    session_memory_configured: int = 0
+    # The memory all sessions together may claim, null without a budget, and
+    # what the live sessions have reserved of it.
+    memory_budget_mb: int | None = None
+    host_memory_mb: int | None = None
+    memory_reserved_mb: int = 0
     updated_by: str = ""
 
 
@@ -266,6 +276,10 @@ class ControlUpdate(BaseModel):
     # Null clears the override and the configured ceiling applies again.
     max_parallel: int | None = Field(default=None, ge=0, le=100)
     clear_max_parallel: bool = False
+    # The memory limit of each session started from now on, in MB. Null
+    # with clear_session_memory_mb goes back to the deployment's default.
+    session_memory_mb: int | None = Field(default=None, ge=512, le=1_048_576)
+    clear_session_memory_mb: bool = False
 
 
 class CapacityState(BaseModel):

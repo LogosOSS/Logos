@@ -1,37 +1,37 @@
 from dataclasses import replace
 
-import pytest
-from app import controls, memory_budget
+from app import controls, docker_engine, memory_budget, sessions
 
-
-@pytest.fixture(autouse=True)
-def no_budget():
-    memory_budget.set_for_tests(None)
-    yield
-    memory_budget.set_for_tests(None)
+# Taken before the shared fixture replaces it for every other test.
+REAL_ESTABLISH = memory_budget.establish
 
 
 def configured(monkeypatch, **values):
-    monkeypatch.setattr(memory_budget, "settings", replace(memory_budget.settings, **values))
-    monkeypatch.setattr(controls, "settings", replace(controls.settings, **values))
+    for module in (memory_budget, controls, sessions, docker_engine):
+        monkeypatch.setattr(module, "settings", replace(module.settings, **values))
+
+
+def budget(budget_mb, host_mb=None):
+    return memory_budget.Budget(budget_mb, host_mb, "test")
 
 
 class TestBudget:
     def test_half_of_the_host_holds_one_session_of_four_gigabytes_on_eleven(self, monkeypatch):
-        configured(monkeypatch, session_memory_mb=4096, memory_budget_mb=0, host_memory_share=0.5)
+        configured(monkeypatch, memory_budget_mb=0, host_memory_share=0.5)
 
-        budget = memory_budget.compute(11_600)
+        found = memory_budget.compute(11_600)
 
-        assert budget.budget_mb == 5800
-        assert budget.ceiling == 1
+        assert found.budget_mb == 5800
+        assert found.ceiling(4096) == 1
+        assert found.ceiling(1024) == 5
 
     def test_an_explicit_budget_wins_over_the_host(self, monkeypatch):
-        configured(monkeypatch, session_memory_mb=2048, memory_budget_mb=12_288, host_memory_share=0.5)
+        configured(monkeypatch, memory_budget_mb=12_288, host_memory_share=0.5)
 
-        budget = memory_budget.compute(11_600)
+        found = memory_budget.compute(11_600)
 
-        assert budget.ceiling == 6
-        assert budget.source == "LOGOS_AGENT_MEMORY_BUDGET_MB"
+        assert found.ceiling(2048) == 6
+        assert found.source == "LOGOS_AGENT_MEMORY_BUDGET_MB"
 
     def test_without_the_host_and_without_a_budget_there_is_none(self, monkeypatch):
         configured(monkeypatch, memory_budget_mb=0)
@@ -39,14 +39,21 @@ class TestBudget:
         assert memory_budget.compute(None) is None
 
     def test_a_budget_below_one_session_holds_none(self, monkeypatch):
-        configured(monkeypatch, session_memory_mb=8192, memory_budget_mb=0, host_memory_share=0.5)
+        configured(monkeypatch, memory_budget_mb=0, host_memory_share=0.5)
 
-        assert memory_budget.compute(8_000).ceiling == 0
+        assert memory_budget.compute(8_000).ceiling(8192) == 0
 
     def test_the_share_is_clamped_to_the_whole_host(self, monkeypatch):
-        configured(monkeypatch, session_memory_mb=1024, memory_budget_mb=0, host_memory_share=3.0)
+        configured(monkeypatch, memory_budget_mb=0, host_memory_share=3.0)
 
-        assert memory_budget.compute(4096).ceiling == 4
+        assert memory_budget.compute(4096).ceiling(1024) == 4
+
+    def test_admission_counts_what_live_sessions_reserved(self):
+        found = budget(8192)
+
+        assert found.admission_block(reserved_mb=4096, session_mb=4096) == ""
+        reason = found.admission_block(reserved_mb=6144, session_mb=4096)
+        assert reason.startswith("the memory budget is used: 6144 of 8192 MB")
 
     async def test_the_docker_hosts_memory_is_read(self, monkeypatch):
         class Response:
@@ -70,28 +77,36 @@ class TestBudget:
         assert await memory_budget.host_memory_mb() == memory_budget._local_memory_mb()
 
     async def test_establish_fixes_the_budget(self, monkeypatch):
-        configured(monkeypatch, session_memory_mb=4096, memory_budget_mb=0, host_memory_share=0.5)
+        configured(monkeypatch, memory_budget_mb=0, host_memory_share=0.5)
 
         async def host():
             return 11_600
 
         monkeypatch.setattr(memory_budget, "host_memory_mb", host)
 
-        await memory_budget.establish()
+        await REAL_ESTABLISH()
 
-        assert memory_budget.ceiling() == 1
+        assert memory_budget.ceiling(4096) == 1
 
 
 class TestCeilingInForce:
-    def test_the_memory_budget_lowers_the_configured_ceiling(self, monkeypatch):
+    def test_the_ceiling_follows_the_memory_per_session(self, monkeypatch):
         configured(monkeypatch, max_parallel_sessions=10, session_memory_mb=4096)
-        memory_budget.set_for_tests(memory_budget.Budget(5800, 4096, 11_600, "test"))
+        memory_budget.set_for_tests(budget(8192))
 
-        assert controls.Controls().max_parallel == 1
+        assert controls.Controls().max_parallel == 2
+        assert controls.Controls(session_memory_override=1024).max_parallel == 8
+        assert controls.Controls(session_memory_override=1024).session_memory_mb == 1024
 
-    def test_an_operator_override_cannot_raise_it_above_the_budget(self, monkeypatch):
+    def test_the_configured_cap_still_bounds_it(self, monkeypatch):
+        configured(monkeypatch, max_parallel_sessions=3, session_memory_mb=1024)
+        memory_budget.set_for_tests(budget(65_536))
+
+        assert controls.Controls().max_parallel_available == 3
+
+    def test_an_operator_can_lower_it_but_not_raise_it(self, monkeypatch):
         configured(monkeypatch, max_parallel_sessions=10, session_memory_mb=4096)
-        memory_budget.set_for_tests(memory_budget.Budget(12_288, 4096, None, "test"))
+        memory_budget.set_for_tests(budget(12_288))
 
         assert controls.Controls(max_parallel_override=8).max_parallel == 3
         assert controls.Controls(max_parallel_override=2).max_parallel == 2
@@ -103,9 +118,48 @@ class TestCeilingInForce:
 
     def test_a_budget_that_holds_no_session_says_so(self, monkeypatch):
         configured(monkeypatch, max_parallel_sessions=10, session_memory_mb=8192)
-        memory_budget.set_for_tests(memory_budget.Budget(4000, 8192, 8000, "test"))
+        memory_budget.set_for_tests(budget(4000, 8000))
 
         reason = controls.Controls().admission_block()
 
         assert reason.startswith("the memory budget holds no session")
         assert "8192 MB" in reason
+
+
+class TestMemoryAdmission:
+    async def test_a_session_that_does_not_fit_beside_the_reserved_ones_waits(self, monkeypatch):
+        configured(monkeypatch, session_memory_mb=4096)
+        memory_budget.set_for_tests(budget(8192))
+        seen = []
+
+        async def reserved(default_mb):
+            seen.append(default_mb)
+            return 6144
+
+        monkeypatch.setattr(sessions.db, "reserved_memory_mb", reserved)
+
+        assert await sessions.memory_admission_block(controls.Controls(session_memory_override=2048)) == ""
+        assert await sessions.memory_admission_block(controls.Controls(session_memory_override=4096))
+        # Rows started before a memory was recorded count with the default.
+        assert seen == [4096, 4096]
+
+    async def test_without_a_budget_nothing_is_held_back(self, monkeypatch):
+        async def reserved(_default_mb):
+            raise AssertionError("not read without a budget")
+
+        monkeypatch.setattr(sessions.db, "reserved_memory_mb", reserved)
+
+        assert await sessions.memory_admission_block(controls.Controls()) == ""
+
+    async def test_helpers_get_the_memory_their_session_started_with(self, monkeypatch):
+        monkeypatch.setattr(sessions, "_session_memory", {})
+        sessions._remember_memory({"id": 5, "memory_mb": 2048})
+
+        assert await sessions._session_memory_mb(5) == 2048
+        assert await sessions._session_memory_mb(6) is None
+
+    def test_a_container_without_a_recorded_memory_gets_the_default(self, monkeypatch):
+        configured(monkeypatch, session_memory_mb=4096)
+
+        assert docker_engine._memory_bytes(None) == 4096 * 1024 * 1024
+        assert docker_engine._memory_bytes(1024) == 1024 * 1024 * 1024

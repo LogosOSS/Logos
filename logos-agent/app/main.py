@@ -53,7 +53,7 @@ from .schemas import (
     WorkspaceCreate,
 )
 from .security_models import AssessmentAction, IncidentInput, RepositoryInput
-from .sessions import artifact_dir, cache_volume_for, manager, resumption_base
+from .sessions import artifact_dir, cache_volume_for, manager, memory_admission_block, resumption_base
 
 logging.basicConfig(
     level=logging.INFO,
@@ -250,6 +250,10 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     blocked = control.admission_block()
     if blocked:
         may_start, reason = False, blocked
+    elif may_start:
+        memory_block = await memory_admission_block(control)
+        if memory_block:
+            may_start, reason = False, memory_block
     # The local-only model policy gates admission as hard as load does, so
     # the page that explains why nothing starts has to show it too — an
     # operator staring at an idle platform should not have to read the logs
@@ -278,7 +282,14 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     )
 
 
-def _control_state(state: controls.Controls) -> ControlState:
+async def _control_state(state: controls.Controls) -> ControlState:
+    budget = memory_budget.current()
+    reserved = 0
+    if budget is not None:
+        try:
+            reserved = await db.reserved_memory_mb(settings.session_memory_mb)
+        except Exception as exc:  # noqa: BLE001 - the page still shows the controls
+            logger.info("could not read the reserved session memory: %s", exc)
     return ControlState(
         mode=state.mode,
         mode_reason=state.mode_reason,
@@ -287,7 +298,13 @@ def _control_state(state: controls.Controls) -> ControlState:
         max_parallel=state.max_parallel,
         max_parallel_override=state.max_parallel_override,
         max_parallel_configured=settings.max_parallel_sessions,
-        max_parallel_memory=memory_budget.ceiling(),
+        max_parallel_available=state.max_parallel_available,
+        session_memory_mb=state.session_memory_mb,
+        session_memory_override=state.session_memory_override,
+        session_memory_configured=settings.session_memory_mb,
+        memory_budget_mb=budget.budget_mb if budget is not None else None,
+        host_memory_mb=budget.host_mb if budget is not None else None,
+        memory_reserved_mb=reserved,
         updated_by=state.updated_by,
     )
 
@@ -295,7 +312,7 @@ def _control_state(state: controls.Controls) -> ControlState:
 @app.get("/controls", response_model=ControlState, tags=["capacity"])
 async def get_controls(_: Principal = Depends(require_agent_operator)) -> ControlState:
     """The kill switch and the ceiling, as they stand."""
-    return _control_state(await controls.current())
+    return await _control_state(await controls.current())
 
 
 @app.post("/controls", response_model=ControlState, tags=["capacity"])
@@ -319,10 +336,14 @@ async def update_controls(body: ControlUpdate, principal: Principal = Depends(re
         limit = None if body.clear_max_parallel else body.max_parallel
         state = await controls.set_max_parallel(limit=limit, by=principal.username)
         logger.info("%s set the parallel ceiling to %s", principal.username, limit if limit is not None else "default")
+    if body.clear_session_memory_mb or body.session_memory_mb is not None:
+        memory = None if body.clear_session_memory_mb else body.session_memory_mb
+        state = await controls.set_session_memory(memory_mb=memory, by=principal.username)
+        logger.info("%s set the memory per session to %s", principal.username, f"{memory} MB" if memory else "default")
     # A pause takes effect on the next pass anyway; running one now means the
     # operator sees it happen instead of waiting a tick for it.
     manager.request_scheduler_pass()
-    return _control_state(state)
+    return await _control_state(state)
 
 
 @app.get("/models", tags=["capacity"])

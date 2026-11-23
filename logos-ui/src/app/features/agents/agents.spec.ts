@@ -148,11 +148,25 @@ class FakeAgentService {
       mode_reason: '',
       paused: false,
       admits_new_sessions: true,
-      max_parallel: 10,
+      max_parallel: 2,
       max_parallel_override: null,
       max_parallel_configured: 10,
+      max_parallel_available: 2,
+      session_memory_mb: 4096,
+      session_memory_override: null,
+      session_memory_configured: 4096,
+      memory_budget_mb: 8192,
+      host_memory_mb: 16384,
+      memory_reserved_mb: 0,
       updated_by: '',
     };
+  }
+
+  controlBodies: unknown[] = [];
+
+  async setControls(body: unknown): Promise<AgentControls> {
+    this.controlBodies.push(body);
+    return this.getControls();
   }
 
   async getTriggers(): Promise<AgentTriggers> {
@@ -491,6 +505,38 @@ describe('Agents', () => {
       ).map((row) => row.textContent ?? '');
       expect(rows[0]).toContain('ls1intum/artemis');
       expect(rows[1]).not.toContain('ls1intum/artemis');
+    });
+  });
+
+  describe('the memory per session', () => {
+    it('ends the session slider at what the memory budget holds', () => {
+      expect(component.limitCeiling()).toBe(2);
+      expect(component.limitShown()).toBe(2);
+      expect(component.memoryShown()).toBe('4096');
+    });
+
+    it('sets the memory per session and goes back to the default on an empty field', async () => {
+      await component.applyMemory('2048');
+      await component.applyMemory('');
+
+      expect(agentService.controlBodies).toEqual([
+        { session_memory_mb: 2048 },
+        { clear_session_memory_mb: true },
+      ]);
+    });
+
+    it('refuses less than 512 MB without sending anything', async () => {
+      await component.applyMemory('100');
+
+      expect(agentService.controlBodies).toEqual([]);
+      expect(component.error()).toContain('512 MB');
+    });
+
+    it('lowers the ceiling below the maximum and clears it at the maximum', async () => {
+      await component.applyLimit('1');
+      await component.applyLimit('5');
+
+      expect(agentService.controlBodies).toEqual([{ max_parallel: 1 }, { clear_max_parallel: true }]);
     });
   });
 

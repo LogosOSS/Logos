@@ -664,6 +664,8 @@ services:
       LOGOS_AGENT_EGRESS_PROXY_URL: "${LOGOS_AGENT_EGRESS_PROXY_URL-http://logos-agent-egress-proxy:3128}"
       LOGOS_AGENT_MAX_PARALLEL_SESSIONS: "${LOGOS_AGENT_MAX_PARALLEL_SESSIONS:-10}"
       LOGOS_AGENT_SESSION_MEMORY_MB: "${LOGOS_AGENT_SESSION_MEMORY_MB:-4096}"
+      LOGOS_AGENT_MEMORY_BUDGET_MB: "${LOGOS_AGENT_MEMORY_BUDGET_MB:-0}"
+      LOGOS_AGENT_HOST_MEMORY_SHARE: "${LOGOS_AGENT_HOST_MEMORY_SHARE:-0.5}"
       LOGOS_AGENT_SESSION_CPUS: "${LOGOS_AGENT_SESSION_CPUS:-2}"
       # The uid the session image runs as; the runner chowns the per-session
       # artefact directories it creates to this user.

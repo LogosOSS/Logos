@@ -130,32 +130,31 @@ export class Agents implements OnInit {
   pauseReason = signal('');
   /** What is typed in the limit field, until it is applied. */
   limitDraft = signal('');
+  /** What is typed in the memory field, until it is applied. */
+  memoryDraft = signal('');
 
   /**
    * What the slider stands at: the value being dragged if there is one,
-   * otherwise the limit in force — the override, or the configured value
-   * when nothing overrides it.
+   * otherwise the ceiling in force.
    */
   readonly limitShown = computed(() => {
     const draft = this.limitDraft().trim();
     if (draft !== '' && Number.isFinite(Number(draft))) return Number(draft);
-    const state = this.controls();
-    return state?.max_parallel_override ?? state?.max_parallel_configured ?? 0;
+    return this.controls()?.max_parallel ?? 0;
   });
 
   /**
-   * How far the slider goes. The configured value is the normal working
-   * point, so the scale reaches past it without running to the schema's
-   * hundred, which no deployment has the capacity for.
+   * How far the slider goes: the most sessions the host's memory budget
+   * holds with the current memory per session. The slider lowers the
+   * ceiling from there; it cannot raise it.
    */
-  readonly limitCeiling = computed(() => {
-    const state = this.controls();
-    const configured = state?.max_parallel_configured ?? 10;
-    // Never below what is actually set: a stored override of 80 against a
-    // scale that stops at 20 would show 80 in the label, clamp the control
-    // to 20, and lower the limit on the first touch of it.
-    const inForce = Math.max(state?.max_parallel_override ?? 0, this.limitShown());
-    return Math.min(100, Math.max(20, configured * 2, inForce));
+  readonly limitCeiling = computed(() => this.controls()?.max_parallel_available ?? 0);
+
+  /** The memory field: what is being typed, otherwise the memory in force. */
+  readonly memoryShown = computed(() => {
+    const draft = this.memoryDraft().trim();
+    if (draft !== '') return draft;
+    return String(this.controls()?.session_memory_mb ?? '');
   });
   creatingWorkspace = signal(false);
 
@@ -387,6 +386,39 @@ export class Agents implements OnInit {
    * keystroke: submitting per character disables the input mid-number, so
    * "25" could not be typed at all.
    */
+  /**
+   * Set the memory of each session started from now on, in MB. An empty
+   * field goes back to the deployment's default. Sessions already running
+   * keep the memory they were started with.
+   */
+  async applyMemory(value: string): Promise<void> {
+    if (this.controlBusy()) return;
+    const trimmed = value.trim();
+    let body: { session_memory_mb?: number; clear_session_memory_mb?: boolean };
+    if (trimmed === '') {
+      body = { clear_session_memory_mb: true };
+    } else {
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed) || parsed < 512) {
+        this.memoryDraft.set('');
+        this.error.set('The memory per session must be at least 512 MB.');
+        return;
+      }
+      body = { session_memory_mb: Math.round(parsed) };
+    }
+    this.controlBusy.set(true);
+    try {
+      const state = await this.agentService.setControls(body);
+      this.controls.set(state);
+      this.memoryDraft.set('');
+      await this.refresh({ quiet: true });
+    } catch (err: unknown) {
+      this.error.set(this.messageOf(err, 'Could not change the memory per session.'));
+    } finally {
+      this.controlBusy.set(false);
+    }
+  }
+
   async applyLimit(value: string): Promise<void> {
     if (this.controlBusy()) return;
     const trimmed = value.trim();
@@ -401,7 +433,11 @@ export class Agents implements OnInit {
         this.limitDraft.set(String(this.controls()?.max_parallel_override ?? ''));
         return;
       }
-      body = { max_parallel: Math.max(0, Math.min(100, Math.round(parsed))) };
+      const available = this.controls()?.max_parallel_available ?? 100;
+      const limit = Math.max(0, Math.min(available, Math.round(parsed)));
+      // The maximum is not an override: at the top of the scale the ceiling
+      // follows the memory budget again.
+      body = limit >= available ? { clear_max_parallel: true } : { max_parallel: limit };
     }
     this.controlBusy.set(true);
     try {

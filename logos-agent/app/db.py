@@ -161,7 +161,7 @@ async def get_controls() -> dict[str, Any] | None:
     """The one row of runtime controls, or None if it is missing."""
     async with sessionmaker()() as db:
         row = (await db.execute(text("""
-                    SELECT mode, mode_reason, max_parallel, comments_scanned_at,
+                    SELECT mode, mode_reason, max_parallel, session_memory_mb, comments_scanned_at,
                            updated_by, updated_at
                       FROM agent_controls WHERE id = 1
                     """))).mappings().first()
@@ -174,6 +174,8 @@ async def set_controls(
     mode_reason: str | None = None,
     max_parallel: int | None = None,
     clear_max_parallel: bool = False,
+    session_memory_mb: int | None = None,
+    clear_session_memory_mb: bool = False,
     updated_by: str,
 ) -> None:
     """Change the runtime controls, leaving untouched what was not named.
@@ -185,10 +187,13 @@ async def set_controls(
     async with sessionmaker()() as db:
         await db.execute(
             text("""
-                INSERT INTO agent_controls (id, mode, mode_reason, max_parallel, updated_by, updated_at)
+                INSERT INTO agent_controls (id, mode, mode_reason, max_parallel, session_memory_mb,
+                                            updated_by, updated_at)
                 VALUES (1, COALESCE(:mode, 'running'), :mode_reason,
                         CASE WHEN CAST(:clear AS BOOLEAN) THEN NULL
                              ELSE CAST(:max_parallel AS INTEGER) END,
+                        CASE WHEN CAST(:clear_memory AS BOOLEAN) THEN NULL
+                             ELSE CAST(:session_memory_mb AS INTEGER) END,
                         :updated_by, :now)
                 ON CONFLICT (id) DO UPDATE SET
                     mode = COALESCE(:mode, agent_controls.mode),
@@ -207,6 +212,11 @@ async def set_controls(
                         WHEN CAST(:max_parallel AS INTEGER) IS NULL THEN agent_controls.max_parallel
                         ELSE CAST(:max_parallel AS INTEGER)
                     END,
+                    session_memory_mb = CASE
+                        WHEN CAST(:clear_memory AS BOOLEAN) THEN NULL
+                        WHEN CAST(:session_memory_mb AS INTEGER) IS NULL THEN agent_controls.session_memory_mb
+                        ELSE CAST(:session_memory_mb AS INTEGER)
+                    END,
                     updated_by = :updated_by,
                     updated_at = :now
                 """),
@@ -215,6 +225,8 @@ async def set_controls(
                 "mode_reason": mode_reason,
                 "max_parallel": max_parallel,
                 "clear": clear_max_parallel,
+                "session_memory_mb": session_memory_mb,
+                "clear_memory": clear_session_memory_mb,
                 "updated_by": updated_by,
                 "now": _now(),
             },
@@ -980,7 +992,7 @@ _SESSION_SELECT = """
            s.reply_target, s.reaction_target,
            s.priority, s.priority_reason, s.environment_notes,
            s.repo_url, s.repo_slug, s.team_repository_id, s.verification_command, s.repo_base_branch,
-           s.push_repo_slug,
+           s.push_repo_slug, s.memory_mb,
            t.name AS team_name,
            COALESCE(s.tokens_in, 0) AS tokens_in,
            COALESCE(s.tokens_out, 0) AS tokens_out,
@@ -1568,6 +1580,9 @@ async def update_session(session_id: int, **fields: Any) -> None:
         "model",
         # The hash of the token the session's egress proxy credentials carry.
         "egress_token_hash",
+        # The memory limit its containers get, reserved from the host's
+        # memory budget while the session runs or is paused.
+        "memory_mb",
         # Where the session's branch is pushed when the agent account cannot
         # push to the repository itself: its own fork.
         "push_repo_slug",
@@ -1622,6 +1637,28 @@ async def count_sessions_by_status() -> dict[str, int]:
             .all()
         )
     return {r["status"]: int(r["n"]) for r in rows}
+
+
+async def reserved_memory_mb(default_mb: int) -> int:
+    """The memory the sessions that hold a container, or are about to, have reserved.
+
+    A session reserves its memory from its claim until it is finished: the
+    preparation and finalization helpers run in its place, and a paused
+    container keeps its memory. A row without a recorded figure counts with
+    ``default_mb``.
+    """
+    async with sessionmaker()() as db:
+        value = (
+            await db.execute(
+                text("""
+                SELECT COALESCE(SUM(COALESCE(memory_mb, :default_mb)), 0)
+                  FROM agent_sessions
+                 WHERE status IN ('starting', 'running', 'paused', 'finalizing')
+                """),
+                {"default_mb": default_mb},
+            )
+        ).scalar()
+    return int(value or 0)
 
 
 async def sessions_in_status(status: SessionStatus) -> list[dict[str, Any]]:

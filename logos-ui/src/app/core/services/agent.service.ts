@@ -218,6 +218,8 @@ export class AgentService {
     reason?: string;
     max_parallel?: number | null;
     clear_max_parallel?: boolean;
+    session_memory_mb?: number;
+    clear_session_memory_mb?: boolean;
   }): Promise<AgentControls> {
     return firstValueFrom(this.http.post<AgentControls>(`${AgentService.BASE}/controls`, body));
   }

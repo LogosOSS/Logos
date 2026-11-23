@@ -164,11 +164,57 @@
       </label>
 
       <div class="controls__field">
+        <label class="field__label" for="agent-session-memory">
+          Memory per session (MB)
+          @if (ctl.session_memory_override === null) {
+            <span class="field__optional">(default)</span>
+          }
+        </label>
+        <div class="slider">
+          <input
+            id="agent-session-memory"
+            class="input"
+            type="number"
+            min="512"
+            step="512"
+            inputmode="numeric"
+            [value]="memoryShown()"
+            (input)="memoryDraft.set($any($event.target).value)"
+            (change)="applyMemory(memoryDraft())"
+            [disabled]="controlBusy()"
+          />
+          @if (ctl.session_memory_override !== null) {
+            <button
+              class="btn btn--link"
+              (click)="applyMemory('')"
+              [disabled]="controlBusy()"
+              title="Go back to the memory this deployment was configured with"
+            >
+              Reset to {{ ctl.session_memory_configured }} MB
+            </button>
+          }
+        </div>
+        <span class="field__hint">
+          @if (ctl.memory_budget_mb !== null) {
+            Sessions may use {{ ctl.memory_budget_mb }} MB together
+            @if (ctl.host_memory_mb !== null) {
+              of {{ ctl.host_memory_mb }} MB on the host
+            }
+            ({{ ctl.memory_reserved_mb }} MB in use), so up to {{ ctl.max_parallel_available }}
+            {{ ctl.max_parallel_available === 1 ? 'session' : 'sessions' }} of {{ ctl.session_memory_mb }} MB.
+          } @else {
+            The host's memory is unknown; only the configured ceiling of {{ ctl.max_parallel_configured }} applies.
+          }
+          Running sessions keep the memory they started with.
+        </span>
+      </div>
+
+      <div class="controls__field">
         <span class="field__label">
           Sessions at once
           <span class="field__value">{{ limitShown() }}</span>
           @if (ctl.max_parallel_override === null) {
-            <span class="field__optional">(configured)</span>
+            <span class="field__optional">(maximum)</span>
           }
         </span>
         <div class="slider">
@@ -189,15 +235,15 @@
               class="btn btn--link"
               (click)="applyLimit('')"
               [disabled]="controlBusy()"
-              title="Go back to the limit this deployment was configured with"
+              title="Go back to the most sessions the memory budget holds"
             >
-              Reset to {{ ctl.max_parallel_configured }}
+              Reset to {{ ctl.max_parallel_available }}
             </button>
           }
         </div>
         <span class="field__hint">
-          Takes effect on the next scheduler pass. Zero drains without pausing: nothing new starts,
-          what runs finishes.
+          Follows from the memory per session; lower it here. Takes effect on the next scheduler
+          pass. Zero drains without pausing: nothing new starts, what runs finishes.
         </span>
       </div>
     </section>

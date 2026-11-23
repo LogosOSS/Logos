@@ -8,13 +8,18 @@ parallel ceiling alone can promise sessions far more memory than the host
 has: ten sessions of 4 GB on a host with 11 GB. When they all build at once,
 the kernel kills processes of the host, not only of the sessions.
 
-The runner therefore caps the parallel ceiling by a memory budget: the
-memory all sessions together may claim. ``LOGOS_AGENT_MEMORY_BUDGET_MB`` sets
-it explicitly; otherwise it is ``LOGOS_AGENT_HOST_MEMORY_SHARE`` of the
-memory the Docker host reports, because the runner usually shares its host
-with the database and the services of Logos. The ceiling in force is the
-smaller of the configured (or operator) ceiling and the budget divided by the
-memory of one session.
+The runner therefore admits sessions against a memory budget: the memory all
+sessions together may claim. ``LOGOS_AGENT_MEMORY_BUDGET_MB`` sets it
+explicitly; otherwise it is ``LOGOS_AGENT_HOST_MEMORY_SHARE`` of the memory
+the Docker host reports, because the runner usually shares its host with the
+database and the services of Logos.
+
+An operator sets the memory of one session; the parallel ceiling follows
+from it (the budget divided by that memory, never above
+``LOGOS_AGENT_MAX_PARALLEL_SESSIONS``) and can only be lowered from there.
+Each session keeps the memory it was started with, so admission also counts
+what the live sessions actually reserve: a change of the per-session memory
+never lets the sessions together exceed the budget.
 """
 
 from __future__ import annotations
@@ -33,24 +38,32 @@ _MB = 1024 * 1024
 
 @dataclass(frozen=True)
 class Budget:
-    """The memory budget of the sessions and the ceiling it allows."""
+    """The memory all sessions together may claim."""
 
     budget_mb: int
-    session_mb: int
     host_mb: int | None
     source: str
 
-    @property
-    def ceiling(self) -> int:
-        if self.session_mb <= 0:
+    def ceiling(self, session_mb: int) -> int:
+        """How many sessions of ``session_mb`` the budget holds."""
+        if session_mb <= 0:
             return 0
-        return max(0, self.budget_mb // self.session_mb)
+        return max(0, self.budget_mb // session_mb)
 
-    def describe(self) -> str:
+    def describe(self, session_mb: int | None = None) -> str:
         host = f" of {self.host_mb} MB on the host" if self.host_mb is not None else ""
+        text = f"{self.budget_mb} MB{host} ({self.source})"
+        if session_mb is not None:
+            text += f" holds {self.ceiling(session_mb)} session(s) of {session_mb} MB"
+        return text
+
+    def admission_block(self, *, reserved_mb: int, session_mb: int) -> str:
+        """Why one more session of ``session_mb`` does not fit, or an empty string."""
+        if reserved_mb + session_mb <= self.budget_mb:
+            return ""
         return (
-            f"{self.budget_mb} MB{host} ({self.source}) holds {self.ceiling} "
-            f"session(s) of {self.session_mb} MB"
+            f"the memory budget is used: {reserved_mb} of {self.budget_mb} MB are reserved, "
+            f"a new session needs {session_mb} MB"
         )
 
 
@@ -59,13 +72,12 @@ _current: Budget | None = None
 
 def compute(host_mb: int | None) -> Budget | None:
     """The budget from the settings and the host's memory, or None when neither gives one."""
-    session_mb = settings.session_memory_mb
     if settings.memory_budget_mb > 0:
-        return Budget(settings.memory_budget_mb, session_mb, host_mb, "LOGOS_AGENT_MEMORY_BUDGET_MB")
+        return Budget(settings.memory_budget_mb, host_mb, "LOGOS_AGENT_MEMORY_BUDGET_MB")
     if host_mb is None or host_mb <= 0:
         return None
     share = min(max(settings.host_memory_share, 0.0), 1.0)
-    return Budget(int(host_mb * share), session_mb, host_mb, f"{share:.0%} of the host")
+    return Budget(int(host_mb * share), host_mb, f"{share:.0%} of the host")
 
 
 def _local_memory_mb() -> int | None:
@@ -96,15 +108,8 @@ async def establish() -> Budget | None:
             "no memory budget: the host's memory is unknown and LOGOS_AGENT_MEMORY_BUDGET_MB is not set; "
             "only LOGOS_AGENT_MAX_PARALLEL_SESSIONS limits sessions"
         )
-    elif _current.ceiling < settings.max_parallel_sessions:
-        logger.warning(
-            "memory budget %s; the parallel ceiling is lowered from %s to %s",
-            _current.describe(),
-            settings.max_parallel_sessions,
-            _current.ceiling,
-        )
     else:
-        logger.info("memory budget %s", _current.describe())
+        logger.info("memory budget %s", _current.describe(settings.session_memory_mb))
     return _current
 
 
@@ -112,9 +117,9 @@ def current() -> Budget | None:
     return _current
 
 
-def ceiling() -> int | None:
-    """How many sessions the memory budget allows, or None when there is no budget."""
-    return None if _current is None else _current.ceiling
+def ceiling(session_mb: int) -> int | None:
+    """How many sessions of ``session_mb`` the budget allows, or None when there is no budget."""
+    return None if _current is None else _current.ceiling(session_mb)
 
 
 def set_for_tests(budget: Budget | None) -> None:

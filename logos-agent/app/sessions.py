@@ -44,6 +44,7 @@ from . import (
     egress_proxy,
     github,
     github_broker,
+    memory_budget,
     model_policy,
     repository_context,
     triggers,
@@ -194,6 +195,32 @@ def _footer(session_id: int, session: dict[str, Any] | None) -> str:
     """
     model = str((session or {}).get("model") or "").strip() or model_policy.current().resolve(None)
     return disclosure.footer(model=model, session_id=session_id)
+
+
+async def memory_admission_block(control: controls.Controls) -> str:
+    """Why the host's memory budget has no room for one more session, or an empty string."""
+    budget = memory_budget.current()
+    if budget is None:
+        return ""
+    reserved = await db.reserved_memory_mb(settings.session_memory_mb)
+    return budget.admission_block(reserved_mb=reserved, session_mb=control.session_memory_mb)
+
+
+# The memory each session of this process was started with. Its helpers get
+# the same limit. A session this process did not start (one it found after a
+# restart) is absent, and its helpers get the configured default.
+_session_memory: dict[int, int] = {}
+
+
+def _remember_memory(session: dict[str, Any]) -> None:
+    value = session.get("memory_mb")
+    if value:
+        _session_memory[int(session["id"])] = int(value)
+
+
+async def _session_memory_mb(session_id: int) -> int | None:
+    """The memory a session was started with, or None for the configured default."""
+    return _session_memory.get(session_id)
 
 
 def cache_volume_for(workspace: dict[str, Any]) -> str:
@@ -1150,6 +1177,9 @@ class SessionManager:
             )
             if not may_start:
                 return
+            # The host's memory: what live sessions reserved, plus this one.
+            if await memory_admission_block(control):
+                return
             if not self._capacity_sample_available(reading):
                 return
             # The row that was measured, not "the next one": between the
@@ -1163,6 +1193,17 @@ class SessionManager:
             taken = await db.claim_session(int(candidate["id"]), trigger_quota=quota)
             if taken:
                 self._spend_capacity_sample(reading)
+                # Recorded inside the admission lock, so the next admission
+                # counts it, and kept for the session's life: a later change
+                # of the per-session memory applies to sessions started later.
+                taken = {**taken, "memory_mb": control.session_memory_mb}
+                _remember_memory(taken)
+                try:
+                    await db.update_session(int(taken["id"]), memory_mb=control.session_memory_mb)
+                except Exception as exc:  # noqa: BLE001 - the session still runs with its limit
+                    # Unrecorded, the row counts with the configured default
+                    # in the budget until it finishes.
+                    logger.warning("could not record the memory of session %s: %s", taken["id"], exc)
             claimed = [taken] if taken else []
             # The claim is what makes these rows this pass's to launch, so
             # the launch record is taken here rather than inside _launch:
@@ -1555,6 +1596,7 @@ class SessionManager:
                 state_host_path=state_host_path,
                 session_id=sid,
                 cache_volume=cache_volume_for(workspace) if sandboxed else None,
+                memory_mb=session.get("memory_mb"),
             )
             # Boundary: the container exists but has not run. Give it back
             # rather than starting an agent for a cancelled session.
@@ -1843,6 +1885,7 @@ class SessionManager:
                     # Only verification reads the workspace cache, read-only;
                     # credential-bearing helpers never mount it.
                     cache_volume=cache_volume if phase == "verify" else None,
+                    memory_mb=await _session_memory_mb(session_id),
                 )
                 helper.container_id = container_id
             finally:
@@ -3929,6 +3972,7 @@ class SessionManager:
                     output_path=f"/artifacts/screenshots/{name}",
                     artifact_host_path=artifact_host_path,
                     session_id=session_id,
+                    memory_mb=await _session_memory_mb(session_id),
                 )
                 await docker_engine.start_container(container_id)
                 exit_code = await docker_engine.wait_container(container_id, timeout_s=180)
