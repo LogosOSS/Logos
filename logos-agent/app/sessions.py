@@ -197,9 +197,75 @@ def _footer(session_id: int, session: dict[str, Any] | None) -> str:
     return disclosure.footer(model=model, session_id=session_id)
 
 
-# Memory held by containers of finished sessions: the screenshots that run
-# after a session has settled. The rows no longer count, so these do.
-_held_memory: dict[int, int] = {}
+# Memory held for containers whose rows no longer count in the budget: a
+# session being cancelled or settled until its container has stopped, and
+# the screenshots that run after a session settled. Each holder owns its own
+# entry, so one actor can never release what another one holds; two holds
+# for the same container only over-reserve for a moment.
+_held_memory: dict[object, int] = {}
+
+# States in which a container still uses its memory.
+_LIVE_CONTAINER_STATES = frozenset({"running", "paused", "restarting", "removing"})
+
+
+def _hold(memory_mb: int) -> object:
+    token = object()
+    _held_memory[token] = memory_mb
+    return token
+
+
+def _release(token: object | None) -> None:
+    if token is not None:
+        _held_memory.pop(token, None)
+
+
+async def _release_when_stopped(
+    token: object | None, container_id: str | None, *, timeout_s: float = 600, poll_s: float = 5
+) -> None:
+    """Give a hold back once its container no longer uses memory.
+
+    A container that cannot be inspected for ``timeout_s`` is given up on,
+    so a broken Docker call cannot keep the budget occupied for good.
+    """
+    if token is None:
+        return
+    try:
+        if container_id:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout_s
+            while loop.time() < deadline:
+                try:
+                    state, _ = await docker_engine.container_state(container_id)
+                except Exception as exc:  # noqa: BLE001 - keep waiting until the deadline
+                    logger.info("could not inspect container %s: %s", container_id, exc)
+                    state = "unknown"
+                if state not in _LIVE_CONTAINER_STATES and state != "unknown":
+                    return
+                await asyncio.sleep(poll_s)
+            logger.warning("container %s still holds memory after %ss; releasing its hold", container_id, timeout_s)
+    finally:
+        _release(token)
+
+
+_release_tasks: set[asyncio.Task] = set()
+
+
+def _release_in_background(token: object | None, container_id: str | None) -> None:
+    """Release a hold once its container stopped, without making the caller wait for it.
+
+    The caller may be a settlement that runs under the admission lock (a
+    failed launch); waiting there for a container to stop would stall the
+    scheduler.
+    """
+    if token is None:
+        return
+    task = asyncio.get_running_loop().create_task(_release_when_stopped(token, container_id))
+    _release_tasks.add(task)
+    task.add_done_callback(_release_tasks.discard)
+
+
+def _memory_of(session: dict[str, Any] | None) -> int:
+    return int((session or {}).get("memory_mb") or settings.session_memory_mb)
 
 
 async def reserved_memory_mb() -> int:
@@ -2872,6 +2938,28 @@ class SessionManager:
             logger.info("could not react on %s: %s", target, exc)
 
     async def _settle(self, session_id: int, *, exit_code: int | None, error: str | None) -> None:
+        """Record the outcome of a finished session and clean up after it.
+
+        The row stops counting in the memory budget when it reaches its
+        final state, which can be before its container has stopped (a
+        supervision error settles a container that may still run). Its
+        memory is held until the container is seen stopped.
+        """
+        try:
+            row = await db.get_session(session_id)
+        except Exception:  # noqa: BLE001 - the settlement reads it again
+            row = None
+        # Taken before the transition, synchronously, for the same reason as
+        # in cancel(); a failed launch settles under the admission lock.
+        token = None
+        if row and row.get("status") not in {state.value for state in TERMINAL_STATUSES}:
+            token = _hold(_memory_of(row))
+        try:
+            await self._settle_outcome(session_id, exit_code=exit_code, error=error)
+        finally:
+            _release_in_background(token, (row or {}).get("container_id"))
+
+    async def _settle_outcome(self, session_id: int, *, exit_code: int | None, error: str | None) -> None:
         """Record the outcome of a finished session and clean up after it."""
         # A request written just before the agent exited — a release note on
         # an issue it gave up — is still carried out.
@@ -3932,7 +4020,8 @@ class SessionManager:
             return
 
         memory = await _session_memory_mb(session_id) or settings.session_memory_mb
-        if not await self._hold_memory(session_id, memory):
+        token = await self._hold_memory(memory)
+        if token is None:
             await db.add_event(
                 session_id,
                 EventKind.SCREENSHOT,
@@ -3943,11 +4032,9 @@ class SessionManager:
             for name in await self._take_screenshots(session_id, paths):
                 await db.add_event(session_id, EventKind.SCREENSHOT, {"name": name})
         finally:
-            _held_memory.pop(session_id, None)
+            _release(token)
 
-    async def _hold_memory(
-        self, session_id: int, memory_mb: int, *, timeout_s: float = 600, poll_s: float = 10
-    ) -> bool:
+    async def _hold_memory(self, memory_mb: int, *, timeout_s: float = 600, poll_s: float = 10) -> object | None:
         """Reserve memory for a container that runs after its session settled.
 
         Taken under the admission lock, so a session admitted at the same
@@ -3962,10 +4049,9 @@ class SessionManager:
                 if budget is None or not budget.admission_block(
                     reserved_mb=await reserved_memory_mb(), session_mb=memory_mb
                 ):
-                    _held_memory[session_id] = memory_mb
-                    return True
+                    return _hold(memory_mb)
             if loop.time() >= deadline:
-                return False
+                return None
             await asyncio.sleep(poll_s)
 
     async def _wait_dev_ready(self, *, timeout_s: float = 5 * 60, poll_s: float = 5.0) -> bool:
@@ -4082,12 +4168,16 @@ class SessionManager:
         # cancelled, but its containers hold their memory until they are
         # stopped. Held here first, so no admission in between can hand that
         # memory to another session.
-        if status != SessionStatus.QUEUED:
-            _held_memory[session_id] = int(session.get("memory_mb") or settings.session_memory_mb)
+        # The hold is this call's own and goes back only once the container
+        # is seen stopped. It is taken synchronously before the transition:
+        # an admission summing the budget sees the row, the hold, or both,
+        # never neither. No lock here — a failed launch settles while the
+        # scheduler holds the admission lock.
+        token = _hold(_memory_of(session)) if status != SessionStatus.QUEUED else None
         try:
             return await self._cancel(session_id, session)
         finally:
-            _held_memory.pop(session_id, None)
+            _release_in_background(token, session.get("container_id"))
 
     async def _cancel(self, session_id: int, session: dict[str, Any]) -> bool:
         container_id = session.get("container_id")
