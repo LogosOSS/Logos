@@ -37,7 +37,7 @@ One warm-up request runs before measurement. Its result is not part of the measu
 
 | Setting | Supported values |
 | --- | --- |
-| Sample size | 1–100 requests per run |
+| Sample size | 1–100 for public datasets, or all requests in a saved dataset (up to 500) |
 | Maximum output tokens | 1–4096 per request |
 | Concurrent requests | 1–32 |
 | Dataset | Public Hugging Face dataset with a plain-text prompt column |

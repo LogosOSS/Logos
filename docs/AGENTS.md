@@ -302,7 +302,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-statistics-worker-lock.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a worker locked with two lanes (e2e stack; capture the lane panel) | `roles/logos-admin.md#worker-locks` |
 | `logos-admin-statistics-requesters.png` | `tobias.wasner` | `/statistics?tab=requests` — **Requesters** list open | `roles/logos-admin.md` |
 | `logos-admin-models.png` | `tobias.wasner` | `/models` | `roles/logos-admin.md` |
-| `logos-admin-nightly-enable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — activation dialog | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-enable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — nightly schedule ready to enable | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-benchmarks.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Run a benchmark** and compact nightly status | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-automatic-source.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — automatic recent-user source policy | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-plan.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Manage → Schedule and test plan** | `roles/logos-admin.md#nightly-benchmarks` |

@@ -31,8 +31,7 @@ DELETE FROM users             WHERE id = 501;
 
 -- ---------------------------------------------------------------------------
 -- User + team. Rate limits and budget MUST be NULL: the benchmark's whole
--- point is to find the gateway's own concurrency ceiling (the Spring task
--- executor pool), not an incidental team/budget limit hit first.
+-- point is to find the gateway's own response concurrency, not an incidental team/budget limit hit first.
 -- ---------------------------------------------------------------------------
 INSERT INTO users (id, username, prename, name, email, role)
 VALUES (501, 'bench-gw-user', 'B', 'Bench Gateway User', 'bench-gw-user@bench.test', 'app_developer');

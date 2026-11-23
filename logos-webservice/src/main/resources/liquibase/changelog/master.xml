@@ -88,5 +88,7 @@
     <include file="liquibase/changelog/081_security_manual_updates.xml"/>
     <include file="liquibase/changelog/082_model_profile_config_fingerprint.xml"/>
     <include file="liquibase/changelog/083_node_settings.xml"/>
-    <include file="liquibase/changelog/084_agent_service_identity.xml"/>
+    <include file="liquibase/changelog/084_benchmark_workload_size.xml"/>
+    <include file="liquibase/changelog/085_recent_model_full_requests.xml"/>
+    <include file="liquibase/changelog/086_agent_service_identity.xml"/>
 </databaseChangeLog>

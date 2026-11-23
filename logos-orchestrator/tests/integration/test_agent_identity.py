@@ -57,7 +57,7 @@ def database():
             """))
             migration = (
                 Path(__file__).resolve().parents[3]
-                / "logos-webservice/src/main/resources/liquibase/changelog/084_agent_service_identity.xml"
+                / "logos-webservice/src/main/resources/liquibase/changelog/086_agent_service_identity.xml"
             )
             for sql in ElementTree.parse(migration).findall("{*}changeSet/{*}sql"):
                 conn.execute(text(sql.text))

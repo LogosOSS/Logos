@@ -2,7 +2,7 @@
 <databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
-    <changeSet id="084-agent-service-identity" author="logos">
+    <changeSet id="086-agent-service-identity" author="logos">
         <sql><![CDATA[
             ALTER TABLE api_keys ADD COLUMN internal_service TEXT UNIQUE;
             ALTER TABLE api_keys ADD CONSTRAINT api_keys_internal_service_scope CHECK (

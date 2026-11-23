@@ -1,4 +1,4 @@
-"""Content-addressed, private request snapshots from explicitly selected FULL logs."""
+"""Content-addressed, private request snapshots from successful FULL logs."""
 
 import copy
 import hashlib
@@ -7,6 +7,7 @@ import json
 from sqlalchemy import text
 
 MAX_REQUESTS = 100
+MAX_WINDOW_REQUESTS = 500
 MAX_BYTES = 5_000_000
 BODY_FIELDS = {
     "messages",
@@ -165,15 +166,19 @@ def build_snapshot(rows, name, provenance):
         if row.get("environment") == "model-provider-benchmark":
             raise ValueError("Benchmark replays cannot become source requests")
     requests = [{"source_log_id": row["id"], "body": request_body(row["input_payload"])} for row in rows]
-    content = {"model_id": rows[0]["model_id"], "provenance": provenance, "requests": requests}
-    encoded = canonical(content)
-    if len(encoded.encode()) > MAX_BYTES:
+    return _snapshot(rows[0]["model_id"], rows[0]["model_name"], requests, name.strip(), provenance)
+
+
+def _snapshot(model_id, model_name, requests, name, provenance):
+    content = {"model_id": model_id, "provenance": provenance, "requests": requests}
+    encoded = canonical(content).encode()
+    if len(encoded) > MAX_BYTES:
         raise ValueError("The snapshot exceeds 5 MB")
     return {
-        "id": hashlib.sha256(encoded.encode()).hexdigest(),
-        "name": name.strip(),
+        "id": hashlib.sha256(encoded).hexdigest(),
+        "name": name,
         **content,
-        "model_name": rows[0]["model_name"],
+        "model_name": model_name,
         "request_count": len(requests),
     }
 
@@ -218,20 +223,72 @@ def create(log_ids, name, provenance):
         if len(rows) != len(log_ids):
             raise ValueError("A selected source request no longer exists")
         snapshot = build_snapshot(rows, name, provenance)
-        save_snapshot(db, snapshot)
-        db.session.commit()
-        stored = (
-            db.session.execute(
-                text(
-                    "SELECT id, name, model_id, model_name, provenance, request_count, created_at "
-                    "FROM benchmark_workloads WHERE id = :id"
-                ),
-                {"id": snapshot["id"]},
-            )
-            .mappings()
-            .one()
+        return _persist(db, snapshot)
+
+
+def _persist(db, snapshot):
+    save_snapshot(db, snapshot)
+    stored = (
+        db.session.execute(
+            text(
+                "SELECT id, name, model_id, model_name, provenance, request_count, created_at "
+                "FROM benchmark_workloads WHERE id = :id"
+            ),
+            {"id": snapshot["id"]},
         )
-        return metadata(stored)
+        .mappings()
+        .one()
+    )
+    db.session.commit()
+    return metadata(stored)
+
+
+def create_recent(target, days=None):
+    """Freeze the latest 100 replayable inputs, or take a larger sample within a time window."""
+    from logos.dbutils.dbmanager import DBManager
+
+    if days is not None and days not in (1, 3, 7):
+        raise ValueError("Choose a window of 1, 3 or 7 days")
+    limit = MAX_REQUESTS if days is None else MAX_WINDOW_REQUESTS
+    model_id = target["model_id"]
+    requests = []
+    size = len(canonical({"model_id": model_id, "provenance": "production", "requests": []}).encode())
+    with DBManager() as db:
+        query = text("""
+            SELECT id, input_payload FROM log_entry
+            WHERE model_id = :model_id AND privacy_level = 'FULL' AND result_status = 'success'
+              AND environment IS DISTINCT FROM 'model-provider-benchmark'
+              AND timestamp_request BETWEEN
+                  COALESCE(CURRENT_TIMESTAMP - CAST(:days AS integer) * INTERVAL '24 hours', '-infinity'::timestamptz)
+                  AND CURRENT_TIMESTAMP
+              AND timestamp_response <= CURRENT_TIMESTAMP AND input_payload IS NOT NULL
+              AND octet_length(input_payload::text) <= :max_bytes
+            ORDER BY timestamp_request DESC, id DESC
+        """).execution_options(yield_per=10)
+        with db.session.execute(query, {"model_id": model_id, "days": days, "max_bytes": MAX_BYTES}) as rows:
+            for row in rows.mappings():
+                try:
+                    entry = {"source_log_id": row["id"], **replay_request(row["input_payload"])}
+                    entry_size = len(canonical(entry).encode()) + bool(requests)
+                except ValueError:
+                    continue
+                if size + entry_size > MAX_BYTES:
+                    if requests:
+                        break
+                    continue
+                requests.append(entry)
+                size += entry_size
+                if len(requests) == limit:
+                    break
+        if not requests:
+            scope = " in the selected time window" if days is not None else ""
+            raise ValueError(f"No replayable successful FULL requests for this model{scope}.")
+        name = (
+            "Latest 100 FULL requests"
+            if days is None
+            else f"FULL requests · last {days} {'day' if days == 1 else 'days'}"
+        )
+        return _persist(db, _snapshot(model_id, target["model_name"], requests, name, "production"))
 
 
 def load(workload_id, model_id=None):

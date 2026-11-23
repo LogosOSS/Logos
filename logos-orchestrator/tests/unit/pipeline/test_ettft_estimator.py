@@ -574,3 +574,53 @@ def test_estimate_ettft_local_unavailable_when_cold_reclaim_infeasible():
     )
     assert est.tier == ReadinessTier.UNAVAILABLE
     assert math.isinf(est.expected_wait_s)
+
+
+def test_reclaim_engine_work_is_not_idle_when_reservation_count_lags():
+    lane = _make_lane(
+        active_requests=0, requests_running=3, queue_waiting=1, e2e_latency_p50_seconds=20, num_parallel=2
+    )
+    assert _estimate_reclaim_overhead_s([lane], "target") == pytest.approx(43)
+
+
+def test_reclaim_reserved_work_is_not_free_when_engine_scrape_lags():
+    lane = _make_lane(
+        active_requests=5, requests_running=0, queue_waiting=0, e2e_latency_p50_seconds=20, num_parallel=2
+    )
+    assert _estimate_reclaim_overhead_s([lane], "target") == pytest.approx(63)
+
+
+def test_queue_does_not_count_engine_waiters_twice_in_active_ledger():
+    lane = _make_lane(
+        model_name="test-model",
+        runtime_state="running",
+        active_requests=10,
+        requests_running=4,
+        queue_waiting=6,
+        num_parallel=4,
+    )
+    view = _make_view(best_lane_state="running", aggregate_active_requests=10, aggregate_queue_waiting=6, lanes=[lane])
+    est = estimate_ettft_local(view, effective_parallel=4, observed_e2e_p50_s=20)
+    assert est.queue_wait_s == pytest.approx(30)
+
+
+def test_accepted_requests_missing_from_scrape_still_wait():
+    lane = _make_lane(
+        model_name="test-model",
+        runtime_state="running",
+        active_requests=10,
+        requests_running=4,
+        queue_waiting=0,
+        num_parallel=4,
+    )
+    view = _make_view(best_lane_state="running", aggregate_active_requests=10, lanes=[lane])
+    assert estimate_ettft_local(view, effective_parallel=4, observed_e2e_p50_s=20).queue_wait_s == pytest.approx(30)
+
+
+@pytest.mark.parametrize("active", [1, 3, 4])
+def test_reserved_work_can_use_free_slots_when_engine_scrape_lags(active):
+    lane = _make_lane(
+        model_name="test-model", runtime_state="running", active_requests=active, requests_running=0, num_parallel=4
+    )
+    view = _make_view(best_lane_state="running", aggregate_active_requests=active, lanes=[lane])
+    assert estimate_ettft_local(view, effective_parallel=4, observed_e2e_p50_s=20).queue_wait_s == 0

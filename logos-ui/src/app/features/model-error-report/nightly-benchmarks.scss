@@ -8,9 +8,6 @@
 .nightly__heading strong { color: rgb(var(--color-typography-0)); font-size: var(--model-detail-heading-size, 1rem); }
 .nightly__heading i { margin-right: .35rem; }
 .nightly__title { display: flex; flex-direction: column; align-items: flex-start; gap: .4rem; }
-.nightly__preview { margin: 1rem 0; padding: 1rem 0; border-top: 1px solid rgb(var(--color-typography-100) / .12); border-bottom: 1px solid rgb(var(--color-typography-100) / .12); }
-.nightly__parameters { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; }
-.nightly__parameters b { margin-left: .4rem; font-weight: 500; color: rgb(var(--color-typography-0)); }
 p { margin: .4rem 0; line-height: 1.5; }
 button { padding: .6rem .85rem; border-radius: .5rem; border: 1px solid rgb(var(--color-outline-300)); background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-0)); font: inherit; font-weight: 500; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
@@ -18,7 +15,7 @@ button:disabled { opacity: .5; cursor: default; }
 small { display: block; margin-top: .75rem; overflow-wrap: anywhere; }
 summary { cursor: pointer; padding: .4rem 0; }
 label { display: block; margin: .65rem 0 .3rem; }
-input, select { max-width: 100%; width: 100%; margin: .3rem 0 .65rem; padding: .6rem; border-radius: .5rem; border: 1px solid rgb(var(--color-outline-300)); background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-0)); font: inherit; }
+input, select { box-sizing: border-box; min-width: 0; max-width: 100%; width: 100%; margin: .3rem 0 .65rem; padding: .6rem; border-radius: .5rem; border: 1px solid rgb(var(--color-outline-300)); background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-0)); font: inherit; }
 li { margin: .5rem 0; overflow-wrap: anywhere; }
 @media (max-width: 600px) { button { width: 100%; } }
 
@@ -31,7 +28,6 @@ li { margin: .5rem 0; overflow-wrap: anywhere; }
   &.nightly__status--blocked { color: rgb(var(--color-warning)); background: rgb(var(--color-warning) / .12); }
 }
 
-.nightly__round-note { color: rgb(var(--color-typography-500)); }
 .nightly__schedule { display: grid; gap: .75rem; margin: .75rem 0 1.25rem; }
 .nightly__schedule > div { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: 1rem; }
 .nightly__schedule dt { color: rgb(var(--color-typography-500)); }
@@ -50,13 +46,25 @@ summary { min-height: 44px; align-content: center; }
 button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }
 @media (max-width: 600px) { .nightly__schedule > div { grid-template-columns: 1fr; gap: .25rem; } }
 
-.nightly details { @include disclosure.section; }
 
 .nightly__summary { margin: 8px 0 0; font-size: .875rem; color: rgb(var(--color-typography-500)); }
 .nightly__heading strong { font-size: 1rem; }
 .nightly__heading button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; }
 .nightly__heading button i { margin: 0; }
-.nightly-management { --model-detail-font-size: 1rem; --model-detail-heading-size: 1.25rem; font-size: 1rem; line-height: 1.5; }
-.nightly-management .nightly__preview { margin-top: 0; border-top: 0; padding-top: 0; }
+.nightly-management { --model-detail-font-size: 1rem; --model-detail-heading-size: 1rem; min-width: 0; font-size: 1rem; line-height: 1.5; }
 .nightly-management details { @include disclosure.section; }
-.nightly__actions { display: flex; flex-wrap: wrap; justify-content: space-between; width: 100%; gap: 12px; }
+.nightly__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; width: 100%; gap: 12px; }
+.nightly__window { display: flex; align-items: center; gap: .5rem; font-weight: 600; }
+.nightly__hint { color: rgb(var(--color-typography-500)); }
+.nightly-management label { font-weight: 500; }
+.nightly-management select {
+  appearance: none;
+  min-height: 44px;
+  padding-inline: .75rem 2.5rem;
+  text-overflow: ellipsis;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='%23717b89' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right .875rem center;
+  background-repeat: no-repeat;
+}
+@media (forced-colors: active) { .nightly-management select { appearance: auto; } }
+.nightly__actions button { width: auto; min-height: 44px; background: rgb(var(--color-primary-600)); color: rgb(var(--color-background-0)); border: 0; }
