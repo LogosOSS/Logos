@@ -662,6 +662,35 @@ class TeamRepoLinkControllerTest {
     }
 
     @Test
+    void manualAndBulkQueueingShareOneRepositorySlot() throws Exception {
+        String base = "/admin/teams/2001/repositories";
+        var created = mvc.perform(post(base).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/example/queue-race\"}"))
+            .andExpect(status().isOk()).andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        var ready = new java.util.concurrent.CyclicBarrier(2);
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var manual = executor.submit(() -> {
+                ready.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                return mvc.perform(post(base + "/" + id + "/analyze/agent").with(TestJwt.logosAdmin()))
+                    .andReturn().getResponse().getStatus();
+            });
+            var bulk = executor.submit(() -> {
+                ready.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                return mvc.perform(post("/admin/repositories/analyze").with(TestJwt.logosAdmin()))
+                    .andReturn().getResponse().getStatus();
+            });
+            org.assertj.core.api.Assertions.assertThat(manual.get(10, java.util.concurrent.TimeUnit.SECONDS))
+                .isIn(200, 409);
+            assertEquals(200, bulk.get(10, java.util.concurrent.TimeUnit.SECONDS));
+        }
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM ai_workflow_analyses WHERE team_repository_id = ?",
+            Integer.class, id));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM agent_sessions WHERE team_repository_id = ?",
+            Integer.class, id));
+    }
+
+    @Test
     void ownerOptOutSkipsBulkAndCancelsOnlyQueuedAutomaticAnalysis() throws Exception {
         String base = "/admin/teams/2001/repositories";
         MvcResult result = mvc.perform(post(base).with(TestJwt.adminUser()).contentType("application/json")

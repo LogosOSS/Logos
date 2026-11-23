@@ -479,3 +479,24 @@ def test_saved_lane_on_busy_gpu_uses_feasible_equivalent_card(pool, other_free, 
     actions = planner._plan_restore(PROVIDER_ID, records, {}, set(), {})
     admitted = planner._validate_vram_budget(actions)
     assert [(a.lane_id, a.params["gpu_devices"]) for a in admitted] == ([(lane, expected)] if expected else [])
+
+
+@pytest.mark.parametrize(
+    "free,expected",
+    [
+        ({0: 49136, 1: 49136}, "0,1"),
+        ({0: 20945, 1: 49136, 2: 49136}, "1,2"),
+        ({0: 20945, 1: 49136}, None),
+    ],
+)
+def test_restore_preserves_two_card_lane_with_single_card_profile(free, expected):
+    planner = _planner(free=free, profiles={MODEL: _profile(tp=1)})
+    runtime = planner._registry.peek_runtime_snapshot(PROVIDER_ID)["runtime"]
+    runtime["restore_gpu_pool_by_model"] = {MODEL: list(free)}
+    runtime["devices"] = {"devices": [{"extra": {"index": gpu}, "name": "Card A"} for gpu in free]}
+    action = _load(gpu_devices="0,1")
+    action.restore = True
+    action.params["vllm_config"] = {"tensor_parallel_size": 2}
+    admitted = planner._validate_vram_budget([action])
+    assert [a.params["gpu_devices"] for a in admitted] == ([expected] if expected else [])
+    assert action.params["vllm_config"]["tensor_parallel_size"] == 2

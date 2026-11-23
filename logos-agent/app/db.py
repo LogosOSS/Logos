@@ -660,6 +660,15 @@ class WorkspaceBusy(ValueError):
     """A workspace is still working on another repository."""
 
 
+# Old poller-created sessions predate the per-analysis flag. Its reserved
+# identity is also the discriminator used by the provenance migration.
+_ANALYSIS_IS_AUTOMATIC = """
+    (s.created_by = 'logos-agent (analysis)' OR EXISTS (
+        SELECT 1 FROM ai_workflow_analyses a
+         WHERE a.agent_session_id = s.id AND a.team_repository_id = s.team_repository_id AND a.automatically_queued))
+"""
+
+
 async def create_session(
     *,
     workspace_id: int,
@@ -683,7 +692,7 @@ async def create_session(
     verification_command: str | None = None,
     repo_base_branch: str | None = None,
     point_workspace_at: str | None = None,
-    automatic_analysis: bool = False,
+    automatic_analysis: bool | None = None,
     retry_analysis_session_id: int | None = None,
 ) -> int:
     """Queue a session. Returns its id.
@@ -697,20 +706,42 @@ async def create_session(
     workspace idle — whichever path inserts the session.
     """
     async with sessionmaker()() as db:
-        if automatic_analysis:
-            # Serialize initial selection, retry and attachment with an owner's opt-out.
-            team_id = await db.scalar(
-                text("SELECT team_id FROM team_repositories WHERE id = :id AND automatic_workflow_analysis FOR UPDATE"),
-                {"id": team_repository_id},
+        if automatic_analysis is not None or retry_analysis_session_id is not None:
+            # Every producer takes the link before the workspace or in-flight slot.
+            link = (
+                (
+                    await db.execute(
+                        text(
+                            "SELECT team_id, automatic_workflow_analysis FROM team_repositories "
+                            "WHERE id = :id FOR UPDATE"
+                        ),
+                        {"id": team_repository_id},
+                    )
+                )
+                .mappings()
+                .one_or_none()
             )
-            if team_id is None:
-                raise ValueError("automatic workflow analysis is disabled or the link was removed")
+            if link is None:
+                raise ValueError("the repository link was removed")
+            if automatic_analysis is None:
+                automatic_analysis = await db.scalar(
+                    text(
+                        f"SELECT {_ANALYSIS_IS_AUTOMATIC} FROM agent_sessions s "
+                        "WHERE s.id = :parent AND s.team_repository_id = :repo AND s.trigger_kind = 'analysis'"
+                    ),
+                    {"parent": retry_analysis_session_id, "repo": team_repository_id},
+                )
+                if automatic_analysis is None:
+                    raise ValueError("the parent analysis session does not belong to this repository")
+            if automatic_analysis and not link["automatic_workflow_analysis"]:
+                raise ValueError("automatic workflow analysis is disabled")
             if retry_analysis_session_id is not None:
                 await db.execute(
                     text("""
                         UPDATE ai_workflow_analyses a SET status = 'failed', finished_at = now(),
                                error = COALESCE(a.error, 'agent session ended without ingest')
-                          FROM agent_sessions s WHERE s.id = :parent AND s.status = 'failed'
+                          FROM agent_sessions s WHERE s.id = :parent
+                           AND s.status IN ('failed', 'cancelled', 'succeeded')
                            AND a.agent_session_id = s.id AND a.team_repository_id = :repo
                            AND a.status IN ('queued', 'running')
                         """),
@@ -811,16 +842,21 @@ async def create_session(
                 },
             )
         ).scalar_one()
-        if automatic_analysis:
+        if automatic_analysis is not None:
             attached = await db.scalar(
                 text("""
                     INSERT INTO ai_workflow_analyses
                         (team_id, team_repository_id, status, source, started_at,
                          automatically_queued, agent_session_id)
-                    VALUES (:team, :repo, 'queued', 'agent', now(), TRUE, :session)
+                    VALUES (:team, :repo, 'queued', 'agent', now(), :automatic, :session)
                     ON CONFLICT (team_repository_id) WHERE status IN ('queued', 'running') DO NOTHING RETURNING id
                     """),
-                {"team": team_id, "repo": team_repository_id, "session": session_id},
+                {
+                    "team": link["team_id"],
+                    "repo": team_repository_id,
+                    "session": session_id,
+                    "automatic": automatic_analysis,
+                },
             )
             if attached is None:
                 raise ValueError("workflow analysis is already in flight")
@@ -1570,7 +1606,7 @@ async def sessions_owing_a_replacement(*, max_attempts: int, since: datetime) ->
     async with sessionmaker()() as db:
         rows = (
             await db.execute(
-                text("""
+                text(f"""
                     SELECT s.id, s.workspace_id, s.task, s.model, s.branch_name,
                            s.trigger_kind, s.trigger_ref, s.reply_target, s.reaction_target,
                            s.priority, s.priority_reason, s.open_pull_request, s.error,
@@ -1582,7 +1618,8 @@ async def sessions_owing_a_replacement(*, max_attempts: int, since: datetime) ->
                        AND COALESCE(s.trigger_kind, '') NOT IN ('security-analysis', 'security-fix')
                        AND (s.trigger_kind IS DISTINCT FROM 'analysis' OR EXISTS (
                              SELECT 1 FROM team_repositories tr
-                              WHERE tr.id = s.team_repository_id AND tr.automatic_workflow_analysis))
+                              WHERE tr.id = s.team_repository_id
+                                AND (tr.automatic_workflow_analysis OR NOT ({_ANALYSIS_IS_AUTOMATIC}))))
                        AND s.finished_at IS NOT NULL
                        AND s.finished_at > :since
                        AND NOT EXISTS (

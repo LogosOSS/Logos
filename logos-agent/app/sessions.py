@@ -3043,7 +3043,6 @@ class SessionManager:
                 team_repository_id=session.get("team_repository_id"),
                 verification_command=session.get("verification_command"),
                 repo_base_branch=session.get("repo_base_branch"),
-                automatic_analysis=session.get("trigger_kind") == "analysis",
                 retry_analysis_session_id=session.get("id") if session.get("trigger_kind") == "analysis" else None,
                 point_workspace_at=resumption_base(session),
             )

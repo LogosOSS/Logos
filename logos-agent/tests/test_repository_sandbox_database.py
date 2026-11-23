@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # Taken before the shared fixture stubs it for the tests without a database.
 REAL_SESSION_MEMORY_MB = db.session_memory_mb
+REAL_OWING_REPLACEMENT = db.sessions_owing_a_replacement
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("SECURITY_TEST_DATABASE_URL"), reason="PostgreSQL integration URL not set"
@@ -277,6 +278,40 @@ async def test_failed_analysis_retry_honors_opt_out_and_attaches_cancellable_ana
             )
         ).all()
         assert rows == [(parent_id, "failed", True), (retry, "queued", True)]
+
+
+@pytest.mark.parametrize("automatic", [True, False])
+async def test_recovery_preserves_original_analysis_provenance_while_opted_out(database, monkeypatch, automatic):
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import AsyncMock
+
+    from app.sessions import SessionManager
+
+    now = datetime.now(timezone.utc)
+    parent = await db.create_session(
+        **_session(trigger_kind="analysis", trigger_ref="team-repository:1"), automatic_analysis=automatic
+    )
+    await db.update_session(parent, status="failed", finished_at=now)
+    async with database.begin() as conn:
+        await conn.execute(text("UPDATE team_repositories SET automatic_workflow_analysis = FALSE"))
+    manager = SessionManager()
+    monkeypatch.setattr(manager, "request_scheduler_pass", lambda: None)
+    monkeypatch.setattr(db, "add_event", AsyncMock())
+    pending = await REAL_OWING_REPLACEMENT(max_attempts=3, since=now - timedelta(hours=1))
+    assert [row["id"] for row in pending] == ([] if automatic else [parent])
+    retry = await manager.take_up_again(await db.get_session(parent))
+    if automatic:
+        assert retry is None
+    else:
+        assert retry is not None
+        async with database.begin() as conn:
+            assert (
+                await conn.scalar(
+                    text("SELECT automatically_queued FROM ai_workflow_analyses " "WHERE agent_session_id = :sid"),
+                    {"sid": retry},
+                )
+                is False
+            )
 
 
 async def test_activity_clock_freezes_and_metadata_survives_reread_and_out_of_order_writes(

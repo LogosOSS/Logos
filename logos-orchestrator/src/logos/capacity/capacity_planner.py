@@ -7853,6 +7853,10 @@ class CapacityPlanner:
             params = action.params if isinstance(action.params, dict) else {}
             pinned = self._parse_gpu_device_ids(params.get("gpu_devices") if params else None)
             required_gpus: Optional[tuple[int, ...]] = pinned if pinned else None
+            if action.restore and required_gpus:
+                # The saved selector is the width of the lane being restored. A
+                # newer calibration may describe a different parallel topology.
+                tp = len(required_gpus)
             free_map = _ensure_working(provider_id)
 
             if free_map is not None:

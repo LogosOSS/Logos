@@ -431,14 +431,19 @@ public class AiWorkflowAnalysisService {
      * row in {@code queued} status.
      */
     public Map<String, Object> queueAgentAnalysis(int teamId, int linkId) {
-        TeamRepoLink link = requireLink(teamId, linkId);
-        try {
-            return tx.execute(status -> queue(teamId, link, false));
+        if (!teamExists(teamId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Team not found");
         }
-        catch (DuplicateKeyException e) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                "An analysis of " + link.getRepoSlug() + " is already queued or running");
-        }
+        return tx.execute(status -> {
+            TeamRepoLink link = repoLinkRepository.findByIdAndTeamIdForUpdate(linkId, teamId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Repository link not found"));
+            try {
+                return queue(teamId, link, false);
+            } catch (DuplicateKeyException e) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "An analysis of " + link.getRepoSlug() + " is already queued or running");
+            }
+        });
     }
 
     /** Each repository gets its own transaction and the same lock as a settings edit. */
