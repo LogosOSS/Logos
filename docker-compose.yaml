@@ -6,7 +6,7 @@
 # Self-built installations can override REGISTRY with their own image source.
 services:
   traefik:
-    image: traefik:v3.7.16
+    image: traefik:v3.7.19
     security_opt:
       - no-new-privileges:true
     cap_drop:
