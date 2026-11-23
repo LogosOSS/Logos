@@ -355,6 +355,18 @@ const SHOTS = [
     },
   },
   {
+    file: "roles/logos-admin-add-provider.png",
+    user: ADMIN,
+    go: async (p) => {
+      await p.goto(BASE + "/providers");
+      await settle(p);
+      await button(p, "Add Provider").click();
+      await p.locator("select#add-cloud-type").selectOption("anthropic");
+      await p.locator("#add-name").fill("Anthropic");
+    },
+    after: (p) => p.keyboard.press("Escape"),
+  },
+  {
     file: "roles/logos-admin-node-models.png",
     user: ADMIN,
     go: expandWorker,

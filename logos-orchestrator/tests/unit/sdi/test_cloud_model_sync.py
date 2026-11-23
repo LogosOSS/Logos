@@ -624,3 +624,115 @@ async def test_sync_preserves_catalogue_when_all_names_are_invalid(monkeypatch):
     service = _run(monkeypatch, [_provider()], lambda url, headers: {"data": [{"id": "bad\nLOGOS\ncommand"}]})
     await service.run_once()
     assert all(not db.synced for db in DummyDB.instances)
+
+
+def test_an_anthropic_listing_contributes_its_max_input_tokens():
+    body = {
+        "data": [
+            {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "max_input_tokens": 1000000},
+            {"type": "model", "id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5"},
+        ],
+        "has_more": False,
+    }
+    names, contexts, looks_like_logos = parse_model_list(body)
+    assert names == ["claude-opus-5-5", "claude-haiku-4-5"]
+    assert contexts == {"claude-opus-5-5": {"current_min": 1000000, "current_max": 1000000, "overall": 1000000}}
+    assert looks_like_logos is False
+
+
+class _PagedResponse:
+    def __init__(self, body):
+        self._body = body
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._body
+
+
+class _PagedClient:
+    """Serves a listing in pages keyed by the ``after_id`` cursor."""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.cursors = []
+
+    async def get(self, url, headers=None, params=None, timeout=None):  # noqa: ARG002
+        cursor = (params or {}).get("after_id")
+        self.cursors.append(cursor)
+        return _PagedResponse(self.pages[cursor])
+
+
+@pytest.mark.asyncio
+async def test_fetch_models_follows_every_page_of_a_paged_listing():
+    client = _PagedClient(
+        {
+            None: {"data": [{"id": "a"}, {"id": "b"}], "has_more": True, "last_id": "b"},
+            "b": {"data": [{"id": "c"}], "has_more": True, "last_id": "c"},
+            "c": {"data": [{"id": "d"}], "has_more": False, "last_id": "d"},
+        }
+    )
+    body = await cloud_model_sync.fetch_models("https://api.anthropic.com/v1/models", {}, client)
+
+    assert [entry["id"] for entry in body["data"]] == ["a", "b", "c", "d"]
+    assert client.cursors == [None, "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_models_reads_an_unpaged_listing_once():
+    client = _PagedClient({None: {"object": "list", "data": [{"id": "gpt-5"}]}})
+    body = await cloud_model_sync.fetch_models("https://api.openai.com/v1/models", {}, client)
+
+    assert body == {"object": "list", "data": [{"id": "gpt-5"}]}
+    assert client.cursors == [None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pages",
+    [
+        pytest.param(
+            {
+                None: {"data": [{"id": "a"}], "has_more": True, "last_id": "a"},
+                "a": {"data": [{"id": "b"}], "has_more": True, "last_id": "a"},
+            },
+            id="repeated-cursor",
+        ),
+        pytest.param({None: {"data": [{"id": "a"}], "has_more": True}}, id="missing-cursor"),
+        pytest.param(
+            {None: {"data": [{"id": "a"}], "has_more": True, "last_id": "a"}, "a": {"error": "boom"}},
+            id="malformed-page",
+        ),
+    ],
+)
+async def test_fetch_models_rejects_an_incomplete_listing(pages):
+    with pytest.raises(cloud_model_sync.IncompleteModelListError):
+        await cloud_model_sync.fetch_models("https://upstream.example.org/v1/models", {}, _PagedClient(pages))
+
+
+@pytest.mark.asyncio
+async def test_fetch_models_rejects_a_listing_beyond_the_page_cap(monkeypatch):
+    monkeypatch.setattr(cloud_model_sync, "_MAX_PAGES", 2)
+    client = _PagedClient(
+        {
+            None: {"data": [{"id": "a"}], "has_more": True, "last_id": "a"},
+            "a": {"data": [{"id": "b"}], "has_more": True, "last_id": "b"},
+        }
+    )
+    with pytest.raises(cloud_model_sync.IncompleteModelListError):
+        await cloud_model_sync.fetch_models("https://upstream.example.org/v1/models", {}, client)
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_listing_leaves_the_catalogue_untouched(monkeypatch):
+    """A paging failure must not replace the links with the pages read so far."""
+
+    def fetch(url, headers):  # noqa: ARG001
+        raise cloud_model_sync.IncompleteModelListError("cursor repeated")
+
+    service = _run(monkeypatch, [_provider(cloud_provider_type="anthropic")], fetch)
+    await service.run_once()
+
+    assert not any(db.synced for db in DummyDB.instances)
+    assert not any(db.contexts for db in DummyDB.instances)
