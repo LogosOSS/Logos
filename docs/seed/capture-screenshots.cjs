@@ -33,6 +33,10 @@ const OUT = process.env.OUT_DIR || IMG;
 const ONLY = process.argv.slice(2);
 const WIDTH = Number(process.env.LOGOS_SCREENSHOT_WIDTH || 1440);
 
+// The screenshots stack does not run the agent runner; /api/agent must reach one
+// that reads the documentation database.
+const AGENT_API = "the agent runner API on /api/agent";
+
 const ADMIN = "tobias.wasner";
 const APP_ADMIN = "alexandra.szuminska";
 const DEVELOPER = "henriette.huhn";
@@ -432,6 +436,32 @@ const SHOTS = [
       await p.fill("#team-name", "MAISS");
       await p.fill("#team-keycloak-group", "maiss-dev");
       await p.locator("#team-keycloak-group").blur();
+    },
+  },
+  {
+    file: "roles/logos-admin-agents.png",
+    user: ADMIN,
+    full: true,
+    needs: AGENT_API,
+    go: async (p) => {
+      await p.goto(BASE + "/agents");
+      await p.getByText("Add input validation to the signup form").waitFor();
+    },
+  },
+  {
+    file: "roles/logos-admin-agents-new-session.png",
+    user: ADMIN,
+    full: true,
+    needs: AGENT_API,
+    go: async (p) => {
+      await p.goto(BASE + "/agents");
+      await settle(p);
+      await button(p, "New session").click();
+      await p.getByLabel("Repository", { exact: true }).selectOption({ label: "docs-example/sample-app (develop)" });
+      await p.getByLabel("Workspace", { exact: true }).selectOption({ label: "sample-app" });
+      await p.locator(".form-card textarea").first().fill("Fix the date format in the export of the order list");
+      await p.locator(".form-card textarea").first().blur();
+      await p.getByText("Deploy to dev and screenshots are available only for the platform repository.").waitFor();
     },
   },
   { file: "roles/logos-admin-my-workspace.png", user: ADMIN, go: (p) => p.goto(BASE + "/my-workspace") },

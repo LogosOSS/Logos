@@ -657,17 +657,30 @@ that is queued or that runs. The results go to the teams as proposals on their
 
 ### Start a Session
 
-Select **New session** to queue a manual session. In **Repository**, select
-the repository that the agent changes:
+To queue a manual session, do these steps:
 
-- **LogosOSS/Logos (platform repository)** is the default.
-- Each linked team repository with the coding agent enabled shows as
-  `owner/name (branch)`.
+1. Select **New session**. The **Start a session** form opens.
+2. In **Repository**, select the repository that the agent changes:
+   - **LogosOSS/Logos (platform repository)** is the default.
+   - Each linked team repository with the coding agent enabled shows as
+     `owner/name (branch)`.
+3. In **Workspace**, select a workspace. One workspace runs one session at a time.
+4. In **Task**, write the change that you want.
+5. Select **Queue session**.
 
-For a linked repository, the session works on that repository and its branch.
-**Deploy to the dev environment afterwards** and **Screenshot paths** are
-available only for the platform repository. The session list and the session
-details show the repository of a session on a linked repository.
+![Start a session form with the linked repository docs-example/sample-app selected](/img/roles/logos-admin-agents-new-session.png)
+
+The example shows the linked repository `docs-example/sample-app` with the
+branch `develop`. For a linked repository, the session works on that
+repository and its branch. The form disables **Deploy to the dev environment
+afterwards** and **Screenshot paths**, because these options are available
+only for the platform repository. A note below the check boxes gives this
+reason.
+
+The session list and the session details show the repository of a session on
+a linked repository. In the session list, the repository shows next to the
+workspace, for example `docs-example/sample-app` in the **Finished** section
+of the **Agent Sessions** page image.
 
 A Logos Admin also sets the network hosts and the comment permission of each
 linked repository. Edit the repository link on the **Repositories** tab of the

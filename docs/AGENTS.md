@@ -207,6 +207,15 @@ is on `:18085`, DB on `127.0.0.1:15432`. Tear down with
 `docker compose -f docker-compose.screenshots.yaml --project-name logos-doks down -v`
 when finished.
 
+The screenshots stack does not run the agent runner, so the capture script
+skips the `logos-admin-agents*.png` shots unless you name them. For these
+shots, serve the `logos-agent` API against `doks-db` (`DB_PORT=15432`)
+without its scheduler, because the scheduler starts the seeded sessions. Add a
+`/api/agent` entry (path rewrite to `/`) before `/api` in the proxy
+configuration. Set `LOGOS_AGENT_API_KEY` to a key of the team **Logos** that
+reaches only the models of **Docs Local Worker**; otherwise the page shows a
+model policy error.
+
 The ordinary `docker-compose.dev.yaml` + `ng serve` on `:4200` also works; point
 `psql` at that stack's DB instead of `15432`.
 
@@ -241,6 +250,8 @@ capturing.
    providers and three models (capabilities, aliases, prices); policies;
    priced `log_entry` rows (billing + statistics + My Workspace usage bars);
    one `in_progress` and one `completed` batch; agent workspaces/sessions;
+   the linked repository `docs-example/sample-app` with the coding agent,
+   2 allowed network hosts and the comment permission, and 1 session on it;
    and team budget / default rate limits for the team-detail overview. It
    also creates a fourth, catalog-only model (`gpt-4o-mini`), gives it usage,
    and deletes it again — the delete trigger keeps that usage under the
@@ -341,7 +352,8 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-security-intake.png` | `tobias.wasner` | `/agents/security` — Report an important incident expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-evidence.png` | `tobias.wasner` | `/agents/security` — Evidence & history expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-confirm.png` | `tobias.wasner` | `/agents/security` — Confirm resolved form; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
-| `logos-admin-agents.png` | `tobias.wasner` | `/agents` | `roles/logos-admin.md` |
+| `logos-admin-agents.png` | `tobias.wasner` | `/agents` (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#agent-sessions` |
+| `logos-admin-agents-new-session.png` | `tobias.wasner` | `/agents` — **New session**, **Repository** `docs-example/sample-app (develop)` selected (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#start-a-session` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |
 | `app-admin-models.png` | `alexandra.szuminska` | `/models` | `roles/app-admin.md` |
 | `app-admin-user-management.png` | `alexandra.szuminska` | `/user-management` | `roles/app-admin.md` |

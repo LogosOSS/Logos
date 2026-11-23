@@ -147,6 +147,12 @@ Only a Logos Admin can change them:
 | **Allowed network hosts** | The HTTPS hosts that agent sessions for this repository can reach, for example to download toolchains. Write one host per line. If the list is empty, then sessions have no internet access. |
 | **Let LogosOSSAgent comment on issues and pull requests during a session** | If selected, the agent can comment on issues and pull requests of this repository while a session runs. The comments use the GitHub account of the agent. |
 
+The screenshot in [Enable the Coding Agent](#enable-the-coding-agent) shows
+the two settings as a Logos Admin sees them. An App Admin sees them in the
+read-only block **Agent sandbox permissions** of the dialog. If a link has
+these permissions, then the list shows, for example, **Network: 2 hosts** and
+**Comments during sessions: Allowed**.
+
 A host is a DNS name, for example `github.com`. A leading `*.` permits all
 subdomains, for example `*.githubusercontent.com`. Logos refuses a scheme, a
 port, a path, an IP address, `localhost` and a top-level wildcard such as
