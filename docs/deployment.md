@@ -359,7 +359,7 @@ The scheduler waits for each selected worker's existing requests to finish.
 No spare worker is required. If all workers are reserved, normal requests must wait.
 The old `LOGOS_NIGHTLY_ALLOW_SINGLE_WORKER` variable no longer controls admission.
 
-Each night selects at most 2 enabled model/worker pairs.
+Each night selects at most `LOGOS_NIGHTLY_MAX_PAIRS` enabled model/worker pairs.
 Untested pairs come first, followed by the oldest previous attempt.
 Unavailable pairs do not consume a place in that night's limit.
 Failed or cancelled plans consume a place after admission.
