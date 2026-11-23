@@ -121,6 +121,14 @@ class ProviderControllerTest {
     }
 
     @Test
+    void maskedSuffixKeepsTheLastThreeUnicodeCodePoints() throws Exception {
+        jdbc.update("UPDATE providers SET api_key = ? WHERE id = 6001", "synthetic-a🙂z");
+        mvc.perform(post("/logosdb/get_providers").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+           .andExpect(jsonPath("$[0].api_key_hint").value("••••a🙂z"));
+    }
+
+    @Test
     void rotateWorkerKeyRequiresWorkerAndAdminAndReplacesTheAuthenticationKey() throws Exception {
         String url = "/logosdb/providers/6001/rotate_worker_key";
         mvc.perform(post(url).with(TestJwt.logosAdmin())).andExpect(status().isBadRequest());

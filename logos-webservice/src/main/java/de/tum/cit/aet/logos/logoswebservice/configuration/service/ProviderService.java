@@ -303,7 +303,7 @@ public class ProviderService {
     private static String keyHint(String key) {
         if (key == null || key.isEmpty()) return null;
         int length = key.codePointCount(0, key.length());
-        return length <= 3 ? "••••" : "••••" + key.substring(key.offsetByCodePoints(key.length(), -3));
+        return length <= 3 ? "••••" : "••••" + key.substring(key.offsetByCodePoints(0, length - 3));
     }
 
     private static String normalizeBaseUrl(String raw) {
