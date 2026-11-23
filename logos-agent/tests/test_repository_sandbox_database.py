@@ -50,7 +50,7 @@ async def database(monkeypatch):
                 trigger_kind text, trigger_ref text, reply_target text, reaction_target text,
                 priority integer, priority_reason text, environment_notes text,
                 repo_url text, repo_slug text, team_repository_id integer, verification_command text,
-                repo_base_branch text, push_repo_slug text, egress_token_hash text,
+                repo_base_branch text, push_repo_slug text, egress_token_hash text, memory_mb integer,
                 tokens_in bigint, tokens_out bigint, cost_usd numeric)"""))
             await conn.execute(text("CREATE TABLE agent_events (id SERIAL PRIMARY KEY, session_id integer, kind text)"))
             await conn.execute(text("""INSERT INTO team_repositories (team_id, repo_url, repo_slug, branch,
@@ -156,3 +156,18 @@ async def test_a_retry_cannot_join_a_workspace_busy_with_another_repository(data
 
     with pytest.raises(db.WorkspaceBusy):
         await db.create_session(**_session())
+
+
+async def test_reserved_memory_counts_sessions_that_hold_a_container(database):
+    holding = []
+    for status in ("starting", "running", "paused", "finalizing", "queued", "succeeded"):
+        session_id = await db.create_session(**_session(repo_slug=None, repo_url=None, team_repository_id=None))
+        async with database.begin() as conn:
+            await conn.execute(
+                text("UPDATE agent_sessions SET status = :s WHERE id = :i"), {"s": status, "i": session_id}
+            )
+        holding.append(session_id)
+    await db.update_session(holding[0], memory_mb=2048)
+
+    # starting 2048 + running, paused and finalizing at the default of 1024.
+    assert await db.reserved_memory_mb(1024) == 2048 + 3 * 1024
