@@ -7861,22 +7861,17 @@ class CapacityPlanner:
 
             if free_map is not None:
                 if action.action == "load":
-                    eligible_free = free_map
-                    if not action.operator_initiated:
-                        pools = self._runtime_dict_for_provider(provider_id).get("restore_gpu_pool_by_model") or {}
-                        if action.model_name in pools:
-                            eligible_free = {gpu: free_map[gpu] for gpu in pools[action.model_name] if gpu in free_map}
                     selected = self._select_cold_load_gpus(
                         provider_id,
                         profile,
                         estimated_vram,
                         tp=tp,
-                        per_gpu_free=eligible_free,
+                        per_gpu_free=free_map,
                         required_gpus=required_gpus,
                         model_name=action.model_name,
                     )
                     if selected is None and action.restore and required_gpus:
-                        alternate = self._restore_gpu_candidates(action, required_gpus, eligible_free)
+                        alternate = self._restore_gpu_candidates(action, required_gpus, free_map)
                         selected = self._select_cold_load_gpus(
                             provider_id,
                             profile,
