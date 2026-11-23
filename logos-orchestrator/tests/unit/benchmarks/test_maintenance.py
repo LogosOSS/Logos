@@ -14,7 +14,7 @@ def coordinator(monkeypatch):
     state = {"claim": None, "locked": False, "benchmark": False, "recovery": False}
 
     @contextmanager
-    def lock():
+    def lock(*, shared=False):
         if state["locked"]:
             yield None
             return
@@ -29,6 +29,8 @@ def coordinator(monkeypatch):
         state["claim"] = dict(
             provider_id=pid, token=token, confirmed=False, automatic=automatic, created_at=datetime.now(UTC)
         )
+
+        return True
 
     def confirm(token):
         assert state["claim"]["token"] == token
@@ -59,11 +61,11 @@ async def dispatch(callback):
     return {"ok": True}
 
 
-async def test_serializes_calibrations_across_providers_and_until_worker_completion(coordinator):
+async def test_serializes_calibrations_on_one_provider_until_worker_completion(coordinator):
     service, state = coordinator
     await service.start_calibration(1, dispatch)
     with pytest.raises(MaintenanceBusyError):
-        await service.start_calibration(2, dispatch)
+        await service.start_calibration(1, dispatch)
     service.registry.send_command.return_value = {"calibrating": True}
     assert await service.reconcile() == []
     assert state["claim"] is not None
@@ -73,7 +75,7 @@ async def test_serializes_calibrations_across_providers_and_until_worker_complet
     assert state["claim"]["provider_id"] == 2
 
 
-async def test_concurrent_manual_calibration_cannot_enter_before_first_start_ack(coordinator):
+async def test_same_worker_start_cannot_enter_before_first_start_ack(coordinator):
     service, _ = coordinator
     sent, finish = asyncio.Event(), asyncio.Event()
 
@@ -86,7 +88,7 @@ async def test_concurrent_manual_calibration_cannot_enter_before_first_start_ack
     await sent.wait()
     try:
         with pytest.raises(MaintenanceBusyError):
-            await service.start_calibration(2, dispatch)
+            await service.start_calibration(1, dispatch)
     finally:
         finish.set()
         await first
@@ -107,7 +109,7 @@ async def test_live_calibration_without_claim_also_blocks(coordinator):
     service, _ = coordinator
     service.registry.is_calibrating.return_value = True
     with pytest.raises(MaintenanceBusyError):
-        await service.start_calibration(2, dispatch)
+        await service.start_calibration(1, dispatch)
 
 
 @pytest.mark.parametrize("dispatched", [False, True])
@@ -220,7 +222,7 @@ async def test_registry_routes_all_calibration_starts_through_coordinator(coordi
     assert state["claim"]["confirmed"]
     caller_callback.assert_called_once_with(None)
     with pytest.raises(MaintenanceBusyError):
-        await registry.send_command(2, "start_calibration_session")
+        await registry.send_command(1, "start_calibration_session")
     registry._send_command.assert_awaited_once()
 
 
@@ -291,7 +293,7 @@ async def test_refused_start_retains_claim_until_fresh_idle_confirmation(coordin
         await service.start_calibration(1, refuse)
     assert state["claim"] is not None
     with pytest.raises(MaintenanceBusyError):
-        await service.start_calibration(2, dispatch)
+        await service.start_calibration(1, dispatch)
     service.registry.send_command.side_effect = None
     service.registry.send_command.return_value = {"calibrating": False}
     await service.reconcile()
@@ -308,7 +310,8 @@ async def test_parallel_calibration_admission_respects_limit_and_worker_identity
         "claim_calibration",
         lambda pid, token, automatic: claims.update(
             {pid: dict(provider_id=pid, token=token, automatic=automatic, confirmed=False)}
-        ),
+        )
+        or True,
     )
     monkeypatch.setattr(
         module.store,
@@ -319,8 +322,12 @@ async def test_parallel_calibration_admission_respects_limit_and_worker_identity
     with pytest.raises(MaintenanceBusyError):
         await service.start_calibration(1, dispatch)
     await service.start_calibration(2, dispatch)
-    with pytest.raises(MaintenanceBusyError):
-        await service.start_calibration(3, dispatch)
+    token = module.AUTOMATIC_CALIBRATION.set(True)
+    try:
+        with pytest.raises(MaintenanceBusyError):
+            await service.start_calibration(3, dispatch)
+    finally:
+        module.AUTOMATIC_CALIBRATION.reset(token)
     assert set(claims) == {1, 2}
 
 

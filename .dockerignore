@@ -23,6 +23,7 @@
 !logos-agent/uv.lock
 !logos-agent/app
 !logos-agent/workspace/run_session.py
+!logos-agent/workspace/session_activity.py
 !logos-agent/workspace/verify_checkout.py
 !logos-agent/workspace/screenshot.js
 !logos-agent/workspace/logos_github.py

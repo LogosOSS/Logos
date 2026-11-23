@@ -13,6 +13,7 @@ import {
   AgentTriggers,
   AgentWorkspace,
   CreateSessionRequest,
+  SessionMessages,
 } from '../../shared/models/agent.model';
 
 @Injectable({ providedIn: 'root' })
@@ -85,6 +86,10 @@ export class AgentService {
     return firstValueFrom(
       this.http.get<AgentEvent[]>(`${AgentService.BASE}/sessions/${sessionId}/events`, { params }),
     );
+  }
+
+  getMessages(sessionId: number): Promise<SessionMessages> {
+    return firstValueFrom(this.http.get<SessionMessages>(`${AgentService.BASE}/sessions/${sessionId}/messages`));
   }
 
   /**

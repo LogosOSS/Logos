@@ -192,6 +192,7 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 agent \
   && mkdir -p /workspace /artifacts /cache \
   && chown -R agent:agent /workspace /artifacts /cache /home/agent
 
+COPY logos-agent/workspace/session_activity.py /usr/local/lib/session_activity.py
 COPY --chown=agent:agent logos-agent/workspace/run_session.py /usr/local/lib/run_session.py
 COPY --chown=agent:agent logos-agent/workspace/verify_checkout.py /usr/local/lib/verify_checkout.py
 COPY --chown=agent:agent logos-agent/workspace/screenshot.js /usr/local/lib/screenshot.js

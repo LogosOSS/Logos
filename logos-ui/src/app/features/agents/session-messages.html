@@ -1,0 +1,18 @@
+<div class="agent-messages" role="log" aria-label="Agent messages">
+  @for (message of messages(); track message.id) {
+    <article class="agent-message">
+      <header>{{ message.actor === 'main' ? 'Agent' : 'Subagent · ' + message.actor.slice(6) }}</header>
+      @for (block of message.blocks; track $index) {
+        @switch (block.kind) {
+          @case ('paragraph') { <p>{{ block.text }}</p> }
+          @case ('code') { <pre><code>{{ block.text }}</code></pre> }
+          @case ('ul') { <ul>@for (item of block.items; track $index) { <li>{{ item }}</li> }</ul> }
+          @case ('ol') { <ol [start]="block.start">@for (item of block.items; track $index) { <li>{{ item }}</li> }</ol> }
+        }
+      }
+      @if (message.truncated) { <small>Message shortened in this view.</small> }
+    </article>
+  } @empty {
+    <p class="empty-message">{{ active() ? 'Waiting for an agent message.' : 'No structured messages were recorded for this session.' }}</p>
+  }
+</div>

@@ -619,14 +619,14 @@ WHERE id = 1;
 INSERT INTO agent_sessions (
     workspace_id, task, model, status,
     open_pull_request, created_by, created_at, started_at, finished_at,
-    tokens_in, tokens_out, cost_usd
+    tokens_in, tokens_out, cost_usd, memory_mb
 )
 SELECT w.id, s.task, 'qwen-2.5-72b-instruct', s.status,
        true, 'docs-role-screenshots',
        now() - s.created_ago,
        CASE WHEN s.status = 'queued' THEN NULL ELSE now() - s.started_ago END,
        CASE WHEN s.status IN ('succeeded', 'failed') THEN now() - s.finished_ago ELSE NULL END,
-       s.tin, s.tout, s.cost
+       s.tin, s.tout, s.cost, CASE WHEN s.status = 'running' THEN 2048 END
 FROM agent_workspaces w
 JOIN (VALUES
     ('edutelligence', 'queued',
@@ -648,6 +648,12 @@ WHERE NOT EXISTS (
     WHERE a.created_by = 'docs-role-screenshots' AND a.task = s.task
 );
 
+-- Illustrative parent estimate and one child on the running documentation session.
+UPDATE agent_sessions SET subagent_count = 1, progress_percent = 40,
+    progress_active_s = 1200, progress_reported_at = now() - interval '2 minutes',
+    active_seconds = 1200, active_since = now() - interval '2 minutes'
+WHERE created_by = 'docs-role-screenshots' AND status = 'running';
+
 -- Team → Repositories / Workflows tabs (role-guide PNGs).
 INSERT INTO team_repositories (team_id, repo_url, repo_slug, branch, paths)
 SELECT t.id,
@@ -666,11 +672,11 @@ WHERE t.name = 'Logos'
 -- The agent sandbox permissions fill the Logos Admin fields of the editor.
 INSERT INTO team_repositories (
     team_id, repo_url, repo_slug, branch, paths,
-    agent_enabled, verification_command, agent_instructions,
+    agent_enabled, automatic_workflow_analysis, verification_command, agent_instructions,
     agent_egress_hosts, agent_may_comment
 )
 SELECT t.id, 'https://github.com/docs-example/sample-app.git', 'docs-example/sample-app',
-       'develop', '["src"]'::jsonb, TRUE, 'make check && make build',
+       'develop', '["src"]'::jsonb, TRUE, FALSE, 'make check && make build',
        'Use the project Makefile. Keep API behavior compatible.',
        '["github.com", "*.githubusercontent.com"]'::jsonb, TRUE
 FROM teams t
@@ -679,6 +685,7 @@ ON CONFLICT (team_id, repo_slug) DO UPDATE SET
     branch = EXCLUDED.branch,
     paths = EXCLUDED.paths,
     agent_enabled = EXCLUDED.agent_enabled,
+    automatic_workflow_analysis = EXCLUDED.automatic_workflow_analysis,
     verification_command = EXCLUDED.verification_command,
     agent_instructions = EXCLUDED.agent_instructions,
     agent_egress_hosts = EXCLUDED.agent_egress_hosts,
@@ -692,13 +699,13 @@ WHERE NOT EXISTS (SELECT 1 FROM agent_workspaces w WHERE w.name = 'sample-app');
 INSERT INTO agent_sessions (
     workspace_id, task, model, status,
     open_pull_request, created_by, created_at, started_at, finished_at,
-    tokens_in, tokens_out, cost_usd,
+    tokens_in, tokens_out, cost_usd, memory_mb, memory_peak_bytes,
     repo_url, repo_slug, team_repository_id, verification_command, repo_base_branch
 )
 SELECT w.id, 'Add input validation to the signup form', 'qwen-2.5-72b-instruct', 'succeeded',
        true, 'docs-role-screenshots',
        now() - interval '5 hours', now() - interval '5 hours', now() - interval '4 hours',
-       9000, 2500, 0.24,
+       9000, 2500, 0.24, 2048, 1460::bigint * 1048576,
        tr.repo_url, tr.repo_slug, tr.id, tr.verification_command, tr.branch
 FROM agent_workspaces w
 JOIN teams t ON t.name = 'Logos'

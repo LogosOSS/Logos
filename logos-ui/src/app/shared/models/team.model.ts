@@ -166,6 +166,7 @@ export interface TeamProviderBudget {
 
 /** GitHub repository linked to a team for later AI-workflow / SLO analysis. */
 export interface RepositoryAgentSettings {
+  automatic_workflow_analysis?: boolean;
   agent_enabled?: boolean;
   agent_instructions?: string | null;
   verification_command?: string | null;
