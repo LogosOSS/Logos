@@ -290,6 +290,22 @@ def authenticate_api_key(headers: Optional[Dict[str, str]], client_ip: Optional[
         raise
 
 
+def issue_continuation_credential(headers: Optional[Dict[str, str]], auth: AuthContext) -> Optional[str]:
+    """A fresh agent credential for an in-process turn of an authenticated request.
+
+    An agent credential expires a minute after issue, but a request that runs
+    several model turns inside the orchestrator (server-side tools) can take
+    longer. Its turns carry a new credential for the identity that
+    authenticated the request instead; each turn's own authentication still
+    rejects a revoked identity. None when the request carries no agent
+    credential, which keeps any other key unchanged.
+    """
+    key = _resolve_logos_key(headers, required=False)
+    if not key or not key.startswith(agent_credential.AGENT_CREDENTIAL_PREFIX):
+        return None
+    return agent_credential.issue_agent_credential(auth.api_key_id)
+
+
 def authenticate_batch_api_key(headers: Optional[Dict[str, str]]) -> AuthContext:
     """Auth for the Batch API, which also takes the scoped credential.
 

@@ -1,12 +1,17 @@
 """Expiry, revocation and scope at the actual inference authentication boundary."""
 
-from unittest.mock import MagicMock
+import sys
+from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 
+import logos as main
 from logos import agent_credential, auth, batch_credential
-from logos.routers import internal
+from logos.anthropic_compat import web_search as server_web_search
+from logos.routers import internal, user_facing
 
 ROW = {
     "id": 17,
@@ -117,3 +122,69 @@ def test_issuer_is_secret_gated_and_honors_revocation(clock, database, monkeypat
     with pytest.raises(HTTPException) as exc:
         internal.internal_agent_credentials(request)
     assert exc.value.status_code == 403
+
+
+def _turn(content, stop_reason):
+    return {
+        "id": "msg_upstream",
+        "type": "message",
+        "role": "assistant",
+        "model": "local-model",
+        "content": content,
+        "stop_reason": stop_reason,
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+
+
+@pytest.fixture
+def slow_web_search_turns(clock, database, monkeypatch):
+    """Server-side web search whose every model turn outlasts one credential."""
+    # The route resolves the auth module through sys.modules, not the
+    # ``logos.auth`` attribute this file imports before the package handover.
+    monkeypatch.setattr(sys.modules["logos.auth"], "DBManager", lambda: database)
+    found = [{"title": "Docs", "url": "https://docs.example.org", "snippet": "docs"}]
+    monkeypatch.setattr(server_web_search, "search_web", AsyncMock(return_value=found))
+    search = {"type": "tool_use", "id": "toolu_1", "name": "web_search", "input": {"query": "docs"}}
+    turns = [_turn([search], "tool_use"), _turn([{"type": "text", "text": "Answer"}], "end_turn")]
+    authenticated = []
+
+    async def handle(path, request):
+        authenticated.append(user_facing.authenticate_api_key(dict(request.headers)).api_key_id)
+        clock[0] += agent_credential.AGENT_CREDENTIAL_TTL_S + 1
+        return JSONResponse(turns[len(authenticated) - 1])
+
+    monkeypatch.setattr(user_facing, "handle_sync_request", handle)
+    return authenticated
+
+
+async def _post_web_search():
+    payload = {
+        "model": "local-model",
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": "Search for docs"}],
+        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
+    }
+    headers = {"Authorization": f"Bearer {agent_credential.issue_agent_credential(17)}"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+        return await client.post("/v1/messages", json=payload, headers=headers)
+
+
+async def test_in_process_turns_renew_the_credential_of_a_long_request(slow_web_search_turns):
+    response = await _post_web_search()
+    assert response.status_code == 200
+    assert [block["type"] for block in response.json()["content"]][-1] == "text"
+    assert slow_web_search_turns == [17, 17]
+
+
+async def test_in_process_turns_still_honor_identity_revocation(slow_web_search_turns, database):
+    # Request authentication and the first turn see the identity; it is revoked before the second.
+    database.get_api_key_by_id.side_effect = [dict(ROW), dict(ROW), None]
+    response = await _post_web_search()
+    assert response.status_code == 401
+    assert slow_web_search_turns == [17]
+
+
+def test_ordinary_keys_keep_their_credential_for_in_process_turns(clock):
+    context = MagicMock(api_key_id=17)
+    assert auth.issue_continuation_credential({"Authorization": "Bearer lg-key"}, context) is None
+    assert auth.issue_continuation_credential({}, context) is None

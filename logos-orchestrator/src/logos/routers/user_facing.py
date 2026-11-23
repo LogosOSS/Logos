@@ -21,7 +21,7 @@ from pydantic import ValidationError
 import logos.main as _main
 from logos.anthropic_compat import translate_error
 from logos.anthropic_compat import web_search as server_web_search
-from logos.auth import authenticate_api_key
+from logos.auth import AuthContext, authenticate_api_key, issue_continuation_credential
 from logos.batch_api import handle_batch_api_request
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbmodules import JobStatus
@@ -509,6 +509,9 @@ async def web_search(body: WebSearchRequest, request: Request):
     return {"query": body.query, "source": "DuckDuckGo", "results": results}
 
 
+# The headers ``authenticate_api_key`` reads the caller's key from.
+_KEY_HEADERS = (b"authorization", b"logos_key", b"logos-key")
+
 _ERROR_TYPES = {
     400: "invalid_request_error",
     401: "authentication_error",
@@ -521,20 +524,27 @@ _ERROR_TYPES = {
 }
 
 
-async def _pipeline_turn(path: str, request: Request, payload: dict) -> tuple[int, Optional[dict]]:
+async def _pipeline_turn(path: str, request: Request, payload: dict, auth: AuthContext) -> tuple[int, Optional[dict]]:
     """One non-streaming request through the normal pipeline, in process.
 
     The client's own request with a different body: same headers, so the same
     key, client IP and routing hints; a fresh request id and log entry, so the
-    turn is accounted like any other. The body stream ends after the payload
-    and then waits instead of reporting a disconnect — a client that leaves
-    cancels the task running this turn instead.
+    turn is accounted like any other. A short-lived credential is replaced by
+    a fresh one for ``auth``'s identity, because the turns of one request can
+    outlive it; the turn's own authentication still checks that identity. The
+    body stream ends after the payload and then waits instead of reporting a
+    disconnect — a client that leaves cancels the task running this turn
+    instead.
 
     Returns the status and the JSON body, ``None`` for an unreadable one.
     Raises the pipeline's HTTPException for a request it rejects.
     """
     raw = json.dumps(payload).encode()
     headers = [(k, v) for k, v in request.scope["headers"] if k.lower() != b"content-length"]
+    renewed = issue_continuation_credential(dict(request.headers), auth)
+    if renewed is not None:
+        headers = [(k, v) for k, v in headers if k.lower() not in _KEY_HEADERS]
+        headers.append((b"authorization", f"Bearer {renewed}".encode()))
     headers.append((b"content-length", str(len(raw)).encode()))
     delivered = False
 
@@ -560,10 +570,10 @@ async def _pipeline_turn(path: str, request: Request, payload: dict) -> tuple[in
     return response.status_code, data
 
 
-async def _messages_turn(request: Request, payload: dict) -> tuple[int, dict]:
+async def _messages_turn(request: Request, payload: dict, auth: AuthContext) -> tuple[int, dict]:
     """One non-streaming Messages request through the normal pipeline, in process."""
     try:
-        status, data = await _pipeline_turn("v1/messages", request, payload)
+        status, data = await _pipeline_turn("v1/messages", request, payload, auth)
     except HTTPException as exc:
         status = exc.status_code
         return status, {
@@ -584,10 +594,10 @@ async def _serve_server_web_search(request: Request, payload: dict, tool: dict):
     """Answer a Messages request that carries Anthropic's web search server tool."""
     # Rejected up front: a stream, once open, can only report it as an error
     # event, and a bad key deserves its 401.
-    authenticate_api_key(dict(request.headers), client_ip=get_client_ip(request))
+    auth = authenticate_api_key(dict(request.headers), client_ip=get_client_ip(request))
 
     async def turn(body: dict) -> tuple[int, dict]:
-        return await _messages_turn(request, body)
+        return await _messages_turn(request, body, auth)
 
     if not payload.get("stream"):
         status, body = await server_web_search.run(payload, tool, turn)
@@ -655,11 +665,11 @@ async def system_one(request: Request):
 async def _answer_with_decision_profile(body: SystemOneRequest, request: Request):
     """Each question is one completion on the decision model's lane, run through
     the normal pipeline (authorisation, scheduling, logging, billing)."""
-    authenticate_api_key(dict(request.headers), client_ip=get_client_ip(request))
+    auth = authenticate_api_key(dict(request.headers), client_ip=get_client_ip(request))
 
     async def turn(path: str, payload: dict) -> tuple[int, Optional[dict]]:
         try:
-            status, data = await _pipeline_turn(path, request, payload)
+            status, data = await _pipeline_turn(path, request, payload, auth)
             if data is None:
                 return 502, {"error": {"message": "The model returned an unreadable response."}}
             return status, data
