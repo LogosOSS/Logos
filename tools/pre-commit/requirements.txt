@@ -8,8 +8,8 @@
 # requirements.lock with --no-deps --require-hashes into the environment you
 # run pre-commit from.
 pre-commit==4.7.0
-pre-commit-hooks==5.0.0
+pre-commit-hooks==6.0.0
 autoflake==2.4.0
-isort==5.13.2
+isort==9.0.2
 black==26.10.1
 flake8==7.5.0
