@@ -319,7 +319,7 @@ See the [nightly benchmark guide](../admin/nightly-benchmarks.md) for rotation, 
 
 The card then shows **Enabled · in nightly rotation**.
 The schedule stays active after a page reload.
-Each night, Logos selects up to 2 eligible pairs (`LOGOS_NIGHTLY_MAX_PAIRS`), with new or older attempts first.
+Each night, Logos selects up to `LOGOS_NIGHTLY_MAX_PAIRS` eligible pairs, with new or older attempts first.
 Select **Manage** to inspect the parameter values for this pair. The plan does not guarantee a place for tonight.
 
 The example uses illustrative measurements and an active nightly schedule.
