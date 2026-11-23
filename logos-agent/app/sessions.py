@@ -204,8 +204,8 @@ def _footer(session_id: int, session: dict[str, Any] | None) -> str:
 # for the same container only over-reserve for a moment.
 _held_memory: dict[object, int] = {}
 
-# States in which a container still uses its memory.
-_LIVE_CONTAINER_STATES = frozenset({"running", "paused", "restarting", "removing"})
+# Docker states that confirm a container has no running processes.
+_STOPPED_CONTAINER_STATES = frozenset({"created", "exited", "dead", "gone"})
 
 
 def _hold(memory_mb: int) -> object:
@@ -225,50 +225,32 @@ async def _release_when_stopped(
     *,
     helper: _Helper | None = None,
     launch: _Launch | None = None,
-    unknown_timeout_s: float = 600,
     poll_s: float = 5,
 ) -> None:
-    """Give a hold back once none of its containers uses memory any more.
-
-    A container Docker reports as running or paused keeps the hold, however
-    long that takes: the memory is in use. Only a container that cannot be
-    inspected at all for ``unknown_timeout_s`` is given up on, so a broken
-    Docker call cannot occupy the budget for good.
-    """
+    """Return memory only after Docker confirms that every owner has stopped."""
     if token is None:
         return
     try:
         if launch is not None:
             await launch.settled.wait()
         if container_id:
-            await _wait_for_container_stop(container_id, unknown_timeout_s, poll_s)
+            await _wait_for_container_stop(container_id, poll_s)
         if helper is not None:
             helper_id = await helper.started_container()
             if helper_id:
-                await _wait_for_container_stop(helper_id, unknown_timeout_s, poll_s)
+                await _wait_for_container_stop(helper_id, poll_s)
     finally:
         _release(token)
 
 
-async def _wait_for_container_stop(container_id: str, unknown_timeout_s: float, poll_s: float) -> None:
-    loop = asyncio.get_running_loop()
-    unknown_since: float | None = None
+async def _wait_for_container_stop(container_id: str, poll_s: float) -> None:
     while True:
         try:
             state, _ = await docker_engine.container_state(container_id)
+            if state in _STOPPED_CONTAINER_STATES:
+                return
         except Exception as exc:
             logger.info("could not inspect container %s: %s", container_id, exc)
-            state = "unknown"
-        if state in _LIVE_CONTAINER_STATES:
-            unknown_since = None
-        elif state == "unknown":
-            if unknown_since is None:
-                unknown_since = loop.time()
-            if loop.time() - unknown_since >= unknown_timeout_s:
-                logger.warning("container %s could not be inspected for %ss", container_id, unknown_timeout_s)
-                return
-        else:
-            return
         await asyncio.sleep(poll_s)
 
 
@@ -773,23 +755,8 @@ class SessionManager:
         settlement, so a later cancel or cleanup can still reach the
         credential-bearing agent.
         """
-        live: dict[int, dict[str, Any]] = {}
-        try:
-            for container in await docker_engine.list_managed_containers():
-                labels = container.get("Labels") or {}
-                if labels.get("logos.agent.helper"):
-                    # A transient prepare/finalize container: never the
-                    # supervised session container. A restart mid-helper is
-                    # the only way one survives this far, so remove it
-                    # instead of re-adopting it as a session.
-                    await docker_engine.remove_container(container.get("Id", ""))
-                    continue
-                label = labels.get("logos.agent.session")
-                if label and label.isdigit():
-                    live[int(label)] = container
-        except Exception as exc:
-            logger.warning("could not list managed containers during reconcile: %s", exc)
-            return
+        # Enumeration must succeed before any work is resumed or admitted.
+        containers = await docker_engine.list_managed_containers()
 
         # Snapshot the occupying rows before committing any of the
         # transitions: the status queries must see the state as it was at
@@ -805,6 +772,22 @@ class SessionManager:
                 # restart of the runner.
                 _remember_memory(session)
                 occupying.append((status, session))
+
+        # Recover every leftover before any supervisor or finalizer can start.
+        # A single session can leave several helpers and screenshots behind.
+        active_ids = {session["id"] for _, session in occupying}
+        live: dict[int, dict[str, Any]] = {}
+        for container in containers:
+            labels = container.get("Labels") or {}
+            label = labels.get("logos.agent.session", "")
+            sid = int(label) if label.isdigit() else None
+            helper = labels.get("logos.agent.helper") or labels.get("logos.agent.screenshot")
+            if sid in active_ids and not helper:
+                if sid in live:
+                    raise RuntimeError(f"multiple agent containers for session {sid} during recovery")
+                live[sid] = container
+            else:
+                await self._remove_recovered_leftover(container["Id"], active_session=sid in active_ids)
 
         for status, session in occupying:
             sid = session["id"]
@@ -908,10 +891,27 @@ class SessionManager:
                 _, exit_code = await docker_engine.container_state(container_id)
                 await self._settle(sid, exit_code=exit_code, error=None)
 
-        # Containers with no live session row: leftovers, remove them.
-        for sid, container in live.items():
-            logger.info("removing orphaned container for session %s", sid)
-            await docker_engine.remove_container(container.get("Id", ""))
+    @staticmethod
+    async def _remove_recovered_leftover(container_id: str, *, active_session: bool) -> None:
+        try:
+            await docker_engine.remove_container(container_id)
+            return
+        except Exception as exc:
+            logger.warning("could not remove leftover container %s during startup: %s", container_id, exc)
+
+        # The original process's holds are gone. Docker's configured cap also
+        # covers screenshots, legacy rows and containers whose row was deleted.
+        info = await docker_engine.inspect_container(container_id)
+        if info is None or info.get("State", {}).get("Status") in _STOPPED_CONTAINER_STATES:
+            return
+        if active_session:
+            # Replaying finalization beside its old helper can repeat its side effects.
+            raise RuntimeError(f"helper {container_id} is still active during session recovery")
+        limit = info.get("HostConfig", {}).get("Memory")
+        if not isinstance(limit, int) or limit <= 0:
+            raise RuntimeError(f"cannot establish the memory limit of leftover container {container_id}")
+        megabyte = 1024 * 1024
+        _release_in_background(_hold((limit + megabyte - 1) // megabyte), container_id)
 
     # --- scheduling -------------------------------------------------------
 

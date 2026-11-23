@@ -169,6 +169,14 @@ containers get the same limit; a new session starts only while the memory
 that starting, running, paused and finalizing sessions reserved, plus its
 own, fits in the budget (`app/memory_budget.py`).
 
+If Docker cleanup fails, a container keeps its reservation until Docker
+confirms it has stopped. On restart the runner inventories managed containers
+before starting the scheduler. For a leftover container that still runs after
+its session ended, the runner restores the reservation from its Docker memory
+limit. Startup fails if the inventory or a required limit is unavailable, or
+if a helper from an active session is still running when recovery would
+repeat its work.
+
 Workspaces the runner creates for triggered work are named after it —
 `issue-812-oom-on-startup`, `pr-772-add-an-agent-runner` — which is also what
 appears in the branch (`logos/agent/issue-812-oom-on-startup/session-42`) and
