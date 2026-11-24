@@ -28,7 +28,7 @@ ANSWER = CachedAnswer(
     source_model_id=4,
 )
 HIT = (ANSWER, Match(accepted=True, index=0, similarity=0.93, label="track_order"))
-MISS = (None, Match(accepted=False, index=0, similarity=0.62, label="track_order"))
+MISS = (None, Match(accepted=False, index=0, similarity=0.62, label="track_order", agreed=True, entry_id=3))
 
 
 class _Recorder:
@@ -211,8 +211,9 @@ async def test_a_hit_is_settled_with_its_log_row_entry_and_payload(monkeypatch, 
     await _route(log_id=55)
 
     assert len(persisted) == 1
-    log_id, request_id, entry_id, payload = persisted[0]
+    log_id, request_id, entry_id, payload, similarity = persisted[0]
     assert (log_id, request_id, entry_id) == (55, "req-1", 7)
+    assert similarity == 0.93
     assert payload["choices"][0]["message"]["content"] == ANSWER.answer
 
 
@@ -231,8 +232,20 @@ async def test_a_miss_takes_the_normal_path_and_is_recorded(monkeypatch, paths, 
     out = await _route()
 
     assert out == {"status": "resource"}
-    pipeline.record_answer_reuse_miss.assert_called_once_with("req-1")
+    pipeline.record_answer_reuse_miss.assert_called_once_with("req-1", similarity=0.62, nearest_entry_id=3, agreed=True)
     assert persisted == []
+
+
+async def test_a_miss_without_a_comparison_records_no_lookup_values(monkeypatch, paths, pipeline, persisted):
+    # Fewer than k stored entries: find returns similarity 0.0 but no entry.
+    # Recording 0.0 would look like "compared, and very far"; it must stay NULL.
+    _use_cache(monkeypatch, (None, Match(accepted=False, index=None, similarity=0.0, label=None)))
+
+    await _route()
+
+    pipeline.record_answer_reuse_miss.assert_called_once_with(
+        "req-1", similarity=None, nearest_entry_id=None, agreed=None
+    )
 
 
 async def test_without_the_header_the_cache_is_never_consulted(monkeypatch, paths, pipeline, persisted):
@@ -313,12 +326,12 @@ def fake_db(monkeypatch):
 def test_settling_a_hit_writes_the_row_and_the_payload(fake_db, pipeline):
     pipeline.take_monitoring_buffer.return_value = {"cache_hit": None, "queue_depth_at_arrival": 2}
 
-    main._persist_cache_hit(55, "req-1", 7, {"x": 1})
+    main._persist_cache_hit(55, "req-1", 7, {"x": 1}, 0.93)
 
     names = [name for name, _, _ in fake_db.calls]
     assert names == ["finalize_cache_hit_row", "store_response_payload", "update_log_entry_metrics"]
     assert fake_db.calls[0][1] == (55, 7)
-    assert fake_db.calls[0][2] == {"request_id": "req-1"}
+    assert fake_db.calls[0][2] == {"similarity": 0.93, "request_id": "req-1"}
     assert fake_db.calls[1][1] == (55, {"x": 1})
     assert fake_db.calls[2][2] == {"log_id": 55, "request_id": "req-1", "queue_depth_at_arrival": 2}
     pipeline.discard_request.assert_called_once_with("req-1", "success")
@@ -327,7 +340,7 @@ def test_settling_a_hit_writes_the_row_and_the_payload(fake_db, pipeline):
 def test_settling_a_hit_without_a_log_row_still_counts_the_hit(fake_db, pipeline):
     pipeline.take_monitoring_buffer.return_value = {}
 
-    main._persist_cache_hit(None, "req-1", 7, {"x": 1})
+    main._persist_cache_hit(None, "req-1", 7, {"x": 1}, 0.93)
 
     assert [name for name, _, _ in fake_db.calls] == ["record_answer_cache_hit"]
     assert fake_db.calls[0][1] == (7,)
@@ -339,13 +352,13 @@ def test_a_failing_settlement_never_reaches_the_client(monkeypatch, pipeline):
 
     monkeypatch.setattr(main, "DBManager", broken)
 
-    main._persist_cache_hit(55, "req-1", 7, {"x": 1})
+    main._persist_cache_hit(55, "req-1", 7, {"x": 1}, 0.93)
 
 
 def test_settling_survives_a_failing_monitoring_buffer(fake_db, pipeline):
     pipeline.take_monitoring_buffer.side_effect = RuntimeError("buffer gone")
 
-    main._persist_cache_hit(55, "req-1", 7, {"x": 1})
+    main._persist_cache_hit(55, "req-1", 7, {"x": 1}, 0.93)
 
     assert [name for name, _, _ in fake_db.calls] == ["finalize_cache_hit_row", "store_response_payload"]
 
