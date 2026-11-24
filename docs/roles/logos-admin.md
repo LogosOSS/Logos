@@ -732,6 +732,8 @@ In **New Team**, enter a name, choose where requests can be processed, and selec
 
 Change the setting under **Teams → Settings → Team privacy**. It applies to every key, including custom permissions and keys issued before the change. A model served at multiple providers stays available through its eligible deployments. Historical EU labels need the same endpoint confirmation when a request selects a geographically restricted profile. Existing optional routing profiles continue to restrict requests that select them, including profiles requiring an EU-based provider. Use **Team Management** for queue priority and the team’s **Settings** for budgets and limits. Operators manage optional profiles through the management API (`POST /logosdb/get_policies`, `/logosdb/add_policy`, `/logosdb/update_policy` and `/logosdb/delete_policy`). A client selects a stored profile with the `policy` header. Within the team’s privacy limit, the profile can set thresholds for latency, accuracy, cost and quality, plus priority and topic.
 
+Logos keeps grants that the current privacy setting hides. Saving the visible permissions leaves those hidden grants in place. They become available again when the team and provider settings permit them.
+
 When you open a team, you see the same detail tabs as an owning App Admin sees.
 For the tabs Overview to Settings, see [App Admin → Teams](app-admin.md#teams).
 Logos Admins also get a **Providers** tab. This tab shows which cloud

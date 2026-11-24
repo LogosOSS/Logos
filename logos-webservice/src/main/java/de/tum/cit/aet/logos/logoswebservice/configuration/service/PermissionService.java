@@ -92,11 +92,13 @@ public class PermissionService {
         return models ? providerRepo.eligibleModels(teamId) : providerRepo.eligibleProviders(teamId);
     }
 
-    private void checkScope(Integer teamId, boolean models, List<Integer> ids) {
-        if (!eligibleIds(teamId, models).containsAll(ids)) {
+    private Set<Integer> checkScope(Integer teamId, boolean models, List<Integer> ids) {
+        Set<Integer> eligible = eligibleIds(teamId, models);
+        if (!eligible.containsAll(ids)) {
             throw new ForbiddenException(
                 "The team's privacy level excludes a requested model or provider.");
         }
+        return eligible;
     }
 
     public List<Map<String, Object>> getPermissionCatalog(Integer teamId) {
@@ -133,9 +135,9 @@ public class PermissionService {
     @Transactional
     public void setApiKeyModelPermissions(int keyId, List<Integer> modelIds) {
         apiKeyProviderRepo.lockApiKeyPermissions(apiKeyPermsLockKey(keyId));
-        checkScope(teamForKey(keyId), true, modelIds);
+        Set<Integer> eligible = checkScope(teamForKey(keyId), true, modelIds);
         audit.withCause("direct", () -> replaceGrants(
-            apiKeyModelRepo, apiKeyModelRepo.findById_ApiKeyId(keyId), modelIds,
+            apiKeyModelRepo, apiKeyModelRepo.findById_ApiKeyId(keyId), modelIds, eligible,
             p -> p.getId().getModelId(), id -> new ApiKeyModelPermission(keyId, id)));
     }
 
@@ -153,9 +155,9 @@ public class PermissionService {
     @Transactional
     public void setApiKeyProviderPermissions(int keyId, List<Integer> providerIds) {
         apiKeyProviderRepo.lockApiKeyPermissions(apiKeyPermsLockKey(keyId));
-        checkScope(teamForKey(keyId), false, providerIds);
+        Set<Integer> eligible = checkScope(teamForKey(keyId), false, providerIds);
         audit.withCause("direct", () -> replaceGrants(
-            apiKeyProviderRepo, apiKeyProviderRepo.findById_ApiKeyId(keyId), providerIds,
+            apiKeyProviderRepo, apiKeyProviderRepo.findById_ApiKeyId(keyId), providerIds, eligible,
             p -> p.getId().getProviderId(), id -> new ApiKeyProviderPermission(keyId, id)));
         audit.withCause("cascade", () -> apiKeyModelRepo.deleteCascadeForApiKey(keyId));
     }
@@ -169,9 +171,9 @@ public class PermissionService {
     @Transactional
     public void setTeamModelPermissions(int teamId, List<Integer> modelIds) {
         teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
-        checkScope(teamId, true, modelIds);
+        Set<Integer> eligible = checkScope(teamId, true, modelIds);
         audit.withCause("direct", () -> replaceGrants(
-            teamModelRepo, teamModelRepo.findById_TeamId(teamId), modelIds,
+            teamModelRepo, teamModelRepo.findById_TeamId(teamId), modelIds, eligible,
             p -> p.getId().getModelId(), id -> new TeamModelPermission(teamId, id)));
     }
 
@@ -184,9 +186,9 @@ public class PermissionService {
     @Transactional
     public void setTeamProviderPermissions(int teamId, List<Integer> providerIds) {
         teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
-        checkScope(teamId, false, providerIds);
+        Set<Integer> eligible = checkScope(teamId, false, providerIds);
         audit.withCause("direct", () -> replaceGrants(
-            teamProviderRepo, teamProviderRepo.findById_TeamId(teamId), providerIds,
+            teamProviderRepo, teamProviderRepo.findById_TeamId(teamId), providerIds, eligible,
             p -> p.getId().getProviderId(), id -> new TeamProviderPermission(teamId, id)));
         audit.withCause("cascade", () -> teamModelRepo.deleteCascadeForTeam(teamId));
     }
@@ -225,12 +227,16 @@ public class PermissionService {
     }
 
     private static <T, ID> void replaceGrants(JpaRepository<T, ID> repository, List<T> current,
-                                              List<Integer> requested, ToIntFunction<T> targetId,
+                                              List<Integer> requested, Set<Integer> eligible, ToIntFunction<T> targetId,
                                               Function<Integer, T> create) {
         Set<Integer> desired = Set.copyOf(requested);
         Set<Integer> existing = current.stream().map(targetId::applyAsInt)
             .collect(java.util.stream.Collectors.toSet());
-        repository.deleteAll(current.stream().filter(p -> !desired.contains(targetId.applyAsInt(p))).toList());
+        // The editor can replace only grants visible under the current privacy scope.
+        repository.deleteAll(current.stream().filter(p -> {
+            int id = targetId.applyAsInt(p);
+            return eligible.contains(id) && !desired.contains(id);
+        }).toList());
         repository.saveAll(desired.stream().filter(id -> !existing.contains(id)).map(create).toList());
     }
 }
