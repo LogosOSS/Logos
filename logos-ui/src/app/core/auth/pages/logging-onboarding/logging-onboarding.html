@@ -1,0 +1,85 @@
+<tumaet-ui-dialog
+  [visible]="true"
+  [showHeader]="false"
+  [closeOnEscape]="savingChoice() === null"
+  ariaLabel="Choose your logging level"
+  (visibleChange)="$event || close()"
+>
+  @let saved = earlierChoice();
+  <section class="onboarding-card" [class.onboarding-card--choices]="saved === null" aria-labelledby="logging-title">
+    <header class="onboarding-header">
+      <app-logo [size]="36" />
+      @if (saved !== null) {
+        <h2 id="logging-title" #heading tabindex="-1">Logging choice already saved</h2>
+        <p>
+          {{ saved === 'FULL' ? 'Your earlier choice to enable full logging was saved.' : 'Your earlier choice to keep billing-only logging was saved.' }}
+          You can review or change your developer key's logging level for <strong>{{ team().name }}</strong> in My Workspace.
+        </p>
+      } @else {
+        <h2 id="logging-title">Choose your logging level</h2>
+        <p id="logging-scope">This sets logging for your own developer key in <strong>{{ team().name }}</strong>.</p>
+      }
+    </header>
+
+    @if (saved !== null) {
+      <div class="onboarding-actions">
+        <button type="button" class="btn-primary" (click)="close()">Continue to your key</button>
+      </div>
+    } @else {
+      @if (error()) {
+        <app-error-message [message]="error()" />
+      }
+
+      <div class="logging-options" role="group" aria-label="Logging options">
+        <button type="button" class="logging-option logging-option--full" aria-labelledby="full-action"
+                aria-describedby="full-summary full-details logging-scope"
+                [disabled]="savingChoice() !== null" (click)="complete('FULL')">
+          <span class="option-art" aria-hidden="true">
+            <span class="option-icon"><i class="pi pi-bolt"></i></span>
+            <span class="option-icon"><i class="pi pi-chart-line"></i></span>
+          </span>
+          <span class="option-title">Full logging</span>
+          <span class="option-summary" id="full-summary">Help improve Logos with your requests.</span>
+          <span class="option-details" id="full-details">
+            <span><i class="pi pi-check" aria-hidden="true"></i> Lets Logos replay your requests in benchmarks</span>
+            <span><i class="pi pi-check" aria-hidden="true"></i> Helps find faster model settings for similar requests</span>
+            <span><i class="pi pi-info-circle" aria-hidden="true"></i> Stores request and response content, including prompts and answers</span>
+          </span>
+          <span class="option-action" id="full-action">
+            {{ savingChoice() === 'FULL' ? 'Saving…' : 'Enable full logging' }}
+            <i class="pi pi-arrow-right" aria-hidden="true"></i>
+          </span>
+        </button>
+
+        <button type="button" class="logging-option" aria-labelledby="billing-action"
+                aria-describedby="billing-summary billing-details logging-scope"
+                [disabled]="savingChoice() !== null" (click)="complete('BILLING')">
+          <span class="option-art" aria-hidden="true">
+            <span class="option-icon"><i class="pi pi-shield"></i></span>
+            <span class="option-icon"><i class="pi pi-file"></i></span>
+          </span>
+          <span class="option-title">Billing-only logging</span>
+          <span class="option-summary" id="billing-summary">Keep your existing usage and billing logs.</span>
+          <span class="option-details" id="billing-details">
+            <span><i class="pi pi-times" aria-hidden="true"></i> No benchmark replays from billing logs</span>
+            <span><i class="pi pi-times" aria-hidden="true"></i> Your prompts aren't used to test faster model settings</span>
+            <span><i class="pi pi-check" aria-hidden="true"></i> Keeps request and response content out of logs</span>
+          </span>
+          <span class="option-action" id="billing-action">
+            @if (savingChoice() === 'BILLING') {
+              Saving…
+            } @else {
+              Keep billing-only logging <span aria-hidden="true">:(</span>
+            }
+          </span>
+        </button>
+      </div>
+      <footer class="onboarding-footer">
+        <p>You can change logging for each key in My Workspace.</p>
+        <button type="button" class="btn-secondary" [disabled]="savingChoice() !== null" (click)="close()">
+          Decide later
+        </button>
+      </footer>
+    }
+  </section>
+</tumaet-ui-dialog>

@@ -65,6 +65,7 @@
           [apiKeys]="apiKeys()"
           [canEdit]="canEdit()"
           (refresh)="refresh()"
+          (keysReloaded)="apiKeys.set($event)"
         />
       }
 

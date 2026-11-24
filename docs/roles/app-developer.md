@@ -94,6 +94,23 @@ The budget message shows this distinction; it does not mean that the key is inac
 
 ![My Workspace — exhausted cloud budget with local models available](/img/roles/app-developer-my-workspace-budget.png)
 
+### Choose a logging level
+
+1. Open **My Workspace**.
+2. Find your developer key in the team card.
+3. Select **Expand models**.
+
+If the key uses billing-only logging, then Logos asks for your choice the first time you open it.
+
+![My Workspace — choose a logging level for your developer key](/img/roles/my-workspace-logging-choice.png)
+
+- **Keep billing-only logging** keeps usage and billing logs.
+- **Enable full logging** lets Logos store requests and responses for this key. Logos can use this content in benchmarks.
+
+Logos saves the choice for you and the team shown in the dialog. A different team has a separate choice.
+Select **Decide later** to open the key and make your choice the next time you open it.
+To change the logging level later, select **BILLING** or **FULL** on the key card.
+
 ## AI Tools
 
 **AI Coding Tools** is a guided wizard that every role uses. The page does not

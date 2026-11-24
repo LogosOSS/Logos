@@ -135,6 +135,8 @@
                   class="btn-chevron"
                   type="button"
                   [class.btn-chevron--open]="isExpanded(key.id)"
+                  [attr.aria-expanded]="isExpanded(key.id)"
+                  [attr.aria-busy]="checkingLoggingKeyId() === key.id"
                   [attr.aria-label]="(isExpanded(key.id) ? 'Collapse' : 'Expand') + ' models'"
                   (click)="toggleModels(key)"
                 >
@@ -225,3 +227,11 @@
     </button>
   </div>
 </app-modal-form>
+
+@if (loggingTarget(); as target) {
+  <app-logging-onboarding
+    [team]="target.team"
+    (completed)="finishLoggingOnboarding(true)"
+    (dismissed)="finishLoggingOnboarding(false)"
+  />
+}
