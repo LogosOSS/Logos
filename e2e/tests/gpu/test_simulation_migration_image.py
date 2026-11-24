@@ -22,15 +22,13 @@ _BUILD = Path(__file__).resolve().parents[3] / "benchmarks/residency_simulation/
 )
 def test_image_build_retries_transient_downloads_only(tmp_path, outcomes, returncode, delays):
     docker = tmp_path / "docker"
-    docker.write_text(
-        """#!/usr/bin/env bash
+    docker.write_text("""#!/usr/bin/env bash
 set -eu
 printf '%s\\n' "$*" >> "$TRACE/commands"
 next="$(wc -l < "$TRACE/commands" | tr -d ' ')"
 outcome="$(sed -n "${next}p" "$TRACE/outcomes")"
 if [[ "$outcome" != RETRY_OK ]]; then echo "$outcome" >&2; exit 24; fi
-"""
-    )
+""")
     sleep = tmp_path / "sleep"
     sleep.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$1" >> "$TRACE/delays"\n')
     for tool in (docker, sleep):
