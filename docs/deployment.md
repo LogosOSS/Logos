@@ -29,6 +29,7 @@ A core host with a deployer also needs `LOGOS_DEPLOYER_KEY`.
 Worker hosts need only `LOGOS_API_KEY` in `.env`.
 The worker obtains its Hugging Face token from the orchestrator when it starts.
 Restrict access to the file with `chmod 600 .env`.
+If a value contains `$`, write `$$` in its place, or put the value in single quotes. Compose otherwise reads `$` as the start of a variable and cuts the value.
 
 ### Data service passwords
 

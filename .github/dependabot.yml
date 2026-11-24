@@ -64,10 +64,7 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: "github-actions"
-    # The second entry is for the actions that the workflows share: they pin the actions that they use as well.
-    directories:
-      - "/"
-      - "/.github/actions/*"
+    directory: "/"
     patterns: ["*"]
     multi-ecosystem-group: ci-tooling
 
