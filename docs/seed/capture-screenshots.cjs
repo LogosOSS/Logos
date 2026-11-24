@@ -61,9 +61,10 @@ function lookupIds() {
     team: sql("SELECT id FROM teams WHERE name = 'Logos'"),
     worker: sql("SELECT id FROM providers WHERE name = 'Docs Local Worker'"),
     model,
-    // The second nightly night: its variant is the linked result in the guide.
+    // Use an earlier variant to show its changed parameters.
     linkedBenchmark: sql(
-      `SELECT id FROM model_provider_benchmarks WHERE model_provider_id = ${pair} ORDER BY recorded_at DESC OFFSET 2 LIMIT 1`,
+      `SELECT id FROM model_provider_benchmarks WHERE model_provider_id = ${pair}
+        AND configuration->'nightly' ? 'parameters' ORDER BY recorded_at DESC, id DESC OFFSET 1 LIMIT 1`,
     ),
   };
 }
@@ -628,7 +629,7 @@ const SHOTS = [
     full: true,
     go: async (p, ids) => {
       await resultsView(p, ids, [], `&benchmark=${ids.linkedBenchmark}`);
-      await p.getByRole("region", { name: "Selected benchmark result" }).waitFor();
+      await p.getByRole("dialog", { name: `Benchmark #${ids.linkedBenchmark}`, exact: true }).waitFor();
     },
   },
   {

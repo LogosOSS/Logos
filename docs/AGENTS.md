@@ -324,7 +324,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-nightly-workload.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — request dataset form | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-results.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Nightly rotation**, **Worker**, **Currently deployed** and **Timeline** | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-notification.png` | `tobias.wasner` | Notification inbox — benchmark with captured result link | `roles/logos-admin.md#nightly-benchmarks` |
-| `logos-admin-benchmark-linked-result.png` | `tobias.wasner` | `/models/<id>/details?tab=performance&benchmark=<id>` — selected result and parameter changes | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-benchmark-linked-result.png` | `tobias.wasner` | `/models/<id>/details?tab=performance&benchmark=<id>` — benchmark dialog with parameter changes | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-benchmark-saved-requests.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark with a saved request dataset | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-frozen-batch.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — frozen request batch plan and fixed settings | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-status.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — illustrative running batch status with progress and stop action | `roles/logos-admin.md#model-benchmarks` |

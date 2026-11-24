@@ -256,7 +256,7 @@ Read the runs from left to right in completion order.
 Each dot shows output tokens per second (tok/s) on the vertical scale. An open circle marks a baseline.
 A blue ring marks the benchmark for the active configuration. Select **Deployed** to find it in a long timeline.
 Each trial shows its change from the baseline of its round, if available.
-Select a run to see its settings and any reason for exclusion.
+Select a run to open the benchmark dialog with its settings and any reason for exclusion.
 Select **Show all** to see older runs.
 Expand **What does Logos check?** for the nightly adoption checks and examples of the request latency limit.
 Expand **Benchmark runs** to see the latest 5 results per dataset.
@@ -267,12 +267,13 @@ Select the same column again to reverse the order. Missing values stay at the en
 ![Performance overview with nightly rotation tiles, a worker selection, deployed settings and throughput timeline](../static/img/roles/logos-admin-nightly-results.png)
 
 Read **Currently deployed** below **Nightly rotation** in **Performance → Overview**.
-The summary shows throughput, baseline, change and the main batching parameters.
+The summary shows live batching limits above the benchmark measurement.
 Expand **Configuration & selection details** for **Serving settings** and **Run selection**.
 The view identifies measurements with matching settings and the same measurement environment.
 Measurements from another environment appear with a historical label. They do not verify current performance.
-If a batching limit shows **Not reported** and no benchmark matches, then the summary shows **Benchmark match unverified**.
-The summary can then show **Last confirmed adoption** separately and link to its saved benchmark.
+If a batching limit is unavailable, it shows **Not reported**.
+If no benchmark matches, then **Last confirmed adoption** can show the last adopted result and link to its benchmark.
+If a limit is unavailable and there is no saved adoption, then the summary shows **Live benchmark unverified**.
 The measurement includes its benchmark number, baseline throughput, result throughput and percentage change.
 Temporary benchmark settings and recovery states do not establish the production configuration.
 The status distinguishes an offline worker, a sleeping model and a model waiting to start. A sleeping model can still show its configured settings. Active replicas with different settings are identified separately.
@@ -336,16 +337,17 @@ Otherwise, production settings return after each round. The pairs take turns unt
 The dataset keeps its original freeze date across runs. Its content hash remains in the configuration details.
 Logos sends one notification after the last round.
 The notification shows the result and the last interruption reason, if available.
-Select **View benchmark** with its number to open the measurement and the changed parameters.
+Select **View benchmark** with its number to open the benchmark dialog.
 The **Benchmark runs** table groups runs by dataset. Select a column heading to change the order.
 Each sortable column cycles through the initial order, ascending order and descending order.
 
 ![Benchmark notification with a link to its captured measurement](../static/img/roles/logos-admin-benchmark-notification.png)
 
-The linked result stays selected when newer benchmark runs appear.
-If the measurement is deleted, then the page identifies the unavailable benchmark.
+A direct link opens the same dialog. It shows the selected benchmark when new results arrive.
+If the measurement is deleted, then the dialog shows that the benchmark is unavailable.
+Close the dialog to return to the same worker and timeline position.
 
-![Selected benchmark with its result and changed parameters](../static/img/roles/logos-admin-benchmark-linked-result.png)
+![Benchmark dialog with its result and changed parameters](../static/img/roles/logos-admin-benchmark-linked-result.png)
 
 
 ![Enabled nightly rotation in the performance overview](../static/img/roles/logos-admin-nightly-benchmarks.png)

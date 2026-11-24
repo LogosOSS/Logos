@@ -265,14 +265,15 @@ The selection changes **Currently deployed** and **Timeline**.
 Each completed run has one dot. Runs appear from left to right in completion order.
 The vertical axis shows output tokens per second (tok/s). Each stem starts at zero. An open circle marks a baseline.
 Trials show their change from the baseline of the same round, if available.
-Slower runs and excluded trials remain visible. Select a run to see its configuration and result.
+Slower runs and excluded trials remain visible. Select a run to open its configuration and result in a dialog.
 The collapsed timeline shows up to six runs, including the current deployment when measured.
 A blue ring marks its benchmark. Select **Deployed** to find it or **Show all** to see the full timeline.
 The timeline separates workloads and test settings. Measurements can span worker releases.
 Expand **What does Logos check?** for the nightly adoption checks and examples of the request latency limit.
 Expand **Currently deployed → Configuration & selection details** to inspect **Serving settings** and **Run selection**.
-If a batching limit shows **Not reported** and no benchmark matches, then the summary shows **Benchmark match unverified**.
-The summary can then show **Last confirmed adoption** separately and link to its saved benchmark.
+If a batching limit is unavailable, it shows **Not reported**.
+If no benchmark matches, then **Last confirmed adoption** can show the last adopted result and link to its benchmark.
+If a limit is unavailable and there is no saved adoption, then the summary shows **Live benchmark unverified**.
 Open **Why other runs were excluded** when it appears to see each run and its exclusion reasons.
 **Answer length changes** shows the baseline and trial token counts for each answer more than 20% shorter or longer. Request numbers follow the saved dataset order.
 A completed eligible winner is saved before the next trial starts.

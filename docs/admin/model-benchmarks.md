@@ -69,6 +69,7 @@ If the model has more than one worker, then use **Worker** to change **Currently
 Select **Benchmarks** to configure a manual run.
 Select **Request measurements** for production request times, or **Analysis** for comparisons and saved configurations.
 Expand **Overview → Benchmark runs** for the history. Active jobs remain visible in every section.
+Select a run in **Timeline** or **Benchmark runs** to open its details in a dialog.
 
 The screenshots show the local application with example data, navigation and complete page content.
 They demonstrate the interface, not a live benchmark measurement.
