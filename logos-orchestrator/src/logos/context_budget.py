@@ -129,12 +129,13 @@ def reserved_output_tokens(payload: Any) -> int:
     return DEFAULT_OUTPUT_RESERVE_TOKENS
 
 
-def required_context_tokens(payload: Any) -> Optional[int]:
+def required_context_tokens(payload: Any, *, prompt_tokens: int | None = None) -> Optional[int]:
     """Smallest context window that can serve ``payload``, or None.
 
     None means "could not estimate" — the caller should not filter on context.
     """
-    prompt_tokens = estimate_prompt_tokens(payload)
+    if prompt_tokens is None:
+        prompt_tokens = estimate_prompt_tokens(payload)
     if prompt_tokens <= 0:
         return None
     return prompt_tokens + reserved_output_tokens(payload) + SAFETY_MARGIN_TOKENS

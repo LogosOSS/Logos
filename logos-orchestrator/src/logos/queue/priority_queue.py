@@ -8,7 +8,7 @@ result must be attributable to one exact worker.
 
 For backward compatibility every public method that previously took a
 ``provider_id`` still accepts it. Enqueue and aggregate metrics ignore it;
-dequeue uses it only to keep provider-affine entries on their required worker.
+dequeue checks the request's eligible deployments and any explicit worker binding.
 """
 
 import heapq
@@ -85,12 +85,14 @@ class PriorityQueueManager:
         role_rank: int = 0,
         api_key_id: int | None = None,
         request_id: str | None = None,
+        allowed_provider_ids: frozenset[int] | None = None,
+        context_tokens: int = 0,
     ) -> str:
         """Add a task to the priority queue for ``model_id``.
 
-        ``provider_id`` is accepted but ignored (back-compat). Unless
-        ``provider_affinity`` is set, any provider with capability for
-        ``model_id`` can later dispatch this task.
+        Each deployment in the request's eligible set may dispatch it, subject
+        to an explicit provider affinity. Older callers omit the set and can
+        use any deployment of the model.
 
         ``raw_priority`` is the full-precision priority the request resolved
         to (1..10 scale); it refines the ordering inside the bucket that
@@ -117,6 +119,8 @@ class PriorityQueueManager:
                 enqueue_time=datetime.now(),
                 is_cold_at_queue=is_cold_at_queue,
                 provider_affinity=provider_affinity,
+                allowed_provider_ids=allowed_provider_ids,
+                context_tokens=context_tokens,
                 api_key_id=api_key_id,
                 request_id=request_id,
             )
@@ -164,13 +168,14 @@ class PriorityQueueManager:
         provider_id: int = None,  # Ignored — kept for back-compat.
         priority: Optional[Priority] = None,
         required_api_key_id: int | None = None,
+        context_limit: float | None = None,
     ) -> Tuple[Optional[any], Optional[QueueEntry]]:
         """Dequeue and return both the task and its QueueEntry metadata."""
         with self._lock:
             if priority is not None:
-                return self._dequeue_from_priority(model_id, priority, provider_id, required_api_key_id)
+                return self._dequeue_from_priority(model_id, priority, provider_id, required_api_key_id, context_limit)
             for p in [Priority.HIGH, Priority.NORMAL, Priority.LOW]:
-                task, entry = self._dequeue_from_priority(model_id, p, provider_id, required_api_key_id)
+                task, entry = self._dequeue_from_priority(model_id, p, provider_id, required_api_key_id, context_limit)
                 if task is not None:
                     return task, entry
             return None, None
@@ -181,6 +186,7 @@ class PriorityQueueManager:
         priority: Priority,
         provider_id: int | None = None,
         required_api_key_id: int | None = None,
+        context_limit: float | None = None,
     ) -> Tuple[Optional[any], Optional[QueueEntry]]:
         """Dequeue from a specific priority heap. Caller must hold ``_lock``."""
         queue = self._queues[model_id][priority]
@@ -196,8 +202,9 @@ class PriorityQueueManager:
                     enumerate(queue),
                     key=lambda item: item[1][:4],
                 )
-                if (provider_id is None or candidate.provider_affinity in (None, provider_id))
+                if candidate.accepts_provider(provider_id)
                 and (required_api_key_id is None or candidate.api_key_id == required_api_key_id)
+                and (context_limit is None or candidate.context_tokens <= context_limit)
             ),
             None,
         )
@@ -306,7 +313,7 @@ class PriorityQueueManager:
                     entry.enqueue_time.timestamp()
                     for queue in self._queues.get(model_id, {}).values()
                     for *_, entry in queue
-                    if entry.provider_affinity in (None, provider_id)
+                    if entry.accepts_provider(provider_id)
                 ),
                 default=None,
             )
@@ -414,7 +421,7 @@ class PriorityQueueManager:
                 return False
             for queue in model_queues.values():
                 for (*_, entry) in queue:
-                    eligible = provider_id is None or entry.provider_affinity in (None, provider_id)
+                    eligible = entry.accepts_provider(provider_id)
                     if eligible and entry.is_cold_at_queue:
                         return True
             return False

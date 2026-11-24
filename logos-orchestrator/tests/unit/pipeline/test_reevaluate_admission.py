@@ -24,6 +24,9 @@ PROVIDER_ID = 3
 class _Facade:
     """Minimal logosnode facade for the dispatcher path."""
 
+    def unqueued_context_limit(self, model_id, provider_id):
+        return float("inf")
+
     def __init__(self, capacity: int, admission: AdmissionDecision | None):
         self._capacity = capacity
         self._admission = admission
@@ -128,6 +131,9 @@ def test_real_worker_dispatch_uses_live_budget_instead_of_stored_quota(monkeypat
     """A stored quota of one must not shrink a live four-request dispatch step."""
 
     class Registry:
+        def unqueued_context_limit(self, provider_id, model_name):
+            return float("inf")
+
         def peek_runtime_snapshot(self, provider_id):
             return {
                 "runtime_revision": 1,

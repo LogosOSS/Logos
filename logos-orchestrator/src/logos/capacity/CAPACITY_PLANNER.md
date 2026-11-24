@@ -578,8 +578,12 @@ draining. `lru` keeps routing, demand ordering and draining, chooses victims
 by their idle age with sleep preferred over stop, and disables the competitive
 wake/load gates.
 
-`simple` routes to a ready deployment in stable provider-ID order and then to
-the first ready lane by lane ID. Wait estimates remain available as diagnostic
+`simple` shares requests across eligible ready replicas of the selected model, including
+replicas on the same worker. It prefers a shorter engine queue, then lower
+occupancy relative to the lane's full-context parallelism. A reservation counts
+immediately, even before the worker reports it. At equal pressure each replica
+gets a turn. A matching prefix can favor its previous worker among replicas
+due for the same turn. Wait estimates remain available as diagnostic
 annotations but do not rank deployments. Classification still determines the
 model for requests that do not name one. Residency activations follow the oldest
 currently waiting request across workers, regardless of queue size or historical

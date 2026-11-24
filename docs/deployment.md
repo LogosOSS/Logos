@@ -70,7 +70,7 @@ Missing, empty, and invalid values select `simple`. Invalid values produce a war
 
 | Value | Routing and residency |
 |---|---|
-| `simple` | Stable selection of ready deployments; oldest waiting request first for residency activation; idle lanes released by LRU. |
+| `simple` | Shares requests across ready replicas by relative load and fair turns. Activates residency for the oldest waiting request and releases idle lanes by LRU. |
 | `demand` | ETTFT routing; demand-based residency, victim selection, and competitive activation gates; automatic drains of busy lanes. |
 | `lru` | ETTFT routing and demand-based residency; LRU victims; no competitive activation gates; automatic drains of busy lanes. |
 
