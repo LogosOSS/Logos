@@ -1,74 +1,61 @@
-import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { ActivatedRoute, Router, convertToParamMap } from '@angular/router';
-import { Team } from '../../models/user.model';
-import { AuthService } from '../../services/auth.service';
+import { DeveloperKeyLoggingService } from '../../../services/developer-key-logging.service';
 import { LoggingOnboarding } from './logging-onboarding';
 
 describe('LoggingOnboarding', () => {
-  const firstTeam: Team = { id: 10, name: 'First team' };
-  const secondTeam: Team = { id: 20, name: 'Second team' };
+  const team = { id: 10, name: 'Research team' };
+  const saveChoice = vi.fn();
 
-  function setup(save: (teamId: number, fullLogging: boolean) => Promise<boolean>, teams = [firstTeam]) {
-    const pendingLoggingTeams = signal(teams);
-    const navigateByUrl = vi.fn().mockResolvedValue(true);
+  function setup() {
     TestBed.configureTestingModule({
-      providers: [
-        { provide: AuthService, useValue: {
-          pendingLoggingTeams,
-          async completeLoggingOnboarding(teamId: number, fullLogging: boolean) {
-            const choice = await save(teamId, fullLogging);
-            pendingLoggingTeams.update(values => values.filter(team => team.id !== teamId));
-            return choice;
-          },
-        } },
-        { provide: Router, useValue: { navigateByUrl } },
-        { provide: ActivatedRoute, useValue: { snapshot: { queryParamMap: convertToParamMap({ returnUrl: '/my-workspace' }) } } },
-      ],
+      providers: [{ provide: DeveloperKeyLoggingService, useValue: { saveChoice } }],
     });
-    const component = TestBed.runInInjectionContext(() => new LoggingOnboarding());
-    return { component, navigateByUrl };
+    const fixture = TestBed.createComponent(LoggingOnboarding);
+    fixture.componentRef.setInput('team', team);
+    const component = fixture.componentInstance;
+    const completed = vi.fn();
+    const dismissed = vi.fn();
+    component.completed.subscribe(completed);
+    component.dismissed.subscribe(dismissed);
+    return { component, completed, dismissed };
   }
 
-  it('lets the user retry after a failed save', async () => {
-    const save = vi.fn().mockRejectedValueOnce(new Error('Save failed')).mockResolvedValueOnce(true);
-    const { component, navigateByUrl } = setup(save);
+  beforeEach(() => saveChoice.mockReset());
 
-    await component.complete(true);
+  it('lets the user retry a failed save for the selected team', async () => {
+    saveChoice.mockRejectedValueOnce(new Error('Save failed')).mockResolvedValueOnce('FULL');
+    const { component, completed } = setup();
+
+    await component.complete('FULL');
     expect(component.error()).toContain('Please try again.');
     expect(component.savingChoice()).toBeNull();
-    expect(navigateByUrl).not.toHaveBeenCalled();
+    expect(completed).not.toHaveBeenCalled();
 
-    await component.complete(true);
-    expect(save).toHaveBeenNthCalledWith(2, firstTeam.id, true);
+    await component.complete('FULL');
+    expect(saveChoice).toHaveBeenNthCalledWith(2, team.id, 'FULL');
     expect(component.error()).toBe('');
-    expect(navigateByUrl).toHaveBeenCalledWith('/my-workspace', { replaceUrl: true });
+    expect(completed).toHaveBeenCalledWith('FULL');
   });
 
-  it('accepts an independent choice for each team before restoring the destination', async () => {
-    const save = vi.fn()
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false);
-    const { component, navigateByUrl } = setup(save, [firstTeam, secondTeam]);
+  it.each(['FULL', 'BILLING'] as const)('shows the saved choice (%s) before returning to the key', async (saved) => {
+    saveChoice.mockResolvedValue(saved);
+    const { component, completed, dismissed } = setup();
 
-    await component.complete(true);
-    expect(component.team()).toEqual(secondTeam);
-    expect(navigateByUrl).not.toHaveBeenCalled();
+    await component.complete(saved === 'FULL' ? 'BILLING' : 'FULL');
+    expect(component.earlierChoice()).toBe(saved);
+    expect(completed).not.toHaveBeenCalled();
 
-    await component.complete(false);
-    expect(save.mock.calls).toEqual([[firstTeam.id, true], [secondTeam.id, false]]);
-    expect(navigateByUrl).toHaveBeenCalledWith('/my-workspace', { replaceUrl: true });
+    component.close();
+    expect(completed).toHaveBeenCalledWith(saved);
+    expect(dismissed).not.toHaveBeenCalled();
   });
 
-  it.each([true, false])('shows a conflicting saved choice (%s) before continuing', async (savedChoice) => {
-    const { component, navigateByUrl } = setup(vi.fn().mockResolvedValue(savedChoice));
+  it('does not save a choice when the user decides later', () => {
+    const { component, completed, dismissed } = setup();
 
-    await component.complete(!savedChoice);
-
-    expect(component.earlierChoice()).toBe(savedChoice);
-    expect(component.team()).toEqual(firstTeam);
-    expect(component.savingChoice()).toBeNull();
-    expect(component.error()).toBe('');
-    expect(navigateByUrl).not.toHaveBeenCalled();
+    component.close();
+    expect(dismissed).toHaveBeenCalledOnce();
+    expect(completed).not.toHaveBeenCalled();
+    expect(saveChoice).not.toHaveBeenCalled();
   });
 });

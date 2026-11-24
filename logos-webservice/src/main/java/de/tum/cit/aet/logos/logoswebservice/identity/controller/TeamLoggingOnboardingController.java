@@ -5,6 +5,7 @@ import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
@@ -25,6 +26,13 @@ public class TeamLoggingOnboardingController {
 
     public TeamLoggingOnboardingController(LoggingOnboardingService service) {
         this.service = service;
+    }
+
+    @GetMapping("/teams/{teamId}/logging-onboarding")
+    public ResponseEntity<Map<String, Boolean>> getStatus(
+            @PathVariable int teamId, @RequestAttribute("authContext") AuthContext auth) {
+        if (auth.userId() == null) return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        return ResponseEntity.ok(Map.of("pending", service.isPending(teamId, auth.userId())));
     }
 
     @PostMapping("/teams/{teamId}/logging-onboarding")

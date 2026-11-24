@@ -85,19 +85,7 @@ async function login(browser, user, dark = false) {
   await page.fill("#password", "password");
   await page.click("#kc-login");
   await page.waitForURL((u) => u.toString().startsWith(BASE), { timeout: 30000 });
-  const shell = page.locator(".shell-layout");
-  const keepBilling = page.getByRole("button", { name: "Keep billing-only logging", exact: true });
-  while (!(await shell.isVisible())) {
-    await shell.or(keepBilling).waitFor();
-    if (await keepBilling.isVisible()) {
-      const [saved] = await Promise.all([
-        page.waitForResponse(response => response.url().endsWith("/logging-onboarding")),
-        keepBilling.click(),
-      ]);
-      if (!saved.ok()) throw new Error(`Could not save logging choice (HTTP ${saved.status()})`);
-    }
-  }
-  await shell.waitFor();
+  await page.locator(".shell-layout").waitFor();
   return { ctx, page };
 }
 
@@ -922,6 +910,16 @@ const SHOTS = [
   // App Developer
   { file: "roles/app-developer-models.png", user: DEVELOPER, go: (p) => p.goto(BASE + "/models") },
   { file: "roles/app-developer-my-workspace.png", user: DEVELOPER, go: (p) => p.goto(BASE + "/my-workspace") },
+  {
+    file: "roles/my-workspace-logging-choice.png",
+    user: DEVELOPER,
+    go: async (p) => {
+      await p.goto(BASE + "/my-workspace");
+      const team = p.locator(".team-card").filter({ has: p.getByText("Logos", { exact: true }) });
+      await team.getByRole("button", { name: "Expand models", exact: true }).click();
+      await p.getByRole("heading", { name: "Choose your logging level", exact: true }).waitFor();
+    },
+  },
   {
     file: "roles/ai-tools-step-connect.png",
     user: DEVELOPER,

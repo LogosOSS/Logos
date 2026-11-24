@@ -1,33 +1,17 @@
-@use 'styles/glass' as *;
-
-.onboarding {
-  position: relative;
-  height: 100dvh;
-  overflow-y: auto;
-  display: flex;
-  padding: 4.5rem 1rem 2rem;
-  background: rgb(var(--shell-background));
-}
-
 .onboarding-card {
-  @include glass-surface;
-  width: 100%;
-  max-width: 36rem;
-  margin: auto;
-  padding: clamp(1.25rem, 5vw, 2rem);
-  box-shadow: 0 2rem 5rem rgb(var(--shadow-color) / var(--opacity-border));
+  width: min(33rem, calc(100dvw - 4rem));
+  padding: clamp(0.25rem, 2vw, 1rem);
 }
 
 .onboarding-card--choices {
-  max-width: 53rem;
-  padding: clamp(1.25rem, 4vw, 2.5rem);
+  width: min(53rem, calc(100dvw - 4rem));
 
   .onboarding-header {
     display: grid;
     justify-items: center;
     text-align: center;
 
-    h1 {
+    h2 {
       font-size: clamp(var(--font-size-2xl), 4vw, var(--font-size-display));
     }
   }
@@ -36,7 +20,7 @@
 .onboarding-header {
   margin-bottom: 1.5rem;
 
-  h1 {
+  h2 {
     margin: 0.75rem 0 0.5rem;
     font-size: var(--font-size-2xl);
     line-height: 1.2;
@@ -129,7 +113,7 @@
 
 .onboarding-header p,
 .option-summary,
-.onboarding-note {
+.onboarding-footer {
   color: rgb(var(--color-typography-300));
   line-height: var(--line-height-normal);
 }
@@ -188,10 +172,19 @@
   color: rgb(var(--color-white));
 }
 
-.onboarding-note {
+.onboarding-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
   margin-top: 1.25rem;
   font-size: var(--font-size-sm);
   text-align: center;
+
+  p {
+    margin: 0;
+  }
 }
 
 .onboarding-actions {

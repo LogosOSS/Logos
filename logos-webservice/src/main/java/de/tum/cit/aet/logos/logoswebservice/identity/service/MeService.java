@@ -23,14 +23,10 @@ public class MeService {
     private final UserRepository userRepository;
     private final TeamRepository teamRepository;
     private final ApiKeyRepository apiKeyRepository;
-    private final LoggingOnboardingService loggingOnboarding;
-
-    public MeService(UserRepository userRepository, TeamRepository teamRepository,
-                     ApiKeyRepository apiKeyRepository, LoggingOnboardingService loggingOnboarding) {
+    public MeService(UserRepository userRepository, TeamRepository teamRepository, ApiKeyRepository apiKeyRepository) {
         this.userRepository = userRepository;
         this.teamRepository = teamRepository;
         this.apiKeyRepository = apiKeyRepository;
-        this.loggingOnboarding = loggingOnboarding;
     }
 
     public Optional<MeResponseDTO> getMe(Integer userId) {
@@ -39,7 +35,7 @@ public class MeService {
                 .map(t -> new TeamResponseDTO(t.getId(), t.getName()))
                 .toList();
             return new MeResponseDTO(user.getId(), user.getUsername(), user.getPrename(), user.getName(),
-                user.getEmail(), user.getRole(), teams, loggingOnboarding.pendingTeams(userId));
+                user.getEmail(), user.getRole(), teams);
         });
     }
 

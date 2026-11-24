@@ -11,7 +11,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
-import de.tum.cit.aet.logos.logoswebservice.identity.dto.TeamResponseDTO;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.TeamRepository;
 
 @Service
@@ -40,20 +39,8 @@ public class LoggingOnboardingService {
         this.teamRepository = teamRepository;
     }
 
-    public List<TeamResponseDTO> pendingTeams(int userId) {
-        return jdbc.query("""
-            SELECT DISTINCT t.id, t.name
-            FROM api_keys ak
-            JOIN teams t ON t.id = ak.team_id
-            WHERE %s AND ak.log = 'BILLING'
-              AND NOT EXISTS (
-                SELECT 1 FROM audit_log a
-                WHERE a.team_id = t.id AND a.action = :action
-                  AND a.target_type = 'team_member' AND a.target_id = concat(t.id, '/', :userId)
-              )
-            ORDER BY t.name, t.id
-            """.formatted(ELIGIBLE_KEY), Map.of("userId", userId, "action", CHOICE_ACTION),
-            (rs, row) -> new TeamResponseDTO(rs.getInt("id"), rs.getString("name")));
+    public boolean isPending(int teamId, int userId) {
+        return eligibleKeyLevels(teamId, userId).contains("BILLING") && recordedChoice(teamId, userId).isEmpty();
     }
 
     @Transactional

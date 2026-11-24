@@ -387,6 +387,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `batches.png` | any admin role | `/batches` | `roles/app-admin.md#batches` (Logos Admin links) |
 | `app-developer-models.png` | `henriette.huhn` | `/models` | `roles/app-developer.md` |
 | `app-developer-my-workspace.png` | `henriette.huhn` | `/my-workspace` | `roles/app-developer.md` |
+| `my-workspace-logging-choice.png` | `henriette.huhn` | `/my-workspace` — **Expand models** on the **Logos** developer key, before a logging choice | `roles/app-developer.md#choose-a-logging-level` |
 | `app-developer-my-workspace-budget.png` | `henriette.huhn` | `/my-workspace` — exhausted cloud budget, available models expanded | `roles/app-developer.md#my-workspace` |
 | `ai-tools-step-tool.png` | any role with a key | `/ai-tools` — step **Tool** | `roles/app-developer.md#ai-tools` |
 | `ai-tools-step-team.png` | same (needs **>1** API key) | `/ai-tools` — step **Team** | same |

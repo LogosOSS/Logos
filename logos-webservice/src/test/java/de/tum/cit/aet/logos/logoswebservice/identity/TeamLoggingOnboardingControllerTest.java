@@ -20,6 +20,7 @@ import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -56,28 +57,57 @@ class TeamLoggingOnboardingControllerTest {
     }
 
     @Test
-    void listsOnlyTeamsWithAnActiveBillingDeveloperKeyAndMembership() throws Exception {
+    void statusRequiresOwnActiveBillingDeveloperKeyAndMembership() throws Exception {
         addKey(3005, "developer", 1001, 2002, true);
         addKey(3006, "application", 1001, 2002, true);
 
-        mvc.perform(get("/me").with(TestJwt.testUser()))
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.logging_onboarding_teams[*].id", contains(2001)))
-            .andExpect(jsonPath("$.logging_onboarding_teams[0].name").value("test-team"));
-
+        expectPending(2001, true);
+        expectPending(2002, false);
         submit(2002, true).andExpect(status().isForbidden());
+
+        jdbc.update("INSERT INTO team_members (user_id, team_id, is_owner) VALUES (1001, 2002, false)");
+        jdbc.update("UPDATE api_keys SET is_active = false WHERE id = 3005");
+        expectPending(2002, false);
+
         jdbc.update("UPDATE api_keys SET is_active = false WHERE id = 3001");
-        mvc.perform(get("/me").with(TestJwt.testUser()))
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.logging_onboarding_teams").isEmpty());
+        expectPending(2001, false);
         submit(2001, true).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void newlyAssignedTeamIsEligibleWithoutRefreshingTheSession() throws Exception {
+        var developerSession = TestJwt.testUser();
+        mvc.perform(get("/me").with(developerSession))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.logging_onboarding_teams").doesNotExist());
+        mvc.perform(get("/me/keys").with(developerSession))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$[*].team.id", contains(2001)));
+        submit(2001, false).andExpect(status().isNoContent());
+        expectPending(2002, false);
+
+        mvc.perform(post("/teams/2002/members").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"user_id\":1001}"))
+            .andExpect(status().isOk());
+
+        mvc.perform(get("/me/keys").with(developerSession))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$[*].team.id", containsInAnyOrder(2001, 2002)));
+        mvc.perform(get("/teams/2002/logging-onboarding").with(developerSession))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.pending").value(true));
+        expectPending(2001, false);
+        submit(2002, true).andExpect(status().isNoContent());
+        expectPending(2002, false);
+        assertChoice(2001, "2001/1001", false);
+        assertChoice(2002, "2002/1001", true);
     }
 
     @Test
     void optInOnlyUpdatesTheCallersActiveDeveloperKeysForTheChosenTeam() throws Exception {
         jdbc.update("INSERT INTO team_members (user_id, team_id, is_owner) VALUES (1001, 2002, false)");
         addKey(3005, "developer", 1001, 2002, true);
-        addKey(3006, "application", null, 2001, true);
+        addKey(3006, "application", 1001, 2001, true);
         addKey(3007, "developer", 1001, 2001, false);
 
         submit(2001, true).andExpect(status().isNoContent());
@@ -92,12 +122,11 @@ class TeamLoggingOnboardingControllerTest {
         assertThat(keyLevel(3007)).isEqualTo("BILLING");
         assertChoice(2001, "2001/1001", true);
 
-        mvc.perform(get("/me").with(TestJwt.testUser()))
+        expectPending(2001, false);
+        expectPending(2002, true);
+        mvc.perform(get("/teams/2001/logging-onboarding").with(TestJwt.adminUser()))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.logging_onboarding_teams[*].id", contains(2002)));
-        mvc.perform(get("/me").with(TestJwt.adminUser()))
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.logging_onboarding_teams[*].id", contains(2001)));
+            .andExpect(jsonPath("$.pending").value(true));
     }
 
     @Test
@@ -109,31 +138,36 @@ class TeamLoggingOnboardingControllerTest {
 
         assertThat(keyLevel(3001)).isEqualTo("BILLING");
         assertChoice(2001, "2001/1001", false);
-        mvc.perform(get("/me").with(TestJwt.testUser()))
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.logging_onboarding_teams").isEmpty());
+        expectPending(2001, false);
     }
 
     @Test
     void fullLoggingAlreadyEnabledNeedsNoOnboardingChoice() throws Exception {
         jdbc.update("UPDATE api_keys SET log = 'FULL' WHERE id = 3001");
 
-        mvc.perform(get("/me").with(TestJwt.testUser()))
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.logging_onboarding_teams").isEmpty());
+        expectPending(2001, false);
         submit(2001, false).andExpect(status().isForbidden());
         assertThat(keyLevel(3001)).isEqualTo("FULL");
     }
 
     @Test
     void rejectsAnUnknownTeamAndRequiresAnExplicitAuthenticatedChoice() throws Exception {
+        expectPending(2999, false);
         submit(2999, true).andExpect(status().isNotFound());
+        mvc.perform(get("/teams/2001/logging-onboarding"))
+            .andExpect(status().isUnauthorized());
         mvc.perform(post("/teams/2001/logging-onboarding").with(TestJwt.testUser())
                 .contentType("application/json").content("{}"))
             .andExpect(status().isBadRequest());
         mvc.perform(post("/teams/2001/logging-onboarding").contentType("application/json")
                 .content("{\"full_logging\":true}"))
             .andExpect(status().isUnauthorized());
+    }
+
+    private void expectPending(int teamId, boolean pending) throws Exception {
+        mvc.perform(get("/teams/{teamId}/logging-onboarding", teamId).with(TestJwt.testUser()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.pending").value(pending));
     }
 
     private ResultActions submit(int teamId, boolean fullLogging) throws Exception {

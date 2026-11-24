@@ -1,5 +1,5 @@
 import { Injectable, signal, computed, inject } from '@angular/core';
-import { HttpClient, HttpErrorResponse, HttpStatusCode } from '@angular/common/http';
+import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { KeycloakTokenParsed } from 'keycloak-js';
 import { KEYCLOAK } from '../keycloak';
@@ -27,7 +27,6 @@ export class AuthService {
   currentUser = signal<User | null>(null);
   status      = signal<AuthStatus>('checking');
   role        = computed<UserRole | null>(() => this.currentUser()?.role ?? null);
-  pendingLoggingTeams = computed(() => this.currentUser()?.logging_onboarding_teams ?? []);
 
   constructor() {
     // initKeycloak() (APP_INITIALIZER) has already run check-sso by now.
@@ -68,25 +67,6 @@ export class AuthService {
       this.currentUser.set(null);
       this.status.set('unauthenticated');
     }
-  }
-
-  async completeLoggingOnboarding(teamId: number, fullLogging: boolean): Promise<boolean> {
-    const userId = this.currentUser()?.user_id;
-    let savedChoice = fullLogging;
-    try {
-      await firstValueFrom(
-        this.http.post<void>(`/api/teams/${teamId}/logging-onboarding`, { full_logging: fullLogging }),
-      );
-    } catch (error) {
-      if (!(error instanceof HttpErrorResponse) || error.status !== HttpStatusCode.Conflict
-          || typeof error.error?.full_logging !== 'boolean') throw error;
-      savedChoice = error.error.full_logging;
-    }
-    this.currentUser.update((user) => user && user.user_id === userId ? {
-      ...user,
-      logging_onboarding_teams: (user.logging_onboarding_teams ?? []).filter((team) => team.id !== teamId),
-    } : user);
-    return savedChoice;
   }
 
   /** Redirects to Keycloak for an authorization-code (PKCE) login. */

@@ -1,27 +1,29 @@
-<main class="onboarding">
-  <app-theme-toggle />
-
+<tumaet-ui-dialog
+  [visible]="true"
+  [showHeader]="false"
+  [closeOnEscape]="savingChoice() === null"
+  ariaLabel="Choose your logging level"
+  (visibleChange)="$event || close()"
+>
   @let saved = earlierChoice();
   <section class="onboarding-card" [class.onboarding-card--choices]="saved === null" aria-labelledby="logging-title">
     <header class="onboarding-header">
       <app-logo [size]="36" />
       @if (saved !== null) {
-        <h1 id="logging-title" #heading tabindex="-1">Logging choice already saved</h1>
+        <h2 id="logging-title" #heading tabindex="-1">Logging choice already saved</h2>
         <p>
-          {{ saved ? 'Your earlier choice to enable full logging was saved.' : 'Your earlier choice to keep billing-only logging was saved.' }}
-          You can review or change your developer key's logging level for <strong>{{ team()?.name }}</strong> in My Workspace.
+          {{ saved === 'FULL' ? 'Your earlier choice to enable full logging was saved.' : 'Your earlier choice to keep billing-only logging was saved.' }}
+          You can review or change your developer key's logging level for <strong>{{ team().name }}</strong> in My Workspace.
         </p>
       } @else {
-        <h1 id="logging-title" #heading tabindex="-1">Choose your logging level</h1>
-        <p id="logging-scope">This sets the default for your own developer key in <strong>{{ team()?.name }}</strong>.</p>
+        <h2 id="logging-title">Choose your logging level</h2>
+        <p id="logging-scope">This sets logging for your own developer key in <strong>{{ team().name }}</strong>.</p>
       }
     </header>
 
     @if (saved !== null) {
       <div class="onboarding-actions">
-        <button type="button" class="btn-primary" (click)="continueAfterConflict()">
-          {{ pendingTeams().length ? 'Continue to next team' : 'Open My Workspace' }}
-        </button>
+        <button type="button" class="btn-primary" (click)="close()">Continue to your key</button>
       </div>
     } @else {
       @if (error()) {
@@ -31,7 +33,7 @@
       <div class="logging-options" role="group" aria-label="Logging options">
         <button type="button" class="logging-option logging-option--full" aria-labelledby="full-action"
                 aria-describedby="full-summary full-details logging-scope"
-                [disabled]="savingChoice() !== null" (click)="complete(true)">
+                [disabled]="savingChoice() !== null" (click)="complete('FULL')">
           <span class="option-art" aria-hidden="true">
             <span class="option-icon"><i class="pi pi-bolt"></i></span>
             <span class="option-icon"><i class="pi pi-chart-line"></i></span>
@@ -44,14 +46,14 @@
             <span><i class="pi pi-info-circle" aria-hidden="true"></i> Stores request and response content, including prompts and answers</span>
           </span>
           <span class="option-action" id="full-action">
-            {{ savingChoice() === true ? 'Saving…' : 'Enable full logging' }}
+            {{ savingChoice() === 'FULL' ? 'Saving…' : 'Enable full logging' }}
             <i class="pi pi-arrow-right" aria-hidden="true"></i>
           </span>
         </button>
 
         <button type="button" class="logging-option" aria-labelledby="billing-action"
                 aria-describedby="billing-summary billing-details logging-scope"
-                [disabled]="savingChoice() !== null" (click)="complete(false)">
+                [disabled]="savingChoice() !== null" (click)="complete('BILLING')">
           <span class="option-art" aria-hidden="true">
             <span class="option-icon"><i class="pi pi-shield"></i></span>
             <span class="option-icon"><i class="pi pi-file"></i></span>
@@ -64,7 +66,7 @@
             <span><i class="pi pi-check" aria-hidden="true"></i> Keeps request and response content out of logs</span>
           </span>
           <span class="option-action" id="billing-action">
-            @if (savingChoice() === false) {
+            @if (savingChoice() === 'BILLING') {
               Saving…
             } @else {
               Keep billing-only logging <span aria-hidden="true">:(</span>
@@ -72,7 +74,12 @@
           </span>
         </button>
       </div>
-      <p class="onboarding-note">You can change logging for each key in My Workspace.</p>
+      <footer class="onboarding-footer">
+        <p>You can change logging for each key in My Workspace.</p>
+        <button type="button" class="btn-secondary" [disabled]="savingChoice() !== null" (click)="close()">
+          Decide later
+        </button>
+      </footer>
     }
   </section>
-</main>
+</tumaet-ui-dialog>
