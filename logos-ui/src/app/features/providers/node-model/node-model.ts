@@ -594,9 +594,17 @@ export class NodeModel implements OnInit {
     if (!d) {
       return false;
     }
-    const tp = Number(best['tensor_parallel_size']) || null;
-    const kv = kvToGb(best['kv_cache_memory_bytes']);
-    const ctx = Number(best['max_model_len']) || null;
+    // Applying rounds and limits the values to what the editor offers; compare with that result, or a
+    // recommendation the editor can only take approximately would never show as in use.
+    const measuredTp = this.insight()?.calibration.results.some((r) => r.tp === Number(best['tensor_parallel_size']));
+    const tp = measuredTp ? Number(best['tensor_parallel_size']) : null;
+    const window = this.window();
+    const wantedKv = kvToGb(best['kv_cache_memory_bytes']);
+    const kv = wantedKv === null || !window ? null : Math.min(window.max, Math.max(window.min, Math.round(wantedKv)));
+    const wantedCtx = Number(best['max_model_len']) || null;
+    const cap = this.capacity();
+    const steppedCtx = wantedCtx === null ? null : Math.round(wantedCtx / CONTEXT_MIN) * CONTEXT_MIN;
+    const ctx = steppedCtx === null || !window ? null : Math.max(CONTEXT_MIN, cap ? Math.min(steppedCtx, cap) : steppedCtx);
     const values = this.adv()?.values ?? {};
     const args = (values['extra_args'] ?? '').split('\n').map((line) => line.trim());
     const batchApplied = BATCHING_KEYS.every((key) => {

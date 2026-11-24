@@ -1353,6 +1353,29 @@ describe('NodeModel', () => {
       expect(button().textContent).toContain('Use recommendation');
     });
 
+    it.each([
+      ['a fractional KV size', { tensor_parallel_size: 4, kv_cache_memory_bytes: '2.5G', max_model_len: 5120 }],
+      ['a context that is no multiple of 1,024', { tensor_parallel_size: 4, kv_cache_memory_bytes: '2G', max_model_len: 5000 }],
+      ['a KV size above what was measured', { tensor_parallel_size: 4, kv_cache_memory_bytes: '64G', max_model_len: 5120 }],
+    ])('shows the recommendation as in use after applying it with %s', async (_name, settings) => {
+      const best = { benchmark_id: 7, throughput: 52.3, settings, recorded_at: null };
+      service['getNodeInsights'].mockResolvedValue({
+        ...insights([
+          insight({ benchmark: { best_eligible: best, best_observed: best, current: { tensor_parallel_size: 4, max_model_len: 32768 }, eligible_for_comparison: true } }),
+        ]),
+        gpus,
+      });
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+      const button = (): HTMLButtonElement => root.querySelector<HTMLButtonElement>('.banner--rec button')!;
+      button().click();
+      fixture.detectChanges();
+      // The editor takes whole GB inside the measured range and contexts in steps of 1,024; that counts as applied.
+      expect(button().disabled).toBe(true);
+      expect(button().textContent).toContain('Recommendation in use');
+    });
+
     it('offers batch values of a benchmark that the stored entry does not set, and puts them in the editor', async () => {
       const best = { benchmark_id: 7, throughput: 52.3, settings: { max_num_seqs: 64, max_num_batched_tokens: 4096 }, recorded_at: null };
       service['getNodeInsights'].mockResolvedValue({
