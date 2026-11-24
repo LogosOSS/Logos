@@ -29,8 +29,8 @@ export class LoggingOnboarding {
       await this.auth.completeLoggingOnboarding(fullLogging);
     } catch {
       this.error.set('We could not save your choice. Please try again.');
-      return;
       this.savingChoice.set(null);
+      return;
     }
 
     const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl');
