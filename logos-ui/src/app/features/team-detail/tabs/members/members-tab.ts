@@ -1,3 +1,4 @@
+import { RouterLink } from '@angular/router';
 import {
   Component,
   Input,
@@ -34,6 +35,7 @@ import { isInteractiveClick } from '../../../../shared/utils/interactive-click';
   standalone: true,
   imports: [
     FormsModule,
+    RouterLink,
     ModalFormComponent,
     ModalConfirmComponent,
     SearchInputComponent,
@@ -194,8 +196,6 @@ export class MembersTabComponent {
 
   // Removing an owner demotes them to a regular member (is_owner = false) via
   // the logos_admin-only PATCH endpoint, so only expose it to logos_admins.
-  // Ownership is editable even for Keycloak-managed owners (only removing the
-  // membership is locked), so we intentionally do not gate this on m.managed.
   get canChangeRole(): boolean {
     return this.isLogosAdminSignal();
   }

@@ -44,8 +44,7 @@ npm start
 ```
 
 Then open `http://localhost:4200/` and sign in with one of the seeded
-development accounts. `keycloak/tum-realm.json` defines these accounts and
-their roles. Do not use them in a production deployment.
+development accounts. The local realm supplies their identities and the explicit development Liquibase context seeds their Logos roles.
 
 ## Production Deployment
 
@@ -113,6 +112,20 @@ certificate through Let's Encrypt.
 
 After startup, verify the UI at `https://<your-domain>/`. Verify the API
 documentation at `https://<your-domain>/docs`.
+
+## First Logos Admin
+
+On a fresh production installation, have the designated operator sign in once. Verify their subject UUID directly in the configured Keycloak realm. Using a database administration session connected to this deployment, replace the example UUID with that exact subject and run:
+
+```sql
+UPDATE users SET role = 'logos_admin'
+WHERE keycloak_id = '00000000-0000-0000-0000-000000000000'::uuid AND is_active
+RETURNING id, username, keycloak_id, role;
+```
+
+Confirm the returned identity before using **Users** to assign subsequent roles. Keep the `dev-identities` Liquibase context confined to the development and screenshot stacks.
+
+During upgrade, Logos keeps existing roles, team memberships, ownerships, keys and grants. Previously synchronized memberships become locally managed. Existing teams start with worldwide processing to preserve their available deployments. Existing request profiles continue to impose their own privacy thresholds. Review each team in **Teams → Settings** and confirm regional cloud endpoints before selecting EU processing. Keycloak sign-in and the optional account availability sync preserve local role and membership decisions.
 
 ## Persistent Data and Upgrades
 

@@ -1029,7 +1029,14 @@ def _extract_policy(headers: dict, logos_key: str, body: dict):
                     if key == "default":
                         continue
                     if key == "privacy":
-                        policy["threshold_privacy"] = p[key]
+                        from logos.pipeline.pipeline import PRIVACY_ORDER
+
+                        stored = policy.get("threshold_privacy")
+                        requested = p[key] if p[key] in PRIVACY_ORDER else "LOCAL"
+                        if stored is None or (
+                            stored in PRIVACY_ORDER and PRIVACY_ORDER.index(requested) < PRIVACY_ORDER.index(stored)
+                        ):
+                            policy["threshold_privacy"] = requested
                     # Add other policy settings as needed
     except Exception as e:
         logger.debug(f"Could not parse model string for policy: {e}")

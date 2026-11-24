@@ -182,9 +182,9 @@ public class ModelController {
 
     @PostMapping("/get_model")
     public ResponseEntity<?> getModel(
-            @RequestBody GetModelRequestDTO req) {
+            @RequestAttribute("authContext") AuthContext auth, @RequestBody GetModelRequestDTO req) {
         if (req.id() == null) return ResponseEntity.badRequest().body(Map.of("error", "id is required"));
-        return modelService.getModel(req.id())
+        return modelService.getModelForUser(req.id(), auth)
             .map(ResponseEntity::ok)
             .<ResponseEntity<?>>map(r -> r)
             .orElse(ResponseEntity.status(404).body(Map.of("error", "Model not found")));

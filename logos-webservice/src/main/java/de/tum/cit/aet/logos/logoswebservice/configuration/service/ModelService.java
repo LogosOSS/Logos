@@ -176,6 +176,13 @@ public class ModelService {
         return Map.of("result", "Deleted Model");
     }
 
+    public Optional<Map<String, Object>> getModelForUser(Integer id, AuthContext auth) {
+        if (!isLogosAdmin(auth) && (auth.userId() == null || !modelRepository.isModelAccessibleToUser(auth.userId(), id))) {
+            return Optional.empty();
+        }
+        return getModel(id);
+    }
+
     public Optional<Map<String, Object>> getModel(Integer id) {
         return modelRepository.findById(id).map(m -> {
             Map<String, Object> map = new LinkedHashMap<>();

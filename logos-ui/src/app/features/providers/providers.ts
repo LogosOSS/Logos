@@ -220,6 +220,7 @@ export class Providers implements OnInit, OnDestroy {
   }
 
   onAddProviderTypeChange(type: ProviderType): void {
+    this.addEuVerified.set(false);
     const previous = this.suggestedBaseUrl(this.addProviderType(), this.addCloudProviderType());
     this.addProviderType.set(type);
     this.addApiKey.set('');
@@ -234,6 +235,7 @@ export class Providers implements OnInit, OnDestroy {
   }
 
   onAddCloudProviderTypeChange(cloud: CloudProviderType): void {
+    this.addEuVerified.set(false);
     const type = this.addProviderType();
     const previous = this.suggestedBaseUrl(type, this.addCloudProviderType());
     this.addCloudProviderType.set(cloud);
@@ -241,6 +243,7 @@ export class Providers implements OnInit, OnDestroy {
   }
 
   onEditProviderTypeChange(type: ProviderType): void {
+    this.editEuVerified.set(false);
     const previous = this.suggestedBaseUrl(this.editProviderType(), this.editCloudProviderType());
     this.editProviderType.set(type);
     const { cloud, privacy } = this.coercedForType(
@@ -254,6 +257,7 @@ export class Providers implements OnInit, OnDestroy {
   }
 
   onEditCloudProviderTypeChange(cloud: CloudProviderType): void {
+    this.editEuVerified.set(false);
     const type = this.editProviderType();
     const previous = this.suggestedBaseUrl(type, this.editCloudProviderType());
     this.editCloudProviderType.set(cloud);
@@ -296,6 +300,7 @@ export class Providers implements OnInit, OnDestroy {
   addAuthFormat = signal('');
   addProviderType = signal<ProviderType>('cloud');
   addCloudProviderType = signal<CloudProviderType>('azure');
+  addEuVerified = signal(false);
   addPrivacyLevel = signal<PrivacyLevel>('CLOUD_IN_EU_BY_US_PROVIDER');
   addLoading = signal(false);
   addError = signal('');
@@ -315,6 +320,7 @@ export class Providers implements OnInit, OnDestroy {
   editAuthFormat = signal('');
   editProviderType = signal<ProviderType>('cloud');
   editCloudProviderType = signal<CloudProviderType>('azure');
+  editEuVerified = signal(false);
   editPrivacyLevel = signal<PrivacyLevel>('CLOUD_IN_EU_BY_US_PROVIDER');
   editLoading = signal(false);
   editError = signal('');
@@ -585,6 +591,7 @@ export class Providers implements OnInit, OnDestroy {
     this.addAuthFormat.set('');
     this.addProviderType.set('cloud');
     this.addCloudProviderType.set(this.defaultCloudProviderType);
+    this.addEuVerified.set(false);
     this.addPrivacyLevel.set(this.defaultCloudPrivacyLevel);
     this.addError.set('');
     this.addOpen.set(true);
@@ -608,6 +615,8 @@ export class Providers implements OnInit, OnDestroy {
       provider_type: this.addProviderType(),
       cloud_provider_type:
         this.addCloudProviderType() === 'none' ? undefined : this.addCloudProviderType(),
+      eu_processing_verified: this.addProviderType() === 'cloud'
+        && this.addPrivacyLevel().startsWith('CLOUD_IN_EU_') && this.addEuVerified(),
       privacy_level: this.addPrivacyLevel(),
     };
     try {
@@ -704,6 +713,7 @@ export class Providers implements OnInit, OnDestroy {
       provider.cloud_provider_type ?? 'none',
       provider.privacy_level,
     );
+    this.editEuVerified.set(provider.eu_processing_verified === true);
     this.editCloudProviderType.set(cloud);
     this.editPrivacyLevel.set(privacy);
     this.editError.set('');
@@ -729,6 +739,8 @@ export class Providers implements OnInit, OnDestroy {
       // Send 'none' literally — the application server treats null as "leave unchanged",
       // so mapping it to null makes resetting the cloud type a silent no-op.
       cloud_provider_type: this.editCloudProviderType(),
+      eu_processing_verified: this.editProviderType() === 'cloud'
+        && this.editPrivacyLevel().startsWith('CLOUD_IN_EU_') && this.editEuVerified(),
       privacy_level: this.editPrivacyLevel(),
     };
     try {

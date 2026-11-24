@@ -98,4 +98,5 @@
     <include file="liquibase/changelog/091_agent_observed_memory.xml"/>
     <include file="liquibase/changelog/092_automatic_workflow_analysis.xml"/>
     <include file="liquibase/changelog/093_agent_activity.xml"/>
+    <include file="liquibase/changelog/094_team_privacy.xml"/>
 </databaseChangeLog>

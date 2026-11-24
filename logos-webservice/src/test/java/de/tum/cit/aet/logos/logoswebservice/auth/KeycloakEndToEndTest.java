@@ -1,5 +1,10 @@
 package de.tum.cit.aet.logos.logoswebservice.auth;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
@@ -17,10 +22,6 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.web.client.RestClient;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import dasniko.testcontainers.keycloak.KeycloakContainer;
 import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
@@ -69,16 +70,41 @@ class KeycloakEndToEndTest {
     }
 
     @Test
-    void realKeycloakToken_jitProvisionsAdminWithPersonalKey() throws Exception {
+    void realmAdminLogsInAsDeveloperUntilGrantedALocalRole() throws Exception {
         String token = passwordToken("tobias.wasner");
 
         mvc.perform(get("/me").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.username").value("tobias.wasner"))
-                .andExpect(jsonPath("$.role").value("logos_admin"));
+                .andExpect(jsonPath("$.role").value("app_developer"));
 
-        assertThat(userRepository.findByUsername("tobias.wasner")).isPresent();
-
+        var admin = userRepository.findByUsername("tobias.wasner").orElseThrow();
+        // Simulate the operator's one-time bootstrap for a new installation.
+        admin.setRole("logos_admin");
+        userRepository.save(admin);
+        String targetToken = passwordToken("fridoline.fuchs");
+        mvc.perform(get("/me").header("Authorization", "Bearer " + targetToken))
+            .andExpect(jsonPath("$.role").value("app_developer"));
+        var target = userRepository.findByUsername("fridoline.fuchs").orElseThrow();
+        String rolePath = "/users/" + target.getId() + "/role";
+        mvc.perform(patch(rolePath)
+            .header("Authorization", "Bearer " + targetToken).contentType("application/json")
+            .content("{\"role\":\"logos_admin\"}")).andExpect(status().isForbidden());
+        for (String role : java.util.List.of("app_admin", "logos_admin", "app_developer")) {
+            mvc.perform(patch(rolePath)
+                .header("Authorization", "Bearer " + token).contentType("application/json")
+                .content("{\"role\":\"" + role + "\"}")).andExpect(status().isOk());
+            mvc.perform(get("/me").header("Authorization", "Bearer " + targetToken))
+                .andExpect(jsonPath("$.role").value(role));
+            var stale = userRepository.findById(target.getId()).orElseThrow();
+            stale.setLastSyncedAt(java.time.Instant.EPOCH);
+            userRepository.save(stale);
+            mvc.perform(get("/me").header("Authorization", "Bearer " + passwordToken("fridoline.fuchs")))
+                .andExpect(jsonPath("$.role").value(role));
+        }
+        mvc.perform(patch(rolePath)
+            .header("Authorization", "Bearer " + targetToken).contentType("application/json")
+            .content("{\"role\":\"app_admin\"}")).andExpect(status().isForbidden());
 
         mvc.perform(get("/me").header("logos-key", token))
                 .andExpect(status().isOk());

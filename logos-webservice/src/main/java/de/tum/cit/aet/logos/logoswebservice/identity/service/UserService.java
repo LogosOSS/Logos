@@ -9,6 +9,8 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
+import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -31,8 +33,14 @@ public class UserService {
     private final UserRepository userRepository;
     private final TeamRepository teamRepository;
     private final TeamService teamService;
+    private final AuditLogService auditLog;
+    private final TransactionTemplate transactions;
 
-    public UserService(UserRepository userRepository, TeamRepository teamRepository, TeamService teamService) {
+    public UserService(UserRepository userRepository, TeamRepository teamRepository, TeamService teamService,
+                       AuditLogService auditLog,
+                       TransactionTemplate transactions) {
+        this.auditLog = auditLog;
+        this.transactions = transactions;
         this.userRepository = userRepository;
         this.teamRepository = teamRepository;
         this.teamService = teamService;
@@ -101,13 +109,14 @@ public class UserService {
         // grant (which locks the same row before checking the role) cannot slip
         // in between the ownsAnyTeam check and the demotion.
         return userRepository.findByIdForUpdate(userId).map(user -> {
-            requireUnmanaged(user, "given a different role");
+            String previous = user.getRole();
             if (Role.APP_DEVELOPER.matches(role) && teamService.ownsAnyTeam(userId)) {
                 throw new ConflictException("User '" + user.getUsername()
                     + "' owns a team and team owners need the app_admin or logos_admin role."
                     + " Remove their ownership first.");
             }
             user.setRole(role);
+            auditLog.record("user.role_changed", "user", userId, null, Map.of("role", previous), Map.of("role", role));
             return toDto(userRepository.save(user));
         });
     }
@@ -146,42 +155,24 @@ public class UserService {
 
     /**
      * Creates the users the web application mapped and selected from the preview.
-     * No team is part of the import: users are created as app_developers without
-     * one and added to a team's members afterwards.
+     * Each row commits together with its optional team membership.
      */
-    public Map<String, Object> importUsers(List<ImportUsersRequestDTO.Row> rowsIn) {
+    public Map<String, Object> importUsers(List<ImportUsersRequestDTO.Row> rowsIn, Integer targetTeamId, Integer callerId, boolean platformAdmin) {
         List<Map<String, Object>> rows = new ArrayList<>();
         int created = 0, existing = 0, failed = 0;
         for (ImportUsersRequestDTO.Row in : rowsIn) {
-            String prename = trimToNull(in.prename());
-            String name = trimToNull(in.name());
-            String email = trimToNull(in.email());
             Map<String, Object> row = new LinkedHashMap<>();
-            row.put("email", email);
+            row.put("email", trimToNull(in.email()));
             row.put("username", null);
-            row.put("status", "failed");
             row.put("error", null);
             try {
-                if (email != null && userRepository.existsByEmailIgnoreCase(email)) {
-                    User existingUser = userRepository.findFirstByEmailIgnoreCase(email).get();
-                    row.put("username", existingUser.getUsername());
-                    row.put("status", "existing");
-                    existing++;
-                } else {
-                    String username = generateUsername(prename, name);
-                    User user = new User();
-                    user.setUsername(username);
-                    user.setPrename(prename);
-                    user.setName(name);
-                    user.setEmail(email);
-                    user.setRole(Role.APP_DEVELOPER.getValue());
-                    user = userRepository.save(user);
-                    row.put("username", user.getUsername());
-                    row.put("status", "created");
-                    created++;
-                }
-            } catch (Exception e) {
-                row.put("error", e.getMessage());
+                transactions.executeWithoutResult(tx -> importRow(row, in, targetTeamId, callerId, platformAdmin));
+                if ("existing".equals(row.get("status"))) existing++;
+                else created++;
+            } catch (RuntimeException e) {
+                row.put("username", null);
+                row.remove("membership");
+                row.put("error", e instanceof IllegalArgumentException ? e.getMessage() : "Could not import this row");
                 row.put("status", "failed");
                 failed++;
             }
@@ -194,9 +185,53 @@ public class UserService {
         return Map.of("summary", summary, "rows", rows);
     }
 
+    private void importRow(Map<String, Object> row, ImportUsersRequestDTO.Row in,
+                           Integer targetTeamId, Integer callerId, boolean platformAdmin) {
+        String email = trimToNull(in.email());
+        // Lock identity before team, in the same order as account reactivation.
+        Optional<User> match = email == null ? Optional.empty() : userRepository.findByEmailForUpdate(email);
+        Integer teamId = targetTeamId;
+        if (in.team() != null) {
+            if (teamId != null) throw new IllegalArgumentException("Select one team source for this row");
+            teamId = teamRepository.findByName(in.team().strip())
+                .orElseThrow(() -> new IllegalArgumentException("Unknown team name")).getId();
+        }
+        if (teamId != null) {
+            var team = teamRepository.findByIdForUpdate(teamId)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown team"));
+            if (!platformAdmin && !teamService.isOwner(teamId, callerId)) {
+                throw new IllegalArgumentException("Team owner access required");
+            }
+            if (email == null) throw new IllegalArgumentException("Email is required for membership");
+            row.put("team", team.getName());
+        }
+        User user = match.orElseGet(() -> {
+            String prename = trimToNull(in.prename());
+            String name = trimToNull(in.name());
+            User fresh = new User();
+            fresh.setUsername(generateUsername(prename, name));
+            fresh.setPrename(prename);
+            fresh.setName(name);
+            fresh.setEmail(email);
+            fresh.setRole(Role.Names.APP_DEVELOPER);
+            return userRepository.save(fresh);
+        });
+        if (teamId != null) {
+            if (!user.isActive()) throw new IllegalArgumentException("Account is inactive");
+            boolean alreadyMember = teamService.isMember(teamId, user.getId());
+            if (!alreadyMember) {
+                teamService.addMember(teamId, new AddTeamMemberRequestDTO(user.getId(), false))
+                    .orElseThrow(() -> new IllegalArgumentException("Could not assign team membership"));
+            }
+            row.put("membership", alreadyMember ? "Already a member" : "Member added");
+        }
+        row.put("username", user.getUsername());
+        row.put("status", match.isPresent() ? "existing" : "created");
+    }
+
     /**
-     * Keycloak owns the identity, role and existence of synced users: every sync
-     * overwrites prename/name/email/role and reactivates the account. Editing those
+     * Keycloak owns the identity and existence of synced users: every sync
+     * overwrites prename/name/email and reactivates the account. Editing those
      * locally would just be undone on the next sync, so we reject it outright.
      * Logos-owned data (team limits, key budgets, team ownership) stays editable.
      */

@@ -11,7 +11,9 @@ import java.util.function.ToIntFunction;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
 import de.tum.cit.aet.logos.logoswebservice.audit.PermissionAuditContext;
+import de.tum.cit.aet.logos.logoswebservice.common.ForbiddenException;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ApiKeyModelPermission;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ApiKeyProviderPermission;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.TeamModelPermission;
@@ -81,16 +83,25 @@ public class PermissionService {
         this.providerRepo = providerRepo;
     }
 
-    /**
-     * The full Logos catalog an API key's custom permissions can be chosen
-     * from: every provider with the models it serves. Custom permissions are
-     * not limited to the team's permissions or to the caller's own access, so
-     * the catalog is not filtered. It carries only ids and names, never
-     * provider URLs or credentials.
-     */
-    public List<Map<String, Object>> getPermissionCatalog() {
+    /** A legacy key may have explicit grants without a team. Key access is checked by the controller. */
+    public Integer teamForKey(int keyId) {
+        return providerRepo.teamForKey(keyId).orElse(null);
+    }
+
+    private Set<Integer> eligibleIds(Integer teamId, boolean models) {
+        return models ? providerRepo.eligibleModels(teamId) : providerRepo.eligibleProviders(teamId);
+    }
+
+    private void checkScope(Integer teamId, boolean models, List<Integer> ids) {
+        if (!eligibleIds(teamId, models).containsAll(ids)) {
+            throw new ForbiddenException(
+                "The team's privacy level excludes a requested model or provider.");
+        }
+    }
+
+    public List<Map<String, Object>> getPermissionCatalog(Integer teamId) {
         Map<Integer, Map<String, Object>> providers = new LinkedHashMap<>();
-        for (PermissionCatalogProjection row : providerRepo.findPermissionCatalog()) {
+        for (PermissionCatalogProjection row : providerRepo.findPermissionCatalog(teamId)) {
             Map<String, Object> provider = providers.computeIfAbsent(row.getProviderId(), id -> {
                 Map<String, Object> p = new LinkedHashMap<>();
                 p.put("id", id);
@@ -108,8 +119,9 @@ public class PermissionService {
     }
 
     public List<Integer> getApiKeyModelPermissions(int keyId) {
+        Set<Integer> allowed = eligibleIds(teamForKey(keyId), true);
         return apiKeyModelRepo.findById_ApiKeyId(keyId).stream()
-            .map(p -> p.getId().getModelId()).toList();
+            .map(p -> p.getId().getModelId()).filter(allowed::contains).toList();
     }
 
     /**
@@ -121,14 +133,16 @@ public class PermissionService {
     @Transactional
     public void setApiKeyModelPermissions(int keyId, List<Integer> modelIds) {
         apiKeyProviderRepo.lockApiKeyPermissions(apiKeyPermsLockKey(keyId));
+        checkScope(teamForKey(keyId), true, modelIds);
         audit.withCause("direct", () -> replaceGrants(
             apiKeyModelRepo, apiKeyModelRepo.findById_ApiKeyId(keyId), modelIds,
             p -> p.getId().getModelId(), id -> new ApiKeyModelPermission(keyId, id)));
     }
 
     public List<Integer> getApiKeyProviderPermissions(int keyId) {
+        Set<Integer> allowed = eligibleIds(teamForKey(keyId), false);
         return apiKeyProviderRepo.findById_ApiKeyId(keyId).stream()
-            .map(p -> p.getId().getProviderId()).toList();
+            .map(p -> p.getId().getProviderId()).filter(allowed::contains).toList();
     }
 
     /**
@@ -139,6 +153,7 @@ public class PermissionService {
     @Transactional
     public void setApiKeyProviderPermissions(int keyId, List<Integer> providerIds) {
         apiKeyProviderRepo.lockApiKeyPermissions(apiKeyPermsLockKey(keyId));
+        checkScope(teamForKey(keyId), false, providerIds);
         audit.withCause("direct", () -> replaceGrants(
             apiKeyProviderRepo, apiKeyProviderRepo.findById_ApiKeyId(keyId), providerIds,
             p -> p.getId().getProviderId(), id -> new ApiKeyProviderPermission(keyId, id)));
@@ -146,26 +161,30 @@ public class PermissionService {
     }
 
     public List<Integer> getTeamModelPermissions(int teamId) {
+        Set<Integer> allowed = eligibleIds(teamId, true);
         return teamModelRepo.findById_TeamId(teamId).stream()
-            .map(p -> p.getId().getModelId()).toList();
+            .map(p -> p.getId().getModelId()).filter(allowed::contains).toList();
     }
 
     @Transactional
     public void setTeamModelPermissions(int teamId, List<Integer> modelIds) {
         teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
+        checkScope(teamId, true, modelIds);
         audit.withCause("direct", () -> replaceGrants(
             teamModelRepo, teamModelRepo.findById_TeamId(teamId), modelIds,
             p -> p.getId().getModelId(), id -> new TeamModelPermission(teamId, id)));
     }
 
     public List<Integer> getTeamProviderPermissions(int teamId) {
+        Set<Integer> allowed = eligibleIds(teamId, false);
         return teamProviderRepo.findById_TeamId(teamId).stream()
-            .map(p -> p.getId().getProviderId()).toList();
+            .map(p -> p.getId().getProviderId()).filter(allowed::contains).toList();
     }
 
     @Transactional
     public void setTeamProviderPermissions(int teamId, List<Integer> providerIds) {
         teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
+        checkScope(teamId, false, providerIds);
         audit.withCause("direct", () -> replaceGrants(
             teamProviderRepo, teamProviderRepo.findById_TeamId(teamId), providerIds,
             p -> p.getId().getProviderId(), id -> new TeamProviderPermission(teamId, id)));
@@ -182,6 +201,7 @@ public class PermissionService {
     @Transactional
     public void addTeamProviderPermission(int teamId, Integer providerId) {
         teamProviderRepo.lockTeamProviderPermissions(teamProviderPermsLockKey(teamId));
+        checkScope(teamId, false, List.of(providerId));
         audit.withCause("repair", () -> teamProviderRepo.grantIfAbsent(teamId, providerId));
     }
 

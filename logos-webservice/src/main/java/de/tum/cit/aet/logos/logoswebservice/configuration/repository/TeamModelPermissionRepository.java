@@ -26,7 +26,7 @@ public interface TeamModelPermissionRepository
         WHERE team_id = :teamId
           AND model_id NOT IN (
               SELECT DISTINCT mp.model_id FROM model_provider mp
-              JOIN team_provider_permissions tpp ON mp.provider_id = tpp.provider_id
+              JOIN allowed_team_provider_grants tpp ON mp.provider_id = tpp.provider_id
               WHERE tpp.team_id = :teamId
           )
         """, nativeQuery = true)
@@ -49,7 +49,7 @@ public interface TeamModelPermissionRepository
         LEFT JOIN model_provider mp ON mp.model_id = :modelId
         LEFT JOIN team_model_permissions tmp
                ON tmp.team_id = t.id AND tmp.model_id = :modelId
-        LEFT JOIN team_provider_permissions tpp
+        LEFT JOIN allowed_team_provider_grants tpp
                ON tpp.team_id = t.id AND tpp.provider_id = mp.provider_id
         ORDER BY t.id, mp.provider_id NULLS LAST
         """, nativeQuery = true)

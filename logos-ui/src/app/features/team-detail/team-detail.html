@@ -108,7 +108,7 @@
           [team]="t"
           [teamId]="teamId()"
           [canEdit]="canEdit()"
-          [canLinkKeycloak]="isLogosAdmin()"
+          [canManagePrivacy]="isLogosAdmin()"
           (refresh)="refresh()"
           (teamDeleted)="onTeamDeleted()"
           (publicStatsSaved)="applyPublicStats($event)"

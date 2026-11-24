@@ -428,10 +428,6 @@ services:
       KEYCLOAK_PASSKEY_RP_NAME: "${KEYCLOAK_PASSKEY_RP_NAME:-Logos}"
       # Empty default: KeycloakProperties auto-derives audience from client id.
       KEYCLOAK_AUDIENCE: "${KEYCLOAK_AUDIENCE:-}"
-      KEYCLOAK_ROLES_LOGOS_ADMIN: "${KEYCLOAK_ROLES_LOGOS_ADMIN:-itg-admin}"
-      KEYCLOAK_ROLES_APP_ADMIN: "${KEYCLOAK_ROLES_APP_ADMIN:-chair-member}"
-      KEYCLOAK_AUTO_PROVISION_TEAMS: "${KEYCLOAK_AUTO_PROVISION_TEAMS:-false}"
-      KEYCLOAK_TEAM_ROLE_SUFFIXES: "${KEYCLOAK_TEAM_ROLE_SUFFIXES:--dev,-team,-group}"
       KEYCLOAK_SYNC_ENABLED: "${KEYCLOAK_SYNC_ENABLED:-false}"
       KEYCLOAK_SYNC_CLIENT_ID: "${KEYCLOAK_SYNC_CLIENT_ID:-logos-sync}"
       KEYCLOAK_SYNC_CLIENT_SECRET: "${KEYCLOAK_SYNC_CLIENT_SECRET:-}"
@@ -657,8 +653,6 @@ services:
       # External Keycloak role(s) that grant the required internal role — the
       # same variable (and default) the webservice reads, so one .env names
       # the deployment's admin role for both services.
-      KEYCLOAK_ROLES_LOGOS_ADMIN: "${KEYCLOAK_ROLES_LOGOS_ADMIN:-itg-admin}"
-      LOGOS_AGENT_REQUIRED_ROLE: "${LOGOS_AGENT_REQUIRED_ROLE:-logos_admin}"
 
       # Optional default among the managed identity's locally served models.
       LOGOS_AGENT_DEFAULT_MODEL: "${LOGOS_AGENT_DEFAULT_MODEL:-}"

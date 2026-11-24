@@ -159,7 +159,6 @@ describe('Shell', () => {
           'Statistics',
           'Models',
           'Providers',
-          'Policies',
           'Billing',
         ]),
       );

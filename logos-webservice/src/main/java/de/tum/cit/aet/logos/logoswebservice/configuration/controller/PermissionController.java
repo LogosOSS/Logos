@@ -49,7 +49,7 @@ public class PermissionController {
             @PathVariable Integer keyId,
             @RequestAttribute("authContext") AuthContext auth) {
         enforceKeyAccess(keyId, auth);
-        return ResponseEntity.ok(permissionService.getPermissionCatalog());
+        return ResponseEntity.ok(permissionService.getPermissionCatalog(permissionService.teamForKey(keyId)));
     }
 
     @GetMapping("/api-keys/{keyId}/model-permissions")
@@ -90,6 +90,13 @@ public class PermissionController {
         enforceKeyAccess(keyId, auth);
         permissionService.setApiKeyProviderPermissions(keyId, body.providerIds());
         return ResponseEntity.ok(Map.of("result", "API Key provider permissions updated"));
+    }
+
+    @GetMapping("/teams/{teamId}/permission-catalog")
+    @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
+    public ResponseEntity<?> getTeamCatalog(@PathVariable Integer teamId, @RequestAttribute("authContext") AuthContext auth) {
+        enforceTeamAccess(teamId, auth);
+        return ResponseEntity.ok(permissionService.getPermissionCatalog(teamId));
     }
 
     @GetMapping("/teams/{teamId}/model-permissions")

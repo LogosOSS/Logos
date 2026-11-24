@@ -1,3 +1,12 @@
+export const TEAM_PRIVACY = {
+  LOCAL: 'Local models only',
+  EU: 'Local models and cloud processing in the EU',
+  WORLDWIDE: 'Local models and cloud processing worldwide',
+} as const;
+
+export type TeamPrivacy = keyof typeof TEAM_PRIVACY;
+export const TEAM_PRIVACY_OPTIONS = Object.entries(TEAM_PRIVACY);
+
 export interface Team {
   id: number;
   name: string;
@@ -11,9 +20,10 @@ export interface Team {
   /** Queue priority of the team's traffic (1..10, same scale as API-key priorities); null = not set. */
   priority: number | null;
   is_caller_owner: boolean;
-  /** True when the team is linked to a Keycloak group; name and existence are Keycloak-owned. */
+  privacy_scope: TeamPrivacy;
+  /** Compatibility field for older clients. */
   managed: boolean;
-  /** The linked Keycloak group (or realm role); null when the team is Logos-owned. */
+  /** Compatibility field for older clients. */
   keycloak_group: string | null;
 }
 
@@ -28,6 +38,7 @@ export interface TeamDetail {
   id: number;
   name: string;
   is_caller_owner: boolean;
+  privacy_scope: TeamPrivacy;
   team_monthly_budget_micro_cents: number | null;
   budget_used_micro_cents: number | null;
   default_monthly_budget_micro_cents: number | null;
@@ -37,28 +48,14 @@ export interface TeamDetail {
   default_local_tpm_limit: number | null;
   /** Queue priority of the team's traffic (1..10); null = not set. */
   priority: number | null;
-  /** True when the team is linked to a Keycloak group; name and existence are Keycloak-owned. */
+  /** Compatibility field for older clients. */
   managed: boolean;
-  /** The linked Keycloak group (or realm role); null when the team is Logos-owned. */
+  /** Compatibility field for older clients. */
   keycloak_group: string | null;
   /** When true, this team's name and traffic appear on the public stats page. */
   show_on_public_stats: boolean;
   /** Free-text group the public stats page sorts this team into; null = uncategorized. */
   public_category: string | null;
-}
-
-/** A Keycloak claim name a team can be linked to, as offered by the group picker. */
-export interface KeycloakGroupOption {
-  name: string;
-  source: 'group' | 'role';
-  linked_team_id: number | null;
-  linked_team_name: string | null;
-}
-
-export interface KeycloakGroupDirectory {
-  /** False when the deployment has no Keycloak directory access — type the group instead. */
-  available: boolean;
-  groups: KeycloakGroupOption[];
 }
 
 export interface TeamMember {
@@ -69,7 +66,7 @@ export interface TeamMember {
   email: string;
   is_owner: boolean;
   developer_monthly_budget_micro_cents: number | null;
-  /** True when the membership comes from a Keycloak group; it is re-added on sync and cannot be removed here. */
+  /** Compatibility field for older clients. */
   managed: boolean;
 }
 
@@ -305,6 +302,7 @@ export interface MyTeam {
   id: number;
   name: string;
   is_caller_owner: boolean;
+  privacy_scope: TeamPrivacy;
   team_monthly_budget_micro_cents: number | null;
   budget_used_micro_cents: number;
   member_count: number;

@@ -97,6 +97,7 @@ class User(Base):
 
 class Team(Base):
     __tablename__ = "teams"
+    privacy_scope = Column(String, nullable=False, default="LOCAL")
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
     default_cloud_rpm_limit = Column(Integer, nullable=True, default=5)
@@ -148,6 +149,7 @@ class Model(Base):
 
 class Provider(Base):
     __tablename__ = "providers"
+    eu_processing_verified = Column(Boolean, nullable=False, default=False)
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
     base_url = Column(Text, nullable=True)

@@ -47,11 +47,11 @@ public class GatewayDeploymentRepository {
         ),
         effective_providers AS (
             SELECT akpp.provider_id
-            FROM api_key_provider_permissions akpp, key_info ki
+            FROM allowed_key_provider_grants akpp, key_info ki
             WHERE akpp.api_key_id = ki.aki AND ki.custom = true
             UNION
             SELECT tpp.provider_id
-            FROM team_provider_permissions tpp, key_info ki
+            FROM allowed_team_provider_grants tpp, key_info ki
             WHERE tpp.team_id = ki.tid AND ki.custom = false
         ),
         effective_models AS (
@@ -76,12 +76,13 @@ public class GatewayDeploymentRepository {
                    mp.endpoint AS endpoint,
                    p.auth_name AS auth_name,
                    p.auth_format AS auth_format,
-                   p.privacy_level::text AS privacy_level,
+                   region.privacy_level AS privacy_level,
                    COALESCE(NULLIF(mp.api_key, ''), p.api_key, '') AS provider_api_key
             FROM effective_models em
                  JOIN models m ON m.id = em.model_id
                  JOIN model_provider mp ON m.id = mp.model_id
                  JOIN providers p ON mp.provider_id = p.id
+                 JOIN provider_processing_privacy region ON region.provider_id = p.id
                  JOIN effective_providers ep ON p.id = ep.provider_id
         )
         SELECT ki.aki AS api_key_id,
@@ -194,11 +195,11 @@ public class GatewayDeploymentRepository {
             ),
             effective_providers AS (
                 SELECT akpp.provider_id
-                FROM api_key_provider_permissions akpp, key_info ki
+                FROM allowed_key_provider_grants akpp, key_info ki
                 WHERE akpp.api_key_id = ki.aki AND ki.custom = true
                 UNION
                 SELECT tpp.provider_id
-                FROM team_provider_permissions tpp, key_info ki
+                FROM allowed_team_provider_grants tpp, key_info ki
                 WHERE tpp.team_id = ki.tid AND ki.custom = false
             ),
             effective_models AS (
@@ -222,12 +223,13 @@ public class GatewayDeploymentRepository {
                    mp.endpoint AS endpoint,
                    p.auth_name AS auth_name,
                    p.auth_format AS auth_format,
-                   p.privacy_level::text AS privacy_level,
+                   region.privacy_level AS privacy_level,
                    COALESCE(NULLIF(mp.api_key, ''), p.api_key, '') AS provider_api_key
             FROM models m
                  JOIN effective_models em ON m.id = em.model_id
                  JOIN model_provider mp ON m.id = mp.model_id
                  JOIN providers p ON mp.provider_id = p.id
+                 JOIN provider_processing_privacy region ON region.provider_id = p.id
                  JOIN effective_providers ep ON p.id = ep.provider_id
             ORDER BY p.id
             """, params, (rs, rowNum) -> mapDeployment(

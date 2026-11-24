@@ -1743,11 +1743,12 @@ async def handle_batch_api_request(request: Request) -> Response:
             elif owner is not None and owner.get("execution") == "logos":
                 response = _serve_local_operation(db, operation, owner)
             elif owner is not None:
-                provider = db.get_batch_provider(int(owner["provider_id"]))
+                provider = next(
+                    (p for p in db.get_batch_provider_candidates(auth.api_key_id) if p["id"] == owner["provider_id"]),
+                    None,
+                )
                 if provider is None:
-                    raise_openai_error(
-                        502, "The provider holding this object is gone.", code="batch_upstream_unreachable"
-                    )
+                    raise_openai_error(403, "This provider is no longer permitted.", code="provider_not_permitted")
                 # A result file is exposed under Logos's own id; the forward
                 # must address the provider's, which the mapping row keeps.
                 # The path was parsed with the id the client supplied, so it

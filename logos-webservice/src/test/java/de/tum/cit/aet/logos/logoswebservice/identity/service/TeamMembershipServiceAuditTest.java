@@ -71,7 +71,7 @@ class TeamMembershipServiceAuditTest {
         newKey.setKeyValue("lg-test");
         when(keyFactory.createDeveloperKey(user, team)).thenReturn(newKey);
 
-        service.join(7, 3, true, TeamMemberSource.MANUAL);
+        service.join(7, 3, true);
 
         ArgumentCaptor<Map<String, Object>> before = ArgumentCaptor.forClass(Map.class);
         ArgumentCaptor<Map<String, Object>> after = ArgumentCaptor.forClass(Map.class);
@@ -108,7 +108,7 @@ class TeamMembershipServiceAuditTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void keycloakTakingOverAManualMembershipKeepsItsBeforeState() {
+    void repeatedJoinAuditsTheExistingMembership() {
         User user = mock(User.class);
         when(user.getUsername()).thenReturn("alice");
         Team team = mock(Team.class);
@@ -123,13 +123,13 @@ class TeamMembershipServiceAuditTest {
         when(keys.findByUserIdAndTeamIdAndKeyType(any(), any(), any())).thenReturn(List.of(existingKey));
         service = new TeamMembershipService(members, keys, users, teams, keyFactory, audit);
 
-        service.join(7, 3, false, TeamMemberSource.KEYCLOAK);
+        service.join(7, 3, false);
 
         ArgumentCaptor<Map<String, Object>> before = ArgumentCaptor.forClass(Map.class);
         ArgumentCaptor<Map<String, Object>> after = ArgumentCaptor.forClass(Map.class);
         verify(audit).record(eq("team.member_joined"), eq("team_member"), eq("3/7"), eq(3),
             before.capture(), after.capture());
         assertThat(before.getValue()).containsEntry("source", "MANUAL");
-        assertThat(after.getValue()).containsEntry("source", "KEYCLOAK");
+        assertThat(after.getValue()).containsEntry("source", "MANUAL");
     }
 }

@@ -18,12 +18,10 @@ import org.springframework.web.bind.annotation.RestController;
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
 import de.tum.cit.aet.logos.logoswebservice.identity.dto.AddTeamMemberRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.identity.dto.CreateTeamRequestDTO;
-import de.tum.cit.aet.logos.logoswebservice.identity.dto.UpdateTeamKeycloakGroupRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.identity.dto.UpdateTeamMemberRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.identity.dto.UpdateTeamPriorityRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.identity.dto.UpdateTeamRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
-import de.tum.cit.aet.logos.logoswebservice.identity.service.KeycloakGroupDirectoryService;
 import de.tum.cit.aet.logos.logoswebservice.identity.service.TeamService;
 
 import static de.tum.cit.aet.logos.logoswebservice.identity.controller.UserController.isLogosAdmin;
@@ -33,11 +31,9 @@ import static de.tum.cit.aet.logos.logoswebservice.identity.controller.UserContr
 public class TeamController {
 
     private final TeamService teamService;
-    private final KeycloakGroupDirectoryService groupDirectory;
 
-    public TeamController(TeamService teamService, KeycloakGroupDirectoryService groupDirectory) {
+    public TeamController(TeamService teamService) {
         this.teamService = teamService;
-        this.groupDirectory = groupDirectory;
     }
 
     @GetMapping
@@ -62,9 +58,8 @@ public class TeamController {
         if (teamService.teamNameExists(body.name())) {
             return ResponseEntity.status(409).body(Map.of("detail", "A team with this name already exists."));
         }
-        if (body.keycloak_group() != null && !body.keycloak_group().isBlank() && !isLogosAdmin(auth)) {
-            return ResponseEntity.status(403).body(Map.of(
-                "detail", "Only Logos admins can link a team to a Keycloak group."));
+        if (!validPrivacy(body.privacy_scope())) {
+            return ResponseEntity.badRequest().body(Map.of("detail", "Choose a team privacy level."));
         }
         return ResponseEntity.ok(teamService.createTeam(body, auth.userId()));
     }
@@ -146,33 +141,17 @@ public class TeamController {
             .orElse(ResponseEntity.status(404).body(null));
     }
 
-    /**
-     * Links the team to a Keycloak group, so that the group's members join it
-     * on their next login and on the nightly directory sync; a null or blank
-     * value removes the link. Who belongs to which team is an identity-level
-     * decision and a team owner must not be able to pull an arbitrary group
-     * into their own team, so this is logos_admin only.
-     */
-    @PatchMapping("/{teamId}/keycloak-group")
-    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
-    public ResponseEntity<?> updateTeamKeycloakGroup(
-            @RequestAttribute("authContext") AuthContext auth,
-            @PathVariable Integer teamId,
-            @RequestBody UpdateTeamKeycloakGroupRequestDTO body) {
-        return teamService.updateTeamKeycloakGroup(teamId, body.keycloak_group())
-            .<ResponseEntity<?>>map(ResponseEntity::ok)
-            .orElse(ResponseEntity.status(404).body(Map.of("detail", "Team not found")));
+    private static boolean validPrivacy(String scope) {
+        return "LOCAL".equals(scope) || "EU".equals(scope) || "WORLDWIDE".equals(scope);
     }
 
-    /**
-     * The groups and realm roles of the configured Keycloak realm, for the
-     * group picker. Reports {@code available=false} instead of failing when the
-     * deployment has no directory access, so the dialog falls back to free text.
-     */
-    @GetMapping("/keycloak-groups")
+    @PatchMapping("/{teamId}/privacy")
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
-    public ResponseEntity<?> listKeycloakGroups(@RequestAttribute("authContext") AuthContext auth) {
-        return ResponseEntity.ok(groupDirectory.list());
+    public ResponseEntity<?> updatePrivacy(@PathVariable Integer teamId, @RequestBody Map<String, String> body) {
+        String scope = body.get("privacy_scope");
+        if (!validPrivacy(scope)) return ResponseEntity.badRequest().body(Map.of("detail", "Choose a team privacy level."));
+        return teamService.updatePrivacy(teamId, scope)
+            .<ResponseEntity<?>>map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
     }
 
     /** Public stats categories already in use, for the team settings picker. */

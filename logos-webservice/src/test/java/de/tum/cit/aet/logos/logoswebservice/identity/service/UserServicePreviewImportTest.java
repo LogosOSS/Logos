@@ -13,7 +13,7 @@ class UserServicePreviewImportTest {
     @Test
     void previewImport_returns_header_row_as_flat_column_list() throws Exception {
         String csv = "First Name,Last Name,Email\nTobias,Wasner,tobias.wasner@tum.de\n";
-        UserService service = new UserService(null, null, null);
+        UserService service = new UserService(null, null, null, null, null);
 
         Map<String, Object> result = service.previewImport(
             new MockMultipartFile("file", "people.csv", "text/csv", csv.getBytes()));
@@ -29,7 +29,7 @@ class UserServicePreviewImportTest {
 
     @Test
     void previewImport_returns_empty_lists_for_a_file_without_rows() throws Exception {
-        UserService service = new UserService(null, null, null);
+        UserService service = new UserService(null, null, null, null, null);
 
         Map<String, Object> result = service.previewImport(
             new MockMultipartFile("file", "empty.csv", "text/csv", new byte[0]));

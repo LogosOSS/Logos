@@ -55,7 +55,7 @@ public class KeycloakDirectorySyncJob implements KeycloakDirectorySync {
                     rep.get("firstName") instanceof String s ? s : "",
                     rep.get("lastName") instanceof String s ? s : "",
                     rep.get("email") instanceof String s ? s : null,
-                    adminClient.getUserClaimNames(keycloakId),
+                    Boolean.TRUE.equals(rep.get("emailVerified")),
                     null));
             } catch (Exception e) {
                 log.warn("Keycloak directory sync failed for user {}: {}", user.getId(), e.getMessage());

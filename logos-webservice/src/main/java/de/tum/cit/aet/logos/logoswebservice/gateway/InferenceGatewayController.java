@@ -143,6 +143,9 @@ public class InferenceGatewayController {
                 key, authService.deploymentsForModel(key, modelName));
             List<GatewayDeployment> privacyFiltered = filterByPrivacy(
                 ctx.deploymentsForModel(), request, modelName);
+            if (privacyFiltered.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No permitted deployment for this model");
+            }
             GatewayRouteDecision decision = GatewayRouteResolver.decideFromDeployments(privacyFiltered);
             if (decision.route() == GatewayRoute.CLOUD && decision.deployment() != null) {
                 String logLevel = GatewayLoggingLevel.resolve(request, ctx.key().logLevel());

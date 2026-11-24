@@ -134,6 +134,7 @@ class ContextResolver:
         request_id: Optional[str] = None,
         deployment_info: Optional[Dict[str, Any]] = None,
         wait_for_lane: bool = True,
+        api_key_id: Optional[int] = None,
     ) -> Optional[ExecutionContext]:
         """
         Resolve all DB information needed to execute a request with authorization verification.
@@ -167,7 +168,8 @@ class ContextResolver:
         """
         deployment = (
             deployment_info
-            if deployment_info is not None
+            if api_key_id is None
+            and deployment_info is not None
             and (deployment_info.get("model_name") or "").strip()
             and (deployment_info.get("provider_name") or "").strip()
             and _normalize_provider_type(deployment_info.get("type")) == "logosnode"
@@ -187,7 +189,11 @@ class ContextResolver:
         else:
             with perf_trace.phase(request_id, "context.resolve_db"):
                 with DBManager() as db:
-                    auth_info = db.get_auth_info_to_deployment(model_id, provider_id)
+                    auth_info = (
+                        db.get_auth_info_to_deployment(model_id, provider_id, api_key_id)
+                        if api_key_id is not None
+                        else db.get_auth_info_to_deployment(model_id, provider_id)
+                    )
                     if not auth_info:
                         logger.error(f"No deployment auth info for model={model_id}, provider={provider_id}")
                         return None

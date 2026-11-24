@@ -44,11 +44,7 @@
           />
           <span class="team-name-stack">
             <span class="team-name">{{ team.name }}</span>
-            @if (team.managed) {
-              <span class="team-group" [title]="managedTitle(team)">
-                <i class="pi pi-lock" aria-hidden="true"></i> {{ team.keycloak_group }}
-              </span>
-            }
+            <span class="team-group">{{ privacyLabels[team.privacy_scope] }}</span>
           </span>
           <div class="name-mobile-actions">
             @if (isLogosAdmin()) {
@@ -57,7 +53,7 @@
                 <i class="pi pi-history" aria-hidden="true"></i>
               </button>
             }
-            @if (!team.managed && (isLogosAdmin() || team.is_caller_owner)) {
+            @if (isLogosAdmin() || team.is_caller_owner) {
               <button
                 class="btn-icon btn-icon--danger"
                 type="button"
@@ -116,7 +112,7 @@
               <i class="pi pi-history" aria-hidden="true"></i>
             </button>
           }
-          @if (!team.managed && (isLogosAdmin() || team.is_caller_owner)) {
+          @if (isLogosAdmin() || team.is_caller_owner) {
             <button
               class="btn-icon btn-icon--danger"
               type="button"
@@ -168,33 +164,17 @@
       />
     </div>
 
-    @if (isLogosAdmin()) {
-      <div class="form-field">
-        <label class="field-label" for="team-keycloak-group">Keycloak group</label>
-        <input
-          id="team-keycloak-group"
-          class="field-input"
-          type="text"
-          list="keycloak-group-options"
-          placeholder="e.g. ios-26ws, leave blank for a Logos-managed team"
-          [value]="createKeycloakGroup()"
-          (input)="createKeycloakGroup.set($any($event.target).value)"
-          [disabled]="createLoading()"
-          autocomplete="off"
-        />
-        <datalist id="keycloak-group-options">
-          @for (group of availableKeycloakGroups(); track group.name) {
-            <option [value]="group.name">{{ group.source }}</option>
-          }
-        </datalist>
-        <p class="field-hint">
-          Everyone in this Keycloak group joins the team on their next login, and leaves it again
-          once they are out of the group. A linked team cannot be renamed or deleted until the link
-          is removed.
-        </p>
-        <p class="field-hint">{{ groupPickerHint() }}</p>
-      </div>
-    }
+    <div class="form-field">
+      <label class="field-label" for="team-privacy">Team privacy <span class="required">*</span></label>
+      <select id="team-privacy" class="field-input" [value]="createPrivacy()"
+        (change)="createPrivacy.set($any($event.target).value)" [disabled]="createLoading()">
+        <option value="" disabled>Choose where requests can be processed</option>
+        @for (option of privacyOptions; track option[0]) {
+          <option [value]="option[0]">{{ option[1] }}</option>
+        }
+      </select>
+      <p class="field-hint">Applies to every API key in this team.</p>
+    </div>
 
     @if (adminUsers().length > 0) {
       <div class="form-field">

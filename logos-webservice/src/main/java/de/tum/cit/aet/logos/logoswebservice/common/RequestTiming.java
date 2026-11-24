@@ -49,8 +49,8 @@ public final class RequestTiming {
     }
 
     /**
-     * The phases of a Keycloak sync: looking up and saving the user row, resolving the claimed
-     * teams, waiting for their row locks, writing keys and memberships.
+     * The phases of a Keycloak sync: looking up and saving the user row, resolving the user's
+     * team keys for reactivation, waiting for team locks and updating key status.
      */
     public static void recordSync(long userNanos, long resolveNanos, long lockNanos, long writeNanos, int teams) {
         RequestTiming timing = CURRENT.get();

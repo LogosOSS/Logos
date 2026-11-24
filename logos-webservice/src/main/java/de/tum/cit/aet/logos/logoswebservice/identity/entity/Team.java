@@ -18,8 +18,11 @@ public class Team {
     @Column(nullable = false)
     private String name;
 
-    @Column(unique = true)
-    private String keycloakGroup;
+    @Column(nullable = false)
+    private String privacyScope = "LOCAL";
+
+    public String getPrivacyScope() { return privacyScope; }
+    public void setPrivacyScope(String value) { privacyScope = value; }
 
     private Integer defaultCloudRpmLimit = 5;
     private Integer defaultCloudTpmLimit = 10000;
@@ -52,7 +55,6 @@ public class Team {
     public Long getDefaultMonthlyBudgetMicroCents() { return defaultMonthlyBudgetMicroCents; }
     public Long getTeamMonthlyBudgetMicroCents() { return teamMonthlyBudgetMicroCents; }
     public Integer getPriority() { return priority; }
-    public String getKeycloakGroup() { return keycloakGroup; }
     public boolean isShowOnPublicStats() { return showOnPublicStats; }
     public String getPublicCategory() { return publicCategory; }
     public void setName(String name) { this.name = name; }
@@ -63,7 +65,6 @@ public class Team {
     public void setDefaultMonthlyBudgetMicroCents(Long v) { this.defaultMonthlyBudgetMicroCents = v; }
     public void setTeamMonthlyBudgetMicroCents(Long v) { this.teamMonthlyBudgetMicroCents = v; }
     public void setPriority(Integer v) { this.priority = v; }
-    public void setKeycloakGroup(String keycloakGroup) { this.keycloakGroup = keycloakGroup; }
     public void setShowOnPublicStats(boolean v) { this.showOnPublicStats = v; }
     public void setPublicCategory(String v) { this.publicCategory = v; }
 }

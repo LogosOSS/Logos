@@ -85,7 +85,7 @@ async function login(browser, user, dark = false) {
   await page.fill("#password", "password");
   await page.click("#kc-login");
   await page.waitForURL((u) => u.toString().startsWith(BASE), { timeout: 30000 });
-  await page.waitForTimeout(3000);
+  await page.locator(".shell-layout").waitFor();
   return { ctx, page };
 }
 
@@ -103,6 +103,7 @@ async function markNotificationsRead(page) {
 
 // Waits for fonts, for skeletons and spinners to disappear, then for paint.
 async function settle(page, extra = 1500) {
+  await page.locator(".shell-layout").waitFor();
   await page.evaluate(() => document.fonts.ready);
   await page
     .waitForFunction(
@@ -178,6 +179,13 @@ async function unlock(page) {
   });
   await page.evaluate(() => {
     for (const dialog of document.querySelectorAll(".tumaet-ui-dialog")) {
+      const preview = dialog.querySelector(".import-preview-scroll");
+      if (preview) {
+        preview.style.setProperty("max-height", "none", "important");
+        dialog.style.setProperty("height", "auto", "important");
+        dialog.style.setProperty("overflow", "visible", "important");
+        dialog.closest(".cdk-overlay-pane")?.style.setProperty("max-height", "none", "important");
+      }
       if (!dialog.getClientRects().length) continue;
       dialog.style.setProperty("max-height", "none", "important");
       const content = dialog.querySelector(".tumaet-ui-dialog-content");
@@ -392,7 +400,20 @@ const SHOTS = [
     },
   },
   {
+    file: "roles/logos-admin-edit-cloud-key.png",
+    user: ADMIN,
+    full: true,
+    go: async (p) => {
+      await p.goto(BASE + "/providers");
+      await settle(p);
+      await button(p, "Edit provider Docs Cloud (EU)").click();
+      await p.getByText(/I verified EU processing/).waitFor();
+    },
+    after: (p) => p.keyboard.press("Escape"),
+  },
+  {
     file: "roles/logos-admin-add-provider.png",
+    full: true,
     user: ADMIN,
     go: async (p) => {
       await p.goto(BASE + "/providers");
@@ -516,21 +537,20 @@ const SHOTS = [
       sql("DELETE FROM deployers WHERE name = 'Docs standby host'");
     },
   },
-  { file: "roles/logos-admin-policies.png", user: ADMIN, go: (p) => p.goto(BASE + "/policies") },
   { file: "roles/logos-admin-billing.png", user: ADMIN, go: (p) => p.goto(BASE + "/billing") },
-  { file: "roles/logos-admin-user-management.png", user: ADMIN, go: (p) => p.goto(BASE + "/user-management") },
-  { file: "roles/logos-admin-team-management.png", user: ADMIN, go: (p) => p.goto(BASE + "/team-management") },
+  { file: "roles/logos-admin-user-management.png", full: true, user: ADMIN, go: (p) => p.goto(BASE + "/user-management") },
+  { file: "roles/logos-admin-team-management.png", full: true, user: ADMIN, go: (p) => p.goto(BASE + "/team-management") },
   { file: "roles/logos-admin-permission-audit.png", user: ADMIN, full: true, go: (p, ids) => p.goto(`${BASE}/permission-audit-log?team_id=${ids.team}`) },
   {
     file: "roles/logos-admin-new-team.png",
+    full: true,
     user: ADMIN,
     go: async (p) => {
       await p.goto(BASE + "/team-management");
       await settle(p);
       await p.getByRole("button", { name: /New Team/ }).click();
       await p.fill("#team-name", "MAISS");
-      await p.fill("#team-keycloak-group", "maiss-dev");
-      await p.locator("#team-keycloak-group").blur();
+      await p.locator("#team-privacy").selectOption("EU");
     },
   },
   {
@@ -572,7 +592,7 @@ const SHOTS = [
     },
   },
   { file: "roles/logos-admin-my-workspace.png", user: ADMIN, go: (p) => p.goto(BASE + "/my-workspace") },
-  { file: "roles/team-detail-providers.png", user: ADMIN, go: (p, ids) => teamTab(p, ids, "Providers") },
+  { file: "roles/team-detail-providers.png", full: true, user: ADMIN, go: (p, ids) => teamTab(p, ids, "Providers") },
   { file: "roles/team-detail-repositories.png", user: ADMIN, full: true, go: (p, ids) => teamTab(p, ids, "Repositories") },
   { file: "roles/team-detail-repository-agent.png", user: ADMIN, full: true, go: async (p, ids) => {
     await teamTab(p, ids, "Repositories");
@@ -772,12 +792,30 @@ const SHOTS = [
 
   // App Admin
   { file: "roles/app-admin-models.png", user: APP_ADMIN, go: (p) => p.goto(BASE + "/models") },
-  { file: "roles/app-admin-user-management.png", user: APP_ADMIN, go: (p) => p.goto(BASE + "/user-management") },
-  { file: "roles/app-admin-team-management.png", user: APP_ADMIN, go: (p) => p.goto(BASE + "/team-management") },
+  { file: "roles/app-admin-user-management.png", full: true, user: APP_ADMIN, go: (p) => p.goto(BASE + "/user-management") },
+  { file: "roles/app-admin-team-management.png", full: true, user: APP_ADMIN, go: (p) => p.goto(BASE + "/team-management") },
   { file: "roles/app-admin-my-workspace.png", user: APP_ADMIN, go: (p) => p.goto(BASE + "/my-workspace") },
   { file: "roles/batches.png", user: APP_ADMIN, full: true, go: (p) => p.goto(BASE + "/batches") },
   { file: "roles/team-detail-overview.png", user: APP_ADMIN, go: (p, ids) => teamTab(p, ids, "Overview") },
-  { file: "roles/team-detail-members.png", user: APP_ADMIN, go: (p, ids) => teamTab(p, ids, "Members") },
+  {
+    file: "roles/team-members-csv.png",
+    user: APP_ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await teamTab(p, ids, "Members");
+      await p.getByRole("link", { name: /Import CSV/i }).click();
+      const [chooser] = await Promise.all([
+        p.waitForEvent("filechooser"),
+        button(p, "Choose File").click(),
+      ]);
+      await chooser.setFiles({
+        name: "members.csv", mimeType: "text/csv",
+        buffer: Buffer.from("prename,name,email\nAlex,River,alex.river@example.org\nHenriette,Huhn,henriette.huhn@test.de"),
+      });
+      await p.getByText("alex.river@example.org", { exact: true }).waitFor();
+    },
+  },
+  { file: "roles/team-detail-members.png", full: true, user: APP_ADMIN, go: (p, ids) => teamTab(p, ids, "Members") },
   {
     file: "roles/team-detail-application-keys.png",
     user: APP_ADMIN,

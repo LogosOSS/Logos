@@ -50,6 +50,12 @@ public class Provider {
 
     private String apiKey;
 
+    @Column(nullable = false)
+    private boolean euProcessingVerified;
+
+    public boolean isEuProcessingVerified() { return euProcessingVerified; }
+    public void setEuProcessingVerified(boolean value) { euProcessingVerified = value; }
+
     private String ollamaAdminUrl = "";
 
     private Integer totalVramMb;

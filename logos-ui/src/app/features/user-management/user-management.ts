@@ -1,3 +1,4 @@
+import { ActivatedRoute } from '@angular/router';
 import { Component, computed, inject, signal, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../core/auth/services/auth.service';
@@ -75,8 +76,14 @@ export class UserManagement {
   allTeams = signal<Team[]>([]);
   teamsLoading = signal(false);
 
+  readonly teamColumn = signal('');
+  readonly importTeamId = signal<number | null>(null);
+  readonly assignableTeams = computed(() => this.allTeams().filter(t => this.isLogosAdmin() || t.is_caller_owner));
+
   constructor() {
     void this.fetchUsers();
+    const team = Number(inject(ActivatedRoute, { optional: true })?.snapshot.queryParamMap.get('importTeam'));
+    if (Number.isInteger(team) && team > 0) this.openImportDialog(team);
   }
 
   async fetchUsers(): Promise<void> {
@@ -342,7 +349,7 @@ export class UserManagement {
 
   importValid = computed(() => {
     const m = this.importMapping();
-    return m.prename !== '' && m.name !== '' && m.email !== '' && this.importSelected().size > 0;
+    return (this.importTeamId() !== -1 || this.teamColumn() !== '') && m.prename !== '' && m.name !== '' && m.email !== '' && this.importSelected().size > 0;
   });
 
   importSummary = computed(() => {
@@ -357,7 +364,10 @@ export class UserManagement {
     return { selected, toCreate, existing, total: this.importRows().length };
   });
 
-  openImportDialog(): void {
+  openImportDialog(teamId: number | null = null): void {
+    this.importTeamId.set(teamId);
+    this.teamColumn.set('');
+    void this.loadTeams();
     this.importFileName.set(null);
     this.importColumns.set([]);
     this.importRows.set([]);
@@ -399,6 +409,8 @@ export class UserManagement {
       this.importColumns.set(columns);
       this.importRows.set(rows);
       this.importMapping.set(this.guessMapping(columns));
+      const teamColumn = columns.findIndex(c => c.trim().toLowerCase() === 'team');
+      this.teamColumn.set(teamColumn < 0 ? '' : String(teamColumn));
       // Everything is selected by default; the user de-selects what to skip.
       this.importSelected.set(new Set(rows.map((_, i) => i)));
     } catch (err: unknown) {
@@ -485,7 +497,8 @@ export class UserManagement {
       .forEach((idx) => {
         const cells = this.importRows()[idx];
         if (!cells) return;
-        rows.push({ prename: cell(cells, prenameCol), name: cell(cells, nameCol), email: cell(cells, emailCol) });
+        rows.push({ prename: cell(cells, prenameCol), name: cell(cells, nameCol), email: cell(cells, emailCol),
+          ...(this.importTeamId() === -1 ? { team: cell(cells, Number(this.teamColumn())).trim() } : {}) });
       });
     return rows;
   }
@@ -495,7 +508,7 @@ export class UserManagement {
     this.importLoading.set(true);
     this.importError.set(null);
     try {
-      const result = await this.userSvc.importUsers(this.buildImportRows());
+      const result = await this.userSvc.importUsers(this.buildImportRows(), this.importTeamId() === -1 ? null : this.importTeamId());
       this.importResult.set(result);
       await this.fetchUsers();
     } catch (err: unknown) {

@@ -8,6 +8,7 @@ public interface ProviderProjection {
     String getProviderType();
     String getCloudProviderType();
     String getPrivacyLevel();
+    boolean getEuProcessingVerified();
     String getAuthName();
     String getAuthFormat();
 }

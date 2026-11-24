@@ -57,6 +57,19 @@ def _now() -> datetime:
 # --- the managed local-only agent identity -------------------------------
 
 
+async def active_user_role(subject: str) -> str | None:
+    """Read the current Logos role for a verified Keycloak subject."""
+    async with sessionmaker()() as db:
+        return (
+            await db.execute(
+                text("""
+            SELECT role FROM users WHERE keycloak_id = CAST(:subject AS uuid) AND is_active
+        """),
+                {"subject": subject},
+            )
+        ).scalar_one_or_none()
+
+
 async def agent_key_id() -> int | None:
     """Stable accounting id; revocation is shared by runner and issuer."""
     async with sessionmaker()() as db:

@@ -106,8 +106,8 @@ This design has three properties:
 | **Lane** | One `vllm serve` process on a worker. It serves one model. The orchestrator schedules lanes. The capacity planner puts lanes to sleep and wakes them. |
 | **Model** | A model id that Logos offers to clients, for example `logos-v1/...`. A cloud provider or a worker lane serves the model. |
 | **Provider** | The place where a model runs. It is a cloud provider (Azure, OpenAI, …) configured on the core node, or a connected worker node. The **Providers** page of the UI lists both kinds. |
-| **Policy** | A rule that limits the models that a team or an API key can use. Use the **Policies** page of the UI to manage policies. |
-| **Team** | A group of users. API keys and budgets belong to teams. The policies of a team apply to the API keys of the team. |
+| **Policy** | An optional routing profile selected on a request. It can further restrict eligible deployments or set scheduling preferences. |
+| **Team** | A group of users. API keys and budgets belong to teams. The team privacy setting bounds all model and provider grants for every key. |
 | **API key** | A secret that a client uses to call the Logos API. An API key belongs to a team. By default, it has the model permissions of the team. An API key with custom permissions has its own model permissions, and these can include models that the team permissions do not include. An API key can have a fixed queue priority. |
 | **Inference gateway** | The web service path that ends `/v1`, `/openai`, and `/jobs`. It does authentication and budget checks. Then it sends the request directly to the cloud or through a proxy to the orchestrator. |
 | **Batch** | An OpenAI Batch API job (`/v1/batches`). It is many requests in one `.jsonl` upload. These requests can wait for the result. See [batch processing](../batch-processing.md). |
@@ -124,13 +124,8 @@ sees and which admin endpoints the web service accepts:
 
 | Role | UI label | Scope | Guide |
 |---|---|---|---|
-| `logos_admin` | Logos Admin | Full platform access to all pages, including providers, policies, billing, and agent sessions. | [Logos Admin](../roles/logos-admin.md) |
+| `logos_admin` | Logos Admin | Full platform access to all pages, including providers, team privacy, billing, and agent sessions. | [Logos Admin](../roles/logos-admin.md) |
 | `app_admin` | App Admin | Application administration: users, teams, and the shared developer pages. | [App Admin](../roles/app-admin.md) |
 | `app_developer` | App Developer | Developer tools: models, own workspace, AI tools. | [App Developer](../roles/app-developer.md) |
 
-Logos derives the role of a user at login from the roles of the identity
-provider account. An account with the configured `logos_admin` role becomes a
-Logos Admin. An account with the configured `app_admin` role becomes an App
-Admin. Every other authenticated user is an App Developer. You configure the
-mapping for each deployment (see the
-[installation guide](../admin/installation.md)).
+Keycloak verifies the user's identity. Logos looks up the active account by subject on each authenticated management request. New accounts receive the App Developer role. A Logos Admin can change the role in **Users**. The directory sync updates identity and account availability. See the [installation guide](../admin/installation.md#first-logos-admin) to provision the first admin.

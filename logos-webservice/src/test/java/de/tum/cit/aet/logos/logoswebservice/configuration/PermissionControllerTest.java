@@ -58,6 +58,23 @@ class PermissionControllerTest {
     @MockitoBean JwtDecoder jwtDecoder;
 
     @Test
+    void localTeamCannotGrantOrDiscoverACloudDeploymentEvenWithLocalProviderLabel() throws Exception {
+        jdbc.update("UPDATE teams SET privacy_scope = 'LOCAL' WHERE id = 2001");
+        for (String target : java.util.List.of("/admin/teams/2001", "/admin/api-keys/3001")) {
+            mvc.perform(get(target + "/permission-catalog").with(TestJwt.adminUser()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$[?(@.id == 6001)]").isEmpty());
+            mvc.perform(put(target + "/provider-permissions").with(TestJwt.logosAdmin())
+                    .contentType("application/json").content("{\"provider_ids\":[6001]}"))
+                .andExpect(status().isForbidden());
+            mvc.perform(put(target + "/model-permissions").with(TestJwt.logosAdmin())
+                    .contentType("application/json").content("{\"model_ids\":[5001]}"))
+                .andExpect(status().isForbidden());
+        }
+        mvc.perform(post("/logosdb/get_model").with(TestJwt.adminUser())
+                .contentType("application/json").content("{\"id\":5001}")).andExpect(status().isNotFound());
+    }
+
+    @Test
     void getApiKeyModelPermissions_emptyByDefault() throws Exception {
         mvc.perform(get("/admin/api-keys/3001/model-permissions")
                 .with(TestJwt.logosAdmin()))

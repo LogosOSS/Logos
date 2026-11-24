@@ -273,8 +273,14 @@
         [options]="addPrivacyLevelOptions()"
         [value]="addPrivacyLevel()"
         [disabled]="addLoading()"
-        (valueChange)="addPrivacyLevel.set($any($event))"
+        (valueChange)="addPrivacyLevel.set($any($event)); addEuVerified.set(false)"
       />
+      @if (addProviderType() === 'cloud' && addPrivacyLevel().startsWith('CLOUD_IN_EU_')) {
+        <label class="field-hint"><input type="checkbox" [checked]="addEuVerified()"
+          (change)="addEuVerified.set($any($event.target).checked)" />
+          I verified EU processing for all deployments on this endpoint, including routing and fallback.
+        </label>
+      }
     </div>
     <p class="form-section-label form-section-label--mt">Basic</p>
     <div class="form-field">
@@ -298,7 +304,7 @@
         type="text"
         [placeholder]="addBaseUrlPlaceholder()"
         [value]="addBaseUrl()"
-        (input)="addBaseUrl.set($any($event.target).value)"
+        (input)="addBaseUrl.set($any($event.target).value); addEuVerified.set(false)"
         [disabled]="addLoading()"
         autocomplete="off"
       />
@@ -504,8 +510,14 @@
         [options]="editPrivacyLevelOptions()"
         [value]="editPrivacyLevel()"
         [disabled]="editLoading()"
-        (valueChange)="editPrivacyLevel.set($any($event))"
+        (valueChange)="editPrivacyLevel.set($any($event)); editEuVerified.set(false)"
       />
+      @if (editProviderType() === 'cloud' && editPrivacyLevel().startsWith('CLOUD_IN_EU_')) {
+        <label class="field-hint"><input type="checkbox" [checked]="editEuVerified()"
+          (change)="editEuVerified.set($any($event.target).checked)" />
+          I verified EU processing for all deployments on this endpoint, including routing and fallback.
+        </label>
+      }
     </div>
     <p class="form-section-label form-section-label--mt">Basic</p>
     <div class="form-field">
@@ -528,7 +540,7 @@
         type="text"
         [placeholder]="editBaseUrlPlaceholder()"
         [value]="editBaseUrl()"
-        (input)="editBaseUrl.set($any($event.target).value)"
+        (input)="editBaseUrl.set($any($event.target).value); editEuVerified.set(false)"
         [disabled]="editLoading()"
         autocomplete="off"
       />

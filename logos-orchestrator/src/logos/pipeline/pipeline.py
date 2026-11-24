@@ -8,7 +8,7 @@ import datetime
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from logos import perf_trace
@@ -240,6 +240,7 @@ class RequestPipeline:
         # ranking — the caller already named the model.
         with perf_trace.phase(request_id, "pipeline.classify"):
             classification_result = self._classify(request)
+        request = replace(request, deployments=classification_result.deployments)
         if not classification_result.candidates:
             self.record_completion(
                 request_id=request_id,
@@ -519,6 +520,14 @@ class RequestPipeline:
 
         try:
             while True:
+                if pipeline_request is not None and pipeline_request.api_key_id is not None and deployment_info is None:
+                    self._release_scheduler_safe(scheduling_result, request_id, "ineligible deployment")
+                    return self._context_failure(
+                        scheduling_result,
+                        classification_result,
+                        request_id,
+                        error="Deployment is outside request permissions",
+                    )
                 try:
                     exec_context = await self._context_resolver.resolve_context(
                         model_id=scheduling_result.model_id,
@@ -527,6 +536,7 @@ class RequestPipeline:
                         request_id=request_id,
                         deployment_info=deployment_info,
                         wait_for_lane=False,
+                        api_key_id=pipeline_request.api_key_id if pipeline_request else None,
                     )
                 except Exception as exc:  # noqa: BLE001
                     self._release_scheduler_safe(scheduling_result, request_id, "exception")
@@ -730,7 +740,7 @@ class RequestPipeline:
             ],
         }
 
-        return _ClassificationResult(candidates=candidates, stats=stats)
+        return _ClassificationResult(candidates=candidates, stats=stats, deployments=privacy_deployments)
 
     def _extract_prompts(self, payload: Dict[str, Any]) -> Tuple[str, str]:
         """Extract user and system prompts from payload.
@@ -911,3 +921,4 @@ class RequestPipeline:
 class _ClassificationResult:
     candidates: List[Tuple[int, float, int]]  # (model_id, weight, priority)
     stats: Dict[str, Any]
+    deployments: list[Deployment] = field(default_factory=list)

@@ -74,14 +74,14 @@ _EFFECTIVE_PERMISSIONS_CTE = """
     ),
     effective_providers AS (
         SELECT akpp.provider_id
-        FROM api_key_provider_permissions akpp, key_info ki
+        FROM allowed_key_provider_grants akpp, key_info ki
         WHERE akpp.api_key_id = ki.aki AND ki.custom = true AND ki.internal_service IS NULL
         UNION
         SELECT p.id FROM providers p, key_info ki
         WHERE ki.internal_service = 'agent' AND p.provider_type = 'logosnode'
         UNION
         SELECT tpp.provider_id
-        FROM team_provider_permissions tpp, key_info ki
+        FROM allowed_team_provider_grants tpp, key_info ki
         WHERE tpp.team_id = ki.tid AND ki.custom = false
     ),
     effective_models AS (
@@ -3098,37 +3098,19 @@ class DBManager:
         """
         Resolve auth + routing info for a model/provider pair, optionally scoped to a api-key.
         """
+        params = {"model_id": int(model_id), "provider_id": int(provider_id)}
+        permission_cte = ""
         permission_join = ""
-        filters = "WHERE m.id = :model_id AND p.id = :provider_id"
-        params: Dict[str, Any] = {
-            "model_id": int(model_id),
-            "provider_id": int(provider_id),
-        }
-
         if api_key_id is not None:
-            permission_join = """
-                JOIN (
-                    SELECT model_id FROM api_key_model_permissions akmp
-                    JOIN api_keys ak ON ak.id = akmp.api_key_id
-                    WHERE ak.id = :api_key_id AND ak.use_custom_permissions = true
-                    UNION
-                    SELECT tmp.model_id FROM team_model_permissions tmp
-                    JOIN api_keys ak ON ak.team_id = tmp.team_id
-                    WHERE ak.id = :api_key_id AND ak.use_custom_permissions = false
-                ) em ON em.model_id = m.id
-                JOIN (
-                    SELECT provider_id FROM api_key_provider_permissions akpp
-                    JOIN api_keys ak ON ak.id = akpp.api_key_id
-                    WHERE ak.id = :api_key_id AND ak.use_custom_permissions = true
-                    UNION
-                    SELECT tpp.provider_id FROM team_provider_permissions tpp
-                    JOIN api_keys ak ON ak.team_id = tpp.team_id
-                    WHERE ak.id = :api_key_id AND ak.use_custom_permissions = false
-                ) ep ON ep.provider_id = p.id
-            """
             params["api_key_id"] = int(api_key_id)
+            permission_cte = f"WITH {_EFFECTIVE_PERMISSIONS_CTE}"
+            permission_join = """
+                JOIN effective_providers ep ON ep.provider_id = p.id
+                JOIN effective_models em ON em.model_id = m.id
+            """
 
         sql = text(f"""
+            {permission_cte}
             SELECT m.id          AS model_id,
                    m.name        AS model_name,
                    mp.endpoint   AS endpoint,
@@ -3144,7 +3126,7 @@ class DBManager:
             JOIN model_provider mp ON m.id = mp.model_id
             JOIN providers p ON mp.provider_id = p.id
             {permission_join}
-            {filters}
+            WHERE m.id = :model_id AND p.id = :provider_id
             LIMIT 1
         """)
 
@@ -3169,7 +3151,7 @@ class DBManager:
                    SELECT m.id               as model_id,
                           p.id               as provider_id,
                           p.provider_type    as type,
-                          p.privacy_level    as privacy_level,
+                          region.privacy_level as privacy_level,
                           p.cloud_provider_type as cloud_provider_type,
                           p.base_url         as base_url,
                           m.name             as model_name,
@@ -3182,6 +3164,7 @@ class DBManager:
                    FROM models m
                         JOIN model_provider mp ON m.id = mp.model_id
                         JOIN providers p ON mp.provider_id = p.id
+                        JOIN provider_processing_privacy region ON region.provider_id = p.id
                         JOIN effective_models em ON m.id = em.model_id
                         JOIN effective_providers ep ON p.id = ep.provider_id
                    ORDER BY model_id, provider_id
@@ -3215,11 +3198,11 @@ class DBManager:
                         ),
                         effective_providers AS (
                             SELECT akpp.provider_id
-                            FROM api_key_provider_permissions akpp, key_info ki
+                            FROM allowed_key_provider_grants akpp, key_info ki
                             WHERE akpp.api_key_id = ki.aki AND ki.custom = true
                             UNION
                             SELECT tpp.provider_id
-                            FROM team_provider_permissions tpp, key_info ki
+                            FROM allowed_team_provider_grants tpp, key_info ki
                             WHERE tpp.team_id = ki.tid AND ki.custom = false
                         )
                    SELECT p.id,
@@ -3242,6 +3225,8 @@ class DBManager:
                         JOIN effective_providers ep ON p.id = ep.provider_id
                         LEFT JOIN provider_batch_capability pbc ON pbc.provider_id = p.id
                    WHERE p.provider_type = 'cloud'
+                     AND NOT EXISTS (SELECT 1 FROM teams t JOIN key_info ki ON t.id = ki.tid
+                                     WHERE t.privacy_scope <> 'WORLDWIDE')
                      AND COALESCE(NULLIF(TRIM(p.base_url), ''), NULL) IS NOT NULL
                    ORDER BY p.id
                    """)
@@ -3455,11 +3440,11 @@ class DBManager:
                         ),
                         effective_providers AS (
                             SELECT akpp.provider_id
-                            FROM api_key_provider_permissions akpp, key_info ki
+                            FROM allowed_key_provider_grants akpp, key_info ki
                             WHERE akpp.api_key_id = ki.aki AND ki.custom = true
                             UNION
                             SELECT tpp.provider_id
-                            FROM team_provider_permissions tpp, key_info ki
+                            FROM allowed_team_provider_grants tpp, key_info ki
                             WHERE tpp.team_id = ki.tid AND ki.custom = false
                         )
                    SELECT m.id AS model_id,
@@ -3800,8 +3785,9 @@ class DBManager:
         rows = self.session.execute(
             text("""
                 SELECT id, upstream_id, provider_id, api_key_id, team_id, user_id, status, log_level
-                FROM batch_objects
+                FROM batch_objects b
                 WHERE kind = 'batch' AND settled_at IS NULL AND execution = 'provider'
+                  AND NOT EXISTS (SELECT 1 FROM teams t WHERE t.id = b.team_id AND t.privacy_scope <> 'WORLDWIDE')
                 ORDER BY updated_at
                 LIMIT :limit
                 """),
@@ -4718,11 +4704,11 @@ class DBManager:
                 ),
                 effective_providers AS (
                     SELECT akpp.provider_id
-                    FROM api_key_provider_permissions akpp, key_info ki
+                    FROM allowed_key_provider_grants akpp, key_info ki
                     WHERE akpp.api_key_id = ki.aki AND ki.custom = true
                     UNION
                     SELECT tpp.provider_id
-                    FROM team_provider_permissions tpp, key_info ki
+                    FROM allowed_team_provider_grants tpp, key_info ki
                     WHERE tpp.team_id = ki.tid AND ki.custom = false
                 ),
                 effective_models AS (
