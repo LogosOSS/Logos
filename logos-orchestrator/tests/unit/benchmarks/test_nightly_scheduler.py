@@ -405,6 +405,18 @@ async def test_lost_cluster_lock_keeps_recovery_journal(scheduler, monkeypatch):
     assert scheduler.saved[-1][3] is not None
 
 
+async def test_lost_lease_before_preparation_never_takes_a_model_hold(scheduler, monkeypatch):
+    monkeypatch.setattr(module.store, "lock_held", lambda _: False)
+    scheduler.submit = AsyncMock()
+
+    assert await scheduler.run_schedule(31, MagicMock())
+
+    scheduler.planner._facade.reserve_model_for_drain.assert_not_called()
+    scheduler.registry.send_command.assert_not_awaited()
+    scheduler.submit.assert_not_awaited()
+    assert scheduler.saved[-1][1] == "lease_lost"
+
+
 async def test_failed_initial_drain_releases_target_without_restart(scheduler):
     scheduler.restore = module.NightlyScheduler.restore.__get__(scheduler)
     scheduler.recovery_worker_idle = AsyncMock(side_effect=RuntimeError("Cannot read request counts"))
@@ -1102,7 +1114,8 @@ def simulate_worker(scheduler, lanes, *, max_lanes=0, missing_delete_succeeds=Fa
                 raise module.LogosNodeCommandError(
                     f"MAX_LANES limit reached ({max_lanes})", reason_code=NIGHTLY_GPU_BUDGET_REASON
                 )
-            assert lane is None
+            if lane is not None:
+                raise module.LogosNodeCommandError(f"Lane '{lane_id}' already exists")
             lane = lane_status(lane_id, model=params["model"])
             lane["lane_config"] = {
                 key: copy.deepcopy(value) for key, value in params.items() if key != "nightly_gpu_budget"
@@ -1112,6 +1125,10 @@ def simulate_worker(scheduler, lanes, *, max_lanes=0, missing_delete_succeeds=Fa
             if lane is None and not missing_delete_succeeds:
                 raise module.LogosNodeCommandError(str(KeyError(f"Lane '{lane_id}' not found")))
             if lane is not None:
+                if params.get("expected_model") not in {None, lane["model"]}:
+                    raise module.LogosNodeCommandError(
+                        "Lane belongs to another model", reason_code="nightly_lane_identity"
+                    )
                 assert not lane["is_static"]
                 runtime["lanes"].remove(lane)
             return {"ok": True, "lane_id": lane_id}
@@ -1122,6 +1139,8 @@ def simulate_worker(scheduler, lanes, *, max_lanes=0, missing_delete_succeeds=Fa
             assert lane["runtime_state"] == "sleeping"
             lane.update(runtime_state="loaded", sleep_state="awake")
         elif action == "reconfigure_lane":
+            if lane is None:
+                raise module.LogosNodeCommandError(str(KeyError(f"Lane '{lane_id}' not found")))
             lane["lane_config"].update(params["updates"])
             return {**copy.deepcopy(lane), "restarted": True}
         else:
@@ -1282,3 +1301,74 @@ async def test_recovery_accepts_an_already_removed_temporary_lane(scheduler):
     }
     await scheduler.restore(31, journal)
     assert events == [("delete_lane", "nightly-31")]
+
+
+async def test_scoped_recovery_does_not_delete_a_temporary_id_reused_by_another_model(scheduler):
+    unrelated = lane_status("nightly-31", model="other")
+    runtime, events = simulate_worker(scheduler, [unrelated])
+    journal = {
+        "provider_id": 20,
+        "lane_id": "nightly-31",
+        "model": "model",
+        "temporary_lane": True,
+        "model_scoped": True,
+        "gpu_budget": True,
+    }
+
+    await scheduler.restore(31, journal)
+
+    assert runtime["lanes"] == [unrelated]
+    assert events == [("delete_lane", "nightly-31"), ("release_nightly_gpu_budget", "nightly-31")]
+    scheduler.registry.update_desired_lane_remove.assert_not_called()
+    assert benchmark_reservations.allows(20, "other", "production")
+
+
+async def test_recovery_replays_sleep_and_unload_journals_after_upgrade(scheduler):
+    sleeper = lane_status("sleeper", model="other", static=True, can_sleep=True)
+    lost_sleeper = lane_status("lost-sleeper", static=True, can_sleep=True)
+    displaced = lane_status("displaced", seqs=32)
+    runtime, events = simulate_worker(
+        scheduler,
+        [{**sleeper, "runtime_state": "sleeping", "sleep_state": "sleeping"}, lane_status("displaced")],
+    )
+    journal = {
+        "provider_id": 20,
+        "benchmark_lane_mutated": False,
+        "slept_lanes": [sleeper["lane_config"], lost_sleeper["lane_config"]],
+        "removed_lanes": [displaced["lane_config"]],
+    }
+
+    await scheduler.restore(31, journal)
+
+    assert events == [
+        ("reconfigure_lane", "sleeper"),
+        ("wake_lane", "sleeper"),
+        ("reconfigure_lane", "lost-sleeper"),
+        ("add_lane", "lost-sleeper"),
+        ("add_lane", "displaced"),
+        ("reconfigure_lane", "displaced"),
+    ]
+    original = {lane["lane_id"]: lane["lane_config"] for lane in (sleeper, lost_sleeper, displaced)}
+    assert {lane["lane_id"]: lane["lane_config"] for lane in runtime["lanes"]} == original
+    assert all(lane["runtime_state"] == "loaded" for lane in runtime["lanes"])
+    assert not benchmark_reservations.allows(20, "other", "production")
+
+
+async def test_startup_fences_recovery_journals_using_their_saved_scope(scheduler, monkeypatch):
+    monkeypatch.setattr(
+        module.store,
+        "rows",
+        lambda: [
+            {"model_provider_id": 31, "recovery": {"provider_id": 20, "model": "model", "model_scoped": True}},
+            {"model_provider_id": 32, "recovery": {"provider_id": 21}},
+        ],
+    )
+    scheduler._loop = AsyncMock()
+    await scheduler.start()
+    try:
+        assert not benchmark_reservations.allows(20, "model", "production")
+        assert benchmark_reservations.allows(20, "other", "production")
+        assert not benchmark_reservations.allows(21, "other", "production")
+    finally:
+        await scheduler.stop()
+        benchmark_reservations.release(-32)

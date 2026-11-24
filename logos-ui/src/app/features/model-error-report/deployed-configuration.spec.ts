@@ -101,6 +101,64 @@ describe('Deployment status on Overview', () => {
     fixture.destroy();
     http.verify();
   });
+
+  it('deduplicates length detail requests and lets a failed request be retried', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
+    const fixture = TestBed.createComponent(DeployedConfiguration);
+    fixture.componentRef.setInput('pairId', 1);
+    fixture.componentRef.setInput('providerName', 'Worker');
+    fixture.componentRef.setInput('runs', []);
+    fixture.detectChanges();
+    const component = fixture.componentInstance;
+    const http = TestBed.inject(HttpTestingController);
+    const status = '/api/logosdb/model_benchmarks/nightly/status';
+    http.expectOne(status).flush({ deployment });
+    await Promise.resolve();
+    expect(component.excludedComparisons()).toEqual([]);
+
+    const loading = component.loadAnswerLengthDetails(2);
+    const request = http.expectOne(status);
+    await component.loadAnswerLengthDetails(2);
+    http.expectNone(status);
+    request.flush({}, { status: 503, statusText: 'Service unavailable' });
+    await loading;
+    expect(component.answerLengthDetails().get(2)).toBe('error');
+
+    const retry = component.loadAnswerLengthDetails(2);
+    http.expectOne(status).flush({ selection: { comparisons: [] } });
+    await retry;
+    expect(component.answerLengthDetails().get(2)).toEqual([]);
+    await component.loadAnswerLengthDetails(2);
+    http.expectNone(status);
+    fixture.destroy();
+    http.verify();
+  });
+
+  it('discards length details that arrive after switching workers', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
+    const fixture = TestBed.createComponent(DeployedConfiguration);
+    fixture.componentRef.setInput('pairId', 1);
+    fixture.componentRef.setInput('providerName', 'Worker');
+    fixture.componentRef.setInput('runs', []);
+    fixture.detectChanges();
+    const component = fixture.componentInstance;
+    const http = TestBed.inject(HttpTestingController);
+    const status = '/api/logosdb/model_benchmarks/nightly/status';
+    http.expectOne(status).flush({ deployment });
+
+    const oldDetails = component.loadAnswerLengthDetails(2);
+    const oldRequest = http.expectOne(status);
+    fixture.componentRef.setInput('pairId', 4);
+    fixture.detectChanges();
+    const newRequest = http.expectOne(status);
+    expect(newRequest.request.body).toEqual({ model_provider_id: 4 });
+    newRequest.flush({ deployment });
+    oldRequest.flush({ selection: { comparisons: [{ benchmark_id: 2, length_changes: [] }] } });
+    await oldDetails;
+    expect(component.answerLengthDetails().has(2)).toBe(false);
+    fixture.destroy();
+    http.verify();
+  });
 });
 
 describe('Current deployment measurement', () => {

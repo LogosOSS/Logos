@@ -1046,6 +1046,11 @@ class LogosBridgeClient:
         self._start_lifecycle_task(self._execute_in_order(ws, cmd_id, action, params), action, cmd_id)
 
     @staticmethod
+    def _added_lane_config(params: dict[str, Any]) -> LaneConfig:
+        """Parse the lane settings without the transient Nightly command option."""
+        return LaneConfig(**{key: value for key, value in params.items() if key != "nightly_gpu_budget"})
+
+    @staticmethod
     def _command_target(action: str, params: dict[str, Any]) -> str | None:
         """The lane a lifecycle command changes, ``*`` for the whole worker, or None for a read."""
         if action in {
@@ -1059,7 +1064,7 @@ class LogosBridgeClient:
         }:
             try:
                 if action == "add_lane":
-                    return _lane_id_from_config(LaneConfig(**params))
+                    return _lane_id_from_config(LogosBridgeClient._added_lane_config(params))
                 lane_id = str(params.get("lane_id") or "").strip()
                 return _normalize_lane_id(lane_id) if lane_id else "*"
             except Exception:  # noqa: BLE001 — the command itself reports a bad config
@@ -1155,7 +1160,7 @@ class LogosBridgeClient:
             return result.model_dump(mode="json")
 
         if action == "add_lane":
-            lane_config = LaneConfig(**params)
+            lane_config = self._added_lane_config(params)
             if params.get("nightly_gpu_budget") is True:
                 status = await lane_manager.add_lane(lane_config, nightly_gpu_budget=True)
             else:

@@ -1,14 +1,17 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from logos_worker_node.lane_manager import LaneManager, NightlyGpuBudgetUnavailable, NightlyLaneIdentityMismatch
+from logos_worker_node.logos_bridge import LogosBridgeClient
 from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry
 from logos_worker_node.models import (
     DeviceInfo,
     DeviceSummary,
     LaneConfig,
+    LogosConfig,
     ProcessState,
     ProcessStatus,
     VllmConfig,
@@ -143,3 +146,141 @@ async def test_benchmark_cannot_remove_another_model_at_its_temporary_lane_id() 
         await manager.remove_lane("benchmark", expected_model=MODEL)
     assert manager._handles["benchmark"] is unrelated
     unrelated.destroy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reserved_gpu_refuses_lifecycle_changes_but_preserves_other_lane() -> None:
+    manager = _manager({0: TOTAL_MIB, 1: TOTAL_MIB})
+    peer = MagicMock(lane_config=_config("org/peer"), destroy=AsyncMock(), wake_up=AsyncMock())
+    manager._handles["peer"] = peer
+    async with manager._lock.scoped(["benchmark"], [0]):
+        manager._claim_nightly_gpus("benchmark", frozenset({0}))
+    with pytest.raises(NightlyGpuBudgetUnavailable, match="cannot change its reserved GPUs"):
+        manager._claim_nightly_gpus("benchmark", frozenset({1}))
+    with pytest.raises(NightlyGpuBudgetUnavailable, match="already reserved"):
+        manager._claim_nightly_gpus("another", frozenset({0}))
+    with pytest.raises(RuntimeError, match="holding GPUs"):
+        manager.begin_calibration_session()
+    with pytest.raises(RuntimeError, match="nightly benchmark holds GPUs"):
+        await manager.apply_lanes([_config("org/peer").model_copy(update={"lane_id": "peer"})])
+    for operation in (manager.wake_lane, manager.sleep_lane, manager.remove_lane):
+        with pytest.raises(RuntimeError, match="reserved for a nightly benchmark"):
+            await operation("peer")
+    assert manager._handles["peer"] is peer
+    peer.destroy.assert_not_called()
+    peer.wake_up.assert_not_called()
+    assert not manager._transitions
+
+
+@pytest.mark.asyncio
+async def test_replacement_is_checked_against_live_memory_after_shutdown(monkeypatch) -> None:
+    free = {0: EXPECTED_MIB - 1000}
+    manager = _manager(free)
+    original = _config()
+    status = ProcessStatus(state=ProcessState.RUNNING, pid=15)
+
+    async def destroy() -> None:
+        free[0] = EXPECTED_MIB - 1
+
+    manager._handles["benchmark"] = MagicMock(
+        lane_config=original,
+        status=MagicMock(return_value=status),
+        destroy=AsyncMock(side_effect=destroy),
+        close=AsyncMock(),
+    )
+    manager._port_alloc.allocate("benchmark")
+    manager._nightly_process_gpu_vram = AsyncMock(return_value={"gpu0": 2_000})
+    create = MagicMock()
+    monkeypatch.setattr("logos_worker_node.lane_manager._create_handle", create)
+    updates = {"vllm_config": {**original.vllm_config.model_dump(), "max_num_seqs": 16}}
+    with pytest.raises(NightlyGpuBudgetUnavailable, match=f"needs {EXPECTED_MIB} MiB including warm-up"):
+        await manager.reconfigure_lane("benchmark", updates, require_idle=True, nightly_gpu_budget=True)
+    create.assert_not_called()
+    assert "benchmark" not in manager._handles
+    assert manager._nightly_gpu_holds == {"benchmark": frozenset({0})}
+
+
+@pytest.mark.asyncio
+async def test_nvidia_process_query_only_credits_the_lane_and_its_children(monkeypatch) -> None:
+    manager = _manager({0: TOTAL_MIB, 1: TOTAL_MIB})
+    result = b"\n".join(
+        [
+            b"gpu0, 21, 2500",
+            b"gpu0, 22, 200",
+            b"gpu1, 22, 1200",
+            b"gpu0, 31, 8000",
+            b"gpu0, 22, N/A",
+            b"gpu0, 21, inf",
+            b"gpu0, 21, -2",
+            b"gpu0, invalid, 900",
+            b"malformed",
+        ]
+    )
+    process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(result, None)))
+    execute = AsyncMock(return_value=process)
+    monkeypatch.setattr("logos_worker_node.lane_manager.asyncio.create_subprocess_exec", execute)
+    monkeypatch.setattr(LaneManager, "_read_parent_pid", staticmethod(lambda pid, _cache: 21 if pid == 22 else None))
+    assert await manager._nightly_process_gpu_vram(None) == {}
+    assert await manager._nightly_process_gpu_vram(21) == {"gpu0": 2_700, "gpu1": 1200}
+    assert "--query-compute-apps=gpu_uuid,pid,used_memory" in execute.await_args.args
+
+
+@pytest.mark.asyncio
+async def test_nvidia_process_query_timeout_reaps_subprocess(monkeypatch) -> None:
+    manager = _manager({0: TOTAL_MIB})
+    process = SimpleNamespace(
+        returncode=None, communicate=AsyncMock(side_effect=TimeoutError), kill=MagicMock(), wait=AsyncMock()
+    )
+    monkeypatch.setattr(
+        "logos_worker_node.lane_manager.asyncio.create_subprocess_exec", AsyncMock(return_value=process)
+    )
+    assert await manager._nightly_process_gpu_vram(21) == {}
+    process.kill.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_nightly_bridge_preserves_budget_and_lane_identity_semantics() -> None:
+    lane = MagicMock()
+    lane.model_dump.return_value = {"lane_id": "benchmark", "model": MODEL}
+    manager = SimpleNamespace(
+        status_revision=1,
+        add_lane=AsyncMock(return_value=lane),
+        reconfigure_lane=AsyncMock(return_value=lane),
+        remove_lane=AsyncMock(),
+        check_nightly_gpu_budget=AsyncMock(return_value={0: EXPECTED_MIB}),
+        release_nightly_gpu_budget=AsyncMock(),
+    )
+    bridge = LogosBridgeClient(SimpleNamespace(state=SimpleNamespace(lane_manager=manager)), LogosConfig())
+    bridge._send_json = AsyncMock()
+
+    async def send(action: str, **params):
+        await bridge._execute_in_order(object(), action, action, {"lane_id": "benchmark", **params})
+        return bridge._send_json.await_args.args[1]
+
+    try:
+        assert (await send("check_nightly_gpu_budget"))["result"]["required_mib_by_gpu"] == {0: EXPECTED_MIB}
+        cold_params = {"lane_id": "benchmark", "model": MODEL, "vllm": True, "nightly_gpu_budget": True}
+        assert bridge._command_target("add_lane", cold_params) == "benchmark"
+        assert (await send("add_lane", model=MODEL, vllm=True, nightly_gpu_budget=True))["success"]
+        assert manager.add_lane.await_args.kwargs == {"nightly_gpu_budget": True}
+        assert "nightly_gpu_budget" not in manager.add_lane.await_args.args[0].model_dump()
+        report = await send(
+            "reconfigure_lane", updates={"vllm_config": {}}, force_restart=True, nightly_gpu_budget=True
+        )
+        assert report["result"]["restarted"]
+        assert manager.reconfigure_lane.await_args.kwargs == {
+            "require_idle": True,
+            "force_restart": True,
+            "nightly_gpu_budget": True,
+        }
+        manager.check_nightly_gpu_budget.side_effect = NightlyGpuBudgetUnavailable("no room")
+        assert (await send("check_nightly_gpu_budget"))["reason_code"] == "nightly_gpu_budget"
+        manager.remove_lane.side_effect = NightlyLaneIdentityMismatch("different model")
+        assert (await send("delete_lane", expected_model=MODEL))["reason_code"] == "nightly_lane_identity"
+        manager.remove_lane.assert_awaited_once_with("benchmark", expected_model=MODEL)
+        assert not (await send("delete_lane", expected_model=4))["success"]
+        assert (await send("release_nightly_gpu_budget"))["result"] == {"ok": True}
+        manager.release_nightly_gpu_budget.assert_awaited_once_with("benchmark")
+    finally:
+        await bridge.stop()

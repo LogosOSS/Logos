@@ -1,7 +1,7 @@
 import asyncio
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -654,6 +654,7 @@ async def test_release_recovery_after_the_worker_shows_the_original_settings(rec
     "reply",
     [
         {"lanes": []},
+        {"lanes": {"lane": {"lane_config": {"vllm_config": ORIGINAL}}}},
         {"lanes": [{"lane_id": "lane", "lane_config": {"vllm_config": {"max_num_seqs": 64}}}]},
         LogosNodeCommandError("worker offline"),
         TimeoutError(),
@@ -739,6 +740,30 @@ async def test_even_forced_recovery_keeps_its_journal_until_the_gpu_hold_is_rele
         20, "release_nightly_gpu_budget", {"lane_id": "lane"}, timeout_seconds=30
     )
     assert not _reserved()
+
+
+@pytest.mark.parametrize("lost_lock", ["lock_held", "execution_lock_held"])
+async def test_recovery_does_not_clear_the_journal_if_it_loses_its_lock_during_gpu_release(
+    recovery, monkeypatch, lost_lock
+):
+    service, state = recovery
+    state["row"]["recovery"].update(model_scoped=True, gpu_budget=True)
+    service.registry.send_command.side_effect = [
+        {"lanes": [{"lane_id": "lane", "lane_config": {"vllm_config": ORIGINAL}}]},
+        {"ok": True},
+    ]
+    monkeypatch.setattr(module.store, lost_lock, MagicMock(side_effect=[True, False]))
+
+    with pytest.raises(MaintenanceBusyError, match="Maintenance command is still in progress"):
+        await service.release_recovery(31)
+
+    service.registry.send_command.assert_has_awaits(
+        [
+            call(20, "get_lanes", {}, timeout_seconds=30),
+            call(20, "release_nightly_gpu_budget", {"lane_id": "lane"}, timeout_seconds=30),
+        ]
+    )
+    assert not state["saved"] and _reserved()
 
 
 @pytest.mark.parametrize("journal_key", ["removed_lanes", "slept_lanes"])

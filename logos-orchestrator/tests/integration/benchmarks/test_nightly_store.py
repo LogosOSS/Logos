@@ -12,6 +12,7 @@ from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.orm import Session
 
 from logos.benchmarks import nightly_store as store
+from logos.benchmarks.nightly import CAPACITY_WAITING
 
 pytestmark = pytest.mark.integration
 
@@ -658,6 +659,32 @@ def test_continuous_rounds_keep_daily_claims_and_notify_only_after_the_final_res
         payload = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
         assert payload["successful_configurations"] == 4
         assert payload["rounds"] == 2
+    assert not store.claim(31, day)
+
+
+def test_capacity_wait_reuses_its_daily_claim_and_emits_one_deferred_event(database):
+    engine, _ = database
+    day = date(2026, 10, 29)
+    report = [{"status": CAPACITY_WAITING, "reason": "GPU 0 lacks free memory for warm-up"}]
+    store.set_enabled(31, True, False)
+    assert store.claim(31, day)
+    store.finish(31, CAPACITY_WAITING, report)
+
+    store.finalize_continuations(datetime.fromisoformat("2026-10-29T07:59:59+01:00"))
+    assert store.status(31)["status"] == CAPACITY_WAITING
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 0
+    assert store.claim(31, day)
+    assert store.claimed_today(day) == 1
+    store.finish(31, CAPACITY_WAITING, report)
+
+    end = datetime.fromisoformat("2026-10-29T08:00:00+01:00")
+    store.finalize_continuations(end)
+    store.finalize_continuations(end)
+    assert store.status(31)["status"] == "capacity_deferred"
+    with engine.connect() as connection:
+        event = connection.execute(text("SELECT payload FROM benchmark_completion_events")).scalar_one()
+    assert (event["status"], event["rounds"], event["successful_configurations"]) == ("capacity_deferred", 0, 0)
     assert not store.claim(31, day)
 
 

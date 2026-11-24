@@ -219,6 +219,30 @@ def test_nightly_model_remains_reserved_between_jobs():
     assert lease.allows(1, "benchmark-model", "production")
 
 
+def test_stale_nightly_owner_cannot_attach_a_job_or_replace_a_hold():
+    lease = BenchmarkReservations()
+    lease.reserve_nightly(1, "model", -31)
+    with pytest.raises(RuntimeError, match="already reserved"):
+        lease.reserve_nightly(1, "model", -32)
+    with pytest.raises(RuntimeError, match="no longer owns"):
+        lease.pin_lane(1, "model", -32, "late-lane")
+    lease.release(-31)
+    with pytest.raises(RuntimeError, match="no longer owns"):
+        lease.reserve(1, "model", 7, nightly_owner=-31)
+    assert lease.allows(1, "model", "production")
+
+
+def test_restored_lane_uses_confirmed_id_in_desired_state():
+    registry = LogosNodeRuntimeRegistry()
+    session = ProviderSession(9001, "worker", MagicMock())
+    registry._sessions[9001] = session
+    config = {"model": "org/model"}
+
+    registry.update_desired_lane_add(9001, config, lane_id="org_model")
+
+    assert session.desired_lanes == {"org_model": config}
+
+
 def test_nightly_model_guard_preserves_other_models_on_the_same_worker():
     facade = LogosNodeSchedulingDataFacade(MagicMock())
     provider = MagicMock(provider_id=9001)
