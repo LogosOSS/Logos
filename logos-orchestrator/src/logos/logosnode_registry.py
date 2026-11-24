@@ -22,6 +22,7 @@ from logos.errors import UpstreamStreamError
 from logos.monitoring import prometheus_metrics as prom
 from logos.residency_policy import DEFAULT_RESIDENCY_POLICY, configured_residency_policy
 from logos.runtime_latency import HistogramDelta
+from logos.simple_routing import WarmLaneBookings, WarmLaneRank, unqueued_context_limit
 from logos.terminal_logging import (
     BOLD,
     CYAN,
@@ -375,6 +376,7 @@ class ProviderSession:
     # as a "new measurement" marker: stream chunks and command results bump
     # it too, so under streaming load it changes constantly while the lane
     # signals stay put.
+    warm_bookings: WarmLaneBookings = field(default_factory=WarmLaneBookings)
     runtime_revision: int = 0
     # Bumped whenever any field peek_runtime_snapshot() embeds changes — a
     # runtime push (latest_runtime, capabilities, configured_models,
@@ -424,6 +426,7 @@ class LogosNodeRuntimeRegistry:
         latency_store: LatencyStore | None = None,
     ) -> None:
         self._residency_policy = configured_residency_policy()
+        self._warm_round: dict[str, int] = {}
         self._tickets: dict[str, AuthTicket] = {}
         self._sessions: dict[int, ProviderSession] = {}
         # peek_runtime_snapshot memo: provider_id -> (snapshot_version, dict).
@@ -883,6 +886,8 @@ class LogosNodeRuntimeRegistry:
         session.latest_runtime = runtime if isinstance(runtime, dict) else {}
         session.runtime_status_count += 1
         session.runtime_revision += 1
+        if session.warm_bookings.rounds or session.warm_bookings.fresh:
+            session.warm_bookings.observe(session.latest_runtime.get("lanes") or [])
         was_first = not session.first_status_received
         session.first_status_received = True
         session.last_heartbeat = _utc_now()
@@ -1861,41 +1866,97 @@ class LogosNodeRuntimeRegistry:
         session = await self._get_active_session(provider_id, stale_after_seconds)
         if not benchmark_reservations.allows(provider_id, model_name, request_id):
             return None
+        if getattr(self, "_residency_policy", DEFAULT_RESIDENCY_POLICY) == "simple":
+            return self._warm_choice(session, model_name, request_id=request_id)[1]
+        candidates = self._candidate_lanes(session, model_name)
+        return min(candidates, key=_lane_sort_key, default=None)
+
+    def _candidate_lanes(self, session: ProviderSession, model_name: str):
         if session.capabilities_models and model_name not in session.capabilities_models:
-            return None
-        lanes = (session.latest_runtime or {}).get("lanes") or []
-        if not isinstance(lanes, list):
-            return None
-        candidates: list[dict[str, Any]] = []
-        for lane in lanes:
-            if not isinstance(lane, dict):
+            return
+        for lane in session.latest_runtime.get("lanes") or []:
+            if not isinstance(lane, dict) or lane.get("model") != model_name:
                 continue
-            if lane.get("model") != model_name:
+            if lane.get("runtime_state") not in {"loaded", "running", "cold", "starting"}:
                 continue
-            if lane.get("runtime_state") not in {
-                "loaded",
-                "running",
-                "cold",
-                "starting",
-            }:
-                continue
-            # Exclude lanes pre-marked as cold by the capacity planner
-            lid = str(lane.get("lane_id") or "")
-            if lid and self.is_lane_cold_marked(provider_id, lid):
-                continue
-            # The worker is taking the lane down (draining for a sleep, falling
-            # asleep, stopping): a request sent now would queue behind that
-            # command and reach a sleeping or removed lane.
             if lane.get("transition") in _LANE_LEAVING_TRANSITIONS:
                 continue
-            candidates.append(lane)
-        if not candidates:
+            if self.is_lane_cold_marked(session.provider_id, str(lane.get("lane_id") or "")):
+                continue
+            yield lane
+
+    def _warm_choice(
+        self, session: ProviderSession, model_name: str, *, request_id: str | None = None, context_tokens: int = 0
+    ) -> tuple[WarmLaneRank | None, dict | None]:
+        bookings = session.warm_bookings
+        # A returning lane can take the next turn without accumulating unbounded
+        # credit while it was saturated, offline or ineligible.
+        floor = max(0, self._warm_round.get(model_name, 0) - 1)
+        existing = bookings.requests.get(request_id)
+        if existing:
+            context_tokens = existing.context_tokens
+        profiles = session.latest_runtime.get("model_profiles") or {}
+        best_key = None
+        chosen = None
+        for lane in self._warm_lanes(session, model_name):
+            lid = str(lane["lane_id"])
+            rank = bookings.rank(lane, floor, context_tokens, profiles)
+            # Preserve an admission across resolution and retries unless a
+            # better fitting lane or a shorter engine queue now exists.
+            keep_booking = existing is not None and lid == existing.lane_id
+            key = (rank.context_shortfall, rank.waiting, not keep_booking, rank.occupied_fraction, rank.turn, lid)
+            if best_key is None or key < best_key:
+                chosen, best_key = (rank, lane), key
+        if chosen is None:
+            return None, None
+        rank, lane = chosen
+        lid = str(lane["lane_id"])
+        if request_id is not None and (not existing or lid != existing.lane_id):
+            turn = rank.turn + 1
+            self._warm_round[model_name] = max(self._warm_round.get(model_name, 0), turn)
+            bookings.book(request_id, lid, session.runtime_revision, turn, context_tokens)
+        return chosen
+
+    def simple_ready_lanes(self, provider_id: int, model_name: str) -> list[dict] | None:
+        """Supply the same eligible lanes to admission and physical placement."""
+        if getattr(self, "_residency_policy", DEFAULT_RESIDENCY_POLICY) != "simple":
             return None
-        if getattr(self, "_residency_policy", DEFAULT_RESIDENCY_POLICY) == "simple":
-            candidates = [lane for lane in candidates if lane.get("runtime_state") in {"loaded", "running"}]
-            return min(candidates, key=lambda lane: str(lane.get("lane_id", "")), default=None)
-        candidates.sort(key=_lane_sort_key)
-        return candidates[0]
+        session = self._sessions.get(provider_id)
+        if session is None:
+            return []
+        return list(self._warm_lanes(session, model_name))
+
+    def _warm_lanes(self, session: ProviderSession, model_name: str):
+        return (
+            lane
+            for lane in self._candidate_lanes(session, model_name)
+            if lane.get("lane_id")
+            and lane["runtime_state"] in {"loaded", "running"}
+            and lane.get("sleep_state") != "sleeping"
+        )
+
+    def unqueued_context_limit(self, provider_id: int, model_name: str) -> float:
+        session = self._sessions.get(provider_id)
+        if session is None:
+            return 0
+        return unqueued_context_limit(
+            self._warm_lanes(session, model_name), session.latest_runtime.get("model_profiles") or {}
+        )
+
+    def warm_lane_rank(self, provider_id: int, model_name: str, context_tokens: int = 0) -> WarmLaneRank | None:
+        """Rank the best ready replica without booking it."""
+        session = self._sessions.get(provider_id)
+        return self._warm_choice(session, model_name, context_tokens=context_tokens)[0] if session else None
+
+    def book_warm_lane(self, provider_id: int, model_name: str, request_id: str, context_tokens: int = 0) -> None:
+        session = self._sessions.get(provider_id)
+        if session and self._residency_policy == "simple":
+            self._warm_choice(session, model_name, request_id=request_id, context_tokens=context_tokens)
+
+    def release_warm_lane(self, provider_id: int, request_id: str) -> None:
+        session = self._sessions.get(provider_id)
+        if session:
+            session.warm_bookings.release(request_id, session.runtime_revision)
 
     # ------------------------------------------------------------------
     # Cold lane marking (for capacity planner pre-removal exclusion)

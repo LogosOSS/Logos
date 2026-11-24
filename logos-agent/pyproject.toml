@@ -14,7 +14,7 @@ dependencies = [
     "pydantic==2.14.4",
     "pyjwt[crypto]==2.15.1",
     # Security floors for transitive packages (fastapi[standard] / httpx).
-    "certifi==2026.10.23",
+    "certifi==2026.11.20",
     "dnspython==2.9.2",
     # The exporter requires the matching opentelemetry-sdk release, which in
     # turn pins opentelemetry-api exactly. Declaring only the exporter keeps

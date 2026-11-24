@@ -142,7 +142,7 @@ class TestNamedModelStrictWaitOrder:
 
         captured: dict = {}
 
-        async def fake_queue(best_scored, request):
+        async def fake_queue(best_scored, request, context_tokens=0):
             captured["provider_id"] = best_scored[1]
             captured["wait"] = best_scored[5].expected_wait_s
             return None
@@ -349,7 +349,7 @@ class TestRankingScoreTiesAndInfinities:
 
         captured: dict = {}
 
-        async def fake_queue(best_scored, request):
+        async def fake_queue(best_scored, request, context_tokens=0):
             captured["provider_id"] = best_scored[1]
             captured["wait"] = best_scored[5].expected_wait_s
             captured["score"] = best_scored[3]

@@ -10,12 +10,15 @@ import os
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from app import auth, main
+from app import security_feeds as feeds
 from app import security_incidents as incidents
 from app import security_scans
 from app import security_store as store
@@ -56,7 +59,11 @@ async def database(monkeypatch, tmp_path):
                 trigger_ref text, priority integer, priority_reason text, repo_url text, repo_slug text,
                 error text, pr_url text, verification_command text)"""))
             changelogs = Path(__file__).resolve().parents[2] / "logos-webservice/src/main/resources/liquibase/changelog"
-            for name in ("080_security_incidents.xml", "081_security_manual_updates.xml"):
+            for name in (
+                "080_security_incidents.xml",
+                "081_security_manual_updates.xml",
+                "094_security_feed_retry_window.xml",
+            ):
                 sql = (
                     ET.parse(changelogs / name)
                     .getroot()
@@ -83,6 +90,135 @@ def incident_body(**updates):
         summary="A parser can execute untrusted code remotely.",
         importance="Internet-facing services need immediate assessment.",
     ).model_copy(update=updates)
+
+
+@pytest.mark.parametrize("existing", ["absent", "failed", "successful"])
+async def test_feed_retries_preserve_window_and_deduplicate_partial_pages(database, monkeypatch, existing):
+    clock = [datetime(2026, 11, 23, 23, 59, 34, 318770, tzinfo=timezone.utc)]
+    last = clock[0] - timedelta(hours=2) if existing == "successful" else None
+    since = (last or clock[0] - timedelta(days=7)) - timedelta(hours=1)
+    if existing != "absent":
+        async with database.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO security_feed_state (name, last_success, error) VALUES ('github', :last, 'old error')"
+                ),
+                {"last": last},
+            )
+    monkeypatch.setattr(feeds, "datetime", SimpleNamespace(now=lambda tz: clock[0]))
+    monkeypatch.setattr(feeds, "cisa_advisories", AsyncMock())
+    monkeypatch.setattr(feeds.github, "_headers", lambda: {})
+    phase = ["rejected"]
+    requests = []
+    advisory = {
+        "ghsa_id": "GHSA-2345-6789-abcd",
+        "cve_id": "CVE-2026-12345",
+        "severity": "critical",
+        "summary": "Critical parser vulnerability",
+        "html_url": "https://github.com/advisories/GHSA-2345-6789-abcd",
+        "updated_at": since.isoformat(timespec="seconds"),
+    }
+
+    def handle(request):
+        requests.append(request)
+        if phase[0] == "rejected":
+            return httpx.Response(422, json={"message": "The date input is invalid."})
+        if phase[0] == "empty":
+            return httpx.Response(200, json=[])
+        assert request.url.params["modified"] == f">={since.isoformat(timespec='seconds')}"
+        if "after" not in request.url.params:
+            return httpx.Response(
+                200, json=[advisory], headers={"Link": '<https://api.github.com/advisories?after=next>; rel="next"'}
+            )
+        assert request.url.params["after"] == "next"
+        if phase[0] == "partial":
+            return httpx.Response(503)
+        return httpx.Response(200, json=[{**advisory, "cve_id": "CVE-2026-12346"}])
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        feeds.httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs)
+    )
+
+    async def state():
+        async with database.connect() as conn:
+            return (await conn.execute(text("SELECT * FROM security_feed_state WHERE name='github'"))).mappings().one()
+
+    await feeds.poll_feeds()
+    failed = await state()
+    assert failed["last_success"] == last
+    assert failed["retry_since"] == since
+    assert "422" in failed["error"]
+
+    # Retry after more than the bootstrap lookback, including a failure on page two.
+    clock[0] += timedelta(days=8)
+    phase[0] = "partial"
+    await feeds.poll_feeds()
+    partial = await state()
+    assert partial["last_success"] == last
+    assert partial["retry_since"] == since
+    assert "503" in partial["error"]
+
+    clock[0] += timedelta(hours=2)
+    phase[0] = "complete"
+    await feeds.poll_feeds()
+    completed = await state()
+    assert completed["last_success"] == clock[0]
+    assert completed["retry_since"] is None
+    assert completed["error"] is None
+    assert [r.url.params.get("after") for r in requests] == [None, None, "next", None, "next"]
+    async with database.connect() as conn:
+        rows = (
+            await conn.execute(text("SELECT advisory_id, revision FROM security_incidents ORDER BY advisory_id"))
+        ).all()
+    assert rows == [("CVE-2026-12345", 1), ("CVE-2026-12346", 1)]
+
+    clock[0] += timedelta(minutes=30)
+    await feeds.poll_feeds()
+    assert len(requests) == 5
+    clock[0] += timedelta(hours=1)
+    phase[0] = "empty"
+    await feeds.poll_feeds()
+    next_since = completed["last_success"] - timedelta(hours=1)
+    assert requests[-1].url.params["modified"] == f">={next_since.isoformat(timespec='seconds')}"
+    assert (await state())["last_success"] == clock[0]
+
+
+async def test_earlier_backfill_survives_inflight_success_and_bypasses_hourly_delay(database, monkeypatch):
+    now = datetime(2026, 11, 24, 0, 0, tzinfo=timezone.utc)
+    earlier = now - timedelta(days=14)
+    monkeypatch.setattr(feeds, "datetime", SimpleNamespace(now=lambda tz: now))
+    monkeypatch.setattr(feeds, "cisa_advisories", AsyncMock())
+    calls = []
+
+    async def ingest(since):
+        calls.append(since)
+        if len(calls) == 1:
+            async with database.begin() as conn:
+                for _ in range(2):
+                    await conn.execute(
+                        text("""
+                        INSERT INTO security_feed_state (name, retry_since) VALUES ('github', :since)
+                        ON CONFLICT (name) DO UPDATE SET
+                            retry_since=LEAST(security_feed_state.retry_since, EXCLUDED.retry_since)
+                    """),
+                        {"since": earlier},
+                    )
+
+    monkeypatch.setattr(feeds, "github_advisories", ingest)
+    await feeds.poll_feeds()
+    async with database.connect() as conn:
+        state = (await conn.execute(text("SELECT * FROM security_feed_state WHERE name='github'"))).mappings().one()
+    assert state["last_success"] == now
+    assert state["retry_since"] == earlier
+    await feeds.poll_feeds()
+    assert calls == [now - timedelta(days=7, hours=1), earlier]
+    async with database.connect() as conn:
+        assert (
+            await conn.execute(text("SELECT retry_since FROM security_feed_state WHERE name='github'"))
+        ).scalar() is None
+    await feeds.poll_feeds()
+    assert len(calls) == 2
 
 
 async def test_incident_lifecycle_is_atomic_and_revisits_new_evidence(database, monkeypatch, tmp_path):
@@ -130,6 +266,7 @@ async def test_incident_lifecycle_is_atomic_and_revisits_new_evidence(database, 
     )
     await incidents.reconcile()
     due = await incidents.due_assessments()
+    assert due, (await store.overview())["assessments"]
     assert due[0]["status"] == "fix_available"
     await incidents.queue_assessment(due[0])
     async with engine.begin() as conn:

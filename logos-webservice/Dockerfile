@@ -3,7 +3,7 @@ FROM maven:3.10-eclipse-temurin-25@sha256:4ed0327629de542aefd6ea9fd5da0c52e80143
 COPY install-temurin.sh /tmp/install-temurin.sh
 RUN sh /tmp/install-temurin.sh jre
 
-FROM maven:3.10-eclipse-temurin-25@sha256:4ed0327629de542aefd6ea9fd5da0c52e80143bf8405e5dc32ac2bde55d70d88 AS builder
+FROM maven:3.10-eclipse-temurin-25@sha256:4ed0327629de542aefd6ea9fd5da0c52e80143bf8405e5dc32ac2bde55d70d88 AS maven-project
 # Official Temurin archives carry the patch before the base images are rebuilt.
 COPY install-temurin.sh /tmp/install-temurin.sh
 RUN sh /tmp/install-temurin.sh jdk && rm /tmp/install-temurin.sh
@@ -12,6 +12,16 @@ WORKDIR /build
 COPY pom.xml .
 
 RUN --mount=type=cache,target=/root/.m2 mvn dependency:go-offline -q
+
+FROM maven-project AS e2e-jdbc
+# Reuse the service's resolved dependencies when building the migration image.
+RUN --mount=type=cache,target=/root/.m2 mvn -B -q dependency:copy-dependencies \
+    -DincludeScope=runtime -DincludeGroupIds=org.postgresql -DincludeArtifactIds=postgresql -DoutputDirectory=/jdbc
+
+FROM liquibase/liquibase:5.0.4 AS e2e-migrate
+COPY --from=e2e-jdbc /jdbc/postgresql-*.jar /liquibase/lib/
+
+FROM maven-project AS builder
 COPY src ./src
 RUN --mount=type=cache,target=/root/.m2 mvn package -DskipTests -q
 
