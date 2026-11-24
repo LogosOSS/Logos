@@ -19,7 +19,8 @@ async def github_advisories(since: datetime) -> None:
     params = {
         "severity": "critical",
         "type": "reviewed",
-        "modified": f">={since.isoformat()}",
+        # Search dates accept whole seconds; truncate to replay the inclusive boundary.
+        "modified": f">={since.isoformat(timespec='seconds')}",
         "per_page": 100,
         "sort": "updated",
         "direction": "asc",
@@ -104,21 +105,40 @@ async def poll_feeds() -> None:
                 .first()
             )
         last = row["last_success"] if row else None
-        if last and now - last < timedelta(hours=1):
+        if last and not row.get("retry_since") and now - last < timedelta(hours=1):
             continue
+        # Keep even the first window across failures/restarts; a rolling week
+        # would silently discard older advisories during an extended outage.
+        since = (last or now - timedelta(days=7)) - timedelta(hours=1)
+        async with db.sessionmaker()() as conn:
+            since = (
+                await conn.execute(
+                    text("""
+                    INSERT INTO security_feed_state (name, retry_since) VALUES (:name, :since)
+                    ON CONFLICT (name) DO UPDATE SET
+                        retry_since=COALESCE(security_feed_state.retry_since, EXCLUDED.retry_since)
+                    RETURNING retry_since
+                """),
+                    {"name": name, "since": since},
+                )
+            ).scalar_one()
+            await conn.commit()
         error = None
         try:
-            # First start covers the last week, not an unbounded historic backlog.
-            await ingest((last or now - timedelta(days=7)) - timedelta(hours=1))
+            await ingest(since)
         except Exception as exc:
-            error = str(exc)[:1000]
+            error = str(exc)[:1000] or type(exc).__name__
         async with db.sessionmaker()() as conn:
             await conn.execute(
                 text("""
                 INSERT INTO security_feed_state (name, last_success, error) VALUES (:name, :success, :error)
                 ON CONFLICT (name) DO UPDATE SET
-                    last_success=COALESCE(EXCLUDED.last_success, security_feed_state.last_success), error=EXCLUDED.error
+                    last_success=COALESCE(EXCLUDED.last_success, security_feed_state.last_success),
+                    error=EXCLUDED.error,
+                    retry_since=CASE WHEN EXCLUDED.last_success IS NOT NULL
+                                          AND security_feed_state.retry_since=:since THEN NULL
+                                     ELSE security_feed_state.retry_since END
             """),
-                {"name": name, "success": None if error else now, "error": error},
+                {"name": name, "success": None if error else now, "error": error, "since": since},
             )
             await conn.commit()
