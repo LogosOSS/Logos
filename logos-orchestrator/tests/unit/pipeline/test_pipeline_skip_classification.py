@@ -58,6 +58,7 @@ class _FakeContextResolver:
         deployment_info=None,
         wait_for_lane=True,
         api_key_id=None,
+        privacy_threshold=None,
     ):
         self.kwargs = {
             "model_id": model_id,

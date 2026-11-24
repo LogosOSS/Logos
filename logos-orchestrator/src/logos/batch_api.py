@@ -156,6 +156,13 @@ class BatchOperation:
     def is_listing(self) -> bool:
         return self.method == "GET" and self.resource_id is None
 
+    @property
+    def is_cleanup(self) -> bool:
+        return (self.resource, self.method, self.suboperation) in {
+            ("files", "DELETE", None),
+            ("batches", "POST", "cancel"),
+        } and self.resource_id is not None
+
 
 def _canonical_path(path: str, resource: str, resource_id: Optional[str], suboperation: Optional[str]) -> str:
     """The ``v1/...`` spelling of an operation, whichever mirror it arrived on."""
@@ -1743,10 +1750,19 @@ async def handle_batch_api_request(request: Request) -> Response:
             elif owner is not None and owner.get("execution") == "logos":
                 response = _serve_local_operation(db, operation, owner)
             elif owner is not None:
-                provider = next(
-                    (p for p in db.get_batch_provider_candidates(auth.api_key_id) if p["id"] == owner["provider_id"]),
-                    None,
-                )
+                if operation.is_cleanup:
+                    # The ownership check above authorizes stopping work and erasing existing data.
+                    if owner["provider_id"] is not None:
+                        provider = db.get_batch_provider(owner["provider_id"])
+                else:
+                    provider = next(
+                        (
+                            p
+                            for p in db.get_batch_provider_candidates(auth.api_key_id)
+                            if p["id"] == owner["provider_id"]
+                        ),
+                        None,
+                    )
                 if provider is None:
                     raise_openai_error(403, "This provider is no longer permitted.", code="provider_not_permitted")
                 # A result file is exposed under Logos's own id; the forward

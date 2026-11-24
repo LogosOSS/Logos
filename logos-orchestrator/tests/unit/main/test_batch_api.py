@@ -1435,6 +1435,33 @@ def test_a_deleted_provider_file_leaves_no_ownership_row_behind(monkeypatch):
     assert listed.json()["data"] == []
 
 
+def test_tightened_provider_access_preserves_only_owned_cleanup(monkeypatch):
+    db = _FakeDB(
+        [OPENAI_PROVIDER],
+        OPENAI_DEPLOYMENTS,
+        owned={
+            ("batch", "batch-own"): _remote(2, OWN_TEAM),
+            ("file", "file-own"): _remote(3, OWN_TEAM),
+            ("batch", "batch-other"): _remote(4, OWN_TEAM + 1),
+            ("file", "file-other"): _remote(5, OWN_TEAM + 1),
+        },
+    )
+    db.key_permissions[11] = {"providers": [], "deployments": []}
+    seen = _patch_env(monkeypatch, db, lambda request: httpx.Response(200, json={}))
+
+    assert client.get("/v1/files/file-own/content").status_code == 403
+    assert client.post("/v1/batches", json={"input_file_id": "file-own"}).status_code == 403
+    assert client.post("/v1/batches/batch-other/cancel").status_code == 404
+    assert client.delete("/v1/files/file-other").status_code == 404
+    assert client.post("/v1/batches/batch-own/cancel").status_code == 200
+    assert client.delete("/v1/files/file-own").status_code == 200
+    assert [(r.method, r.url.path) for r in seen] == [
+        ("POST", "/v1/batches/batch-own/cancel"),
+        ("DELETE", "/v1/files/file-own"),
+    ]
+    assert db.deleted == [3]
+
+
 def test_a_failed_provider_delete_keeps_the_ownership_row(monkeypatch):
     # The other side of the same coin: the file is only gone from Logos's
     # books when the provider says it is gone.

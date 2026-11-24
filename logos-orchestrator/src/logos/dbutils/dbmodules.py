@@ -29,7 +29,7 @@ class ThresholdLevel(enum.Enum):
     """Privacy levels — the single ordered definition, most trusted first.
 
     The declaration order IS the trust ordering (index 0 = strictest);
-    pipeline.py derives PRIVACY_ORDER from it and dbmanager.py derives the
+    PRIVACY_ORDER is derived from it and dbmanager.py derives the
     validation set, so a new level added here is known to router and
     registration at once. Mirrors the Postgres enum threshold_enum
     (liquibase 000 + 024) and the webservice Java enum of the same name —
@@ -47,6 +47,19 @@ class ThresholdLevel(enum.Enum):
     CLOUD_IN_EU_BY_US_PROVIDER = "CLOUD_IN_EU_BY_US_PROVIDER"
     CLOUD_NOT_IN_EU_BY_US_PROVIDER = "CLOUD_NOT_IN_EU_BY_US_PROVIDER"
     THIRD_PARTY_HARDWARE = "THIRD_PARTY_HARDWARE"
+
+
+PRIVACY_ORDER = tuple(level.value for level in ThresholdLevel)
+
+
+def privacy_allows(threshold: str, level: str) -> bool:
+    """Check that a deployment is at least as trusted as the request requires.
+
+    An unknown threshold requires LOCAL. An unknown deployment level receives the lowest trust.
+    """
+    threshold_idx = PRIVACY_ORDER.index(threshold) if threshold in PRIVACY_ORDER else 0
+    level_idx = PRIVACY_ORDER.index(level) if level in PRIVACY_ORDER else len(PRIVACY_ORDER) - 1
+    return threshold_idx >= level_idx
 
 
 class LoggingLevel(enum.Enum):

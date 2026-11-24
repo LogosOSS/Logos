@@ -122,6 +122,31 @@ def test_normal_key_keeps_its_explicit_cloud_permissions(database):
     assert db.get_api_key_by_value("normal")["id"] == kid
 
 
+@pytest.mark.parametrize("scope", ["LOCAL", "EU"])
+def test_tightening_team_scope_preserves_historical_batch_settlement(database, scope):
+    db = database
+    db.session.execute(text("""
+        CREATE TABLE batch_objects (
+            id int PRIMARY KEY, upstream_id text, provider_id int, api_key_id int, team_id int,
+            user_id int, status text, log_level text, kind text, execution text, settled_at timestamptz,
+            updated_at timestamptz, settlement_lease_expires_at timestamptz);
+        INSERT INTO teams (id, privacy_scope) VALUES (7, 'WORLDWIDE');
+        INSERT INTO batch_objects (id, upstream_id, provider_id, api_key_id, team_id, status, kind, execution)
+            VALUES (1, 'batch-1', 2, 11, 7, 'completed', 'batch', 'provider');
+    """))
+    db.session.execute(text("UPDATE teams SET privacy_scope = :scope WHERE id = 7"), {"scope": scope})
+    [pending] = db.get_unsettled_batches()
+    assert (pending["upstream_id"], pending["provider_id"], pending["api_key_id"], pending["team_id"]) == (
+        "batch-1",
+        2,
+        11,
+        7,
+    )
+    assert db.claim_batch_for_settlement(pending["id"])
+    db.mark_batch_settled(pending["id"])
+    assert db.get_unsettled_batches() == []
+
+
 @pytest.mark.parametrize("custom", [False, True])
 def test_team_scope_tightens_existing_keys_and_retains_the_local_alias(database, custom):
     db = database

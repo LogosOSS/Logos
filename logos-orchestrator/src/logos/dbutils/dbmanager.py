@@ -3114,6 +3114,7 @@ class DBManager:
             SELECT m.id          AS model_id,
                    m.name        AS model_name,
                    mp.endpoint   AS endpoint,
+                   region.privacy_level AS privacy_level,
                    p.id          AS provider_id,
                    p.name        AS provider_name,
                    p.provider_type AS provider_type,
@@ -3125,6 +3126,7 @@ class DBManager:
             FROM models m
             JOIN model_provider mp ON m.id = mp.model_id
             JOIN providers p ON mp.provider_id = p.id
+            JOIN provider_processing_privacy region ON region.provider_id = p.id
             {permission_join}
             WHERE m.id = :model_id AND p.id = :provider_id
             LIMIT 1
@@ -3785,9 +3787,8 @@ class DBManager:
         rows = self.session.execute(
             text("""
                 SELECT id, upstream_id, provider_id, api_key_id, team_id, user_id, status, log_level
-                FROM batch_objects b
+                FROM batch_objects
                 WHERE kind = 'batch' AND settled_at IS NULL AND execution = 'provider'
-                  AND NOT EXISTS (SELECT 1 FROM teams t WHERE t.id = b.team_id AND t.privacy_scope <> 'WORLDWIDE')
                 ORDER BY updated_at
                 LIMIT :limit
                 """),

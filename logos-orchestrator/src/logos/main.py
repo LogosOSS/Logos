@@ -1029,7 +1029,7 @@ def _extract_policy(headers: dict, logos_key: str, body: dict):
                     if key == "default":
                         continue
                     if key == "privacy":
-                        from logos.pipeline.pipeline import PRIVACY_ORDER
+                        from logos.dbutils.dbmodules import PRIVACY_ORDER
 
                         stored = policy.get("threshold_privacy")
                         requested = p[key] if p[key] in PRIVACY_ORDER else "LOCAL"
