@@ -1,5 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.configuration.entity;
 
+import java.time.OffsetDateTime;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -43,12 +45,60 @@ public class RequestedModel {
      */
     private Integer firstRequestingTeam;
 
+    /**
+     * The SPDX license expression the model's Hugging Face card declares
+     * (e.g. {@code apache-2.0}); several declared licenses are stored joined
+     * as an OR expression. Null when the card names none.
+     */
+    private String licenseId;
+
+    /**
+     * The text of the repository's license file, fetched from Hugging Face
+     * via the orchestrator's central HF_TOKEN. Null either while no fetch has
+     * run yet (see {@code licenseFetchedDate}) or when the repository carries
+     * no license file.
+     */
+    private String licenseText;
+
+    /**
+     * When the last license fetch ran. Null means "never fetched" — a failed
+     * fetch leaves it null, so the row is simply retried on the next pass.
+     */
+    private OffsetDateTime licenseFetchedDate;
+
+    /**
+     * The repository file the acceptable-use policy was read from (e.g.
+     * USE_POLICY.md, POLICY.md), fetched alongside the license in the same
+     * Hugging Face pass. Null either while no fetch has run yet or when the
+     * repository publishes no use policy file — unlike the license, whose
+     * absence is a state to flag, an absent use policy is nothing to show.
+     */
+    private String usePolicyFile;
+
+    /** The text of the repository's use policy file; null as above. */
+    private String usePolicyText;
+
+    /** When the last use-policy fetch ran (the license fetch's date). */
+    private OffsetDateTime usePolicyFetchedDate;
+
     public Integer getId() { return id; }
     public String getName() { return name; }
     public Boolean getIsGated() { return isGated; }
     public Integer getFirstRequestingTeam() { return firstRequestingTeam; }
+    public String getLicenseId() { return licenseId; }
+    public String getLicenseText() { return licenseText; }
+    public OffsetDateTime getLicenseFetchedDate() { return licenseFetchedDate; }
+    public String getUsePolicyFile() { return usePolicyFile; }
+    public String getUsePolicyText() { return usePolicyText; }
+    public OffsetDateTime getUsePolicyFetchedDate() { return usePolicyFetchedDate; }
 
     public void setName(String name) { this.name = name; }
     public void setIsGated(Boolean isGated) { this.isGated = isGated; }
     public void setFirstRequestingTeam(Integer firstRequestingTeam) { this.firstRequestingTeam = firstRequestingTeam; }
+    public void setLicenseId(String licenseId) { this.licenseId = licenseId; }
+    public void setLicenseText(String licenseText) { this.licenseText = licenseText; }
+    public void setLicenseFetchedDate(OffsetDateTime licenseFetchedDate) { this.licenseFetchedDate = licenseFetchedDate; }
+    public void setUsePolicyFile(String usePolicyFile) { this.usePolicyFile = usePolicyFile; }
+    public void setUsePolicyText(String usePolicyText) { this.usePolicyText = usePolicyText; }
+    public void setUsePolicyFetchedDate(OffsetDateTime usePolicyFetchedDate) { this.usePolicyFetchedDate = usePolicyFetchedDate; }
 }

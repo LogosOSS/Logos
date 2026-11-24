@@ -38,7 +38,8 @@ jobs:
   benchmark:
     name: Benchmark
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # A cold Maven image build can take 22 minutes before the 10-minute benchmark starts.
+    timeout-minutes: 45
     env:
       LOGOS_BENCH_GW_DB_STORAGE: tmpfs-ci-ephemeral
       LOGOS_BENCH_GW_URL: http://localhost:18081

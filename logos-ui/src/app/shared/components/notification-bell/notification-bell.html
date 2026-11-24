@@ -57,8 +57,13 @@
                   <i [class]="'pi ' + meta(item.type).icon"></i>
                 </span>
                 <div class="item__text">
-                  <button type="button" class="item__title" (click)="markRead(item)"
-                    [attr.aria-label]="(item.read ? '' : 'Unread: ') + item.title">{{ item.title }}</button>
+                  @if (externalUrl(item); as url) {
+                    <a class="item__title" [href]="url" target="_blank" rel="noopener noreferrer" (click)="markRead(item)"
+                      [attr.aria-label]="(item.read ? '' : 'Unread: ') + item.title">{{ item.title }}</a>
+                  } @else {
+                    <button type="button" class="item__title" (click)="markRead(item)"
+                      [attr.aria-label]="(item.read ? '' : 'Unread: ') + item.title">{{ item.title }}</button>
+                  }
                   @if (body(item); as text) {
                     <p class="item__body">{{ text }}</p>
                   }

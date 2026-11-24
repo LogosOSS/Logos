@@ -20,6 +20,9 @@ description and the capabilities of each model. App Admins see the list. They
 do not see the operator controls for each model (weights, aliases, add and
 delete).
 
+Use **Active models** to browse the catalogue. Use **Model requests** to request a model for your team.
+Enter the Hugging Face repository name, select your team, and select **Vote for this model**.
+
 ![Models page](/img/roles/app-admin-models.png)
 
 ## Users

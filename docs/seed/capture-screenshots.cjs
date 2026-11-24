@@ -388,6 +388,35 @@ const SHOTS = [
     },
   },
   { file: "roles/logos-admin-models.png", user: ADMIN, full: true, go: (p) => p.goto(BASE + "/models") },
+  {
+    file: "roles/model-requests.png",
+    user: ADMIN,
+    full: true,
+    go: async (p) => {
+      await p.goto(BASE + "/models?tab=requests");
+      await p.getByRole("button", { name: /^License agreement for logos-docs\/example-chat/ }).waitFor();
+    },
+  },
+  {
+    file: "roles/model-request-license.png",
+    user: ADMIN,
+    go: async (p) => {
+      await p.goto(BASE + "/models?tab=requests");
+      await p.getByRole("button", { name: /^License agreement for logos-docs\/example-chat/ }).click();
+      await p.getByText("Example use policy for the documentation model.", { exact: true }).waitFor();
+    },
+    after: (p) => button(p, "Cancel").click(),
+  },
+  {
+    file: "roles/model-request-gated.png",
+    user: ADMIN,
+    go: async (p) => {
+      await p.goto(BASE + "/models?tab=requests");
+      await p.getByRole("button", { name: /example-chat repository is gated/ }).click();
+      await button(p, "Go to Hugging Face").waitFor();
+    },
+    after: (p) => button(p, "Cancel").click(),
+  },
   { file: "roles/logos-admin-providers.png", user: ADMIN, go: (p) => p.goto(BASE + "/providers") },
   {
     file: "roles/logos-admin-provider-connections.png",

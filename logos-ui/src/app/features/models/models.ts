@@ -4,12 +4,13 @@ import {
   inject,
   signal,
   OnInit,
+  OnDestroy,
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { DestroyRef } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { timer, switchMap, catchError, of } from 'rxjs';
+import { timer, switchMap, catchError, of, Subscription } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { TitleCasePipe } from '@angular/common';
 import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
@@ -22,7 +23,7 @@ import { ErrorMessageComponent } from '../../shared/components/error-message/err
 import { ModelProfileRadarComponent } from '../../shared/components/model-profile-radar/model-profile-radar';
 import { ModelRequests } from '../model-requests/model-requests';
 import { AuthService } from '../../core/auth/services/auth.service';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import {
   daysSince,
   formatLastUsedParts,
@@ -36,6 +37,9 @@ interface NightlySchedule {
 }
 
 const PROFILE_AXES = ['latency', 'quality', 'price'] as const;
+
+/** The two sections of the models page; `active` is the default. */
+type ModelsTab = 'active' | 'requests';
 
 @Component({
   selector: 'app-models',
@@ -55,7 +59,7 @@ const PROFILE_AXES = ['latency', 'quality', 'price'] as const;
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './models.scss',
 })
-export class Models implements OnInit {
+export class Models implements OnInit, OnDestroy {
   private http = inject(HttpClient);
   private destroyRef = inject(DestroyRef);
   nightly = signal<{ schedules: NightlySchedule[]; next_date: string } | null>(null);
@@ -80,6 +84,41 @@ export class Models implements OnInit {
   private modelService = inject(ModelManagementService);
   readonly role = inject(AuthService).role;
   private router = inject(Router);
+  private route = inject(ActivatedRoute);
+
+  // ── Tabs ──────────────────────────────────────────────────────────────────
+  // Two tabs, because the page answers two unrelated questions: what Logos
+  // serves right now, and what it is asked to serve next. The same split as
+  // the statistics page: one question per tab.
+  //
+  // The active tab is mirrored into ?tab= so a link points at the section it
+  // was copied from, and each switch is a history entry so Back returns to
+  // the tab it came from.
+  readonly TABS: ReadonlyArray<{ id: ModelsTab; label: string }> = [
+    { id: 'active', label: 'Active models' },
+    { id: 'requests', label: 'Model requests' },
+  ];
+  readonly activeTab = signal<ModelsTab>('active');
+  private routeSub: Subscription | null = null;
+
+  setActiveTab(tab: ModelsTab): void {
+    if (this.activeTab() === tab) return;
+    // The signal is not set here: the query-parameter subscription below owns
+    // it, so a tab reached by Back, by a pasted link or by this click all take
+    // the same path and cannot disagree.
+    this.router.navigate([], {
+      relativeTo: this.route,
+      // The default stays out of the URL rather than decorating every link
+      // with a parameter that changes nothing.
+      queryParams: { tab: tab === 'active' ? null : tab },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /** Resolves a ?tab= value, falling back to the default for anything unknown. */
+  private tabFromParam(raw: string | null): ModelsTab {
+    return this.TABS.some((t) => t.id === raw) ? (raw as ModelsTab) : 'active';
+  }
 
   /**
    * A model without a single logged request for this long is highlighted as a
@@ -221,6 +260,14 @@ export class Models implements OnInit {
   }
 
   ngOnInit(): void {
+    // Subscribed, not read once: Angular reuses this component for a
+    // query-parameter navigation, so a snapshot read in ngOnInit would leave
+    // the URL naming one tab while the page still showed the other.
+    this.activeTab.set(this.tabFromParam(this.route.snapshot.queryParamMap.get('tab')));
+    this.routeSub = this.route.queryParamMap.subscribe((params) => {
+      this.activeTab.set(this.tabFromParam(params.get('tab')));
+    });
+
     void this.fetchModels();
     if (this.role() === 'logos_admin') {
       timer(0, 30000).pipe(
@@ -229,6 +276,11 @@ export class Models implements OnInit {
         takeUntilDestroyed(this.destroyRef),
       ).subscribe(value => { this.nightly.set(value); this.nightlyError.set(value === null); });
     }
+  }
+
+  ngOnDestroy(): void {
+    this.routeSub?.unsubscribe();
+    this.routeSub = null;
   }
 
   async fetchModels(): Promise<void> {

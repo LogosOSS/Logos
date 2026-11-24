@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    logicalFilePath="liquibase/changelog/083_model_license_approvals_nullable_user.xml"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- model_license_approvals.user_id becomes nullable.
+
+         The recheck records the global acceptance of a gated model
+         automatically the moment it finds the repository readable again:
+         accepting the repository's terms on Hugging Face (which is what
+         grants the central HF_TOKEN access) is the acceptance, so Logos
+         must not make the Logos admin accept the same agreement a second
+         time. That system-recorded row has no user, which a nullable
+         user_id expresses directly — a named user stays the audit record
+         for an acceptance made in the dialog. -->
+    <changeSet id="083-model-license-approvals-nullable-user" author="maltebai">
+        <dropNotNullConstraint tableName="model_license_approvals"
+                               columnName="user_id"
+                               columnDataType="INTEGER"/>
+        <rollback>
+            <addNotNullConstraint tableName="model_license_approvals"
+                                  columnName="user_id"
+                                  columnDataType="INTEGER"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>
