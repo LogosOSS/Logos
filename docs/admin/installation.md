@@ -126,6 +126,8 @@ The production stack keeps the following data:
 | `agent_state` (literal name `logos_agent_state`) | named volume | agent session state |
 | `./letsencrypt` | bind mount | Traefik Let's Encrypt certificate state |
 
+For a PostgreSQL 17 installation, complete the [database upgrade](#upgrade-postgresql-17-to-18) before the general upgrade steps.
+
 Before an upgrade, back up these volumes and the `./letsencrypt` directory.
 Keycloak is external to the stack. Back up its realm export together with your
 identity provider (for the realm format, see `keycloak/tum-realm.json` in this
@@ -136,3 +138,18 @@ the necessary image tag and recreate the stack:
 docker compose --env-file .env pull
 docker compose --env-file .env up -d
 ```
+
+## Upgrade PostgreSQL 17 to 18
+
+PostgreSQL 18 uses `/var/lib/postgresql/18/docker` inside the volume mounted at `/var/lib/postgresql`. An existing PostgreSQL 17 volume requires a major-version migration.
+
+1. Schedule a maintenance window. Record the current application tag, database image and physical volume name. Verify a backup on a separate system.
+2. Stop the application services and other writers. Suspend scheduled database jobs for the full maintenance window. Keep the PostgreSQL 17 server available to the backup client.
+3. Use the PostgreSQL 18 `pg_dumpall` client to export the cluster, including databases, roles and grants. Connect with a source superuser. Restrict access to the dump because it contains role password hashes. Check the command exit status and available target disk space. Record the source database sizes, application row counts, Liquibase changesets and scheduled jobs. Stop the PostgreSQL 17 server after the export.
+4. Start the Logos PostgreSQL 18 image on a separate, empty volume and an isolated network. Mount the volume at `/var/lib/postgresql`. Use `POSTGRES_DB=postgres` and a temporary `POSTGRES_USER` name that does not exist in the source cluster. Set a temporary bootstrap password. Start the server with `shared_preload_libraries=pg_cron`, `cron.database_name=logosdb` and `cron.launch_active_jobs=off`. Install any other source extensions and prepare any custom tablespaces before the restore.
+5. Restore the complete dump with `psql -X -v ON_ERROR_STOP=1` as the temporary superuser, initially connected to `postgres`. Verify the original application login, roles, grants, sequences, application records, scheduled jobs and Liquibase history. Disable login for the temporary superuser from the restored administrative account. Stop the isolated server after validation.
+6. Set `LOGOS_DB_VOLUME_NAME` to the exact restored volume name in the core deployment environment. For GitHub Actions, set the variable in the environment used by the core deploy. Check `docker volume inspect` and the resolved `docker compose config` before starting the service. The normal database service enables scheduled jobs at startup. Confirm the data directory and restored records before you reopen application traffic.
+
+Keep the original volume and image until the upgrade is accepted. Before accepting new writes, you can restore service with the previous Compose version, image and volume setting. After writes resume, a switch to the old volume would lose those writes. Reconcile or recover them before a rollback.
+
+See the [PostgreSQL cluster upgrade procedure](https://www.postgresql.org/docs/18/upgrading.html) and the [pg_dumpall reference](https://www.postgresql.org/docs/18/app-pgdumpall.html).

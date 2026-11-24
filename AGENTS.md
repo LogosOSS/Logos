@@ -17,7 +17,7 @@
 | `e2e/` | pytest, Playwright | GPU-less end-to-end suite. See its own `AGENTS.md` and `README.md`. |
 | `agent-gateway/`, `rate-limit-gateway/` | nginx | Edge proxies around the agent runner and the orchestrator. |
 | `keycloak/` | — | Dev realm seed (`tum-realm.json`); all seeded dev users have password `password`. |
-| `db/` | — | Plain `postgres:17` + pg_cron Dockerfile — **no schema here**. |
+| `db/` | — | Plain `postgres:18` + pg_cron Dockerfile — **no schema here**. |
 | `docs/` | Docusaurus | User/admin/developer documentation site. Role-guide screenshot refresh + demo seed: see `docs/AGENTS.md`. |
 | `benchmarks/` | Python | Scheduler/throughput benchmarking scripts. |
 | `scripts/` | bash | Core-node ops scripts, e.g. `gateway-failover-demo.sh` (see [deployment](docs/deployment.md#failover-verification)). |

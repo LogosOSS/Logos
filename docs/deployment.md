@@ -63,6 +63,8 @@ Do not delete the volume to change its password.
 Redis uses `requirepass`. The web service and Redis health check use the same `LOGOS_REDIS_PASSWORD`.
 To change the Redis password, update `.env`, then recreate Redis and the web service together.
 
+For a PostgreSQL 17 installation, complete the [database upgrade](admin/installation.md#upgrade-postgresql-17-to-18) before you deploy the PostgreSQL 18 image.
+
 ## Residency policy
 
 `LOGOS_RESIDENCY_POLICY` selects the orchestrator policy. The default is `simple`.
@@ -127,7 +129,7 @@ PostgreSQL, Redis, nginx, and GPU worker images retain their existing startup us
 | `logos-orchestrator` | orchestrator |
 | `logos-webservice` | Spring admin/statistics service and public inference gateway (`/v1`, `/openai`, `/jobs`) |
 | `logos-ui` | Angular web application |
-| `logos-db` | PostgreSQL 17 plus `pg_cron` |
+| `logos-db` | PostgreSQL 18 plus `pg_cron` |
 | `logos-rate-gateway` | per-IP rate limiting (nginx) |
 | `logos-agent`, `logos-agent-gateway`, `logos-agent-workspace` | the agent stack (only with the `agent` profile) |
 | `logos-workernode-vllm` | the worker node runtime (on the GPU host) |

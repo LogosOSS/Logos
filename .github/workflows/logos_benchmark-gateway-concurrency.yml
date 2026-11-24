@@ -146,7 +146,7 @@ jobs:
 
       - name: Verify ephemeral database storage
         run: |
-          test "$(docker inspect logos-db --format '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Type}}{{end}}{{end}}')" = tmpfs
+          test "$(docker inspect logos-db --format '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql"}}{{.Type}}{{end}}{{end}}')" = tmpfs
           docker exec logos-db psql -U postgres -d logosdb -c 'SHOW fsync;' -c 'SHOW synchronous_commit;'
 
       - name: Seed benchmark data
@@ -162,7 +162,7 @@ jobs:
 
       - name: Record database fixture size
         run: |
-          docker exec logos-db df -h /var/lib/postgresql/data
+          docker exec logos-db df -h /var/lib/postgresql
           docker exec logos-db psql -U postgres -d logosdb -v ON_ERROR_STOP=1 -c "SELECT pg_size_pretty(pg_database_size('logosdb'));"
 
       - name: Set up Python
