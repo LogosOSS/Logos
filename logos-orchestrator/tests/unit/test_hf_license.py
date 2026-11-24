@@ -224,6 +224,45 @@ async def test_oversized_use_policy_file_is_refused_before_buffering(hub):
     assert result.use_policy_file is None
 
 
+async def test_nul_byte_in_fetched_text_is_refused_and_the_next_fetch_succeeds(hub):
+    # A file is the repository's to write and may carry a NUL byte, which
+    # PostgreSQL TEXT rejects on insert: storing it would roll back the vote
+    # or recheck transaction that persists the license, so the fetch refuses
+    # it like any other failure (an error, all fields None) and leaves the
+    # row pending rather than altering the text.
+    _hub_with(
+        hub,
+        {"cardData": {"license": "apache-2.0"}},
+        {"main": [{"type": "file", "path": "LICENSE"}]},
+        {"LICENSE": "Apache License 2.0 \x00 ..."},
+    )
+
+    result = await hf_license.fetch_hf_license("org/model")
+
+    assert result.error is not None
+    assert "NUL byte" in result.error
+    assert result.license_id is None
+    assert result.license_file is None
+    assert result.license_text is None
+    assert result.use_policy_file is None
+    assert result.use_policy_text is None
+
+    # The refusal must not poison the fetch: a following model with clean
+    # text is still served, as the next row of a recheck pass would be.
+    _hub_with(
+        hub,
+        {"cardData": {"license": "mit"}},
+        {"main": [{"type": "file", "path": "LICENSE"}]},
+        {"LICENSE": "MIT ..."},
+    )
+
+    result = await hf_license.fetch_hf_license("org/model")
+
+    assert result.error is None
+    assert result.license_id == "mit"
+    assert result.license_text == "MIT ..."
+
+
 async def test_provider_specific_license_file_names_are_found(hub):
     _hub_with(
         hub,

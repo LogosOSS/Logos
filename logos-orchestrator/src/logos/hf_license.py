@@ -196,11 +196,35 @@ async def fetch_hf_license(hf_repo_id: str) -> HfLicense:
     """Fetch one repository's license and use policy. Never raises.
 
     A returned ``error`` (network error, Hub outage, timeout, an oversized
-    license or use-policy file, or a repository the token may not read) is
-    not a statement about the repository's licensing — callers must leave
-    the row pending and retry later.
+    license or use-policy file, a repository the token may not read, or a
+    fetched file PostgreSQL's TEXT columns cannot store) is not a statement
+    about the repository's licensing — callers must leave the row pending
+    and retry later.
     """
     repo_id = hf_repo_id.strip()
     token = os.getenv("HF_TOKEN", "").strip() or None
     license_id, license_file, license_text, use_policy_file, use_policy_text, error = await _fetch(repo_id, token)
+    if error is None:
+        # The fetched strings are the repository's to write, and a file may
+        # carry a NUL byte, which PostgreSQL TEXT rejects on insert: storing
+        # it would roll back the vote or recheck transaction that persists
+        # the license. Refuse the fetch like any other failure and leave the
+        # row pending — the text is left exactly as published, not altered.
+        for label, value in (
+            ("license id", license_id),
+            ("license file name", license_file),
+            ("license text", license_text),
+            ("use policy file name", use_policy_file),
+            ("use policy text", use_policy_text),
+        ):
+            if value is not None and "\x00" in value:
+                return HfLicense(
+                    repo_id,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    f"The fetched {label} contains a NUL byte and cannot be stored.",
+                )
     return HfLicense(repo_id, license_id, license_file, license_text, use_policy_file, use_policy_text, error)
