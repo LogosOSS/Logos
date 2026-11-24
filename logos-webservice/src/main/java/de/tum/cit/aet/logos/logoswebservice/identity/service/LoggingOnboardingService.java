@@ -1,6 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.identity.service;
 
 import java.util.Map;
+import java.util.Optional;
 
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -39,16 +40,25 @@ public class LoggingOnboardingService {
     }
 
     @Transactional
-    public void complete(int userId, boolean fullLogging) {
-        // The first submission wins, including retries after a lost response.
+    public Optional<Boolean> complete(int userId, boolean fullLogging) {
         int recorded = jdbc.update("""
             INSERT INTO user_logging_onboarding (user_id, full_logging)
             SELECT :userId, :fullLogging
             WHERE EXISTS (SELECT 1 FROM api_keys ak WHERE %s)
             ON CONFLICT (user_id) DO NOTHING
             """.formatted(ELIGIBLE_KEY), Map.of("userId", userId, "fullLogging", fullLogging));
-        if (recorded == 0 || !fullLogging) return;
+        if (recorded == 0) {
+            // A concurrent submission may have won the insert. Read its
+            // committed choice so a retry can distinguish a conflict.
+            return jdbc.queryForList("""
+                SELECT full_logging FROM user_logging_onboarding WHERE user_id = :userId
+                """, Map.of("userId", userId), Boolean.class).stream().findFirst();
+        }
+        if (fullLogging) enableFullLogging(userId);
+        return Optional.of(fullLogging);
+    }
 
+    private void enableFullLogging(int userId) {
         var keys = jdbc.query("""
             UPDATE api_keys ak SET log = 'FULL'
             WHERE %s

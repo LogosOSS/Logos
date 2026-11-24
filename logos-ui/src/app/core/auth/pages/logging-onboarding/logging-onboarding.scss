@@ -2,9 +2,9 @@
 
 .onboarding {
   position: relative;
-  min-height: 100dvh;
-  display: grid;
-  place-items: center;
+  height: 100dvh;
+  overflow-y: auto;
+  display: flex;
   padding: 4.5rem 1rem 2rem;
   background: rgb(var(--shell-background));
 }
@@ -13,6 +13,7 @@
   @include glass-surface;
   width: 100%;
   max-width: 36rem;
+  margin: auto;
   padding: clamp(1.25rem, 5vw, 2rem);
   box-shadow: 0 2rem 5rem rgb(var(--shadow-color) / var(--opacity-border));
 }
@@ -65,6 +66,7 @@
 .btn-primary {
   min-height: 3rem;
   justify-content: center;
+  text-decoration: none;
 }
 
 .billing-button {

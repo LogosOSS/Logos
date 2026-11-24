@@ -2,6 +2,7 @@ package de.tum.cit.aet.logos.logoswebservice.identity.controller;
 
 import java.util.Map;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -79,12 +80,15 @@ public class MeController {
     }
 
     @PostMapping("/me/logging-onboarding")
-    public ResponseEntity<Void> completeLoggingOnboarding(
+    public ResponseEntity<Map<String, Boolean>> completeLoggingOnboarding(
             @RequestAttribute("authContext") AuthContext auth,
             @RequestBody LoggingOnboardingRequestDTO request) {
         if (auth.userId() == null) return ResponseEntity.notFound().build();
         if (request.full_logging() == null) return ResponseEntity.badRequest().build();
-        loggingOnboarding.complete(auth.userId(), request.full_logging());
+        var saved = loggingOnboarding.complete(auth.userId(), request.full_logging());
+        if (saved.isPresent() && !saved.get().equals(request.full_logging())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("full_logging", saved.get()));
+        }
         return ResponseEntity.noContent().build();
     }
 }

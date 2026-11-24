@@ -11,6 +11,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.jdbc.Sql;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -63,7 +64,7 @@ class MeControllerTest {
                 (3012, 'test-orphan-key', 'orphan key', 'developer', 1001, 2002, true, 'BILLING')
             """);
 
-        submitLoggingChoice(true);
+        submitLoggingChoice(true).andExpect(status().isNoContent());
 
         assertThat(keyLog(3001)).isEqualTo("FULL");
         for (int untouchedKey : new int[] {3003, 3010, 3011, 3012}) {
@@ -76,14 +77,17 @@ class MeControllerTest {
            .andExpect(jsonPath("$.logging_onboarding_pending").value(false));
 
         jdbc.update("UPDATE api_keys SET log = 'BILLING' WHERE id = 3001");
-        submitLoggingChoice(true);
+        submitLoggingChoice(true).andExpect(status().isNoContent());
         assertThat(keyLog(3001)).isEqualTo("BILLING");
     }
 
     @Test
-    void declineKeepsBillingAndCannotBeOverwrittenByARepeatedSubmission() throws Exception {
-        submitLoggingChoice(false);
-        submitLoggingChoice(true);
+    void declineKeepsBillingAndReportsAConflictingOptIn() throws Exception {
+        submitLoggingChoice(false).andExpect(status().isNoContent());
+        submitLoggingChoice(false).andExpect(status().isNoContent());
+        submitLoggingChoice(true)
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.full_logging").value(false));
 
         assertThat(keyLog(3001)).isEqualTo("BILLING");
         assertThat(jdbc.queryForObject(
@@ -91,6 +95,16 @@ class MeControllerTest {
         mvc.perform(get("/me").with(TestJwt.testUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.logging_onboarding_pending").value(false));
+    }
+
+    @Test
+    void reportsPriorOptInWhenBillingIsSubmittedAfterALostResponse() throws Exception {
+        submitLoggingChoice(true).andExpect(status().isNoContent());
+        submitLoggingChoice(false)
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.full_logging").value(true));
+
+        assertThat(keyLog(3001)).isEqualTo("FULL");
     }
 
     @Test
@@ -114,11 +128,10 @@ class MeControllerTest {
            .andExpect(jsonPath("$.logging_onboarding_pending").value(false));
     }
 
-    private void submitLoggingChoice(boolean fullLogging) throws Exception {
-        mvc.perform(post("/me/logging-onboarding").with(TestJwt.testUser())
+    private ResultActions submitLoggingChoice(boolean fullLogging) throws Exception {
+        return mvc.perform(post("/me/logging-onboarding").with(TestJwt.testUser())
                 .contentType("application/json")
-                .content("{\"full_logging\":" + fullLogging + "}"))
-           .andExpect(status().isNoContent());
+                .content("{\"full_logging\":" + fullLogging + "}"));
     }
 
     private String keyLog(int keyId) {

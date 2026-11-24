@@ -2,34 +2,49 @@
   <app-theme-toggle />
 
   <section class="onboarding-card" aria-labelledby="logging-title">
+    @let saved = earlierChoice();
     <header class="onboarding-header">
       <app-logo [size]="36" />
-      <h1 id="logging-title">Help make Logos faster</h1>
-      <p>Your requests can help us find faster model settings for work like yours. Thanks for helping improve Logos for everyone!</p>
+      @if (saved !== null) {
+        <h1 id="logging-title" #savedChoiceHeading tabindex="-1">Logging choice already saved</h1>
+        <p>
+          {{ saved ? 'Your earlier choice to enable full logging was saved.' : 'Your earlier choice to keep billing-only logging was saved.' }}
+          You can review or change the logging level for each key in My Workspace.
+        </p>
+      } @else {
+        <h1 id="logging-title">Help make Logos faster</h1>
+        <p>Your requests can help us find faster model settings for work like yours. Thanks for helping improve Logos for everyone!</p>
+      }
     </header>
 
-    <div class="logging-details" id="logging-details">
-      <h2>What full logging shares</h2>
-      <p>Logos stores request and response content, including prompts and generated answers, and can replay requests in benchmarks.</p>
-      <p>This applies to your active developer keys that use billing-only logging. You can change logging per key in My Workspace.</p>
-    </div>
+    @if (saved !== null) {
+      <div class="onboarding-actions">
+        <a class="btn-primary" routerLink="/my-workspace" [replaceUrl]="true">Open My Workspace</a>
+      </div>
+    } @else {
+      <div class="logging-details" id="logging-details">
+        <h2>What full logging shares</h2>
+        <p>Logos stores request and response content, including prompts and generated answers, and can replay requests in benchmarks.</p>
+        <p>This applies to your active developer keys that use billing-only logging. You can change logging per key in My Workspace.</p>
+      </div>
 
-    <div class="onboarding-actions">
-      @if (error()) {
-        <app-error-message [message]="error()" />
-      }
-
-      <button type="button" class="btn-primary" aria-describedby="logging-details"
-              [disabled]="savingChoice() !== null" (click)="complete(true)">
-        {{ savingChoice() === true ? 'Saving…' : 'Enable full logging' }}
-      </button>
-      <button type="button" class="billing-button" [disabled]="savingChoice() !== null" (click)="complete(false)">
-        @if (savingChoice() === false) {
-          Saving…
-        } @else {
-          Keep billing-only logging <span aria-hidden="true">:(</span>
+      <div class="onboarding-actions">
+        @if (error()) {
+          <app-error-message [message]="error()" />
         }
-      </button>
-    </div>
+
+        <button type="button" class="btn-primary" aria-describedby="logging-details"
+                [disabled]="savingChoice() !== null" (click)="complete(true)">
+          {{ savingChoice() === true ? 'Saving…' : 'Enable full logging' }}
+        </button>
+        <button type="button" class="billing-button" [disabled]="savingChoice() !== null" (click)="complete(false)">
+          @if (savingChoice() === false) {
+            Saving…
+          } @else {
+            Keep billing-only logging <span aria-hidden="true">:(</span>
+          }
+        </button>
+      </div>
+    }
   </section>
 </main>
