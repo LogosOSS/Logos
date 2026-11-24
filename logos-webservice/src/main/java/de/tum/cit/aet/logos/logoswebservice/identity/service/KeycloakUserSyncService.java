@@ -22,6 +22,7 @@ import de.tum.cit.aet.logos.logoswebservice.identity.repository.ApiKeyRepository
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.TeamMemberRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.TeamRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.UserRepository;
+import jakarta.persistence.EntityManager;
 
 @Service
 public class KeycloakUserSyncService {
@@ -31,15 +32,17 @@ public class KeycloakUserSyncService {
     private final TeamMemberRepository memberRepository;
     private final ApiKeyRepository apiKeyRepository;
     private final KeycloakProperties props;
+    private final EntityManager entityManager;
 
     public KeycloakUserSyncService(UserRepository userRepository, TeamRepository teamRepository,
                                    TeamMemberRepository memberRepository, ApiKeyRepository apiKeyRepository,
-                                   KeycloakProperties props) {
+                                   KeycloakProperties props, EntityManager entityManager) {
         this.userRepository = userRepository;
         this.teamRepository = teamRepository;
         this.memberRepository = memberRepository;
         this.apiKeyRepository = apiKeyRepository;
         this.props = props;
+        this.entityManager = entityManager;
     }
 
     @Transactional(readOnly = true)
@@ -107,7 +110,7 @@ public class KeycloakUserSyncService {
 
     @Transactional
     public void deactivateUser(User user) {
-        user = userRepository.findByIdForUpdate(user.getId()).orElseThrow();
+        user = refreshLocked(userRepository.findByIdForUpdate(user.getId()).orElseThrow());
         user.setActive(false);
         user.setLastSyncedAt(Instant.now());
         userRepository.save(user);
@@ -119,12 +122,12 @@ public class KeycloakUserSyncService {
 
     private User findOrCreate(UUID keycloakId, KeycloakClaims claims) {
         Optional<User> byId = userRepository.findByKeycloakIdForUpdate(keycloakId);
-        if (byId.isPresent()) return byId.get();
+        if (byId.isPresent()) return refreshLocked(byId.get());
 
         if (claims.email() != null) {
             Optional<User> byEmail = userRepository.findByEmailForUpdate(claims.email());
             if (byEmail.isPresent()) {
-                User existing = byEmail.get();
+                User existing = refreshLocked(byEmail.get());
                 // Adopt an as-yet-unlinked row (seed/admin-created user signing in for the first time).
                 if (existing.getKeycloakId() == null && existing.isActive() && claims.verifiedEmail()) return existing;
                 if (existing.getKeycloakId() == null) {
@@ -146,6 +149,12 @@ public class KeycloakUserSyncService {
         // A matching name is no proof of identity: two people can share one, so an
         // unlinked account is adopted by email only.
         return new User();
+    }
+
+    private User refreshLocked(User user) {
+        // A locking query can return the instance cached by the handshake's earlier freshness check.
+        entityManager.refresh(user);
+        return user;
     }
 
     private String generateUniqueUsername(String prename, String name) {

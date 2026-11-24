@@ -2,9 +2,14 @@ package de.tum.cit.aet.logos.logoswebservice.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -15,6 +20,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.jdbc.Sql;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
 import de.tum.cit.aet.logos.logoswebservice.auth.KeycloakClaims;
@@ -33,6 +39,7 @@ import de.tum.cit.aet.logos.logoswebservice.identity.repository.UserRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.service.ApiKeyFactory;
 import de.tum.cit.aet.logos.logoswebservice.identity.service.KeycloakUserSyncService;
 import de.tum.cit.aet.logos.logoswebservice.identity.service.TeamService;
+import de.tum.cit.aet.logos.logoswebservice.identity.service.UserService;
 
 @SpringBootTest
 @Import(TestContainersConfig.class)
@@ -56,6 +63,7 @@ class KeycloakUserSyncServiceTest {
     @Autowired ApiKeyRepository apiKeyRepository;
     @Autowired ApiKeyFactory apiKeyFactory;
     @Autowired TeamService teamService;
+    @Autowired UserService userService;
     @Autowired JdbcTemplate jdbc;
     @Autowired PlatformTransactionManager txManager;
 
@@ -63,6 +71,26 @@ class KeycloakUserSyncServiceTest {
 
     private KeycloakClaims claims(String sub, String username) {
         return new KeycloakClaims(sub, username, "Pre", "Name", username + "@tum.de", true, Instant.now());
+    }
+
+    @Test
+    void concurrentIdentityRefreshReturnsAndPreservesTheCommittedRole() throws Exception {
+        var identity = claims(NEW_SUB, "synced");
+        int userId = syncService.syncFromClaims(identity).getId();
+        jdbc.update("UPDATE users SET role = 'logos_admin', last_synced_at = 'epoch' WHERE id = ?", userId);
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            Future<User> refresh = new TransactionTemplate(txManager).execute(tx -> {
+                int writerPid = jdbc.queryForObject("SELECT pg_backend_pid()", Integer.class);
+                userService.updateRole(userId, "app_developer").orElseThrow();
+                Future<User> pending = executor.submit(() -> syncService.syncIfStale(identity));
+                Awaitility.await().atMost(Duration.ofSeconds(10)).until(() -> jdbc.queryForObject(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ? = ANY(pg_blocking_pids(pid)))",
+                    Boolean.class, writerPid));
+                return pending;
+            });
+            assertThat(refresh.get(10, TimeUnit.SECONDS).getRole()).isEqualTo("app_developer");
+            assertThat(userRepository.findById(userId).orElseThrow().getRole()).isEqualTo("app_developer");
+        }
     }
 
     @Test
