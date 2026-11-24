@@ -339,6 +339,8 @@ export class NodeModel implements OnInit {
   /** A model with no measurement has no placement to show. */
   readonly measured = computed(() => this.result() !== null);
   readonly window = computed(() => kvWindowGb(this.result()));
+  /** The right column has something to show: a benchmark, or the stored placement next to the one being edited. */
+  readonly hasSideColumn = computed(() => !!this.insight()?.benchmark || (this.editing() && this.saved() !== null));
   readonly saved = computed<Placement | null>(() => {
     const s = this.settings();
     const kv = this.kvGb();

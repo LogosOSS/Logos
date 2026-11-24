@@ -260,7 +260,7 @@
       }
     }
 
-    <div class="grid" [class.grid--single]="!insight()?.benchmark && !editing()" [attr.inert]="saving() ? '' : null" [attr.aria-busy]="saving()">
+    <div class="grid" [class.grid--single]="!hasSideColumn()" [attr.inert]="saving() ? '' : null" [attr.aria-busy]="saving()">
       <div class="stack">
         @if (measured()) {
           <section class="card" aria-labelledby="cfg-title">
@@ -609,7 +609,7 @@
         }
       </div>
 
-      @if (insight()?.benchmark || editing()) {
+      @if (hasSideColumn()) {
         <div class="stack">
           @if (insight()?.benchmark; as b) {
             <section class="card" aria-labelledby="bm-title">

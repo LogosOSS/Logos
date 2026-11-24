@@ -1462,6 +1462,26 @@ describe('NodeModel', () => {
 
       expect(root.querySelector('[aria-labelledby="cur-title"]')).toBeNull();
     });
+
+    it('uses the full width while editing a model with neither a stored placement nor a benchmark', async () => {
+      service['getNodeInsights'].mockResolvedValue(insights([insight({ row: false, configured: false })]));
+      service['getNodeConfig'].mockResolvedValue({ ...config, entries: [] });
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      expect(root.querySelector('.grid')!.classList).toContain('grid--single');
+      expect(root.querySelectorAll('.grid > .stack').length).toBe(1);
+    });
+
+    it('keeps the right column while editing a model that has a stored placement', async () => {
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      expect(root.querySelector('.grid')!.classList).not.toContain('grid--single');
+      expect(root.querySelector('[aria-labelledby="cur-title"]')).not.toBeNull();
+    });
   });
 
   describe('what happens around a save', () => {
