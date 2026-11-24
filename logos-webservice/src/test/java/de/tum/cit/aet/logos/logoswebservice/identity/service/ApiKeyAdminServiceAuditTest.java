@@ -14,11 +14,15 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 import de.tum.cit.aet.logos.logoswebservice.audit.AuditLogService;
+import de.tum.cit.aet.logos.logoswebservice.identity.dto.CreateAppKeyRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.identity.dto.UpdateApiKeyRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.ApiKey;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.LogLevel;
@@ -27,7 +31,7 @@ import de.tum.cit.aet.logos.logoswebservice.identity.repository.TeamMemberReposi
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.TeamRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.UserRepository;
 
-/** Both log-level setters and the key update leave a record, and only for a real change. */
+/** Key creation and logging changes record settings without exposing key material. */
 class ApiKeyAdminServiceAuditTest {
 
     private NamedParameterJdbcTemplate jdbc;
@@ -46,6 +50,28 @@ class ApiKeyAdminServiceAuditTest {
         key.setLog(LogLevel.BILLING);
         key.setSettings("{\"cloud_rpm_limit\":10}");
         when(keys.findById(5)).thenReturn(Optional.of(key));
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = {"FULL", "BILLING"})
+    void keyCreationRecordsInitialLoggingLevelWithoutCredentials(String requestedLevel) {
+        when(keys.save(any(ApiKey.class))).thenAnswer(invocation -> {
+            ApiKey created = invocation.getArgument(0);
+            org.springframework.test.util.ReflectionTestUtils.setField(created, "id", 51);
+            return created;
+        });
+        service.createAppKey(3, new CreateAppKeyRequestDTO(
+            "new key", "application", "test", requestedLevel, null, null, null));
+
+        ArgumentCaptor<MapSqlParameterSource> params = ArgumentCaptor.forClass(MapSqlParameterSource.class);
+        verify(jdbc).update(anyString(), params.capture());
+        assertThat(params.getValue().getValue("action")).isEqualTo("api_key.created");
+        assertThat(params.getValue().getValue("targetType")).isEqualTo("api_key");
+        assertThat(params.getValue().getValue("targetId")).isEqualTo("51");
+        assertThat(params.getValue().getValue("teamId")).isEqualTo(3);
+        String expected = requestedLevel == null ? "BILLING" : requestedLevel;
+        assertThat(params.getValue().getValue("after")).isEqualTo("{\"log\":\"" + expected + "\"}");
     }
 
     @Test

@@ -127,6 +127,9 @@ public class ApiKeyAdminService {
         newKey.setIsActive(true);
         newKey.setUseCustomPermissions(useCustomPermissions);
         newKey = apiKeyRepository.save(newKey);
+        // Record the initial level without claiming that a default is user consent.
+        auditLog.record("api_key.created", "api_key", newKey.getId(), teamId,
+            Map.of(), Map.of("log", logName));
         return Map.of("result", "Application Key created",
                       "id", newKey.getId(),
                       "api_key", newKey.getKeyValue());
