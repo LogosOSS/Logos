@@ -234,6 +234,11 @@ export class ModelRequests implements OnInit {
     // An in-flight load will not clear the flag for the closed session
     // (its generation no longer matches), so the close does.
     this.licenseLoading.set(false);
+    // The stored license is bound to the open session too: drop it, so the
+    // exit animation renders an empty dialog instead of a stale one — and
+    // the body (guarded by the license, not the target) cannot read a
+    // cleared target while it renders.
+    this.license.set(null);
   }
 
   /**
@@ -245,7 +250,7 @@ export class ModelRequests implements OnInit {
     if (target) {
       this.openHuggingFacePage(target.name);
     }
-    this.licenseTarget.set(null);
+    this.closeLicenseDialog();
   }
 
   /**
@@ -261,7 +266,7 @@ export class ModelRequests implements OnInit {
     this.licenseError.set(null);
     try {
       await this.service.approveLicense(target.id);
-      this.licenseTarget.set(null);
+      this.closeLicenseDialog();
       this.notice.set(`License agreement for "${target.name}" accepted.`);
       await this.loadRequests();
     } catch (err: unknown) {

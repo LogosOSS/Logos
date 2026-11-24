@@ -594,6 +594,27 @@ describe('the license agreement column', () => {
     fx.destroy();
   });
 
+  it('points the acceptance wording to the model’s Hugging Face page', async () => {
+    const { fx } = await renderPage('logos_admin');
+    (rowOf(fx, 'openai/gpt-5').querySelector('.license-state') as HTMLButtonElement).click();
+    fx.detectChanges();
+    await tick();
+    fx.detectChanges();
+
+    const label = document.querySelector('.license-accept') as HTMLElement;
+    expect(label.textContent).toContain(
+      'The most current and complete version of the license text can be found on Hugging Face.',
+    );
+    // The Hugging Face mention is the link to the model's own page, opening
+    // in a new tab without the opener's access.
+    const link = label.querySelector('a') as HTMLAnchorElement;
+    expect(link.textContent).toBe('Hugging Face');
+    expect(link.href).toBe('https://huggingface.co/openai/gpt-5');
+    expect(link.target).toBe('_blank');
+    expect(link.rel).toBe('noopener noreferrer');
+    fx.destroy();
+  });
+
   it('offers no use policy section when the repository publishes none', async () => {
     const { fx } = await renderPage('logos_admin');
     (rowOf(fx, 'mistral/mistral-7b').querySelector('.license-state') as HTMLButtonElement).click();

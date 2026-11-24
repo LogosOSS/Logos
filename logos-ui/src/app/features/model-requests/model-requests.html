@@ -257,8 +257,16 @@
                 (change)="acceptChecked.set($any($event.target).checked)"
                 [disabled]="accepting()"
               />
-              I accept this model's license agreement@if (license()!.use_policy_text) { and use
-              policy}.
+              <span>
+                I accept this model's license agreement@if (license()!.use_policy_text) { and use
+                policy}. The most current and complete version of the license text can be found on
+                <a
+                  [href]="'https://huggingface.co/' + licenseTarget()!.name"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="hf-link"
+                >Hugging Face</a>.
+              </span>
             </label>
           }
         }

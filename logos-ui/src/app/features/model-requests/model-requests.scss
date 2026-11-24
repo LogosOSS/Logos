@@ -305,7 +305,9 @@ table {
   }
 }
 
-// The "I accept this model's license agreement." checkbox row.
+// The "I accept this model's license agreement." checkbox row. The text is a
+// single flex item (the span), so the Hugging Face link stays inside the
+// sentence instead of becoming a gap-separated flex item of its own.
 .license-accept {
   display: flex;
   align-items: center;
@@ -313,6 +315,11 @@ table {
   margin: 0;
   font-size: var(--font-size-md);
   cursor: pointer;
+
+  .hf-link {
+    color: rgb(var(--color-primary-500));
+    text-decoration: underline;
+  }
 }
 
 .empty {
