@@ -734,7 +734,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   readonly loading = signal(true);
   readonly loadError = signal(false);
 
-  readonly activeTab = signal<ModelErrorTab>('error_report');
+  readonly activeTab = signal<ModelErrorTab>('performance');
 
   private readonly expandedErrors = signal<ReadonlySet<string>>(new Set());
 
@@ -810,8 +810,16 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   });
   private readonly deployedConfiguration = viewChild(DeployedConfiguration);
   readonly deployedBenchmarkIds = computed(() => {
-    const measurement = this.deployedConfiguration()?.measurement();
-    return new Set(measurement ? [measurement.id] : []);
+    const run = this.deployedConfiguration()?.deployedRun();
+    return new Set(run ? [run.id] : []);
+  });
+  readonly timelineDeploymentNote = computed(() => {
+    const configuration = this.deployedConfiguration();
+    const live = configuration?.deployment();
+    if (!live?.available || live.maintenance || live.mixed_configuration || this.deployedBenchmarkIds().size) return null;
+    return configuration?.hasUnreportedBatchingLimit()
+      ? 'Live benchmark unverified · Batching limit not reported'
+      : 'Live benchmark unverified';
   });
   readonly performanceViews = [
     { id: 'results', label: 'Overview', icon: 'pi-chart-line' },
@@ -971,9 +979,9 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   // ==========================================================================
 
   readonly tabs: readonly ModelErrorTab[] = [
+    'performance',
     'error_report',
     'complete_logs',
-    'performance',
     'access',
     'prices',
   ];
@@ -1284,6 +1292,8 @@ export class ModelErrorReport implements OnInit, OnDestroy {
         this.activeTab.set('performance');
       } else if (tab !== null && this.tabs.includes(tab)) {
         this.activeTab.set(tab);
+      } else {
+        this.activeTab.set('performance');
       }
       if (modelChanged) {
         this.modelId.set(id);

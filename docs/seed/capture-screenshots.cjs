@@ -227,12 +227,15 @@ async function setNightly(page, enabled) {
   await tile.waitFor();
   if (await tile.getAttribute("aria-expanded") === "false") await tile.click();
   const worker = rotation.getByRole("region", { name: "Docs Local Worker", exact: true });
-  const toggle = worker.getByRole("button", { name: /nightly rotation…?$/ });
+  const toggle = worker.getByRole("button", { name: /^(Enable|Disable) nightly rotation$/ });
   const label = (await toggle.textContent()).trim();
   if (label.startsWith("Disable") === enabled) return;
   await toggle.and(page.locator("button:enabled")).waitFor();
   await toggle.evaluate(b => b.click());
-  if (!enabled) await button(page, "Disable nightly rotation").evaluate(b => b.click());
+  if (!enabled) {
+    const dialog = page.getByRole("dialog", { name: "Disable nightly rotation?", exact: true });
+    await button(dialog, "Disable nightly rotation").evaluate(b => b.click());
+  }
   await rotation.getByRole("button", { name: enabled ? /^Docs Local Worker Enabled\b/ : /^Docs Local Worker Disabled\b/ }).waitFor();
   await page.waitForTimeout(600);
 }
@@ -682,7 +685,7 @@ const SHOTS = [
     full: true,
     go: async (p, ids) => {
       await nightlyView(p, ids, true);
-      await p.getByRole("button", { name: "Disable nightly rotation…", exact: true }).first().click();
+      await button(p, "Disable nightly rotation").click();
       await p.waitForTimeout(800);
     },
     after: async (p) => {

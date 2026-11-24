@@ -34,7 +34,7 @@
         <button type="button" class="nightly__toggle" (click)="toggleNightly()" [disabled]="saving() || !!enableBlocker"
           [attr.aria-haspopup]="state()?.enabled ? 'dialog' : null"
           [attr.aria-describedby]="enableBlocker ? 'nightly-blocker-' + pairId : null">
-          {{ state()?.enabled ? 'Disable nightly rotation…' : 'Enable nightly rotation' }}
+          {{ state()?.enabled ? 'Disable nightly rotation' : 'Enable nightly rotation' }}
         </button>
       }
     </div>

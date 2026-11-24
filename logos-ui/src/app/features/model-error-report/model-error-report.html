@@ -603,7 +603,8 @@
             } @empty { <p>No local worker configurations are available for this model.</p> }
           </section>
             <app-benchmark-results id="performance-timeline" [runs]="overviewTimelineRuns()" [workerName]="overviewPair()?.provider_name ?? null"
-              [deployedBenchmarkIds]="deployedBenchmarkIds()" [showHistory]="false" />
+              [deployedBenchmarkIds]="deployedBenchmarkIds()" [lastAdoptionId]="deployedConfiguration()?.adoption()?.benchmark_id ?? null"
+              [deploymentNote]="timelineDeploymentNote()" [showHistory]="false" />
           </div>
 
           <div class="performance-results">

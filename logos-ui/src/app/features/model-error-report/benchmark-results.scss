@@ -98,6 +98,7 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
   &::before { content: ''; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--deployment-marker); }
   &:hover { text-decoration: underline; }
 }
+.timeline-deployment--historical { --deployment-marker: rgb(var(--color-typography-500)); }
 .timeline-axes { display: grid; grid-template-columns: max-content minmax(0, 1fr); }
 .timeline-ticks {
   display: grid; justify-items: end; align-items: end; position: relative;

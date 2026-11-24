@@ -258,9 +258,10 @@ describe('Nightly worker selection', () => {
 
     const ready = { worker_ready: true, enabled: true, status: 'scheduled', report: [], recovery_required: false,
       window: { start: '05:00', end: '08:00', benchmark_start_cutoff: '08:00', timezone: 'Europe/Berlin' } };
+    const incompleteTelemetry = { status: 'active', available: true, maintenance: false, configuration: { max_num_seqs: 5 } };
     const statuses = new Map<number, NightlyStatus>([
       [31, ready],
-      [32, { ...ready, enabled: false, status: 'disabled' }],
+      [32, { ...ready, enabled: false, status: 'disabled', deployment: incompleteTelemetry }],
       [33, { ...ready, worker_ready: false, status: 'unavailable',
         deployment: { status: 'offline' } }],
     ]);
@@ -328,6 +329,7 @@ describe('Nightly worker selection', () => {
     const root: HTMLElement = fixture.nativeElement;
     const workers = root.querySelectorAll<HTMLButtonElement>('.overview-worker-tabs button');
     const deployed = () => root.querySelector('#performance-deployment app-deployed-configuration');
+    const deploymentNote = () => root.querySelector('#performance-timeline figcaption [role="status"]')?.textContent?.trim();
     const timelineRunIds = () => Array.from(root.querySelectorAll<HTMLAnchorElement>('#performance-timeline .timeline-run'),
       link => new URLSearchParams(link.search).get('benchmark'));
 
@@ -335,6 +337,8 @@ describe('Nightly worker selection', () => {
     expect(workers[1].getAttribute('aria-pressed')).toBe('true');
     expect(deployed()?.textContent).toContain('Worker 32');
     expect(timelineRunIds()).toEqual(['1', '2']);
+    expect(deploymentNote()).toBe('Live benchmark unverified · Batching limit not reported');
+    expect(root.querySelector('#performance-timeline .timeline-run--deployed')).toBeNull();
 
     workers[2].click();
     fixture.detectChanges();
@@ -342,6 +346,7 @@ describe('Nightly worker selection', () => {
     expect(workers[2].getAttribute('aria-pressed')).toBe('true');
     expect(deployed()?.textContent).toContain('Worker 33');
     expect(timelineRunIds()).toEqual(['3', '4']);
+    expect(deploymentNote()).toBeUndefined();
     http.verify();
   });
 });

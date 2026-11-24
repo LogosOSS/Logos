@@ -28,7 +28,7 @@ for screenshots of the schedule controls.
 6. Check for **Enabled** and a green dot beside the worker.
 
 The schedule persists after a page reload or browser close.
-To remove the pair from rotation, open its tile and select **Disable nightly rotation…**.
+To remove the pair from rotation, open its tile and select **Disable nightly rotation**.
 Confirm with **Disable nightly rotation**.
 Activation requires
 an updated, connected worker. Run admission also checks the lane and the other
@@ -268,6 +268,7 @@ Trials show their change from the baseline of the same round, if available.
 Slower runs and excluded trials remain visible. Select a run to open its configuration and result in a dialog.
 The collapsed timeline shows up to six runs, including the current deployment when measured.
 A blue ring marks its benchmark. Select **Deployed** to find it or **Show all** to see the full timeline.
+If the live settings cannot be matched, select **Last adoption** to find the last confirmed adoption in its timeline.
 The timeline separates workloads and test settings. Measurements can span worker releases.
 Expand **What does Logos check?** for the nightly adoption checks and examples of the request latency limit.
 Expand **Currently deployed → Configuration & selection details** to inspect **Serving settings** and **Run selection**.

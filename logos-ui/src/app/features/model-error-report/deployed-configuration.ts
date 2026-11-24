@@ -108,6 +108,12 @@ export class DeployedConfiguration implements OnDestroy {
     const deployment = this.deployment();
     return deployment ? deployedMeasurement(deployment, this.runs().filter(run => run.model_provider_id === this.pairId())) : null;
   });
+  readonly deployedRun = computed(() => {
+    const adopted = this.adoptionRun();
+    if (!adopted || this.hasUnreportedBatchingLimit()) return this.measurement();
+    // The ring identifies the applied settings. Live throughput still requires the same measurement series.
+    return deployedMeasurement(this.deployment(), [adopted], false) ?? this.measurement();
+  });
   readonly historicalMeasurement = computed(() => this.measurement() ?? deployedMeasurement(this.deployment(),
     this.runs().filter(run => run.model_provider_id === this.pairId()), false));
   readonly result = computed(() => this.historicalMeasurement() ? deployedResult(this.historicalMeasurement()!, this.runs()) : null);

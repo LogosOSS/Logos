@@ -205,7 +205,7 @@ The bar chart shows p50 and p95 separately for each metric. Do not add these per
 
 ### Model Benchmarks
 
-Open the model's **Performance** tab to configure and start a benchmark.
+Model details open on **Performance**, where you can configure and start a benchmark.
 The orchestrator reserves the selected model lanes during a worker benchmark.
 The status card separates the provider, request progress and completed runs.
 **Requests started** does not mean that all responses are complete.
@@ -255,6 +255,7 @@ It includes the current deployment when a matching measurement is available.
 Read the runs from left to right in completion order.
 Each dot shows output tokens per second (tok/s) on the vertical scale. An open circle marks a baseline.
 A blue ring marks the benchmark for the active configuration. Select **Deployed** to find it in a long timeline.
+Select **Last adoption** when available to find the last confirmed adoption if the live settings cannot be matched.
 Each trial shows its change from the baseline of its round, if available.
 Select a run to open the benchmark dialog with its settings and any reason for exclusion.
 Select **Show all** to see older runs.
@@ -369,7 +370,7 @@ See [deployment-specific request sources](../admin/nightly-benchmarks.md#deploym
 To remove the pair from the nightly rotation:
 
 1. Under **Nightly rotation**, select the tile for the worker.
-2. Select **Disable nightly rotation…**.
+2. Select **Disable nightly rotation**.
 3. Read the dialog and select **Disable nightly rotation**.
 4. Check for **Disabled** and a gray dot on the worker tile.
 

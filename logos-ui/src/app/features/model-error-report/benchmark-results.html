@@ -42,8 +42,13 @@
         <figcaption>
           <div>Output throughput <span>(tok/s)</span></div>
           @if (deployedPoint(); as deployed) {
-            <button type="button" class="timeline-deployment" (click)="focusDeployedBenchmark()"
+            <button type="button" class="timeline-deployment" (click)="focusTimelineBenchmark(deployed.run.id)"
               [attr.aria-label]="'Show currently deployed benchmark #' + deployed.run.id">Deployed · #{{ deployed.run.id }}</button>
+          } @else if (lastAdoptionPoint(); as adopted) {
+            <button type="button" class="timeline-deployment timeline-deployment--historical" (click)="focusTimelineBenchmark(adopted.run.id)"
+              [attr.title]="deploymentNote()" [attr.aria-label]="'Show last confirmed adoption, benchmark #' + adopted.run.id">Last adoption · #{{ adopted.run.id }}</button>
+          } @else if (deploymentNote(); as note) {
+            <span role="status">{{ note }}</span>
           }
         </figcaption>
         <div class="timeline-axes">
@@ -62,9 +67,11 @@
                   @let rate = point.rate | number:'1.1-1';
                   @let description = kind + ' #' + point.run.id + ' · ' + rate + ' tok/s · ' + (point.time | date:'dd MMM yyyy, HH:mm') +
                     (point.isBaseline ? '' : point.baselineId && change ? ' · ' + change + ' vs. baseline #' + point.baselineId : ' · No linked baseline') +
-                    (point.selectionNote ? ' · Excluded from adoption' : '') + (isDeployed ? ' · Currently deployed' : '');
+                    (point.selectionNote ? ' · Excluded from adoption' : '') +
+                    (isDeployed ? ' · Currently deployed' : point.run.id === lastAdoptionId() ? ' · Last confirmed adoption' : '');
                   <li><a class="timeline-run" [class.timeline-run--baseline]="point.isBaseline"
                     [class.timeline-run--deployed]="isDeployed" [attr.aria-label]="description" [title]="description"
+                    [attr.data-benchmark-id]="point.run.id"
                     [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }"
                     queryParamsHandling="merge" [preserveFragment]="true" aria-haspopup="dialog">
                     <span class="timeline-measure" aria-hidden="true" [attr.data-rate]="rate">

@@ -33,12 +33,17 @@ describe('Benchmark runner', () => {
 
   it('keeps the current view for a benchmark link and resets the view for a different model', async () => {
     const params = new BehaviorSubject(convertToParamMap({ id: '1' }));
-    const query = new BehaviorSubject(convertToParamMap({ tab: 'access' }));
+    const query = new BehaviorSubject(convertToParamMap({}));
     Object.assign(TestBed.inject(ActivatedRoute), { paramMap: params, queryParamMap: query });
     component.modelId.set(null);
     const fetch = vi.spyOn(component, 'fetchModel').mockResolvedValue();
     await component.ngOnInit();
+    expect(component.activeTab()).toBe('performance');
+    expect(component.visibleTabs()).toEqual(['performance', 'error_report', 'complete_logs', 'access', 'prices']);
+    query.next(convertToParamMap({ tab: 'access' }));
     expect(component.activeTab()).toBe('access');
+    query.next(convertToParamMap({}));
+    expect(component.activeTab()).toBe('performance');
     query.next(convertToParamMap({ tab: 'delays' }));
     expect(component.activeTab()).toBe('performance');
     expect(component.performanceView()).toBe('measurements');

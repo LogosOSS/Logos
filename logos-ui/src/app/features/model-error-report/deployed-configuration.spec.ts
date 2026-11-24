@@ -35,6 +35,7 @@ describe('Deployment status on Overview', () => {
 
     expect(limits()).toEqual(['Max sequences 4', 'Max batched tokens Not reported']);
     expect(fixture.componentInstance.measurement()).toBeNull();
+    expect(fixture.componentInstance.deployedRun()).toBeNull();
     const lastAdoption = content.querySelector('section[aria-label="Last confirmed adoption"]')!;
     expect(lastAdoption.textContent).toContain('Last confirmed adoption');
     expect(lastAdoption.textContent).toMatch(/28\.0\s*→.*29\.0 tok\/s/);
@@ -53,6 +54,18 @@ describe('Deployment status on Overview', () => {
     expect(limits()).toEqual(['Max sequences 4', 'Max batched tokens 2048']);
     expect(fixture.componentInstance.measurement()?.id).toBe(1);
     expect(content.querySelector('section[aria-label="Last confirmed adoption"]')).toBeNull();
+
+    fixture.componentRef.setInput('runs', [run(1), run(2)]);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.measurement()?.id).toBe(2);
+    expect(fixture.componentInstance.deployedRun()?.id).toBe(1);
+
+    fixture.componentInstance.state.update(state => ({
+      ...state!, deployment: { ...deployment, series_key: 'new-workload' },
+    }));
+    fixture.detectChanges();
+    expect(fixture.componentInstance.measurement()).toBeNull();
+    expect(fixture.componentInstance.deployedRun()?.id).toBe(1);
     fixture.destroy();
     http.verify();
   });

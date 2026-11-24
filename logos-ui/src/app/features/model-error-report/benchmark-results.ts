@@ -25,6 +25,8 @@ export class BenchmarkResults {
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
   readonly workerName = input<string | null>(null);
   readonly deployedBenchmarkIds = input<ReadonlySet<number>>(new Set<number>());
+  readonly lastAdoptionId = input<number | null>(null);
+  readonly deploymentNote = input<string | null>(null);
   readonly selectedRunId = input<number | null>(null);
   readonly loading = input(false);
   readonly loadError = input(false);
@@ -46,11 +48,16 @@ export class BenchmarkResults {
     const charts = this.progress();
     return charts.find(group => group.key === this.progressKey())
       ?? charts.find(group => this.deploymentGroups().has(group.key))
+      ?? charts.find(group => group.runIds.includes(this.lastAdoptionId() ?? -1))
       ?? charts[0];
   });
   readonly deployedPoint = computed(() => {
     const chart = this.activeProgress();
     return chart ? this.deploymentGroups().get(chart.key) : undefined;
+  });
+  readonly lastAdoptionPoint = computed(() => {
+    const id = this.lastAdoptionId();
+    return this.activeProgress()?.points.find(point => point.run.id === id);
   });
   readonly timelineLimit = 6;
   readonly expandedTimeline = signal<string | null>(null);
@@ -59,8 +66,8 @@ export class BenchmarkResults {
     if (!chart) return [];
     if (this.expandedTimeline() === chart.key) return chart.points;
     const latest = chart.points.slice(-this.timelineLimit);
-    const deployed = this.deployedPoint();
-    return deployed && !latest.includes(deployed) ? [deployed, ...latest.slice(1)] : latest;
+    const highlighted = this.deployedPoint() ?? this.lastAdoptionPoint();
+    return highlighted && !latest.includes(highlighted) ? [highlighted, ...latest.slice(1)] : latest;
   });
   readonly showAll = signal(false);
   readonly sort = signal<{ key: ResultColumn; direction: 'ascending' | 'descending' } | null>(null);
@@ -102,8 +109,8 @@ export class BenchmarkResults {
       : { key, direction: 'ascending' });
   }
 
-  focusDeployedBenchmark(): void {
-    const link = this.timelineScroll()?.nativeElement.querySelector<HTMLAnchorElement>('.timeline-run--deployed');
+  focusTimelineBenchmark(id: number): void {
+    const link = this.timelineScroll()?.nativeElement.querySelector<HTMLAnchorElement>(`.timeline-run[data-benchmark-id="${id}"]`);
     link?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     link?.focus({ preventScroll: true });
   }

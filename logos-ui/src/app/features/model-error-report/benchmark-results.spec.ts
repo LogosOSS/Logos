@@ -378,6 +378,16 @@ describe('Nightly progress', () => {
     fixture.detectChanges();
     expect(marked()).toBeNull();
     expect(timeline.querySelector('.timeline-deployment')).toBeNull();
+
+    fixture.componentRef.setInput('lastAdoptionId', 8);
+    timeline.querySelector<HTMLButtonElement>('.timeline-toggle')?.click();
+    fixture.detectChanges();
+    const adoption = timeline.querySelector<HTMLButtonElement>('.timeline-deployment--historical')!;
+    expect(adoption.textContent).toContain('Last adoption · #8');
+    expect(timeline.querySelectorAll('.timeline-run')).toHaveLength(6);
+    expect(marked()).toBeNull();
+    adoption.click();
+    expect(document.activeElement?.getAttribute('aria-label')).toContain('Last confirmed adoption');
   });
 
   it('defaults to a deployment group and follows a different worker or workload selection', () => {
