@@ -23,7 +23,7 @@ RUN --network=none rm -rf target \
 # Keep the content-addressed npm cache so npm ci can validate each session's
 # actual lockfile offline; changed dependency versions fail instead of using
 # node_modules from a different revision.
-FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS ui-verification
+FROM node:22-bookworm-slim@sha256:66cb8ef75184df13dc0dcf866330488996b485d404db60555756865300ced4a5 AS ui-verification
 WORKDIR /build/logos-ui
 COPY logos-ui/package.json logos-ui/package-lock.json ./
 RUN npm ci --cache /opt/logos-verification/npm-cache --no-audit --no-fund
@@ -36,7 +36,7 @@ RUN --network=none npm ci --offline --cache /opt/logos-verification/npm-cache --
   && node node_modules/@angular/cli/bin/ng.js build --configuration production \
   && node node_modules/@angular/cli/bin/ng.js test --watch=false
 
-FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
+FROM node:22-bookworm-slim@sha256:66cb8ef75184df13dc0dcf866330488996b485d404db60555756865300ced4a5
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
