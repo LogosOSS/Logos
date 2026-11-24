@@ -594,13 +594,11 @@ answered twice. Only the *newest* changes-requested review of a pull request
 counts as work; the older ones were answered by it. A session that failed is
 re-queued by a person, who can see why it failed.
 
-**Bounded.** Self-queued sessions may *run* up to the parallel ceiling less a
-fifth of it, at least one place, kept for people — triggered sessions carry
-higher priorities and would otherwise win every slot. Keeping half the fleet
-idle for a session nobody has asked for is the wrong trade on a platform
-whose point is spending what would go to waste. What does not fit runs
-later: it is queued, in priority order, and visible as work waiting rather
-than left in the repository where nobody sees it. Bots are ignored:
+**Bounded.** Self-queued sessions can use all available session slots. When
+eligible manual work is queued, it is admitted first as capacity becomes
+available, without interrupting running work. Model headroom, host RAM,
+and workspace and branch locks still apply. What does not fit stays queued
+and visible. Bots are ignored:
 their findings reach the agent through the next review, not as a session per
 note. Workspaces are created on demand up to the ceiling, since a session the
 runner queued has nobody to prepare a working copy for it.
@@ -683,7 +681,7 @@ an `Authorization` header, and the token is what authorises the read.
   resets. One went that way: ninety minutes and thirty-eight million tokens,
   killed at the deadline with nothing to show. What this runner protects is
   capacity, and capacity is protected by the things that measure it — the
-  pause, the parallel ceiling, the trigger quota — none of which care how
+  pause and the parallel ceiling — neither of which care how
   long a session has been at it. A session that really is stuck is visible
   on the page and can be cancelled there.
 - **Yielding does not cost the work.** Freezing a session and cutting it off

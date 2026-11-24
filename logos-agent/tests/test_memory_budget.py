@@ -169,14 +169,11 @@ class TestMemoryAdmission:
         assert docker_engine._memory_bytes(1024) == 1024 * 1024 * 1024
 
 
-class TestCeilingOfOne:
-    def test_the_automation_may_take_the_only_place_while_no_person_waits(self):
-        from app import triggers
+@pytest.mark.parametrize("ceiling", [0, 1, 2, 5])
+def test_automation_can_use_the_entire_session_ceiling(ceiling):
+    from app import triggers
 
-        assert triggers.max_active_sessions(1) == 1
-        assert triggers.max_active_sessions(1, person_waiting=True) == 0
-        assert triggers.max_active_sessions(0) == 0
-        assert triggers.max_active_sessions(5) == 4
+    assert triggers.max_active_sessions(ceiling) == ceiling
 
 
 class TestMemoryAfterRestart:
