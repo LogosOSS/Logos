@@ -1,5 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.identity.sync;
 
+import java.time.Instant;
 import java.util.Map;
 
 import org.slf4j.Logger;
@@ -33,6 +34,7 @@ public class KeycloakDirectorySyncJob implements KeycloakDirectorySync {
     @Override
     @Scheduled(cron = "${logos.auth.sync.cron:0 0 0 * * *}")
     public void syncAll() {
+        Instant observedAt = Instant.now();
         Map<String, Map<String, Object>> keycloakUsers;
         try {
             keycloakUsers = adminClient.listUsersById();
@@ -56,7 +58,7 @@ public class KeycloakDirectorySyncJob implements KeycloakDirectorySync {
                     rep.get("lastName") instanceof String s ? s : "",
                     rep.get("email") instanceof String s ? s : null,
                     Boolean.TRUE.equals(rep.get("emailVerified")),
-                    null));
+                    observedAt));
             } catch (Exception e) {
                 log.warn("Keycloak directory sync failed for user {}: {}", user.getId(), e.getMessage());
             }

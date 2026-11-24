@@ -62,7 +62,22 @@ class KeycloakUserSyncServiceTest {
     private static final String NEW_SUB = "33333333-3333-3333-3333-333333333333";
 
     private KeycloakClaims claims(String sub, String username) {
-        return new KeycloakClaims(sub, username, "Pre", "Name", username + "@tum.de", true, null);
+        return new KeycloakClaims(sub, username, "Pre", "Name", username + "@tum.de", true, Instant.now());
+    }
+
+    @Test
+    void anOlderIdentityCannotReactivateAnAccountAfterTheDebounceExpires() {
+        User member = syncService.syncFromClaims(claims(NEW_SUB, "synced"));
+        syncService.deactivateUser(member);
+        member = userRepository.findById(member.getId()).orElseThrow();
+        Instant deactivated = Instant.now().minusSeconds(3600);
+        member.setLastSyncedAt(deactivated);
+        userRepository.save(member);
+        KeycloakClaims stale = new KeycloakClaims(NEW_SUB, "synced", "Pre", "Name", "synced@tum.de", true,
+            deactivated.minusSeconds(60));
+        assertThat(syncService.syncIfStale(stale).isActive()).isFalse();
+        assertThat(syncService.syncFromClaims(stale).isActive()).isFalse();
+        assertThat(syncService.syncFromClaims(claims(NEW_SUB, "synced")).isActive()).isTrue();
     }
 
     @Test

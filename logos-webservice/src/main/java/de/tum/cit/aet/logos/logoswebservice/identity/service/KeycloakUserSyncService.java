@@ -46,15 +46,15 @@ public class KeycloakUserSyncService {
     public Optional<User> findIfFresh(KeycloakClaims claims) {
         Instant cutoff = Instant.now().minus(Duration.ofMinutes(props.syncDebounceMinutes()));
         return userRepository.findByKeycloakId(UUID.fromString(claims.keycloakId()))
-            .filter(user -> {
-                if (user.getLastSyncedAt() == null || !user.getLastSyncedAt().isAfter(cutoff)) {
-                    return false;
-                }
-                if (!user.isActive()) {
-                    return claims.issuedAt() != null && claims.issuedAt().isBefore(user.getLastSyncedAt());
-                }
-                return true;
-            });
+            .filter(user -> user.isActive()
+                ? user.getLastSyncedAt() != null && user.getLastSyncedAt().isAfter(cutoff)
+                : !canReactivate(user, claims));
+    }
+
+    private static boolean canReactivate(User user, KeycloakClaims claims) {
+        // A signed token or directory observation must postdate the account deactivation.
+        return claims.observedAt() != null
+            && (user.getLastSyncedAt() == null || claims.observedAt().isAfter(user.getLastSyncedAt()));
     }
 
     @Transactional
@@ -70,6 +70,7 @@ public class KeycloakUserSyncService {
 
         boolean isNew = user.getId() == null;
         boolean wasInactive = !isNew && !user.isActive();
+        if (wasInactive && !canReactivate(user, claims)) return user;
 
         user.setKeycloakId(keycloakId);
         if (isNew) {

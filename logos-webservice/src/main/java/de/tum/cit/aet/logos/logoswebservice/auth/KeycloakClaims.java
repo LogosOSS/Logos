@@ -9,5 +9,5 @@ public record KeycloakClaims(
     String name,
     String email,
     boolean verifiedEmail,
-    Instant issuedAt
+    Instant observedAt
 ) {}
