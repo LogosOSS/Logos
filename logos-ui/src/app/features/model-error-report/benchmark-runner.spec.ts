@@ -31,7 +31,7 @@ describe('Benchmark runner', () => {
   });
   afterEach(() => { component.ngOnDestroy(); vi.restoreAllMocks(); });
 
-  it('opens benchmark links when only query parameters change and when another model reuses the route', async () => {
+  it('keeps the current view for a benchmark link and resets the view for a different model', async () => {
     const params = new BehaviorSubject(convertToParamMap({ id: '1' }));
     const query = new BehaviorSubject(convertToParamMap({ tab: 'access' }));
     Object.assign(TestBed.inject(ActivatedRoute), { paramMap: params, queryParamMap: query });
@@ -46,9 +46,10 @@ describe('Benchmark runner', () => {
     expect(component.activeTab()).toBe('performance');
     query.next(convertToParamMap({ tab: 'performance', benchmark: '115' }));
     expect(component.linkedBenchmarkId()).toBe(115);
-    expect(component.performanceView()).toBe('results');
+    expect(component.performanceView()).toBe('measurements');
     expect(component.activeTab()).toBe('performance');
     params.next(convertToParamMap({ id: '2' }));
+    expect(component.performanceView()).toBe('results');
     expect(fetch.mock.calls.map(call => call[0])).toEqual([1, 2]);
     component.ngOnDestroy();
     query.next(convertToParamMap({ benchmark: '124' }));

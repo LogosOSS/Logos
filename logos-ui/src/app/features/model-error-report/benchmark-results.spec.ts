@@ -1,9 +1,17 @@
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
-beforeEach(() => TestBed.configureTestingModule({ providers: [provideRouter([])] }));
-import { BenchmarkResults } from './benchmark-results';
+import { NavigationEnd, Router, provideRouter } from '@angular/router';
+import { RouterTestingHarness } from '@angular/router/testing';
+import { filter, firstValueFrom } from 'rxjs';
+import { ModelManagementService } from '../../core/services/model-management.service';
+import { Model } from '../../shared/models/model.model';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { benchmarkProgress, recordConfiguration } from './benchmark-progress';
+import { BenchmarkResults } from './benchmark-results';
+import { ModelErrorReport } from './model-error-report';
+
+beforeEach(() => TestBed.configureTestingModule({ providers: [provideRouter([])] }));
 
 function run(id: number, rate: number, baseline?: number, pair = 1): ModelProviderBenchmark {
   return { id, model_provider_id: pair, model_id: 1, model_name: 'Model', provider_id: pair,
@@ -55,22 +63,31 @@ describe('Benchmark result baseline', () => {
     expect(component.visibleRows().map(row => row.run.id)).toEqual([1, 3, 2]);
   });
 
-  it('reveals an older linked run together with its results and parameter changes', async () => {
+  it('shows the linked run in a dialog without expanding history or adding a table row', async () => {
     const fixture = TestBed.createComponent(BenchmarkResults);
     const baseline = run(1, 40, 1), selected = run(2, 50, 1);
     fixture.componentRef.setInput('runs', [baseline, selected, ...Array.from({ length: 8 }, (_, i) => run(i + 3, 20))]);
     fixture.componentRef.setInput('selectedRunId', 2);
     fixture.detectChanges();
     await fixture.whenStable();
-    const result = fixture.nativeElement.querySelector('.selected-result');
-    expect(document.activeElement).toBe(result);
-    expect(result.textContent).toContain('Benchmark #2');
-    expect(result.textContent).toContain('Sequences: 4 → 8');
-    expect(result.textContent).toContain('+25.0%');
-    expect(fixture.nativeElement.querySelector('.run-history').open).toBe(true);
-    expect(fixture.nativeElement.querySelectorAll('.selected-run')).toHaveLength(1);
-    expect(fixture.nativeElement.querySelectorAll('tbody tr:not(.dataset-heading)')).toHaveLength(6);
-    expect(fixture.componentInstance.showAll()).toBe(false);
+    const result = document.querySelector('[role="dialog"]');
+    expect(result?.textContent).toContain('Benchmark #2');
+    expect(result?.textContent).toContain('Sequences: 4 → 8');
+    expect(result?.textContent).toContain('+25.0%');
+    expect(fixture.nativeElement.querySelector('.run-history').open).toBe(false);
+    expect(fixture.nativeElement.querySelectorAll('tbody tr:not(.dataset-heading)')).toHaveLength(5);
+  });
+
+  it('keeps a dialog open with an explanation if the selected benchmark disappears', async () => {
+    const fixture = TestBed.createComponent(BenchmarkResults);
+    fixture.componentRef.setInput('runs', [run(1, 40)]);
+    fixture.componentRef.setInput('selectedRunId', 1);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    fixture.componentRef.setInput('runs', []);
+    fixture.detectChanges();
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('This benchmark is no longer available.');
   });
   it('starts collapsed and preserves the selected order when reopened', () => {
     const fixture = TestBed.createComponent(BenchmarkResults);
@@ -171,6 +188,87 @@ function measured(id: number, rate: number, baseline: number, day: number, concu
   };
   return result;
 }
+
+describe('Benchmark detail navigation', () => {
+  it('opens direct links and preserves the worker, timeline, history and other URL parameters on close', async () => {
+    const resultUrl = '/models/1/details?tab=performance&view=fixtures';
+    TestBed.configureTestingModule({ providers: [
+      provideRouter([{ path: 'models/:id/details', component: ModelErrorReport }]),
+      provideHttpClient(),
+      provideHttpClientTesting(),
+      { provide: ModelManagementService, useValue: {
+        getBenchmarkWorkerLimits: async () => ({ gpu_count: 1, current: {} }),
+        getBenchmarkWorkloads: async () => [],
+        getBenchmarkDatasetMetadata: async () => ({ dataset: 'openai/gsm8k', subset: 'main', split: 'test',
+          splits: [{ subset: 'main', split: 'test' }], text_columns: ['question'] }),
+      } },
+    ] });
+    const fetchModel = vi.spyOn(ModelErrorReport.prototype, 'fetchModel').mockImplementation(async function(this: ModelErrorReport) {
+      this.model.set({ id: 1, name: 'Model' } as Model);
+      this.performance.set([
+        measured(1, 40, 1, 21), measured(2, 50, 1, 22),
+        ...[measured(3, 80, 3, 21), measured(4, 90, 3, 22)]
+          .map(row => ({ ...row, model_provider_id: 2, provider_id: 2, provider_name: 'Worker 2' })),
+      ]);
+      this.benchmarkPairs.set([1, 2].map(id => ({
+        model_provider_id: id, provider_id: id, provider_name: `Worker ${id}`, provider_type: 'logosnode',
+        model_id: 1, model_name: 'Model', endpoint_configured: true, authentication_configured: false,
+      })));
+      this.benchmarkAvailability.set(new Map([[1, 'online'], [2, 'online']]));
+      this.loading.set(false);
+    });
+    const harness = await RouterTestingHarness.create(`${resultUrl}&benchmark=4#results`);
+    fetchModel.mockRestore();
+    const http = TestBed.inject(HttpTestingController);
+    for (const request of http.match('/api/logosdb/model_benchmarks/nightly/status')) {
+      request.flush({ enabled: false, status: 'disabled', recovery_required: false });
+    }
+    http.expectOne('/api/logosdb/request_latency_stats').flush({ range: { start: '', end: '' }, rows: [] });
+    await harness.fixture.whenStable();
+    const router = TestBed.inject(Router);
+    async function navigateWith(action: () => void) {
+      const navigation = firstValueFrom(router.events.pipe(filter(event => event instanceof NavigationEnd)));
+      action();
+      await navigation;
+      harness.detectChanges();
+      await harness.fixture.whenStable();
+    }
+
+    const view = harness.routeNativeElement!;
+    const dialog = () => document.querySelector('[role="dialog"]');
+    const selectedWorker = () => view.querySelector('.overview-worker-tabs [aria-pressed="true"]')?.textContent?.trim();
+    const history = view.querySelector<HTMLDetailsElement>('.run-history')!;
+    const timeline = view.querySelector<HTMLElement>('.timeline-scroll')!;
+    expect(dialog()?.textContent).toContain('Benchmark #4');
+    expect(selectedWorker()).toBe('Worker 2');
+    expect(history.open).toBe(false);
+
+    const dialogClose = dialog()!.querySelector('button')!;
+    await navigateWith(() => dialogClose.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(dialog()).toBeNull();
+    expect(router.url).toBe(`${resultUrl}#results`);
+    expect(selectedWorker()).toBe('Worker 2');
+
+    history.open = true;
+    timeline.scrollLeft = 40;
+    const historyLink = history.querySelector<HTMLAnchorElement>('a[href*="benchmark=2"]')!;
+    historyLink.focus();
+    await navigateWith(() => historyLink.click());
+    expect(dialog()?.textContent).toContain('Benchmark #2');
+    expect(router.url).toBe(`${resultUrl}&benchmark=2#results`);
+    expect(selectedWorker()).toBe('Worker 2');
+    expect(history.open).toBe(true);
+    expect(timeline.scrollLeft).toBe(40);
+
+    const closeButton = Array.from(dialog()!.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Close')!;
+    await navigateWith(() => closeButton.click());
+    expect(dialog()).toBeNull();
+    expect(router.url).toBe(`${resultUrl}#results`);
+    expect(history.open).toBe(true);
+    expect(document.activeElement).toBe(historyLink);
+    http.verify();
+  });
+});
 
 describe('Nightly progress', () => {
   it('keeps slower runs and compares each measurement with its own round baseline', () => {

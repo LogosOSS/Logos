@@ -1,7 +1,8 @@
-import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, effect, ElementRef, input, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, ElementRef, input, output, signal, viewChild } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { ModelProviderBenchmark } from '../../shared/models/provider.model';
+import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
 import { benchmarkConfigurationItems, benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
 import { comparisonValue } from './benchmark-comparison';
 import { benchmarkProgress, recordConfiguration } from './benchmark-progress';
@@ -13,7 +14,7 @@ type ResultColumn = 'runId' | 'measuredFrom' | 'before' | 'after' | 'delta';
 @Component({
   selector: 'app-benchmark-results',
   standalone: true,
-  imports: [DatePipe, DecimalPipe, RouterLink],
+  imports: [DatePipe, DecimalPipe, ModalFormComponent, RouterLink],
   templateUrl: './benchmark-results.html',
   styleUrl: './benchmark-results.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -25,12 +26,13 @@ export class BenchmarkResults {
   readonly workerName = input<string | null>(null);
   readonly deployedBenchmarkIds = input<ReadonlySet<number>>(new Set<number>());
   readonly selectedRunId = input<number | null>(null);
+  readonly loading = input(false);
+  readonly loadError = input(false);
+  readonly closeSelectedRun = output<void>();
   readonly showProgress = input(true);
   readonly showHistory = input(true);
   readonly selectedRow = computed(() => this.rows().find(row => row.run.id === this.selectedRunId()) ?? null);
-  private readonly selectedResult = viewChild<ElementRef<HTMLElement>>('selectedResult');
   private readonly timelineScroll = viewChild<ElementRef<HTMLElement>>('timelineScroll');
-  private focusedRunId: number | null = null;
   readonly progress = computed(() => benchmarkProgress(this.runs()));
   readonly progressKey = signal('');
   readonly deploymentGroups = computed(() => {
@@ -41,10 +43,8 @@ export class BenchmarkResults {
     }));
   });
   readonly activeProgress = computed(() => {
-    const selected = this.selectedRunId();
     const charts = this.progress();
     return charts.find(group => group.key === this.progressKey())
-      ?? charts.find(group => selected !== null && group.runIds.includes(selected))
       ?? charts.find(group => this.deploymentGroups().has(group.key))
       ?? charts[0];
   });
@@ -91,26 +91,10 @@ export class BenchmarkResults {
       groups.get(workload?.id ? `requests:${workload.id}` : row.run.dataset)!.rows.push(row);
     }
     return [...groups.values()].map(group => ({ ...group,
-      visible: this.showAll() ? group.rows : group.rows.filter((row, index) => index < 5 || row.run.id === this.selectedRunId()) }));
+      visible: this.showAll() ? group.rows : group.rows.slice(0, 5) }));
   });
   readonly visibleRows = computed(() => this.datasetGroups().flatMap(group => group.visible));
   readonly hasMore = computed(() => this.datasetGroups().some(group => group.rows.length > 5));
-
-  constructor() {
-    effect(() => {
-      if (this.selectedRunId() !== null) this.progressKey.set('');
-    });
-    afterRenderEffect(() => {
-      const element = this.selectedResult()?.nativeElement;
-      const id = this.selectedRunId();
-      if (id === null) this.focusedRunId = null;
-      if (element && id !== this.focusedRunId) {
-        element.scrollIntoView?.({ block: 'center' });
-        element.focus({ preventScroll: true });
-        this.focusedRunId = id;
-      }
-    });
-  }
 
   sortBy(key: ResultColumn): void {
     this.sort.update(previous => previous?.key === key

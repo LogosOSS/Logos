@@ -1,22 +1,30 @@
-@if (selectedRow(); as row) {
-  <section #selectedResult class="selected-result" tabindex="-1" aria-label="Selected benchmark result">
-    <h3>Benchmark #{{ row.run.id }}</h3>
-    <p>{{ datasetLabel(row.run) }} · {{ row.run.provider_name }} · {{ row.kind }}</p>
-    <dl class="results-summary">
-      <div><dt>Baseline (tok/s)</dt><dd>{{ row.before === null ? '—' : (row.before | number:'1.1-1') }}</dd></div>
-      <div><dt>Result (tok/s)</dt><dd>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }}</dd></div>
-      <div><dt>Change</dt><dd>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</dd></div>
-    </dl>
-    <p>{{ row.comparisonNote }}</p>
-    @if (row.selectionNote) { <p>{{ row.selectionNote }}</p> }
-    <p>{{ configuration(row.run) }}</p>
-    <h4>Changed parameters</h4>
-    @for (change of row.changes; track change) { <p>{{ change }}</p> }
-    @empty { <p>Current settings · no parameter changes</p> }
-    <p>Measured {{ (row.measurement?.started_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }} → {{ (row.measurement?.ended_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }}</p>
-  </section>
-} @else if (selectedRunId() !== null) {
-  <p role="status">Benchmark #{{ selectedRunId() }} is no longer available. Other saved results are shown below.</p>
+@if (selectedRunId(); as benchmarkId) {
+  <app-modal-form [visible]="true" [title]="'Benchmark #' + benchmarkId" (visibleChange)="$event || closeSelectedRun.emit()">
+    <div class="benchmark-result-dialog">
+      @if (selectedRow(); as row) {
+        <p>{{ datasetLabel(row.run) }} · {{ row.run.provider_name }} · {{ row.kind }}</p>
+        <dl class="results-summary">
+          <div><dt>Baseline (tok/s)</dt><dd>{{ row.before === null ? '—' : (row.before | number:'1.1-1') }}</dd></div>
+          <div><dt>Result (tok/s)</dt><dd>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }}</dd></div>
+          <div><dt>Change</dt><dd>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</dd></div>
+        </dl>
+        <p>{{ row.comparisonNote }}</p>
+        @if (row.selectionNote) { <p>{{ row.selectionNote }}</p> }
+        <p>{{ configuration(row.run) }}</p>
+        <h4>Changed parameters</h4>
+        @for (change of row.changes; track change) { <p>{{ change }}</p> }
+        @empty { <p>Current settings · no parameter changes</p> }
+        <p>Measured {{ (row.measurement?.started_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }} → {{ (row.measurement?.ended_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }}</p>
+      } @else if (loading()) {
+        <p role="status">Loading benchmark…</p>
+      } @else if (loadError()) {
+        <p role="alert">Could not load benchmark results.</p>
+      } @else {
+        <p role="status">This benchmark is no longer available.</p>
+      }
+    </div>
+    <div modal-footer><button type="button" class="btn-secondary" (click)="closeSelectedRun.emit()">Close</button></div>
+  </app-modal-form>
 }
 @if (showProgress()) {
   <section class="benchmark-progress" aria-label="Performance timeline">
@@ -57,7 +65,8 @@
                     (point.selectionNote ? ' · Excluded from adoption' : '') + (isDeployed ? ' · Currently deployed' : '');
                   <li><a class="timeline-run" [class.timeline-run--baseline]="point.isBaseline"
                     [class.timeline-run--deployed]="isDeployed" [attr.aria-label]="description" [title]="description"
-                    [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }">
+                    [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }"
+                    queryParamsHandling="merge" [preserveFragment]="true" aria-haspopup="dialog">
                     <span class="timeline-measure" aria-hidden="true" [attr.data-rate]="rate">
                       <span class="timeline-stem" [style.height.%]="100 * (point.rate / chart.axisMax)">
                         <span class="timeline-dot"></span><strong class="timeline-value">{{ rate }}</strong>
@@ -111,7 +120,7 @@
   </section>
 }
 @if (showHistory()) {
-<details class="run-history" [open]="selectedRunId() !== null">
+<details class="run-history">
   <summary>
     <h3><i class="pi pi-history" aria-hidden="true"></i> Benchmark runs</h3>
     <small>{{ rows().length }} results · output tok/s</small>
@@ -161,8 +170,13 @@
     <tbody [attr.aria-label]="group.label">
       <tr class="dataset-heading"><th scope="rowgroup" colspan="6">{{ group.label }} <small>{{ group.rows.length }} {{ group.rows.length === 1 ? 'run' : 'runs' }}</small></th></tr>
       @for (row of group.visible; track row.run.id) {
-        <tr [class.selected-run]="row.run.id === selectedRunId()">
-          <td data-label="Run"><strong>#{{ row.run.id }} · {{ row.kind }}</strong><small>{{ row.run.provider_name }}</small></td>
+        <tr>
+          <td data-label="Run">
+            <strong><a class="benchmark-run-link" [routerLink]="['/models', row.run.model_id, 'details']"
+              [queryParams]="{ tab: 'performance', benchmark: row.run.id }" queryParamsHandling="merge" [preserveFragment]="true"
+              aria-haspopup="dialog">#{{ row.run.id }}</a> · {{ row.kind }}</strong>
+            <small>{{ row.run.provider_name }}</small>
+          </td>
           <td data-label="Changed parameters">
             @if (row.isBaseline || row.currentSettings) { Current settings }
             @else { @for (change of row.changes; track change) { <span>{{ change }}</span> } @empty { — } }

@@ -30,14 +30,14 @@ describe('Deployment status on Overview', () => {
     await Promise.resolve();
     fixture.detectChanges();
     const content: HTMLElement = fixture.nativeElement;
-    const limits = () => Array.from(content.querySelectorAll('.key-parameters span'), row => row.textContent?.trim());
+    const limits = () => Array.from(content.querySelectorAll('.key-parameters > div'), row =>
+      [row.querySelector('dt')?.textContent, row.querySelector('dd')?.textContent].join(' '));
 
     expect(limits()).toEqual(['Max sequences 4', 'Max batched tokens Not reported']);
-    expect(content.textContent).toContain('Benchmark match unverified');
     expect(fixture.componentInstance.measurement()).toBeNull();
-    const lastAdoption = content.querySelector('[data-testid="last-confirmed-adoption"]')!;
+    const lastAdoption = content.querySelector('section[aria-label="Last confirmed adoption"]')!;
     expect(lastAdoption.textContent).toContain('Last confirmed adoption');
-    expect(lastAdoption.textContent).toContain('28.0 → 29.0 tok/s');
+    expect(lastAdoption.textContent).toMatch(/28\.0\s*→.*29\.0 tok\/s/);
     expect(lastAdoption.textContent).toContain('Sequences 4 · batch tokens 2048');
     expect(lastAdoption.querySelector('a')?.getAttribute('href')).toContain('benchmark=1');
 
@@ -52,7 +52,7 @@ describe('Deployment status on Overview', () => {
     fixture.detectChanges();
     expect(limits()).toEqual(['Max sequences 4', 'Max batched tokens 2048']);
     expect(fixture.componentInstance.measurement()?.id).toBe(1);
-    expect(content.querySelector('[data-testid="last-confirmed-adoption"]')).toBeNull();
+    expect(content.querySelector('section[aria-label="Last confirmed adoption"]')).toBeNull();
     fixture.destroy();
     http.verify();
   });

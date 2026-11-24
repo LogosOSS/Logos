@@ -1,5 +1,12 @@
 <section class="deployed" aria-label="Currently deployed configuration">
-  <header><h4>{{ providerName() }}</h4><span class="worker-state">{{ workerStatus() }}</span></header>
+  <header class="deployment-header">
+    <h4>{{ providerName() }}</h4>
+    <span class="worker-state">
+      <span class="status-dot" [class.status-dot--gray]="!deployment()?.available"
+        [class.status-dot--warn]="deployment()?.maintenance" aria-hidden="true"></span>
+      {{ workerStatus() }}
+    </span>
+  </header>
   @if (error()) { <p role="alert">Could not verify the worker configuration.</p> }
   @else if (!state()) { <p role="status">Reading worker configuration…</p> }
   @else if (!deployment()?.available) { <p role="status">No active serving configuration confirmed for this model.
@@ -14,36 +21,44 @@
   @else if (deployment()?.maintenance) { <p role="status">Temporary benchmark settings · production confirmation pending</p> }
   @else if (deployment()?.mixed_configuration) { <p>Active replicas report different settings. Throughput is shown per run in Analysis.</p> }
   @else {
-    @if (result(); as row) {
-      <div class="deployment-metrics">
-        <div><span>Measured throughput{{ measurement() ? '' : (result()?.run?.configuration?.['nightly'] ? ' · historical' : ' · saved') }}</span><strong>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }} <small>tok/s</small></strong></div>
-        <div><span>{{ row.startingBaseline ? 'Starting baseline' : 'Baseline' }} #{{ row.baselineId ?? 'unavailable' }}</span><strong>{{ row.before === null ? '—' : (row.before | number:'1.1-1') }} <small>tok/s</small></strong></div>
-        <div><span>Change</span><strong>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</strong></div>
-      </div>
-      <p class="deployment-caption"><a [routerLink]="['/models', row.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: row.run.id }">Benchmark #{{ row.run.id }} ↗</a> · {{ row.run.recorded_at | date:'dd MMM yyyy, HH:mm' }}</p>
-    } @else {
-      <div>
-        @if (hasUnreportedBatchingLimit()) {
-          <p class="deployment-caption">Benchmark match unverified. Live telemetry is missing a batching limit.</p>
-        } @else { <p class="deployment-caption">No complete benchmark matches the active settings.</p> }
-        @if (adoption(); as adopted) {
-          @let run = adoptionRun();
-          <p class="deployment-caption" data-testid="last-confirmed-adoption">
-            <strong>Last confirmed adoption</strong> ·
-            @if (run) {
-              <a [routerLink]="['/models', run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: run.id }">Benchmark #{{ run.id }} ↗</a>
-            } @else { Benchmark #{{ adopted.benchmark_id }} }
-            · {{ adopted.baseline_throughput | number:'1.1-1' }} → {{ adopted.throughput | number:'1.1-1' }} tok/s
-            @if (run) { <br />{{ recordedConfiguration(run) }} }
-          </p>
-        }
-      </div>
-    }
-    <p class="key-parameters">
+    <dl class="key-parameters" aria-label="Live batching limits">
       @for (parameter of keyParameters(); track parameter.key) {
-        <span>{{ parameter.label }} <strong>{{ parameter.captured ? parameter.value : 'Not reported' }}</strong></span>
+        <div>
+          <dt>{{ parameter.label }}</dt>
+          <dd [class.unreported-limit]="!parameter.captured">{{ parameter.captured ? parameter.value : 'Not reported' }}</dd>
+        </div>
       }
-    </p>
+    </dl>
+    @if (result(); as row) {
+      <section class="deployment-benchmark" aria-label="Benchmark measurement">
+        <div class="deployment-benchmark__header">
+          <h5>{{ measurement() ? 'Measured throughput' : row.run.configuration['nightly'] ? 'Historical measurement' : 'Saved measurement' }}</h5>
+          <a class="deployment-benchmark__link" aria-haspopup="dialog" [routerLink]="['/models', row.run.model_id, 'details']"
+            [queryParams]="{ tab: 'performance', benchmark: row.run.id }" queryParamsHandling="merge" [preserveFragment]="true">Benchmark #{{ row.run.id }} <i class="pi pi-angle-right" aria-hidden="true"></i></a>
+        </div>
+        <dl class="deployment-metrics">
+          <div><dt>Result</dt><dd>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }} <small>tok/s</small></dd></div>
+          <div><dt>{{ row.startingBaseline ? 'Starting baseline' : 'Baseline' }} @if (row.baselineId) { #{{ row.baselineId }} }</dt><dd>{{ row.before === null ? '—' : (row.before | number:'1.1-1') }} <small>tok/s</small></dd></div>
+          <div><dt>Change</dt><dd>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</dd></div>
+        </dl>
+        <p class="deployment-caption">{{ row.run.recorded_at | date:'dd MMM yyyy, HH:mm' }}</p>
+      </section>
+    } @else if (adoption(); as adopted) {
+      @let run = adoptionRun();
+      <section class="deployment-benchmark" aria-label="Last confirmed adoption">
+        <div class="deployment-benchmark__header">
+          <h5>Last confirmed adoption</h5>
+          @if (run) {
+            <a class="deployment-benchmark__link" aria-haspopup="dialog" [routerLink]="['/models', run.model_id, 'details']"
+              [queryParams]="{ tab: 'performance', benchmark: run.id }" queryParamsHandling="merge" [preserveFragment]="true">Benchmark #{{ run.id }} <i class="pi pi-angle-right" aria-hidden="true"></i></a>
+          } @else { <span>Benchmark #{{ adopted.benchmark_id }}</span> }
+        </div>
+        <p class="adoption-throughput">{{ adopted.baseline_throughput | number:'1.1-1' }} <span aria-hidden="true">→</span><span class="sr-only"> to </span> {{ adopted.throughput | number:'1.1-1' }} <small>tok/s</small></p>
+        @if (run) { <p class="deployment-caption">Measured settings · {{ recordedConfiguration(run) }}</p> }
+      </section>
+    } @else {
+      <p class="deployment-caption">{{ hasUnreportedBatchingLimit() ? 'Live benchmark unverified' : 'No matching benchmark' }}</p>
+    }
   }
   @if (deployment(); as current) {
     @if (current.available) {
@@ -85,14 +100,14 @@
                   <dd>#{{ best.benchmark_id }} · {{ best.throughput | number:'1.1-1' }} tok/s</dd>
                 </div>
               }
-              <div>
-                <dt><i class="pi pi-history" aria-hidden="true"></i> Last confirmed adoption</dt>
-                <dd>
-                  @if (adoption(); as adopted) {
-                    #{{ adopted.benchmark_id }} · {{ adopted.baseline_throughput | number:'1.1-1' }} → {{ adopted.throughput | number:'1.1-1' }} tok/s
-                  } @else { None for this series }
-                </dd>
-              </div>
+              @if (result() || current.maintenance || current.mixed_configuration) {
+                @if (adoption(); as adopted) {
+                  <div>
+                    <dt><i class="pi pi-history" aria-hidden="true"></i> Last confirmed adoption</dt>
+                    <dd>#{{ adopted.benchmark_id }} · {{ adopted.baseline_throughput | number:'1.1-1' }} → {{ adopted.throughput | number:'1.1-1' }} tok/s</dd>
+                  </div>
+                }
+              }
             </dl>
           </section>
         </div>

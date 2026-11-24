@@ -62,10 +62,10 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
   }
   .run-history > summary small { grid-column: 2; }
 }
-.selected-result { margin: 1rem 0 1.5rem; padding: 1rem; border: 2px solid rgb(var(--color-primary-500)); border-radius: .5rem; color: rgb(var(--color-typography-100)); overflow-wrap: anywhere; }
-.selected-result h4 { margin: .75rem 0 .25rem; font: inherit; font-weight: 600; }
-.selected-result p { margin: .4rem 0; }
-.selected-run { background: rgb(var(--color-primary-500) / .08); }
+.benchmark-result-dialog { color: rgb(var(--color-typography-100)); overflow-wrap: anywhere; }
+.benchmark-result-dialog h4 { margin: .75rem 0 .25rem; font: inherit; font-weight: 600; }
+.benchmark-result-dialog p { margin: .4rem 0; }
+.benchmark-run-link { color: rgb(var(--color-text-accent)); }
 .dataset-heading th { padding: 1rem .75rem .5rem; color: rgb(var(--color-typography-100)); font-weight: 600; background: rgb(var(--color-surface-100)); overflow-wrap: anywhere; }
 .dataset-heading small { margin-left: .75rem; font-weight: 400; }
 @media (max-width: 767px) {
@@ -75,8 +75,6 @@ td span, td small { display: block; margin-top: .25rem; overflow-wrap: anywhere;
 }
 
 .numeric small { white-space: normal; min-width: 0; }
-.selected-result { margin: 0; }
-
 .benchmark-progress { @include panel.surface; }
 .timeline-dataset {
   max-width: 100%; margin: 12px 0 16px; padding: 8px 12px;

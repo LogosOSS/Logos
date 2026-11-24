@@ -24,7 +24,7 @@ import {
   CdkVirtualScrollViewport,
   ScrollingModule,
 } from '@angular/cdk/scrolling';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { combineLatest, firstValueFrom, Subscription } from 'rxjs';
 
@@ -719,6 +719,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   // ==========================================================================
 
   private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
   private readonly modelService = inject(ModelManagementService);
   private readonly http = inject(HttpClient);
 
@@ -895,6 +896,17 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     setTimeout(() => document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 
+  closeLinkedBenchmark(): void {
+    if (!this.route.snapshot.queryParamMap.has('benchmark')) return;
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { benchmark: null },
+      queryParamsHandling: 'merge',
+      preserveFragment: true,
+      replaceUrl: true,
+    });
+  }
+
   toggleNightlyWorker(pairId: number): void {
     this.selectedNightlyPairId.update(current => current === pairId ? null : pairId);
   }
@@ -942,7 +954,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     return [...grouped.entries()].map(([modelProviderId, benchmarks]) => ({
       modelProviderId,
       benchmarks,
-      selected: benchmarks.find(benchmark => benchmark.id === (selectedIds.get(modelProviderId) ?? this.linkedBenchmarkId())) ?? benchmarks[0]!,
+      selected: benchmarks.find(benchmark => benchmark.id === selectedIds.get(modelProviderId)) ?? benchmarks[0]!,
     }));
   });
   private performancePollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1250,29 +1262,30 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   async ngOnInit(): Promise<void> {
     this.navigation = combineLatest([this.route.paramMap, this.route.queryParamMap]).subscribe(([params, query]) => {
       const id = Number(params.get('id'));
+      const modelChanged = this.modelId() !== id;
       const requestedTab = query.get('tab');
       const tab = (requestedTab === 'delays' || requestedTab === 'improvement' ? 'performance' : requestedTab) as ModelErrorTab | null;
-      if (this.modelId() !== id) {
+      const benchmark = Number(query.get('benchmark'));
+      const linked = Number.isSafeInteger(benchmark) && benchmark > 0 ? benchmark : null;
+      if (modelChanged) {
         this.performanceView.set('results');
         this.benchmarkSettingsOpen.set(false);
         this.selectedNightlyPairId.set(null);
         this.selectedOverviewPairId.set(null);
+        this.selectedBenchmarkIds.set(new Map());
+      } else if (linked !== this.linkedBenchmarkId() && this.selectedOverviewPairId() === null) {
+        // Keep the same worker behind the dialog, including after a direct link closes.
+        this.selectedOverviewPairId.set(this.overviewPair()?.model_provider_id ?? null);
       }
       if (requestedTab === 'delays') this.performanceView.set('measurements');
-      const benchmark = Number(query.get('benchmark'));
-      const linked = Number.isSafeInteger(benchmark) && benchmark > 0 ? benchmark : null;
-      if (linked !== this.linkedBenchmarkId()) {
-        this.selectedBenchmarkIds.set(new Map());
-        if (linked !== null) this.selectedOverviewPairId.set(null);
-      }
       this.linkedBenchmarkId.set(linked);
-      if (this.linkedBenchmarkId() !== null) {
+      if (linked !== null) {
+        if (this.activeTab() !== 'performance') this.performanceView.set('results');
         this.activeTab.set('performance');
-        this.performanceView.set('results');
       } else if (tab !== null && this.tabs.includes(tab)) {
         this.activeTab.set(tab);
       }
-      if (this.modelId() !== id) {
+      if (modelChanged) {
         this.modelId.set(id);
         this.performance.set([]);
         void this.fetchModel(id);
