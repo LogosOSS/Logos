@@ -80,7 +80,7 @@
       }
       @if (measured()) {
         <div class="pill">
-          <span [class]="'status-dot status-dot--' + (insight()?.configured ? 'ok' : 'gray')" aria-hidden="true"></span>
+          <span [class]="'status-dot status-dot--' + (insight()?.configured || !outdated() ? 'ok' : 'gray')" aria-hidden="true"></span>
           <div><small>Placement</small><b>{{ insight()?.configured ? 'Set' : 'Automatic' }}</b></div>
         </div>
       }
