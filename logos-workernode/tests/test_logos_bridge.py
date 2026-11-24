@@ -1293,7 +1293,7 @@ def _make_app_for_calibration(tmp_path, *, vllm_disable_sleep=False, per_model_o
     lane_manager.destroy_all = AsyncMock(return_value=None)
     # Calibration-session GPU-slice guard: the session holds a
     # power-of-two slice and frees only the lanes on it, keeping leftover lanes.
-    lane_manager.begin_calibration_session = MagicMock(return_value=frozenset({0, 1}))
+    lane_manager.acquire_calibration_gpu_reservation = AsyncMock(return_value=frozenset({0, 1}))
     lane_manager.destroy_lanes_on_gpus = AsyncMock(return_value=1)
     lane_manager.end_calibration_session = MagicMock()
     app.state.lane_manager = lane_manager
@@ -1336,7 +1336,7 @@ async def test_start_calibration_session_returns_ok_and_runs_in_background(tmp_p
     # The slice is only held and freed when there is at least one model to
     # calibrate; an empty configured_models list ends the session before that.
     app.state.lane_manager.destroy_all.assert_not_awaited()
-    app.state.lane_manager.begin_calibration_session.assert_not_called()
+    app.state.lane_manager.acquire_calibration_gpu_reservation.assert_not_awaited()
     app.state.lane_manager.destroy_lanes_on_gpus.assert_not_awaited()
 
 
@@ -1929,10 +1929,48 @@ async def test_session_frees_calibrating_slice_before_calibrating(tmp_path, monk
 
     # The session holds the slice and frees only the lanes on it — never the
     # whole node (which would idle the leftover GPUs for the session).
-    app.state.lane_manager.begin_calibration_session.assert_called_once()
+    app.state.lane_manager.acquire_calibration_gpu_reservation.assert_awaited_once()
     app.state.lane_manager.destroy_lanes_on_gpus.assert_awaited_once_with(frozenset({0, 1}))
     app.state.lane_manager.destroy_all.assert_not_awaited()
     app.state.lane_manager.end_calibration_session.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["conflict", "unknown", "drain", "escaped_pin"])
+async def test_calibration_never_launches_probe_without_confirmed_drained_slice(tmp_path, monkeypatch, failure):
+    from logos_worker_node import config as _wcfg
+
+    monkeypatch.setattr(_wcfg, "STATE_DIR", tmp_path)
+    app = _make_app_for_calibration(tmp_path)
+    manager = app.state.lane_manager
+    if failure == "conflict":
+        manager.acquire_calibration_gpu_reservation.side_effect = RuntimeError("nightly reservation")
+    elif failure == "unknown":
+        manager.acquire_calibration_gpu_reservation.return_value = frozenset()
+    elif failure == "drain":
+        manager.destroy_lanes_on_gpus.side_effect = RuntimeError("cannot drain")
+    else:
+        monkeypatch.setattr(
+            "logos_worker_node.node_config.plans_from_app_config",
+            lambda cfg: [{"model": "some/model", "gpu_devices": "2"}],
+        )
+    probe = MagicMock()
+    monkeypatch.setattr("logos_worker_node.calibration.calibrate_with_tp_escalation", probe)
+    cfg = LogosConfig(
+        enabled=True, logos_url="https://logos.example", shared_key="secret", configured_models=["some/model"]
+    )
+    client = LogosBridgeClient(app, cfg)
+    assert (await client._handle_start_calibration_session({"sleep_level": 1}))["ok"] is True
+    await _drain_session(client)
+
+    probe.assert_not_called()
+    assert any(event.event == "calibration_session_cancelled" for event in manager._event_log)
+    if failure == "conflict":
+        manager.end_calibration_session.assert_not_called()
+    else:
+        manager.end_calibration_session.assert_called_once()
+    if failure != "drain":
+        manager.destroy_lanes_on_gpus.assert_not_awaited()
 
 
 # ── HF compatibility precheck ─────────────────────────────────────────────────

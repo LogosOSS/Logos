@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -72,7 +73,7 @@ async def test_cold_nightly_launch_includes_warmup_margin_and_skips_without_room
     with pytest.raises(NightlyGpuBudgetUnavailable, match=f"GPU 0 .*needs {EXPECTED_MIB} MiB including warm-up"):
         await manager.add_lane(_config(), nightly_gpu_budget=True)
     create.assert_not_called()
-    assert not manager._nightly_gpu_holds
+    assert not manager._gpu_reservations
 
 
 @pytest.mark.asyncio
@@ -85,7 +86,7 @@ async def test_cold_nightly_launch_selects_only_a_gpu_that_can_cover_warmup(monk
     manager._get_status_unlocked = AsyncMock()
     monkeypatch.setattr("logos_worker_node.lane_manager._create_handle", lambda *args, **kwargs: new)
     await manager.add_lane(_config(gpu=""), nightly_gpu_budget=True)
-    assert manager._nightly_gpu_holds == {"benchmark": frozenset({1})}
+    assert manager._gpu_reservations == {("nightly", "benchmark"): frozenset({1})}
     assert new.spawn.await_args.args[0].gpu_devices == "1"
 
 
@@ -102,9 +103,9 @@ async def test_existing_lane_uses_only_its_own_measured_gpu_memory_for_credit() 
     manager._nightly_process_gpu_vram.return_value = {"gpu0": 1500}
     assert await manager.check_nightly_gpu_budget("benchmark") == {0: EXPECTED_MIB}
     manager._nightly_process_gpu_vram.assert_awaited_with(15)
-    assert manager._nightly_gpu_holds == {"benchmark": frozenset({0})}
+    assert manager._gpu_reservations == {("nightly", "benchmark"): frozenset({0})}
     await manager.release_nightly_gpu_budget("benchmark")
-    assert not manager._nightly_gpu_holds
+    assert not manager._gpu_reservations
 
 
 @pytest.mark.asyncio
@@ -197,7 +198,7 @@ async def test_replacement_is_checked_against_live_memory_after_shutdown(monkeyp
         await manager.reconfigure_lane("benchmark", updates, require_idle=True, nightly_gpu_budget=True)
     create.assert_not_called()
     assert "benchmark" not in manager._handles
-    assert manager._nightly_gpu_holds == {"benchmark": frozenset({0})}
+    assert manager._gpu_reservations == {("nightly", "benchmark"): frozenset({0})}
 
 
 @pytest.mark.asyncio
@@ -341,3 +342,85 @@ async def test_nightly_bridge_preserves_budget_and_lane_identity_semantics() -> 
         manager.release_nightly_gpu_budget.assert_awaited_once_with("benchmark")
     finally:
         await bridge.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["calibration", "nightly"])
+async def test_held_pair_leaves_third_gpu_available_for_lane_add_and_wake(monkeypatch, owner) -> None:
+    manager = _manager({0: TOTAL_MIB, 1: TOTAL_MIB, 2: TOTAL_MIB})
+    if owner == "calibration":
+        assert await manager.acquire_calibration_gpu_reservation() == frozenset({0, 1})
+        # Even a disjoint second maintenance session has global effects.
+        with pytest.raises(NightlyGpuBudgetUnavailable, match="calibration session"):
+            await manager.add_lane(_config(gpu="2"), nightly_gpu_budget=True)
+        await manager.release_nightly_gpu_budget("benchmark")
+        assert manager.calibration_gpu_subset == frozenset({0, 1})
+    else:
+        async with manager._lock.scoped(["benchmark"], [0, 1]):
+            manager._claim_nightly_gpus("benchmark", frozenset({0, 1}))
+        with pytest.raises(RuntimeError, match="nightly benchmark"):
+            await manager.acquire_calibration_gpu_reservation()
+        manager.end_calibration_session()
+        assert manager._gpu_reservations == {("nightly", "benchmark"): frozenset({0, 1})}
+
+    # A whole-worker apply must refuse before any drain/preparation side effect.
+    manager._drain_lane_inflight = AsyncMock()
+    manager._handles["held"] = MagicMock(lane_config=_config(gpu="0"), wake_up=AsyncMock())
+    with pytest.raises(RuntimeError, match="benchmark|calibration"):
+        await manager.apply_lanes([])
+    manager._drain_lane_inflight.assert_not_awaited()
+
+    # Tests drive the worker's real add/wake APIs with synthetic GPU telemetry.
+    new = MagicMock(init=AsyncMock(), spawn=AsyncMock(return_value=ProcessStatus(state=ProcessState.RUNNING)))
+    manager._get_status_unlocked = AsyncMock()
+    manager._wait_for_vram_headroom = AsyncMock()
+    create = MagicMock(return_value=new)
+    monkeypatch.setattr("logos_worker_node.lane_manager._create_handle", create)
+    for pin in ("0", "0,1", "all"):
+        with pytest.raises((ValueError, RuntimeError), match="reserved"):
+            await manager.add_lane(_config(gpu=pin).model_copy(update={"lane_id": "blocked"}))
+    unknown = _config(gpu="2").model_copy(update={"lane_id": "blocked"})
+    unknown.vllm_config.env_overrides = {"CUDA_VISIBLE_DEVICES": "GPU-unmapped"}
+    with pytest.raises((ValueError, RuntimeError), match="reserved"):
+        await manager.add_lane(unknown)
+    create.assert_not_called()
+    with pytest.raises((ValueError, RuntimeError), match="reserved"):
+        await manager.wake_lane("held")
+    manager._handles["held"].wake_up.assert_not_awaited()
+
+    await manager.add_lane(_config(gpu="").model_copy(update={"lane_id": "leftover"}))
+    assert new.spawn.await_args.args[0].gpu_devices == "2"
+    new.lane_config = new.spawn.await_args.args[0]
+    new.wake_up = AsyncMock()
+    await manager.wake_lane("leftover")
+    new.wake_up.assert_awaited_once()
+    if owner == "nightly":
+        await manager.release_nightly_gpu_budget("benchmark")
+    else:
+        manager.end_calibration_session()
+    assert not manager._gpu_reservations
+    await manager.wake_lane("held")
+    manager._handles["held"].wake_up.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_calibration_waits_to_claim_until_inflight_whole_worker_operation_exits() -> None:
+    manager = _manager({0: TOTAL_MIB, 1: TOTAL_MIB, 2: TOTAL_MIB})
+    async with manager._lock:
+        pending = asyncio.create_task(manager.acquire_calibration_gpu_reservation())
+        await asyncio.sleep(0)
+        assert not pending.done()
+        assert manager.calibration_gpu_subset is None
+    assert await asyncio.wait_for(pending, timeout=1) == frozenset({0, 1})
+    manager.end_calibration_session()
+
+
+@pytest.mark.asyncio
+async def test_required_calibration_gpu_is_not_discarded_in_favor_of_idle_pair() -> None:
+    manager = _manager({0: TOTAL_MIB, 1: TOTAL_MIB, 2: TOTAL_MIB})
+    manager._handles["resident"] = MagicMock(lane_config=_config(gpu="0"))
+    assert await manager.acquire_calibration_gpu_reservation(frozenset({0})) == frozenset({0, 1})
+    manager.end_calibration_session()
+    with pytest.raises(RuntimeError, match="outside the confirmed GPU inventory"):
+        await manager.acquire_calibration_gpu_reservation(frozenset({3}))
+    assert manager.calibration_gpu_subset is None
