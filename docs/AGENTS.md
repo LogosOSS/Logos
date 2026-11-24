@@ -347,6 +347,8 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-node-model-view.png` | `tobias.wasner` | `/providers/:id/models?model=llama-3.1-8b-instruct` — the model page in view mode | `roles/logos-admin.md` |
 | `logos-admin-node-model-edit.png` | `tobias.wasner` | the same page after **Edit configuration**: TP tiles, KV cache, context, **Advanced settings** | `roles/logos-admin.md` |
 | `logos-admin-node-model-calibrate.png` | `tobias.wasner` | the page of `mistral-small-3.2-24b`: **Calibration settings** with **Calibrate model** | `roles/logos-admin.md` |
+| `logos-admin-node-model-edit-settings.png` | `tobias.wasner` | **Edit settings** on the uncalibrated model page | `roles/logos-admin.md#calibrate-a-model` |
+| `logos-admin-node-model-unsupported.png` | `tobias.wasner` | **Calibration not supported** on the model page. The capture supplies an example failure in the node insights response. | `roles/logos-admin.md#calibrate-a-model` |
 | `logos-admin-node-connect-model.png` | `tobias.wasner` | the **Connect model** dialog; the capture adds a fourth catalog model to the answer of `get_models` | `roles/logos-admin.md` |
 | `logos-admin-node-settings.png` | `tobias.wasner` | `/providers/:id/node-settings` — **GPU pool**, **Engine defaults**, **Node care** | `roles/logos-admin.md` |
 | `logos-admin-billing.png` | `tobias.wasner` | `/billing` | `roles/logos-admin.md` |

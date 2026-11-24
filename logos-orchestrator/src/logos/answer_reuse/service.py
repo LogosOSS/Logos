@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import numpy as np
@@ -281,9 +281,10 @@ class AnswerCache:
             return None, Match(accepted=False, index=None, similarity=0.0, label=None)
         query = np.asarray(self._encode(embedding_text(request.question)), dtype=np.float32)
         match = decide_reuse(query, scope.vectors, scope.intents, threshold=self._threshold, k=self._k)
+        entry = scope.entries[match.index]
+        match = replace(match, entry_id=int(entry["id"]))
         if not match.accepted:
             return None, match
-        entry = scope.entries[match.index]
         answer = CachedAnswer(
             entry_id=int(entry["id"]),
             answer=entry["answer_template"],

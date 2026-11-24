@@ -457,6 +457,40 @@ const SHOTS = [
     },
   },
   {
+    file: "roles/logos-admin-node-model-edit-settings.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await nodeModel(p, ids, "mistral-small-3.2-24b");
+      await button(p, "Edit settings").click();
+      await p.locator(".grid--single .stack").first().waitFor();
+      await p.addStyleTag({ content: ".savebar { position: static !important; }" });
+    },
+  },
+  {
+    file: "roles/logos-admin-node-model-unsupported.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      const model = "mistral-small-3.2-24b";
+      // The documentation worker has no failed calibration. Show the reported failure for this catalog model.
+      await p.route("**/api/logosdb/node_config/insights", async (route) => {
+        const response = await route.fetch();
+        const insights = await response.json();
+        const entry = insights.models.find((m) => m.model_name === model);
+        entry.calibration = {
+          ...entry.calibration,
+          status: "unsupported",
+          reason: "The model does not fit in the available GPU memory.",
+        };
+        await route.fulfill({ response, json: insights });
+      });
+      await nodeModel(p, ids, model);
+      await p.getByRole("link", { name: "Open the error report" }).waitFor();
+    },
+    after: (p) => p.unroute("**/api/logosdb/node_config/insights"),
+  },
+  {
     file: "roles/logos-admin-node-connect-model.png",
     user: ADMIN,
     go: async (p, ids) => {
@@ -470,7 +504,7 @@ const SHOTS = [
       await expandWorker(p);
       await button(p, "Connect model").click();
       await p.getByText("Add a model from the Logos catalog to this node.").waitFor();
-      await p.getByRole("combobox").last().selectOption({ label: "gemma-3-27b-it" });
+      await p.getByRole("option", { name: "Select model…" }).waitFor({ state: "attached" });
     },
     after: async (p) => {
       await button(p, "Cancel").evaluate((b) => b.click());

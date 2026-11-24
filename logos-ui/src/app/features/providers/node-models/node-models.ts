@@ -51,6 +51,12 @@ export class NodeModels implements OnInit {
       .map((name) => ({ value: name, label: name }));
   });
 
+  /** The options with an empty entry first, so the select shows that nothing is chosen yet. */
+  readonly connectSelectOptions = computed<AppSelectOption[]>(() => [
+    { value: '', label: 'Select model…' },
+    ...this.connectOptions(),
+  ]);
+
   ngOnInit(): void {
     void this.load();
   }

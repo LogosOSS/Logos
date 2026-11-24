@@ -26,6 +26,7 @@ from grpclocal import model_pb2_grpc
 from grpclocal.grpc_server import LogosServicer
 from logos import perf_trace, refcache, write_queue
 from logos.answer_reuse.context import InvalidContextId
+from logos.answer_reuse.matching import Match
 from logos.answer_reuse.service import (
     CACHE_RESPONSE_HEADERS,
     AnswerCache,
@@ -3627,20 +3628,33 @@ def _get_answer_cache() -> AnswerCache:
     return _answer_cache
 
 
-def _record_answer_reuse_miss(request_id: Optional[str]) -> None:
-    """Mark the request's log row: the cache was checked and had no reusable answer."""
+def _record_answer_reuse_miss(request_id: Optional[str], match: Optional[Match] = None) -> None:
+    """Mark the request's log row: the cache was checked and had no reusable answer.
+
+    The match's similarity, nearest entry and top-k agreement are recorded
+    with it, so the decision can be recomputed at any threshold later. They
+    are left out when no comparison ran (match.entry_id is None).
+    """
     if not request_id:
         return
     pipeline = globals().get("_pipeline")
     if pipeline is None:
         return
+    compared = match is not None and match.entry_id is not None
     try:
-        pipeline.record_answer_reuse_miss(request_id)
+        pipeline.record_answer_reuse_miss(
+            request_id,
+            similarity=match.similarity if compared else None,
+            nearest_entry_id=match.entry_id if compared else None,
+            agreed=match.agreed if compared else None,
+        )
     except Exception:  # noqa: BLE001 — monitoring must never break a request
         logger.debug("Failed to record answer-cache miss for %s", request_id, exc_info=True)
 
 
-def _persist_cache_hit(log_id, request_id: Optional[str], entry_id: int, payload: Dict[str, Any]) -> None:
+def _persist_cache_hit(
+    log_id, request_id: Optional[str], entry_id: int, payload: Dict[str, Any], similarity: float
+) -> None:
     """Settle a request answered from the cache: its log row, the entry's hit count, the payload.
 
     The same terminal duties as `_record_log_failure`, for a success that
@@ -3663,7 +3677,7 @@ def _persist_cache_hit(log_id, request_id: Optional[str], entry_id: int, payload
             if actual_log_id is None:
                 db.record_answer_cache_hit(entry_id)
                 return
-            db.finalize_cache_hit_row(actual_log_id, entry_id, request_id=request_id)
+            db.finalize_cache_hit_row(actual_log_id, entry_id, similarity=similarity, request_id=request_id)
             db.store_response_payload(actual_log_id, payload)
             metrics_fields = {k: v for k, v in buffered_metrics.items() if v is not None}
             if metrics_fields:
@@ -3754,16 +3768,16 @@ async def _answer_from_cache(
         return None
 
     try:
-        answer, _match = await asyncio.to_thread(_get_answer_cache().find, reuse)
+        answer, match = await asyncio.to_thread(_get_answer_cache().find, reuse)
     except Exception:  # noqa: BLE001 — the cache is an optimisation, never a failure
         logger.exception("Answer cache lookup failed; continuing without it (request_id=%s)", request_id)
         return None
     if answer is None:
-        _record_answer_reuse_miss(request_id)
+        _record_answer_reuse_miss(request_id, match)
         return None
 
     payload = chat_completion_payload(answer)
-    await asyncio.to_thread(_persist_cache_hit, log_id, request_id, answer.entry_id, payload)
+    await asyncio.to_thread(_persist_cache_hit, log_id, request_id, answer.entry_id, payload, answer.similarity)
     if is_async_job:
         return {"status_code": 200, "data": payload}
     response_headers = {**(_decision_response_headers(request_id, None) or {}), **cache_hit_headers(answer)}

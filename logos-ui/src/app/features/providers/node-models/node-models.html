@@ -87,7 +87,7 @@
       } @else {
         <app-select
           [id]="'connect-model'"
-          [options]="connectOptions()"
+          [options]="connectSelectOptions()"
           [value]="connectChoice() ?? ''"
           [disabled]="connecting()"
           (valueChange)="connectChoice.set($event)"
