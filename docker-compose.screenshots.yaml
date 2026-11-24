@@ -29,7 +29,7 @@ services:
       timeout: 5s
       retries: 10
     volumes:
-      - doks_pg:/var/lib/postgresql
+      - doks_pg:/var/lib/postgresql/data
     networks:
       - doks-internal
 
