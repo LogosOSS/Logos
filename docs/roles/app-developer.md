@@ -70,6 +70,9 @@ shows what the model supports (function calling, vision, reasoning) and where
 Logos serves the model. You can search the list and open the details of a
 model.
 
+Use **Active models** to browse the catalogue. Use **Model requests** to request a model for your team.
+Enter the Hugging Face repository name, select your team, and select **Vote for this model**.
+
 ![Models page](/img/roles/app-developer-models.png)
 
 ## My Workspace

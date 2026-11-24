@@ -1,4 +1,4 @@
-import { notificationBody, notificationModelUrl, notificationTarget } from './notification-target';
+import { notificationBody, notificationExternalUrl, notificationTarget } from './notification-target';
 import { AppNotification } from './notification.service';
 
 describe('Benchmark notification destinations', () => {
@@ -17,7 +17,7 @@ describe('Benchmark notification destinations', () => {
 describe('Gated model notification destinations', () => {
   const notification = (payload: unknown) => ({ type: 'gated_model_requested', payload } as AppNotification);
   it('points at the model page on Hugging Face', () => {
-    expect(notificationModelUrl(notification({ model: 'meta-llama/llama-3.1-8b' }))).toBe(
+    expect(notificationExternalUrl(notification({ model: 'meta-llama/llama-3.1-8b' }))).toBe(
       'https://huggingface.co/meta-llama/llama-3.1-8b',
     );
   });
@@ -27,10 +27,10 @@ describe('Gated model notification destinations', () => {
     { model: 'https://huggingface.co/x/y' }, { model: 'x@y/z' }, { model: 'x/y?redirect=1' },
     { model: 'x/y\nHost: evil.example' },
   ])('does not open a URL for a malformed model name: %j', payload => {
-    expect(notificationModelUrl(notification(payload))).toBeNull();
+    expect(notificationExternalUrl(notification(payload))).toBeNull();
   });
   it('ignores other notification types', () => {
-    expect(notificationModelUrl({ type: 'batch_job_finished', payload: { model: 'x/y' } } as AppNotification)).toBeNull();
+    expect(notificationExternalUrl({ type: 'batch_job_finished', payload: { model: 'x/y' } } as AppNotification)).toBeNull();
   });
 });
 

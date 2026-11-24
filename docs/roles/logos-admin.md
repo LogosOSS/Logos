@@ -158,7 +158,7 @@ first lane has started.
 
 ## Models
 
-This page shows the model catalogue of the deployment. It shows tags, aliases,
+The **Active models** tab shows the model catalogue of the deployment. It shows tags, aliases,
 capabilities and scheduling weights for each model. It also shows the Likert
 **profile ratings** (latency / quality / price) as a spider chart. Click a
 model to open its **Model Details** view. This view shows the request history,
@@ -174,6 +174,27 @@ Point to a status for the worker and date. Select it to open **Performance**.
 The preview depends on current worker availability. It does not reserve a worker.
 
 ![Models page](/img/roles/logos-admin-models.png)
+
+### Model requests
+
+Select **Model requests** to see which models users request and how many votes each model has.
+To vote for a model, select your team and enter its Hugging Face repository name.
+Select **Vote for this model**.
+
+![Model requests, vote counts and license agreement status](/img/roles/model-requests.png)
+
+Select the icon under **License agreement status** to open the agreement.
+Read the license and the use policy if the repository provides one.
+If you accept the terms, select the checkbox and then **Save**.
+
+![License agreement and use policy for a requested model](/img/roles/model-request-license.png)
+
+A warning icon next to the model name identifies a gated repository.
+Select it to open **Gated model**. Select **Go to HuggingFace** to request access from the repository owner.
+
+![Gated model access dialog](/img/roles/model-request-gated.png)
+
+### Model details
 
 Open **Model Details → Performance → Request measurements** to inspect request times.
 This view uses timing metadata. It does not use prompt or response content.

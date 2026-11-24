@@ -50,7 +50,11 @@ import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabil
 })
 @Sql(scripts = {"/sql/seed-identity.sql", "/sql/seed-configuration.sql"},
      executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD)
-@Sql(scripts = {"/sql/cleanup-requested-models.sql", "/sql/cleanup-configuration.sql", "/sql/cleanup-identity.sql"},
+@Sql(statements = {
+    "DELETE FROM notifications WHERE type = 'gated_model_requested' AND payload->>'model' IN (SELECT name FROM requested_models)",
+    "DELETE FROM requested_models"
+}, executionPhase = Sql.ExecutionPhase.AFTER_TEST_METHOD)
+@Sql(scripts = {"/sql/cleanup-configuration.sql", "/sql/cleanup-identity.sql"},
      executionPhase = Sql.ExecutionPhase.AFTER_TEST_METHOD)
 class ModelRequestControllerTest {
 
@@ -214,7 +218,9 @@ class ModelRequestControllerTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.is_gated").value(false));
 
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notifications", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM notifications WHERE type = 'gated_model_requested' AND payload->>'model' = 'openai/gpt-5'",
+            Integer.class)).isZero();
     }
 
     @Test

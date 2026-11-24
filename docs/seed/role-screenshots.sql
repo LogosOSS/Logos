@@ -935,6 +935,18 @@ VALUES ((SELECT id FROM providers WHERE name = 'Docs Local Worker'),
         '{"gpu_devices":"all","global_extra_args":["--safetensors-load-strategy=prefetch"],"gpu_poll_interval":5}'::jsonb,
         2, now());
 
+-- Model requests shown in the role guide. Both the repository name and the terms are examples.
+INSERT INTO requested_models (name, is_gated, license_id, license_text, license_fetched_date,
+                              use_policy_file, use_policy_text, use_policy_fetched_date)
+VALUES ('logos-docs/example-chat', true, 'example-license', 'Example agreement for the documentation model.',
+        now(), 'USE_POLICY.md', 'Example use policy for the documentation model.', now())
+ON CONFLICT (lower(name)) DO NOTHING;
+
+INSERT INTO requested_model_votes (requested_model_id, user_id)
+SELECT m.id, u.id FROM requested_models m CROSS JOIN users u
+WHERE m.name = 'logos-docs/example-chat' AND u.username = 'alexandra.szuminska'
+ON CONFLICT (requested_model_id, user_id) DO NOTHING;
+
 COMMIT;
 
 SELECT 'docs role-screenshots seed applied' AS status,

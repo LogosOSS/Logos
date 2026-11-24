@@ -124,53 +124,24 @@ async def _fetch(
                 elif not isinstance(license_id, str):
                     license_id = None
 
-                # Both files come from the repository's tree, scanned in the
-                # same pass. The license pins the default branch, so once it
-                # is found the other ref need not be asked — the policy, if
-                # any, lives on that branch too.
-                license_file: str | None = None
-                license_ref: str | None = None
-                policy_file: str | None = None
-                policy_ref: str | None = None
+                license_file = license_text = policy_file = use_policy_text = None
                 for ref in _DEFAULT_REFS:
                     tree = await get(f"{constants.ENDPOINT}/api/models/{hf_repo_id}/tree/{ref}")
                     if tree.status_code == 404:
-                        continue  # not this repository's default branch
+                        continue
                     hf_raise_for_status(tree)
-                    entries = tree.json()
-                    if license_file is None:
-                        candidates = [
-                            entry["path"]
-                            for entry in entries
-                            if entry.get("type") == "file"
-                            and _LICENSE_FILE_NAME.match(entry["path"].rsplit("/", 1)[-1])
-                        ]
-                        if candidates:
-                            license_file = min(candidates, key=_license_file_rank)
-                            license_ref = ref
-                    if policy_file is None:
-                        candidates = [
-                            entry["path"]
-                            for entry in entries
-                            if entry.get("type") == "file"
-                            and _USE_POLICY_FILE_NAME.match(entry["path"].rsplit("/", 1)[-1])
-                        ]
-                        if candidates:
-                            policy_file = min(candidates)
-                            policy_ref = ref
-                    if license_file is not None:
-                        break
-
-                license_text: str | None = None
-                if license_file is not None and license_ref is not None:
-                    license_text = await read_repo_file(
-                        f"{constants.ENDPOINT}/{hf_repo_id}/resolve/{license_ref}/{license_file}", "License file"
-                    )
-                use_policy_text: str | None = None
-                if policy_file is not None and policy_ref is not None:
-                    use_policy_text = await read_repo_file(
-                        f"{constants.ENDPOINT}/{hf_repo_id}/resolve/{policy_ref}/{policy_file}", "Use policy file"
-                    )
+                    paths = [entry["path"] for entry in tree.json() if entry.get("type") == "file"]
+                    licenses = [path for path in paths if _LICENSE_FILE_NAME.match(path.rsplit("/", 1)[-1])]
+                    policies = [path for path in paths if _USE_POLICY_FILE_NAME.match(path.rsplit("/", 1)[-1])]
+                    base_url = f"{constants.ENDPOINT}/{hf_repo_id}/resolve/{ref}"
+                    if licenses:
+                        license_file = min(licenses, key=_license_file_rank)
+                        license_text = await read_repo_file(f"{base_url}/{license_file}", "License file")
+                    if policies:
+                        policy_file = min(policies)
+                        use_policy_text = await read_repo_file(f"{base_url}/{policy_file}", "Use policy file")
+                    # A successful tree selects the revision for both documents, even when either is absent.
+                    break
         return license_id, license_file, license_text, policy_file, use_policy_text, None
     except HFValidationError:
         return (None, None, None, None, None, "Not a valid Hugging Face repository id.")

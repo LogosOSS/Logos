@@ -95,39 +95,33 @@ describe('NotificationBell', () => {
     payload,
   });
 
-  it('opens the model page on Hugging Face when a gated-model notification is clicked', async () => {
-    const open = vi.spyOn(window, 'open').mockReturnValue(null);
-    try {
-      service.list.mockResolvedValue({
-        content: [gated({ model: 'meta-llama/llama-3.1-8b' })],
-        total_elements: 1, total_pages: 1, number: 0, last: true,
-      });
-      await bell.toggle();
-      fixture.detectChanges();
-      fixture.nativeElement.querySelector('.item__title').click();
-      expect(open).toHaveBeenCalledWith('https://huggingface.co/meta-llama/llama-3.1-8b', '_blank', 'noopener,noreferrer');
-      expect(bell.items()[0].read).toBe(true);
-      expect(bell.open()).toBe(true);
-    } finally {
-      open.mockRestore();
-    }
+  it('links a gated-model notification to the model in a new tab', async () => {
+    service.list.mockResolvedValue({
+      content: [gated({ model: 'meta-llama/llama-3.1-8b' })],
+      total_elements: 1, total_pages: 1, number: 0, last: true,
+    });
+    await bell.toggle();
+    fixture.detectChanges();
+    const title: HTMLAnchorElement = fixture.nativeElement.querySelector('a.item__title');
+    expect(title.href).toBe('https://huggingface.co/meta-llama/llama-3.1-8b');
+    expect(title.target).toBe('_blank');
+    expect(title.relList.contains('noopener')).toBe(true);
+    title.addEventListener('click', (event) => event.preventDefault(), { once: true });
+    title.click();
+    expect(bell.items()[0].read).toBe(true);
+    expect(bell.open()).toBe(true);
   });
 
-  it('marks a gated-model notification read without opening a page for a malformed payload', async () => {
-    const open = vi.spyOn(window, 'open').mockReturnValue(null);
-    try {
-      service.list.mockResolvedValue({
-        content: [gated({ model: 'https://huggingface.co/evil/x' })],
-        total_elements: 1, total_pages: 1, number: 0, last: true,
-      });
-      await bell.toggle();
-      fixture.detectChanges();
-      fixture.nativeElement.querySelector('.item__title').click();
-      expect(open).not.toHaveBeenCalled();
-      expect(bell.items()[0].read).toBe(true);
-    } finally {
-      open.mockRestore();
-    }
+  it('keeps click-to-read for a notification without a valid destination', async () => {
+    service.list.mockResolvedValue({
+      content: [gated({ model: 'https://huggingface.co/evil/x' })],
+      total_elements: 1, total_pages: 1, number: 0, last: true,
+    });
+    await bell.toggle();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('a.item__title')).toBeNull();
+    fixture.nativeElement.querySelector('button.item__title').click();
+    expect(bell.items()[0].read).toBe(true);
   });
 
   for (const read of [false, true]) {

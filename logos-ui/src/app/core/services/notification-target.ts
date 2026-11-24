@@ -28,7 +28,7 @@ function modelName(value: unknown): string | null {
  * same target as the Model requests page' license dialog. Built from the
  * validated payload value only, never from a payload-supplied URL.
  */
-export function notificationModelUrl(item: AppNotification): string | null {
+export function notificationExternalUrl(item: AppNotification): string | null {
   if (item.type !== 'gated_model_requested' || !item.payload || typeof item.payload !== 'object') return null;
   const model = modelName((item.payload as Record<string, unknown>)['model']);
   return model === null ? null : `https://huggingface.co/${model}`;

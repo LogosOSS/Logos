@@ -265,7 +265,15 @@ async def test_license_id_wins_when_several_files_match(hub):
 
 
 async def test_no_license_file_keeps_the_card_license(hub):
-    _hub_with(hub, {"cardData": {"license": "mit"}}, {"main": [{"type": "file", "path": "model.safetensors"}]}, {})
+    _hub_with(
+        hub,
+        {"cardData": {"license": "mit"}},
+        {
+            "main": [{"type": "file", "path": "USE_POLICY.md"}],
+            "master": [{"type": "file", "path": "LICENSE"}],
+        },
+        {"USE_POLICY.md": "Current policy", "LICENSE": "Obsolete GPL agreement"},
+    )
 
     result = await hf_license.fetch_hf_license("org/model")
 
@@ -273,6 +281,8 @@ async def test_no_license_file_keeps_the_card_license(hub):
     assert result.license_id == "mit"
     assert result.license_file is None
     assert result.license_text is None
+    assert result.use_policy_text == "Current policy"
+    assert all(not request.url.path.endswith("/tree/master") for request in hub.requests)
 
 
 async def test_no_license_information_is_no_error(hub):
