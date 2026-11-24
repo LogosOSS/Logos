@@ -177,10 +177,15 @@
     </div>
 
     @if (adminUsers().length > 0) {
-      <div class="form-field">
-        <label class="field-label">Owners</label>
+      <div class="form-field" role="group" aria-labelledby="new-team-owners">
+        <span id="new-team-owners" class="field-label">Owners</span>
+        <app-search-input
+          placeholder="Search owners…"
+          [value]="ownerSearch()"
+          (valueChange)="ownerSearch.set($event)"
+        />
         <div class="owner-list">
-          @for (user of adminUsers(); track user.id) {
+          @for (user of filteredOwners(); track user.id) {
             <label class="owner-option" [class.owner-option--selected]="isOwnerSelected(user.id)">
               <input
                 type="checkbox"
@@ -191,6 +196,8 @@
               />
               <span class="owner-username">{{ displayName(user) }}</span>
             </label>
+          } @empty {
+            <span class="field-hint" role="status">No matching owners.</span>
           }
         </div>
       </div>

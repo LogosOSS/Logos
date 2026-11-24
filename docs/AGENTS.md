@@ -353,7 +353,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-user-management.png` | `tobias.wasner` | `/user-management` | `roles/logos-admin.md` |
 | `logos-admin-team-management.png` | `tobias.wasner` | `/team-management` | `roles/logos-admin.md` |
 | `logos-admin-permission-audit.png` | `tobias.wasner` | `/permission-audit-log` | `roles/logos-admin.md#permission-audit` |
-| `logos-admin-new-team.png` | `tobias.wasner` | `/team-management` — **New Team** dialog, EU processing selected | `roles/logos-admin.md#team-privacy` |
+| `logos-admin-new-team.png` | `tobias.wasner` | `/team-management` — **New Team** dialog, EU processing and a searched owner selected | `roles/logos-admin.md#team-privacy` |
 | `logos-admin-security-incidents.png` | `tobias.wasner` | `/agents/security` — all statuses; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-repositories.png` | `tobias.wasner` | `/agents/security` — Monitored repositories expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-intake.png` | `tobias.wasner` | `/agents/security` — Report an important incident expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
@@ -374,7 +374,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled and automatic workflow analysis off | `roles/app-admin.md#enable-the-coding-agent` |
 | `team-detail-workflows.png` | owner or `logos_admin` | `/teams/<id>` — **Workflows** | same |
 | `team-detail-models.png` | owner or `logos_admin` | `/teams/<id>` — **Models** | same |
-| `team-detail-activity.png` | owner or `logos_admin` | `/teams/<id>` — **Activity** | same |
+| `team-detail-activity.png` | owner or `logos_admin` | `/teams/<id>` — **Activity**, one requester selected by name | same |
 | `team-detail-cloud-usage.png` | owner or `logos_admin` | `/teams/<id>` — **Cloud Usage** | same |
 | `team-detail-settings.png` | owner or `logos_admin` | `/teams/<id>` — **Settings** | same |
 | `team-detail-providers.png` | `tobias.wasner` (`logos_admin` only) | `/teams/<id>` — **Providers** | `roles/logos-admin.md#teams` |

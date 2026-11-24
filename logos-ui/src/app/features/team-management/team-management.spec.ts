@@ -204,6 +204,44 @@ describe('TeamManagement', () => {
     component.createPrivacy.set('EU');
     expect(component.createValid()).toBe(true);
   });
+
+  it('filters owner checkboxes by name or username and submits selections hidden by a later search', async () => {
+    teamService.getAdminUsers.mockResolvedValue([
+      { id: 12, username: 'river', prename: 'Alex', name: 'Stone' },
+      { id: 27, username: 'mtran', prename: 'Mai', name: 'Tran' },
+    ]);
+    await createFor('logos_admin');
+    component.openCreateDialog();
+    fixture.detectChanges();
+    const group = document.querySelector<HTMLElement>('[role="group"][aria-labelledby="new-team-owners"]')!;
+    const search = group.querySelector<HTMLInputElement>('input[type="text"]')!;
+    const boxes = () => Array.from(group.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+    const type = (query: string) => {
+      search.value = query;
+      search.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+    };
+
+    expect(boxes()).toHaveLength(2);
+    type('iVe');
+    expect(boxes()).toHaveLength(1);
+    boxes()[0].click();
+    type('unmatched');
+    expect(group.textContent).toContain('No matching owners.');
+    type(' trA ');
+    boxes()[0].click();
+    type('');
+    expect(boxes().map(box => box.checked)).toEqual([true, true]);
+    component.createName.set('Search team');
+    expect(component.createValid()).toBe(false);
+    component.createPrivacy.set('LOCAL');
+    type('mai');
+    await component.submitCreate();
+    expect(teamService.createTeam).toHaveBeenCalledWith('Search team', [12, 27], 'LOCAL');
+    component.openCreateDialog();
+    expect(component.ownerSearch()).toBe('');
+    expect(component.createOwnerIds()).toEqual([]);
+  });
   it('rolls back and reports when saving fails', async () => {
     await createFor('logos_admin');
     teamService.updateTeamPriority.mockRejectedValue(new Error('boom'));

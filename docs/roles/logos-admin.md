@@ -720,9 +720,10 @@ The log starts with that team's ID as a filter.
 
 ### Team privacy
 
-In **New Team**, enter a name, choose where requests can be processed, and select any owners. Each team must have a privacy setting.
+In **New Team**, enter a name and choose where requests can be processed. Each team must have a privacy setting.
+Type part of a name or username in **Search owners**. Select each owner. Your selections stay when you change the search.
 
-![New Team with EU processing selected](/img/roles/logos-admin-new-team.png)
+![New Team with EU processing and one owner selected after a name search](/img/roles/logos-admin-new-team.png)
 
 | Team privacy | Eligible deployments |
 | --- | --- |

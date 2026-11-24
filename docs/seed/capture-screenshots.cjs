@@ -551,6 +551,8 @@ const SHOTS = [
       await p.getByRole("button", { name: /New Team/ }).click();
       await p.fill("#team-name", "MAISS");
       await p.locator("#team-privacy").selectOption("EU");
+      await p.getByRole("textbox", { name: "Search owners…" }).fill("szum");
+      await p.getByRole("checkbox", { name: "Alexandra Szuminska" }).check();
     },
   },
   {
@@ -822,7 +824,12 @@ const SHOTS = [
     go: (p, ids) => teamTab(p, ids, "Application Keys"),
   },
   { file: "roles/team-detail-models.png", user: APP_ADMIN, go: (p, ids) => teamTab(p, ids, "Models") },
-  { file: "roles/team-detail-activity.png", user: APP_ADMIN, full: true, go: (p, ids) => teamTab(p, ids, "Activity") },
+  { file: "roles/team-detail-activity.png", user: APP_ADMIN, full: true, go: async (p, ids) => {
+    await teamTab(p, ids, "Activity");
+    await p.getByRole("button", { name: /^Filter by requester/ }).click();
+    await p.getByRole("searchbox", { name: "Search requesters" }).fill("wasn");
+    await p.getByRole("button", { name: /Tobias Wasner/i }).click();
+  } },
   {
     file: "roles/team-detail-cloud-usage.png",
     user: APP_ADMIN,

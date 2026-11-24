@@ -239,8 +239,10 @@ This tab shows which catalogue models the team can use.
 
 This tab shows the live queue state of the team, the recent request log, the
 token totals and the export function.
+Under **Requests**, open **Everyone in this team** and type part of a requester’s name.
+Select a result to show that person’s requests.
 
-![Team detail — Activity](/img/roles/team-detail-activity.png)
+![Team activity with the request log filtered to one requester](/img/roles/team-detail-activity.png)
 
 ### Cloud Usage
 

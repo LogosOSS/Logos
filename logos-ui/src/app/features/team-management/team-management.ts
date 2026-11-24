@@ -60,6 +60,8 @@ export class TeamManagement implements OnInit {
   createOpen = signal(false);
   createName = signal('');
   createOwnerIds = signal<number[]>([]);
+  ownerSearch = signal('');
+  readonly filteredOwners = computed(() => this.adminUsers().filter(user => userMatchesQuery(user, this.ownerSearch())));
   readonly privacyLabels = TEAM_PRIVACY;
   readonly privacyOptions = TEAM_PRIVACY_OPTIONS;
   createPrivacy = signal<TeamPrivacy | ''>('');
@@ -247,6 +249,7 @@ export class TeamManagement implements OnInit {
   openCreateDialog(): void {
     this.createName.set('');
     this.createOwnerIds.set([]);
+    this.ownerSearch.set('');
     this.createPrivacy.set('');
     this.createError.set('');
     this.createOpen.set(true);
