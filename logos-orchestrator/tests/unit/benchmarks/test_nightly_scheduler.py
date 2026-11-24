@@ -508,6 +508,34 @@ async def test_capacity_deferral_retries_after_cooldown_during_the_same_window(s
     assert scheduler.run_schedule.await_args.args[0] == 31
 
 
+@pytest.mark.parametrize("status", [CAPACITY_WAITING, "continuing"])
+async def test_claimed_round_can_retry_after_worker_reconnects(scheduler, rotation, monkeypatch, status):
+    rows, _ = rotation
+    claimed_at = module.local_now()
+    rows[0].update(last_run_date=claimed_at.date(), status=status, updated_at=claimed_at)
+    for row in rows[1:]:
+        row["enabled"] = False
+    claim = MagicMock(return_value=True)
+    monkeypatch.setattr(module.store, "claim", claim)
+    now = claimed_at + timedelta(seconds=CAPACITY_RETRY_SECONDS)
+    monkeypatch.setattr(module, "local_now", lambda: now)
+    scheduler.target_lane.side_effect = lambda pair: module.NightlyScheduler.target_lane(scheduler, pair)
+    scheduler.registry.is_provider_online.return_value = False
+
+    await scheduler.tick()
+
+    module.store.save.assert_not_called()
+    claim.assert_not_called()
+    scheduler.run_schedule.assert_not_awaited()
+
+    scheduler.registry.is_provider_online.return_value = True
+    now += timedelta(seconds=15)
+    await scheduler.tick()
+
+    claim.assert_called_once_with(31, claimed_at.date())
+    scheduler.run_schedule.assert_awaited_once()
+
+
 async def test_all_pending_recovery_precedes_any_new_pair(scheduler, rotation):
     rows, claimed = rotation
     rows[2]["recovery"] = {"provider_id": 20}

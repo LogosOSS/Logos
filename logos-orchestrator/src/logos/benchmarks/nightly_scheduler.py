@@ -134,14 +134,15 @@ class NightlyScheduler:
                         break
                     if not row["enabled"]:
                         continue
-                    if row["last_run_date"] == day:
+                    claimed_today = row["last_run_date"] == day
+                    if claimed_today:
                         if row.get("status") == CAPACITY_WAITING:
                             updated = row.get("updated_at")
                             if updated and (local_now() - updated).total_seconds() < CAPACITY_RETRY_SECONDS:
                                 continue
                         elif row.get("status") != "continuing":
                             continue
-                    if row["last_run_date"] != day and store.claimed_today(day) >= MAX_PAIRS_PER_NIGHT:
+                    if not claimed_today and store.claimed_today(day) >= MAX_PAIRS_PER_NIGHT:
                         continue
                     if len(selected) >= maintenance_node_limit():
                         deferred.append(row)
@@ -149,7 +150,9 @@ class NightlyScheduler:
                     try:
                         target, _, _ = self.target_lane(pair_id)
                     except RuntimeError as exc:
-                        store.save(pair_id, "unavailable", [{"status": "skipped", "reason": str(exc)[:1000]}], None)
+                        # Keep claimed rounds eligible for retry or window finalization.
+                        if not claimed_today:
+                            store.save(pair_id, "unavailable", [{"status": "skipped", "reason": str(exc)[:1000]}], None)
                         continue
                     provider_id = int(target["provider_id"])
                     if self.planner.is_worker_locked(provider_id):
