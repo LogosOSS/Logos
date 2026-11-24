@@ -10,7 +10,23 @@ import { benchmarkResultRow } from './benchmark-result-row';
 import { benchmarkProgress } from './benchmark-progress';
 import { comparisonValue } from './benchmark-comparison';
 
-interface SelectionComparison { benchmark_id: number; baseline_id: number | null; throughput: number | null; issues: string[]; }
+interface AnswerLengthChange {
+  request_number: number;
+  baseline_tokens: number;
+  trial_tokens: number;
+  change_percent: number | null;
+}
+
+interface SelectionComparison {
+  benchmark_id: number;
+  baseline_id: number | null;
+  throughput: number | null;
+  issues: string[];
+  length_mismatches?: number;
+  length_changes?: AnswerLengthChange[];
+}
+
+type AnswerLengthDetails = AnswerLengthChange[] | 'loading' | 'error';
 interface DeploymentStatus extends NightlyStatus { deployment?: DeploymentSnapshot; selection?: { best_observed: SelectionComparison | null; best_eligible: SelectionComparison | null; comparisons: SelectionComparison[] }; }
 
 export interface DeploymentSnapshot {
@@ -71,6 +87,7 @@ export class DeployedConfiguration implements OnDestroy {
   private readonly http = inject(HttpClient);
   readonly state = signal<DeploymentStatus | null>(null);
   readonly error = signal(false);
+  readonly answerLengthDetails = signal<ReadonlyMap<number, AnswerLengthDetails>>(new Map());
   readonly datasetLabel = benchmarkDatasetLabel;
   readonly deployment = computed(() => this.state()?.deployment);
   readonly workerStatus = computed(() => {
@@ -103,7 +120,41 @@ export class DeployedConfiguration implements OnDestroy {
   private destroyed = false;
 
   constructor() {
-    effect(() => { const id = this.pairId(); this.state.set(null); this.error.set(false); void this.load(id, ++this.generation); });
+    effect(() => {
+      const id = this.pairId();
+      this.state.set(null);
+      this.error.set(false);
+      this.answerLengthDetails.set(new Map());
+      void this.load(id, ++this.generation);
+    });
+  }
+
+  async loadAnswerLengthDetails(benchmarkId: number): Promise<void> {
+    const current = this.answerLengthDetails().get(benchmarkId);
+    if (current !== undefined && current !== 'error') return;
+    const pairId = this.pairId();
+    const generation = this.generation;
+    this.setAnswerLengthDetails(benchmarkId, 'loading');
+    let details: AnswerLengthDetails;
+    try {
+      const status = await firstValueFrom(this.http.post<DeploymentStatus>(
+        '/api/logosdb/model_benchmarks/nightly/status', { model_provider_id: pairId, length_comparison_id: benchmarkId }));
+      details = status.selection?.comparisons.find(item => item.benchmark_id === benchmarkId)?.length_changes ?? [];
+    } catch {
+      details = 'error';
+    }
+    if (!this.destroyed && generation === this.generation && pairId === this.pairId()) {
+      this.setAnswerLengthDetails(benchmarkId, details);
+    }
+  }
+
+  lengthChangeNearBoundary(percent: number): boolean {
+    // Two decimal places can otherwise make a rejected value look exactly at the limit.
+    return Math.abs(percent) < 20.005;
+  }
+
+  private setAnswerLengthDetails(benchmarkId: number, details: AnswerLengthDetails): void {
+    this.answerLengthDetails.update(current => new Map(current).set(benchmarkId, details));
   }
   ngOnDestroy(): void { this.destroyed = true; this.generation++; clearTimeout(this.timer); }
   private async load(id: number, generation: number): Promise<void> {

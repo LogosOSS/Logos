@@ -118,45 +118,63 @@ def rate(run):
     return value
 
 
-def eligibility_issues(candidate, baseline):
-    """Explain the response, workload and latency checks used for automatic adoption."""
+def comparison_diagnostics(candidate, baseline, *, include_length_changes=False):
+    """Return adoption issues, the length mismatch count, and optional anonymous measurements."""
     issues = []
+    lengths = 0
+    length_changes = []
     if rate(candidate) is None or rate(baseline) is None:
         issues.append("A complete successful throughput measurement is missing")
     candidate_config, base_config = candidate["configuration"], baseline["configuration"]
     if candidate_config.get("nightly", {}).get("series_key") != base_config.get("nightly", {}).get("series_key"):
         issues.append("Measurement environments differ")
-    if candidate_config.get("workload", {}).get("id") != base_config.get("workload", {}).get("id"):
+    workload_id = candidate_config.get("workload", {}).get("id")
+    same_workload = workload_id == base_config.get("workload", {}).get("id")
+    if not same_workload:
         issues.append("Request datasets differ")
-    base_rows = baseline["metrics"].get("replay_samples", [])
-    samples = candidate["metrics"].get("replay_samples", [])
-    base_samples = {row["source_log_id"]: row for row in base_rows}
+    base_rows = baseline["metrics"].get("replay_samples") or []
+    samples = candidate["metrics"].get("replay_samples") or []
+    by_source = {row["source_log_id"]: row for row in samples}
     if (
-        len(base_samples) != baseline["sample_size"]
-        or len(samples) != len(base_samples)
-        or {row["source_log_id"] for row in samples} != set(base_samples)
+        len(base_rows) != baseline["sample_size"]
+        or len(by_source) != len(base_rows)
+        or len(samples) != len(base_rows)
+        or {row["source_log_id"] for row in base_rows} != set(by_source)
+        or any(not _is_token_count(row.get("output_tokens")) for rows in (base_rows, samples) for row in rows)
     ):
         issues.append("Per-request comparison data is missing or the request sets differ")
     else:
-        finishes, native, lengths = 0, 0, 0
-        for row in samples:
-            original = base_samples[row["source_log_id"]]
-            reason = row["finish_reason"]
+        finishes, native = 0, 0
+        for request_number, original in enumerate(base_rows, start=1):
+            row = by_source[original["source_log_id"]]
+            baseline_tokens, trial_tokens = original["output_tokens"], row["output_tokens"]
+            reason = row.get("finish_reason")
             budget = row.get("fixed_output_budget")
             reached_fixed_budget = (
                 reason == "length"
                 and type(budget) is int
                 and budget > 0
-                and budget == original.get("fixed_output_budget") == row["output_tokens"] == original["output_tokens"]
+                and budget == original.get("fixed_output_budget") == trial_tokens == baseline_tokens
             )
-            if reason != original["finish_reason"] or (
+            if reason != original.get("finish_reason") or (
                 reason not in {"stop", "tool_calls"} and not reached_fixed_budget
             ):
                 finishes += 1
             if row.get("native_finish_reason") != original.get("native_finish_reason"):
                 native += 1
-            if not (0.8 * original["output_tokens"] <= row["output_tokens"] <= 1.2 * original["output_tokens"]):
+            if not (4 * baseline_tokens <= 5 * trial_tokens <= 6 * baseline_tokens):
                 lengths += 1
+                if include_length_changes and same_workload and workload_id:
+                    length_changes.append(
+                        {
+                            "request_number": request_number,
+                            "baseline_tokens": baseline_tokens,
+                            "trial_tokens": trial_tokens,
+                            "change_percent": (
+                                100 * (trial_tokens - baseline_tokens) / baseline_tokens if baseline_tokens else None
+                            ),
+                        }
+                    )
         if finishes:
             issues.append(f"{finishes} answers have a different or incomplete finish reason")
         if native:
@@ -179,6 +197,16 @@ def eligibility_issues(candidate, baseline):
         issues.append("Comparable p95 request latency is missing")
     elif after > before * 1.1:
         issues.append(f"p95 latency increased by {(after / before - 1) * 100:.1f}% (maximum 10%)")
+    return issues, lengths if same_workload and workload_id else 0, length_changes
+
+
+def _is_token_count(value):
+    return (type(value) is int or (type(value) is float and value.is_integer())) and value >= 0
+
+
+def eligibility_issues(candidate, baseline):
+    """Explain the response, workload and latency checks used for automatic adoption."""
+    issues, _, _ = comparison_diagnostics(candidate, baseline)
     return issues
 
 

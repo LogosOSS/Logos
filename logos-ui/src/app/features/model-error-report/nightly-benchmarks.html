@@ -56,16 +56,6 @@
         @if (sourceNotice()) { <p role="status">{{ sourceNotice() }}</p> }
       }
     </div>
-    @if (!automaticSource) {
-      <details>
-        <summary>Select individual request IDs</summary>
-        <label>Name <input [(ngModel)]="workloadName" maxlength="128" [disabled]="sourceLocked" /></label>
-        <label>Request IDs <input [(ngModel)]="logIds" placeholder="3280, 3281, 3282" [disabled]="sourceLocked" /></label>
-        <label>Provenance <select [(ngModel)]="provenance" [disabled]="sourceLocked"><option value="synthetic">Synthetic test requests</option><option value="production">Production requests</option></select></label>
-        <p>Select 1–100 successful FULL requests for this model. Their text and inference settings remain in the database.</p>
-        <button type="button" (click)="createWorkload()" [disabled]="sourceLocked">Create dataset</button>
-      </details>
-    }
     <details class="nightly__plan">
       <summary>Schedule and test plan</summary>
       @if (window; as timing) {

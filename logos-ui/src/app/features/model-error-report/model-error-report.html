@@ -747,10 +747,12 @@
 
           <section id="performance-analysis" class="performance-view performance-advanced" aria-label="Benchmark analysis" [hidden]="performanceView() !== 'analysis'">
             <div class="performance-advanced__content">
-<section class="performance-comparison" aria-label="Charts and comparison"><h3><i class="pi pi-chart-bar" aria-hidden="true"></i> Charts and comparison</h3>
-              <app-benchmark-comparison [runs]="performance()" />
-            </section>
-<details class="performance-analysis-item" name="performance-analysis"><summary>Run details and saved configurations</summary>
+              <details class="performance-analysis-item" name="performance-analysis">
+                <summary><h3><i class="pi pi-chart-bar" aria-hidden="true"></i> Compare parameter values</h3></summary>
+                <app-benchmark-comparison [runs]="performance()" />
+              </details>
+              <details class="performance-analysis-item" name="performance-analysis">
+                <summary><h3><i class="pi pi-list" aria-hidden="true"></i> Inspect saved runs</h3></summary>
 
             <div class="performance-list">
 
@@ -914,8 +916,8 @@
 
             </div>
             </details>
-<details class="performance-analysis-item performance-glossary" name="performance-analysis">
-            <summary><span>Glossary &amp; abbreviations</span><small>Metrics and serving parameters</small></summary>
+          <details class="performance-analysis-item performance-glossary" name="performance-analysis">
+            <summary><h3><i class="pi pi-book" aria-hidden="true"></i> Benchmark glossary</h3></summary>
             <div class="glossary-sections">
               <section><h4>Metrics</h4><dl class="glossary-grid">
                 <div><dt>TTFT</dt><dd>Time to first token.</dd></div>

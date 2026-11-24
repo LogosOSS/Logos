@@ -93,8 +93,6 @@
 .performance-editor { --model-detail-font-size: 1rem; --model-detail-heading-size: 1.25rem; font-size: 1rem; line-height: 1.5; }
 .performance-editor h3 { font-size: 1.25rem; font-weight: 500; margin: 0; }
 .performance-editor .benchmark-settings-panel { margin-top: 24px; }
-.performance-comparison > h3 { margin: 0 0 8px; font-size: 1.25rem; font-weight: 500; }
-.performance-comparison { @include panel.surface; }
 @media (max-width: 600px) {
   .benchmark-recipe { align-items: flex-start; flex-direction: column; }
   .performance-nav button { justify-content: flex-start; }

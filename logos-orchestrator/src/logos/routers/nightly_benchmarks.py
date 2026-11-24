@@ -14,7 +14,7 @@ from logos.benchmarks.nightly_overview import overview
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import (
     BenchmarkWorkloadRequest,
-    NightlyStatusRequest,
+    NightlySelectionStatusRequest,
     NightlyUpdateRequest,
     RecentBenchmarkWorkloadRequest,
 )
@@ -37,7 +37,7 @@ def worker_ready(snapshot, online):
 
 
 @router.post("/status")
-async def nightly_status(data: NightlyStatusRequest, request: Request):
+async def nightly_status(data: NightlySelectionStatusRequest, request: Request):
     _require_internal_secret(request)
     target = target_for(data.model_provider_id)
     result = store.status(data.model_provider_id)
@@ -87,7 +87,9 @@ async def nightly_status(data: NightlyStatusRequest, request: Request):
     )
     if result["deployment"]["configuration"] != current:
         result["deployment"]["series_key"] = None
-    result["selection"] = store.selection_summary(data.model_provider_id, result.get("workload_id"))
+    result["selection"] = store.selection_summary(
+        data.model_provider_id, result.get("workload_id"), length_comparison_id=data.length_comparison_id
+    )
     result["window"] = MaintenanceWindow.from_env().describe()
     result["timezone"] = result["window"]["timezone"]
     result["max_maintenance_nodes"] = maintenance_node_limit()

@@ -83,11 +83,52 @@
               @for (comparison of excluded; track comparison.benchmark_id) {
                 <li class="exclusion">
                   <i class="pi pi-times-circle" aria-hidden="true"></i>
-                  <div>
-                    <p><strong>#{{ comparison.benchmark_id }}</strong> · {{ comparison.throughput === null ? 'No complete result' : (comparison.throughput | number:'1.1-1') + ' tok/s' }}</p>
-                    <ul>
+                  <div class="exclusion__body">
+                    <p>
+                      <strong>#{{ comparison.benchmark_id }}</strong> · {{ comparison.throughput === null ? 'No complete result' : (comparison.throughput | number:'1.1-1') + ' tok/s' }}
+                      @if (comparison.baseline_id; as baseline) { <span> · Baseline #{{ baseline }}</span> }
+                    </p>
+                    <ul class="exclusion__reasons">
                       @for (issue of comparison.issues; track $index) { <li>{{ issue }}</li> }
                     </ul>
+                    @if (comparison.length_mismatches) {
+                      <details class="answer-length-details" #lengths (toggle)="lengths.open && loadAnswerLengthDetails(comparison.benchmark_id)">
+                        <summary>Answer length changes</summary>
+                        @let changes = answerLengthDetails().get(comparison.benchmark_id);
+                        @if (changes === 'loading') {
+                          <p role="status">Loading answer lengths…</p>
+                        } @else if (changes === 'error') {
+                          <p role="alert">Could not load answer lengths.</p>
+                          <button type="button" class="answer-length-retry" (click)="loadAnswerLengthDetails(comparison.benchmark_id)">Retry</button>
+                        } @else if (changes?.length) {
+                          <table>
+                            <caption>Output tokens by position in the saved workload</caption>
+                            <thead><tr><th scope="col">Request</th><th scope="col">Baseline</th><th scope="col">Trial</th><th scope="col">Change</th></tr></thead>
+                            <tbody>
+                              @for (change of changes; track change.request_number) {
+                                @let longer = change.trial_tokens > change.baseline_tokens;
+                                @let percent = change.change_percent;
+                                <tr>
+                                  <th scope="row">#{{ change.request_number }}</th>
+                                  <td>{{ change.baseline_tokens | number }}</td>
+                                  <td>{{ change.trial_tokens | number }}</td>
+                                  <td>
+                                    <span class="answer-length-direction">{{ longer ? 'Longer' : 'Shorter' }}</span>&ngsp;
+                                    @if (percent === null) {
+                                      <small>Zero baseline</small>
+                                    } @else {
+                                      <small>{{ longer ? '+' : '' }}{{ percent | number:(lengthChangeNearBoundary(percent) ? '1.1-8' : '1.1-2') }}%</small>
+                                    }
+                                  </td>
+                                </tr>
+                              }
+                            </tbody>
+                          </table>
+                        } @else if (changes) {
+                          <p role="status">Per-request lengths are unavailable for this run.</p>
+                        }
+                      </details>
+                    }
                   </div>
                 </li>
               }

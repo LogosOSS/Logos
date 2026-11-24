@@ -43,9 +43,6 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   sourceEdited = false;
   lookbackDays: 1 | 3 | 7 | null = null;
   readonly sourceNotice = signal<string | null>(null);
-  workloadName = '';
-  logIds = '';
-  provenance = 'synthetic';
   private version = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private destroyed = false;
@@ -59,8 +56,6 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     this.sourceNotice.set(null);
     this.saving.set(false);
     this.error.set(null);
-    this.workloadName = '';
-    this.logIds = '';
     this.confirming.set(false);
     clearTimeout(this.timer);
     void this.refresh();
@@ -141,29 +136,6 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
       this.state.set({ ...this.state()!, ...state });
       this.sourceNotice.set(created ? `Dataset applied · ${created.request_count} requests` : 'Dataset applied.');
       this.sourceEdited = false;
-      this.error.set(null);
-      await this.refresh();
-    } catch (error) {
-      if (version === this.version && !this.destroyed) this.showError(error);
-    } finally { if (version === this.version) this.saving.set(false); }
-  }
-
-  async createWorkload(): Promise<void> {
-    if (this.sourceLocked || !this.state()) return;
-    const ids = this.logIds.trim().split(/[\s,]+/).map(Number);
-    if (!this.workloadName.trim() || !ids.length || ids.some(id => !Number.isSafeInteger(id) || id <= 0)) {
-      this.error.set('Enter a name and positive request IDs separated by commas.');
-      return;
-    }
-    const version = this.version;
-    this.saving.set(true);
-    try {
-      const workload = await firstValueFrom(this.http.post<{ id: string }>('/api/logosdb/model_benchmarks/workloads/create', {
-        name: this.workloadName.trim(), log_ids: ids, provenance: this.provenance,
-      }));
-      if (version !== this.version || this.destroyed) return;
-      this.selectedWorkload = workload.id;
-      this.sourceEdited = true;
       this.error.set(null);
       await this.refresh();
     } catch (error) {

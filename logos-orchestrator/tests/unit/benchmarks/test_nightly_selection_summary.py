@@ -72,3 +72,59 @@ def test_several_pairs_are_summarized_from_one_query(monkeypatch):
     assert summaries[31]["best_observed"]["benchmark_id"] == 14
     assert summaries[32]["best_observed"]["benchmark_id"] == 20
     assert summaries[33] == {"best_observed": None, "best_eligible": None, "comparisons": []}
+
+
+def test_length_diagnostics_fetch_only_the_requested_run_and_use_baseline_order(monkeypatch):
+    baseline = measurement(10, "current", 40, baseline_id=10)
+    trial = measurement(11, "current", 55, baseline_id=10)
+    other = measurement(12, "current", 56, baseline_id=10)
+    for run, counts in (
+        (baseline, [100, 100, 100, 100, 0]),
+        (trial, [75.0, 141, 80, 120, 7]),
+        (other, [55, 100, 100, 100, 0]),
+    ):
+        run["sample_size"] = 5
+        run["metrics"]["request_totals"].update(total=5, successful=5)
+        run["metrics"]["replay_samples"] = [
+            {"source_log_id": 99 + index, "output_tokens": count, "finish_reason": "stop"}
+            for index, count in enumerate(counts)
+        ]
+    trial["metrics"]["replay_samples"].reverse()
+    db = Mock()
+    db.session.execute.return_value.mappings.return_value = [other, trial, baseline]
+    monkeypatch.setattr(nightly_store, "DBManager", lambda: nullcontext(db))
+
+    summary = nightly_store.selection_summary(31)
+    assert [row["length_mismatches"] for row in summary["comparisons"]] == [1, 3, 0]
+    assert all("length_changes" not in row for row in summary["comparisons"])
+    details = nightly_store.selection_summary(31, length_comparison_id=11)
+    excluded = details["comparisons"][1]
+    assert excluded["issues"] == ["3 answer lengths differ by more than 20% from baseline"]
+    assert excluded["length_changes"] == [
+        {"request_number": 1, "baseline_tokens": 100, "trial_tokens": 75, "change_percent": -25},
+        {"request_number": 2, "baseline_tokens": 100, "trial_tokens": 141, "change_percent": 41},
+        {"request_number": 5, "baseline_tokens": 0, "trial_tokens": 7, "change_percent": None},
+    ]
+    assert "length_changes" not in details["comparisons"][0]
+    assert "source_log_id" not in str(details)
+
+
+@pytest.mark.parametrize("legacy", ["missing samples", "different request set", "different workload"])
+def test_mismatched_or_missing_replays_have_no_length_details(monkeypatch, legacy):
+    baseline = measurement(10, "current", 40, baseline_id=10)
+    trial = measurement(11, "current", 55, baseline_id=10)
+    trial["metrics"]["replay_samples"][0]["output_tokens"] = 50
+    if legacy == "missing samples":
+        baseline["metrics"]["replay_samples"] = None
+    elif legacy == "different request set":
+        baseline["metrics"]["replay_samples"][0]["source_log_id"] = 99
+    else:
+        baseline["configuration"]["workload"]["id"] = "other"
+    db = Mock()
+    db.session.execute.return_value.mappings.return_value = [trial, baseline]
+    monkeypatch.setattr(nightly_store, "DBManager", lambda: nullcontext(db))
+
+    [comparison, *_] = nightly_store.selection_summary(31, length_comparison_id=11)["comparisons"]
+    assert comparison["issues"]
+    assert comparison["length_mismatches"] == 0
+    assert comparison["length_changes"] == []

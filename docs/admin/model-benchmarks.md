@@ -134,8 +134,8 @@ Worker disconnects and orchestrator restarts stop the job. Batches do not resume
 ## Read the Comparison Charts
 
 Expand **Performance → Benchmark runs** to see runs, changed parameters, measurement times and throughput.
-Select **Performance → Analysis**. The **Charts and comparison** section opens first.
-Select a **Reference run**, **Parameter** and **Metric** in **Parameter comparison**.
+Open **Performance → Analysis → Compare parameter values**.
+Select a **Reference run**, **Parameter** and **Metric**.
 The chart shows one parameter at a time: sequence limit, batch token limit, tensor parallelism or concurrent requests.
 Other captured settings must match the reference.
 The dashed line marks the reference measurement. Labels show recorded values and percentage changes.
@@ -152,7 +152,7 @@ Saved request workloads require the same workload identity and captured environm
 
 **Benchmark runs** lists changed parameters, measurement times and output throughput.
 **Before** uses the production baseline from the same nightly round.
-Expand **Run details and saved configurations** for the saved benchmark and serving settings.
+Expand **Inspect saved runs** for the saved benchmark and serving settings.
 
 [![Parameter comparison with reference line](/img/roles/logos-admin-benchmark-comparison.png)](/img/roles/logos-admin-benchmark-comparison.png)
 

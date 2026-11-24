@@ -267,7 +267,7 @@ async function resultsView(page, ids, sections = [], query = "") {
 
 async function analysisView(page, ids, section) {
   await performance(page, ids, "Analysis");
-  if (section !== "Charts and comparison") await details(page, section);
+  await details(page, section);
 }
 
 async function selectSavedDataset(page) {
@@ -639,14 +639,14 @@ const SHOTS = [
     file: "roles/logos-admin-benchmark-comparison.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => analysisView(p, ids, "Charts and comparison"),
+    go: (p, ids) => analysisView(p, ids, "Compare parameter values"),
   },
   {
     file: "roles/logos-admin-benchmark-configuration.png",
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await analysisView(p, ids, "Run details and saved configurations");
+      await analysisView(p, ids, "Inspect saved runs");
       await p.locator(".benchmark-configuration > summary").first().click();
     },
   },
@@ -654,7 +654,7 @@ const SHOTS = [
     file: "roles/logos-admin-benchmark-glossary.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => analysisView(p, ids, "Glossary & abbreviations"),
+    go: (p, ids) => analysisView(p, ids, "Benchmark glossary"),
   },
   // Model performance: Nightly rotation and manual setup
   {

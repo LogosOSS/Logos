@@ -272,28 +272,26 @@ Temporary benchmark settings and recovery states do not establish the production
 The status distinguishes an offline worker, a sleeping model and a model waiting to start. A sleeping model can still show its configured settings. Active replicas with different settings are identified separately.
 Manual measurements can show their change from the first comparable dataset baseline. The summary labels this baseline as **Starting baseline**.
 **Run selection** shows the fastest measured run, the fastest run that passed the checks and the last confirmed adoption when those results are available.
-Expand **Why other runs were excluded** to read the reasons by run.
+Expand **Why other runs were excluded** to read the reasons by run. When per-request counts were recorded, **Answer length changes** shows the baseline and trial token counts and the percentage change for each answer outside the allowed range.
 A fresh comparison must verify a historical candidate before automatic adoption.
 
 ![Current worker configuration and its measured result](../static/img/roles/logos-admin-deployed-configuration.png)
 
 Configuration details and benchmark history start closed on desktop and mobile.
-Select **Analysis** for the comparison charts, saved configurations and glossary.
-The large analysis sections open one at a time.
-**Charts and comparison** opens first. Select the **Reference run**, **Parameter** and **Metric**.
+Under **Analysis**, open **Compare parameter values** and select the **Reference run**, **Parameter** and **Metric**.
 The chart shows one parameter at a time, with a dashed reference line and measured changes.
 Only matching workloads and other captured settings enter the comparison.
 A single parameter value shows an explanation instead of an empty comparison chart.
 
 ![Parameter comparison with reference and measured changes](../static/img/roles/logos-admin-benchmark-comparison.png)
 
-Expand **Run details and saved configurations** to inspect a selected run.
+Expand **Inspect saved runs** to inspect a selected run.
 Expand **Configuration** for its captured benchmark settings and serving parameters.
 Expand **Fields not captured** to see unavailable fields.
 
 ![Run details and saved configuration](../static/img/roles/logos-admin-benchmark-configuration.png)
 
-Expand **Glossary & abbreviations** for metric definitions and nightly parameter names.
+Expand **Benchmark glossary** for metric definitions and nightly parameter names.
 Expand **Runtime terms and other serving parameters** for less common terms.
 
 ![Grouped benchmark glossary](../static/img/roles/logos-admin-benchmark-glossary.png)
@@ -321,7 +319,7 @@ Each night, Logos selects up to `LOGOS_NIGHTLY_MAX_PAIRS` eligible pairs, with n
 Expand **Schedule and test plan** to inspect the parameter values for this pair.
 
 Use **Request workload** to select a saved dataset for the nightly schedule.
-Choose **Recent FULL request logs**, keep **Latest 100 requests** and click **Create and apply dataset**. On production, this saves up to 100 replayable requests for the model from the production log. You can also select a time window. Each dataset has a 5 MB limit. For a hand-picked dataset, open **Select individual request IDs**.
+Choose **Recent FULL request logs**, keep **Latest 100 requests** and click **Create and apply dataset**. On production, this saves up to 100 replayable requests for the model from the production log. You can also select a time window. Each dataset has a 5 MB limit.
 ![Create a fixed request dataset](../static/img/roles/logos-admin-nightly-workload.png)
 
 The dataset keeps its inputs when source logs are deleted.

@@ -546,12 +546,12 @@ def adoption_candidate(pair_id, search, report):
     return optimization.adoption_candidate(search, runs, report)
 
 
-def selection_summary(pair_id, workload_id=None):
+def selection_summary(pair_id, workload_id=None, *, length_comparison_id=None):
     """Return bounded comparison diagnostics without request or response content."""
-    return selection_summaries([pair_id], workload_id)[pair_id]
+    return selection_summaries([pair_id], workload_id, length_comparison_id=length_comparison_id)[pair_id]
 
 
-def selection_summaries(pair_ids, workload_id=None):
+def selection_summaries(pair_ids, workload_id=None, *, length_comparison_id=None):
     """The comparison diagnostics of several pairs from one query, newest 100 runs of each."""
     ids = list(dict.fromkeys(pair_ids))
     runs_by_pair = {pair_id: [] for pair_id in ids}
@@ -569,11 +569,11 @@ def selection_summaries(pair_ids, workload_id=None):
             ).mappings()
             for row in rows:
                 runs_by_pair[row["model_provider_id"]].append(dict(row))
-    return {pair_id: _summarize(runs, workload_id) for pair_id, runs in runs_by_pair.items()}
+    return {pair_id: _summarize(runs, workload_id, length_comparison_id) for pair_id, runs in runs_by_pair.items()}
 
 
-def _summarize(runs, workload_id):
-    from logos.benchmarks.optimization import eligibility_issues, rate
+def _summarize(runs, workload_id, length_comparison_id):
+    from logos.benchmarks.optimization import comparison_diagnostics, rate
 
     by_id = {run["id"]: run for run in runs}
     if not workload_id and runs:
@@ -584,15 +584,22 @@ def _summarize(runs, workload_id):
             continue
         nightly = run["configuration"].get("nightly") or {}
         baseline = by_id.get(nightly.get("baseline_id"))
-        issues = eligibility_issues(run, baseline) if baseline else ["No comparison baseline was recorded"]
-        comparisons.append(
-            {
-                "benchmark_id": run["id"],
-                "baseline_id": nightly.get("baseline_id"),
-                "throughput": rate(run),
-                "issues": issues,
-            }
+        include_length_changes = run["id"] == length_comparison_id
+        issues, length_mismatches, length_changes = (
+            comparison_diagnostics(run, baseline, include_length_changes=include_length_changes)
+            if baseline
+            else (["No comparison baseline was recorded"], 0, [])
         )
+        comparison = {
+            "benchmark_id": run["id"],
+            "baseline_id": nightly.get("baseline_id"),
+            "throughput": rate(run),
+            "issues": issues,
+            "length_mismatches": length_mismatches,
+        }
+        if include_length_changes:
+            comparison["length_changes"] = length_changes
+        comparisons.append(comparison)
     observed = [row for row in comparisons if row["throughput"] is not None]
     eligible = [row for row in observed if not row["issues"]]
     return {

@@ -14,7 +14,7 @@ button:disabled { opacity: .5; cursor: default; }
 [role="alert"] { color: rgb(var(--color-error)); }
 small { display: block; margin-top: .75rem; overflow-wrap: anywhere; }
 label { display: block; margin: .65rem 0 .3rem; font-weight: 500; }
-input, select { box-sizing: border-box; min-width: 0; max-width: 100%; width: 100%; margin: .3rem 0 .65rem; padding: .6rem; border-radius: .5rem; border: 1px solid rgb(var(--color-outline-300)); background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-0)); font: inherit; }
+select { box-sizing: border-box; min-width: 0; max-width: 100%; width: 100%; margin: .3rem 0 .65rem; padding: .6rem; border-radius: .5rem; border: 1px solid rgb(var(--color-outline-300)); background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-0)); font: inherit; }
 li { margin: .5rem 0; overflow-wrap: anywhere; }
 @media (max-width: 600px) { button { width: 100%; } }
 
@@ -44,7 +44,7 @@ th, td { padding: .65rem .5rem; border-bottom: 1px solid rgb(var(--color-typogra
 th { font-weight: 500; }
 thead { color: rgb(var(--color-typography-500)); }
 summary { min-height: 44px; align-content: center; }
-button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }
+button:focus-visible, summary:focus-visible, select:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 2px; }
 @media (max-width: 600px) { .nightly__schedule > div { grid-template-columns: 1fr; gap: .25rem; } }
 
 
@@ -52,7 +52,6 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nightly__workload { max-width: 32rem; margin: .75rem 0 .25rem; min-width: 0; }
 .nightly > details { border-top: 1px solid rgb(var(--color-typography-100) / .12); }
 .nightly details { @include disclosure.section; }
-.nightly > details > input, .nightly > details > label { max-width: 32rem; }
 .nightly__hint { color: rgb(var(--color-typography-500)); }
 .nightly select {
   appearance: none;

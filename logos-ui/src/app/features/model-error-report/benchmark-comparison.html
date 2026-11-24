@@ -1,14 +1,13 @@
 <section class="comparison" aria-label="Benchmark parameter comparison">
-  <header><div><h3>Parameter comparison</h3><p class="muted">Change one parameter. Keep the workload and other captured settings fixed.</p></div></header>
   @if (baseline(); as reference) {
-    <label class="baseline-picker">Reference run
-      <select [value]="reference.id" (change)="baselineId.set(+$any($event.target).value)">
-        @for (run of eligibleRuns(); track run.id) {
-          <option [value]="run.id" [selected]="run.id === reference.id">#{{ run.id }} · {{ run.recorded_at | date:'dd MMM, HH:mm' }} · {{ run.provider_name }} · {{ workloadLabel(run) }}</option>
-        }
-      </select>
-    </label>
     <div class="comparison-controls">
+      <label class="baseline-picker">Reference run
+        <select [value]="reference.id" [title]="reference.provider_name + ' · ' + workloadLabel(reference)" (change)="baselineId.set(+$any($event.target).value)">
+          @for (run of eligibleRuns(); track run.id) {
+            <option [value]="run.id" [selected]="run.id === reference.id">#{{ run.id }} · {{ run.recorded_at | date:'dd MMM, HH:mm' }} · {{ run.provider_name }} · {{ workloadLabel(run) }}</option>
+          }
+        </select>
+      </label>
       <label class="parameter-picker">Parameter
         <select [value]="activeChart()?.key" (change)="parameter.set($any($event.target).value)">
           @for (chart of charts(); track chart.key) { <option [value]="chart.key">{{ chart.label }}</option> }
@@ -26,7 +25,7 @@
         <div><dt>Best recorded median</dt><dd>{{ format(bestValue()) }} <small>{{ activeMetric().unit }}</small></dd></div>
         <div><dt>Change from reference</dt><dd>{{ changeLabel(bestValue()) }}</dd></div>
       </dl>
-      <p class="comparison-context">{{ reference.provider_name }} · {{ workloadLabel(reference) }} · {{ reference.sample_size }} requests per run · {{ selected().length }} matching runs</p>
+      <p class="comparison-context">{{ selected().length }} matching {{ selected().length === 1 ? 'run' : 'runs' }} · {{ reference.sample_size }} requests per run</p>
       @if (chart.groups.length > 1) {
         <figure [attr.aria-label]="chart.label + ': ' + activeMetric().label + ' by parameter value'">
           <figcaption><strong>{{ chart.label }}</strong><span>{{ activeMetric().hint }} · {{ chart.fixed }}</span></figcaption>
@@ -61,7 +60,7 @@
               </div>
             </div>
           </div>
-          <p class="box-legend">Dashed line: reference run · point: one run · box: repeated runs · Y-axis fitted to observations</p>
+          <p class="box-legend">Dashed line for the reference · Point for one run · Box for repeated runs</p>
         </figure>
       } @else {
         <p class="comparison-note">Only one {{ chart.label.toLowerCase() }} value is recorded ({{ chart.groups[0].parameter }}). A parameter comparison needs at least two values under matching conditions.</p>
@@ -69,8 +68,8 @@
     } @else { <p class="comparison-note">No recorded parameter values are available for this reference.</p> }
     <details class="comparison-details">
       <summary>How to read this comparison</summary>
-      <p>Only the selected parameter changes. Workload, source requests, provider and other captured controls match the reference. {{ excludedCount() }} other runs are excluded. Cache state and other traffic may still differ.</p>
-      <p>Labels show observed values and changes, without a statistical significance claim. For repeated runs, the box spans the middle 50%, the line marks the median, whiskers end within 1.5 × IQR, and dots show outliers.</p>
+      <p>Workload, provider and other captured settings match the reference. {{ excludedCount() }} runs are outside this comparison. Cache state and other traffic may still differ.</p>
+      <p>The Y-axis fits the observed values. For repeated runs, the box spans the middle 50%, the line marks the median, whiskers end within 1.5 × IQR, and dots show outliers. Observed changes do not establish statistical significance.</p>
       <p>TTFT is time to first token. Total response time includes the complete request. Latency values are means across successful requests. Replay throughput is all output tokens divided by replay time; GuideLLM reports its aggregate token rate. — means not captured.</p>
     </details>
     <details class="run-details" (toggle)="showRuns.set($any($event.target).open)">
@@ -109,5 +108,5 @@
     }
     }
     </details>
-  } @else { <p class="empty">No comparable runs yet. Older runs remain available in Run details.</p> }
+  } @else { <p class="empty">No comparable runs yet. Open Inspect saved runs to see older results.</p> }
 </section>

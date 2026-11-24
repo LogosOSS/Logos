@@ -62,7 +62,8 @@ describe('Deployment status on Overview', () => {
     fixture.detectChanges();
     const http = TestBed.inject(HttpTestingController);
     const eligible = { benchmark_id: 1, baseline_id: 1, throughput: 29, issues: [] };
-    const excluded = { benchmark_id: 2, baseline_id: 1, throughput: 31, issues: ['Output count changed', 'p95 increased'] };
+    const excluded = { benchmark_id: 2, baseline_id: 1, throughput: 31,
+      issues: ['4 answer lengths differ by more than 20% from baseline', 'p95 increased'], length_mismatches: 4 };
     http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush({
       deployment,
       selection: { best_observed: excluded, best_eligible: eligible, comparisons: [excluded, eligible] },
@@ -73,7 +74,30 @@ describe('Deployment status on Overview', () => {
     expect(content.querySelector<HTMLDetailsElement>('.deployment-details')?.open).toBe(false);
     expect(content.querySelector<HTMLDetailsElement>('.excluded-runs')?.open).toBe(false);
     expect(content.querySelectorAll('.exclusion')).toHaveLength(1);
-    expect(Array.from(content.querySelectorAll('.exclusion li'), reason => reason.textContent?.trim())).toEqual(excluded.issues);
+    expect(Array.from(content.querySelectorAll('.exclusion__reasons li'), reason => reason.textContent?.trim())).toEqual(excluded.issues);
+    const details = content.querySelector<HTMLDetailsElement>('.answer-length-details')!;
+    expect(details.open).toBe(false);
+    http.expectNone(request => request.body.length_comparison_id !== undefined);
+    details.open = true;
+    details.dispatchEvent(new Event('toggle'));
+    const comparison = http.expectOne('/api/logosdb/model_benchmarks/nightly/status');
+    expect(comparison.request.body).toEqual({ model_provider_id: 1, length_comparison_id: 2 });
+    comparison.flush({ selection: { comparisons: [{ ...excluded, length_changes: [
+      { request_number: 1, baseline_tokens: 100, trial_tokens: 72, change_percent: -28 },
+      { request_number: 2, baseline_tokens: 100, trial_tokens: 140, change_percent: 40 },
+      { request_number: 3, baseline_tokens: 0, trial_tokens: 5, change_percent: null },
+      { request_number: 5, baseline_tokens: 50000, trial_tokens: 60001, change_percent: 20.002 },
+    ] }] } });
+    await Promise.resolve();
+    fixture.detectChanges();
+    const rows = Array.from(details.querySelectorAll('tbody tr'), entry =>
+      Array.from(entry.querySelectorAll('th, td'), cell => cell.textContent?.trim().replace(/\s+/g, ' ')));
+    expect(rows).toEqual([
+      ['#1', '100', '72', 'Shorter -28.0%'],
+      ['#2', '100', '140', 'Longer +40.0%'],
+      ['#3', '0', '5', 'Longer Zero baseline'],
+      ['#5', '50,000', '60,001', 'Longer +20.002%'],
+    ]);
     fixture.destroy();
     http.verify();
   });

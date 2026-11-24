@@ -55,7 +55,7 @@ Select **Run**, **Measured from → to**, **Before**, **After** or **Change** to
 Each sort control cycles through the initial order, ascending order and descending order.
 The third selection restores the initial order. Missing measurements remain last.
 A dash means the value or baseline is unavailable. Historical timestamps are not reconstructed.
-Select **Performance → Analysis** for **Charts and comparison** or **Run details and saved configurations**.
+Under **Performance → Analysis**, open **Compare parameter values** for matching runs or **Inspect saved runs** for individual configurations.
 
 ## Automatic Pair Rotation
 
@@ -154,8 +154,6 @@ Use **Request workload** under **Nightly rotation** to replace Hugging Face data
 3. Select **Create and apply dataset**. Logos shows the number of requests saved. The selection ends when you create the dataset.
 
 On production, Logos reads the selected model’s most recent successful, replayable FULL requests from the production request log. The default selection takes up to 100 requests. A time window can include up to 500. Both selections stop at 5 MB. Benchmark traffic is excluded. Every baseline and candidate uses the same saved inputs until you apply another dataset. An empty window leaves the current selection in place.
-
-For a hand-picked dataset, open **Select individual request IDs**, enter a name and 1–100 distinct IDs, choose the provenance, then select **Create dataset** and **Apply dataset**.
 
 The database stores an ordered copy of the inputs and inference settings.
 It excludes request headers, API keys, user identities and response bodies.
@@ -272,6 +270,7 @@ The timeline separates workloads and test settings. Measurements can span worker
 Expand **What does Logos check?** for the nightly adoption checks and examples of the request latency limit.
 Expand **Currently deployed → Configuration & selection details** to inspect **Serving settings** and **Run selection**.
 Open **Why other runs were excluded** when it appears to see each run and its exclusion reasons.
+**Answer length changes** shows the baseline and trial token counts for each answer more than 20% shorter or longer. Request numbers follow the saved dataset order.
 A completed eligible winner is saved before the next trial starts.
 Recovery can apply this saved winner if a later trial is interrupted. Disabling the schedule cancels pending adoption.
 These measurements do not establish statistical significance.
