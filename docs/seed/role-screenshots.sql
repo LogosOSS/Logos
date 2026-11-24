@@ -186,7 +186,7 @@ INSERT INTO teams (
     default_cloud_rpm_limit, default_cloud_tpm_limit,
     default_local_rpm_limit, default_local_tpm_limit,
     default_monthly_budget_micro_cents, team_monthly_budget_micro_cents,
-    show_on_public_stats, public_category
+    show_on_public_stats, public_category, privacy_scope
 )
 SELECT
     'Logos',
@@ -194,7 +194,7 @@ SELECT
     5, 10000,
     100000000,   -- $1.00 key default / month
     500000000,   -- $5.00 team member budget / month
-    TRUE, 'Research'  -- Settings tab shows the public stats opt-in filled
+    TRUE, 'Research', 'EU'  -- Settings tab shows the public stats opt-in filled
 WHERE NOT EXISTS (SELECT 1 FROM teams WHERE name = 'Logos');
 
 -- Members: Alexandra owns; Tobias + Henriette are members.
@@ -258,8 +258,8 @@ WHERE name = 'docs-role-logos-app-key'
   AND (environment IS NULL OR environment = '-' OR char_length(environment) = 0);
 
 -- Providers + models (names match the committed shots' catalogue style).
-INSERT INTO providers (name, base_url, provider_type, cloud_provider_type, privacy_level, auth_name, auth_format)
-SELECT v.name, v.base_url, v.provider_type, v.cloud_provider_type, v.privacy_level, v.auth_name, v.auth_format
+INSERT INTO providers (name, base_url, provider_type, cloud_provider_type, privacy_level, auth_name, auth_format, eu_processing_verified)
+SELECT v.name, v.base_url, v.provider_type, v.cloud_provider_type, v.privacy_level, v.auth_name, v.auth_format, v.provider_type = 'cloud'
 FROM (VALUES
     ('Docs Cloud (EU)', 'https://example.invalid/openai', 'cloud'::provider_type_enum,
      'azure'::cloud_provider_type_enum, 'CLOUD_IN_EU_BY_US_PROVIDER'::threshold_enum, 'api-key', '{}'),

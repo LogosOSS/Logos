@@ -137,23 +137,29 @@ public interface ModelRepository extends JpaRepository<Model, Integer> {
         """, nativeQuery = true)
     List<ModelWithPriceProjection> findAllWithPricing();
 
-    @Query(value = """
+    String EFFECTIVE_MODELS_FOR_USER = """
         WITH effective_model_ids AS (
             SELECT DISTINCT m.id
             FROM models m
             JOIN team_model_permissions tmp ON m.id = tmp.model_id
             JOIN team_members tm ON tmp.team_id = tm.team_id
             JOIN model_provider mp ON m.id = mp.model_id
-            JOIN team_provider_permissions tpp ON mp.provider_id = tpp.provider_id AND tpp.team_id = tm.team_id
+            JOIN allowed_team_provider_grants tpp ON mp.provider_id = tpp.provider_id AND tpp.team_id = tm.team_id
             WHERE tm.user_id = :userId
             UNION
             SELECT DISTINCT akmp.model_id
             FROM api_key_model_permissions akmp
             JOIN api_keys ak ON akmp.api_key_id = ak.id
             JOIN model_provider mp ON akmp.model_id = mp.model_id
-            JOIN api_key_provider_permissions akpp ON akpp.api_key_id = ak.id AND akpp.provider_id = mp.provider_id
+            JOIN allowed_key_provider_grants akpp ON akpp.api_key_id = ak.id AND akpp.provider_id = mp.provider_id
             WHERE ak.user_id = :userId AND ak.is_active = true AND ak.use_custom_permissions = true
         )
+        """;
+
+    @Query(value = EFFECTIVE_MODELS_FOR_USER + "SELECT EXISTS (SELECT 1 FROM effective_model_ids WHERE id = :modelId)", nativeQuery = true)
+    boolean isModelAccessibleToUser(@Param("userId") int userId, @Param("modelId") int modelId);
+
+    @Query(value = EFFECTIVE_MODELS_FOR_USER + """
         -- last_used_at is deliberately not computed here: it is only exposed to
         -- Logos admins (see ModelService), so the per-model MAX subselect would
         -- be wasted work on every other model list request.

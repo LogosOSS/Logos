@@ -122,7 +122,7 @@
                   <i class="pi pi-trash" aria-hidden="true"></i>
                 </button>
               }
-            } @else if (canEdit && !m.managed) {
+            } @else if (canEdit) {
               <button
                 class="btn-icon btn-icon--danger"
                 type="button"
@@ -131,14 +131,6 @@
               >
                 <i class="pi pi-trash" aria-hidden="true"></i>
               </button>
-            } @else if (m.managed) {
-              <span
-                class="managed-lock"
-                title="Membership is managed by Keycloak; it is synced from the group and cannot be removed here."
-                aria-label="Managed by Keycloak"
-              >
-                <i class="pi pi-lock" aria-hidden="true"></i>
-              </span>
             }
           </div>
         } @else {
@@ -161,7 +153,7 @@
                   <i class="pi pi-trash" aria-hidden="true"></i>
                 </button>
               }
-            } @else if (canEdit && !m.managed) {
+            } @else if (canEdit) {
               <button
                 class="btn-icon btn-icon--danger"
                 type="button"
@@ -170,14 +162,6 @@
               >
                 <i class="pi pi-trash" aria-hidden="true"></i>
               </button>
-            } @else if (m.managed) {
-              <span
-                class="managed-lock"
-                title="Membership is managed by Keycloak; it is synced from the group and cannot be removed here."
-                aria-label="Managed by Keycloak"
-              >
-                <i class="pi pi-lock" aria-hidden="true"></i>
-              </span>
             }
           </div>
         }
@@ -232,7 +216,10 @@
       <span class="section-count">{{ regulars.length }}</span>
     </div>
     @if (canEdit) {
-      <button type="button" class="btn-primary" (click)="openAddMember()">
+      <a class="btn-primary" routerLink="/user-management" [queryParams]="{ importTeam: teamId }">
+        <i class="pi pi-upload" aria-hidden="true"></i> Import CSV
+      </a>
+      <button type="button" class="btn-secondary" (click)="openAddMember()">
         <i class="pi pi-plus" aria-hidden="true"></i> Add Member
       </button>
     }
@@ -344,7 +331,7 @@
                   <i class="pi pi-trash" aria-hidden="true"></i>
                 </button>
               }
-            } @else if (canEdit && !m.managed) {
+            } @else if (canEdit) {
               <button
                 class="btn-icon btn-icon--danger"
                 type="button"
@@ -353,14 +340,6 @@
               >
                 <i class="pi pi-trash" aria-hidden="true"></i>
               </button>
-            } @else if (m.managed) {
-              <span
-                class="managed-lock"
-                title="Membership is managed by Keycloak; it is synced from the group and cannot be removed here."
-                aria-label="Managed by Keycloak"
-              >
-                <i class="pi pi-lock" aria-hidden="true"></i>
-              </span>
             }
           </div>
         } @else {
@@ -383,7 +362,7 @@
                   <i class="pi pi-trash" aria-hidden="true"></i>
                 </button>
               }
-            } @else if (canEdit && !m.managed) {
+            } @else if (canEdit) {
               <button
                 class="btn-icon btn-icon--danger"
                 type="button"
@@ -392,14 +371,6 @@
               >
                 <i class="pi pi-trash" aria-hidden="true"></i>
               </button>
-            } @else if (m.managed) {
-              <span
-                class="managed-lock"
-                title="Membership is managed by Keycloak; it is synced from the group and cannot be removed here."
-                aria-label="Managed by Keycloak"
-              >
-                <i class="pi pi-lock" aria-hidden="true"></i>
-              </span>
             }
           </div>
         }

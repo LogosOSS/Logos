@@ -76,17 +76,17 @@ cd logos-ui && npm ci && ng serve
 ```
 
 Open [http://localhost:4200](http://localhost:4200) and select **Sign in**. The local Keycloak realm
-(`keycloak/tum-realm.json`) seeds these accounts, all with the password `password`:
+(`keycloak/tum-realm.json`) seeds these identities with the password `password`. Logos seeds their development roles.
 
 | Username | Role | Use it for |
 | --- | --- | --- |
-| `tobias.wasner` | `logos_admin` | Everything, including providers, policies and workers |
+| `tobias.wasner` | `logos_admin` | Everything, including providers, team privacy and workers |
 | `alexandra.szuminska` | `app_admin` | Teams, users and models |
 | `henriette.huhn`, `blub.fisch`, `fridoline.fuchs` | `app_developer` | Using models through a team |
-| `pech.vogel` | none | The no-team and no-access screens |
+| `pech.vogel` | `app_developer` | The no-team and no-access screens |
 
 A fresh stack has no teams, so `app_developer` accounts see nothing until they join one.
-[Local development](https://logososs.github.io/Logos/developer/local-setup) shows 3 ways to give them a team.
+[Local development](https://logososs.github.io/Logos/developer/local-setup) shows how to import members by CSV or add them individually.
 
 The interactive API reference is served at `/docs` (Swagger). A `GET /v1` returns 404 by design.
 

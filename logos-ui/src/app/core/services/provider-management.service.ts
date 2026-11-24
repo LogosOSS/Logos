@@ -33,6 +33,7 @@ export class ProviderManagementService {
       auth_format:        payload.auth_format ?? null,
       provider_type:      payload.provider_type,
       cloud_provider_type: payload.cloud_provider_type ?? null,
+      eu_processing_verified: payload.eu_processing_verified,
       privacy_level:      payload.privacy_level,
     }));
   }
@@ -47,6 +48,7 @@ export class ProviderManagementService {
       auth_format:        payload.auth_format,
       provider_type:      payload.provider_type ?? null,
       cloud_provider_type: payload.cloud_provider_type ?? null,
+      eu_processing_verified: payload.eu_processing_verified,
       privacy_level:      payload.privacy_level ?? null,
     }));
   }

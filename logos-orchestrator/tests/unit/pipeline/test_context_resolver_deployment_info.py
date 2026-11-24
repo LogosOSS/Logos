@@ -34,9 +34,10 @@ class _RecordingDBManager:
     def __exit__(self, *args):
         return False
 
-    def get_auth_info_to_deployment(self, model_id, provider_id):
+    def get_auth_info_to_deployment(self, model_id, provider_id, api_key_id=None):
         return {
             "model_id": model_id,
+            "privacy_level": "LOCAL",
             "model_name": "db-model",
             "endpoint": "",
             "provider_id": provider_id,
@@ -158,3 +159,19 @@ def test_pipeline_passes_the_scheduled_deployment_to_the_resolver():
 )
 def test_normalize_provider_type(raw, expected):
     assert _normalize_provider_type(raw) == expected
+
+
+@pytest.mark.asyncio
+async def test_keyed_resolution_checks_current_provider_privacy_after_a_queue_wait(monkeypatch):
+    class ReclassifiedProvider(_RecordingDBManager):
+        def get_auth_info_to_deployment(self, model_id, provider_id, api_key_id=None):
+            record = super().get_auth_info_to_deployment(model_id, provider_id, api_key_id)
+            record["privacy_level"] = "THIRD_PARTY_HARDWARE"
+            return record
+
+    monkeypatch.setattr("logos.pipeline.context_resolver.DBManager", lambda: ReclassifiedProvider([]))
+    resolver = ContextResolver(logosnode_registry=_FakeRegistry())
+    assert (
+        await resolver.resolve_context(1, 7, deployment_info=DeploymentInfo, api_key_id=3, privacy_threshold="LOCAL")
+        is None
+    )

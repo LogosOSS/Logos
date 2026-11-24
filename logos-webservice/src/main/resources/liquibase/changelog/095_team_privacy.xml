@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    logicalFilePath="liquibase/changelog/094_team_privacy.xml"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="094-team-privacy" author="LogosOSS">
+        <sql><![CDATA[
+            ALTER TABLE teams ADD COLUMN privacy_scope TEXT NOT NULL DEFAULT 'WORLDWIDE'
+                CHECK (privacy_scope IN ('LOCAL', 'EU', 'WORLDWIDE'));
+            ALTER TABLE providers ADD COLUMN eu_processing_verified BOOLEAN NOT NULL DEFAULT false;
+            UPDATE team_members SET source = 'MANUAL' WHERE source = 'KEYCLOAK';
+            UPDATE teams SET keycloak_group = NULL WHERE keycloak_group IS NOT NULL;
+
+            -- Older provider forms preselected an EU level. Require independent confirmation
+            -- of all routes on that endpoint before using it for a geographically restricted request.
+            CREATE VIEW provider_processing_privacy AS
+            SELECT p.id AS provider_id, CASE
+                WHEN p.provider_type = 'logosnode' THEN p.privacy_level::text
+                WHEN p.privacy_level = 'THIRD_PARTY_HARDWARE' THEN p.privacy_level::text
+                WHEN p.provider_type = 'cloud' AND p.eu_processing_verified
+                    AND p.privacy_level IN ('CLOUD_IN_EU_BY_EU_PROVIDER', 'CLOUD_IN_EU_BY_US_PROVIDER')
+                    AND p.base_url ~ '^https?://[A-Za-z0-9.:-]+(/|$)'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM model_provider mp WHERE mp.provider_id = p.id AND mp.endpoint IS NOT NULL
+                        AND (mp.endpoint ~ '(^//|[[:space:][:cntrl:]])' OR strpos(mp.endpoint, chr(92)) > 0
+                            OR (mp.endpoint ~* '^[a-z][a-z0-9+.-]*:' AND mp.endpoint <> p.base_url
+                                AND NOT starts_with(mp.endpoint, rtrim(p.base_url, '/') || '/'))))
+                    THEN p.privacy_level::text
+                ELSE 'CLOUD_NOT_IN_EU_BY_US_PROVIDER'
+            END AS privacy_level FROM providers p;
+
+            CREATE VIEW team_privacy_providers AS
+            SELECT t.id AS team_id, p.id AS provider_id
+            FROM teams t CROSS JOIN providers p
+            JOIN provider_processing_privacy region ON region.provider_id = p.id
+            WHERE t.privacy_scope = 'WORLDWIDE'
+                OR (p.provider_type = 'logosnode' AND region.privacy_level = 'LOCAL')
+                OR (t.privacy_scope = 'EU' AND p.provider_type = 'cloud'
+                    AND region.privacy_level IN ('CLOUD_IN_EU_BY_EU_PROVIDER', 'CLOUD_IN_EU_BY_US_PROVIDER'));
+
+            CREATE VIEW allowed_team_provider_grants AS
+            SELECT g.* FROM team_provider_permissions g
+            JOIN team_privacy_providers p USING (team_id, provider_id);
+
+            CREATE VIEW allowed_key_provider_grants AS
+            SELECT g.* FROM api_key_provider_permissions g
+            JOIN api_keys k ON k.id = g.api_key_id
+            WHERE (k.team_id IS NULL AND k.internal_service IS NULL)
+               OR EXISTS (SELECT 1 FROM team_privacy_providers p
+                           WHERE p.team_id = k.team_id AND p.provider_id = g.provider_id);
+        ]]></sql>
+    </changeSet>
+    <changeSet id="094-dev-identities" author="LogosOSS" contextFilter="@dev-identities">
+        <sql>
+            INSERT INTO users (keycloak_id, username, prename, name, email, role) VALUES
+                ('4b8ba942-99db-45a4-804a-3a706951c379', 'tobias.wasner', 'Tobias', 'Wasner', 'tobias.wasner@test.de', 'logos_admin'),
+                ('42d4e1d5-dc7f-4656-91a2-18bcfb8592a5', 'alexandra.szuminska', 'Alexandra', 'Szuminska', 'alexandra.szuminska@test.de', 'app_admin'),
+                ('8c06074a-9666-428d-90e3-37879e11f927', 'henriette.huhn', 'Henriette', 'Huhn', 'henriette.huhn@test.de', 'app_developer'),
+                ('96034496-9e61-4d33-93cf-f186a0ce55e0', 'blub.fisch', 'Blub', 'Fisch', 'blub.fisch@test.de', 'app_developer'),
+                ('08b49873-7b5e-4fff-8a9c-03ed599d970c', 'fridoline.fuchs', 'Fridoline', 'Fuchs', 'fridoline.fuchs@test.de', 'app_developer'),
+                ('c1a5b2e4-2f1a-4b3e-9c6d-7a8f0e2d4b6c', 'pech.vogel', 'Pech', 'Vogel', 'pech.vogel@test.de', 'app_developer'),
+                ('9c047a78-46ed-4fbb-bc56-719c5733a1ee', 'henriette.musterfrau', 'Henriette', 'Musterfrau', 'henriette.musterfrau@test.de', 'app_developer'),
+                ('fd264f65-aad9-44a3-b5a7-cbe65a97d501', 'max.mustermann', 'Max', 'Mustermann', 'max.mustermann@test.de', 'app_admin')
+            ON CONFLICT DO NOTHING;
+        </sql>
+    </changeSet>
+</databaseChangeLog>

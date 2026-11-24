@@ -83,7 +83,7 @@ class TeamMembershipServiceTest {
         fakeKey.setKeyValue("lg-artemis-alice-randomvalue");
         when(apiKeyFactory.createDeveloperKey(user, team)).thenReturn(fakeKey);
 
-        Optional<String> result = service.join(1, 10, false, TeamMemberSource.MANUAL);
+        Optional<String> result = service.join(1, 10, false);
 
         assertThat(result).isPresent().contains("lg-artemis-alice-randomvalue");
         verify(apiKeyRepository).save(fakeKey);
@@ -121,7 +121,7 @@ class TeamMembershipServiceTest {
             .thenReturn(List.of(inactiveKey));
         when(apiKeyFactory.createDeveloperKey(user, team)).thenReturn(developerKey("lg-artemis-alice-fresh", true));
 
-        Optional<String> result = service.join(1, 10, false, TeamMemberSource.KEYCLOAK);
+        Optional<String> result = service.join(1, 10, false);
 
         assertThat(result).isPresent().contains("lg-artemis-alice-fresh");
         assertThat(inactiveKey.getKeyValue()).isEqualTo("lg-artemis-alice-fresh");
@@ -141,7 +141,7 @@ class TeamMembershipServiceTest {
         when(apiKeyRepository.findByUserIdAndTeamIdAndKeyType(1, 10, ApiKeyType.developer))
             .thenReturn(List.of(activeKey));
 
-        Optional<String> result = service.join(1, 10, false, TeamMemberSource.KEYCLOAK);
+        Optional<String> result = service.join(1, 10, false);
 
         assertThat(result).isPresent().contains("lg-artemis-alice-current");
         verify(apiKeyRepository, never()).save(activeKey);
@@ -149,7 +149,7 @@ class TeamMembershipServiceTest {
     }
 
     @Test
-    void join_keycloakTakesOverExistingManualMembership() {
+    void repeatedJoinKeepsOwnershipAndMembershipSource() {
         stubUserAndTeam();
         TeamMember manual = new TeamMember();
         manual.setId(new TeamMemberId(1, 10));
@@ -160,10 +160,10 @@ class TeamMembershipServiceTest {
         when(apiKeyRepository.findByUserIdAndTeamIdAndKeyType(1, 10, ApiKeyType.developer))
             .thenReturn(List.of(existingKey));
 
-        Optional<String> result = service.join(1, 10, false, TeamMemberSource.KEYCLOAK);
+        Optional<String> result = service.join(1, 10, false);
 
         assertThat(result).isPresent().contains("lg-artemis-alice-existing");
-        assertThat(manual.getSource()).isEqualTo(TeamMemberSource.KEYCLOAK);
+        assertThat(manual.getSource()).isEqualTo(TeamMemberSource.MANUAL);
         assertThat(manual.getIsOwner()).isTrue();
         assertThat(existingKey.getIsActive()).isTrue();
         verify(memberRepository).save(manual);
@@ -182,7 +182,7 @@ class TeamMembershipServiceTest {
         when(apiKeyRepository.findByUserIdAndTeamIdAndKeyType(1, 10, ApiKeyType.developer))
             .thenReturn(List.of(existingKey));
 
-        Optional<String> result = service.join(1, 10, false, TeamMemberSource.MANUAL);
+        Optional<String> result = service.join(1, 10, false);
 
         assertThat(result).isPresent().contains("lg-artemis-alice-existing");
         assertThat(keycloak.getSource()).isEqualTo(TeamMemberSource.KEYCLOAK);

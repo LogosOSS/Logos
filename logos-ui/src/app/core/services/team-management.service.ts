@@ -8,7 +8,7 @@ import {
   TeamProviderBudget,
   ApiKeyUpdatePayload, CreateApiKeyPayload, MyTeam, TeamRepository,
   TeamRepositoryPayload, TeamWorkflowsResponse, ReviewRecommendationPayload,
-  StoreDeployKeyPayload, AiLlmCallRecommendation, AiWorkflow, KeycloakGroupDirectory,
+  StoreDeployKeyPayload, AiLlmCallRecommendation, AiWorkflow, TeamPrivacy,
 } from '../../shared/models/team.model';
 
 /** One provider of the catalog that the custom permissions of an API key can include. */
@@ -32,29 +32,16 @@ export class TeamManagementService {
     return firstValueFrom(this.http.get<Team[]>('/api/teams'));
   }
 
-  /** `keycloakGroup` links the new team to a Keycloak group; Logos admins only. */
-  createTeam(name: string, ownerIds: number[], keycloakGroup?: string | null): Promise<Team> {
-    const body: Record<string, unknown> = { name, owner_ids: ownerIds };
-    if (keycloakGroup) body['keycloak_group'] = keycloakGroup;
-    return firstValueFrom(this.http.post<Team>('/api/teams', body));
+  createTeam(name: string, ownerIds: number[], privacy: TeamPrivacy): Promise<Team> {
+    return firstValueFrom(this.http.post<Team>('/api/teams', { name, owner_ids: ownerIds, privacy_scope: privacy }));
   }
 
-  /**
-   * Links the team to a Keycloak group (logos_admin only); null unlinks it.
-   * Members of the group join on their next login and on the directory sync.
-   */
-  updateTeamKeycloakGroup(teamId: number, keycloakGroup: string | null): Promise<void> {
-    return firstValueFrom(
-      this.http.patch<void>(`/api/teams/${teamId}/keycloak-group`, { keycloak_group: keycloakGroup }),
-    );
+  updateTeamPrivacy(teamId: number, privacy: TeamPrivacy): Promise<void> {
+    return firstValueFrom(this.http.patch<void>(`/api/teams/${teamId}/privacy`, { privacy_scope: privacy }));
   }
 
-  /**
-   * The realm's groups and roles for the group picker. Reports
-   * `available: false` when the deployment has no Keycloak directory access.
-   */
-  getKeycloakGroups(): Promise<KeycloakGroupDirectory> {
-    return firstValueFrom(this.http.get<KeycloakGroupDirectory>('/api/teams/keycloak-groups'));
+  getTeamPermissionCatalog(teamId: number): Promise<PermissionCatalogProvider[]> {
+    return firstValueFrom(this.http.get<PermissionCatalogProvider[]>(`/api/admin/teams/${teamId}/permission-catalog`));
   }
 
   /** Public stats categories other teams already use, for the category picker. */

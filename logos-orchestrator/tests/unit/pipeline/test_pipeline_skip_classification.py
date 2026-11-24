@@ -50,7 +50,15 @@ class _FakeContextResolver:
         self.kwargs = None
 
     async def resolve_context(  # noqa: ARG002
-        self, model_id, provider_id, request_path=None, request_id=None, deployment_info=None, wait_for_lane=True
+        self,
+        model_id,
+        provider_id,
+        request_path=None,
+        request_id=None,
+        deployment_info=None,
+        wait_for_lane=True,
+        api_key_id=None,
+        privacy_threshold=None,
     ):
         self.kwargs = {
             "model_id": model_id,
@@ -229,3 +237,24 @@ async def test_cancelled_context_resolution_releases_admission_and_tracking(canc
         await asyncio.gather(task, return_exceptions=True)
         benchmark_reservations.finish_request("disconnected-production")
         benchmark_reservations.release(9041)
+
+
+@pytest.mark.asyncio
+async def test_proxy_schedules_only_hosts_meeting_the_selected_profile():
+    pipeline, _, scheduler, _ = _build_pipeline()
+    local = {"model_id": 27, "provider_id": 12, "type": "logosnode", "privacy_level": "LOCAL"}
+    cloud = {"model_id": 27, "provider_id": 13, "type": "cloud", "privacy_level": "CLOUD_IN_EU_BY_EU_PROVIDER"}
+    result = await pipeline.process(
+        PipelineRequest(
+            payload={"messages": []},
+            headers={},
+            allowed_models=[27],
+            deployments=[cloud, local],
+            policy={"threshold_privacy": "LOCAL"},
+            skip_laura=True,
+            api_key_id=4,
+        )
+    )
+    assert result.success
+    assert scheduler.last_request.deployments == [local]
+    assert result.provider_id == 12

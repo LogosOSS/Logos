@@ -354,12 +354,11 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-node-model-unsupported.png` | `tobias.wasner` | **Calibration not supported** on the model page. The capture supplies an example failure in the node insights response. | `roles/logos-admin.md#calibrate-a-model` |
 | `logos-admin-node-connect-model.png` | `tobias.wasner` | the **Connect model** dialog; the capture adds a fourth catalog model to the answer of `get_models` | `roles/logos-admin.md` |
 | `logos-admin-node-settings.png` | `tobias.wasner` | `/providers/:id/node-settings` — **GPU pool**, **Engine defaults**, **Node care** | `roles/logos-admin.md` |
-| `logos-admin-policies.png` | `tobias.wasner` | `/policies` | `roles/logos-admin.md` |
 | `logos-admin-billing.png` | `tobias.wasner` | `/billing` | `roles/logos-admin.md` |
 | `logos-admin-user-management.png` | `tobias.wasner` | `/user-management` | `roles/logos-admin.md` |
 | `logos-admin-team-management.png` | `tobias.wasner` | `/team-management` | `roles/logos-admin.md` |
 | `logos-admin-permission-audit.png` | `tobias.wasner` | `/permission-audit-log` | `roles/logos-admin.md#permission-audit` |
-| `logos-admin-new-team.png` | `tobias.wasner` | `/team-management` — **New Team** dialog, Keycloak group filled | `roles/logos-admin.md#keycloak-group-links` |
+| `logos-admin-new-team.png` | `tobias.wasner` | `/team-management` — **New Team** dialog, EU processing and a searched owner selected | `roles/logos-admin.md#team-privacy` |
 | `logos-admin-security-incidents.png` | `tobias.wasner` | `/agents/security` — all statuses; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-repositories.png` | `tobias.wasner` | `/agents/security` — Monitored repositories expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
 | `logos-admin-security-intake.png` | `tobias.wasner` | `/agents/security` — Report an important incident expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
@@ -373,13 +372,14 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `app-admin-user-management.png` | `alexandra.szuminska` | `/user-management` | `roles/app-admin.md` |
 | `app-admin-team-management.png` | `alexandra.szuminska` | `/team-management` | `roles/app-admin.md` |
 | `team-detail-overview.png` | owner or `logos_admin` | `/teams/<id>` — **Overview** | `roles/app-admin.md#teams` |
+| `team-members-csv.png` | `alexandra.szuminska` | **Members → Import CSV**, file mapped and existing team selected | `roles/app-admin.md#members` |
 | `team-detail-members.png` | same | `/teams/<id>` — **Members** | same |
 | `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys** | same |
 | `team-detail-repositories.png` | owner or `logos_admin` | `/teams/<id>` — **Repositories** | same |
 | `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled and automatic workflow analysis off | `roles/app-admin.md#enable-the-coding-agent` |
 | `team-detail-workflows.png` | owner or `logos_admin` | `/teams/<id>` — **Workflows** | same |
 | `team-detail-models.png` | owner or `logos_admin` | `/teams/<id>` — **Models** | same |
-| `team-detail-activity.png` | owner or `logos_admin` | `/teams/<id>` — **Activity** | same |
+| `team-detail-activity.png` | owner or `logos_admin` | `/teams/<id>` — **Activity**, one requester selected by name | same |
 | `team-detail-cloud-usage.png` | owner or `logos_admin` | `/teams/<id>` — **Cloud Usage** | same |
 | `team-detail-settings.png` | owner or `logos_admin` | `/teams/<id>` — **Settings** | same |
 | `team-detail-providers.png` | `tobias.wasner` (`logos_admin` only) | `/teams/<id>` — **Providers** | `roles/logos-admin.md#teams` |

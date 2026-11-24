@@ -1,7 +1,5 @@
 package de.tum.cit.aet.logos.logoswebservice.auth;
 
-import java.util.List;
-import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -9,14 +7,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class KeycloakClaimExtractorTest {
 
-    private final KeycloakProperties props = new KeycloakProperties(
-        "logos",
-        new KeycloakProperties.Roles(List.of("itg-admin"), List.of("chair-member")),
-        5,
-        new KeycloakProperties.Sync(false, "", "", "tum", "logos-sync", ""),
-        List.of("-dev"), "logos", false);
-
-    private final KeycloakClaimExtractor extractor = new KeycloakClaimExtractor(props);
+    private final KeycloakClaimExtractor extractor = new KeycloakClaimExtractor();
 
     private Jwt.Builder baseJwt() {
         return Jwt.withTokenValue("token")
@@ -39,23 +30,17 @@ class KeycloakClaimExtractorTest {
     }
 
     @Test
-    void collectsRealmRolesClientRolesAndGroups() {
-        Jwt jwt = baseJwt()
-            .claim("realm_access", Map.of("roles", List.of("artemis-dev", "offline_access")))
-            .claim("resource_access", Map.of("logos", Map.of("roles", List.of("chair-member"))))
-            .claim("groups", List.of("/helios-dev"))
-            .build();
-        KeycloakClaims claims = extractor.extract(jwt);
-        assertThat(claims.roleNames())
-            .containsExactlyInAnyOrder("artemis-dev", "offline_access", "chair-member", "helios-dev");
+    void requiresAnExplicitVerifiedEmailClaim() {
+        assertThat(extractor.extract(baseJwt().build()).verifiedEmail()).isFalse();
+        assertThat(extractor.extract(baseJwt().claim("email_verified", true).build()).verifiedEmail()).isTrue();
     }
 
     @Test
-    void missingClaimsYieldEmptyRoleSetAndNullUsername() {
+    void missingClaimsYieldNullUsername() {
         Jwt jwt = Jwt.withTokenValue("token").header("alg", "RS256")
             .subject("22222222-2222-2222-2222-222222222222").build();
         KeycloakClaims claims = extractor.extract(jwt);
-        assertThat(claims.roleNames()).isEmpty();
+        assertThat(claims.verifiedEmail()).isFalse();
         assertThat(claims.username()).isNull();
         assertThat(claims.prename()).isEmpty();
         assertThat(claims.name()).isEmpty();

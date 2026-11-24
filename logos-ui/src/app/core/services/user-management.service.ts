@@ -22,6 +22,7 @@ export interface ImportPreview {
 }
 
 export interface ImportRow {
+  team?: string;
   prename: string;
   name: string;
   email: string;
@@ -29,7 +30,7 @@ export interface ImportRow {
 
 export interface ImportResult {
   summary: { created: number; existing: number; failed: number };
-  rows: { email: string; username: string; status: string; error?: string }[];
+  rows: { email: string; username: string; status: string; team?: string; membership?: string; error?: string }[];
 }
 
 @Injectable({ providedIn: 'root' })
@@ -62,7 +63,7 @@ export class UserManagementService {
     return firstValueFrom(this.http.post<ImportPreview>('/api/users/import/preview', formData));
   }
 
-  importUsers(rows: ImportRow[]): Promise<ImportResult> {
-    return firstValueFrom(this.http.post<ImportResult>('/api/users/import', { rows }));
+  importUsers(rows: ImportRow[], teamId: number | null = null): Promise<ImportResult> {
+    return firstValueFrom(this.http.post<ImportResult>('/api/users/import', { rows, team_id: teamId }));
   }
 }

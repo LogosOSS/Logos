@@ -2,37 +2,27 @@ package de.tum.cit.aet.logos.logoswebservice.identity.service;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import de.tum.cit.aet.logos.logoswebservice.common.ConflictException;
-import de.tum.cit.aet.logos.logoswebservice.common.RequestTiming;
 import de.tum.cit.aet.logos.logoswebservice.auth.KeycloakClaims;
 import de.tum.cit.aet.logos.logoswebservice.auth.KeycloakProperties;
-import de.tum.cit.aet.logos.logoswebservice.auth.KeycloakRoleMapper;
+import de.tum.cit.aet.logos.logoswebservice.common.ConflictException;
+import de.tum.cit.aet.logos.logoswebservice.common.RequestTiming;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.ApiKey;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.ApiKeyType;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
-import de.tum.cit.aet.logos.logoswebservice.identity.entity.Team;
-import de.tum.cit.aet.logos.logoswebservice.identity.entity.TeamMember;
-import de.tum.cit.aet.logos.logoswebservice.identity.entity.TeamMemberSource;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.User;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.ApiKeyRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.TeamMemberRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.TeamRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.UserRepository;
+import jakarta.persistence.EntityManager;
 
 @Service
 public class KeycloakUserSyncService {
@@ -41,39 +31,33 @@ public class KeycloakUserSyncService {
     private final TeamRepository teamRepository;
     private final TeamMemberRepository memberRepository;
     private final ApiKeyRepository apiKeyRepository;
-    private final TeamMembershipService membershipService;
-    private final KeycloakRoleMapper roleMapper;
     private final KeycloakProperties props;
-    private final KeycloakTeamAutoProvisioner teamAutoProvisioner;
+    private final EntityManager entityManager;
 
     public KeycloakUserSyncService(UserRepository userRepository, TeamRepository teamRepository,
                                    TeamMemberRepository memberRepository, ApiKeyRepository apiKeyRepository,
-                                   TeamMembershipService membershipService,
-                                   KeycloakRoleMapper roleMapper, KeycloakProperties props,
-                                   KeycloakTeamAutoProvisioner teamAutoProvisioner) {
+                                   KeycloakProperties props, EntityManager entityManager) {
         this.userRepository = userRepository;
         this.teamRepository = teamRepository;
         this.memberRepository = memberRepository;
         this.apiKeyRepository = apiKeyRepository;
-        this.membershipService = membershipService;
-        this.roleMapper = roleMapper;
         this.props = props;
-        this.teamAutoProvisioner = teamAutoProvisioner;
+        this.entityManager = entityManager;
     }
 
     @Transactional(readOnly = true)
     public Optional<User> findIfFresh(KeycloakClaims claims) {
         Instant cutoff = Instant.now().minus(Duration.ofMinutes(props.syncDebounceMinutes()));
         return userRepository.findByKeycloakId(UUID.fromString(claims.keycloakId()))
-            .filter(user -> {
-                if (user.getLastSyncedAt() == null || !user.getLastSyncedAt().isAfter(cutoff)) {
-                    return false;
-                }
-                if (!user.isActive()) {
-                    return claims.issuedAt() != null && claims.issuedAt().isBefore(user.getLastSyncedAt());
-                }
-                return true;
-            });
+            .filter(user -> user.isActive()
+                ? user.getLastSyncedAt() != null && user.getLastSyncedAt().isAfter(cutoff)
+                : !canReactivate(user, claims));
+    }
+
+    private static boolean canReactivate(User user, KeycloakClaims claims) {
+        // A signed token or directory observation must postdate the account deactivation.
+        return claims.observedAt() != null
+            && (user.getLastSyncedAt() == null || claims.observedAt().isAfter(user.getLastSyncedAt()));
     }
 
     @Transactional
@@ -83,15 +67,17 @@ public class KeycloakUserSyncService {
 
     @Transactional
     public User syncFromClaims(KeycloakClaims claims) {
-        long userStart = System.nanoTime();
+        long started = System.nanoTime();
         UUID keycloakId = UUID.fromString(claims.keycloakId());
         User user = findOrCreate(keycloakId, claims);
 
         boolean isNew = user.getId() == null;
         boolean wasInactive = !isNew && !user.isActive();
+        if (wasInactive && !canReactivate(user, claims)) return user;
 
         user.setKeycloakId(keycloakId);
         if (isNew) {
+            user.setRole(Role.Names.APP_DEVELOPER);
             String prename = claims.prename() != null ? claims.prename() : "";
             String name = claims.name() != null ? claims.name() : "";
             String supplied = claims.username();
@@ -105,82 +91,26 @@ public class KeycloakUserSyncService {
         user.setPrename(claims.prename() != null ? claims.prename() : "");
         user.setName(claims.name() != null ? claims.name() : "");
         if (claims.email() != null) user.setEmail(claims.email());
-        String role = roleMapper.mapRole(claims.roleNames());
-        user.setRole(role);
         user.setActive(true);
         user.setLastSyncedAt(Instant.now());
         user = userRepository.save(user);
 
-        // Keycloak owns the role, team ownership is Logos-owned. When a sync
-        // drops the role below app_admin, keeping the owners-need-an-admin-role
-        // invariant means revoking the ownership, not rejecting the sync.
-        if (!Role.APP_ADMIN.matches(role) && !Role.LOGOS_ADMIN.matches(role)) {
-            membershipService.revokeOwnerships(user.getId());
-        }
-
-        // Resolve first, lock second, write third. Resolution may auto-provision,
-        // which runs in a transaction of its own and would wait forever on a team
-        // row this one already holds; and every write below depends on a read of
-        // a team or its memberships, so all of those reads have to happen with
-        // the rows already held.
-        long resolveStart = System.nanoTime();
-        Map<Integer, Team> resolved = resolveTeams(claims.roleNames());
-        Set<Integer> held = teamsToHold(user, resolved, wasInactive);
-        long lockStart = System.nanoTime();
-        Map<Integer, String> linkedGroups = lockTeams(held);
-        long writeStart = System.nanoTime();
-
+        long userSaved = System.nanoTime();
+        List<Integer> teamIds = wasInactive ? apiKeyRepository.findByUserId(user.getId()).stream()
+            .map(ApiKey::getTeamId).filter(Objects::nonNull).distinct().sorted().toList() : List.of();
+        long keysResolved = System.nanoTime();
+        teamIds.forEach(teamRepository::findByIdForUpdate);
+        long teamsLocked = System.nanoTime();
         if (wasInactive) reactivateUserKeys(user);
         deactivatePersonalKeys(user);
-        syncTeamMemberships(user, resolved, linkedGroups, claims.roleNames());
-        RequestTiming.recordSync(resolveStart - userStart, lockStart - resolveStart, writeStart - lockStart,
-            System.nanoTime() - writeStart, held.size());
+        RequestTiming.recordSync(userSaved - started, keysResolved - userSaved, teamsLocked - keysResolved,
+            System.nanoTime() - teamsLocked, teamIds.size());
         return user;
-    }
-
-    /**
-     * Every team this sync may read-then-write: the ones it might join, and —
-     * when it is about to switch keys back on — the ones those keys belong to.
-     *
-     * <p>The second set matters because a key is revived on the strength of a
-     * membership check, and unlinking a team deletes exactly those memberships.
-     * Without the team held, the check can read a membership that the unlink
-     * removes a moment later, and the reconciliation that follows finds neither
-     * a link nor a membership to undo it — leaving an active key for a team the
-     * user is no longer in.
-     */
-    private Set<Integer> teamsToHold(User user, Map<Integer, Team> resolved, boolean wasInactive) {
-        Set<Integer> teamIds = new HashSet<>(resolved.keySet());
-        if (wasInactive) {
-            apiKeyRepository.findByUserId(user.getId()).stream()
-                .map(ApiKey::getTeamId)
-                .filter(Objects::nonNull)
-                .forEach(teamIds::add);
-        }
-        return teamIds;
-    }
-
-    /**
-     * Takes every team row this sync needs and reports the Keycloak group each
-     * one currently carries (absent for an unlinked or vanished team).
-     *
-     * <p>Locked in ascending id order, in a single pass, so two logins holding
-     * overlapping sets can never take them in opposite orders. The read is a
-     * scalar on purpose: resolution has already loaded these teams, and an
-     * entity read would hand back that cached copy with the link seen before
-     * waiting — exactly the stale value the lock is here to rule out. The rows
-     * stay held until this transaction commits.
-     */
-    private Map<Integer, String> lockTeams(Set<Integer> teamIds) {
-        Map<Integer, String> groups = new LinkedHashMap<>();
-        teamIds.stream().sorted().forEach(teamId ->
-            teamRepository.lockAndReadKeycloakGroup(teamId)
-                .ifPresent(group -> groups.put(teamId, group)));
-        return groups;
     }
 
     @Transactional
     public void deactivateUser(User user) {
+        user = refreshLocked(userRepository.findByIdForUpdate(user.getId()).orElseThrow());
         user.setActive(false);
         user.setLastSyncedAt(Instant.now());
         userRepository.save(user);
@@ -191,15 +121,19 @@ public class KeycloakUserSyncService {
     }
 
     private User findOrCreate(UUID keycloakId, KeycloakClaims claims) {
-        Optional<User> byId = userRepository.findByKeycloakId(keycloakId);
-        if (byId.isPresent()) return byId.get();
+        Optional<User> byId = userRepository.findByKeycloakIdForUpdate(keycloakId);
+        if (byId.isPresent()) return refreshLocked(byId.get());
 
         if (claims.email() != null) {
-            Optional<User> byEmail = userRepository.findByEmailIgnoreCase(claims.email());
+            Optional<User> byEmail = userRepository.findByEmailForUpdate(claims.email());
             if (byEmail.isPresent()) {
-                User existing = byEmail.get();
+                User existing = refreshLocked(byEmail.get());
                 // Adopt an as-yet-unlinked row (seed/admin-created user signing in for the first time).
-                if (existing.getKeycloakId() == null) return existing;
+                if (existing.getKeycloakId() == null && existing.isActive() && claims.verifiedEmail()) return existing;
+                if (existing.getKeycloakId() == null) {
+                    throw new ConflictException("Linking this account requires an active user and verified email.");
+                }
+                if (keycloakId.equals(existing.getKeycloakId())) return existing;
                 // The email belongs to a *different* Keycloak subject (we already established no row
                 // matches the current sub). We deliberately do not relink — letting a new subject
                 // absorb an existing account is an account-takeover vector. Falling through would
@@ -215,6 +149,12 @@ public class KeycloakUserSyncService {
         // A matching name is no proof of identity: two people can share one, so an
         // unlinked account is adopted by email only.
         return new User();
+    }
+
+    private User refreshLocked(User user) {
+        // A locking query can return the instance cached by the handshake's earlier freshness check.
+        entityManager.refresh(user);
+        return user;
     }
 
     private String generateUniqueUsername(String prename, String name) {
@@ -240,16 +180,7 @@ public class KeycloakUserSyncService {
      * Switches the user's keys back on when Keycloak re-enables their account —
      * except the ones bound to a team they are no longer in.
      *
-     * <p>A team key carries that team's model permissions and budget, and
-     * nothing on the inference path re-checks membership, so reviving one for a
-     * team the user has since left (their group was unlinked, or they were
-     * taken out of it while deactivated) would hand back access that was
-     * deliberately removed. Membership they still hold revives its key here;
-     * membership this very sync restores is handled by the join that follows.
-     *
-     * <p>The caller holds every team named by these keys, so the membership
-     * read below cannot be invalidated by an unlink between the check and the
-     * commit. Must not be called without those locks.
+     * The caller locks the teams before checking membership and reactivating keys.
      */
     private void reactivateUserKeys(User user) {
         apiKeyRepository.findByUserId(user.getId()).forEach(k -> {
@@ -274,74 +205,4 @@ public class KeycloakUserSyncService {
         personal.forEach(k -> { k.setIsActive(false); apiKeyRepository.save(k); });
     }
 
-    /** The teams this login's claims point at, before any of them is held. */
-    private Map<Integer, Team> resolveTeams(Set<String> claimNames) {
-        Set<String> userLevelRoles = new HashSet<>(props.roles().logosAdmin());
-        userLevelRoles.addAll(props.roles().appAdmin());
-
-        return claimNames.stream()
-            .filter(r -> !userLevelRoles.contains(r))
-            .map(this::resolveTeamForRole)
-            .flatMap(Optional::stream)
-            .collect(Collectors.toMap(Team::getId, t -> t, (a, b) -> a));
-    }
-
-    private void syncTeamMemberships(User user, Map<Integer, Team> resolved,
-                                     Map<Integer, String> linkedGroups, Set<String> claimNames) {
-        // Keep only the teams still linked to a group this login carries, as the
-        // held rows report them. A link removed in the meantime drops the
-        // memberships it produced and must not see a new one appear behind it:
-        // either the removal waits for us and then cleans up, or it won and the
-        // team no longer resolves here.
-        Map<Integer, Team> desired = new LinkedHashMap<>();
-        resolved.keySet().stream().sorted()
-            .filter(teamId -> {
-                String group = linkedGroups.get(teamId);
-                return group != null && claimNames.contains(group);
-            })
-            .forEach(teamId -> desired.put(teamId, resolved.get(teamId)));
-
-        List<TeamMember> currentKeycloak =
-            memberRepository.findById_UserIdAndSource(user.getId(), TeamMemberSource.KEYCLOAK);
-
-        for (TeamMember m : currentKeycloak) {
-            if (!desired.containsKey(m.getId().getTeamId())) {
-                membershipService.leave(user.getId(), m.getId().getTeamId());
-            }
-        }
-        for (Team team : desired.values()) {
-            membershipService.join(user.getId(), team.getId(), false, TeamMemberSource.KEYCLOAK);
-        }
-    }
-
-    private Optional<Team> resolveTeamForRole(String roleName) {
-        Optional<Team> linked = teamRepository.findByKeycloakGroup(roleName);
-        if (linked.isPresent()) return linked;
-        if (!props.autoProvisionTeams()) return Optional.empty();
-        if (!isTeamRole(roleName)) return Optional.empty();
-        try {
-            return Optional.of(teamAutoProvisioner.findOrCreate(roleName, props.teamRoleSuffixes()));
-        } catch (DataIntegrityViolationException e) {
-            return teamRepository.findByKeycloakGroup(roleName);
-        }
-    }
-
-    private boolean isTeamRole(String roleName) {
-        return props.teamRoleSuffixes().stream()
-            .anyMatch(suffix -> !suffix.isBlank() && roleName.endsWith(suffix));
-    }
-
-    public static String deriveTeamName(String roleName, List<String> teamRoleSuffixes) {
-        String base = roleName;
-        for (String suffix : teamRoleSuffixes) {
-            if (!suffix.isBlank() && base.endsWith(suffix)) {
-                base = base.substring(0, base.length() - suffix.length());
-                break;
-            }
-        }
-        return Arrays.stream(base.split("-"))
-            .filter(w -> !w.isEmpty())
-            .map(w -> Character.toUpperCase(w.charAt(0)) + w.substring(1))
-            .collect(Collectors.joining(" "));
-    }
 }

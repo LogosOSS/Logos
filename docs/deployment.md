@@ -63,6 +63,8 @@ Do not delete the volume to change its password.
 Redis uses `requirepass`. The web service and Redis health check use the same `LOGOS_REDIS_PASSWORD`.
 To change the Redis password, update `.env`, then recreate Redis and the web service together.
 
+For a PostgreSQL 17 installation, complete the [database upgrade](admin/installation.md#upgrade-postgresql-17-to-18) before you deploy the PostgreSQL 18 image.
+
 ## Residency policy
 
 `LOGOS_RESIDENCY_POLICY` selects the orchestrator policy. The default is `simple`.
@@ -127,7 +129,7 @@ PostgreSQL, Redis, nginx, and GPU worker images retain their existing startup us
 | `logos-orchestrator` | orchestrator |
 | `logos-webservice` | Spring admin/statistics service and public inference gateway (`/v1`, `/openai`, `/jobs`) |
 | `logos-ui` | Angular web application |
-| `logos-db` | PostgreSQL 17 plus `pg_cron` |
+| `logos-db` | PostgreSQL 18 plus `pg_cron` |
 | `logos-rate-gateway` | per-IP rate limiting (nginx) |
 | `logos-agent`, `logos-agent-gateway`, `logos-agent-workspace` | the agent stack (only with the `agent` profile) |
 | `logos-workernode-vllm` | the worker node runtime (on the GPU host) |
@@ -1028,7 +1030,6 @@ variables:
 | `LOGOS_REDIS_PASSWORD` | required — Redis password | — |
 | `LOGOS_INTERNAL_SECRET` | a strong random string — the shared secret between web service and orchestrator | — |
 | `KEYCLOAK_ISSUER_URI` | your identity provider's issuer (`https://<idp>/realms/<realm>`) | — |
-| `KEYCLOAK_ROLES_LOGOS_ADMIN` / `KEYCLOAK_ROLES_APP_ADMIN` | the OIDC role names that map to the Logos roles (see [roles](developer/architecture#roles)) | — |
 | `PROMETHEUS_API_KEY` | optional — gates `/metrics`; unset denies all | — |
 | `HF_TOKEN` | optional — HuggingFace token for gated models; also distributed to connected workers | or set per worker |
 | `LOGOS_URL` | — | the core node's URL, e.g. `https://logos.example.org` |

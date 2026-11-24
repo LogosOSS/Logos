@@ -5,10 +5,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,7 +27,6 @@ import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Team;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.TeamMember;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.TeamMemberId;
-import de.tum.cit.aet.logos.logoswebservice.identity.entity.TeamMemberSource;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.ApiKeyRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.TeamMemberRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.repository.TeamRepository;
@@ -45,7 +42,6 @@ public class TeamService {
     private final TeamModelPermissionRepository teamModelPermissionRepository;
     private final ApiKeyRepository apiKeyRepository;
     private final TeamMembershipService membershipService;
-    private final KeycloakGroupLinkNormalizer groupLinkNormalizer;
     private final AuditLogService auditLog;
 
     public TeamService(TeamRepository teamRepository, TeamMemberRepository memberRepository,
@@ -53,7 +49,6 @@ public class TeamService {
                        TeamModelPermissionRepository teamModelPermissionRepository,
                        ApiKeyRepository apiKeyRepository,
                        TeamMembershipService membershipService,
-                       KeycloakGroupLinkNormalizer groupLinkNormalizer,
                        AuditLogService auditLog) {
         this.teamRepository = teamRepository;
         this.memberRepository = memberRepository;
@@ -62,7 +57,6 @@ public class TeamService {
         this.teamModelPermissionRepository = teamModelPermissionRepository;
         this.apiKeyRepository = apiKeyRepository;
         this.membershipService = membershipService;
-        this.groupLinkNormalizer = groupLinkNormalizer;
         this.auditLog = auditLog;
     }
 
@@ -116,8 +110,9 @@ public class TeamService {
             t.getDefaultLocalTpmLimit(),
             t.getPriority(),
             isCallerOwner,
-            t.getKeycloakGroup() != null,
-            t.getKeycloakGroup()
+            t.getPrivacyScope(),
+            false,
+            null
         );
     }
 
@@ -129,16 +124,12 @@ public class TeamService {
     public TeamResponseDTO createTeam(CreateTeamRequestDTO body, Integer callerId) {
         Team team = new Team();
         team.setName(body.name());
-        String group = groupLinkNormalizer.normalize(body.keycloak_group());
-        if (group != null) {
-            requireGroupUnlinked(group, null);
-            team.setKeycloakGroup(group);
-        }
-        team = saveWithGroupLink(team);
+        team.setPrivacyScope(body.privacy_scope());
+        team = teamRepository.save(team);
         Map<String, Object> created = new LinkedHashMap<>();
         created.put("exists", true);
         created.put("name", team.getName());
-        created.put("keycloak_group", team.getKeycloakGroup());
+        created.put("privacy_scope", team.getPrivacyScope());
         auditLog.record("team.created", "team", team.getId(), team.getId(),
             Map.of("exists", false), created);
         List<Integer> ownerIds = (body.owner_ids() != null && !body.owner_ids().isEmpty())
@@ -163,27 +154,12 @@ public class TeamService {
     public boolean deleteTeam(Integer teamId) {
         Optional<Team> teamOpt = teamRepository.findByIdForUpdate(teamId);
         if (teamOpt.isEmpty()) return false;
-        requireUnmanaged(teamOpt.get(), "deleted");
         Map<String, Object> gone = new LinkedHashMap<>();
         gone.put("exists", true);
         gone.put("name", teamOpt.get().getName());
         teamRepository.deleteById(teamId);
         auditLog.record("team.deleted", "team", teamId, teamId, gone, Map.of("exists", false));
         return true;
-    }
-
-    /**
-     * A linked team stands for a Keycloak group: its membership is reconciled on
-     * every login, and its name is what the group is called in Logos. Renaming or
-     * deleting it while the link stands would drift from Keycloak, so we reject it
-     * and point at removing the link, which hands the team back to Logos. Logos-owned
-     * data (limits, budgets, ownership flags) stays editable for linked teams too.
-     */
-    private void requireUnmanaged(Team team, String action) {
-        if (team.getKeycloakGroup() != null) {
-            throw new ConflictException("This team is linked to Keycloak group '" + team.getKeycloakGroup()
-                + "' and cannot be " + action + " here. Remove the link first.");
-        }
     }
 
     public Optional<Map<String, Object>> getTeamDetail(Integer teamId, Integer callerId, boolean callerIsLogosAdmin) {
@@ -196,8 +172,8 @@ public class TeamService {
             teamMap.put("id", team.getId());
             teamMap.put("name", team.getName());
             teamMap.put("is_caller_owner", isCallerOwner);
-            teamMap.put("managed", team.getKeycloakGroup() != null);
-            teamMap.put("keycloak_group", team.getKeycloakGroup());
+            teamMap.put("managed", false);
+            teamMap.put("keycloak_group", null);
             teamMap.put("budget_used_micro_cents", budgetUsed != null ? budgetUsed : 0L);
             teamMap.put("default_monthly_budget_micro_cents", team.getDefaultMonthlyBudgetMicroCents());
             teamMap.put("team_monthly_budget_micro_cents", team.getTeamMonthlyBudgetMicroCents());
@@ -207,6 +183,7 @@ public class TeamService {
             teamMap.put("default_local_tpm_limit", team.getDefaultLocalTpmLimit());
             // Same field as the teams list: needed so the application-keys SLO
             // column can show what an unset (inherited) key is actually served as.
+            teamMap.put("privacy_scope", team.getPrivacyScope());
             teamMap.put("priority", team.getPriority());
             teamMap.put("show_on_public_stats", team.isShowOnPublicStats());
             teamMap.put("public_category", team.getPublicCategory());
@@ -216,7 +193,7 @@ public class TeamService {
                     Map<String, Object> memberMap = new HashMap<>();
                     memberMap.put("id", m.getId().getUserId());
                     memberMap.put("is_owner", m.getIsOwner());
-                    memberMap.put("managed", m.getSource() == TeamMemberSource.KEYCLOAK);
+                    memberMap.put("managed", false);
                     memberMap.put("username", user.getUsername());
                     memberMap.put("role", user.getRole());
                     memberMap.put("prename", user.getPrename());
@@ -288,7 +265,6 @@ public class TeamService {
     @Transactional
     public Optional<TeamResponseDTO> updateTeamName(Integer teamId, String name) {
         return teamRepository.findByIdForUpdate(teamId).map(team -> {
-            requireUnmanaged(team, "renamed");
             team.setName(name);
             teamRepository.save(team);
             return new TeamResponseDTO(team.getId(), team.getName());
@@ -309,74 +285,22 @@ public class TeamService {
         });
     }
 
-    /**
-     * Links the team to a Keycloak group (or, with null/blank, unlinks it).
-     * Members of that group are joined on their next login and by the nightly
-     * directory sync; the link itself is a platform decision, so the endpoint
-     * is gated to logos_admin.
-     *
-     * <p>Dropping or repointing the link also drops the memberships the old
-     * group produced: they are Keycloak-sourced and so cannot be removed by
-     * hand, and nothing would ever reconcile them once the team no longer
-     * resolves from that group. Members still covered by the new link are
-     * re-joined on their next login.
-     */
     @Transactional
-    public Optional<TeamResponseDTO> updateTeamKeycloakGroup(Integer teamId, String rawGroup) {
-        String group = groupLinkNormalizer.normalize(rawGroup);
+    public Optional<TeamResponseDTO> updatePrivacy(Integer teamId, String scope) {
         return teamRepository.findByIdForUpdate(teamId).map(team -> {
-            String previous = team.getKeycloakGroup();
-            if (Objects.equals(previous, group)) {
-                return new TeamResponseDTO(team.getId(), team.getName());
-            }
-            if (group != null) requireGroupUnlinked(group, teamId);
-            team.setKeycloakGroup(group);
-            saveWithGroupLink(team);
-            if (previous != null) dropSyncedMemberships(teamId);
-            // The link decides who is a member of this team and who holds its
-            // keys, so it belongs in the trail next to the limits it governs.
-            auditLog.record("team.keycloak_group_changed", "team", teamId, teamId,
-                Map.of("keycloak_group", previous == null ? "" : previous),
-                Map.of("keycloak_group", group == null ? "" : group));
-            return new TeamResponseDTO(team.getId(), team.getName());
+            String previous = team.getPrivacyScope();
+            team.setPrivacyScope(scope);
+            auditLog.record("team.privacy_changed", "team", teamId, teamId,
+                Map.of("privacy_scope", previous), Map.of("privacy_scope", scope));
+            return new TeamResponseDTO(teamId, team.getName());
         });
-    }
-
-    /**
-     * The database enforces uniqueness (uq_teams_keycloak_group); checking up
-     * front turns the race-free-but-opaque constraint violation into a message
-     * naming the team that already holds the link.
-     */
-    private void requireGroupUnlinked(String group, Integer selfTeamId) {
-        teamRepository.findByKeycloakGroup(group)
-            .filter(other -> !other.getId().equals(selfTeamId))
-            .ifPresent(other -> {
-                throw new ConflictException("Keycloak group '" + group
-                    + "' is already linked to team '" + other.getName() + "'.");
-            });
-    }
-
-    /** Reports a lost uniqueness race as the same conflict as the up-front check. */
-    private Team saveWithGroupLink(Team team) {
-        try {
-            return teamRepository.saveAndFlush(team);
-        } catch (DataIntegrityViolationException e) {
-            throw new ConflictException("Keycloak group '" + team.getKeycloakGroup()
-                + "' is already linked to another team.");
-        }
-    }
-
-    private void dropSyncedMemberships(Integer teamId) {
-        for (TeamMember member : memberRepository.findById_TeamIdAndSource(teamId, TeamMemberSource.KEYCLOAK)) {
-            membershipService.leave(member.getId().getUserId(), teamId);
-        }
     }
 
     @Transactional
     public Optional<String> addMember(Integer teamId, AddTeamMemberRequestDTO body) {
         boolean isOwner = body.is_owner() != null && body.is_owner();
         if (isOwner) requireOwnerCapableRole(body.user_id());
-        return membershipService.join(body.user_id(), teamId, isOwner, TeamMemberSource.MANUAL);
+        return membershipService.join(body.user_id(), teamId, isOwner);
     }
 
     public boolean ownsAnyTeam(Integer userId) {
@@ -444,12 +368,6 @@ public class TeamService {
     @Transactional
     public void removeMember(Integer teamId, Integer userId) {
         teamRepository.findByIdForUpdate(teamId);
-        memberRepository.findById(new TeamMemberId(userId, teamId)).ifPresent(m -> {
-            if (m.getSource() == TeamMemberSource.KEYCLOAK) {
-                throw new ConflictException(
-                    "This membership is managed by Keycloak and cannot be removed here.");
-            }
-        });
         membershipService.leave(userId, teamId);
     }
 

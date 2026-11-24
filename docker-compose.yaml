@@ -428,10 +428,6 @@ services:
       KEYCLOAK_PASSKEY_RP_NAME: "${KEYCLOAK_PASSKEY_RP_NAME:-Logos}"
       # Empty default: KeycloakProperties auto-derives audience from client id.
       KEYCLOAK_AUDIENCE: "${KEYCLOAK_AUDIENCE:-}"
-      KEYCLOAK_ROLES_LOGOS_ADMIN: "${KEYCLOAK_ROLES_LOGOS_ADMIN:-itg-admin}"
-      KEYCLOAK_ROLES_APP_ADMIN: "${KEYCLOAK_ROLES_APP_ADMIN:-chair-member}"
-      KEYCLOAK_AUTO_PROVISION_TEAMS: "${KEYCLOAK_AUTO_PROVISION_TEAMS:-false}"
-      KEYCLOAK_TEAM_ROLE_SUFFIXES: "${KEYCLOAK_TEAM_ROLE_SUFFIXES:--dev,-team,-group}"
       KEYCLOAK_SYNC_ENABLED: "${KEYCLOAK_SYNC_ENABLED:-false}"
       KEYCLOAK_SYNC_CLIENT_ID: "${KEYCLOAK_SYNC_CLIENT_ID:-logos-sync}"
       KEYCLOAK_SYNC_CLIENT_SECRET: "${KEYCLOAK_SYNC_CLIENT_SECRET:-}"
@@ -573,7 +569,7 @@ services:
       timeout: 5s
       retries: 10
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     networks:
       - internal
 
@@ -657,8 +653,6 @@ services:
       # External Keycloak role(s) that grant the required internal role — the
       # same variable (and default) the webservice reads, so one .env names
       # the deployment's admin role for both services.
-      KEYCLOAK_ROLES_LOGOS_ADMIN: "${KEYCLOAK_ROLES_LOGOS_ADMIN:-itg-admin}"
-      LOGOS_AGENT_REQUIRED_ROLE: "${LOGOS_AGENT_REQUIRED_ROLE:-logos_admin}"
 
       # Optional default among the managed identity's locally served models.
       LOGOS_AGENT_DEFAULT_MODEL: "${LOGOS_AGENT_DEFAULT_MODEL:-}"
@@ -864,6 +858,7 @@ services:
 volumes:
   data_volume:
   postgres_data:
+    name: ${LOGOS_DB_VOLUME_NAME:-${COMPOSE_PROJECT_NAME}_postgres_data}
   agent_artifacts:
   # Named literally (not project-scoped) so its Docker name is exactly the
   # value LOGOS_AGENT_STATE_VOLUME hands to the runner: a bind source is

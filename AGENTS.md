@@ -17,7 +17,7 @@
 | `e2e/` | pytest, Playwright | GPU-less end-to-end suite. See its own `AGENTS.md` and `README.md`. |
 | `agent-gateway/`, `rate-limit-gateway/` | nginx | Edge proxies around the agent runner and the orchestrator. |
 | `keycloak/` | — | Dev realm seed (`tum-realm.json`); all seeded dev users have password `password`. |
-| `db/` | — | Plain `postgres:17` + pg_cron Dockerfile — **no schema here**. |
+| `db/` | — | Plain `postgres:18` + pg_cron Dockerfile — **no schema here**. |
 | `docs/` | Docusaurus | User/admin/developer documentation site. Role-guide screenshot refresh + demo seed: see `docs/AGENTS.md`. |
 | `benchmarks/` | Python | Scheduler/throughput benchmarking scripts. |
 | `scripts/` | bash | Core-node ops scripts, e.g. `gateway-failover-demo.sh` (see [deployment](docs/deployment.md#failover-verification)). |
@@ -43,7 +43,7 @@ User (role: app_developer | app_admin | logos_admin)
                     use_custom_permissions=false → team's team_*_permissions (default)
 ```
 
-Team permissions are only the **default** that keys with `use_custom_permissions=false` (typically developer keys) inherit — they are **not a ceiling**. A key with custom permissions (typically an application or production key) may hold any model or provider from the Logos catalog, including ones the team default does not contain, and a team owner (`app_admin`) granting that to a key of their own team is intended behavior, not a privilege escalation. Changing team permissions therefore never prunes custom key grants; only removing a provider from a key drops that key's models of the provider.
+Team permissions are only the **default** that keys with `use_custom_permissions=false` (typically developer keys) inherit — they are **not a ceiling**. A key with custom permissions (typically an application or production key) may hold any model or provider allowed by the team’s mandatory privacy setting, including ones the team default does not contain, and a team owner (`app_admin`) granting that to a key of their own team is intended behavior, not a privilege escalation. Changing team permissions therefore never prunes custom key grants; only removing a provider from a key drops that key's models of the provider.
 
 The older Process/Profile hierarchy (`process`, `profiles`, `profile_model_permissions`, `model_api_keys` tables) **no longer exists** — never design against it.
 

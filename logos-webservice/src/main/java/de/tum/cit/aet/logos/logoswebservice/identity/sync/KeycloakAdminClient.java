@@ -1,12 +1,9 @@
 package de.tum.cit.aet.logos.logoswebservice.identity.sync;
 
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.ParameterizedTypeReference;
@@ -16,7 +13,6 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
-import de.tum.cit.aet.logos.logoswebservice.auth.KeycloakClaimExtractor;
 import de.tum.cit.aet.logos.logoswebservice.auth.KeycloakProperties;
 
 @Component
@@ -76,129 +72,6 @@ public class KeycloakAdminClient {
             }
         } while (page != null && page.size() == batchSize);
         return result;
-    }
-
-    public Set<String> getUserClaimNames(String keycloakId) {
-        Set<String> names = new HashSet<>();
-        List<Map<String, Object>> roles = restClient.get()
-            .uri("/admin/realms/{realm}/users/{id}/role-mappings/realm/composite",
-                props.sync().realm(), keycloakId)
-            .header("Authorization", "Bearer " + accessToken())
-            .retrieve()
-            .body(LIST_OF_MAPS);
-        if (roles != null) roles.forEach(r -> addName(names, r));
-
-        List<Map<String, Object>> groups = restClient.get()
-            .uri("/admin/realms/{realm}/users/{id}/groups", props.sync().realm(), keycloakId)
-            .header("Authorization", "Bearer " + accessToken())
-            .retrieve()
-            .body(LIST_OF_MAPS);
-        if (groups != null) groups.forEach(g -> addGroupName(names, g));
-        return names;
-    }
-
-    /**
-     * Every group path in the realm, without the leading '/', i.e. exactly as a
-     * login claim carries it. Nested groups are walked explicitly: Keycloak
-     * stopped populating {@code subGroups} in the group listing and serves the
-     * children on their own endpoint instead, while older realms still inline
-     * them. The walk is capped so a large realm cannot stall the request.
-     */
-    public List<String> listGroupPaths() {
-        List<String> paths = new ArrayList<>();
-        collectGroups(topLevelGroups(), paths, 0);
-        return paths;
-    }
-
-    /** Realm role names; a role name reaches the membership sync as a claim name too. */
-    public List<String> listRealmRoleNames() {
-        List<String> names = new ArrayList<>();
-        int first = 0;
-        List<Map<String, Object>> page;
-        do {
-            page = restClient.get()
-                .uri("/admin/realms/{realm}/roles?briefRepresentation=true&first={first}&max={max}",
-                    props.sync().realm(), first, PAGE_SIZE)
-                .header("Authorization", "Bearer " + accessToken())
-                .retrieve()
-                .body(LIST_OF_MAPS);
-            if (page != null) {
-                page.forEach(r -> {
-                    if (r.get("name") instanceof String n) names.add(n);
-                });
-                first += page.size();
-            }
-        } while (page != null && page.size() == PAGE_SIZE && names.size() < MAX_DIRECTORY_ENTRIES);
-        return names;
-    }
-
-    private List<Map<String, Object>> topLevelGroups() {
-        List<Map<String, Object>> all = new ArrayList<>();
-        int first = 0;
-        List<Map<String, Object>> page;
-        do {
-            page = restClient.get()
-                .uri("/admin/realms/{realm}/groups?briefRepresentation=true&first={first}&max={max}",
-                    props.sync().realm(), first, PAGE_SIZE)
-                .header("Authorization", "Bearer " + accessToken())
-                .retrieve()
-                .body(LIST_OF_MAPS);
-            if (page != null) {
-                all.addAll(page);
-                first += page.size();
-            }
-        } while (page != null && page.size() == PAGE_SIZE && all.size() < MAX_DIRECTORY_ENTRIES);
-        return all;
-    }
-
-    private void collectGroups(List<Map<String, Object>> groups, List<String> paths, int depth) {
-        for (Map<String, Object> group : groups) {
-            if (paths.size() >= MAX_DIRECTORY_ENTRIES) return;
-            if (group.get("path") instanceof String path) {
-                paths.add(KeycloakClaimExtractor.normalizeGroupName(path));
-            } else if (group.get("name") instanceof String name) {
-                paths.add(name);
-            }
-            if (depth >= MAX_GROUP_DEPTH) continue;
-            collectGroups(childGroups(group), paths, depth + 1);
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private List<Map<String, Object>> childGroups(Map<String, Object> group) {
-        if (group.get("subGroups") instanceof List<?> inlined && !inlined.isEmpty()) {
-            return (List<Map<String, Object>>) inlined;
-        }
-        boolean hasChildren = group.get("subGroupCount") instanceof Number count && count.intValue() > 0;
-        if (!hasChildren || !(group.get("id") instanceof String id)) return List.of();
-        List<Map<String, Object>> all = new ArrayList<>();
-        int first = 0;
-        List<Map<String, Object>> page;
-        do {
-            page = restClient.get()
-                .uri("/admin/realms/{realm}/groups/{id}/children?briefRepresentation=true&first={first}&max={max}",
-                    props.sync().realm(), id, first, PAGE_SIZE)
-                .header("Authorization", "Bearer " + accessToken())
-                .retrieve()
-                .body(LIST_OF_MAPS);
-            if (page != null) {
-                all.addAll(page);
-                first += page.size();
-            }
-        } while (page != null && page.size() == PAGE_SIZE && all.size() < MAX_DIRECTORY_ENTRIES);
-        return all;
-    }
-
-    private static void addName(Set<String> target, Map<String, Object> rep) {
-        if (rep.get("name") instanceof String s) target.add(s);
-    }
-
-    private static void addGroupName(Set<String> target, Map<String, Object> rep) {
-        if (rep.get("path") instanceof String p) {
-            target.add(KeycloakClaimExtractor.normalizeGroupName(p));
-        } else if (rep.get("name") instanceof String s) {
-            target.add(s);
-        }
     }
 
     private synchronized String accessToken() {

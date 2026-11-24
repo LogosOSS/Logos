@@ -118,7 +118,7 @@ def _requests(request_id="req-1"):
         deployments=deployments,
         classified_models=[(MODEL_ID, 1.0, 1)],
     )
-    pipeline_request = SimpleNamespace(deployments=deployments)
+    pipeline_request = SimpleNamespace(deployments=deployments, api_key_id=None)
     return pipeline_request, scheduling_request
 
 

@@ -13,7 +13,8 @@ import { FormsModule } from '@angular/forms';
 import { ModalConfirmComponent } from '../../../../shared/components/modal/modal-confirm/modal-confirm';
 import { TeamManagementService } from '../../../../core/services/team-management.service';
 import {
-  KeycloakGroupOption,
+  TEAM_PRIVACY_OPTIONS,
+  TeamPrivacy,
   ProviderItem,
   TeamDetail,
   TeamLimitsPayload,
@@ -64,8 +65,7 @@ export class SettingsTabComponent implements OnChanges {
   @Input() team!: TeamDetail;
   @Input() teamId!: number;
   @Input() canEdit = false;
-  /** Logos admins only: the Keycloak link decides who ends up in the team. */
-  @Input() canLinkKeycloak = false;
+  @Input() canManagePrivacy = false;
   @Output() refresh = new EventEmitter<void>();
   @Output() teamDeleted = new EventEmitter<void>();
   @Output() publicStatsSaved = new EventEmitter<Pick<TeamDetail, 'show_on_public_stats' | 'public_category'>>();
@@ -106,46 +106,10 @@ export class SettingsTabComponent implements OnChanges {
   deleteLoading = signal(false);
   deleteError = signal(false);
 
-  // ── Keycloak link ─────────────────────────────────────────────────────────
-  keycloakGroup = signal('');
-  /** Realm groups and roles to suggest; empty when the deployment has no
-   *  Keycloak directory access, in which case the field stays free text. */
-  keycloakGroupOptions = signal<KeycloakGroupOption[]>([]);
-  /** The deployment can read the realm; false means the field is free text only. */
-  keycloakDirectoryAvailable = signal(false);
-  /** The directory was asked once; it stays the same while the tab is open. */
-  private keycloakGroupsRequested = false;
-  linkLoading = signal(false);
-  linkError = signal('');
-  linkSuccess = signal(false);
-
-  /** Suggestions minus the groups another team already holds — the link is unique. */
-  availableKeycloakGroups(): KeycloakGroupOption[] {
-    return this.keycloakGroupOptions()
-      .filter((g) => g.linked_team_id === null || g.linked_team_id === this.teamId);
-  }
-
-  /**
-   * Whether the field offers suggestions — a datalist gives no affordance of
-   * its own, so the admin would otherwise not know the realm can be browsed.
-   */
-  groupPickerHint(): string {
-    if (!this.keycloakDirectoryAvailable()) {
-      return 'Type the name exactly as a login claim carries it (a group path without its leading /).';
-    }
-    const free = this.availableKeycloakGroups().length;
-    return `Pick one of the ${free} selectable groups and roles in the realm, or type another.`;
-  }
-
-  /** Nothing to save while the field still shows what the team is linked to. */
-  linkChanged(): boolean {
-    return this.keycloakGroup().trim() !== (this.team?.keycloak_group ?? '');
-  }
-
-  /** Clearing the field only removes something when a link is actually stored. */
-  linkButtonLabel(): string {
-    return !this.keycloakGroup().trim() && this.team?.keycloak_group ? 'Remove Link' : 'Save Link';
-  }
+  readonly privacyOptions = TEAM_PRIVACY_OPTIONS;
+  privacy = signal<TeamPrivacy>('LOCAL');
+  privacySaving = signal(false);
+  privacyError = signal('');
 
   ngOnChanges(changes: SimpleChanges): void {
     if (this.team) this.resetForm(changes['team']?.previousValue);
@@ -153,10 +117,6 @@ export class SettingsTabComponent implements OnChanges {
     if (this.canEdit && !this.publicCategoriesRequested) {
       this.publicCategoriesRequested = true;
       void this.fetchPublicCategories();
-    }
-    if (this.canLinkKeycloak && !this.keycloakGroupsRequested) {
-      this.keycloakGroupsRequested = true;
-      void this.fetchKeycloakGroups();
     }
   }
 
@@ -180,8 +140,8 @@ export class SettingsTabComponent implements OnChanges {
     if (!previous || previous.default_local_tpm_limit !== this.team.default_local_tpm_limit) {
       this.localTpm.set(this.team.default_local_tpm_limit?.toString() ?? '');
     }
-    if (!previous || previous.keycloak_group !== this.team.keycloak_group) {
-      this.keycloakGroup.set(this.team.keycloak_group ?? '');
+    if (!previous || previous.privacy_scope !== this.team.privacy_scope) {
+      this.privacy.set(this.team.privacy_scope);
     }
     if (!previous || previous.show_on_public_stats !== this.team.show_on_public_stats) {
       this.showOnPublicStats.set(!!this.team.show_on_public_stats);
@@ -253,38 +213,17 @@ export class SettingsTabComponent implements OnChanges {
     }
   }
 
-  /** Group suggestions for the link field; silently stays free text on failure. */
-  private async fetchKeycloakGroups(): Promise<void> {
+  async savePrivacy(): Promise<void> {
+    if (!this.canManagePrivacy || this.privacySaving() || this.privacy() === this.team.privacy_scope) return;
+    this.privacySaving.set(true);
+    this.privacyError.set('');
     try {
-      const directory = await this.teamService.getKeycloakGroups();
-      this.keycloakDirectoryAvailable.set(directory.available);
-      this.keycloakGroupOptions.set(directory.available ? directory.groups : []);
-    } catch {
-      this.keycloakDirectoryAvailable.set(false);
-      this.keycloakGroupOptions.set([]);
-    }
-  }
-
-  /**
-   * Saves the Keycloak link; a blank field removes it. Removing or repointing
-   * it also drops the memberships the old group produced, so the whole team has
-   * to be reloaded afterwards.
-   */
-  async saveKeycloakLink(): Promise<void> {
-    if (this.linkLoading() || !this.linkChanged()) return;
-    this.linkLoading.set(true);
-    this.linkError.set('');
-    this.linkSuccess.set(false);
-    const group = this.keycloakGroup().trim();
-    try {
-      await this.teamService.updateTeamKeycloakGroup(this.teamId, group || null);
-      this.linkSuccess.set(true);
+      await this.teamService.updateTeamPrivacy(this.teamId, this.privacy());
       this.refresh.emit();
-      setTimeout(() => this.linkSuccess.set(false), 3000);
     } catch (err) {
-      this.linkError.set(errorDetail(err) ?? 'Failed to save the Keycloak link, please try again.');
+      this.privacyError.set(errorDetail(err) ?? 'Could not save team privacy.');
     } finally {
-      this.linkLoading.set(false);
+      this.privacySaving.set(false);
     }
   }
 

@@ -58,6 +58,63 @@ class PermissionControllerTest {
     @MockitoBean JwtDecoder jwtDecoder;
 
     @Test
+    void editingVisiblePermissionsPreservesStoredGrantsOutsideTeamPrivacy() throws Exception {
+        jdbc.update("""
+            INSERT INTO providers (id, name, provider_type, privacy_level, auth_name, auth_format)
+            VALUES (6002, 'local', 'logosnode', 'LOCAL', 'Authorization', 'Bearer {}')
+            """);
+        jdbc.update("INSERT INTO model_provider (id, provider_id, model_id) VALUES (7002, 6002, 5002)");
+        var targets = java.util.List.of("/admin/teams/2001", "/admin/api-keys/3001");
+        for (String target : targets) {
+            mvc.perform(put(target + "/provider-permissions").with(TestJwt.logosAdmin())
+                    .contentType("application/json").content("{\"provider_ids\":[6001,6002]}"))
+                .andExpect(status().isOk());
+            mvc.perform(put(target + "/model-permissions").with(TestJwt.logosAdmin())
+                    .contentType("application/json").content("{\"model_ids\":[5001,5002]}"))
+                .andExpect(status().isOk());
+        }
+        jdbc.update("UPDATE teams SET privacy_scope = 'LOCAL' WHERE id = 2001");
+        mvc.perform(delete("/admin/teams/2001/provider-permissions/6002").with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk());
+        for (String target : targets) {
+            mvc.perform(put(target + "/model-permissions").with(TestJwt.logosAdmin())
+                    .contentType("application/json").content("{\"model_ids\":[]}"))
+                .andExpect(status().isOk());
+            mvc.perform(put(target + "/provider-permissions").with(TestJwt.logosAdmin())
+                    .contentType("application/json").content("{\"provider_ids\":[]}"))
+                .andExpect(status().isOk());
+            mvc.perform(get(target + "/model-permissions").with(TestJwt.logosAdmin()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$").isEmpty());
+        }
+        jdbc.update("UPDATE teams SET privacy_scope = 'WORLDWIDE' WHERE id = 2001");
+        for (String target : targets) {
+            mvc.perform(get(target + "/provider-permissions").with(TestJwt.logosAdmin()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0]").value(6001));
+            mvc.perform(get(target + "/model-permissions").with(TestJwt.logosAdmin()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0]").value(5001));
+        }
+    }
+
+    @Test
+    void localTeamCannotGrantOrDiscoverACloudDeploymentEvenWithLocalProviderLabel() throws Exception {
+        jdbc.update("UPDATE teams SET privacy_scope = 'LOCAL' WHERE id = 2001");
+        for (String target : java.util.List.of("/admin/teams/2001", "/admin/api-keys/3001")) {
+            mvc.perform(get(target + "/permission-catalog").with(TestJwt.adminUser()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$[?(@.id == 6001)]").isEmpty());
+            mvc.perform(put(target + "/provider-permissions").with(TestJwt.logosAdmin())
+                    .contentType("application/json").content("{\"provider_ids\":[6001]}"))
+                .andExpect(status().isForbidden());
+            mvc.perform(put(target + "/model-permissions").with(TestJwt.logosAdmin())
+                    .contentType("application/json").content("{\"model_ids\":[5001]}"))
+                .andExpect(status().isForbidden());
+        }
+        mvc.perform(post("/logosdb/get_model").with(TestJwt.adminUser())
+                .contentType("application/json").content("{\"id\":5001}")).andExpect(status().isNotFound());
+    }
+
+    @Test
     void getApiKeyModelPermissions_emptyByDefault() throws Exception {
         mvc.perform(get("/admin/api-keys/3001/model-permissions")
                 .with(TestJwt.logosAdmin()))

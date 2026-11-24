@@ -12,10 +12,10 @@
     />
 
     @if (isAdminOrAbove()) {
-      <button type="button" class="btn-secondary" (click)="openImportDialog()">
+      <button type="button" class="btn-primary" (click)="openImportDialog()">
         <i class="pi pi-upload" aria-hidden="true"></i> Import CSV
       </button>
-      <button type="button" class="btn-primary" (click)="openCreateDialog()">
+      <button type="button" class="btn-secondary" (click)="openCreateDialog()">
         <i class="pi pi-plus" aria-hidden="true"></i> New User
       </button>
     }
@@ -51,14 +51,14 @@
           <app-role-badge
             class="mobile-role-badge"
             [role]="user.role"
-            [clickable]="isLogosAdmin() && !user.managed"
+            [clickable]="isLogosAdmin()"
             (roleChange)="handleRoleChange(user.id, $event)"
           />
 
           @if (isAdminOrAbove()) {
             <div class="name-mobile-actions">
               @if (user.managed) {
-                <span class="managed-badge" title="Managed by Keycloak; identity, role and account are synced and cannot be changed here.">
+                <span class="managed-badge" title="Managed by Keycloak; identity details come from the directory. Logos admins can change the role here.">
                   <i class="pi pi-lock" aria-hidden="true"></i> Keycloak
                 </span>
               } @else if (isLogosAdmin() && user.username !== 'root') {
@@ -93,7 +93,7 @@
         <div class="col-role" role="cell" data-label="Role">
           <app-role-badge
             [role]="user.role"
-            [clickable]="isLogosAdmin() && !user.managed"
+            [clickable]="isLogosAdmin()"
             (roleChange)="handleRoleChange(user.id, $event)"
           />
         </div>
@@ -112,7 +112,7 @@
         @if (isAdminOrAbove()) {
           <div class="col-actions actions-cell" role="cell">
             @if (user.managed) {
-              <span class="managed-badge" title="Managed by Keycloak; identity, role and account are synced and cannot be changed here.">
+              <span class="managed-badge" title="Managed by Keycloak; identity details come from the directory. Logos admins can change the role here.">
                 <i class="pi pi-lock" aria-hidden="true"></i> Keycloak
               </span>
             } @else if (isLogosAdmin() && user.username !== 'root') {
@@ -439,6 +439,19 @@
   size="xl"
 >
   <div class="dialog-body">
+    @if (!importResult()) {
+      <div class="form-field">
+        <label for="import-team" class="field-label">Target team</label>
+        <select id="import-team" class="field-input" [ngModel]="importTeamId()"
+          (ngModelChange)="importTeamId.set($event)" [disabled]="importLoading() || teamsLoading()">
+          <option [ngValue]="null">Import users without a team</option>
+          <option [ngValue]="-1">Read team names from a CSV column</option>
+          @for (team of assignableTeams(); track team.id) {
+            <option [ngValue]="team.id">{{ team.name }}</option>
+          }
+        </select>
+      </div>
+    }
     @if (importResult()) {
       <div class="import-summary">
         <span class="import-stat import-stat--created"
@@ -462,6 +475,7 @@
             <div class="import-user-cell" role="cell" data-label="User">
               <span class="import-user-email">{{ row.email }}</span>
               <span class="import-user-username">{{ row.username }}</span>
+              @if (row.membership) { <span>{{ row.team }} · {{ row.membership }}</span> }
             </div>
             <div class="import-status-cell" role="cell" data-label="Status">
               <span class="import-status" [class]="importStatusClass(row.status)">{{ row.status }}</span>
@@ -473,8 +487,8 @@
     } @else if (!importReady()) {
       <p class="import-hint">
         Upload a CSV, then choose which columns hold the first name, last name and email, and
-        pick the rows to add. Imported users are created without a team — add them to a team's
-        members afterwards.
+        pick the rows to add. New users receive the App Developer role. When you select a team,
+        new and existing users join as members. Existing roles and ownership stay in place.
       </p>
 
       <div class="file-picker-row">
@@ -546,6 +560,14 @@
         </div>
       </div>
 
+      @if (importTeamId() === -1) {
+        <label for="map-team" class="field-label">Team name column</label>
+        <select id="map-team" class="field-input" [ngModel]="teamColumn()" (ngModelChange)="teamColumn.set($event)">
+          <option value="">Choose a column</option>
+          @for (col of importColumns(); track $index) { <option [value]="$index">{{ col }}</option> }
+        </select>
+        <p class="import-hint">Each row must name an existing team you manage.</p>
+      }
       <div class="import-toolbar">
         <span class="import-count">
           {{ importSummary().selected }} of {{ importSummary().total }} rows selected —

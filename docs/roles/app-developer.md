@@ -4,11 +4,7 @@ title: App Developer
 
 # App Developer
 
-The App Developer role (`app_developer`) is the default role. Every
-authenticated user who does not have a configured admin role on the identity
-provider becomes an App Developer (see the
-[installation guide](../admin/installation.md)). App Developers use Logos
-with the models of their team and with their own API keys.
+New accounts receive the App Developer role (`app_developer`) when they sign in. Logos Admins manage roles in Logos. App Developers use the models of their team with their API keys.
 
 The UI shows the role badge "App Developer" in the header menu. A user can
 use the developer-only pages only if the user belongs to a team that has an

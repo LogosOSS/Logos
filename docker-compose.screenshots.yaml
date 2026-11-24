@@ -29,7 +29,7 @@ services:
       timeout: 5s
       retries: 10
     volumes:
-      - doks_pg:/var/lib/postgresql/data
+      - doks_pg:/var/lib/postgresql
     networks:
       - doks-internal
 
@@ -125,6 +125,7 @@ services:
       LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS: "172.16.0.0/12"
       JDK_JAVA_OPTIONS: "-XX:MaxRAMPercentage=80.0"
       KEYCLOAK_ISSUER_URI: "http://localhost:18085/realms/tum"
+      SPRING_LIQUIBASE_CONTEXTS: dev-identities
       KEYCLOAK_JWKS_URI: "http://logos-doks-keycloak:8080/realms/tum/protocol/openid-connect/certs"
       KEYCLOAK_ADMIN_BASE_URL: "http://logos-doks-keycloak:8080"
       KEYCLOAK_REALM: "tum"
@@ -132,10 +133,6 @@ services:
       KEYCLOAK_PASSKEY_RP_ID: ""
       KEYCLOAK_PASSKEY_RP_NAME: "Logos"
       KEYCLOAK_AUDIENCE: ""
-      KEYCLOAK_ROLES_LOGOS_ADMIN: "itg-admin"
-      KEYCLOAK_ROLES_APP_ADMIN: "chair-member"
-      KEYCLOAK_AUTO_PROVISION_TEAMS: "false"
-      KEYCLOAK_TEAM_ROLE_SUFFIXES: "-dev,-team,-group"
       # On, so the docs stack can reproduce the realm-backed group picker on the
       # team dialogs. The seeded realm ships this service-account client.
       KEYCLOAK_SYNC_ENABLED: "true"

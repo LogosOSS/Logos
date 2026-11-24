@@ -2,6 +2,8 @@ package de.tum.cit.aet.logos.logoswebservice.gateway;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -24,12 +26,15 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -51,11 +56,15 @@ import de.tum.cit.aet.logos.logoswebservice.identity.entity.ApiKeyType;
  * request leaves in the database — the cost the budget actually reads.
  */
 @SpringBootTest
+@AutoConfigureMockMvc
 @Testcontainers
 class GatewayCloudBillingEndToEndTest {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @Autowired
+    MockMvc mvc;
 
     @Autowired
     GatewayCloudAccounting accounting;
@@ -864,6 +873,39 @@ class GatewayCloudBillingEndToEndTest {
         return jdbc.queryForObject(
             "SELECT id FROM log_entry WHERE api_key_id = ? ORDER BY id DESC LIMIT 1",
             Integer.class, f.key().id());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void existingKeyCanCallConfirmedEuAliasUntilTeamTightensPrivacy(boolean custom) throws Exception {
+        Fixture f = seedPricedDeployment();
+        String alias = "regional-" + f.modelId();
+        jdbc.update("INSERT INTO model_aliases (model_id, alias) VALUES (?, ?)", f.modelId(), alias);
+        jdbc.update("INSERT INTO model_provider (model_id, provider_id) VALUES (?, ?)", f.modelId(), f.providerId());
+        jdbc.update("UPDATE providers SET privacy_level = 'CLOUD_IN_EU_BY_US_PROVIDER' WHERE id = ?", f.providerId());
+        jdbc.update("UPDATE teams SET privacy_scope = 'EU', default_cloud_rpm_limit = 0, default_cloud_tpm_limit = 0 WHERE id = ?", f.key().teamId());
+        jdbc.update("UPDATE api_keys SET use_custom_permissions = ? WHERE id = ?", custom, f.key().id());
+        if (custom) {
+            jdbc.update("INSERT INTO api_key_model_permissions (api_key_id, model_id) VALUES (?, ?)", f.key().id(), f.modelId());
+            jdbc.update("INSERT INTO api_key_provider_permissions (api_key_id, provider_id) VALUES (?, ?)", f.key().id(), f.providerId());
+        } else {
+            jdbc.update("INSERT INTO team_model_permissions (team_id, model_id) VALUES (?, ?)", f.key().teamId(), f.modelId());
+            jdbc.update("INSERT INTO team_provider_permissions (team_id, provider_id) VALUES (?, ?)", f.key().teamId(), f.providerId());
+        }
+        String key = jdbc.queryForObject("SELECT key_value FROM api_keys WHERE id = ?", String.class, f.key().id());
+        var request = post("/openai/chat/completions")
+            .header("Authorization", "Bearer " + key).contentType("application/json")
+            .content("{\"model\":\"" + alias + "\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}");
+        mvc.perform(request).andExpect(MockMvcResultMatchers.status().isNotFound());
+        assertThat(seenRequestBody.get()).isNull();
+        jdbc.update("UPDATE providers SET eu_processing_verified = true WHERE id = ?", f.providerId());
+        var result = mvc.perform(request).andReturn();
+        mvc.perform(asyncDispatch(result))
+            .andExpect(MockMvcResultMatchers.status().isOk());
+        assertThat(seenRequestBody.getAndSet(null)).isNotEmpty();
+        jdbc.update("UPDATE teams SET privacy_scope = 'LOCAL' WHERE id = ?", f.key().teamId());
+        mvc.perform(request).andExpect(MockMvcResultMatchers.status().isNotFound());
+        assertThat(seenRequestBody.get()).isNull();
     }
 
     private Fixture seedPricedDeployment() {

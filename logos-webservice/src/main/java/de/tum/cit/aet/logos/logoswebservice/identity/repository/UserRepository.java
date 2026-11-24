@@ -39,6 +39,14 @@ public interface UserRepository extends JpaRepository<User, Integer> {
 
     Optional<User> findByKeycloakId(UUID keycloakId);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT u FROM User u WHERE u.keycloakId = :subject")
+    Optional<User> findByKeycloakIdForUpdate(@Param("subject") UUID subject);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT u FROM User u WHERE lower(u.email) = lower(:email)")
+    Optional<User> findByEmailForUpdate(@Param("email") String email);
+
     Optional<User> findByUsername(String username);
 
     List<User> findByKeycloakIdIsNotNull();

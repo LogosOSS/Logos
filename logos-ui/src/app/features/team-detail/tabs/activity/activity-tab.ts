@@ -13,6 +13,7 @@ import { CommonModule } from '@angular/common';
 
 import { HttpResponse } from '@angular/common/http';
 import { AppSelectOption, SelectComponent } from '../../../../shared/components/select/select';
+import { SearchableSelectComponent } from '../../../../shared/components/searchable-select/searchable-select';
 import { RequestItem } from '../../../statistics/statistics.models';
 import { deriveStage, formatTimeAgo, formatTokenCount } from '../../../statistics/statistics.utils';
 import { TeamActivityService } from './activity-tab.service';
@@ -42,7 +43,7 @@ const DAY_OPTIONS: AppSelectOption[] = [
 @Component({
   selector: 'app-activity-tab',
   standalone: true,
-  imports: [CommonModule, SelectComponent, MostAskedQuestions],
+  imports: [CommonModule, SelectComponent, SearchableSelectComponent, MostAskedQuestions],
   templateUrl: './activity-tab.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './activity-tab.scss',

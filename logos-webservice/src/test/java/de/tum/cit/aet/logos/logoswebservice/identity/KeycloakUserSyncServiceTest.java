@@ -1,28 +1,30 @@
 package de.tum.cit.aet.logos.logoswebservice.identity;
 
-import java.time.Instant;
-import java.util.Set;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-
 import static org.assertj.core.api.Assertions.assertThat;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.jdbc.Sql;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
 import de.tum.cit.aet.logos.logoswebservice.auth.KeycloakClaims;
+import de.tum.cit.aet.logos.logoswebservice.identity.dto.AddTeamMemberRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.ApiKey;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.ApiKeyType;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Team;
@@ -37,6 +39,7 @@ import de.tum.cit.aet.logos.logoswebservice.identity.repository.UserRepository;
 import de.tum.cit.aet.logos.logoswebservice.identity.service.ApiKeyFactory;
 import de.tum.cit.aet.logos.logoswebservice.identity.service.KeycloakUserSyncService;
 import de.tum.cit.aet.logos.logoswebservice.identity.service.TeamService;
+import de.tum.cit.aet.logos.logoswebservice.identity.service.UserService;
 
 @SpringBootTest
 @Import(TestContainersConfig.class)
@@ -60,24 +63,54 @@ class KeycloakUserSyncServiceTest {
     @Autowired ApiKeyRepository apiKeyRepository;
     @Autowired ApiKeyFactory apiKeyFactory;
     @Autowired TeamService teamService;
+    @Autowired UserService userService;
     @Autowired JdbcTemplate jdbc;
     @Autowired PlatformTransactionManager txManager;
 
     private static final String NEW_SUB = "33333333-3333-3333-3333-333333333333";
 
-    private KeycloakClaims claims(String sub, String username, Set<String> roles) {
-        return new KeycloakClaims(sub, username, "Pre", "Name", username + "@tum.de", roles, null);
+    private KeycloakClaims claims(String sub, String username) {
+        return new KeycloakClaims(sub, username, "Pre", "Name", username + "@tum.de", true, Instant.now());
     }
 
-    private Team linkTeamToGroup(String group) {
-        Team team = teamRepository.findById(2001).orElseThrow();
-        team.setKeycloakGroup(group);
-        return teamRepository.save(team);
+    @Test
+    void concurrentIdentityRefreshReturnsAndPreservesTheCommittedRole() throws Exception {
+        var identity = claims(NEW_SUB, "synced");
+        int userId = syncService.syncFromClaims(identity).getId();
+        jdbc.update("UPDATE users SET role = 'logos_admin', last_synced_at = 'epoch' WHERE id = ?", userId);
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            Future<User> refresh = new TransactionTemplate(txManager).execute(tx -> {
+                int writerPid = jdbc.queryForObject("SELECT pg_backend_pid()", Integer.class);
+                userService.updateRole(userId, "app_developer").orElseThrow();
+                Future<User> pending = executor.submit(() -> syncService.syncIfStale(identity));
+                Awaitility.await().atMost(Duration.ofSeconds(10)).until(() -> jdbc.queryForObject(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ? = ANY(pg_blocking_pids(pid)))",
+                    Boolean.class, writerPid));
+                return pending;
+            });
+            assertThat(refresh.get(10, TimeUnit.SECONDS).getRole()).isEqualTo("app_developer");
+            assertThat(userRepository.findById(userId).orElseThrow().getRole()).isEqualTo("app_developer");
+        }
+    }
+
+    @Test
+    void anOlderIdentityCannotReactivateAnAccountAfterTheDebounceExpires() {
+        User member = syncService.syncFromClaims(claims(NEW_SUB, "synced"));
+        syncService.deactivateUser(member);
+        member = userRepository.findById(member.getId()).orElseThrow();
+        Instant deactivated = Instant.now().minusSeconds(3600);
+        member.setLastSyncedAt(deactivated);
+        userRepository.save(member);
+        KeycloakClaims stale = new KeycloakClaims(NEW_SUB, "synced", "Pre", "Name", "synced@tum.de", true,
+            deactivated.minusSeconds(60));
+        assertThat(syncService.syncIfStale(stale).isActive()).isFalse();
+        assertThat(syncService.syncFromClaims(stale).isActive()).isFalse();
+        assertThat(syncService.syncFromClaims(claims(NEW_SUB, "synced")).isActive()).isTrue();
     }
 
     @Test
     void firstLogin_withNoRoles_registersUserAndCreatesNoKeys() {
-        User user = syncService.syncFromClaims(claims(NEW_SUB, "newbie", Set.of()));
+        User user = syncService.syncFromClaims(claims(NEW_SUB, "newbie"));
 
         assertThat(user.getId()).isNotNull();
         assertThat(user.getKeycloakId()).isEqualTo(UUID.fromString(NEW_SUB));
@@ -90,61 +123,9 @@ class KeycloakUserSyncServiceTest {
     }
 
     @Test
-    void firstLogin_withUnknownTeamRole_autoCreatesTeamAndAddsMember() {
-        User user = syncService.syncFromClaims(claims(NEW_SUB, "newbie", Set.of("new-project-dev")));
-
-        var autoTeam = teamRepository.findByKeycloakGroup("new-project-dev");
-        assertThat(autoTeam).isPresent();
-        assertThat(autoTeam.get().getName()).isEqualTo("New Project");
-        assertThat(memberRepository.findById(new TeamMemberId(user.getId(), autoTeam.get().getId()))).isPresent();
-
-        memberRepository.findById_TeamId(autoTeam.get().getId()).forEach(memberRepository::delete);
-        apiKeyRepository.findByUserId(user.getId()).forEach(apiKeyRepository::delete);
-        teamRepository.delete(autoTeam.get());
-        userRepository.delete(user);
-    }
-
-    @Test
-    void deriveTeamName_stripsKnownSuffixesAndTitleCases() {
-        var suffixes = java.util.List.of("-dev", "-team", "-group", "-member");
-        assertThat(KeycloakUserSyncService.deriveTeamName("artemis-dev", suffixes)).isEqualTo("Artemis");
-        assertThat(KeycloakUserSyncService.deriveTeamName("my-cool-project-dev", suffixes)).isEqualTo("My Cool Project");
-        assertThat(KeycloakUserSyncService.deriveTeamName("foo-team", suffixes)).isEqualTo("Foo");
-        assertThat(KeycloakUserSyncService.deriveTeamName("foo-group", suffixes)).isEqualTo("Foo");
-        assertThat(KeycloakUserSyncService.deriveTeamName("foo-bar", suffixes)).isEqualTo("Foo Bar");
-        assertThat(KeycloakUserSyncService.deriveTeamName("somegroup", suffixes)).isEqualTo("Somegroup");
-    }
-
-    @Test
-    void claimMatchingLinkedTeam_createsKeycloakMembershipAndKey() {
-        linkTeamToGroup("artemis-dev");
-        User user = syncService.syncFromClaims(claims(NEW_SUB, "newbie", Set.of("artemis-dev")));
-
-        TeamMember m = memberRepository.findById(new TeamMemberId(user.getId(), 2001)).orElseThrow();
-        assertThat(m.getSource()).isEqualTo(TeamMemberSource.KEYCLOAK);
-        assertThat(apiKeyRepository.findByUserIdAndTeamIdAndKeyType(user.getId(), 2001, ApiKeyType.developer))
-            .hasSize(1);
-        memberRepository.delete(m);
-        apiKeyRepository.findByUserId(user.getId()).forEach(apiKeyRepository::delete);
-        userRepository.delete(user);
-    }
-
-    @Test
-    void removedClaim_removesOnlyKeycloakMemberships() {
-        linkTeamToGroup("artemis-dev");
-        User user = syncService.syncFromClaims(claims(NEW_SUB, "newbie", Set.of("artemis-dev")));
-        syncService.syncFromClaims(claims(NEW_SUB, "newbie", Set.of()));
-
-        assertThat(memberRepository.findById(new TeamMemberId(user.getId(), 2001))).isEmpty();
-        assertThat(memberRepository.findById(new TeamMemberId(1001, 2001))).isPresent();
-        apiKeyRepository.findByUserId(user.getId()).forEach(apiKeyRepository::delete);
-        userRepository.delete(userRepository.findById(user.getId()).orElseThrow());
-    }
-
-    @Test
-    void logosAdminRole_doesNotMintPersonalKey_andDeactivatesExistingOnes() {
-        User user = syncService.syncFromClaims(claims(NEW_SUB, "newbie", Set.of("itg-admin")));
-        assertThat(user.getRole()).isEqualTo("logos_admin");
+    void newUser_doesNotMintPersonalKey_andDeactivatesExistingOnes() {
+        User user = syncService.syncFromClaims(claims(NEW_SUB, "newbie"));
+        assertThat(user.getRole()).isEqualTo("app_developer");
 
         // Admins no longer receive an auto-provisioned team-less "master" key;
         // they obtain keys through team membership like every other user.
@@ -156,7 +137,7 @@ class KeycloakUserSyncServiceTest {
         legacy.setIsActive(true);
         apiKeyRepository.save(legacy);
 
-        syncService.syncFromClaims(claims(NEW_SUB, "newbie", Set.of("itg-admin")));
+        syncService.syncFromClaims(claims(NEW_SUB, "newbie"));
         var personal = apiKeyRepository.findByUserIdAndTeamIdIsNullAndKeyType(user.getId(), ApiKeyType.developer);
         assertThat(personal).hasSize(1);
         assertThat(personal.get(0).getIsActive()).isFalse();
@@ -177,7 +158,7 @@ class KeycloakUserSyncServiceTest {
 
         try {
             User user = syncService.syncFromClaims(
-                new KeycloakClaims(NEW_SUB, "unknown-username", "P", "N", "legacy-admin@test.com", Set.of(), null));
+                new KeycloakClaims(NEW_SUB, "unknown-username", "P", "N", "legacy-admin@test.com", true, null));
             assertThat(user.getId()).isEqualTo(existing.getId());
             assertThat(user.getKeycloakId()).isEqualTo(UUID.fromString(NEW_SUB));
         } finally {
@@ -191,7 +172,7 @@ class KeycloakUserSyncServiceTest {
         // Seeded 1005 "Manual User" has no keycloak_id; a namesake must get an account of their own.
         try {
             User user = syncService.syncFromClaims(
-                new KeycloakClaims(NEW_SUB, "namesake", "Manual", "User", "namesake@tum.de", Set.of(), null));
+                new KeycloakClaims(NEW_SUB, "namesake", "Manual", "User", "namesake@tum.de", true, null));
             assertThat(user.getId()).isNotEqualTo(1005);
             assertThat(userRepository.findById(1005).orElseThrow().getKeycloakId()).isNull();
         } finally {
@@ -214,7 +195,7 @@ class KeycloakUserSyncServiceTest {
             org.junit.jupiter.api.Assertions.assertThrows(
                 de.tum.cit.aet.logos.logoswebservice.common.ConflictException.class,
                 () -> syncService.syncFromClaims(
-                    new KeycloakClaims(NEW_SUB, "recreated", "Re", "Created", "recreated@test.com", Set.of(), null)));
+                    new KeycloakClaims(NEW_SUB, "recreated", "Re", "Created", "recreated@test.com", true, null)));
             // The login subject must not have been inserted as a second row.
             assertThat(userRepository.findByKeycloakId(UUID.fromString(NEW_SUB))).isEmpty();
         } finally {
@@ -227,7 +208,7 @@ class KeycloakUserSyncServiceTest {
         User seeded = userRepository.findById(1001).orElseThrow();
         Instant before = seeded.getLastSyncedAt();
         User result = syncService.syncIfStale(
-            claims(seeded.getKeycloakId().toString(), "testuser", Set.of("itg-admin")));
+            claims(seeded.getKeycloakId().toString(), "testuser"));
         assertThat(result.getRole()).isEqualTo("app_developer");
         assertThat(result.getLastSyncedAt()).isEqualTo(before);
     }
@@ -241,36 +222,10 @@ class KeycloakUserSyncServiceTest {
     }
 
     @Test
-    void firstLogin_withBuiltinKeycloakRoles_createsNoTeamOrKey() {
-        User user = syncService.syncFromClaims(
-            claims(NEW_SUB, "newbie", Set.of("offline_access", "uma_authorization", "default-roles-tum")));
-
-        assertThat(teamRepository.findByKeycloakGroup("offline_access")).isEmpty();
-        assertThat(teamRepository.findByKeycloakGroup("uma_authorization")).isEmpty();
-        assertThat(teamRepository.findByKeycloakGroup("default-roles-tum")).isEmpty();
-        assertThat(memberRepository.findById_UserIdAndSource(user.getId(), TeamMemberSource.KEYCLOAK)).isEmpty();
-        assertThat(apiKeyRepository.findByUserId(user.getId())).isEmpty();
-
-        userRepository.delete(user);
-    }
-
-    @Test
-    void syncDemotingOwnerToDeveloper_revokesOwnershipButKeepsMembership() {
-        // adminuser (1002) owns team 2001; Keycloak no longer reports an admin role.
-        User u1002 = userRepository.findById(1002).orElseThrow();
-        User synced = syncService.syncFromClaims(
-            claims(u1002.getKeycloakId().toString(), "adminuser", Set.of()));
-
-        assertThat(synced.getRole()).isEqualTo("app_developer");
-        TeamMember m = memberRepository.findById(new TeamMemberId(1002, 2001)).orElseThrow();
-        assertThat(m.getIsOwner()).isFalse();
-    }
-
-    @Test
     void syncKeepingAdminRole_keepsOwnership() {
         User u1002 = userRepository.findById(1002).orElseThrow();
         User synced = syncService.syncFromClaims(
-            claims(u1002.getKeycloakId().toString(), "adminuser", Set.of("chair-member")));
+            claims(u1002.getKeycloakId().toString(), "adminuser"));
 
         assertThat(synced.getRole()).isEqualTo("app_admin");
         TeamMember m = memberRepository.findById(new TeamMemberId(1002, 2001)).orElseThrow();
@@ -278,14 +233,13 @@ class KeycloakUserSyncServiceTest {
     }
 
     @Test
-    void manualMembershipMatchingClaim_isTakenOverByKeycloakSync() {
-        linkTeamToGroup("artemis-dev");
+    void loginPreservesManualMembership() {
         User u1001 = userRepository.findById(1001).orElseThrow();
         syncService.syncFromClaims(
-            claims(u1001.getKeycloakId().toString(), "testuser", Set.of("artemis-dev")));
+            claims(u1001.getKeycloakId().toString(), "testuser"));
 
         TeamMember m = memberRepository.findById(new TeamMemberId(1001, 2001)).orElseThrow();
-        assertThat(m.getSource()).isEqualTo(TeamMemberSource.KEYCLOAK);
+        assertThat(m.getSource()).isEqualTo(TeamMemberSource.MANUAL);
     }
 
     /**
@@ -296,8 +250,9 @@ class KeycloakUserSyncServiceTest {
      */
     @Test
     void reEnabledUser_doesNotRegainTheKeyOfATeamTheyWereRemovedFrom() {
-        Team team = linkTeamToGroup("kc-synced");
-        User member = syncService.syncFromClaims(claims(NEW_SUB, "synced", Set.of("kc-synced")));
+        Team team = teamRepository.findById(2001).orElseThrow();
+        User member = syncService.syncFromClaims(claims(NEW_SUB, "synced"));
+        teamService.addMember(team.getId(), new AddTeamMemberRequestDTO(member.getId(), false));
         ApiKey teamKey = apiKeyRepository
             .findByUserIdAndTeamIdAndKeyType(member.getId(), team.getId(), ApiKeyType.developer)
             .getFirst();
@@ -306,11 +261,11 @@ class KeycloakUserSyncServiceTest {
         // Keycloak disables the account, and the team is unlinked while it is
         // off — which drops the membership and switches the key off with it.
         syncService.deactivateUser(userRepository.findById(member.getId()).orElseThrow());
-        teamService.updateTeamKeycloakGroup(team.getId(), null);
+        teamService.removeMember(team.getId(), member.getId());
         assertThat(memberRepository.findById(new TeamMemberId(member.getId(), team.getId()))).isEmpty();
 
         // The account comes back. The key must not.
-        syncService.syncFromClaims(claims(NEW_SUB, "synced", Set.of("kc-synced")));
+        syncService.syncFromClaims(claims(NEW_SUB, "synced"));
 
         assertThat(apiKeyRepository.findById(teamKey.getId()).orElseThrow().getIsActive())
             .as("a key for a team the user is no longer in must stay inactive")
@@ -319,8 +274,9 @@ class KeycloakUserSyncServiceTest {
 
     @Test
     void reEnabledUser_regainsTheKeyOfATeamTheyAreStillIn() {
-        Team team = linkTeamToGroup("kc-synced");
-        User member = syncService.syncFromClaims(claims(NEW_SUB, "synced", Set.of("kc-synced")));
+        Team team = teamRepository.findById(2001).orElseThrow();
+        User member = syncService.syncFromClaims(claims(NEW_SUB, "synced"));
+        teamService.addMember(team.getId(), new AddTeamMemberRequestDTO(member.getId(), false));
         ApiKey teamKey = apiKeyRepository
             .findByUserIdAndTeamIdAndKeyType(member.getId(), team.getId(), ApiKeyType.developer)
             .getFirst();
@@ -328,160 +284,9 @@ class KeycloakUserSyncServiceTest {
         syncService.deactivateUser(userRepository.findById(member.getId()).orElseThrow());
         assertThat(apiKeyRepository.findById(teamKey.getId()).orElseThrow().getIsActive()).isFalse();
 
-        syncService.syncFromClaims(claims(NEW_SUB, "synced", Set.of("kc-synced")));
+        syncService.syncFromClaims(claims(NEW_SUB, "synced"));
 
         assertThat(apiKeyRepository.findById(teamKey.getId()).orElseThrow().getIsActive()).isTrue();
     }
 
-    /**
-     * Auto-provisioning adopts a same-named unlinked team rather than creating
-     * a duplicate, which makes it a second writer of {@code keycloak_group}. It
-     * has to lose against an admin who links that team first: read, check and
-     * save would overwrite the committed link with the derived one, and the
-     * login would then join through a link nobody chose.
-     */
-    @Test
-    void adoption_neverOverwritesALinkCommittedWhileItWaited() throws Exception {
-        Integer adoptable = jdbc.queryForObject(
-            "INSERT INTO teams (name) VALUES ('Foo') RETURNING id", Integer.class);
-        UUID subject = UUID.randomUUID();
-        CountDownLatch locked = new CountDownLatch(1);
-        CountDownLatch release = new CountDownLatch(1);
-        AtomicInteger holder = new AtomicInteger();
-        try {
-            CompletableFuture<Void> adminLink = CompletableFuture.runAsync(() ->
-                new TransactionTemplate(txManager).executeWithoutResult(status -> {
-                    teamService.updateTeamKeycloakGroup(adoptable, "bar-dev");
-                    holder.set(backendPid());
-                    locked.countDown();
-                    try {
-                        // Hold the row so the adoption runs into it before committing.
-                        release.await(10, TimeUnit.SECONDS);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }));
-
-            assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
-            CompletableFuture<Void> login = CompletableFuture.runAsync(() ->
-                syncService.syncFromClaims(new KeycloakClaims(subject.toString(), "adopter",
-                    "Ad", "Opter", subject + "@tum.de", Set.of("foo-dev"), Instant.now())));
-
-            assertThat(awaitBlockedBy(holder.get()))
-                .as("the adoption must reach the held team row").isTrue();
-            release.countDown();
-            CompletableFuture.allOf(adminLink, login).get(30, TimeUnit.SECONDS);
-
-            assertThat(teamRepository.findById(adoptable).orElseThrow().getKeycloakGroup())
-                .as("the admin's link stands")
-                .isEqualTo("bar-dev");
-            assertThat(teamRepository.findByKeycloakGroup("foo-dev"))
-                .as("the adoption falls back to a team of its own")
-                .get()
-                .extracting(Team::getId)
-                .isNotEqualTo(adoptable);
-        } finally {
-            release.countDown();
-            jdbc.update("""
-                DELETE FROM api_keys WHERE team_id IN (
-                    SELECT id FROM teams WHERE name = 'Foo' OR keycloak_group IN ('foo-dev', 'bar-dev'))
-                """);
-            jdbc.update("""
-                DELETE FROM team_members WHERE team_id IN (
-                    SELECT id FROM teams WHERE name = 'Foo' OR keycloak_group IN ('foo-dev', 'bar-dev'))
-                """);
-            jdbc.update("DELETE FROM teams WHERE name = 'Foo' OR keycloak_group IN ('foo-dev', 'bar-dev')");
-        }
-    }
-
-    /**
-     * The name is the only reason adoption picks a particular team, so a rename
-     * committed while the adoption waits invalidates the choice. Claiming the
-     * team anyway would pour the group's members into a team that no longer
-     * answers to the group's derived name — and hand them its budget.
-     */
-    @Test
-    void adoption_neverClaimsATeamRenamedWhileItWaited() throws Exception {
-        Integer adoptable = jdbc.queryForObject(
-            "INSERT INTO teams (name) VALUES ('Foo') RETURNING id", Integer.class);
-        UUID subject = UUID.randomUUID();
-        CountDownLatch locked = new CountDownLatch(1);
-        CountDownLatch release = new CountDownLatch(1);
-        AtomicInteger holder = new AtomicInteger();
-        try {
-            CompletableFuture<Void> adminRename = CompletableFuture.runAsync(() ->
-                new TransactionTemplate(txManager).executeWithoutResult(status -> {
-                    teamService.updateTeamName(adoptable, "Bar");
-                    holder.set(backendPid());
-                    locked.countDown();
-                    try {
-                        // Hold the row so the adoption runs into it before committing.
-                        release.await(10, TimeUnit.SECONDS);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }));
-
-            assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
-            // The login still sees the committed name 'Foo', so it picks this
-            // team to adopt and then blocks on the row the rename holds.
-            CompletableFuture<Void> login = CompletableFuture.runAsync(() ->
-                syncService.syncFromClaims(new KeycloakClaims(subject.toString(), "adopter",
-                    "Ad", "Opter", subject + "@tum.de", Set.of("foo-dev"), Instant.now())));
-
-            assertThat(awaitBlockedBy(holder.get()))
-                .as("the adoption must reach the held team row").isTrue();
-            release.countDown();
-            CompletableFuture.allOf(adminRename, login).get(30, TimeUnit.SECONDS);
-
-            assertThat(teamRepository.findById(adoptable).orElseThrow())
-                .as("the renamed team is not the one 'foo-dev' derives, so it stays unlinked")
-                .extracting(Team::getName, Team::getKeycloakGroup)
-                .containsExactly("Bar", null);
-            assertThat(teamRepository.findByKeycloakGroup("foo-dev"))
-                .as("the adoption falls back to a team of its own")
-                .get()
-                .extracting(Team::getId)
-                .isNotEqualTo(adoptable);
-        } finally {
-            release.countDown();
-            jdbc.update("""
-                DELETE FROM api_keys WHERE team_id IN (
-                    SELECT id FROM teams WHERE name IN ('Foo', 'Bar') OR keycloak_group = 'foo-dev')
-                """);
-            jdbc.update("""
-                DELETE FROM team_members WHERE team_id IN (
-                    SELECT id FROM teams WHERE name IN ('Foo', 'Bar') OR keycloak_group = 'foo-dev')
-                """);
-            jdbc.update("DELETE FROM teams WHERE name IN ('Foo', 'Bar') OR keycloak_group = 'foo-dev'");
-        }
-    }
-
-    /**
-     * Waits until some backend is blocked <em>by the transaction we are holding
-     * the row in</em> — not merely until something, somewhere in this database,
-     * waits on a lock. A test container is shared, and an unrelated waiter would
-     * otherwise release the holder before the contended statement ever reached
-     * the row, leaving the assertions to pass without the race having happened.
-     * {@code pg_blocking_pids} names the blockers, so we can insist it is ours.
-     */
-    private boolean awaitBlockedBy(int holderPid) throws InterruptedException {
-        for (int attempt = 0; attempt < 100; attempt++) {
-            Integer waiting = jdbc.queryForObject("""
-                SELECT COUNT(*) FROM pg_stat_activity
-                WHERE datname = current_database()
-                  AND pid <> pg_backend_pid()
-                  AND pid <> ?
-                  AND ? = ANY(pg_blocking_pids(pid))
-                """, Integer.class, holderPid, holderPid);
-            if (waiting != null && waiting > 0) return true;
-            TimeUnit.MILLISECONDS.sleep(100);
-        }
-        return false;
-    }
-
-    /** Backend pid of the current transaction; JdbcTemplate shares its connection. */
-    private int backendPid() {
-        return jdbc.queryForObject("SELECT pg_backend_pid()", Integer.class);
-    }
 }

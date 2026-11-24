@@ -118,11 +118,11 @@
     <div class="ac-section-head ac-section-head--spaced">
       <h3 class="ac-section-title">Requests</h3>
       <div class="ac-toolbar">
-        <app-select
+        <app-searchable-select
           class="ac-control"
+          label="Requesters"
           [options]="requesterOptions()"
           [value]="selectedRequesterValue()"
-          [compact]="true"
           ariaLabel="Filter by requester"
           (valueChange)="setRequester($event)"
         />

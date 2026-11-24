@@ -136,11 +136,13 @@ export class ProvidersTabComponent implements OnInit {
 
   async ngOnInit(): Promise<void> {
     try {
-      const [all, enabled] = await Promise.all([
+      const [catalog, all, enabled] = await Promise.all([
+        this.teamService.getTeamPermissionCatalog(this.teamId),
         this.teamService.getAllProviders(),
         this.teamService.getTeamProviderPermissions(this.teamId),
       ]);
-      this.allProviders.set(all);
+      const eligible = new Set(catalog.map((p) => p.id));
+      this.allProviders.set(all.filter((p) => eligible.has(p.id)));
       this.assignedIds.set(new Set(enabled));
     } catch {
       this.error.set(true);
