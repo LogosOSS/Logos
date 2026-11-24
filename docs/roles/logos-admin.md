@@ -286,7 +286,7 @@ A fresh comparison must verify a historical candidate before automatic adoption.
 ![Current worker configuration and its measured result](../static/img/roles/logos-admin-deployed-configuration.png)
 
 Configuration details and benchmark history start closed on desktop and mobile.
-Under **Analysis**, open **Compare parameter values** and select the **Reference run**, **Parameter** and **Metric**.
+**Analysis** opens with **Compare parameter values** expanded. Select the **Reference run**, **Parameter** and **Metric**.
 The chart shows one parameter at a time, with a dashed reference line and measured changes.
 Only matching workloads and other captured settings enter the comparison.
 A single parameter value shows an explanation instead of an empty comparison chart.

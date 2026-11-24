@@ -303,6 +303,8 @@ describe('Benchmark provider picker', () => {
       const visible = [...fixture.nativeElement.querySelectorAll('.performance-view')].filter((panel: any) => !panel.hidden);
       expect(visible.map((panel: any) => panel.id)).toEqual([`performance-${view}`]);
     }
+    const sections = fixture.nativeElement.querySelectorAll('#performance-analysis details[name="performance-analysis"]') as NodeListOf<HTMLDetailsElement>;
+    expect(Array.from(sections, section => section.open)).toEqual([true, false, false]);
     expect(samples.value).toBe('7');
     expect(picker.value).toBe('2');
     expect(component.benchmarkSettingsOpen()).toBe(false);

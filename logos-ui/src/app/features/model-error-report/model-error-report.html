@@ -766,7 +766,7 @@
 
           <section id="performance-analysis" class="performance-view performance-advanced" aria-label="Benchmark analysis" [hidden]="performanceView() !== 'analysis'">
             <div class="performance-advanced__content">
-              <details class="performance-analysis-item" name="performance-analysis">
+              <details class="performance-analysis-item" name="performance-analysis" open>
                 <summary><h3><i class="pi pi-chart-bar" aria-hidden="true"></i> Compare parameter values</h3></summary>
                 <app-benchmark-comparison [runs]="performance()" />
               </details>
