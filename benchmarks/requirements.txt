@@ -4,7 +4,7 @@
 # SSH uses the system ssh binary — no Python SSH library.
 httpx==0.28.1
 # --logos-config capabilities filter
-pyyaml==6.0.3
+pyyaml==6.0.4
 numpy==2.5.5
 matplotlib==3.11.2
 
