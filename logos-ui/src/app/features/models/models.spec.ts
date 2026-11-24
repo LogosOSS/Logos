@@ -49,7 +49,10 @@ async function boot() {
       },
       {
         provide: ModelRequestService,
-        useValue: { list: vi.fn().mockResolvedValue([]), recheckGated: vi.fn().mockResolvedValue(undefined) },
+        useValue: {
+          list: vi.fn().mockResolvedValue({ models: [], require_admin_license_approval: true }),
+          recheckGated: vi.fn().mockResolvedValue(undefined),
+        },
       },
       {
         provide: AuthService,

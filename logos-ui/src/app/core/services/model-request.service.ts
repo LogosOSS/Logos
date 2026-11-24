@@ -29,6 +29,18 @@ export interface ModelRequest {
   license_approved: boolean;
 }
 
+/**
+ * The model-request listing as the webservice reports it: the requested
+ * models, and whether the Logos admin still records the license acceptances
+ * (the webservice's REQUIRE_LOGOS_ADMIN_LICENSE_APPROVAL setting, true while
+ * unset). While it is false, a non-gated model's license is reference
+ * material — shown, not accepted.
+ */
+export interface ModelRequestsResponse {
+  models: ModelRequest[];
+  require_admin_license_approval: boolean;
+}
+
 /** The stored license of a requested model, as the acceptance dialog renders it. */
 export interface ModelLicense {
   status: LicenseStatus;
@@ -57,8 +69,8 @@ export interface ModelLicense {
 export class ModelRequestService {
   private http = inject(HttpClient);
 
-  list(): Promise<ModelRequest[]> {
-    return firstValueFrom(this.http.post<ModelRequest[]>('/api/logosdb/get_model_requests', {}));
+  list(): Promise<ModelRequestsResponse> {
+    return firstValueFrom(this.http.post<ModelRequestsResponse>('/api/logosdb/get_model_requests', {}));
   }
 
   /**

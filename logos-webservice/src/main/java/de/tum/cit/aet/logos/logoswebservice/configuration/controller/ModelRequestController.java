@@ -1,7 +1,5 @@
 package de.tum.cit.aet.logos.logoswebservice.configuration.controller;
 
-import java.util.List;
-
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -13,6 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ModelLicenseRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ModelLicenseResponse;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ModelRequestsResponse;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.RemoveModelRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.RequestedModelResponse;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.SubmitModelRequestDTO;
@@ -43,9 +42,15 @@ public class ModelRequestController {
         this.hfStatusRechecker = hfStatusRechecker;
     }
 
-    /** The requested models, most-voted first, with the caller's vote state. */
+    /**
+     * The requested models — most-voted first, with the caller's vote state —
+     * alongside the deployment setting for the license acceptance (the
+     * REQUIRE_LOGOS_ADMIN_LICENSE_APPROVAL environment variable, true by
+     * default), so the user interface can offer the non-gated licenses
+     * read-only while the setting is off.
+     */
     @PostMapping("/get_model_requests")
-    public ResponseEntity<List<RequestedModelResponse>> getModelRequests(
+    public ResponseEntity<ModelRequestsResponse> getModelRequests(
             @RequestAttribute("authContext") AuthContext auth) {
         return ResponseEntity.ok(requestedModelService.list(auth.userId()));
     }

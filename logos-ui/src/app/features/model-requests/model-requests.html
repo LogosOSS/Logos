@@ -90,7 +90,7 @@
             <th>Model</th>
             <th>Votes</th>
             @if (isLogosAdmin()) {
-              <th>License agreement status</th>
+              <th>{{ requireAdminApproval() ? 'License agreement status' : 'License agreement' }}</th>
             }
             <th></th>
           </tr>
@@ -118,7 +118,20 @@
               </td>
               @if (isLogosAdmin()) {
                 <td class="row-action row-action--license">
-                  @if (request.license_approved) {
+                  @if (!requireAdminApproval() && !request.is_gated) {
+                    <!-- Reference-only: the deployment does not require the
+                         admin's acceptance, so the row has no accepted/open
+                         state — just the agreement to look at. -->
+                    <button
+                      type="button"
+                      class="license-state license-state--doc"
+                      title="View the license agreement"
+                      [attr.aria-label]="'License agreement of ' + request.name + ' — view'"
+                      (click)="openLicenseDialog(request)"
+                    >
+                      <i class="pi pi-file" aria-hidden="true"></i>
+                    </button>
+                  } @else if (request.license_approved) {
                     <button
                       type="button"
                       class="license-state license-state--ok"
@@ -230,7 +243,12 @@
             license file in the repository nor a license declared on the model card.
           </p>
           <p class="license-note">
-            There is nothing to accept here; the row stays flagged so it can be reviewed.
+            @if (readOnlyLicense()) {
+              If Hugging Face gains license information for the repository, the next recheck
+              picks it up.
+            } @else {
+              There is nothing to accept here; the row stays flagged so it can be reviewed.
+            }
           </p>
         } @else {
           @if (license()!.license_text) {
@@ -245,29 +263,31 @@
             <p class="license-note">Use policy — {{ license()!.use_policy_file }}</p>
             <pre class="license-text license-text--policy">{{ license()!.use_policy_text }}</pre>
           }
-          @if (license()!.approved) {
-            <p class="license-note license-approved">
-              Accepted on {{ license()!.approved_at | date: 'medium' }}.
-            </p>
-          } @else {
-            <label class="license-accept">
-              <input
-                type="checkbox"
-                [checked]="acceptChecked()"
-                (change)="acceptChecked.set($any($event.target).checked)"
-                [disabled]="accepting()"
-              />
-              <span>
-                I accept this model's license agreement@if (license()!.use_policy_text) { and use
-                policy}. The most current and complete version of the license text can be found on
-                <a
-                  [href]="'https://huggingface.co/' + licenseTarget()!.name"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="hf-link"
-                >Hugging Face</a>.
-              </span>
-            </label>
+          @if (!readOnlyLicense()) {
+            @if (license()!.approved) {
+              <p class="license-note license-approved">
+                Accepted on {{ license()!.approved_at | date: 'medium' }}.
+              </p>
+            } @else {
+              <label class="license-accept">
+                <input
+                  type="checkbox"
+                  [checked]="acceptChecked()"
+                  (change)="acceptChecked.set($any($event.target).checked)"
+                  [disabled]="accepting()"
+                />
+                <span>
+                  I accept this model's license agreement@if (license()!.use_policy_text) { and use
+                  policy}. The most current and complete version of the license text can be found on
+                  <a
+                    [href]="'https://huggingface.co/' + licenseTarget()!.name"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="hf-link"
+                  >Hugging Face</a>.
+                </span>
+              </label>
+            }
           }
         }
       }
@@ -280,6 +300,12 @@
           <button class="btn-primary" type="button" (click)="goToHuggingFaceFromLicense()">
             Go to Hugging Face
           </button>
+        </div>
+      } @else if (readOnlyLicense()) {
+        <!-- Reference-only: the text is the whole content, so the one action
+             is to close. -->
+        <div class="modal-footer" modal-footer>
+          <button class="btn-secondary" type="button" (click)="closeLicenseDialog()">Close</button>
         </div>
       } @else if (license()!.status === 'available' && !license()!.approved) {
         <div class="modal-footer" modal-footer>

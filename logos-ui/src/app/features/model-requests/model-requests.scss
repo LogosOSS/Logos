@@ -237,8 +237,10 @@ table {
 
 // License agreement state (Logos admin only): a green check while the
 // agreement is accepted, a red cross while it is open (not fetched yet,
-// not accepted yet, or no license found). Hover explains, click opens the
-// license dialog.
+// not accepted yet, or no license found), and a neutral document while the
+// deployment does not require the admin's acceptance (the license is
+// reference material, so the row carries no state). Hover explains, click
+// opens the license dialog.
 .license-state {
   appearance: none;
   background: none;
@@ -255,6 +257,10 @@ table {
 
   &--open {
     color: rgb(var(--color-danger-500));
+  }
+
+  &--doc {
+    color: rgb(var(--color-typography-500));
   }
 
   &:hover {

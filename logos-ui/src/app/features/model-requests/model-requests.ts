@@ -31,6 +31,12 @@ import { AuthService } from '../../core/auth/services/auth.service';
  * happened on Hugging Face when access was granted, so the admin does not
  * accept the same agreement a second time. Team-level acceptances (app
  * admins, per team) build on the global one and live elsewhere.
+ *
+ * While the deployment does not require the admin's acceptance (the
+ * webservice's REQUIRE_LOGOS_ADMIN_LICENSE_APPROVAL setting, reported by the
+ * listing and true by default), a non-gated model's license is reference
+ * material: its column shows a document control and the dialog offers the
+ * text with a close button, no acceptance. Gated rows keep their handling.
  */
 @Component({
   selector: 'app-model-requests',
@@ -66,6 +72,13 @@ export class ModelRequests implements OnInit {
   // acceptance of it — is a Logos admin concern, so the license column and
   // its dialog are only offered to that role.
   readonly isLogosAdmin = computed(() => this.auth.role() === 'logos_admin');
+  /**
+   * Whether the Logos admin still records license acceptances — the
+   * webservice's REQUIRE_LOGOS_ADMIN_LICENSE_APPROVAL setting (true by
+   * default), as the listing reports it. See the class javadoc for what
+   * changes while it is false.
+   */
+  requireAdminApproval = signal(true);
 
   /** The row whose license dialog is open; null while it is closed. */
   licenseTarget = signal<ModelRequest | null>(null);
@@ -82,6 +95,15 @@ export class ModelRequests implements OnInit {
   /** The "I accept…" checkbox of the open dialog. */
   acceptChecked = signal(false);
   accepting = signal(false);
+  /**
+   * The open dialog is reference-only — the text and a close button, no
+   * checkbox and no Save — while the deployment does not require the admin's
+   * acceptance and the row is not a gated model (a gated row keeps its
+   * acceptance handling).
+   */
+  readonly readOnlyLicense = computed(
+    () => !this.requireAdminApproval() && this.licenseTarget()?.is_gated !== true,
+  );
 
   async ngOnInit(): Promise<void> {
     // Preselect the first team: a member of exactly one team should not have
@@ -113,7 +135,9 @@ export class ModelRequests implements OnInit {
   private async loadRequests(): Promise<void> {
     this.loading.set(true);
     try {
-      this.requests.set(await this.service.list());
+      const response = await this.service.list();
+      this.requests.set(response.models);
+      this.requireAdminApproval.set(response.require_admin_license_approval ?? true);
       this.error.set(null);
     } catch {
       this.error.set('Could not load model requests.');

@@ -110,8 +110,10 @@ class ModelRequestControllerTest {
                 .contentType("application/json")
                 .content("{}"))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$").isArray())
-           .andExpect(jsonPath("$.length()").value(0));
+           .andExpect(jsonPath("$.models").isArray())
+           .andExpect(jsonPath("$.models.length()").value(0))
+           // The setting is unset in this context: the default applies.
+           .andExpect(jsonPath("$.require_admin_license_approval").value(true));
     }
 
     @Test
@@ -481,7 +483,7 @@ class ModelRequestControllerTest {
         mvc.perform(post("/logosdb/get_model_requests")
                 .with(TestJwt.testUser())
                 .contentType("application/json").content("{}"))
-           .andExpect(jsonPath("$.length()").value(0));
+           .andExpect(jsonPath("$.models.length()").value(0));
 
         // Re-vote: the model is requestable again and counts one.
         mvc.perform(post("/logosdb/add_model_request")
@@ -503,20 +505,20 @@ class ModelRequestControllerTest {
                 .with(TestJwt.testUser())
                 .contentType("application/json").content("{}"))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$.length()").value(1))
-           .andExpect(jsonPath("$[0].name").value("meta-llama/llama-3"))
-           .andExpect(jsonPath("$[0].request_count").value(1))
-           .andExpect(jsonPath("$[0].has_voted").value(true));
+           .andExpect(jsonPath("$.models.length()").value(1))
+           .andExpect(jsonPath("$.models[0].name").value("meta-llama/llama-3"))
+           .andExpect(jsonPath("$.models[0].request_count").value(1))
+           .andExpect(jsonPath("$.models[0].has_voted").value(true));
 
         // ... a user who did not vote sees has_voted=false for the same model.
         mvc.perform(post("/logosdb/get_model_requests")
                 .with(TestJwt.adminUser())
                 .contentType("application/json").content("{}"))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$.length()").value(1))
-           .andExpect(jsonPath("$[0].name").value("meta-llama/llama-3"))
-           .andExpect(jsonPath("$[0].request_count").value(1))
-           .andExpect(jsonPath("$[0].has_voted").value(false));
+           .andExpect(jsonPath("$.models.length()").value(1))
+           .andExpect(jsonPath("$.models[0].name").value("meta-llama/llama-3"))
+           .andExpect(jsonPath("$.models[0].request_count").value(1))
+           .andExpect(jsonPath("$.models[0].has_voted").value(false));
     }
 
     @Test
@@ -529,7 +531,7 @@ class ModelRequestControllerTest {
         mvc.perform(post("/logosdb/get_model_requests")
                 .with(TestJwt.testUser())
                 .contentType("application/json").content("{}"))
-           .andExpect(jsonPath("$.length()").value(1));
+           .andExpect(jsonPath("$.models.length()").value(1));
 
         // ... then an admin adds it to the models table (simulated directly).
         jdbc.update("INSERT INTO models (id, name) VALUES (5099, 'openai/gpt-5')");
@@ -539,7 +541,7 @@ class ModelRequestControllerTest {
                     .with(TestJwt.testUser())
                     .contentType("application/json").content("{}"))
                .andExpect(status().isOk())
-               .andExpect(jsonPath("$.length()").value(0));
+               .andExpect(jsonPath("$.models.length()").value(0));
         } finally {
             jdbc.update("DELETE FROM models WHERE id = 5099");
         }
@@ -564,12 +566,12 @@ class ModelRequestControllerTest {
                 .with(TestJwt.testUser())
                 .contentType("application/json").content("{}"))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$.length()").value(2))
+           .andExpect(jsonPath("$.models.length()").value(2))
            // "acme/alpha" (2 votes) ranks above "acme/beta" (1 vote).
-           .andExpect(jsonPath("$[0].name").value("acme/alpha"))
-           .andExpect(jsonPath("$[0].request_count").value(2))
-           .andExpect(jsonPath("$[1].name").value("acme/beta"))
-           .andExpect(jsonPath("$[1].request_count").value(1));
+           .andExpect(jsonPath("$.models[0].name").value("acme/alpha"))
+           .andExpect(jsonPath("$.models[0].request_count").value(2))
+           .andExpect(jsonPath("$.models[1].name").value("acme/beta"))
+           .andExpect(jsonPath("$.models[1].request_count").value(1));
     }
 
     @Test
@@ -786,7 +788,7 @@ class ModelRequestControllerTest {
         mvc.perform(post("/logosdb/get_model_requests")
                 .with(TestJwt.testUser())
                 .contentType("application/json").content("{}"))
-           .andExpect(jsonPath("$[0].license_approved").value(true));
+           .andExpect(jsonPath("$.models[0].license_approved").value(true));
     }
 
     @Test
@@ -846,7 +848,7 @@ class ModelRequestControllerTest {
         mvc.perform(post("/logosdb/get_model_requests")
                 .with(TestJwt.testUser())
                 .contentType("application/json").content("{}"))
-           .andExpect(jsonPath("$[0].license_approved").value(true));
+           .andExpect(jsonPath("$.models[0].license_approved").value(true));
     }
 
     @Test
@@ -1097,9 +1099,9 @@ class ModelRequestControllerTest {
                 .contentType("application/json")
                 .content("{}"))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$[0].name").value("openai/gpt-5"))
-           .andExpect(jsonPath("$[0].license_status").value("available"))
-           .andExpect(jsonPath("$[0].license_approved").value(false));
+           .andExpect(jsonPath("$.models[0].name").value("openai/gpt-5"))
+           .andExpect(jsonPath("$.models[0].license_status").value("available"))
+           .andExpect(jsonPath("$.models[0].license_approved").value(false));
     }
 
     private int seedModelWithLicense(String name, String licenseId) {

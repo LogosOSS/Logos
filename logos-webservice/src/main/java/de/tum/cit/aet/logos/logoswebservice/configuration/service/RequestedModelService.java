@@ -13,6 +13,7 @@ import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -22,6 +23,7 @@ import de.tum.cit.aet.logos.logoswebservice.configuration.ModelAlreadyAvailableE
 import de.tum.cit.aet.logos.logoswebservice.configuration.ModelNames;
 import de.tum.cit.aet.logos.logoswebservice.configuration.ModelNotOnHuggingFaceException;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ModelLicenseResponse;
+import de.tum.cit.aet.logos.logoswebservice.configuration.dto.ModelRequestsResponse;
 import de.tum.cit.aet.logos.logoswebservice.configuration.dto.RequestedModelResponse;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ModelLicenseApproval;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.RequestedModel;
@@ -95,6 +97,13 @@ import de.tum.cit.aet.logos.logoswebservice.orchestrator.OrchestratorHfReachabil
  * Face is what granted the central HF_TOKEN access in the first place.
  * Revoking the global acceptance removes the team acceptances that depend on
  * it.
+ *
+ * The deployment setting REQUIRE_LOGOS_ADMIN_LICENSE_APPROVAL (an environment
+ * variable, true while unset) decides whether that acceptance is part of the
+ * flow at all. While it is false, a non-gated model's license is reference
+ * material: the listing reports the setting so the user interface can offer
+ * the text read-only, and recording an acceptance for such a model is
+ * refused. Gated models keep their handling either way.
  */
 @Service
 public class RequestedModelService {
@@ -148,6 +157,12 @@ public class RequestedModelService {
     private final OrchestratorHfLicenseClient hfLicenseClient;
     private final NotificationService notificationService;
     private final TransactionTemplate transactionTemplate;
+    /**
+     * Whether the Logos admin's acceptance is part of the flow at all — the
+     * REQUIRE_LOGOS_ADMIN_LICENSE_APPROVAL environment variable, true while
+     * unset (see the class javadoc).
+     */
+    private final boolean requireAdminLicenseApproval;
 
     public RequestedModelService(RequestedModelRepository requestedModelRepository,
                                  RequestedModelVoteRepository voteRepository,
@@ -158,7 +173,9 @@ public class RequestedModelService {
                                  OrchestratorHfReachabilityClient hfReachabilityClient,
                                  OrchestratorHfLicenseClient hfLicenseClient,
                                  NotificationService notificationService,
-                                 TransactionTemplate transactionTemplate) {
+                                 TransactionTemplate transactionTemplate,
+                                 @Value("${REQUIRE_LOGOS_ADMIN_LICENSE_APPROVAL:true}")
+                                 boolean requireAdminLicenseApproval) {
         this.requestedModelRepository = requestedModelRepository;
         this.voteRepository = voteRepository;
         this.modelRepository = modelRepository;
@@ -169,15 +186,18 @@ public class RequestedModelService {
         this.hfLicenseClient = hfLicenseClient;
         this.notificationService = notificationService;
         this.transactionTemplate = transactionTemplate;
+        this.requireAdminLicenseApproval = requireAdminLicenseApproval;
     }
 
     /**
      * Every requested model that is not yet served by Logos — neither by its
      * own name nor as an alias of a served model — most-voted first (ties
-     * broken by name). Each entry carries its vote count and whether the given
-     * user has voted for it, so the page can render the vote/undo control.
+     * broken by name), alongside the deployment setting that decides whether
+     * the Logos admin's acceptance is part of the flow (see the class
+     * javadoc). Each entry carries its vote count and whether the given user
+     * has voted for it, so the page can render the vote/undo control.
      */
-    public List<RequestedModelResponse> list(Integer userId) {
+    public ModelRequestsResponse list(Integer userId) {
         Set<String> available = modelRepository.findAll().stream()
             .map(model -> model.getName().toLowerCase(Locale.ROOT))
             .collect(java.util.stream.Collectors.toCollection(HashSet::new));
@@ -198,7 +218,7 @@ public class RequestedModelService {
             .map(ModelLicenseApproval::getRequestedModelId)
             .collect(Collectors.toSet());
 
-        return requestedModelRepository.findAll().stream()
+        List<RequestedModelResponse> models = requestedModelRepository.findAll().stream()
             .filter(model -> !available.contains(model.getName().toLowerCase(Locale.ROOT)))
             .map(model -> new RequestedModelResponse(
                 model.getId(),
@@ -213,6 +233,7 @@ public class RequestedModelService {
                 .comparingInt(RequestedModelResponse::requestCount).reversed()
                 .thenComparing(RequestedModelResponse::name, String.CASE_INSENSITIVE_ORDER))
             .toList();
+        return new ModelRequestsResponse(models, requireAdminLicenseApproval);
     }
 
     /**
@@ -612,13 +633,24 @@ public class RequestedModelService {
      * accepted (for instance after another admin took over) refreshes who and
      * when; the audit trail is the row, not a flag.
      *
-     * @throws IllegalArgumentException when the model is unknown or no license
-     *     exists to accept
+     * While the deployment does not require the admin's acceptance (see the
+     * class javadoc), a non-gated model is refused outright: its license is
+     * reference material there, so an acceptance would record a state the
+     * user interface no longer offers. Gated models keep their acceptance.
+     *
+     * @throws IllegalArgumentException when the model is unknown, no license
+     *     exists to accept, or the deployment does not require the admin's
+     *     acceptance for a non-gated model
      */
     @Transactional
     public ModelLicenseResponse approveLicense(Integer modelId, Integer userId) {
         requireUser(userId);
         RequestedModel model = requireModel(modelId);
+        if (!requireAdminLicenseApproval && !Boolean.TRUE.equals(model.getIsGated())) {
+            throw new IllegalArgumentException(
+                "The license agreement of a non-gated model is not accepted in Logos — it is "
+                    + "shown for reference only.");
+        }
         if (!LICENSE_STATUS_AVAILABLE.equals(licenseStatusOf(model))) {
             throw new IllegalArgumentException(
                 "The license agreement cannot be accepted: no license information is available for this model yet.");
