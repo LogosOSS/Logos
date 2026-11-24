@@ -43,6 +43,7 @@ const AGENT_API = "the agent runner API on /api/agent";
 const ADMIN = "tobias.wasner";
 const APP_ADMIN = "alexandra.szuminska";
 const DEVELOPER = "henriette.huhn";
+const NIGHTLY_SCHEDULE = "**/model_benchmarks/nightly/{status,configure}";
 
 function sql(query) {
   return execFileSync("docker", ["exec", DB_CONTAINER, "psql", "-U", "postgres", "-d", "logosdb", "-Atc", query]) // NOSONAR - developer tool: uses the docker CLI from the developer's PATH
@@ -220,22 +221,18 @@ async function setNightly(page, enabled) {
     await customization.waitFor({ state: "hidden" });
   }
   await page.getByRole("navigation", { name: "Performance sections" }).getByRole("button", { name: "Overview", exact: true }).click();
-  const worker = page.getByRole("region", { name: /^Nightly benchmarks on / }).first();
-  await worker.waitFor();
-  await page.waitForFunction(
-    () => ![...document.querySelectorAll(".nightly__status")].some((e) => e.textContent.includes("Loading")),
-    null, { timeout: 30000 },
-  );
+  const rotation = page.getByRole("region", { name: "Nightly rotation", exact: true });
+  const tile = rotation.getByRole("button", { name: /^Docs Local Worker (Enabled|Disabled)\b/ });
+  await tile.waitFor();
+  if (await tile.getAttribute("aria-expanded") === "false") await tile.click();
+  const worker = rotation.getByRole("region", { name: "Docs Local Worker", exact: true });
   const toggle = worker.getByRole("button", { name: /nightly rotation…?$/ });
   const label = (await toggle.textContent()).trim();
   if (label.startsWith("Disable") === enabled) return;
   await toggle.and(page.locator("button:enabled")).waitFor();
   await toggle.evaluate(b => b.click());
   if (!enabled) await button(page, "Disable nightly rotation").evaluate(b => b.click());
-  await page.waitForFunction((enabled) => {
-    const status = document.querySelector(".nightly__status");
-    return status?.textContent.includes(enabled ? "Enabled" : "Disabled");
-  }, enabled, { timeout: 30000 });
+  await rotation.getByRole("button", { name: enabled ? /^Docs Local Worker Enabled\b/ : /^Docs Local Worker Disabled\b/ }).waitFor();
   await page.waitForTimeout(600);
 }
 
@@ -246,10 +243,9 @@ async function performance(page, ids, view, query = "") {
   await settle(page, 800);
 }
 
-async function nightlyView(page, ids, { nightly, open = [] }) {
+async function nightlyView(page, ids, nightly) {
   await performance(page, ids, null);
   await setNightly(page, nightly);
-  for (const text of open) await details(page, text);
 }
 
 async function runView(page, ids, customize = false) {
@@ -661,15 +657,7 @@ const SHOTS = [
     file: "roles/logos-admin-nightly-benchmarks.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) =>
-      nightlyView(p, ids, { nightly: true }),
-    after: (p) => setNightly(p, false),
-  },
-  {
-    file: "roles/logos-admin-nightly-plan.png",
-    user: ADMIN,
-    full: true,
-    go: (p, ids) => nightlyView(p, ids, { nightly: true, open: ["Schedule and test plan"] }),
+    go: (p, ids) => nightlyView(p, ids, true),
     after: (p) => setNightly(p, false),
   },
   {
@@ -677,7 +665,7 @@ const SHOTS = [
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await nightlyView(p, ids, { nightly: false });
+      await nightlyView(p, ids, false);
       await p.getByRole("combobox", { name: "Request workload", exact: true }).first().selectOption("recent");
     },
   },
@@ -685,14 +673,14 @@ const SHOTS = [
     file: "roles/logos-admin-nightly-enable.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => nightlyView(p, ids, { nightly: false }),
+    go: (p, ids) => nightlyView(p, ids, false),
   },
   {
     file: "roles/logos-admin-nightly-disable.png",
     user: ADMIN,
     full: true,
     go: async (p, ids) => {
-      await nightlyView(p, ids, { nightly: true });
+      await nightlyView(p, ids, true);
       await p.getByRole("button", { name: "Disable nightly rotation…", exact: true }).first().click();
       await p.waitForTimeout(800);
     },
@@ -764,7 +752,26 @@ const SHOTS = [
     file: "roles/logos-admin-model-request-measurements.png",
     user: ADMIN,
     full: true,
-    go: (p, ids) => resultsView(p, ids, ["Request measurements"]),
+    go: async (p, ids) => {
+      const endpoint = "**/api/logosdb/request_latency_stats";
+      await p.route(endpoint, async (route) => {
+        const range = route.request().postDataJSON();
+        await route.fulfill({ json: {
+          range: { start: range.start_date, end: range.end_date },
+          rows: [
+            { reasoningEffort: "low", requestCount: 60, ttftSamples: 60, upstreamP50Ms: 850, upstreamP95Ms: 1500 },
+            { reasoningEffort: "medium", requestCount: 42, ttftSamples: 38, upstreamP50Ms: 1100, upstreamP95Ms: 2400 },
+          ].map(row => ({
+            modelId: Number(ids.model), modelName: "llama-3.1-8b-instruct",
+            providerId: Number(ids.worker), providerName: "Docs Local Worker", local: true, errorCount: 0,
+            queueP50Ms: 17, queueP95Ms: 55, ttftP50Ms: 135, ttftP95Ms: 420, ...row,
+          })),
+        } });
+      });
+      await resultsView(p, ids, ["Request measurements"]);
+      await p.locator(".latency-chart").first().waitFor();
+      await p.unroute(endpoint);
+    },
   },
   {
     file: "roles/logos-admin-benchmark-status.png",
@@ -780,12 +787,23 @@ const SHOTS = [
     file: "roles/logos-admin-nightly-automatic-source.png",
     user: ADMIN,
     full: true,
-    needs: "LOGOS_NIGHTLY_REQUEST_USERNAME in the documentation orchestrator",
     go: async (p, ids) => {
-      await nightlyView(p, ids, { nightly: true });
+      await p.route(NIGHTLY_SCHEDULE, async (route) => {
+        const response = await route.fetch();
+        if (!response.ok()) return route.fulfill({ response });
+        const status = await response.json();
+        await route.fulfill({ response, json: {
+          ...status,
+          workload_policy: { kind: "recent_user", username: "docs.operator", request_count: 50, ready: true },
+        } });
+      });
+      await nightlyView(p, ids, true);
       await p.getByText(/Latest \d+ successful FULL requests/).waitFor();
     },
-    after: (p) => setNightly(p, false),
+    after: async (p) => {
+      await p.unroute(NIGHTLY_SCHEDULE);
+      await setNightly(p, false);
+    },
   },
 
   // App Admin

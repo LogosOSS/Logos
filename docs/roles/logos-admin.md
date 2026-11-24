@@ -247,7 +247,11 @@ A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
-The **Timeline** shows up to six complete runs for the selected workload, including the current deployment when measured.
+If the model has more than one worker, then use **Worker** above **Currently deployed** to select one.
+This selection changes **Currently deployed** and **Timeline** together.
+Logos gives priority to an online worker with saved measurements.
+The **Timeline** shows up to 6 complete runs for the selected worker and workload.
+It includes the current deployment when a matching measurement is available.
 Read the runs from left to right in completion order.
 Each dot shows output tokens per second (tok/s) on the vertical scale. An open circle marks a baseline.
 A blue ring marks the benchmark for the active configuration. Select **Deployed** to find it in a long timeline.
@@ -260,7 +264,7 @@ A baseline shows its own throughput and 0% change. Missing comparisons show why 
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
 Select the same column again to reverse the order. Missing values stay at the end.
 
-![Performance overview with nightly rotation, deployed settings and throughput timeline](../static/img/roles/logos-admin-nightly-results.png)
+![Performance overview with nightly rotation tiles, a worker selection, deployed settings and throughput timeline](../static/img/roles/logos-admin-nightly-results.png)
 
 Read **Currently deployed** below **Nightly rotation** in **Performance → Overview**.
 The summary shows throughput, baseline, change and the main batching parameters.
@@ -307,16 +311,16 @@ See the [nightly benchmark guide](../admin/nightly-benchmarks.md) for rotation, 
 
 1. Open a model from **Models**.
 2. Select **Performance**.
-3. In **Overview**, find the intended worker under **Nightly rotation**.
-4. Check the time window and **Request workload** under the worker. Apply any dataset change.
-5. Select **Enable nightly rotation**. If the button is unavailable, the worker shows what needs attention.
+3. Under **Nightly rotation**, select the tile for the worker.
+4. Check the time window and **Request workload**. Apply any dataset change.
+5. Select **Enable nightly rotation**. If the button is unavailable, then read the message.
 
 ![Nightly schedule ready to enable](../static/img/roles/logos-admin-nightly-enable.png)
 
-The worker then shows **Enabled** with a green dot.
+The worker tile then shows **Enabled** with a green dot.
+The tile shows **Offline** if Logos cannot connect to the worker.
 The schedule stays active after a page reload.
 Each night, Logos selects up to `LOGOS_NIGHTLY_MAX_PAIRS` eligible pairs, with new or older attempts first.
-Expand **Schedule and test plan** to inspect the parameter values for this pair.
 
 Use **Request workload** to select a saved dataset for the nightly schedule.
 Choose **Recent FULL request logs**, keep **Latest 100 requests** and click **Create and apply dataset**. On production, this saves up to 100 replayable requests for the model from the production log. You can also select a time window. Each dataset has a 5 MB limit.
@@ -344,12 +348,10 @@ If the measurement is deleted, then the page identifies the unavailable benchmar
 
 ![Enabled nightly rotation in the performance overview](../static/img/roles/logos-admin-nightly-benchmarks.png)
 
-The worker shows the workload and maintenance window. Expand **Schedule and test plan** for the rounds.
+Select the worker tile to see the workload and maintenance window.
 Logos checks GPU memory for the benchmark lane and its warm-up before the round.
 If the worker needs more GPU memory, then the schedule shows **Waiting for GPU capacity**.
 Other models on the same worker continue to serve requests.
-
-![Nightly management with the schedule and test plan](../static/img/roles/logos-admin-nightly-plan.png)
 
 Some deployments select a user instead of a fixed dataset.
 **Request workload** shows the configured number of successful FULL requests and the username.
@@ -362,9 +364,10 @@ See [deployment-specific request sources](../admin/nightly-benchmarks.md#deploym
 
 To remove the pair from the nightly rotation:
 
-1. Select **Disable nightly rotation…**.
-2. Read the dialog and select **Disable nightly rotation**.
-3. Check for **Disabled** and a gray dot beside the worker.
+1. Under **Nightly rotation**, select the tile for the worker.
+2. Select **Disable nightly rotation…**.
+3. Read the dialog and select **Disable nightly rotation**.
+4. Check for **Disabled** and a gray dot on the worker tile.
 
 Select **Cancel** to keep the schedule active.
 Deactivation stops an active benchmark and restores the worker configuration before production resumes.
