@@ -148,6 +148,8 @@ async def test_endpoint_requires_the_internal_secret(monkeypatch):
 async def test_endpoint_returns_the_check_result(hub, monkeypatch):
     internal = importlib.import_module("logos.routers.internal")
     monkeypatch.setattr(internal, "_require_internal_secret", lambda _: None)
+    # Bind the fixture's module instance even when other tests reload the router.
+    monkeypatch.setattr(internal, "check_hf_reachability", hf_reachability.check_hf_reachability)
     hub.handler = staticmethod(lambda request: httpx.Response(403))
     monkeypatch.setattr("huggingface_hub.utils.hf_raise_for_status", _raise_for(GatedRepoError("gated")))
 

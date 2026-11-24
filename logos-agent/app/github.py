@@ -17,10 +17,15 @@ from urllib.parse import quote
 
 import httpx
 
-from . import attachments
+from . import attachments, disclosure, repository_context
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _repo_slug() -> str:
+    return repository_context.slug(settings.repo_slug)
+
 
 _API = "https://api.github.com"
 
@@ -354,7 +359,7 @@ async def wait_for_checks(
     be running, or may not have been queued at all — and it is not the same
     as failure, which is why the caller may not treat it as one.
     """
-    path = f"/repos/{settings.repo_slug}/commits/{head_sha}/check-runs"
+    path = f"/repos/{_repo_slug()}/commits/{head_sha}/check-runs"
     deadline = asyncio.get_running_loop().time() + timeout_s
 
     try:
@@ -508,7 +513,7 @@ async def _assigned(login: str) -> list[dict[str, Any]]:
     assigned months ago is picked up once and then left alone.
     """
     payload = await _get_all(
-        f"/repos/{settings.repo_slug}/issues",
+        f"/repos/{_repo_slug()}/issues",
         {"assignee": login, "state": "open", "sort": "updated", "direction": "desc"},
     )
     return [item for item in payload if isinstance(item, dict)]
@@ -532,7 +537,7 @@ async def authored_pull_requests(login: str) -> list[dict[str, Any]]:
     author to their own pull request.
     """
     payload = await _get_all(
-        f"/repos/{settings.repo_slug}/pulls",
+        f"/repos/{_repo_slug()}/pulls",
         {"state": "open", "sort": "updated", "direction": "desc"},
     )
     wanted = login.strip().lower()
@@ -561,7 +566,7 @@ async def review_requests(login: str) -> list[dict[str, Any]]:
     lags behind it by a minute or two.
     """
     payload = await _get_all(
-        f"/repos/{settings.repo_slug}/pulls",
+        f"/repos/{_repo_slug()}/pulls",
         {"state": "open", "sort": "updated", "direction": "desc"},
     )
     wanted = login.strip().lower()
@@ -610,7 +615,7 @@ async def who_asked_for_a_review(
     still holds is some old gesture, and acting on it would be a guess the
     timeline no longer supports.
     """
-    events, truncated = await _get_all_bounded(f"/repos/{settings.repo_slug}/issues/{number}/timeline")
+    events, truncated = await _get_all_bounded(f"/repos/{_repo_slug()}/issues/{number}/timeline")
     if truncated:
         return None
     wanted = login.strip().lower()
@@ -643,7 +648,7 @@ async def who_asked_for_a_review(
 
 async def pull_request(number: int) -> dict[str, Any]:
     """The full pull request, including its head branch and author."""
-    payload = await _get(f"/repos/{settings.repo_slug}/pulls/{number}")
+    payload = await _get(f"/repos/{_repo_slug()}/pulls/{number}")
     return payload if isinstance(payload, dict) else {}
 
 
@@ -665,7 +670,7 @@ async def latest_changes_requested_review(number: int) -> dict[str, Any] | None:
     direction parameter, so on a long-running pull request the newest
     review is on the last page, not the first.
     """
-    payload = await _get_all(f"/repos/{settings.repo_slug}/pulls/{number}/reviews")
+    payload = await _get_all(f"/repos/{_repo_slug()}/pulls/{number}/reviews")
     if not isinstance(payload, list):
         return None
 
@@ -708,7 +713,7 @@ async def review(number: int, review_id: int) -> dict[str, Any]:
     review — not whoever happens to hold the newest objection by then, and
     not a name parsed out of a task that was written hours earlier.
     """
-    payload = await _get(f"/repos/{settings.repo_slug}/pulls/{number}/reviews/{review_id}")
+    payload = await _get(f"/repos/{_repo_slug()}/pulls/{number}/reviews/{review_id}")
     if not isinstance(payload, dict):
         raise GitHubError(f"review {review_id} of #{number} answered with {type(payload).__name__}, not a review")
     return payload
@@ -723,7 +728,7 @@ async def review_comments(number: int, review_id: int) -> list[dict[str, Any]]:
     Queueing work from the body alone would hand the agent a task with none
     of the requested changes in it.
     """
-    payload = await _get_all(f"/repos/{settings.repo_slug}/pulls/{number}/reviews/{review_id}/comments")
+    payload = await _get_all(f"/repos/{_repo_slug()}/pulls/{number}/reviews/{review_id}/comments")
     return [comment for comment in payload if isinstance(comment, dict)]
 
 
@@ -825,7 +830,7 @@ async def review_thread_map(number: int) -> dict[int, dict[str, Any]]:
     cannot be completed raises: a partial one would silently drop a target,
     and a dropped target is a duplicated answer.
     """
-    owner, name = settings.repo_slug.split("/", 1)
+    owner, name = _repo_slug().split("/", 1)
     mapped: dict[int, dict[str, Any]] = {}
     after: str | None = None
     for _ in range(_MAX_PAGES):
@@ -960,7 +965,7 @@ async def pull_inline_comments(number: int) -> list[dict[str, Any]]:
     only reply that it cannot see the other one. This returns the whole set,
     so the caller can hand over the threads the one it is answering refers to.
     """
-    payload = await _get_all(f"/repos/{settings.repo_slug}/pulls/{number}/comments")
+    payload = await _get_all(f"/repos/{_repo_slug()}/pulls/{number}/comments")
     return [comment for comment in payload if isinstance(comment, dict)]
 
 
@@ -1016,6 +1021,55 @@ async def fetch_image(url: str, *, max_bytes: int) -> tuple[bytes, str] | None:
     return None
 
 
+FORK_READY_TIMEOUT_S = 120.0
+
+
+async def push_target(repo_slug: str, login: str) -> str:
+    """Where the agent account pushes work on ``repo_slug``.
+
+    The repository itself when the account may push to it. Otherwise the
+    account's own fork, created when it does not exist yet: the way an
+    outside contributor proposes a change. A repository of the fork's name
+    that is not a fork of ``repo_slug`` is refused rather than pushed to.
+    """
+    repository = await _get(f"/repos/{repo_slug}")
+    if (repository.get("permissions") or {}).get("push"):
+        return str(repository.get("full_name") or repo_slug)
+    upstream = str(repository.get("full_name") or repo_slug)
+    name = upstream.split("/", 1)[1]
+    try:
+        fork = await _get(f"/repos/{login}/{name}")
+    except GitHubError as exc:
+        if exc.status != 404:
+            raise
+        fork = await _create_fork(upstream)
+    parent = str((fork.get("parent") or {}).get("full_name") or "")
+    if not fork.get("fork") or parent.lower() != upstream.lower():
+        raise GitHubError(f"{login}/{name} exists and is not a fork of {upstream}; refusing to push there")
+    return str(fork["full_name"])
+
+
+async def _create_fork(upstream: str) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{_API}/repos/{upstream}/forks", headers=_headers(), json={"default_branch_only": True}
+        )
+    if response.status_code not in (200, 202):
+        raise GitHubError(f"forking {upstream} failed ({response.status_code}): {response.text[:200]}")
+    full_name = str(response.json().get("full_name") or "")
+    if not full_name:
+        raise GitHubError(f"forking {upstream} returned no repository name")
+    # GitHub creates forks asynchronously: wait until the fork answers.
+    deadline = asyncio.get_running_loop().time() + FORK_READY_TIMEOUT_S
+    while True:
+        try:
+            return await _get(f"/repos/{full_name}")
+        except GitHubError as exc:
+            if exc.status != 404 or asyncio.get_running_loop().time() > deadline:
+                raise
+        await asyncio.sleep(3.0)
+
+
 async def open_pull_request_for(branch: str) -> dict[str, Any] | None:
     """The open pull request whose head is this branch, if there is one.
 
@@ -1026,10 +1080,12 @@ async def open_pull_request_for(branch: str) -> dict[str, Any] | None:
     """
     if not branch:
         return None
-    owner = settings.repo_slug.split("/", 1)[0]
+    # From a fork, the head is named by the fork's owner.
+    target = repository_context.current() or {}
+    owner = str(target.get("push_repo_slug") or _repo_slug()).split("/", 1)[0]
     try:
         payload = await _get(
-            f"/repos/{settings.repo_slug}/pulls",
+            f"/repos/{_repo_slug()}/pulls",
             {"head": f"{owner}:{branch}", "state": "open", "per_page": 1},
         )
     except GitHubError as exc:
@@ -1054,7 +1110,7 @@ async def issue_conversation(number: int) -> tuple[list[dict[str, Any]], list[st
     otherwise push out the one from a maintainer that the whole feature is
     for.
     """
-    answer = await _get_all_bounded(f"/repos/{settings.repo_slug}/issues/{number}/comments")
+    answer = await _get_all_bounded(f"/repos/{_repo_slug()}/issues/{number}/comments")
     return _as_conversation({"comments": answer}, number)
 
 
@@ -1076,9 +1132,9 @@ async def pull_request_conversation(number: int) -> tuple[list[dict[str, Any]], 
     those reviews actually said, and the discussion under the pull request.
     """
     reviews, inline, discussion = await asyncio.gather(
-        _get_all_bounded(f"/repos/{settings.repo_slug}/pulls/{number}/reviews"),
-        _get_all_bounded(f"/repos/{settings.repo_slug}/pulls/{number}/comments"),
-        _get_all_bounded(f"/repos/{settings.repo_slug}/issues/{number}/comments"),
+        _get_all_bounded(f"/repos/{_repo_slug()}/pulls/{number}/reviews"),
+        _get_all_bounded(f"/repos/{_repo_slug()}/pulls/{number}/comments"),
+        _get_all_bounded(f"/repos/{_repo_slug()}/issues/{number}/comments"),
         return_exceptions=True,
     )
     entries, missing = _as_conversation({"reviews": reviews, "inline comments": inline, "comments": discussion}, number)
@@ -1149,7 +1205,7 @@ async def recent_issue_comments(since: datetime) -> list[dict[str, Any]]:
     return [
         comment
         for comment in await _get_all(
-            f"/repos/{settings.repo_slug}/issues/comments",
+            f"/repos/{_repo_slug()}/issues/comments",
             {"since": _stamp(since), "sort": "created", "direction": "desc"},
         )
         if isinstance(comment, dict)
@@ -1161,7 +1217,7 @@ async def recent_review_comments(since: datetime) -> list[dict[str, Any]]:
     return [
         comment
         for comment in await _get_all(
-            f"/repos/{settings.repo_slug}/pulls/comments",
+            f"/repos/{_repo_slug()}/pulls/comments",
             {"since": _stamp(since), "sort": "created", "direction": "desc"},
         )
         if isinstance(comment, dict)
@@ -1238,7 +1294,7 @@ async def may_push(login: str) -> bool:
     if not login:
         return False
     try:
-        payload = await _get(f"/repos/{settings.repo_slug}/collaborators/{login}/permission")
+        payload = await _get(f"/repos/{_repo_slug()}/collaborators/{login}/permission")
     except GitHubError as exc:
         # 404 is the ordinary answer for "not a collaborator".
         logger.info("could not establish repository permission for %s: %s", login, exc)
@@ -1268,7 +1324,7 @@ async def in_a_trusted_team(login: str) -> bool | None:
     """
     if not login or not settings.trusted_teams:
         return None
-    org = settings.repo_slug.split("/", 1)[0]
+    org = _repo_slug().split("/", 1)[0]
     answered = False
     for team in settings.trusted_teams:
         try:
@@ -1322,17 +1378,93 @@ async def react(path: str, content: str = REACTION_QUEUED) -> bool:
     raise GitHubError(f"reaction on {path} failed ({response.status_code}): {response.text[:200]}")
 
 
-async def post_issue_comment(number: int, body: str) -> str:
-    """Answer in an issue or pull-request thread. Returns the comment url."""
+async def post_issue_comment(number: int, body: str, *, footer: str) -> str:
+    """Answer in an issue or pull-request thread. Returns the comment url.
+
+    ``footer`` is the model disclosure every agent text carries; it is
+    required so that no caller can publish without it.
+    """
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
-            f"{_API}/repos/{settings.repo_slug}/issues/{number}/comments",
+            f"{_API}/repos/{_repo_slug()}/issues/{number}/comments",
             headers=_headers(),
-            json={"body": body},
+            json={"body": disclosure.disclose(body, footer)},
         )
     if response.status_code != 201:
         raise GitHubError(f"comment on #{number} failed ({response.status_code}): {response.text[:200]}")
     return str(response.json().get("html_url") or "")
+
+
+def _login_of(item: Any) -> str:
+    return str(((item or {}).get("user") or {}).get("login") or "")
+
+
+async def issue_summary(number: int) -> dict[str, Any]:
+    """An issue's state, kind and assignees, without its conversation."""
+    issue = await _get(f"/repos/{_repo_slug()}/issues/{number}")
+    return {
+        "number": int(issue.get("number") or number),
+        "state": str(issue.get("state") or ""),
+        "is_pull_request": "pull_request" in issue,
+        "assignees": [str(a.get("login") or "") for a in issue.get("assignees") or []],
+    }
+
+
+async def issue_snapshot(number: int, *, max_body_chars: int = 20000) -> dict[str, Any]:
+    """An issue or pull request of the repository and its conversation.
+
+    What a session asks for before it acts on an issue: its state, labels
+    and assignees, and what has been said under it. Bodies are bounded so
+    that one long thread cannot fill the session's response file.
+    """
+    issue = await _get(f"/repos/{_repo_slug()}/issues/{number}")
+    comments, incomplete = await _get_all_bounded(f"/repos/{_repo_slug()}/issues/{number}/comments")
+    return {
+        "number": int(issue.get("number") or number),
+        "title": str(issue.get("title") or ""),
+        "state": str(issue.get("state") or ""),
+        "is_pull_request": "pull_request" in issue,
+        "author": _login_of(issue),
+        "labels": [str(label.get("name") or "") for label in issue.get("labels") or []],
+        "assignees": [str(a.get("login") or "") for a in issue.get("assignees") or []],
+        "body": str(issue.get("body") or "")[:max_body_chars],
+        "comments": [
+            {
+                "author": _login_of(comment),
+                "created_at": str(comment.get("created_at") or ""),
+                "body": str(comment.get("body") or "")[:max_body_chars],
+            }
+            for comment in comments[-100:]
+        ],
+        "comments_incomplete": incomplete or len(comments) > 100,
+    }
+
+
+async def list_issues(
+    *, labels: list[str], state: str, assignee: str | None, page: int, per_page: int = 100
+) -> list[dict[str, Any]]:
+    """One page of the repository's issues and pull requests, newest first."""
+    params: dict[str, Any] = {"state": state, "per_page": per_page, "page": page}
+    if labels:
+        params["labels"] = ",".join(labels)
+    if assignee:
+        params["assignee"] = assignee
+    payload = await _get(f"/repos/{_repo_slug()}/issues", params)
+    if not isinstance(payload, list):
+        raise GitHubError("the issue listing did not answer with a list")
+    return [
+        {
+            "number": int(item.get("number") or 0),
+            "title": str(item.get("title") or ""),
+            "state": str(item.get("state") or ""),
+            "is_pull_request": "pull_request" in item,
+            "labels": [str(label.get("name") or "") for label in item.get("labels") or []],
+            "assignees": [str(a.get("login") or "") for a in item.get("assignees") or []],
+            "comments": int(item.get("comments") or 0),
+            "updated_at": str(item.get("updated_at") or ""),
+        }
+        for item in payload
+    ]
 
 
 async def issue_comment_contains(number: int, marker: str) -> bool:
@@ -1346,13 +1478,13 @@ async def issue_comment_contains(number: int, marker: str) -> bool:
     and a marker in somebody else's comment is not delivery, whatever it
     says.
     """
-    comments, incomplete = await _get_all_bounded(f"/repos/{settings.repo_slug}/issues/{number}/comments")
+    comments, incomplete = await _get_all_bounded(f"/repos/{_repo_slug()}/issues/{number}/comments")
     if incomplete:
         raise GitHubError(f"could not finish reading the comments of #{number}: the listing is incomplete")
     return any(_is_our_marker(c, marker) for c in comments)
 
 
-async def reply_to_review_comment(number: int, comment_id: int, body: str) -> str:
+async def reply_to_review_comment(number: int, comment_id: int, body: str, *, footer: str) -> str:
     """Answer inside an inline review thread. Returns the comment url.
 
     The reply lands in the thread the question was asked in, which is where
@@ -1361,9 +1493,9 @@ async def reply_to_review_comment(number: int, comment_id: int, body: str) -> st
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
-            f"{_API}/repos/{settings.repo_slug}/pulls/{number}/comments/{comment_id}/replies",
+            f"{_API}/repos/{_repo_slug()}/pulls/{number}/comments/{comment_id}/replies",
             headers=_headers(),
-            json={"body": body},
+            json={"body": disclosure.disclose(body, footer)},
         )
     if response.status_code != 201:
         raise GitHubError(
@@ -1372,7 +1504,9 @@ async def reply_to_review_comment(number: int, comment_id: int, body: str) -> st
     return str(response.json().get("html_url") or "")
 
 
-async def create_pull_review(number: int, body: str, comments: list[dict[str, Any]], *, commit_id: str) -> str:
+async def create_pull_review(
+    number: int, body: str, comments: list[dict[str, Any]], *, commit_id: str, footer: str
+) -> str:
     """Post a review that only comments: a summary and its inline comments.
 
     Each comment is ``{"path", "line", "body"}`` on the new side of the
@@ -1383,14 +1517,22 @@ async def create_pull_review(number: int, body: str, comments: list[dict[str, An
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
-            f"{_API}/repos/{settings.repo_slug}/pulls/{number}/reviews",
+            f"{_API}/repos/{_repo_slug()}/pulls/{number}/reviews",
             headers=_headers(),
             json={
                 "commit_id": commit_id,
                 "event": "COMMENT",
-                "body": body,
+                "body": disclosure.disclose(body, footer),
+                # Each inline comment is read on its own in the diff view, so
+                # each one names the model too.
                 "comments": [
-                    {"path": c["path"], "line": c["line"], "side": "RIGHT", "body": c["body"]} for c in comments
+                    {
+                        "path": c["path"],
+                        "line": c["line"],
+                        "side": "RIGHT",
+                        "body": disclosure.disclose(c["body"], footer),
+                    }
+                    for c in comments
                 ],
             },
         )
@@ -1408,7 +1550,7 @@ async def pull_review_contains(number: int, marker: str) -> bool:
     Like :func:`issue_comment_contains`: a review POST whose confirmation was
     lost leaves the review posted, and this is how the retry finds it.
     """
-    reviews, incomplete = await _get_all_bounded(f"/repos/{settings.repo_slug}/pulls/{number}/reviews")
+    reviews, incomplete = await _get_all_bounded(f"/repos/{_repo_slug()}/pulls/{number}/reviews")
     if incomplete:
         raise GitHubError(f"could not finish reading the reviews of #{number}: the listing is incomplete")
     return any(_is_our_marker(r, marker) for r in reviews)
@@ -1429,7 +1571,7 @@ async def request_pull_review(number: int, logins: list[str]) -> None:
         return
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
-            f"{_API}/repos/{settings.repo_slug}/pulls/{number}/requested_reviewers",
+            f"{_API}/repos/{_repo_slug()}/pulls/{number}/requested_reviewers",
             headers=_headers(),
             json={"reviewers": list(logins)},
         )
@@ -1484,7 +1626,7 @@ async def pull_request_state(pr_url: str) -> dict[str, object] | None:
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(f"{_API}/repos/{settings.repo_slug}/pulls/{number}", headers=_headers())
+            response = await client.get(f"{_API}/repos/{_repo_slug()}/pulls/{number}", headers=_headers())
         if response.status_code != 200:
             return None
         payload = response.json()

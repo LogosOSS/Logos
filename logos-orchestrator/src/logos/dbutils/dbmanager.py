@@ -27,6 +27,7 @@ from logos.dbutils.types import (
 )
 from logos.model_names import is_safe_model_name
 from logos.model_profile_store import CALIBRATION_FIELDS, base_residency_agrees
+from logos.node_config import selection_covered, selection_of
 
 # Backwards-compatible re-export (temporary; remove once all imports are migrated)
 __all__ = [
@@ -53,6 +54,50 @@ _METADATA = MetaData()
 _METADATA_REFLECTED = False
 _ENGINE_LOCK = threading.Lock()
 _METADATA_LOCK = threading.Lock()
+
+# Effective model and provider permissions of one active api key, as the CTEs
+# ``key_info``, ``effective_providers`` and ``effective_models``. A key with
+# custom permissions uses its own grants, any other key its team's. The
+# managed agent identity ignores explicit grants and may reach exactly the
+# locally served (``logosnode``) models and providers.
+_EFFECTIVE_PERMISSIONS_CTE = """
+    key_info AS (
+        SELECT ak.id AS aki,
+               ak.team_id AS tid,
+               COALESCE(u.role, '') AS user_role,
+               ak.internal_service,
+               ak.use_custom_permissions AS custom
+        FROM api_keys ak
+            LEFT JOIN users u ON ak.user_id = u.id
+        WHERE ak.id = :api_key_id
+            AND ak.is_active = true
+    ),
+    effective_providers AS (
+        SELECT akpp.provider_id
+        FROM api_key_provider_permissions akpp, key_info ki
+        WHERE akpp.api_key_id = ki.aki AND ki.custom = true AND ki.internal_service IS NULL
+        UNION
+        SELECT p.id FROM providers p, key_info ki
+        WHERE ki.internal_service = 'agent' AND p.provider_type = 'logosnode'
+        UNION
+        SELECT tpp.provider_id
+        FROM team_provider_permissions tpp, key_info ki
+        WHERE tpp.team_id = ki.tid AND ki.custom = false
+    ),
+    effective_models AS (
+        SELECT akmp.model_id
+        FROM api_key_model_permissions akmp, key_info ki
+        WHERE akmp.api_key_id = ki.aki AND ki.custom = true AND ki.internal_service IS NULL
+        UNION
+        SELECT mp.model_id FROM model_provider mp
+        JOIN providers p ON p.id = mp.provider_id, key_info ki
+        WHERE ki.internal_service = 'agent' AND p.provider_type = 'logosnode'
+        UNION
+        SELECT tmp.model_id
+        FROM team_model_permissions tmp, key_info ki
+        WHERE tmp.team_id = ki.tid AND ki.custom = false
+    )
+"""
 
 DEFAULT_CLOUD_RPM_LIMIT = 5
 DEFAULT_CLOUD_TPM_LIMIT = 10000
@@ -281,6 +326,15 @@ def _number(value: Any, convert: Callable[[Any], Any]) -> Any:
 
 def _text(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
+
+
+def _seconds(milliseconds: Any) -> Optional[float]:
+    """A latency stored in milliseconds, in seconds; None when it was not measured."""
+    try:
+        value = float(milliseconds) / 1000.0
+    except (TypeError, ValueError):
+        return None
+    return round(value, 3) if value > 0 else None
 
 
 def _slice_gpu_count(value: Any) -> Optional[int]:
@@ -587,11 +641,19 @@ class DBManager:
                 delta_ms = (scheduled_ts - timestamp_request).total_seconds() * 1000
                 update_data["queue_wait_ms"] = max(0.0, delta_ms)
 
-        if not update_data:
+        routing_decision = fields.get("routing_decision")
+        if not update_data and routing_decision is None:
             return
 
-        assignments = ", ".join(f"{col} = :{col}" for col in update_data.keys())
+        assignments = [f"{col} = :{col}" for col in update_data]
         params = dict(update_data)
+        if routing_decision is not None:
+            # Keep the snapshot alongside classification metadata without a schema change.
+            assignments.append(
+                "classification_statistics = COALESCE(classification_statistics, '{}'::jsonb) "
+                "|| jsonb_build_object('routing_decision', CAST(:routing_decision AS jsonb))"
+            )
+            params["routing_decision"] = _json_for_jsonb(routing_decision)
         if log_id is not None:
             params["log_id"] = log_id
             where_clause = "id = :log_id"
@@ -599,7 +661,7 @@ class DBManager:
             params["lookup_request_id"] = request_id
             where_clause = "request_id = :lookup_request_id"
 
-        sql = text(f"UPDATE log_entry SET {assignments} WHERE {where_clause}")
+        sql = text(f"UPDATE log_entry SET {', '.join(assignments)} WHERE {where_clause}")
         self.session.execute(sql, params)
         self.session.commit()
 
@@ -1957,9 +2019,12 @@ class DBManager:
             SELECT mp.model_name, mp.profile, mp.sync_revision, mp.calibration_key_hash,
                    mc.id AS cal_id, mc.calibration_key_hash AS cal_key_hash,
                    mc.source_provider_id AS cal_source_provider_id,
-                   mc.invalidated_at AS cal_invalidated_at
+                   mc.invalidated_at AS cal_invalidated_at, mc.calibrated_at AS cal_calibrated_at,
+                   mp.config_fingerprint, mp.slice_gpu_count,
+                   nc.capability AS cfg_capability, nc.overrides AS cfg_overrides
             FROM model_profiles mp
             LEFT JOIN model_calibrations mc ON mc.id = mp.calibration_id
+            LEFT JOIN node_model_config nc ON nc.provider_id = mp.provider_id AND nc.model_name = mp.model_name
             WHERE mp.provider_id = :provider_id
               AND """ + _CENTRAL_PROFILE_ROW
         params: Dict[str, Any] = {"provider_id": provider_id}
@@ -1972,17 +2037,72 @@ class DBManager:
             entry = dict(row._mapping)
             if isinstance(entry.get("profile"), str):
                 entry["profile"] = json.loads(entry["profile"])
+            entry["cfg_capability"] = _json_object(entry.get("cfg_capability")) or {}
+            entry["cfg_overrides"] = _json_object(entry.get("cfg_overrides")) or {}
             results.append(entry)
         return results
+
+    def get_node_config_sources(self, provider_id: int) -> Dict[str, str]:
+        """Where each stored model came from (ui, yaml_import)."""
+        rows = self.session.execute(
+            text("SELECT model_name, source FROM node_model_config WHERE provider_id = :pid"), {"pid": provider_id}
+        ).fetchall()
+        return {str(row.model_name): str(row.source) for row in rows}
+
+    def get_model_provider_pairs(self, provider_id: int) -> Dict[str, int]:
+        """The benchmark pair id (model_provider) of each linked model."""
+        rows = self.session.execute(
+            text(
+                "SELECT m.name, mp.id FROM model_provider mp JOIN models m ON m.id = mp.model_id "
+                "WHERE mp.provider_id = :pid"
+            ),
+            {"pid": provider_id},
+        ).fetchall()
+        return {str(row.name): int(row.id) for row in rows}
+
+    def get_catalog_model_ids(self, names: List[str]) -> Dict[str, int]:
+        """The catalog ids of the named models; a name the catalog lacks is left out."""
+        if not names:
+            return {}
+        rows = self.session.execute(
+            text("SELECT id, name FROM models WHERE name = ANY(:names)"), {"names": list(names)}
+        ).fetchall()
+        return {row.name: int(row.id) for row in rows}
+
+    def get_benchmark_runs(self, run_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """Serving settings, time and mean latencies (seconds) of the given benchmark runs."""
+        if not run_ids:
+            return {}
+        rows = self.session.execute(
+            text(
+                "SELECT id, configuration->'serving' AS serving, recorded_at, "
+                "metrics->'time_to_first_token_ms'->'successful'->>'mean' AS ttft_ms, "
+                "metrics->'request_latency_ms'->'successful'->>'mean' AS latency_ms "
+                "FROM model_provider_benchmarks WHERE id = ANY(:ids)"
+            ),
+            {"ids": list(run_ids)},
+        ).fetchall()
+        return {
+            int(row.id): {
+                "serving": row.serving if isinstance(row.serving, dict) else {},
+                "recorded_at": row.recorded_at.isoformat() if row.recorded_at else None,
+                "ttft_s": _seconds(getattr(row, "ttft_ms", None)),
+                "latency_s": _seconds(getattr(row, "latency_ms", None)),
+            }
+            for row in rows
+        }
 
     def update_reported_calibration_keys(
         self,
         provider_id: int,
         key_hashes: Dict[str, str],
         slice_gpu_counts: Optional[Dict[str, int]] = None,
+        config_fingerprints: Optional[Dict[str, str]] = None,
     ) -> None:
-        """Record the calibration key and GPU count each model has on the node.
+        """Record the calibration key, GPU count and configuration fingerprint of each model on the node.
 
+        A worker that reports fingerprints at all also clears the one of a model it
+        no longer has one for; a worker that predates them leaves them as they are.
         A model without a row gets an empty one, so a node that never ran the
         model can still be offered a shared calibration. The caller commits.
         """
@@ -1991,23 +2111,35 @@ class DBManager:
         counts = slice_gpu_counts or {}
         self.session.execute(
             text("""
-                INSERT INTO model_profiles (provider_id, model_name, calibration_key_hash, slice_gpu_count)
-                SELECT :provider_id, k.model_name, k.key_hash, k.slice_gpu_count
+                INSERT INTO model_profiles (
+                    provider_id, model_name, calibration_key_hash, slice_gpu_count, config_fingerprint)
+                SELECT :provider_id, k.model_name, k.key_hash, k.slice_gpu_count, k.fingerprint
                 FROM unnest(CAST(:model_names AS text[]), CAST(:key_hashes AS text[]),
-                            CAST(:slice_counts AS integer[]))
-                     AS k(model_name, key_hash, slice_gpu_count)
+                            CAST(:slice_counts AS integer[]), CAST(:fingerprints AS text[]))
+                     AS k(model_name, key_hash, slice_gpu_count, fingerprint)
                 ON CONFLICT (provider_id, model_name) DO UPDATE
                 SET calibration_key_hash = EXCLUDED.calibration_key_hash,
-                    slice_gpu_count = COALESCE(EXCLUDED.slice_gpu_count, model_profiles.slice_gpu_count)
+                    slice_gpu_count = COALESCE(EXCLUDED.slice_gpu_count, model_profiles.slice_gpu_count),
+                    config_fingerprint = CASE WHEN CAST(:reports_fingerprints AS boolean)
+                        THEN EXCLUDED.config_fingerprint
+                        ELSE COALESCE(EXCLUDED.config_fingerprint, model_profiles.config_fingerprint)
+                    END
                 WHERE model_profiles.calibration_key_hash IS DISTINCT FROM EXCLUDED.calibration_key_hash
                    OR model_profiles.slice_gpu_count IS DISTINCT FROM
                       COALESCE(EXCLUDED.slice_gpu_count, model_profiles.slice_gpu_count)
+                   OR model_profiles.config_fingerprint IS DISTINCT FROM
+                      CASE WHEN CAST(:reports_fingerprints AS boolean)
+                           THEN EXCLUDED.config_fingerprint
+                           ELSE COALESCE(EXCLUDED.config_fingerprint, model_profiles.config_fingerprint)
+                      END
             """),
             {
                 "provider_id": provider_id,
                 "model_names": list(key_hashes),
                 "key_hashes": list(key_hashes.values()),
                 "slice_counts": [_slice_gpu_count(counts.get(name)) for name in key_hashes],
+                "fingerprints": [(config_fingerprints or {}).get(name) for name in key_hashes],
+                "reports_fingerprints": bool(config_fingerprints),
             },
         )
 
@@ -2091,6 +2223,7 @@ class DBManager:
         return self.session.execute(
             text(f"""
                 SELECT mp.profile, mp.calibration_id, mp.calibration_key_hash, mp.slice_gpu_count,
+                       mp.config_fingerprint,
                        mc.calibration_key_hash AS linked_key_hash,
                        mc.source_provider_id AS linked_source,
                        mc.profile->>'tensor_parallel_size' AS linked_tp
@@ -2101,6 +2234,75 @@ class DBManager:
             """),
             {"provider_id": provider_id, "model_name": model_name},
         ).fetchone()
+
+    def _pick_shared_snapshot(self, provider_id: int, model_name: str, hint: Any) -> Any:
+        """The shared calibration a node adopts: same validity key, covering its choice.
+
+        A snapshot measured under the node's own configuration fingerprint comes
+        first, then the newest. One whose measured range lies outside the KV
+        cache size or context length the node is configured with is skipped.
+        Every snapshot of the validity key is considered, not only the newest few: a
+        covering one further back must still be found. The chosen snapshot is locked,
+        so one invalidated meanwhile is never linked.
+        """
+        candidates = self.session.execute(
+            text("""
+                SELECT id, profile
+                FROM model_calibrations
+                WHERE model_name = :model_name
+                  AND calibration_key_hash = :key_hash
+                  AND invalidated_at IS NULL
+                  AND source_provider_id IS DISTINCT FROM :provider_id
+                  AND NOT (CAST(:provider_id AS integer) = ANY(rejected_by))
+                  AND CASE WHEN profile->>'tensor_parallel_size' ~ '^[0-9]+$'
+                           THEN (profile->>'tensor_parallel_size')::int ELSE 1 END <= :slice_gpu_count
+                ORDER BY (CAST(:fingerprint AS text) IS NOT NULL
+                          AND profile->>'config_fingerprint' = CAST(:fingerprint AS text)) DESC NULLS LAST,
+                         calibrated_at DESC
+                LIMIT 500
+            """),
+            {
+                "model_name": model_name,
+                "key_hash": hint.calibration_key_hash,
+                "provider_id": provider_id,
+                "slice_gpu_count": int(hint.slice_gpu_count),
+                "fingerprint": hint.config_fingerprint,
+            },
+        ).fetchall()
+        if not candidates:
+            return None
+        kv_mb, context, tp = self._node_selection(provider_id, model_name)
+        for candidate in candidates:
+            shared = json.loads(candidate.profile) if isinstance(candidate.profile, str) else dict(candidate.profile)
+            if not selection_covered(shared, kv_mb, context, tp):
+                continue
+            locked = self.session.execute(
+                text("""
+                    SELECT id, profile FROM model_calibrations
+                    WHERE id = :id AND invalidated_at IS NULL
+                    FOR UPDATE
+                """),
+                {"id": int(candidate.id)},
+            ).fetchone()
+            if locked is not None:
+                return locked
+        return None
+
+    def _node_selection(
+        self, provider_id: int, model_name: str
+    ) -> Tuple[Optional[float], Optional[int], Optional[int]]:
+        """The KV cache size (MB), context length and tensor-parallel size configured for a model on a node."""
+        row = self.session.execute(
+            text("""
+                SELECT capability, overrides
+                FROM node_model_config
+                WHERE provider_id = :provider_id AND model_name = :model_name
+            """),
+            {"provider_id": provider_id, "model_name": model_name},
+        ).fetchone()
+        if row is None:
+            return None, None, None
+        return selection_of(_json_object(row.capability) or {}, _json_object(row.overrides) or {})
 
     def _adopt_shared_calibration(
         self, provider_id: int, model_name: str, adopt: bool = True
@@ -2115,32 +2317,7 @@ class DBManager:
         hint = self._node_calibration_state(provider_id, model_name)
         if hint is None or not hint.calibration_key_hash or not hint.slice_gpu_count:
             return False, None
-        snapshot = (
-            None
-            if not adopt
-            else self.session.execute(
-                text("""
-                SELECT id, profile
-                FROM model_calibrations
-                WHERE model_name = :model_name
-                  AND calibration_key_hash = :key_hash
-                  AND invalidated_at IS NULL
-                  AND source_provider_id IS DISTINCT FROM :provider_id
-                  AND NOT (CAST(:provider_id AS integer) = ANY(rejected_by))
-                  AND CASE WHEN profile->>'tensor_parallel_size' ~ '^[0-9]+$'
-                           THEN (profile->>'tensor_parallel_size')::int ELSE 1 END <= :slice_gpu_count
-                ORDER BY calibrated_at DESC
-                LIMIT 1
-                FOR UPDATE
-            """),
-                {
-                    "model_name": model_name,
-                    "key_hash": hint.calibration_key_hash,
-                    "provider_id": provider_id,
-                    "slice_gpu_count": int(hint.slice_gpu_count),
-                },
-            ).fetchone()
-        )
+        snapshot = self._pick_shared_snapshot(provider_id, model_name, hint) if adopt else None
         node = self._node_calibration_state(provider_id, model_name, lock=True)
         if (
             node is None
@@ -2245,23 +2422,28 @@ class DBManager:
 
         A node nobody configured yet has revision 0 and no entries.
         """
-        state = self.session.execute(
-            text("SELECT config_revision, yaml_imported_at FROM node_config_state WHERE provider_id = :pid"),
-            {"pid": provider_id},
-        ).fetchone()
-        rows = self.session.execute(
+        # One statement, so the revision and the models are the same snapshot.
+        row = self.session.execute(
             text("""
-                SELECT model_name, capability, overrides FROM node_model_config
-                WHERE provider_id = :pid ORDER BY position, id
+                SELECT s.config_revision, s.yaml_imported_at,
+                       COALESCE((
+                           SELECT jsonb_agg(
+                               jsonb_build_object(
+                                   'model_name', model_name,
+                                   'capability', capability,
+                                   'overrides', overrides
+                               ) ORDER BY position, id
+                           ) FROM node_model_config WHERE provider_id = :pid
+                       ), '[]'::jsonb) AS entries
+                FROM (SELECT 1) AS one
+                LEFT JOIN node_config_state s ON s.provider_id = :pid
             """),
             {"pid": provider_id},
-        ).fetchall()
+        ).fetchone()
         return {
-            "revision": int(state.config_revision) if state is not None else 0,
-            "yaml_imported": state is not None and state.yaml_imported_at is not None,
-            "entries": [
-                {"model_name": r.model_name, "capability": r.capability, "overrides": r.overrides} for r in rows
-            ],
+            "revision": int(row.config_revision) if row.config_revision is not None else 0,
+            "yaml_imported": row.yaml_imported_at is not None,
+            "entries": list(row.entries),
         }
 
     def replace_node_config(
@@ -2273,6 +2455,8 @@ class DBManager:
         source: str,
     ) -> Optional[int]:
         """Replace a node's configured models; returns the new revision.
+
+        ``source`` labels every row.
 
         Returns None, and writes nothing, when expected_revision is not the
         stored one. The first save also ends the YAML import for the node.
@@ -2330,6 +2514,70 @@ class DBManager:
                 UPDATE node_config_state SET yaml_imported_at = CURRENT_TIMESTAMP
                 WHERE provider_id = :pid AND yaml_imported_at IS NULL
                   AND NOT EXISTS (SELECT 1 FROM node_model_config WHERE provider_id = :pid)
+            """),
+            {"pid": provider_id},
+        )
+        return result.rowcount == 1
+
+    def get_node_settings(self, provider_id: int) -> Dict[str, Any]:
+        """A node's settings with their revision; a node nobody configured has revision 0 and none."""
+        row = self.session.execute(
+            text("""
+                SELECT settings, settings_revision, yaml_imported_at
+                FROM node_settings WHERE provider_id = :pid
+            """),
+            {"pid": provider_id},
+        ).fetchone()
+        if row is None:
+            return {"revision": 0, "yaml_imported": False, "settings": {}}
+        settings = json.loads(row.settings) if isinstance(row.settings, str) else dict(row.settings or {})
+        return {
+            "revision": int(row.settings_revision),
+            "yaml_imported": row.yaml_imported_at is not None,
+            "settings": settings,
+        }
+
+    def replace_node_settings(
+        self, provider_id: int, settings: Dict[str, Any], expected_revision: int, updated_by: Optional[int]
+    ) -> Optional[int]:
+        """Replace a node's settings; returns the new revision, or None when expected_revision is stale.
+
+        The first save also ends the YAML import for the node. The caller commits.
+        """
+        self.session.execute(
+            text("INSERT INTO node_settings (provider_id) VALUES (:pid) ON CONFLICT (provider_id) DO NOTHING"),
+            {"pid": provider_id},
+        )
+        row = self.session.execute(
+            text("""
+                UPDATE node_settings
+                SET settings = CAST(:settings AS jsonb),
+                    settings_revision = settings_revision + 1,
+                    yaml_imported_at = COALESCE(yaml_imported_at, CURRENT_TIMESTAMP),
+                    updated_by = :updated_by,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE provider_id = :pid AND settings_revision = :expected
+                RETURNING settings_revision
+            """),
+            {
+                "pid": provider_id,
+                "settings": json.dumps(settings),
+                "updated_by": updated_by,
+                "expected": expected_revision,
+            },
+        ).fetchone()
+        return int(row.settings_revision) if row is not None else None
+
+    def claim_settings_import(self, provider_id: int) -> bool:
+        """Let one caller import a worker's YAML settings; True when this call got it. The caller commits."""
+        self.session.execute(
+            text("INSERT INTO node_settings (provider_id) VALUES (:pid) ON CONFLICT (provider_id) DO NOTHING"),
+            {"pid": provider_id},
+        )
+        result = self.session.execute(
+            text("""
+                UPDATE node_settings SET yaml_imported_at = CURRENT_TIMESTAMP
+                WHERE provider_id = :pid AND yaml_imported_at IS NULL
             """),
             {"pid": provider_id},
         )
@@ -2919,35 +3167,8 @@ class DBManager:
         """
         Get a list of all authorized model deployments for an api key.
         """
-        sql = text("""
-                   WITH key_info AS (
-                            SELECT ak.id AS aki,
-                                   ak.team_id AS tid,
-                                   u.role AS user_role,
-                                   ak.use_custom_permissions AS custom
-                            FROM api_keys ak
-                                LEFT JOIN users u ON ak.user_id = u.id
-                            WHERE ak.id = :api_key_id
-                                AND ak.is_active = true
-                        ),
-                        effective_providers AS (
-                            SELECT akpp.provider_id
-                            FROM api_key_provider_permissions akpp, key_info ki
-                            WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-                            UNION
-                            SELECT tpp.provider_id
-                            FROM team_provider_permissions tpp, key_info ki
-                            WHERE tpp.team_id = ki.tid AND ki.custom = false
-                        ),
-                        effective_models AS (
-                            SELECT akmp.model_id
-                            FROM api_key_model_permissions akmp, key_info ki
-                            WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-                            UNION
-                            SELECT tmp.model_id
-                            FROM team_model_permissions tmp, key_info ki
-                            WHERE tmp.team_id = ki.tid AND ki.custom = false
-                        )
+        sql = text(f"""
+                   WITH {_EFFECTIVE_PERMISSIONS_CTE}
                    SELECT m.id               as model_id,
                           p.id               as provider_id,
                           p.provider_type    as type,
@@ -3957,6 +4178,13 @@ class DBManager:
         ).mappings()
         return {row["custom_id"]: row["row"] for row in rows.all()}
 
+    def get_agent_api_key_id(self) -> Optional[int]:
+        """The active, migration-managed agent accounting identity."""
+        value = self.session.execute(
+            text("SELECT id FROM api_keys WHERE internal_service = 'agent' AND is_active = true")
+        ).scalar_one_or_none()
+        return int(value) if value is not None else None
+
     def get_api_key_by_id(self, api_key_id: int) -> Optional[Dict[str, Any]]:
         """One active api key by id, in the shape ``authenticate_api_key`` uses.
 
@@ -3967,7 +4195,7 @@ class DBManager:
             self.session.execute(
                 text("""
                 SELECT ak.id, ak.key_value, ak.name, ak.key_type, ak.team_id, ak.user_id,
-                       ak.environment, ak.log, ak.settings, ak.default_priority,
+                       ak.environment, ak.log, ak.settings, ak.default_priority, ak.internal_service,
                        u.role,
                        t.priority AS team_priority
                 FROM api_keys ak
@@ -4304,35 +4532,8 @@ class DBManager:
         Returns:
             List of dicts with model id, name, and description.
         """
-        sql = text("""
-           WITH key_info AS (
-                SELECT ak.id AS aki,
-                       ak.team_id AS tid,
-                       u.role AS user_role,
-                       ak.use_custom_permissions AS custom
-                FROM api_keys ak
-                LEFT JOIN users u ON ak.user_id = u.id
-                WHERE ak.id = :api_key_id
-                  AND ak.is_active = true
-            ),
-            effective_providers AS (
-                SELECT akpp.provider_id
-                FROM api_key_provider_permissions akpp, key_info ki
-                WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-                UNION
-                SELECT tpp.provider_id
-                FROM team_provider_permissions tpp, key_info ki
-                WHERE tpp.team_id = ki.tid AND ki.custom = false
-            ),
-            effective_models AS (
-                SELECT akmp.model_id
-                FROM api_key_model_permissions akmp, key_info ki
-                WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-                UNION
-                SELECT tmp.model_id
-                FROM team_model_permissions tmp, key_info ki
-                WHERE tmp.team_id = ki.tid AND ki.custom = false
-            )
+        sql = text(f"""
+           WITH {_EFFECTIVE_PERMISSIONS_CTE}
            SELECT DISTINCT m.id, m.name, m.description,
            (SELECT string_agg(a.alias, ', ' ORDER BY a.alias)
             FROM model_aliases a
@@ -4366,35 +4567,8 @@ class DBManager:
         Returns:
             Dict with model id, name, and description, or None if not found.
         """
-        sql = text("""
-           WITH key_info AS (
-                SELECT ak.id AS aki,
-                       ak.team_id AS tid,
-                       u.role AS user_role,
-                       ak.use_custom_permissions AS custom
-                FROM api_keys ak
-                LEFT JOIN users u ON ak.user_id = u.id
-                WHERE ak.id = :api_key_id
-                  AND ak.is_active = true
-            ),
-            effective_providers AS (
-                SELECT akpp.provider_id
-                FROM api_key_provider_permissions akpp, key_info ki
-                WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-                UNION
-                SELECT tpp.provider_id
-                FROM team_provider_permissions tpp, key_info ki
-                WHERE tpp.team_id = ki.tid AND ki.custom = false
-            ),
-            effective_models AS (
-                SELECT akmp.model_id
-                FROM api_key_model_permissions akmp, key_info ki
-                WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-                UNION
-                SELECT tmp.model_id
-                FROM team_model_permissions tmp, key_info ki
-                WHERE tmp.team_id = ki.tid AND ki.custom = false
-            )
+        sql = text(f"""
+           WITH {_EFFECTIVE_PERMISSIONS_CTE}
             SELECT DISTINCT m.id, m.name, m.description
             FROM models m
             JOIN effective_models em ON m.id = em.model_id
@@ -4650,35 +4824,8 @@ class DBManager:
         # so a top-level import would be circular.
         from logos.logosnode_snapshot import _resolve_requested_model_name
 
-        sql = text("""
-                   WITH key_info AS (
-                            SELECT ak.id AS aki,
-                                   ak.team_id AS tid,
-                                   COALESCE(u.role, '') AS user_role,
-                                   ak.use_custom_permissions AS custom
-                            FROM api_keys ak
-                                LEFT JOIN users u ON ak.user_id = u.id
-                            WHERE ak.id = :api_key_id
-                                AND ak.is_active = true
-                        ),
-                        effective_providers AS (
-                            SELECT akpp.provider_id
-                            FROM api_key_provider_permissions akpp, key_info ki
-                            WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-                            UNION
-                            SELECT tpp.provider_id
-                            FROM team_provider_permissions tpp, key_info ki
-                            WHERE tpp.team_id = ki.tid AND ki.custom = false
-                        ),
-                        effective_models AS (
-                            SELECT akmp.model_id
-                            FROM api_key_model_permissions akmp, key_info ki
-                            WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-                            UNION
-                            SELECT tmp.model_id
-                            FROM team_model_permissions tmp, key_info ki
-                            WHERE tmp.team_id = ki.tid AND ki.custom = false
-                        )
+        sql = text(f"""
+                   WITH {_EFFECTIVE_PERMISSIONS_CTE}
                    SELECT m.id,
                           m.name,
                           (
@@ -5176,7 +5323,8 @@ class DBManager:
                    UPDATE log_entry
                    SET response_payload          = :payload,
                        policy_id                 = COALESCE(:policy_id, policy_id),
-                       classification_statistics = :classification_statistics,
+                       classification_statistics = COALESCE(classification_statistics, '{}'::jsonb)
+                           || CAST(:classification_statistics AS jsonb),
                        queue_depth_at_arrival    = COALESCE(:queue_depth, queue_depth_at_arrival),
                        utilization_at_arrival    = COALESCE(:utilization, utilization_at_arrival)
                    WHERE id = :log_id
@@ -5236,7 +5384,8 @@ class DBManager:
                        model_id         = COALESCE(:model_id, model_id),
                        timestamp_response = :timestamp,
                        policy_id        = COALESCE(:policy_id, policy_id),
-                       classification_statistics = :classification_statistics,
+                       classification_statistics = COALESCE(classification_statistics, '{}'::jsonb)
+                           || CAST(:classification_statistics AS jsonb),
                        request_id = COALESCE(:request_id, request_id),
                        queue_depth_at_arrival = COALESCE(:queue_depth, queue_depth_at_arrival),
                        utilization_at_arrival = COALESCE(:utilization, utilization_at_arrival),
@@ -5539,6 +5688,7 @@ class DBManager:
                           LEFT JOIN teams t ON t.id = ak.team_id
                  WHERE ak.key_value = :kv
                    AND ak.is_active = true
+                   AND ak.internal_service IS NULL
                  """),
             {"kv": key_value},
         ).fetchone()
@@ -5705,6 +5855,10 @@ class DBManager:
         self.session.commit()
         return {"id": row.id, "key_value": row.key_value}
 
+    def user_exists(self, user_id: int) -> bool:
+        row = self.session.execute(text("SELECT 1 FROM users WHERE id = :uid"), {"uid": user_id}).fetchone()
+        return row is not None
+
     def get_user_by_api_key(self, key_value: str):
         row = self.session.execute(
             text("""
@@ -5719,6 +5873,7 @@ class DBManager:
                           LEFT JOIN users u ON u.id = ak.user_id
                  WHERE ak.key_value = :kv
                    AND ak.is_active = true
+                   AND ak.internal_service IS NULL
                  """),
             {"kv": key_value},
         ).fetchone()

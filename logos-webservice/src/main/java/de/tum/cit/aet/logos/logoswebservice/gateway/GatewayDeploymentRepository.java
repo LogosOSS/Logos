@@ -37,10 +37,13 @@ public class GatewayDeploymentRepository {
                    ak.use_custom_permissions AS custom,
                    ak.settings::text AS settings_text,
                    ak.default_priority,
-                   ak.log::text AS log_level
+                   ak.log::text AS log_level,
+                   t.default_cloud_rpm_limit AS team_cloud_rpm_limit,
+                   t.default_cloud_tpm_limit AS team_cloud_tpm_limit
             FROM api_keys ak
+            LEFT JOIN teams t ON t.id = ak.team_id
             WHERE ak.key_value = :key_value
-              AND ak.is_active = true
+              AND ak.is_active = true AND ak.internal_service IS NULL
         ),
         effective_providers AS (
             SELECT akpp.provider_id
@@ -92,6 +95,8 @@ public class GatewayDeploymentRepository {
                ki.settings_text,
                ki.default_priority,
                ki.log_level,
+               ki.team_cloud_rpm_limit,
+               ki.team_cloud_tpm_limit,
                d.model_id,
                d.model_name,
                d.aliases_csv,
@@ -121,10 +126,13 @@ public class GatewayDeploymentRepository {
                ak.use_custom_permissions,
                ak.settings::text AS settings_text,
                ak.default_priority,
-               ak.log::text AS log_level
+               ak.log::text AS log_level,
+               t.default_cloud_rpm_limit AS team_cloud_rpm_limit,
+               t.default_cloud_tpm_limit AS team_cloud_tpm_limit
         FROM api_keys ak
+        LEFT JOIN teams t ON t.id = ak.team_id
         WHERE ak.key_value = :key_value
-          AND ak.is_active = true
+          AND ak.is_active = true AND ak.internal_service IS NULL
         """;
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -182,7 +190,7 @@ public class GatewayDeploymentRepository {
                        ak.use_custom_permissions AS custom
                 FROM api_keys ak
                 WHERE ak.id = :api_key_id
-                  AND ak.is_active = true
+                  AND ak.is_active = true AND ak.internal_service IS NULL
             ),
             effective_providers AS (
                 SELECT akpp.provider_id
@@ -285,7 +293,10 @@ public class GatewayDeploymentRepository {
             rs.getBoolean("use_custom_permissions"),
             rs.getString("settings_text"),
             rs.getInt("default_priority"),
-            rs.getString("log_level")
+            rs.getString("log_level"),
+            new GatewayKey.TeamCloudLimits(
+                (Integer) rs.getObject("team_cloud_rpm_limit"),
+                (Integer) rs.getObject("team_cloud_tpm_limit"))
         );
     }
 

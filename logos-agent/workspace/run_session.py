@@ -49,6 +49,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from session_activity import SessionActivity, redact_output
+
 WORKSPACE = Path("/workspace")
 CHECKOUT = WORKSPACE / "repo"
 SSH_KNOWN_HOSTS = Path("/logos/ssh_known_hosts")
@@ -114,15 +116,7 @@ def _redact(cmd: list[str]) -> list[str]:
     readable by the agent itself, so a token must never reach it — neither in
     a URL nor in a bare argument.
     """
-    token = os.environ.get("GITHUB_TOKEN", "")
-
-    def scrub(part: str) -> str:
-        if token and token in part:
-            part = part.replace(token, "***")
-        # Generic credential-in-URL shape: https://user:password@host
-        return re.sub(r"(://[^/:\s]+:)[^@\s]+(@)", r"\1***\2", part)
-
-    return [scrub(c) for c in cmd]
+    return [redact_output(part) for part in cmd]
 
 
 def _without_auto_maintenance(cmd: list[str]) -> list[str]:
@@ -364,6 +358,40 @@ def _clear_checkout() -> None:
         CHECKOUT.unlink()
 
 
+def _push_remote() -> str:
+    """The remote the session branch lives on.
+
+    ``origin`` when the agent account may push to the repository. When it
+    may not, the runner names the account's own fork, and the branch is
+    pushed there and proposed to the repository from it.
+    """
+    return "push" if os.environ.get("LOGOS_PUSH_REPO_URL", "").strip() else "origin"
+
+
+def _add_push_remote() -> None:
+    url = os.environ.get("LOGOS_PUSH_REPO_URL", "").strip()
+    if url:
+        run(["git", "remote", "add", "push", url], cwd=CHECKOUT, quiet=True)
+
+
+def _base_remote(base_branch: str, branch: str) -> str:
+    """Where the base branch lives: on the fork for continued agent work, else the repository.
+
+    Continued work starts from the session's own branch, or — as the runner
+    says — from an earlier agent branch the workspace published; with a fork
+    both live there rather than on the repository.
+    """
+    if _push_remote() == "push" and (base_branch == branch or _flag("LOGOS_SESSION_BASE_ON_FORK")):
+        return "push"
+    return "origin"
+
+
+def _pull_request_head(branch: str) -> str:
+    """How the pull request names its head: ``owner:branch`` from a fork."""
+    slug = os.environ.get("LOGOS_PUSH_REPO_SLUG", "").strip()
+    return f"{slug.split('/', 1)[0]}:{branch}" if slug else branch
+
+
 def _rebuild_git_metadata(repo_url: str) -> None:
     """Replace all agent-owned Git metadata before authenticated operations.
 
@@ -380,6 +408,7 @@ def _rebuild_git_metadata(repo_url: str) -> None:
         shutil.rmtree(git_dir)
     run(["git", "init", "--quiet"], cwd=CHECKOUT, quiet=True)
     run(["git", "remote", "add", "origin", repo_url], cwd=CHECKOUT, quiet=True)
+    _add_push_remote()
 
 
 def _remote_default_branch() -> str | None:
@@ -402,7 +431,7 @@ _DEEPEN_STEP = 250
 _MAX_HISTORY_DEPTH = 5000
 
 
-def _deepen_until_merge_base(default: str, base: str) -> None:
+def _deepen_until_merge_base(default: str, base: str, base_remote: str = "origin") -> None:
     """Make `git merge-base origin/<default> HEAD` resolvable, or fail.
 
     A reviewing session is handed a diff against the default branch
@@ -436,7 +465,7 @@ def _deepen_until_merge_base(default: str, base: str) -> None:
         # tracks a single branch, so a bare `fetch --deepen` grows only that
         # one, and a single fetch naming both stops deepening the second line
         # once the first has reached the commits they share.
-        run(["git", "fetch", f"--deepen={_DEEPEN_STEP}", "origin", base], cwd=CHECKOUT)
+        run(["git", "fetch", f"--deepen={_DEEPEN_STEP}", base_remote, base], cwd=CHECKOUT)
         run(
             ["git", "fetch", f"--deepen={_DEEPEN_STEP}", "origin", f"{default}:refs/remotes/origin/{default}"],
             cwd=CHECKOUT,
@@ -484,25 +513,29 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     # the checkout is the code under discussion and there is nothing here to
     # push back to.
     reading = base_branch.startswith("refs/")
+    base_remote = _base_remote(base_branch, branch)
+    forked_base = base_remote == "push"
     cloned = not (CHECKOUT / ".git").is_dir()
     if cloned:
         log(f"cloning {repo_url} at {base_branch}")
         CHECKOUT.parent.mkdir(parents=True, exist_ok=True)
         _clear_checkout()
         clone = ["git", "clone", "--depth", "50"]
-        if not reading:
+        if not reading and not forked_base:
             # A ref is not a branch name; the clone takes the default head
             # and the fetch below moves it to what was asked for.
             clone += ["--branch", base_branch]
         run([*clone, repo_url, str(CHECKOUT)])
+        _add_push_remote()
     else:
         log("reusing existing checkout; rebuilding trusted git metadata")
         _rebuild_git_metadata(repo_url)
-    if reading or not cloned:
-        run(["git", "fetch", "--depth", "50", "origin", base_branch], cwd=CHECKOUT)
+    if reading or not cloned or forked_base:
+        run(["git", "fetch", "--depth", "50", base_remote, base_branch], cwd=CHECKOUT)
         # Discard whatever a previous session left behind: a session starts
         # from the base it was given, never from another session's leftovers.
-        run(["git", "reset", "--hard", "FETCH_HEAD" if reading else f"origin/{base_branch}"], cwd=CHECKOUT)
+        exact = reading or forked_base
+        run(["git", "reset", "--hard", "FETCH_HEAD" if exact else f"origin/{base_branch}"], cwd=CHECKOUT)
         run(["git", "clean", "-fdx"], cwd=CHECKOUT, check=False)
 
     # The task a reviewing agent is given tells it to run
@@ -514,7 +547,7 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     # remote's default branch into its remote-tracking ref so the command
     # works however the checkout was built. A failure here does not fail
     # the preparation: the base is already where the session needs it.
-    default = _remote_default_branch()
+    default = os.environ.get("LOGOS_SESSION_REPOSITORY_BRANCH", "").strip() or _remote_default_branch()
     default_available = False
     if default:
         process = run(
@@ -537,7 +570,7 @@ def prepare_checkout(repo_url: str, base_branch: str, branch: str, token: str) -
     # alone is still a usable working copy, and there is nothing to deepen
     # toward.
     if default_available:
-        _deepen_until_merge_base(default, base_branch)
+        _deepen_until_merge_base(default, base_branch, base_remote)
 
 
 def agent_login() -> str:
@@ -624,7 +657,7 @@ def _prepared_branch_sha() -> str:
 def _remote_branch_sha(branch: str) -> str:
     """Read an exact branch tip, distinguishing absence from a fetch failure."""
     ref = f"refs/heads/{branch}"
-    process = run(["git", "ls-remote", "--exit-code", "origin", ref], cwd=CHECKOUT, check=False, quiet=True)
+    process = run(["git", "ls-remote", "--exit-code", _push_remote(), ref], cwd=CHECKOUT, check=False, quiet=True)
     if process.returncode == 2:
         return ""
     if process.returncode != 0:
@@ -664,13 +697,20 @@ def finalize_checkout(repo_url: str, base_branch: str, branch: str, token: str) 
     # trusted baseline from the remote instead of trusting its local name.
     _rebuild_git_metadata(repo_url)
     _install_git_askpass(token)
-    run(["git", "fetch", "--depth", "50", "origin", baseline], cwd=CHECKOUT)
+    fetched = run(["git", "fetch", "--depth", "50", "origin", baseline], cwd=CHECKOUT, check=False)
+    if fetched.returncode != 0 and _push_remote() == "push":
+        # Continued work on the fork: the prepared commit lives there.
+        run(["git", "fetch", "--depth", "50", "push", baseline], cwd=CHECKOUT)
+    elif fetched.returncode != 0:
+        raise RuntimeError("could not fetch the prepared checkout SHA")
     if _ref_sha("FETCH_HEAD") != baseline:
         raise RuntimeError("the fetched commit does not match the prepared checkout SHA")
     run(["git", "update-ref", f"refs/heads/{branch}", baseline], cwd=CHECKOUT, quiet=True)
     if _remote_branch_sha(branch):
+        # Kept under refs/remotes/origin/ whichever remote holds it: the
+        # lease check reads the published tip from there.
         run(
-            ["git", "fetch", "--depth", "50", "origin", f"{branch}:refs/remotes/origin/{branch}"],
+            ["git", "fetch", "--depth", "50", _push_remote(), f"{branch}:refs/remotes/origin/{branch}"],
             cwd=CHECKOUT,
             quiet=True,
         )
@@ -805,6 +845,11 @@ def _agent_command(prompt: str, *, resuming: bool) -> list[str]:
         "--permission-mode",
         "bypassPermissions",
     ]
+    hook = {"type": "command", "command": "python3 /usr/local/lib/session_activity.py", "timeout": 3}
+    cmd += [
+        "--settings",
+        json.dumps({"hooks": {name: [{"hooks": [hook]}] for name in ("PostToolUse", "PostToolUseFailure")}}),
+    ]
     if resuming:
         # Same conversation, same working directory: the agent keeps what it
         # has already read and done instead of starting the task again.
@@ -833,7 +878,7 @@ def _pauses_so_far() -> int:
         return 0
 
 
-def _drive_agent(cmd: list[str]) -> tuple[int, dict[str, object], bool, bool]:
+def _drive_agent(cmd: list[str], activity: SessionActivity | None = None) -> tuple[int, dict[str, object], bool, bool]:
     """Run one invocation.
 
     Returns its exit code, its usage, whether it was cut off, and whether
@@ -845,6 +890,7 @@ def _drive_agent(cmd: list[str]) -> tuple[int, dict[str, object], bool, bool]:
     pauses_before = _pauses_so_far()
     process = subprocess.Popen(cmd, cwd=CHECKOUT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert process.stdout is not None
+    root = ""
     for line in process.stdout:
         line = line.rstrip("\n")
         if not line:
@@ -856,8 +902,19 @@ def _drive_agent(cmd: list[str]) -> tuple[int, dict[str, object], bool, bool]:
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
-            print(line, flush=True)
+            print(redact_output(line), flush=True)
             continue
+        if not isinstance(event, dict):
+            continue
+        if (
+            not root
+            and event.get("type") == "system"
+            and event.get("subtype") == "init"
+            and not event.get("parent_tool_use_id")
+        ):
+            root = event.get("session_id") or ""
+        if activity is not None:
+            activity.observe(event, root)
         _render_event(event)
         if event.get("type") == "result":
             usage = event
@@ -881,6 +938,7 @@ def run_agent(task: str) -> dict[str, object]:
     threw away everything it had done: hours of work, uncommitted, in a
     checkout the next session resets.
     """
+    activity = SessionActivity()
     prompt = build_prompt(task)
     started = time.monotonic()
     # A conversation restored by the preparation phase is this workspace's
@@ -920,7 +978,7 @@ def run_agent(task: str) -> dict[str, object]:
         # review that just came in — into the conversation that did the
         # earlier rounds. A later run carries only "you were cut off".
         text = CONTINUE_PROMPT if attempt > 0 else prompt
-        code, run_usage, interrupted, frozen = _drive_agent(_agent_command(text, resuming=resuming))
+        code, run_usage, interrupted, frozen = _drive_agent(_agent_command(text, resuming=resuming), activity)
         run_in, run_out, run_cost = usage_totals(run_usage)
         if not run_usage:
             # Cut off before it could report: what the assistant events
@@ -1041,9 +1099,9 @@ def _render_event(event: dict) -> None:
         message = (event.get("message") or {}) if isinstance(event.get("message"), dict) else {}
         for block in message.get("content") or []:
             if block.get("type") == "text" and block.get("text", "").strip():
-                print(block["text"].strip(), flush=True)
+                print(redact_output(block["text"].strip()), flush=True)
             elif block.get("type") == "tool_use":
-                print(_tool_line(block), flush=True)
+                print(redact_output(_tool_line(block)), flush=True)
         _report_usage(message)
     elif kind == "result":
         subtype = event.get("subtype", "")
@@ -1257,7 +1315,7 @@ def commit_and_push(branch: str, task: str) -> int:
     log(f"committing {len(files)} changed file(s)")
     run(["git", "commit", "-m", _commit_subject(task)], cwd=CHECKOUT)
     expected = _prepared_branch_sha()
-    run(["git", "push", f"--force-with-lease=refs/heads/{branch}:{expected}", "origin", branch], cwd=CHECKOUT)
+    run(["git", "push", f"--force-with-lease=refs/heads/{branch}:{expected}", _push_remote(), branch], cwd=CHECKOUT)
     return len(files)
 
 
@@ -1323,10 +1381,8 @@ def _closed_issues(closes: str) -> str:
     the change does belongs in the commit subject; why it was made belongs to
     whoever picks it up.
     """
-    number = closes.strip().lstrip("#")
-    if not number.isdigit():
-        return ""
-    return f"closes #{number}"
+    numbers = [part.strip().lstrip("#") for part in closes.split(",")]
+    return "\n".join(f"closes #{number}" for number in numbers if number.isdigit())
 
 
 def _pull_request_body() -> str:
@@ -1335,11 +1391,20 @@ def _pull_request_body() -> str:
     verification = os.environ.get("LOGOS_SESSION_VERIFICATION", "")
     if verification:
         output = os.environ.get("LOGOS_SESSION_VERIFICATION_OUTPUT", "").replace("```", "'''")
-        body += f"\n\n## Verification\n\nOffline compile/type checks: **{verification}**."
+        label = (
+            "Build and test command"
+            if os.environ.get("LOGOS_VERIFICATION_MODE") == "repository"
+            else "Offline compile/type checks"
+        )
+        body += f"\n\n## Verification\n\n{label}: **{verification}**."
         if output:
             body += f"\n\n```text\n{output}\n```"
         if verification != "passed":
             body += "\n\nDraft: fix the reported failure or unavailable dependencies before requesting review."
+    disclosure = os.environ.get("LOGOS_SESSION_DISCLOSURE", "").strip()
+    if disclosure:
+        # Which model wrote the change, set by the runner for every session.
+        body = f"{body.rstrip()}\n\n{disclosure}".lstrip()
     return body
 
 
@@ -1361,7 +1426,7 @@ def open_pull_request(branch: str, base_branch: str, task: str) -> str | None:
         "--base",
         base_branch,
         "--head",
-        branch,
+        _pull_request_head(branch),
         "--title",
         title,
         # Present rather than absent: `gh` prompts for a body it was
@@ -1389,7 +1454,7 @@ def open_pull_request(branch: str, base_branch: str, task: str) -> str | None:
         # request keeps the first run's words: the one titled "Refuse X" that,
         # after its second round, is the one that serves X.
         existing = run(
-            ["gh", "pr", "view", branch, "--repo", slug, "--json", "number", "url"],
+            ["gh", "pr", "view", _pull_request_head(branch), "--repo", slug, "--json", "number", "url"],
             cwd=CHECKOUT,
             check=False,
             quiet=True,
@@ -1494,11 +1559,22 @@ def _checkout_comparison(base_branch: str, branch: str, branch_sha: str) -> tupl
     is authoritative when one exists. Otherwise the runner can retain the
     original target across a successful push whose PR creation failed.
     """
-    if not branch_sha:
-        return require_checkout_ref("HEAD"), base_branch
     target = ""
+    if not branch_sha:
+        if _base_remote(base_branch, branch) != "push":
+            return require_checkout_ref("HEAD"), base_branch
+        # New work started from an earlier agent branch that exists only on
+        # the fork: the pull request cannot target that branch on the
+        # repository, so it targets the repository's branch, compared from
+        # where the two lines meet.
+        target = (
+            os.environ.get("LOGOS_SESSION_REPOSITORY_BRANCH", "").strip()
+            or os.environ.get("LOGOS_SESSION_PR_BASE_BRANCH", "").strip()
+            or _remote_default_branch()
+            or ""
+        )
     slug = os.environ.get("LOGOS_REPO_SLUG", "").strip()
-    if slug:
+    if slug and branch_sha:
         response = run(
             ["gh", "pr", "list", "--repo", slug, "--head", branch, "--state", "open", "--json", "baseRefName"],
             cwd=CHECKOUT,
@@ -1514,12 +1590,17 @@ def _checkout_comparison(base_branch: str, branch: str, branch_sha: str) -> tupl
         if len(targets) > 1:
             raise RuntimeError("the session branch has pull requests with different target branches")
         target = next(iter(targets), "")
-    target = target or os.environ.get("LOGOS_SESSION_PR_BASE_BRANCH", "").strip() or _remote_default_branch()
+    target = (
+        target
+        or os.environ.get("LOGOS_SESSION_PR_BASE_BRANCH", "").strip()
+        or os.environ.get("LOGOS_SESSION_REPOSITORY_BRANCH", "").strip()
+        or _remote_default_branch()
+    )
     if not target:
         raise RuntimeError("could not establish the comparison branch for the existing session branch")
     run(["git", "check-ref-format", f"refs/heads/{target}"], cwd=CHECKOUT, quiet=True)
     run(["git", "fetch", "--depth", "50", "origin", f"{target}:refs/remotes/origin/{target}"], cwd=CHECKOUT)
-    _deepen_until_merge_base(target, base_branch)
+    _deepen_until_merge_base(target, base_branch, _base_remote(base_branch, branch))
     comparison = run(["git", "merge-base", f"origin/{target}", "HEAD"], cwd=CHECKOUT, quiet=True).stdout.strip()
     return comparison, target
 

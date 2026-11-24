@@ -29,155 +29,182 @@
     <app-error-message variant="banner" message="Failed to refresh models, please try again." />
   }
 
+  <h2 class="section-title">
+    Cloud Providers <span class="section-count">{{ cloudProviders().length }}</span>
+  </h2>
+  <app-data-table
+    [columns]="['', 'PROVIDER NAME', 'VENDOR', 'PRIVACY', 'BASE URL', '']"
+    gridCols="40px 200fr 140fr 200fr 260fr 72px"
+    [loading]="loading()"
+    [empty]="cloudProviders().length === 0"
+    [emptyMessage]="search().trim() ? 'No cloud providers match your search.' : 'No cloud providers yet.'"
+  >
+    @for (provider of cloudProviders(); track provider.id) {
+      <ng-container *ngTemplateOutlet="providerRow; context: { $implicit: provider }" />
+    }
+  </app-data-table>
+
+  <h2 class="section-title">
+    Local Providers <span class="section-count">{{ localProviders().length }}</span>
+  </h2>
   <app-data-table
     [columns]="['', 'PROVIDER NAME', 'TYPE', 'PRIVACY', 'BASE URL', '']"
-    gridCols="40px 200fr 120fr 160fr 260fr 72px"
+    gridCols="40px 200fr 140fr 200fr 260fr 72px"
     [loading]="loading()"
-    [empty]="filteredProviders().length === 0"
-    emptyMessage="No providers match your search."
+    [empty]="localProviders().length === 0"
+    [emptyMessage]="search().trim() ? 'No local providers match your search.' : 'No local providers yet.'"
   >
-    @for (provider of filteredProviders(); track provider.id) {
-      <div
-        class="table-row table-row--clickable"
-        [class.table-row--expanded]="expandedId() === provider.id"
-        role="row"
-        (click)="onRowClick($event, provider)"
-      >
-        <div class="col-chevron" role="cell">
-          <button
-            class="btn-chevron"
-            type="button"
-            (click)="toggleExpand(provider)"
-            [attr.aria-label]="'Expand ' + provider.name"
-            [class.btn-chevron--open]="expandedId() === provider.id"
-          >
-            <i class="pi pi-chevron-right" aria-hidden="true"></i>
-          </button>
-        </div>
-
-        <div class="col-name name-cell" role="cell">
-          <button
-            class="btn-chevron mobile-chevron"
-            type="button"
-            (click)="toggleExpand(provider)"
-            [attr.aria-label]="'Expand ' + provider.name"
-            [class.btn-chevron--open]="expandedId() === provider.id"
-          >
-            <i class="pi pi-chevron-right" aria-hidden="true"></i>
-          </button>
-          <span class="provider-name">{{ provider.name }}</span>
-          <div class="name-mobile-actions">
-            <button
-              class="btn-icon"
-              type="button"
-              [attr.aria-label]="'Edit provider ' + provider.name"
-              (click)="openEditDialog(provider)"
-            >
-              <i class="pi pi-pencil" aria-hidden="true"></i>
-            </button>
-            <button
-              class="btn-icon btn-icon--danger"
-              type="button"
-              [attr.aria-label]="'Delete provider ' + provider.name"
-              (click)="openDeleteDialog(provider)"
-            >
-              <i class="pi pi-trash" aria-hidden="true"></i>
-            </button>
-          </div>
-        </div>
-
-        <div class="col-type" role="cell" data-label="Type">
-          <span class="type-badge">{{ provider.provider_type }}</span>
-        </div>
-
-        <div class="col-privacy" role="cell" data-label="Privacy">
-          <span class="privacy-text">{{ formatPrivacy(provider.privacy_level) }}</span>
-        </div>
-
-        <div class="col-url url-cell" role="cell" data-label="Base URL">
-          <span class="url-text">{{ provider.base_url }}</span>
-        </div>
-
-        <div class="col-actions actions-cell" role="cell">
-          <button
-            class="btn-icon"
-            type="button"
-            [attr.aria-label]="'Edit provider ' + provider.name"
-            (click)="openEditDialog(provider)"
-          >
-            <i class="pi pi-pencil" aria-hidden="true"></i>
-          </button>
-          <button
-            class="btn-icon btn-icon--danger"
-            type="button"
-            [attr.aria-label]="'Delete provider ' + provider.name"
-            (click)="openDeleteDialog(provider)"
-          >
-            <i class="pi pi-trash" aria-hidden="true"></i>
-          </button>
-        </div>
-      </div>
-
-      @if (expandedId() === provider.id) {
-        <div class="expanded-row" role="row">
-          <div class="expanded-content">
-            <section class="connections-section" aria-label="Connected models">
-            <div class="expanded-header">
-              <span class="expanded-title">Connected Models</span>
-              <button class="btn-primary" type="button" (click)="openConnectDialog(provider)">
-                <i class="pi pi-plus" aria-hidden="true"></i>
-                Connect
-              </button>
-            </div>
-
-            @if ((providerModels()[provider.id] || []).length === 0) {
-              <p class="empty-connections">No models connected yet.</p>
-            } @else {
-              <div class="connection-list">
-                @for (conn of providerModels()[provider.id]; track conn.model_id) {
-                  <div class="connection-row">
-                    <span class="conn-model-name">{{ conn.model_name }}</span>
-                    <span class="conn-endpoint">{{ conn.endpoint || '-' }}</span>
-                    <span
-                      class="batch-badge"
-                      [class.batch-badge--supported]="conn.batch_support === 'supported'"
-                      [class.batch-badge--unsupported]="conn.batch_support === 'unsupported'"
-                      [attr.title]="batchTooltip(conn)"
-                      [attr.aria-label]="'Batch: ' + batchLabel(conn) + '. ' + batchTooltip(conn)"
-                      data-testid="batch-support"
-                    >{{ batchLabel(conn) }}</span>
-                    <span class="conn-key">{{
-                      conn.api_key ? conn.api_key.slice(0, 6) + '…' : '-'
-                    }}</span>
-                    <div class="conn-actions">
-                      <button
-                        class="btn-icon"
-                        type="button"
-                        (click)="openEditConnDialog(provider, conn)"
-                        [attr.aria-label]="'Edit connection for ' + conn.model_name"
-                      >
-                        <i class="pi pi-pencil" aria-hidden="true"></i>
-                      </button>
-                      <button
-                        class="btn-icon btn-icon--danger"
-                        type="button"
-                        [attr.aria-label]="'Disconnect ' + conn.model_name"
-                        (click)="openDisconnectDialog(provider, conn)"
-                      >
-                        <i class="pi pi-trash" aria-hidden="true"></i>
-                      </button>
-                    </div>
-                  </div>
-                }
-              </div>
-            }
-            </section>
-          </div>
-        </div>
-      }
+    @for (provider of localProviders(); track provider.id) {
+      <ng-container *ngTemplateOutlet="providerRow; context: { $implicit: provider }" />
     }
   </app-data-table>
 </div>
+
+<!-- ── Provider row, shared by the cloud and the local table ──────────────── -->
+<ng-template #providerRow let-provider>
+  <div
+    class="table-row table-row--clickable"
+    [class.table-row--expanded]="isExpanded(provider.id)"
+    role="row"
+    (click)="onRowClick($event, provider)"
+  >
+    <div class="col-chevron" role="cell">
+      <button
+        class="btn-chevron"
+        type="button"
+        (click)="toggleExpand(provider)"
+        [attr.aria-label]="'Expand ' + provider.name"
+        [class.btn-chevron--open]="isExpanded(provider.id)"
+      >
+        <i class="pi pi-chevron-right" aria-hidden="true"></i>
+      </button>
+    </div>
+
+    <div class="col-name name-cell" role="cell">
+      <button
+        class="btn-chevron mobile-chevron"
+        type="button"
+        (click)="toggleExpand(provider)"
+        [attr.aria-label]="'Expand ' + provider.name"
+        [class.btn-chevron--open]="isExpanded(provider.id)"
+      >
+        <i class="pi pi-chevron-right" aria-hidden="true"></i>
+      </button>
+      <span class="provider-name">{{ provider.name }}</span>
+      <div class="name-mobile-actions">
+        <button
+          class="btn-icon"
+          type="button"
+          [attr.aria-label]="'Edit provider ' + provider.name"
+          (click)="openEditDialog(provider)"
+        >
+          <i class="pi pi-pencil" aria-hidden="true"></i>
+        </button>
+        <button
+          class="btn-icon btn-icon--danger"
+          type="button"
+          [attr.aria-label]="'Delete provider ' + provider.name"
+          (click)="openDeleteDialog(provider)"
+        >
+          <i class="pi pi-trash" aria-hidden="true"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="col-type" role="cell" [attr.data-label]="provider.provider_type === 'cloud' ? 'Vendor' : 'Type'">
+      <span class="type-badge">{{ typeLabel(provider) }}</span>
+    </div>
+
+    <div class="col-privacy" role="cell" data-label="Privacy">
+      <span class="privacy-text">{{ formatPrivacy(provider.privacy_level) }}</span>
+    </div>
+
+    <div class="col-url url-cell" role="cell" data-label="Base URL">
+      <span class="url-text">{{ provider.base_url }}</span>
+    </div>
+
+    <div class="col-actions actions-cell" role="cell">
+      <button
+        class="btn-icon"
+        type="button"
+        [attr.aria-label]="'Edit provider ' + provider.name"
+        (click)="openEditDialog(provider)"
+      >
+        <i class="pi pi-pencil" aria-hidden="true"></i>
+      </button>
+      <button
+        class="btn-icon btn-icon--danger"
+        type="button"
+        [attr.aria-label]="'Delete provider ' + provider.name"
+        (click)="openDeleteDialog(provider)"
+      >
+        <i class="pi pi-trash" aria-hidden="true"></i>
+      </button>
+    </div>
+  </div>
+
+  @if (isExpanded(provider.id)) {
+    <div class="expanded-row" role="row">
+      <div class="expanded-content">
+        @if (provider.provider_type === 'logosnode') {
+          <app-node-models [providerId]="provider.id" />
+        } @else {
+          <section class="connections-section" aria-label="Connected models">
+          <div class="expanded-header">
+            <span class="expanded-title">Connected Models</span>
+            <button class="btn-primary" type="button" (click)="openConnectDialog(provider)">
+              <i class="pi pi-plus" aria-hidden="true"></i>
+              Connect
+            </button>
+          </div>
+
+          @if ((providerModels()[provider.id] || []).length === 0) {
+            <p class="empty-connections">No models connected yet.</p>
+          } @else {
+            <div class="connection-list">
+              @for (conn of providerModels()[provider.id]; track conn.model_id) {
+                <div class="connection-row">
+                  <span class="conn-model-name">{{ conn.model_name }}</span>
+                  <span class="conn-endpoint">{{ conn.endpoint || '-' }}</span>
+                  <span
+                    class="batch-badge"
+                    [class.batch-badge--supported]="conn.batch_support === 'supported'"
+                    [class.batch-badge--unsupported]="conn.batch_support === 'unsupported'"
+                    [attr.title]="batchTooltip(conn)"
+                    [attr.aria-label]="'Batch: ' + batchLabel(conn) + '. ' + batchTooltip(conn)"
+                    data-testid="batch-support"
+                  >{{ batchLabel(conn) }}</span>
+                  <span class="conn-key">{{
+                    conn.api_key_hint || '-'
+                  }}</span>
+                  <div class="conn-actions">
+                    <button
+                      class="btn-icon"
+                      type="button"
+                      (click)="openEditConnDialog(provider, conn)"
+                      [attr.aria-label]="'Edit connection for ' + conn.model_name"
+                    >
+                      <i class="pi pi-pencil" aria-hidden="true"></i>
+                    </button>
+                    <button
+                      class="btn-icon btn-icon--danger"
+                      type="button"
+                      [attr.aria-label]="'Disconnect ' + conn.model_name"
+                      (click)="openDisconnectDialog(provider, conn)"
+                    >
+                      <i class="pi pi-trash" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </div>
+              }
+            </div>
+          }
+          </section>
+        }
+      </div>
+    </div>
+  }
+</ng-template>
 
 <!-- ── Delete Dialog ──────────────────────────────────────────────────────── -->
 <app-modal-confirm
@@ -216,7 +243,40 @@
   title="Add Provider"
 >
   <div class="form-body">
-    <p class="form-section-label">Basic</p>
+    <p class="form-section-label">Classification</p>
+    <div class="form-field">
+      <label class="field-label" for="add-provider-type">Provider Type</label>
+      <app-select
+        [id]="'add-provider-type'"
+        [options]="providerTypeOptions"
+        [value]="addProviderType()"
+        [disabled]="addLoading()"
+        (valueChange)="onAddProviderTypeChange($any($event))"
+      />
+    </div>
+    @if (addProviderType() === 'cloud') {
+    <div class="form-field">
+      <label class="field-label" for="add-cloud-type">Cloud Provider</label>
+      <app-select
+        [id]="'add-cloud-type'"
+        [options]="addCloudProviderTypeOptions()"
+        [value]="addCloudProviderType()"
+        [disabled]="addLoading()"
+        (valueChange)="onAddCloudProviderTypeChange($any($event))"
+      />
+    </div>
+    }
+    <div class="form-field">
+      <label class="field-label" for="add-privacy">Privacy Level</label>
+      <app-select
+        [id]="'add-privacy'"
+        [options]="addPrivacyLevelOptions()"
+        [value]="addPrivacyLevel()"
+        [disabled]="addLoading()"
+        (valueChange)="addPrivacyLevel.set($any($event))"
+      />
+    </div>
+    <p class="form-section-label form-section-label--mt">Basic</p>
     <div class="form-field">
       <label class="field-label" for="add-name">Name <span class="required">*</span></label>
       <input
@@ -236,26 +296,33 @@
         id="add-url"
         class="field-input"
         type="text"
-        placeholder="https://api.anthropic.com"
+        [placeholder]="addBaseUrlPlaceholder()"
         [value]="addBaseUrl()"
         (input)="addBaseUrl.set($any($event.target).value)"
         [disabled]="addLoading()"
         autocomplete="off"
       />
+      @if (addBaseUrlIsSuggestion()) {
+        <p class="field-hint">Default endpoint of {{ addCloudProviderType() }}. Change it for a proxy or a regional endpoint.</p>
+      }
     </div>
-    <div class="form-field">
-      <label class="field-label" for="add-key">API Key</label>
-      <input
-        id="add-key"
-        class="field-input"
-        type="text"
-        placeholder="sk-..."
-        [value]="addApiKey()"
-        (input)="addApiKey.set($any($event.target).value)"
-        [disabled]="addLoading()"
-        autocomplete="off"
-      />
-    </div>
+    @if (addProviderType() === 'cloud') {
+      <div class="form-field">
+        <label class="field-label" for="add-key">API Key</label>
+        <input
+          id="add-key"
+          class="field-input"
+          type="password"
+          placeholder="sk-..."
+          [value]="addApiKey()"
+          (input)="addApiKey.set($any($event.target).value)"
+          [disabled]="addLoading()"
+          autocomplete="new-password"
+        />
+      </div>
+    } @else {
+      <p class="field-hint">After adding this worker, open Edit Provider and rotate its key to provision it.</p>
+    }
     <p class="form-section-label form-section-label--mt">Auth</p>
     <div class="form-row">
       <div class="form-field">
@@ -264,7 +331,7 @@
           id="add-auth-name"
           class="field-input"
           type="text"
-          placeholder="Authorization"
+          [placeholder]="addAuthPlaceholders().name"
           [value]="addAuthName()"
           (input)="addAuthName.set($any($event.target).value)"
           [disabled]="addLoading()"
@@ -277,46 +344,13 @@
           id="add-auth-format"
           class="field-input"
           type="text"
-          placeholder="Bearer {}"
+          [placeholder]="addAuthPlaceholders().format"
           [value]="addAuthFormat()"
           (input)="addAuthFormat.set($any($event.target).value)"
           [disabled]="addLoading()"
           autocomplete="off"
         />
       </div>
-    </div>
-    <p class="form-section-label form-section-label--mt">Classification</p>
-    <div class="form-field">
-      <label class="field-label" for="add-provider-type">Provider Type</label>
-      <app-select
-        [id]="'add-provider-type'"
-        [options]="providerTypeOptions"
-        [value]="addProviderType()"
-        [disabled]="addLoading()"
-        (valueChange)="onAddProviderTypeChange($any($event))"
-      />
-    </div>
-    @if (addProviderType() === 'cloud') {
-    <div class="form-field">
-      <label class="field-label" for="add-cloud-type">Cloud Provider</label>
-      <app-select
-        [id]="'add-cloud-type'"
-        [options]="addCloudProviderTypeOptions()"
-        [value]="addCloudProviderType()"
-        [disabled]="addLoading()"
-        (valueChange)="addCloudProviderType.set($any($event))"
-      />
-    </div>
-    }
-    <div class="form-field">
-      <label class="field-label" for="add-privacy">Privacy Level</label>
-      <app-select
-        [id]="'add-privacy'"
-        [options]="addPrivacyLevelOptions()"
-        [value]="addPrivacyLevel()"
-        [disabled]="addLoading()"
-        (valueChange)="addPrivacyLevel.set($any($event))"
-      />
     </div>
     @if (addError()) {
       <app-error-message [message]="addError()!" />
@@ -345,122 +379,102 @@
   </div>
 </app-modal-form>
 
-<!-- ── Created Provider API Key Dialog ─────────────────────────────────────── -->
-<app-modal-form
-  [visible]="createdKeyOpen()"
-  (visibleChange)="$event || closeCreatedKeyDialog()"
-  title="Provider created"
->
-  <div class="form-body">
-    <p class="created-key-intro">
-      <strong>{{ createdKeyName() }}</strong> is a Logos worker node. Authenticate it
-      with the shared key below — it is shown only now, so copy it to your worker
-      configuration.
-    </p>
-    <div class="form-field">
-      <label class="field-label" for="created-key">Shared API Key</label>
-      <div class="created-key-row">
-        <input
-          id="created-key"
-          class="field-input"
-          type="text"
-          readonly
-          [value]="createdKey()"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        <button class="btn-secondary" type="button" (click)="copyCreatedKey()">
-          @if (createdKeyCopied()) {
-            <i class="pi pi-check" aria-hidden="true"></i> Copied!
-          } @else {
-            <i class="pi pi-copy" aria-hidden="true"></i> Copy
-          }
+<ng-template #keyActions let-provider="provider" let-connection="connection">
+  <div class="form-field">
+    <span class="field-label">API Key</span>
+    <div class="key-value-row">
+      <code>{{ (connection ? connection.api_key_hint : provider.api_key_hint) || 'No key configured' }}</code>
+      <button class="btn-secondary" type="button" [disabled]="editLoading() || editConnLoading()" (click)="requestKeyChange(provider, connection)">
+        <i class="pi pi-refresh" aria-hidden="true"></i> Rotate
+      </button>
+      @if (provider.provider_type === 'cloud' && (connection ? connection.api_key_hint : provider.api_key_hint)) {
+        <button class="btn-secondary" type="button" [disabled]="editLoading() || editConnLoading()" (click)="requestKeyChange(provider, connection, true)">
+          <i class="pi pi-trash" aria-hidden="true"></i> Remove
         </button>
-      </div>
+      }
     </div>
   </div>
-  <div class="modal-footer" modal-footer>
-    <button class="btn-primary" type="button" (click)="closeCreatedKeyDialog()">
-      Done
-    </button>
-  </div>
-</app-modal-form>
+</ng-template>
+
+@if (keyChange(); as target) {
+  <app-modal-confirm
+    [visible]="true"
+    (visibleChange)="$event || closeKeyChange()"
+    [title]="(target.remove ? 'Remove API key for ' : 'Rotate API key for ') + (target.connection?.model_name || target.provider.name) + '?'"
+    [message]="target.provider.provider_type === 'logosnode'
+      ? 'This immediately invalidates the current key. Copy the new key and redeploy the worker.'
+      : target.remove
+        ? (target.connection ? 'This connection will use the provider key, if configured.' : 'Requests without a connection key will use this provider without an API key.')
+        : 'Enter the new key issued by your cloud provider.'"
+    [icon]="target.remove ? 'pi-trash' : 'pi-refresh'"
+    [confirmLabel]="target.remove ? 'Remove' : 'Rotate'"
+    [loading]="rotationLoading()"
+    [confirmDisabled]="target.provider.provider_type === 'cloud' && !target.remove && !replacementKey().trim()"
+    (confirmed)="confirmKeyChange()"
+  >
+    @if (target.provider.provider_type === 'cloud' && !target.remove) {
+      <div modal-details class="form-field replacement-field">
+        <label class="field-label" for="replacement-key">New API key</label>
+        <input id="replacement-key" class="field-input" type="password" autocomplete="new-password"
+          [disabled]="rotationLoading()" [value]="replacementKey()"
+          (input)="replacementKey.set($any($event.target).value)" />
+      </div>
+    }
+    @if (rotationError()) {
+      <app-error-message modal-error [message]="rotationError()" />
+    }
+  </app-modal-confirm>
+}
+
+@if (rotatedKey(); as key) {
+  <app-modal-form
+    [visible]="true"
+    (visibleChange)="$event || discardWorkerKey()"
+    title="Worker key rotated"
+  >
+    <div class="form-body">
+      <p class="rotated-key-intro">
+        Copy the new key for <strong>{{ key.name }}</strong> before closing this dialog.
+        Set the worker’s LOGOS_API_KEY deployment secret and redeploy the worker.
+      </p>
+      <div class="form-field">
+        <label class="field-label" for="rotated-key">Shared API Key</label>
+        <div class="rotated-key-row">
+          <input
+            id="rotated-key"
+            class="field-input"
+            type="text"
+            readonly
+            [value]="key.value"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="btn-secondary" type="button" (click)="copyRotatedKey()">
+            @if (rotatedKeyCopied()) {
+              <i class="pi pi-check" aria-hidden="true"></i> Copied!
+            } @else {
+              <i class="pi pi-copy" aria-hidden="true"></i> Copy
+            }
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer" modal-footer>
+      <button class="btn-primary" type="button" (click)="discardWorkerKey()">
+        Done
+      </button>
+    </div>
+  </app-modal-form>
+}
 
 <!-- ── Edit Provider Dialog ───────────────────────────────────────────────── -->
 <app-modal-form
-  [visible]="editTarget() !== null"
+  [visible]="editTarget() !== null && !keyChange()"
   (visibleChange)="$event || closeEditDialog()"
   title="Edit Provider"
 >
   <div class="form-body">
-    <p class="form-section-label">Basic</p>
-    <div class="form-field">
-      <label class="field-label" for="edit-name">Name</label>
-      <input
-        id="edit-name"
-        class="field-input"
-        type="text"
-        [value]="editName()"
-        (input)="editName.set($any($event.target).value)"
-        [disabled]="editLoading()"
-        autocomplete="off"
-      />
-    </div>
-    <div class="form-field">
-      <label class="field-label" for="edit-url">Base URL</label>
-      <input
-        id="edit-url"
-        class="field-input"
-        type="text"
-        [value]="editBaseUrl()"
-        (input)="editBaseUrl.set($any($event.target).value)"
-        [disabled]="editLoading()"
-        autocomplete="off"
-      />
-    </div>
-    <div class="form-field">
-      <label class="field-label" for="edit-key">API Key</label>
-      <input
-        id="edit-key"
-        class="field-input"
-        type="text"
-        placeholder="sk-..."
-        [value]="editApiKey()"
-        (input)="editApiKey.set($any($event.target).value)"
-        [disabled]="editLoading()"
-        autocomplete="off"
-      />
-    </div>
-    <p class="form-section-label form-section-label--mt">Auth</p>
-    <div class="form-row">
-      <div class="form-field">
-        <label class="field-label" for="edit-auth-name">Header Name</label>
-        <input
-          id="edit-auth-name"
-          class="field-input"
-          type="text"
-          placeholder="Authorization"
-          [value]="editAuthName()"
-          (input)="editAuthName.set($any($event.target).value)"
-          [disabled]="editLoading()"
-          autocomplete="off"
-        />
-      </div>
-      <div class="form-field">
-        <label class="field-label" for="edit-auth-format">Format</label>
-        <input
-          id="edit-auth-format"
-          class="field-input"
-          type="text"
-          placeholder="Bearer {}"
-          [value]="editAuthFormat()"
-          (input)="editAuthFormat.set($any($event.target).value)"
-          [disabled]="editLoading()"
-          autocomplete="off"
-        />
-      </div>
-    </div>
-    <p class="form-section-label form-section-label--mt">Classification</p>
+    <p class="form-section-label">Classification</p>
     <div class="form-field">
       <label class="field-label" for="edit-provider-type">Provider Type</label>
       <app-select
@@ -479,7 +493,7 @@
         [options]="editCloudProviderTypeOptions()"
         [value]="editCloudProviderType()"
         [disabled]="editLoading()"
-        (valueChange)="editCloudProviderType.set($any($event))"
+        (valueChange)="onEditCloudProviderTypeChange($any($event))"
       />
     </div>
     }
@@ -492,6 +506,71 @@
         [disabled]="editLoading()"
         (valueChange)="editPrivacyLevel.set($any($event))"
       />
+    </div>
+    <p class="form-section-label form-section-label--mt">Basic</p>
+    <div class="form-field">
+      <label class="field-label" for="edit-name">Name</label>
+      <input
+        id="edit-name"
+        class="field-input"
+        type="text"
+        [value]="editName()"
+        (input)="editName.set($any($event.target).value)"
+        [disabled]="editLoading()"
+        autocomplete="off"
+      />
+    </div>
+    <div class="form-field">
+      <label class="field-label" for="edit-url">Base URL</label>
+      <input
+        id="edit-url"
+        class="field-input"
+        type="text"
+        [placeholder]="editBaseUrlPlaceholder()"
+        [value]="editBaseUrl()"
+        (input)="editBaseUrl.set($any($event.target).value)"
+        [disabled]="editLoading()"
+        autocomplete="off"
+      />
+      @if (editBaseUrlIsSuggestion()) {
+        <p class="field-hint">Default endpoint of {{ editCloudProviderType() }}. Change it for a proxy or a regional endpoint.</p>
+      }
+    </div>
+    @if (editTarget(); as provider) {
+      @if (editProviderType() === provider.provider_type) {
+        <ng-container *ngTemplateOutlet="keyActions; context: { provider }" />
+      } @else {
+        <p class="field-hint">Save the provider type before you rotate its key.</p>
+      }
+    }
+    <p class="form-section-label form-section-label--mt">Auth</p>
+    <div class="form-row">
+      <div class="form-field">
+        <label class="field-label" for="edit-auth-name">Header Name</label>
+        <input
+          id="edit-auth-name"
+          class="field-input"
+          type="text"
+          [placeholder]="editAuthPlaceholders().name"
+          [value]="editAuthName()"
+          (input)="editAuthName.set($any($event.target).value)"
+          [disabled]="editLoading()"
+          autocomplete="off"
+        />
+      </div>
+      <div class="form-field">
+        <label class="field-label" for="edit-auth-format">Format</label>
+        <input
+          id="edit-auth-format"
+          class="field-input"
+          type="text"
+          [placeholder]="editAuthPlaceholders().format"
+          [value]="editAuthFormat()"
+          (input)="editAuthFormat.set($any($event.target).value)"
+          [disabled]="editLoading()"
+          autocomplete="off"
+        />
+      </div>
     </div>
     @if (editError()) {
       <app-error-message [message]="editError()!" />
@@ -555,12 +634,12 @@
       <input
         id="conn-key"
         class="field-input"
-        type="text"
+        type="password"
         placeholder="sk-..."
         [value]="connectApiKey()"
         (input)="connectApiKey.set($any($event.target).value)"
         [disabled]="connectLoading()"
-        autocomplete="off"
+        autocomplete="new-password"
       />
     </div>
     @if (connectError()) {
@@ -592,7 +671,7 @@
 
 <!-- ── Edit Connection Dialog ─────────────────────────────────────────────── -->
 <app-modal-form
-  [visible]="editConnModel() !== null"
+  [visible]="editConnModel() !== null && !keyChange()"
   (visibleChange)="$event || closeEditConnDialog()"
   title="Edit Connection"
 >
@@ -611,19 +690,11 @@
         autocomplete="off"
       />
     </div>
-    <div class="form-field">
-      <label class="field-label" for="editconn-key">API Key</label>
-      <input
-        id="editconn-key"
-        class="field-input"
-        type="text"
-        placeholder="sk-..."
-        [value]="editConnApiKey()"
-        (input)="editConnApiKey.set($any($event.target).value)"
-        [disabled]="editConnLoading()"
-        autocomplete="off"
-      />
-    </div>
+    @if (editConnProvider(); as provider) {
+      @if (editConnModel(); as connection) {
+        <ng-container *ngTemplateOutlet="keyActions; context: { provider, connection }" />
+      }
+    }
     @if (editConnError()) {
       <app-error-message [message]="editConnError()!" />
     }

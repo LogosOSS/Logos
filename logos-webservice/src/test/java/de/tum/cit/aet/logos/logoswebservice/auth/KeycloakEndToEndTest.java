@@ -39,7 +39,7 @@ import de.tum.cit.aet.logos.logoswebservice.identity.repository.UserRepository;
 class KeycloakEndToEndTest {
 
     @Container
-    static KeycloakContainer keycloak = new KeycloakContainer("quay.io/keycloak/keycloak:26.4")
+    static KeycloakContainer keycloak = new KeycloakContainer("quay.io/keycloak/keycloak:26.8.2-3@sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3")
             .withRealmImportFile("/keycloak/tum-realm.json");
 
     @DynamicPropertySource

@@ -2,19 +2,23 @@ import { Component, Input, OnChanges, OnDestroy, inject, signal } from '@angular
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { FormsModule } from '@angular/forms';
+import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
 import { requestDatasetLabel } from './benchmark-configuration';
+
+interface SavedWorkload { id: string; name: string; request_count: number; provenance: string; created_at?: string; }
 
 export interface NightlyStatus {
   workload_policy?: { kind: 'selected' | 'recent_user'; username?: string; request_count?: number; ready?: boolean; error?: string | null };
   workload_id?: string | null;
-  workloads?: { id: string; name: string; request_count: number; provenance: string; created_at?: string }[];
+  workloads?: SavedWorkload[];
   optimizer?: { production_adoption?: { benchmark_id: number; baseline_id: number; baseline_throughput: number; throughput: number }; reference_id?: number; best_benchmark_id?: number; iterations?: number; nightly_session?: { date: string; rounds: number; successful_configurations: number } };
   max_maintenance_nodes?: number;
   window?: { start: string; end: string; benchmark_start_cutoff: string; timezone: string };
   enabled: boolean;
   status: string;
   recovery_required: boolean;
+  worker_ready?: boolean;
   last_run_date?: string;
   plan?: { serving_overrides: Record<string, number | null> }[];
   report: { configuration?: number; attempt?: number; status: string; reason?: string; benchmark_id?: number; job_id?: number }[];
@@ -23,7 +27,7 @@ export interface NightlyStatus {
 @Component({
   selector: 'app-nightly-benchmarks',
   standalone: true,
-  imports: [ModalConfirmComponent, FormsModule],
+  imports: [ModalConfirmComponent, ModalFormComponent, FormsModule],
   templateUrl: './nightly-benchmarks.html',
   styleUrl: './nightly-benchmarks.scss',
 })
@@ -31,18 +35,19 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   readonly datasetLabel = requestDatasetLabel;
   @Input({ required: true }) pairId!: number;
   @Input({ required: true }) providerName!: string;
-  @Input({ required: true }) modelName!: string;
   private readonly http = inject(HttpClient);
   readonly state = signal<NightlyStatus | null>(null);
+  readonly managing = signal(false);
   readonly confirming = signal(false);
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
   selectedWorkload: string | null = null;
   sourceEdited = false;
+  lookbackDays: 1 | 3 | 7 | null = null;
+  readonly sourceNotice = signal<string | null>(null);
   workloadName = '';
   logIds = '';
   provenance = 'synthetic';
-  private expected = false;
   private version = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private destroyed = false;
@@ -52,9 +57,14 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     this.state.set(null);
     this.selectedWorkload = null;
     this.sourceEdited = false;
+    this.lookbackDays = null;
+    this.sourceNotice.set(null);
+    this.saving.set(false);
+    this.error.set(null);
     this.workloadName = '';
     this.logIds = '';
     this.confirming.set(false);
+    this.managing.set(false);
     clearTimeout(this.timer);
     void this.refresh();
   }
@@ -73,7 +83,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
       if (version !== this.version || this.destroyed) return;
       this.state.set(state);
       if (!this.sourceEdited) this.selectedWorkload = state.workload_id ?? null;
-      if (!this.confirming()) this.error.set(null);
+      if (this.error() === 'Could not load nightly benchmark status.') this.error.set(null);
     } catch {
       if (version !== this.version || this.destroyed) return;
       this.error.set('Could not load nightly benchmark status.');
@@ -85,22 +95,27 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     }
   }
 
-  get plannedParameters(): { name: string; values: string }[] {
-    const plan = this.state()?.plan ?? [];
-    return ['max_num_seqs', 'max_num_batched_tokens'].flatMap(name => {
-      const values = [...new Set(plan.flatMap(run => {
-        const value = run.serving_overrides[name];
-        return typeof value === 'number' ? [value] : [];
-      }))].sort((a, b) => a - b);
-      return values.length ? [{ name, values: values.join(', ') }] : [];
-    });
+  selectWorkload(id: string | null): void {
+    this.selectedWorkload = id;
+    this.sourceEdited = id !== (this.state()?.workload_id ?? null);
+    this.sourceNotice.set(null);
+    this.error.set(null);
+  }
+
+  get enableBlocker(): string | null {
+    const state = this.state();
+    if (!state || state.enabled) return null;
+    if (state.recovery_required) return 'Wait for worker recovery to finish.';
+    if (!state.worker_ready) return 'Connect a worker that supports nightly benchmarks.';
+    if (!state.window) return 'Waiting for the maintenance window settings.';
+    if (this.sourceEdited) return 'Apply your dataset to enable nightly runs.';
+    return null;
   }
 
   get window() {
     return this.state()?.window;
   }
 
-  get workload() { return this.state()?.workloads?.find(item => item.id === this.state()?.workload_id); }
   get automaticSource(): boolean { return this.state()?.workload_policy?.kind === 'recent_user'; }
   get sourceLocked(): boolean { return this.automaticSource || this.saving() || !!this.state()?.recovery_required || ['running', 'preparing', 'continuing'].includes(this.state()?.status ?? ''); }
 
@@ -111,18 +126,29 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     this.saving.set(true);
     clearTimeout(this.timer);
     try {
+      let workloadId = this.selectedWorkload;
+      let created: SavedWorkload | undefined;
+      if (workloadId === 'recent') {
+        created = await firstValueFrom(this.http.post<SavedWorkload>(
+          '/api/logosdb/model_benchmarks/workloads/create', { model_provider_id: this.pairId, lookback_days: this.lookbackDays }));
+        if (version !== this.version || this.destroyed) return;
+        workloadId = created.id;
+        this.selectedWorkload = created.id;
+        this.state.set({ ...current, workloads: [created, ...(current.workloads ?? []).filter(row => row.id !== workloadId)] });
+      }
       const state = await firstValueFrom(this.http.post<NightlyStatus>('/api/logosdb/model_benchmarks/nightly/configure', {
         model_provider_id: this.pairId, enabled: current.enabled, expected_enabled: current.enabled,
-        workload_id: this.selectedWorkload, expected_workload_id: current.workload_id ?? null,
+        workload_id: workloadId, expected_workload_id: current.workload_id ?? null,
       }));
       if (version !== this.version || this.destroyed) return;
-      this.state.set({ ...current, ...state });
+      this.state.set({ ...this.state()!, ...state });
+      this.sourceNotice.set(created ? `Dataset applied · ${created.request_count} requests` : 'Dataset applied.');
       this.sourceEdited = false;
       this.error.set(null);
       await this.refresh();
     } catch (error) {
       if (version === this.version && !this.destroyed) this.showError(error);
-    } finally { this.saving.set(false); }
+    } finally { if (version === this.version) this.saving.set(false); }
   }
 
   async createWorkload(): Promise<void> {
@@ -145,12 +171,12 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
       await this.refresh();
     } catch (error) {
       if (version === this.version && !this.destroyed) this.showError(error);
-    } finally { this.saving.set(false); }
+    } finally { if (version === this.version) this.saving.set(false); }
   }
 
   private showError(error: unknown): void {
-    this.error.set(error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
-      ? error.error.detail : 'Could not update the request workload. Refresh and try again.');
+    this.error.set(error instanceof HttpErrorResponse && (typeof error.error?.detail === 'string' || typeof error.error?.error === 'string')
+      ? (error.error.detail ?? error.error.error) : 'Could not update the request workload. Refresh and try again.');
     clearTimeout(this.timer);
     this.timer = setTimeout(() => void this.refresh(), 15000);
   }
@@ -168,44 +194,45 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     return labels[value] ?? value;
   }
 
-  review(): void {
-    if (!this.state() || this.saving() || (!this.state()!.enabled && !this.window)) return;
-    this.expected = this.state()!.enabled;
+  async toggleNightly(): Promise<void> {
+    const state = this.state();
+    if (!this.managing() || !state || this.saving() || this.enableBlocker) return;
     this.error.set(null);
-    this.confirming.set(true);
+    if (state.enabled) {
+      this.managing.set(false);
+      this.confirming.set(true);
+    } else {
+      await this.setEnabled(true);
+    }
   }
 
-  get enabling(): boolean { return !this.expected; }
-
-  get confirmationMessage(): string {
-    const window = this.window;
-    if (this.enabling && !window) return 'The maintenance window is unavailable. Refresh before enabling nightly runs.';
-    return this.enabling
-      ? `Test ${this.modelName} on ${this.providerName} during ${window!.start}–${window!.end} ${window!.timezone}. The whole worker is reserved during testing and cannot serve production requests. Each round measures current settings, the saved candidate and batching variants. Model/worker pairs rotate through further rounds until the window ends. For a saved request dataset, a faster configuration is applied automatically only after complete answers, comparable output lengths, bounded p95 latency and worker readiness are verified. Otherwise, original settings return.`
-      : `Disable nightly benchmarks for this model on ${this.providerName}? Future runs will stop. An active nightly run will be cancelled and its original settings restored before the worker returns to production.`;
+  async confirmDisable(): Promise<void> {
+    if (this.confirming() && !this.saving()) await this.setEnabled(false);
   }
 
-  async confirm(): Promise<void> {
-    if (!this.confirming() || this.saving()) return;
+  private async setEnabled(enabled: boolean): Promise<void> {
     const version = ++this.version;
     this.saving.set(true);
     clearTimeout(this.timer);
     try {
       const state = await firstValueFrom(this.http.post<NightlyStatus>(
         '/api/logosdb/model_benchmarks/nightly/configure', {
-          model_provider_id: this.pairId, enabled: !this.expected, expected_enabled: this.expected,
+          model_provider_id: this.pairId, enabled, expected_enabled: !enabled,
         }));
       if (version !== this.version || this.destroyed) return;
       this.state.set({ ...this.state(), ...state, plan: state.plan ?? this.state()?.plan, window: state.window ?? this.state()?.window, max_maintenance_nodes: state.max_maintenance_nodes ?? this.state()?.max_maintenance_nodes });
       this.confirming.set(false);
+      this.managing.set(false);
       this.error.set(null);
     } catch (error) {
       if (version !== this.version || this.destroyed) return;
       this.error.set(error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
         ? error.error.detail : 'Could not change nightly benchmarks. Refresh and try again.');
     } finally {
-      this.saving.set(false);
-      if (version === this.version && !this.destroyed) this.timer = setTimeout(() => void this.refresh(), 15000);
+      if (version === this.version && !this.destroyed) {
+        this.saving.set(false);
+        this.timer = setTimeout(() => void this.refresh(), 15000);
+      }
     }
   }
 }

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="090-agent-session-memory" author="LogosOSS">
+        <sql>
+            ALTER TABLE agent_controls ADD COLUMN session_memory_mb INTEGER;
+            ALTER TABLE agent_sessions ADD COLUMN memory_mb INTEGER;
+        </sql>
+        <rollback>
+            <sql>
+                ALTER TABLE agent_sessions DROP COLUMN memory_mb;
+                ALTER TABLE agent_controls DROP COLUMN session_memory_mb;
+            </sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

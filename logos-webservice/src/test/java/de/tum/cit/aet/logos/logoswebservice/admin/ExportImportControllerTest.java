@@ -54,6 +54,8 @@ class ExportImportControllerTest {
 
     @Test
     void export_logosAdminReturnsAllTables() throws Exception {
+        jdbc.update("UPDATE providers SET api_key = 'synthetic-worker' WHERE id = 6001");
+        jdbc.update("UPDATE model_provider SET api_key = 'synthetic-override' WHERE id = 7001");
         mvc.perform(post("/logosdb/export")
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
@@ -63,6 +65,8 @@ class ExportImportControllerTest {
            .andExpect(jsonPath("$.result.users").isArray())
            .andExpect(jsonPath("$.result.models").isArray())
            .andExpect(jsonPath("$.result.providers").isArray())
+           .andExpect(jsonPath("$.result.providers[*].api_key").isEmpty())
+           .andExpect(jsonPath("$.result.model_provider[*].api_key").isEmpty())
            .andExpect(jsonPath("$.result.team_repositories").isArray());
     }
 
@@ -213,6 +217,14 @@ class ExportImportControllerTest {
         java.util.Map<String, Object> tableData =
             (java.util.Map<String, Object>) exportEnvelope.get("result");
 
+        @SuppressWarnings("unchecked")
+        var repositories = (java.util.List<java.util.Map<String, Object>>) tableData.get("team_repositories");
+        for (var repo : repositories) {
+            int id = ((Number) repo.get("id")).intValue();
+            if (id == repoA) repo.remove("automatic_workflow_analysis");
+            if (id == repoB) repo.put("automatic_workflow_analysis", false);
+        }
+
         // Imported analysis for repo A reuses the local session id that still
         // analyzes repo B — must be cleared on import.
         @SuppressWarnings("unchecked")
@@ -252,6 +264,13 @@ class ExportImportControllerTest {
                 .content(importBody))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.result").value("Import successful"));
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
+            "SELECT automatic_workflow_analysis FROM team_repositories WHERE id = ?", Boolean.class, repoA)).isTrue();
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
+            "SELECT automatic_workflow_analysis FROM team_repositories WHERE id = ?", Boolean.class, repoB)).isFalse();
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
+            "SELECT automatically_queued FROM ai_workflow_analyses WHERE id = 9002", Boolean.class)).isFalse();
 
         Integer restoredB = jdbc.queryForObject(
             "SELECT team_repository_id FROM agent_sessions WHERE id = ?", Integer.class, sessionId);

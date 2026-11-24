@@ -1,12 +1,19 @@
-fastapi==0.162.0
+# The worker's direct dependencies: the input of ../scripts/lock-requirements.sh,
+# never installed directly. Every install uses a lock built from it
+# (requirements.lock for the vLLM image, requirements-standalone.lock for the
+# macOS worker and CI, ../e2e/requirements.lock for the e2e suite). The image
+# lock resolves this file together with vLLM into one venv, so every pin must
+# satisfy vLLM's own requirements (e.g. its fastapi cap). Re-run the script
+# and commit the locks after any change here.
+fastapi==0.136.3
 uvicorn==0.54.0
 httpx==0.28.1
 pyyaml==6.0.3
-pydantic==2.14.1
-websockets==14.2
+pydantic==2.14.4
+websockets==17.4
 prometheus-client==0.26.0
 # Startup model prefetch (main._download_one_model), the sharded-checkpoint
 # helper and the HF model-info lookup (hf_model_info) import this directly; on
 # the Linux image it previously arrived transitively via vLLM, but the
 # isolated macOS worker venv only installs this file.
-huggingface-hub==1.33.0
+huggingface-hub==2.4.0

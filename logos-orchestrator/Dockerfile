@@ -1,18 +1,30 @@
 # ──────────────────────────────────────────────────────────
 # Stage 1: Builder – compile wheels and install dependencies
 # ──────────────────────────────────────────────────────────
-FROM python:3.13-slim AS builder
+FROM python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS builder
 
 WORKDIR /build/logos/logos-orchestrator
 
+# apt installs exact versions from a fixed Debian archive snapshot, so every
+# build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
+# digest together.
+ARG APT_SNAPSHOT=20261117T000000Z
+RUN sed -i -E \
+      -e "s#https?://deb\.debian\.org/debian-security/?#https://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}/#g" \
+      -e "s#https?://deb\.debian\.org/debian/?#https://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}/#g" \
+      /etc/apt/sources.list.d/debian.sources \
+  && ! grep -q deb.debian.org /etc/apt/sources.list.d/debian.sources
+
 # Install system packages needed for compiling C-extension wheels
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends gcc build-essential rustc cargo \
+RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update \
+  && apt-get install -y --no-install-recommends \
+       gcc=4:14.2.0-1 build-essential=12.12 \
+       rustc=1.85.1+dfsg1-1+deb13u1 cargo=1.85.1+dfsg1-1+deb13u1 \
   && rm -rf /var/lib/apt/lists/*
 
 # Install uv – a drop-in pip replacement written in Rust (10-100× faster)
 # Pinned to a specific version to mitigate supply-chain risk (update explicitly)
-COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
 
 # Create an isolated virtual-env that we will copy into the runtime image
 RUN uv venv /opt/venv
@@ -48,10 +60,24 @@ RUN mkdir -p src/logos && echo '__version__ = "0.1.0"' > src/logos/__init__.py \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-install-project --compile-bytecode
 
+# The E2E stack recreates the orchestrator between scenarios. Fetch the real
+# classifier once at build time so its readiness check never waits on the Hub.
+FROM builder AS e2e-classifier
+RUN python - <<'PY'
+import huggingface_hub
+
+huggingface_hub.snapshot_download(
+    "sentence-transformers/all-MiniLM-L6-v2",
+    revision="1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    local_dir="/e2e-classifier",
+    allow_patterns=["*.json", "vocab.txt", "model.safetensors", "README.md"],
+)
+PY
+
 # ──────────────────────────────────────────────────────────
 # Stage 2: Runtime – slim image without compilers or build tools
 # ──────────────────────────────────────────────────────────
-FROM python:3.13-slim
+FROM python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS runtime
 
 WORKDIR /app
 
@@ -60,9 +86,19 @@ ENV PYTHONPATH=/app/src
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# apt installs exact versions from a fixed Debian archive snapshot, so every
+# build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
+# digest together.
+ARG APT_SNAPSHOT=20261117T000000Z
+RUN sed -i -E \
+      -e "s#https?://deb\.debian\.org/debian-security/?#https://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}/#g" \
+      -e "s#https?://deb\.debian\.org/debian/?#https://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}/#g" \
+      /etc/apt/sources.list.d/debian.sources \
+  && ! grep -q deb.debian.org /etc/apt/sources.list.d/debian.sources
+
 # Only install runtime system dependencies (curl for health-checks)
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl \
+RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update \
+  && apt-get install -y --no-install-recommends curl=8.14.1-2+deb13u7 \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-built virtual-env from the builder stage
@@ -92,3 +128,10 @@ USER 10001:10001
 EXPOSE 8080 50051
 
 CMD ["uvicorn", "logos.main:app", "--host", "0.0.0.0", "--port", "8080", "--ws-ping-interval", "60", "--ws-ping-timeout", "60", "--ws-max-size", "268435456"]
+
+FROM runtime AS e2e
+# SentenceTransformer resolves its configured model name relative to /app.
+COPY --from=e2e-classifier /e2e-classifier /app/all-MiniLM-L6-v2
+ENV HF_HUB_OFFLINE=1
+
+FROM runtime AS production

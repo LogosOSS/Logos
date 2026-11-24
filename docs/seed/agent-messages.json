@@ -1,0 +1,23 @@
+{
+  "messages": [
+    {
+      "id": "3a408c30000600a603ff3c0e689a40bb",
+      "actor": "main",
+      "text": "I reproduced the login timeout on a slow runner. The test starts looking for the workspace before the sign-in redirect finishes.\n\nI’ll wait for the workspace heading, then repeat the test with the same delay.",
+      "truncated": false
+    },
+    {
+      "id": "9c1b90fe01a598978c4d1c17c2ce1012",
+      "actor": "child-92b35e72",
+      "text": "The trace shows two steps in order.\n\n1. The identity provider accepts the sign-in.\n2. The workspace heading appears after the test has already timed out.",
+      "truncated": false
+    },
+    {
+      "id": "964bf110ef272959cde0ebb66acc3879",
+      "actor": "main",
+      "text": "I replaced the fixed delay with a check for the heading the user sees.\n\n```ts\nawait expect(page.getByRole('heading', { name: 'My Workspace' })).toBeVisible();\n```\n\nThe repeated run is in progress.",
+      "truncated": false
+    }
+  ],
+  "omitted": 0
+}

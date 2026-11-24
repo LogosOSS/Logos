@@ -20,7 +20,9 @@ from logos.benchmarks.nightly import LEASE_CHECK, NIGHTLY_CONTEXT
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.errors import UpstreamStreamError
 from logos.monitoring import prometheus_metrics as prom
-from logos.residency_policy import configured_residency_policy
+from logos.residency_policy import DEFAULT_RESIDENCY_POLICY, configured_residency_policy
+from logos.runtime_latency import HistogramDelta
+from logos.simple_routing import WarmLaneBookings, WarmLaneRank, unqueued_context_limit
 from logos.terminal_logging import (
     BOLD,
     CYAN,
@@ -51,7 +53,14 @@ class LogosNodeCommandError(RuntimeError):
 
 
 class LogosNodeCommandRejectedError(LogosNodeCommandError):
-    """The worker explicitly refused a command without accepting it."""
+    """The worker explicitly refused a command without accepting it.
+
+    ``errors`` holds the problems one by one when the worker listed them.
+    """
+
+    def __init__(self, message: str, errors: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.errors: list[str] = list(errors or [])
 
 
 class MaintenanceBusyError(LogosNodeCommandError):
@@ -367,6 +376,7 @@ class ProviderSession:
     # as a "new measurement" marker: stream chunks and command results bump
     # it too, so under streaming load it changes constantly while the lane
     # signals stay put.
+    warm_bookings: WarmLaneBookings = field(default_factory=WarmLaneBookings)
     runtime_revision: int = 0
     # Bumped whenever any field peek_runtime_snapshot() embeds changes — a
     # runtime push (latest_runtime, capabilities, configured_models,
@@ -416,6 +426,7 @@ class LogosNodeRuntimeRegistry:
         latency_store: LatencyStore | None = None,
     ) -> None:
         self._residency_policy = configured_residency_policy()
+        self._warm_round: dict[str, int] = {}
         self._tickets: dict[str, AuthTicket] = {}
         self._sessions: dict[int, ProviderSession] = {}
         # peek_runtime_snapshot memo: provider_id -> (snapshot_version, dict).
@@ -460,14 +471,13 @@ class LogosNodeRuntimeRegistry:
         # reference to fire-and-forget tasks until they complete.
         self._cancellation_tasks: set[asyncio.Task] = set()
         self._latency_store = latency_store
-        # Per-(provider_id, model_name) last-ingested values for idempotency.
-        # Workers retain cold/wake fields across heartbeats; histogram counts are
-        # cumulative — only record when a value has actually changed or new samples
-        # arrived, to avoid inflating EWMA counts with duplicate observations.
-        self._prev_lane_cold_s: dict[tuple[int, str], float] = {}
-        self._prev_lane_wake_s: dict[tuple[int, str], float] = {}
-        self._prev_lane_tpot_count: dict[tuple[int, str], float] = {}
-        self._prev_lane_e2e_count: dict[tuple[int, str], float] = {}
+        # Per engine process, rather than per model: replicas have independent
+        # counters and otherwise make unchanged snapshots look like new samples.
+        self._prev_lane_cold_s: dict[tuple, float] = {}
+        self._prev_lane_wake_s: dict[tuple, float] = {}
+        self._lane_tpot_histograms: dict[tuple, HistogramDelta] = {}
+        self._lane_e2e_histograms: dict[tuple, HistogramDelta] = {}
+        self._prev_lane_prefill: dict[tuple, tuple] = {}
 
     def _absorb_latency_observations(self, provider_id: int, runtime: dict[str, Any]) -> None:
         """Extract timing observations from a worker status update and feed them
@@ -478,6 +488,7 @@ class LogosNodeRuntimeRegistry:
         #   ← sdi.providers.logosnode_provider ← logosnode_registry
         from logos.pipeline.ettft_estimator import ReadinessTier  # noqa: PLC0415
 
+        seen_lanes: set[tuple] = set()
         for lane in runtime.get("lanes") or []:
             if not isinstance(lane, dict):
                 continue
@@ -485,7 +496,10 @@ class LogosNodeRuntimeRegistry:
             if not model_name:
                 continue
 
-            _lane_key = (provider_id, model_name)
+            process = lane.get("process")
+            pid = process.get("pid") if isinstance(process, dict) else None
+            _lane_key = (provider_id, model_name, str(lane.get("lane_id") or model_name), str(pid or ""))
+            seen_lanes.add(_lane_key)
 
             # Cold load timing — workers retain the last value across heartbeats,
             # so only record when it changes to avoid inflating the EWMA count.
@@ -502,26 +516,19 @@ class LogosNodeRuntimeRegistry:
                     self._latency_store.record_overhead(model_name, provider_id, ReadinessTier.SLEEPING, float(wake_s))
                     self._prev_lane_wake_s[_lane_key] = wake_s
 
-            # TPOT and e2e latency from vLLM Prometheus histograms.
-            # Both histograms are cumulative; use the +Inf bucket (total count) as a
-            # generation marker — only ingest when new samples have actually arrived.
+            # Learn the recent interval, not the median of all requests since
+            # engine startup. Duplicate snapshots contain no new observations.
             bm = lane.get("backend_metrics")
             if isinstance(bm, dict):
-                tpot_hist = bm.get("tpot_histogram") or {}
-                tpot_total = float(tpot_hist.get("+Inf", 0.0))
-                if tpot_total > 0 and tpot_total != self._prev_lane_tpot_count.get(_lane_key, 0.0):
-                    tpot_p50 = _histogram_quantile(tpot_hist, 0.50)
-                    if tpot_p50 > 0.0:
-                        self._latency_store.record_ttft(model_name, provider_id, tpot_p50)
-                    self._prev_lane_tpot_count[_lane_key] = tpot_total
-
-                e2e_hist = bm.get("e2e_latency_histogram") or {}
-                e2e_total = float(e2e_hist.get("+Inf", 0.0))
-                if e2e_total > 0 and e2e_total != self._prev_lane_e2e_count.get(_lane_key, 0.0):
-                    e2e_p50 = _histogram_quantile(e2e_hist, 0.50)
-                    if e2e_p50 > 0.0:
-                        self._latency_store.record_e2e_latency(model_name, provider_id, e2e_p50)
-                    self._prev_lane_e2e_count[_lane_key] = e2e_total
+                for histories, metric, record in (
+                    (self._lane_tpot_histograms, "tpot_histogram", self._latency_store.record_ttft),
+                    (self._lane_e2e_histograms, "e2e_latency_histogram", self._latency_store.record_e2e_latency),
+                ):
+                    delta = histories.setdefault(_lane_key, HistogramDelta()).observe(bm.get(metric))
+                    if delta is not None:
+                        median = _histogram_quantile(delta, 0.50)
+                        if median > 0.0:
+                            record(model_name, provider_id, median)
                 # Prefill timing: the worker reports the wall time and prompt-token
                 # count for the most recently completed prefill so the scheduler can
                 # learn the per-token rate and estimate cost for future requests.
@@ -534,7 +541,27 @@ class LogosNodeRuntimeRegistry:
                     and math.isfinite(prefill_tokens)
                     and prefill_tokens > 0
                 ):
-                    self._latency_store.record_prefill(model_name, provider_id, float(prefill_s), float(prefill_tokens))
+                    ttft_histogram = bm.get("ttft_histogram")
+                    completion_count = ttft_histogram.get("+Inf") if isinstance(ttft_histogram, dict) else None
+                    observation = (prefill_s, prefill_tokens, completion_count)
+                    if self._prev_lane_prefill.get(_lane_key) != observation:
+                        self._latency_store.record_prefill(
+                            model_name, provider_id, float(prefill_s), float(prefill_tokens)
+                        )
+                        self._prev_lane_prefill[_lane_key] = observation
+
+        # Full status snapshots replace a provider's lane inventory. Retire
+        # disappeared processes without disturbing other providers' history.
+        for history in (
+            self._prev_lane_cold_s,
+            self._prev_lane_wake_s,
+            self._lane_tpot_histograms,
+            self._lane_e2e_histograms,
+            self._prev_lane_prefill,
+        ):
+            for key in list(history):
+                if key[0] == provider_id and key not in seen_lanes:
+                    del history[key]
 
     def set_on_runtime_updated(self, callback: Callable[[int], None] | None) -> None:
         """Register the post-status hook. See ``_on_runtime_updated``."""
@@ -859,6 +886,8 @@ class LogosNodeRuntimeRegistry:
         session.latest_runtime = runtime if isinstance(runtime, dict) else {}
         session.runtime_status_count += 1
         session.runtime_revision += 1
+        if session.warm_bookings.rounds or session.warm_bookings.fresh:
+            session.warm_bookings.observe(session.latest_runtime.get("lanes") or [])
         was_first = not session.first_status_received
         session.first_status_received = True
         session.last_heartbeat = _utc_now()
@@ -1489,7 +1518,11 @@ class LogosNodeRuntimeRegistry:
         # timeout — so it is raised like any other command failure.
         if isinstance(payload, dict) and payload.get("ok") is False:
             _undo_optimistic_calibration_mark()
-            raise LogosNodeCommandRejectedError(str(payload.get("error", f"worker refused '{action}'")))
+            listed = payload.get("errors")
+            raise LogosNodeCommandRejectedError(
+                str(payload.get("error", f"worker refused '{action}'")),
+                [str(item) for item in listed] if isinstance(listed, list) else None,
+            )
         return payload
 
     async def send_stream_command(
@@ -1833,41 +1866,97 @@ class LogosNodeRuntimeRegistry:
         session = await self._get_active_session(provider_id, stale_after_seconds)
         if not benchmark_reservations.allows(provider_id, model_name, request_id):
             return None
+        if getattr(self, "_residency_policy", DEFAULT_RESIDENCY_POLICY) == "simple":
+            return self._warm_choice(session, model_name, request_id=request_id)[1]
+        candidates = self._candidate_lanes(session, model_name)
+        return min(candidates, key=_lane_sort_key, default=None)
+
+    def _candidate_lanes(self, session: ProviderSession, model_name: str):
         if session.capabilities_models and model_name not in session.capabilities_models:
-            return None
-        lanes = (session.latest_runtime or {}).get("lanes") or []
-        if not isinstance(lanes, list):
-            return None
-        candidates: list[dict[str, Any]] = []
-        for lane in lanes:
-            if not isinstance(lane, dict):
+            return
+        for lane in session.latest_runtime.get("lanes") or []:
+            if not isinstance(lane, dict) or lane.get("model") != model_name:
                 continue
-            if lane.get("model") != model_name:
+            if lane.get("runtime_state") not in {"loaded", "running", "cold", "starting"}:
                 continue
-            if lane.get("runtime_state") not in {
-                "loaded",
-                "running",
-                "cold",
-                "starting",
-            }:
-                continue
-            # Exclude lanes pre-marked as cold by the capacity planner
-            lid = str(lane.get("lane_id") or "")
-            if lid and self.is_lane_cold_marked(provider_id, lid):
-                continue
-            # The worker is taking the lane down (draining for a sleep, falling
-            # asleep, stopping): a request sent now would queue behind that
-            # command and reach a sleeping or removed lane.
             if lane.get("transition") in _LANE_LEAVING_TRANSITIONS:
                 continue
-            candidates.append(lane)
-        if not candidates:
+            if self.is_lane_cold_marked(session.provider_id, str(lane.get("lane_id") or "")):
+                continue
+            yield lane
+
+    def _warm_choice(
+        self, session: ProviderSession, model_name: str, *, request_id: str | None = None, context_tokens: int = 0
+    ) -> tuple[WarmLaneRank | None, dict | None]:
+        bookings = session.warm_bookings
+        # A returning lane can take the next turn without accumulating unbounded
+        # credit while it was saturated, offline or ineligible.
+        floor = max(0, self._warm_round.get(model_name, 0) - 1)
+        existing = bookings.requests.get(request_id)
+        if existing:
+            context_tokens = existing.context_tokens
+        profiles = session.latest_runtime.get("model_profiles") or {}
+        best_key = None
+        chosen = None
+        for lane in self._warm_lanes(session, model_name):
+            lid = str(lane["lane_id"])
+            rank = bookings.rank(lane, floor, context_tokens, profiles)
+            # Preserve an admission across resolution and retries unless a
+            # better fitting lane or a shorter engine queue now exists.
+            keep_booking = existing is not None and lid == existing.lane_id
+            key = (rank.context_shortfall, rank.waiting, not keep_booking, rank.occupied_fraction, rank.turn, lid)
+            if best_key is None or key < best_key:
+                chosen, best_key = (rank, lane), key
+        if chosen is None:
+            return None, None
+        rank, lane = chosen
+        lid = str(lane["lane_id"])
+        if request_id is not None and (not existing or lid != existing.lane_id):
+            turn = rank.turn + 1
+            self._warm_round[model_name] = max(self._warm_round.get(model_name, 0), turn)
+            bookings.book(request_id, lid, session.runtime_revision, turn, context_tokens)
+        return chosen
+
+    def simple_ready_lanes(self, provider_id: int, model_name: str) -> list[dict] | None:
+        """Supply the same eligible lanes to admission and physical placement."""
+        if getattr(self, "_residency_policy", DEFAULT_RESIDENCY_POLICY) != "simple":
             return None
-        if getattr(self, "_residency_policy", "demand") == "simple":
-            candidates = [lane for lane in candidates if lane.get("runtime_state") in {"loaded", "running"}]
-            return min(candidates, key=lambda lane: str(lane.get("lane_id", "")), default=None)
-        candidates.sort(key=_lane_sort_key)
-        return candidates[0]
+        session = self._sessions.get(provider_id)
+        if session is None:
+            return []
+        return list(self._warm_lanes(session, model_name))
+
+    def _warm_lanes(self, session: ProviderSession, model_name: str):
+        return (
+            lane
+            for lane in self._candidate_lanes(session, model_name)
+            if lane.get("lane_id")
+            and lane["runtime_state"] in {"loaded", "running"}
+            and lane.get("sleep_state") != "sleeping"
+        )
+
+    def unqueued_context_limit(self, provider_id: int, model_name: str) -> float:
+        session = self._sessions.get(provider_id)
+        if session is None:
+            return 0
+        return unqueued_context_limit(
+            self._warm_lanes(session, model_name), session.latest_runtime.get("model_profiles") or {}
+        )
+
+    def warm_lane_rank(self, provider_id: int, model_name: str, context_tokens: int = 0) -> WarmLaneRank | None:
+        """Rank the best ready replica without booking it."""
+        session = self._sessions.get(provider_id)
+        return self._warm_choice(session, model_name, context_tokens=context_tokens)[0] if session else None
+
+    def book_warm_lane(self, provider_id: int, model_name: str, request_id: str, context_tokens: int = 0) -> None:
+        session = self._sessions.get(provider_id)
+        if session and self._residency_policy == "simple":
+            self._warm_choice(session, model_name, request_id=request_id, context_tokens=context_tokens)
+
+    def release_warm_lane(self, provider_id: int, request_id: str) -> None:
+        session = self._sessions.get(provider_id)
+        if session:
+            session.warm_bookings.release(request_id, session.runtime_revision)
 
     # ------------------------------------------------------------------
     # Cold lane marking (for capacity planner pre-removal exclusion)

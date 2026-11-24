@@ -223,20 +223,24 @@ This stop alone does not confirm that the worker is ready. Actual worker errors 
 
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
-The **Performance** tab shows **Currently deployed** and **Timeline**.
+The **Performance → Overview** section shows **Currently deployed** and **Timeline**.
+Select **Benchmarks** for manual runs and nightly settings, **Request measurements** for request times, or **Analysis** for comparisons.
 Expand **Benchmark runs** to read saved runs grouped by dataset.
 Without a nightly series, **Highest recorded throughput** shows the best result within each provider's latest captured workload.
 Older workloads are not ranked against it. Unknown controls do not establish a comparison.
 Manual benchmarks do not apply these parameters automatically. Nightly runs with saved request datasets can apply verified improvements.
 
-To benchmark saved requests manually, open **Run benchmark → Dataset and settings**.
+Select **Run benchmark** to start a manual run. The page shows the provider, sample size and current test setup.
+Select **Customize** to change advanced controls. Select **Done** to keep the settings and return to the start button.
+
+To benchmark saved requests manually, open **Run benchmark → Customize**.
 Select the saved dataset under **Input dataset**. Logos fixes the sample size to its request count.
 The run preserves each source request's output limit. Set the profile and concurrency for the comparison.
 **Repeat or compare settings** uses the same saved requests for every configuration.
 
 ![Manual benchmark with a saved request dataset](../static/img/roles/logos-admin-benchmark-saved-requests.png)
 
-Open **Repeat or compare settings** and select **Run a batch** to compare parameter values.
+Select **Customize**, open **Repeat or compare settings**, and select **Run a batch** to compare parameter values.
 Open **View run plan & fixed settings** to check each combination and the saved request count.
 The frozen dataset keeps its source inference and output settings for all runs.
 A response that reaches the caller's explicit token limit completes the requested output budget.
@@ -244,18 +248,14 @@ A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
-The **Timeline** shows absolute throughput in output tokens per second (tok/s).
-The solid line includes complete slower runs and repeated baselines.
-The dashed line shows the freshly measured production baseline of each round.
-The visible legend identifies square baselines, circular trials and outlined points that fail automatic selection checks.
-Each point is one complete benchmark run. A filled point does not confirm production deployment.
-Each point keeps its actual measurement date and configuration.
-The percentage change compares each measurement with its captured baseline from the same round.
-The chart separates datasets, providers and captured test settings. Worker releases can share a measurement history.
-Select a point to open its benchmark result.
-Expand **Measured configurations** to read the dates and parameters.
-Outlined points fail automatic selection checks and remain visible to show measurement variation.
-The chart does not establish automatic parameter adoption or statistical significance.
+The **Timeline** shows the latest six complete runs for the selected workload.
+Read the runs from left to right in completion order.
+Each dot shows output tokens per second (tok/s) on the vertical scale. An open circle marks a baseline.
+Each trial shows its change from the baseline of its round, if available.
+Select a run to see its settings and any reason for exclusion.
+Select **Show all** to see older runs.
+Read **When settings change** for the nightly adoption rule.
+Expand **What does Logos check?** for the limits on output length and request latency.
 Expand **Benchmark runs** to see the latest 5 results per dataset.
 A baseline shows its own throughput and 0% change. Missing comparisons show why the baseline is unavailable. Select **Show all** to read older results.
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
@@ -270,20 +270,19 @@ The view identifies measurements with matching settings and the same measurement
 Measurements from another environment appear with a historical label. They do not verify current performance.
 The measurement includes its benchmark number, baseline throughput, result throughput and percentage change.
 Temporary benchmark settings and recovery states do not establish the production configuration.
-An offline worker shows an unavailable state. A historical winner alone does not verify a deployment.
+The status distinguishes an offline worker, a sleeping model and a model waiting to start. A sleeping model can still show its configured settings. Active replicas with different settings are identified separately.
 Manual measurements can show their change from the first comparable dataset baseline. The summary labels this baseline as **Starting baseline**.
 The details also show the last confirmed adoption and reasons that exclude faster runs.
 A fresh comparison must verify a historical candidate before automatic adoption.
 
 ![Current worker configuration and its measured result](../static/img/roles/logos-admin-deployed-configuration.png)
 
-The configuration and measurement sections start closed.
-The desktop overview places **Currently deployed** and **Timeline** side by side.
-On small screens, these cards appear below each other.
-Select **Run benchmark** to open **Benchmark setup & nightly automation**.
-Expand **More analysis & details** for the comparison charts, saved configurations and glossary.
+The overview shows **Currently deployed** above **Timeline** on desktop and mobile.
+Configuration details and benchmark history start closed.
+Select **Benchmarks** or **Run benchmark** for manual runs and nightly settings.
+Select **Analysis** for the comparison charts, saved configurations and glossary.
 The large analysis sections open one at a time.
-Expand **Charts and comparison**. Select the **Reference run**, **Parameter** and **Metric**.
+**Charts and comparison** opens first. Select the **Reference run**, **Parameter** and **Metric**.
 The chart shows one parameter at a time, with a dashed reference line and measured changes.
 Only matching workloads and other captured settings enter the comparison.
 A single parameter value shows an explanation instead of an empty comparison chart.
@@ -313,26 +312,21 @@ See the [nightly benchmark guide](../admin/nightly-benchmarks.md) for rotation, 
 1. Open a model from **Models**.
 2. Select **Performance**.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Expand **Schedule and test plan**.
-5. Select **Enable nightly runs…**.
-6. Read the dialog and select **Enable nightly runs**.
+4. Select **Manage** and check the time window and request workload.
+5. Select **Enable nightly runs**. If the button is unavailable, the dialog shows what needs attention.
 
-Select **Cancel** to keep the current schedule state.
-The confirmation dialog shows the time window and the effect on production traffic.
-
-![Confirmation dialog to enable nightly benchmarks](../static/img/roles/logos-admin-nightly-enable.png)
+![Nightly schedule ready to enable](../static/img/roles/logos-admin-nightly-enable.png)
 
 The card then shows **Enabled · in nightly rotation**.
 The schedule stays active after a page reload.
-Each night, Logos selects up to 2 eligible pairs, with new or older attempts first.
-The card shows possible parameter values for this pair, not a guaranteed place for tonight.
+Each night, Logos selects up to `LOGOS_NIGHTLY_MAX_PAIRS` eligible pairs, with new or older attempts first.
+Select **Manage** to inspect the parameter values for this pair. The plan does not guarantee a place for tonight.
 
 The example uses illustrative measurements and an active nightly schedule.
-Use **Manual benchmark** to configure a run during the day.
+Use **Run a benchmark** to configure a run during the day.
 These controls do not change the nightly workload.
 Use **Request workload** to select a saved dataset for the nightly schedule.
-Select **Create a fixed dataset from FULL request logs** to copy 1–100 successful requests from the database.
-Enter the request IDs, name and provenance. Select **Create dataset**, then **Apply dataset**.
+Choose **Recent FULL request logs**, keep **Latest 100 requests** and click **Create and apply dataset**. On production, this saves up to 100 replayable requests for the model from the production log. You can also select a time window. Each dataset has a 5 MB limit. For a hand-picked dataset, open **Select individual request IDs**.
 ![Create a fixed request dataset](../static/img/roles/logos-admin-nightly-workload.png)
 
 The dataset keeps its inputs when source logs are deleted.
@@ -355,20 +349,25 @@ If the measurement is deleted, then the page identifies the unavailable benchmar
 ![Selected benchmark with its result and changed parameters](../static/img/roles/logos-admin-benchmark-linked-result.png)
 
 
-![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
+![Run a benchmark and compact nightly status](../static/img/roles/logos-admin-nightly-benchmarks.png)
+
+Select **Manage** beside a worker to inspect its workload and schedule.
+The **Schedule and test plan** section explains the rounds and the maintenance window.
+
+![Nightly management with the schedule and test plan](../static/img/roles/logos-admin-nightly-plan.png)
 
 Some deployments select a user instead of a fixed dataset.
-The card then shows **Latest 50 successful FULL requests**, the username and the cutoff.
+The management dialog shows **Latest 50 successful FULL requests**, the username and the cutoff.
 All configurations use the same selection for that night.
 The dataset controls are unavailable because the deployment setting controls this source.
-If fewer than 50 requests qualify, then the card shows the selection error.
+If fewer than 50 requests qualify, then the management dialog shows the selection error.
 See [deployment-specific request sources](../admin/nightly-benchmarks.md#deployment-specific-request-sources) for the exact rules.
 
 ![Nightly selection of recent user requests](../static/img/roles/logos-admin-nightly-automatic-source.png)
 
 To remove the pair from the nightly rotation:
 
-1. Select **Disable nightly runs…**.
+1. Select **Manage → Disable nightly runs…**.
 2. Read the dialog and select **Disable nightly runs**.
 3. Check that the card shows **Disabled · not scheduled**.
 
@@ -379,12 +378,51 @@ Deactivation stops an active benchmark and restores the worker configuration bef
 
 ## Providers
 
-This page shows each provider that the deployment knows. These are cloud
-providers (Azure, OpenAI and others) and connected worker nodes. For each
-provider, the page shows the status and the connected models. It also shows the
-worker control actions (calibrate, sleep, wake, lane management).
+This page shows each provider that the deployment knows, in two lists.
+**Cloud Providers** lists the cloud providers (Azure, OpenAI, Anthropic and
+others) with their vendor. **Local Providers** lists the connected worker
+nodes. For each provider, the page shows the privacy level and the base URL.
+Expand a provider for its connected models, or for the worker control actions
+(calibrate, sleep, wake, lane management).
 
 ![Providers page](/img/roles/logos-admin-providers.png)
+
+### Add a Provider
+
+Select **Add Provider**. The dialog asks for the classification first:
+
+1. Select the **Provider Type**: `cloud` for a vendor API, `logosnode` for a
+   worker node.
+2. For a cloud provider, select the **Cloud Provider** (the vendor). The vendor
+   decides how Logos authenticates and which protocol headers it sends, and
+   the model sync discovers the models only with the correct vendor. Select
+   **other (OpenAI-compatible)** for an endpoint of no listed vendor.
+3. Select the **Privacy Level**: where the provider processes the data, for
+   example **Cloud in the EU, US provider**.
+4. Check the **Base URL**. For OpenAI, Anthropic, DeepSeek and Groq, the dialog
+   proposes the public endpoint of the vendor. Replace it for a proxy or a
+   regional endpoint. A URL that you typed stays when you change the vendor.
+5. Enter the **Name**. For a cloud provider, enter its **API Key**. Leave **Header Name** and **Format**
+   empty to use the vendor default that the placeholders show.
+
+![Add Provider dialog with Anthropic selected](/img/roles/logos-admin-add-provider.png)
+
+Open **Edit Provider** to see the masked key. The key can show up to its last 3 characters.
+You can save changes to the provider without changing its key.
+
+![Edit Provider with the masked key and Rotate button](/img/roles/logos-admin-edit-cloud-key.png)
+
+To replace the key, select **Rotate**. Enter the key from the cloud provider in **New API key**.
+Select **Rotate** to apply it, or **Cancel** to keep the current key.
+Use the same steps in **Edit Connection** for a key specific to one model.
+
+![Cloud rotation dialog with an empty New API key field](/img/roles/logos-admin-rotate-cloud-key.png)
+
+Select **Remove** to remove a stored key. Confirm with **Remove**.
+After you remove a connection key, the connection uses the provider key, if available.
+After you remove a provider key, connections without their own key send requests without an API key.
+
+![Confirmation before removal of a cloud provider key](/img/roles/logos-admin-remove-cloud-key.png)
 
 Expand a provider to see its connected models. Next to the endpoint, each model
 shows whether its batches can use the provider's Batch API: **Batch**, **No
@@ -393,6 +431,271 @@ names the batch deployment or the reason for a refusal. See
 [Batch status of a model](../batch-processing.md#batch-status-of-a-model).
 
 ![Providers page — connected models with their batch status](/img/roles/logos-admin-provider-connections.png)
+
+### Provision a worker key
+
+1. Open **Edit Provider** for the worker node.
+2. Select **Rotate** next to the masked key.
+3. Confirm with **Rotate**. The previous key immediately stops working for new authentication requests.
+
+![Worker key rotation confirmation](/img/roles/logos-admin-rotate-worker-key.png)
+
+4. Select **Copy** in **Worker key rotated** before you close the dialog.
+5. Set the deployment secret `LOGOS_API_KEY` for this worker to the new value.
+6. Recreate the worker with the updated environment. Recreate its node manager if the worker uses one.
+7. Check that the worker connects to Logos.
+
+![One-time worker key dialog with a synthetic example](/img/roles/logos-admin-worker-key-created.png)
+
+If you lose the new value, rotate the key again.
+The management export omits provider and model connection keys. Provision them again after you restore an export.
+
+### Node models
+
+Expand a worker node to see the **Node models** list. The list shows each model
+that the worker can serve. Cloud providers keep the **Connected Models** list.
+
+![Node models of a worker node](/img/roles/logos-admin-node-models.png)
+
+Each row shows two statuses:
+
+- **Calibration**: **Calibrated**, **Not calibrated**, **Outdated** or **Unsupported**.
+  Logos measures the memory use of a model during a calibration.
+- **Placement**: **Set** if the model has a placement (GPUs, KV cache and
+  context length). The row then shows these values. If the model has a calibration but no
+  placement, the status is **Automatic**, and the worker chooses the placement itself.
+  If the model has no calibration, the status is **Not loadable**. The worker loads a model only
+  with a calibration.
+
+The chip at the top shows **Worker online** or **Worker offline**. Select a row
+to open the page of the model.
+
+### Model page
+
+The model page shows the configuration of one model on one worker node.
+
+![Model page of a configured model](/img/roles/logos-admin-node-model-view.png)
+
+The page has these parts:
+
+- **Configuration**: the tile of the tensor parallel size (TP), the KV cache memory for each GPU
+  and the maximum context length. Each slider shows the measured range. A grey band marks what the
+  calibration measured. Hatching marks what it did not measure.
+- **Figures**: the GPU memory in use, the context capacity, the load times and, if a benchmark ran
+  this placement, its throughput and latencies.
+- **Advanced settings**: the settings of the model that are not part of the placement.
+  Select **N set** to open or close the list.
+- **Best benchmark**: the best result of the nightly benchmarks for this model.
+  Select **Open all benchmarks** to see them all. The part is not shown if the model has no benchmark.
+
+If a comparable benchmark found better values, then the page shows the purple banner
+**Recommendation not in use**. It names the placement, the number of parallel requests and the batch size,
+and how much faster the run was. The page compares the run with the stored configuration of the model.
+The nightly benchmark changes only the running lane and never the stored configuration.
+Select **Edit configuration** and then **Use recommendation** to store the values.
+The button sets the placement and **Max. parallel requests**.
+It also writes `--max-num-seqs` and `--max-num-batched-tokens` as the last lines of **Extra arguments**.
+A flag in **Extra arguments** decides over the field and over the global arguments of the node.
+A change of these batch values makes the calibration outdated.
+If the worker is offline, the page shows a banner and you cannot edit the model.
+
+### Edit the configuration of a model
+
+You can edit a model that has a calibration. The worker must be online.
+
+1. Open the model page.
+2. Select **Edit configuration**. For a model without a placement, select **Set placement**.
+3. Select the number of GPUs. Only sizes that the calibration measured are available.
+4. Set the KV cache memory. Use whole GB inside the measured range.
+5. Set the maximum context length. The limit follows the chosen KV cache size.
+6. Change the fields in **Advanced settings** if necessary.
+7. Select **Save**.
+
+![Editor of a model configuration](/img/roles/logos-admin-node-model-edit.png)
+
+The **Current configuration** card shows the stored values. It changes only after you save.
+A choice of the size, the KV cache memory or the context length does not make the calibration
+outdated if the calibration measured it. A choice that the calibration did not measure makes it outdated.
+The figures below the sliders follow your changes.
+
+If a comparable benchmark found a better placement, then the purple banner
+**Recommended by benchmark** shows it. Select **Use recommendation** to set the size, the
+KV cache memory and the context length. You can change them afterwards.
+
+**Advanced settings** has groups: **Placement**, **Engine** and, under **All engine settings**,
+**Memory and precision**, **Performance and stability**, **Serving** and **Arguments**.
+In **Memory and precision**, the field **Base residency** replaces the memory that the calibration
+measured for the weights. Use it only if the calibration cannot measure the model.
+A new value marks the calibration as outdated.
+Type in **Filter settings** to find a setting by name or key. A dot marks a setting that has a value.
+Select **Use default** to remove the value of a setting. In **GPU devices**, select the GPUs that
+the model may use. If all GPUs are selected, then the model may use all of them.
+
+The save bar lists your changes. The worker checks all settings before Logos stores them.
+This takes a few seconds. The worker uses the new settings when it starts the lane the next time.
+
+If a value is not valid, then Logos shows the message at the field. Nothing is saved.
+If another admin saved the node at the same time, then Logos shows **Configuration changed**.
+Select **Reload** to load the new state. Your changes are lost.
+
+A change of the KV cache size or the context length inside the measured range does
+not start a new calibration. A change of a setting that the calibration depends on
+does start one. Examples are the tensor parallel size, the quantization and the
+extra arguments.
+
+Use **Custom settings** for a vLLM setting that has no field. The worker rejects a name that it
+does not know. If the name looks like a known one, then Logos suggests the correct name.
+
+### Calibrate a model
+
+A model without a calibration has no placement. The page shows **Calibration settings**
+instead of the editor.
+
+![Model page of a model that is not calibrated](/img/roles/logos-admin-node-model-calibrate.png)
+
+1. Open the model page.
+2. Select **Calibrate model**.
+3. Wait. The calibration takes several minutes.
+
+The button shows **Calibrating…** while the worker measures the model.
+Before it starts, the page asks you to confirm. The page shows the result when the calibration is done.
+You can calibrate a model if its calibration is outdated in the same way.
+Select **Stop calibration** and confirm to end the calibration of the node. The model in progress stays uncalibrated.
+
+### Connect a model
+
+1. Expand the worker node.
+2. Select **Connect model**.
+3. Select a model of the Logos catalog.
+4. Select **Connect**.
+
+![Dialog to connect a model to a node](/img/roles/logos-admin-node-connect-model.png)
+
+The model is in the list as **Not calibrated** with the placement **Not loadable**.
+The dialog shows only models that the node does not list yet.
+
+### Node settings
+
+The settings of the whole node are on one page. Select **Node settings** in the
+expanded worker node.
+
+![Node settings page](/img/roles/logos-admin-node-settings.png)
+
+| Card | Setting | Meaning |
+|---|---|---|
+| **GPU pool** | `gpu_devices` | The GPUs on which the node can place lanes: all, none or selected GPUs. |
+| **Engine defaults** | `global_extra_args` | The vLLM arguments that Logos adds to every lane. One argument in each line. |
+| **Node care** | `auto_reboot_on_stuck_gpu` | Restarts the host if all lanes failed and a GPU holds unused memory. The worker uses a new value after the next start. |
+| **Node care** | `gpu_poll_interval` | The time in seconds between two readings of the GPU memory (1 to 300). |
+
+An empty field keeps the value of the `config.yml` file of the worker.
+If you change the global arguments, then every model of the node is measured again
+in the next calibration window. The worker uses a new GPU poll interval after the next start.
+You can save the settings if the worker is offline. The worker applies them when it connects.
+
+## Deployments
+
+The page **Deployments** deploys Logos from Logos. It is for Logos admins only. A
+deployer on each host takes the orders. A Logos deploys only itself: use the page
+of Prod to deploy Prod, the page of Dev to deploy Dev, and the page of Test to
+deploy Test. See [Deployments from Logos](../deployment.md#deployments-from-logos)
+to install the deployers.
+
+If no deployer is set up, the page says so, and the button **Deploy** is off.
+
+![Deployments page](/img/roles/logos-admin-deployments.png)
+
+The page has these parts:
+
+* **Current deployment.** The deployment that runs now, with one row for each
+  node. Each row shows how far the node is: Pull, Drain, Swap and Verify. A node
+  is *Waiting for the core*, *Waiting for the deployer*, *Running*,
+  *Succeeded*, *Unchanged*, *Rolled back*, *Failed* or *Not started*. Click
+  **View details** to open the page of the deployment. Click **Abandon deployment**
+  to stop the next steps of a deployment that this Logos started. Without a
+  running deployment, the part shows the last one.
+* **New deployment.** Enter an image tag and click **Deploy**.
+  Prod shows a red banner. When you click **Deploy** on Prod, a dialog asks you
+  to confirm: click **Deploy** in the dialog to start, or **Cancel** to not
+  start. Dev and Test start at once. The button is off, with a reason, when the
+  core deployer is not online or a deployment runs.
+* **History.** The latest 50 deployments, each with its number, the person who
+  started it and the time. Filter them by status. Click a row to open its page.
+* **Page of a deployment.** Click a row of the history, or **View details**, to open
+  it. The page shows the status, the events of each node and, for a
+  failed part, the end of the container log. A running deployment updates itself.
+* **Deployers.** The deployers of this Logos, when each was seen, and its
+  version. A worker appears in this list when its node manager asks Logos for
+  orders for the first time. It uses its worker key. Click **Add a core
+  deployer** to make the core deployer. Logos shows its key once.
+
+### Start a deployment
+
+1. Enter an image tag in **Image tag**. The list suggests `latest` and the tags
+   of the last deployments.
+2. Click **Deploy**.
+3. On a protected Logos, a dialog asks you to confirm. Click **Deploy** in the
+   dialog to start. Click **Cancel** to not start.
+4. Logos opens the page of the new deployment.
+
+![Confirmation dialog of a protected Logos](/img/roles/logos-admin-deployments-confirm.png)
+
+A protected Logos shows the red banner **Deployments on this Logos affect live
+users**. It accepts only `latest` and release versions such as `1.0.2`. Prod is
+protected. Dev and Test are not, so they start at once.
+
+### Follow a deployment
+
+The core goes first. If the core succeeded, all GPU workers start. The
+orchestrator keeps only one worker out of service at a time. The bar of a node
+has four parts: **Pull**, **Drain**, **Swap** and **Verify**. The bar shows how
+far the node is.
+
+![Current deployment with a worker that drains](/img/roles/logos-admin-deployments-running.png)
+
+In the figure, the core succeeded. The worker waits in the part **Drain** until
+the requests of its node end. The page updates itself.
+
+Click **Abandon deployment** to stop the steps that did not start. A host that
+got its order finishes it. A node that runs the new image keeps it.
+
+### Read the result
+
+Click a row of the history, or **View details**, to open the page of a
+deployment. The page shows the events of each node in the order that they
+happened.
+
+![Page of a deployment that succeeded](/img/roles/logos-admin-deployment-detail.png)
+
+If the node takes its compose file from the image of the tag, the first event
+names the file. The next events show the pull, the drain, the swap and the
+check. For a worker, the events also show how long the node waited for its
+requests.
+
+If the new container of a worker does not come up, the node manager starts the
+previous version again. The node then has the status **Rolled back**. The page
+shows the reason and the end of the container log of the new container.
+
+![Page of a deployment that was rolled back](/img/roles/logos-admin-deployment-rolled-back.png)
+
+If the core fails, the workers do not start. They have the status **Not
+started**. A core deployment has no automatic rollback. Fix the cause and deploy
+again.
+
+### Add a core deployer
+
+1. In the part **Deployers**, click **Add a core deployer**.
+2. Enter the name of the core host.
+3. Click **Make the deployer**.
+4. Copy the key. Logos shows the key one time.
+5. Click **I have copied the key**.
+
+![Dialog with the key of a new core deployer](/img/roles/logos-admin-deployer-key.png)
+
+Store the key as the secret `LOGOS_DEPLOYER_KEY` of the core host. If you lose a
+key, click **New key** for the deployer. The old key stops at once. A worker
+needs no key. It appears in the list when its node manager asks Logos for
+orders.
 
 ## Policies
 
@@ -503,15 +806,88 @@ For each session, it shows the work, the state and the pull request. Every
 Logos Admin can open the page. The **Agents** entry in the sidebar shows only
 if the deployment runs the optional agent stack.
 
+![Agent Sessions page](/img/roles/logos-admin-agents.png)
+
+The page has these parts, from top to bottom:
+
+- **Status tiles.** **Runner** shows the mode of the runner. **Sessions** shows
+  the running sessions and the limit, and the sessions that wait. **Memory**
+  shows the memory that the sessions reserve and the memory budget of the
+  host. **Platform capacity** shows if a new session can start, and the reason.
+- **Runner controls.** In **Mode**, select **Run**, **Stop new sessions** or
+  **Pause everything**. **Stop new sessions** lets the running sessions
+  finish. **Pause everything** pauses the running sessions and gives the
+  capacity back to the platform. **Reason** is an optional note for the
+  change.
+- **Memory per session (MiB)** sets the memory limit of each new session. A
+  running session keeps its memory limit.
+- **Sessions at once** sets the maximum number of sessions that run at the
+  same time. The maximum is the number of sessions that the memory budget
+  holds. You can only set a lower value. The value 0 starts no new session.
+- **Session lists.** **Active**, **Queue** and **Finished** show the
+  sessions. Select a session to show its details and messages. Use the
+  arrows of a queued session to change its position in the queue.
+  **RAM now** shows the latest total for the session containers, including helpers and file cache.
+  The runner samples about every 2 seconds. A short peak between samples can be higher.
+  **Observed peak** keeps the highest sample after the session ends or the runner restarts.
+  **Unavailable** means there is no measurement. **Limit** shows the limit per container at the start of the session.
+  A **2x** badge means the parent used one distinct Claude Code subagent. A second child makes it **3x**.
+  The count includes children that already finished. Older sessions without recorded identities have no badge.
+  **Agent estimate** shows the parent’s latest self-reported percentage and when it reported.
+  After about ten active minutes, the next completed tool call reminds the parent to estimate again.
+  Long tool calls can delay a report. At 40% after 20 active minutes, the forecast is about 30 more active minutes.
+  Pausing freezes the countdown. An elapsed forecast or 20 active minutes without a new report displays
+  **Awaiting updated estimate**. Session status records the actual outcome.
+- **Automatic work**, **Workspaces** and **What every session is told** are
+  at the bottom of the page.
+
+Select a session to read **Agent messages** as the agent works. **Agent** identifies
+the parent. **Subagent** and a short identifier distinguish child messages.
+Each message keeps its paragraphs, lists and code. Open **Diagnostic log** to
+see tool activity and runner output, including the logs of older sessions.
+The message view keeps up to 64 recent messages and marks shortened text.
+
+![Expanded agent session with parent and child messages and a code sample](/img/roles/logos-admin-agents-messages.png)
+
 Repository analyses of the linked repositories of the teams also run here.
 Each night, they run again for repositories that have new commits. **Analyze
-all repositories** immediately queues an analysis for every linked repository,
-also if there are no new commits. Use it, for example, after an improvement of
-the analysis. It does not change repositories that already have an analysis
-that is queued or that runs. The results go to the teams as proposals on their
-**Workflows** tab ([Team detail](app-admin.md#workflows)).
+enabled repositories** in **Automatic work** immediately queues an analysis for
+every repository with **Automatic workflow analysis** enabled, even if there are no new commits. Use it, for
+example, after an improvement of the analysis. It does not change repositories
+that already have an analysis that is queued or that runs. The results go to
+the teams as proposals on their **Workflows** tab
+([Team detail](app-admin.md#workflows)).
 
-![Agent Sessions page](/img/roles/logos-admin-agents.png)
+### Start a Session
+
+To queue a manual session, do these steps:
+
+1. Select **New session**. The **Start a session** form opens.
+2. In **Repository**, select the repository that the agent changes:
+   - **LogosOSS/Logos (platform repository)** is the default.
+   - Each linked team repository with the coding agent enabled shows as
+     `owner/name (branch)`.
+3. In **Workspace**, select a workspace. One workspace runs one session at a time.
+4. In **Task**, write the change that you want.
+5. Select **Queue session**.
+
+![Start a session form with the linked repository docs-example/sample-app selected](/img/roles/logos-admin-agents-new-session.png)
+
+The example shows the linked repository `docs-example/sample-app` with the
+branch `develop`. For a linked repository, the session works on that
+repository and its branch. The form disables **Deploy to the dev environment
+afterwards** and **Screenshot paths**, because these options are available
+only for the platform repository. A note below the check boxes gives this
+reason.
+
+The session list and the session details show the repository of a session on
+a linked repository. In the session list, the repository shows below the task,
+next to the workspace. For example, see `docs-example/sample-app` in the
+**Finished** section of the **Agent Sessions** page image.
+
+A Logos Admin also sets the network access and the comment permission of each
+linked repository. Edit the repository link on the **Repositories** tab of the
+team ([Agent Sandbox Permissions](app-admin.md#agent-sandbox-permissions)).
 
 ## My Workspace
 
@@ -533,3 +909,81 @@ The page does not change with the role. For the step-by-step procedure, see
 
 This is the same Batch UI as for the App Admin. Upload a `.jsonl` file, look at
 the progress and download the results. See [App Admin → Batches](app-admin.md#batches).
+
+## Security incidents
+
+Open **Agents**, then select **Security incidents**. Only Logos Admins can open
+this page or use its API. The examples below are illustrative. They do not show
+the security state of a production system.
+
+The dashboard shows important vulnerabilities and a separate status for each
+repository. The totals count repository assessments. Select **All statuses** to
+include **Not affected** and **Resolved** results.
+
+![Security incidents with a separate status for each repository](/img/roles/logos-admin-security-incidents.png)
+
+The automatic sources are GitHub critical advisories and the CISA list of known
+exploited vulnerabilities. Each source shows its last successful update. A source
+error remains visible. Low and medium findings do not enter this workflow.
+
+### Register a repository
+
+Expand **Monitored repositories**. Enter `owner/repository`, its base branch, and a **Build and test command**.
+The command runs from the repository root before a fix PR opens. It uses installed tools without credentials or network access.
+Select **Register repository**. This gives LogosOSSAgent permission to analyze
+the repository and propose fix PRs. The bot account must have repository access.
+Team repository links do not automatically grant this permission.
+
+![Repository registration for security assessments](/img/roles/logos-admin-security-repositories.png)
+
+### Report an incident
+
+Expand **Report an important incident**. Enter the advisory ID, severity, title,
+source URL and advisory details. Explain the material impact in **Why this is
+important**. Mark exploitation only when a source confirms it. Optional upstream
+GitHub repositories let the agent check for new releases.
+
+![Manual incident report with source and impact fields](/img/roles/logos-admin-security-intake.png)
+
+Select **Record incident**. The runner creates an assessment for each registered
+repository within 5 minutes. It checks dependencies, images and configuration.
+This includes servers that an application image contains, such as an nginx server
+behind another proxy. Repository files do not prove the current deployment state.
+
+### Read the evidence and next action
+
+Select **Evidence & history** on a repository result. Review the checked commit,
+file evidence, reason and status history. **Not affected** requires an explanation
+of why the vulnerable dependency, version or code path does not apply.
+
+![Repository evidence and security status history](/img/roles/logos-admin-security-evidence.png)
+
+| Status | Meaning and next action |
+|---|---|
+| Queued / Analyzing | Wait for capacity and the analysis result. |
+| Not affected | Read the evidence. The agent checks again each day. |
+| Awaiting upstream | No suitable patch is available. Review the temporary mitigation. The agent checks again after 6 hours. |
+| Fix available / Preparing fix | The agent prepares a change from the verified patch information. |
+| PR open | Review the PR and its checks. The agent does not merge it. |
+| Action required | Review missing evidence or the recommended containment action. |
+| Awaiting deployment | The PR is merged. Confirm that the affected systems received the fix. |
+| Analysis failed | Inspect the linked session. Correct the problem, then select Recheck. |
+| Resolved | An admin recorded completed remediation and its evidence. |
+
+An incident without a patch stays open. A recommendation can include a partial
+shutdown or a complete shutdown. The operator must decide and perform that
+change. The recommendation states the affected service and recovery conditions.
+
+### Confirm remediation
+
+After deployment or mitigation, select **Confirm resolved**. Enter the actual
+remediation evidence, then select **Confirm**. A merged PR alone does not prove
+that the running service is fixed. **Recheck** requests another assessment and
+also requires a reason. New advisory evidence reopens a completed assessment.
+
+![Confirmation with deployment or mitigation evidence](/img/roles/logos-admin-security-confirm.png)
+
+Image scanners can send critical Trivy findings through the admin API. The import
+retains the image digest, scan time and findings without a fix. See the
+[agent service guide](https://github.com/LogosOSS/Logos/tree/main/logos-agent#scanner-evidence)
+for the request format and other source options.

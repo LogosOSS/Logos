@@ -138,6 +138,232 @@ class TeamRepoLinkControllerTest {
     }
 
     @Test
+    void codingAgent_isOptInAndKeepsSettingsAcrossPartialUpdates() throws Exception {
+        MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/project\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_enabled").value(false))
+            .andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        String url = "/admin/teams/2001/repositories/" + id;
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"agent_enabled\":true}"))
+            .andExpect(status().isBadRequest());
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("""
+                    {"agent_enabled":true,"verification_command":"make check",
+                     "agent_instructions":"Use the Makefile"}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_enabled").value(true))
+            .andExpect(jsonPath("$.verification_command").value("make check"))
+            .andExpect(jsonPath("$.agent_instructions").value("Use the Makefile"));
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"branch\":\"develop\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_enabled").value(true))
+            .andExpect(jsonPath("$.verification_command").value("make check"));
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"verification_command\":\"\"}"))
+            .andExpect(status().isBadRequest());
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"agent_enabled\":false,\"verification_command\":\"\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_enabled").value(false));
+    }
+
+    @Test
+    void sandboxPermissions_defaultToNoNetworkAndNoComments() throws Exception {
+        mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/sandbox-defaults\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_hosts").isArray())
+            .andExpect(jsonPath("$.agent_egress_hosts.length()").value(0))
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(false))
+            .andExpect(jsonPath("$.agent_may_comment").value(false));
+    }
+
+    @Test
+    void unrestrictedEgress_isAnExplicitLogosAdminOptInThatDoesNotFollowARepositoryChange() throws Exception {
+        MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/open-network\",\"agent_egress_unrestricted\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(true))
+            .andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        String url = "/admin/teams/2001/repositories/" + id;
+
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"agent_egress_unrestricted\":false}"))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.detail")
+                .value("Only Logos admins can change agent network access and comment permissions"));
+        mvc.perform(get("/admin/teams/2001/repositories").with(TestJwt.adminUser()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$[?(@.id == " + id + ")].agent_egress_unrestricted").value(true));
+
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/open-network-moved\",\"agent_egress_unrestricted\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(false));
+
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"agent_egress_unrestricted\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(true));
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"agent_egress_unrestricted\":false}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_unrestricted").value(false));
+    }
+
+    @Test
+    void sandboxPermissions_logosAdminSetsThemOnCreateAndUpdate() throws Exception {
+        MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("""
+                    {"repo_url":"https://github.com/team/sandbox",
+                     "agent_egress_hosts":[" GitHub.com ","*.githubusercontent.com","","github.com"],
+                     "agent_may_comment":true}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_hosts.length()").value(2))
+            .andExpect(jsonPath("$.agent_egress_hosts[0]").value("github.com"))
+            .andExpect(jsonPath("$.agent_egress_hosts[1]").value("*.githubusercontent.com"))
+            .andExpect(jsonPath("$.agent_may_comment").value(true))
+            .andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        String url = "/admin/teams/2001/repositories/" + id;
+
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"agent_egress_hosts\":[\"lakecache.blob.core.windows.net\"],\"agent_may_comment\":false}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_hosts.length()").value(1))
+            .andExpect(jsonPath("$.agent_egress_hosts[0]").value("lakecache.blob.core.windows.net"))
+            .andExpect(jsonPath("$.agent_may_comment").value(false));
+
+        mvc.perform(get("/admin/teams/2001/repositories").with(TestJwt.adminUser()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$[0].agent_egress_hosts[0]").value("lakecache.blob.core.windows.net"))
+            .andExpect(jsonPath("$[0].agent_may_comment").value(false));
+
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"agent_egress_hosts\":[]}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_hosts.length()").value(0));
+    }
+
+    @Test
+    void sandboxPermissions_teamOwnerCannotChangeThem() throws Exception {
+        mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/owner-create\",\"agent_may_comment\":false}"))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.detail")
+                .value("Only Logos admins can change agent network access and comment permissions"));
+
+        MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("""
+                    {"repo_url":"https://github.com/team/owner-update",
+                     "agent_egress_hosts":["github.com"],"agent_may_comment":true}
+                    """))
+            .andExpect(status().isOk())
+            .andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        String url = "/admin/teams/2001/repositories/" + id;
+
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"agent_egress_hosts\":[\"example.com\"]}"))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.detail")
+                .value("Only Logos admins can change agent network access and comment permissions"));
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"agent_may_comment\":false}"))
+            .andExpect(status().isForbidden());
+
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("""
+                    {"branch":"develop","agent_enabled":true,"verification_command":"make check"}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.branch").value("develop"))
+            .andExpect(jsonPath("$.agent_enabled").value(true))
+            .andExpect(jsonPath("$.agent_egress_hosts[0]").value("github.com"))
+            .andExpect(jsonPath("$.agent_may_comment").value(true));
+
+        // Pointing the link at another repository drops what was granted for this one.
+        mvc.perform(patch(url).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/another-repository\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_hosts.length()").value(0))
+            .andExpect(jsonPath("$.agent_may_comment").value(false));
+    }
+
+    @Test
+    void sandboxPermissions_doNotFollowARepositoryChangeEvenWhenTheDialogResendsThem() throws Exception {
+        MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("""
+                    {"repo_url":"https://github.com/team/granted-first",
+                     "agent_egress_hosts":["github.com"],"agent_may_comment":true}
+                    """))
+            .andExpect(status().isOk())
+            .andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        String url = "/admin/teams/2001/repositories/" + id;
+
+        // The full payload the Logos admin edit dialog sends: a new URL plus
+        // the permissions it currently shows.
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("""
+                    {"repo_url":"https://github.com/team/moved-elsewhere","branch":"main","paths":[],
+                     "agent_enabled":false,"agent_instructions":"","verification_command":"",
+                     "agent_egress_hosts":["github.com"],"agent_may_comment":true}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.repo_slug").value("team/moved-elsewhere"))
+            .andExpect(jsonPath("$.agent_egress_hosts.length()").value(0))
+            .andExpect(jsonPath("$.agent_may_comment").value(false));
+
+        // A separate grant for the new repository applies.
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"agent_egress_hosts\":[\"github.com\"],\"agent_may_comment\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.agent_egress_hosts[0]").value("github.com"))
+            .andExpect(jsonPath("$.agent_may_comment").value(true));
+    }
+
+    @Test
+    void sandboxPermissions_rejectsInvalidHostsWithTheEntry() throws Exception {
+        MvcResult created = mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/invalid-hosts\"}"))
+            .andExpect(status().isOk())
+            .andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        String url = "/admin/teams/2001/repositories/" + id;
+
+        mvc.perform(patch(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"agent_egress_hosts\":[\"github.com\",\"https://evil.example\"]}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.detail", containsString("https://evil.example")));
+        mvc.perform(post("/admin/teams/2001/repositories")
+                .with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/team/bad-wildcard\",\"agent_egress_hosts\":[\"*.com\"]}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.detail", containsString("*.com")));
+
+        mvc.perform(get("/admin/teams/2001/repositories").with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(1))
+            .andExpect(jsonPath("$[0].agent_egress_hosts.length()").value(0));
+    }
+
+    @Test
     void create_rejectsCaseVariantDuplicate() throws Exception {
         mvc.perform(post("/admin/teams/2001/repositories")
                 .with(TestJwt.logosAdmin())
@@ -433,6 +659,61 @@ class TeamRepoLinkControllerTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.queued").value(0))
            .andExpect(jsonPath("$.already_in_flight").value(links));
+    }
+
+    @Test
+    void manualAndBulkQueueingShareOneRepositorySlot() throws Exception {
+        String base = "/admin/teams/2001/repositories";
+        var created = mvc.perform(post(base).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/example/queue-race\"}"))
+            .andExpect(status().isOk()).andReturn();
+        int id = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();
+        var ready = new java.util.concurrent.CyclicBarrier(2);
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var manual = executor.submit(() -> {
+                ready.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                return mvc.perform(post(base + "/" + id + "/analyze/agent").with(TestJwt.logosAdmin()))
+                    .andReturn().getResponse().getStatus();
+            });
+            var bulk = executor.submit(() -> {
+                ready.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                return mvc.perform(post("/admin/repositories/analyze").with(TestJwt.logosAdmin()))
+                    .andReturn().getResponse().getStatus();
+            });
+            org.assertj.core.api.Assertions.assertThat(manual.get(10, java.util.concurrent.TimeUnit.SECONDS))
+                .isIn(200, 409);
+            assertEquals(200, bulk.get(10, java.util.concurrent.TimeUnit.SECONDS));
+        }
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM ai_workflow_analyses WHERE team_repository_id = ?",
+            Integer.class, id));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM agent_sessions WHERE team_repository_id = ?",
+            Integer.class, id));
+    }
+
+    @Test
+    void ownerOptOutSkipsBulkAndCancelsOnlyQueuedAutomaticAnalysis() throws Exception {
+        String base = "/admin/teams/2001/repositories";
+        MvcResult result = mvc.perform(post(base).with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"repo_url\":\"https://github.com/example/analysis-choice\"}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.automatic_workflow_analysis").value(true)).andReturn();
+        int id = mapper.readTree(result.getResponse().getContentAsString()).get("id").asInt();
+        String link = base + "/" + id;
+        String disabled = "{\"automatic_workflow_analysis\":false}";
+        mvc.perform(post("/admin/repositories/analyze").with(TestJwt.logosAdmin())).andExpect(status().isOk());
+        mvc.perform(patch(link).with(TestJwt.adminUser()).contentType("application/json").content(disabled))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.automatic_workflow_analysis").value(false));
+        assertEquals("cancelled", jdbc.queryForObject("SELECT status FROM agent_sessions WHERE team_repository_id = ?",
+            String.class, id));
+        assertEquals("skipped", jdbc.queryForObject("SELECT status FROM ai_workflow_analyses WHERE team_repository_id = ?",
+            String.class, id));
+        mvc.perform(post("/admin/repositories/analyze").with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.queued").value(0)).andExpect(jsonPath("$.skipped").value(1));
+        mvc.perform(post(link + "/analyze/agent").with(TestJwt.adminUser()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("queued"));
+        mvc.perform(patch(link).with(TestJwt.adminUser()).contentType("application/json").content(disabled))
+            .andExpect(status().isOk());
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM agent_sessions WHERE team_repository_id = ? AND status = 'queued'",
+            Integer.class, id));
     }
 
     @Test

@@ -154,6 +154,29 @@ workspaces are reused or re-pointed before any queue-only workspace is
 created; a queued session still waits for a real execution slot before it
 starts.
 
+### Memory Budget
+
+The capacity signal says whether the serving fleet has room, not whether the
+host that runs the containers has. Sessions are therefore also admitted
+against a **memory budget**: the memory all sessions together may claim,
+`LOGOS_AGENT_MEMORY_BUDGET_MB`, or by default `LOGOS_AGENT_HOST_MEMORY_SHARE`
+(50 %) of the memory the Docker host reports. An operator sets the **memory
+per session** on the Agents page (default `LOGOS_AGENT_SESSION_MEMORY_MB`).
+The parallel ceiling follows from it, the budget divided by the memory per
+session and never above `MAX_PARALLEL_SESSIONS`, and the slider can only
+lower it. Each session keeps the memory it was started with, and its helper
+containers get the same limit; a new session starts only while the memory
+that starting, running, paused and finalizing sessions reserved, plus its
+own, fits in the budget (`app/memory_budget.py`).
+
+If Docker cleanup fails, a container keeps its reservation until Docker
+confirms it has stopped. On restart the runner inventories managed containers
+before starting the scheduler. For a leftover container that still runs after
+its session ended, the runner restores the reservation from its Docker memory
+limit. Startup fails if the inventory or a required limit is unavailable, or
+if a helper from an active session is still running when recovery would
+repeat its work.
+
 Workspaces the runner creates for triggered work are named after it —
 `issue-812-oom-on-startup`, `pr-772-add-an-agent-runner` — which is also what
 appears in the branch (`logos/agent/issue-812-oom-on-startup/session-42`) and
@@ -256,7 +279,10 @@ content in them. Search results are untrusted external data.
 
 **May:** read and change the working copy, run tests and linters, push a branch
 under `logos/agent/`, open a pull request, and — if enabled — have its result
-deployed to dev and screenshotted.
+deployed to dev and screenshotted. Sessions of a linked repository may, within
+the bounds in [Working the way the repository asks](#working-the-way-the-repository-asks),
+reach allowed HTTPS hosts, keep a workspace cache, read issues and — where
+allowed — comment.
 
 **May not:** reach the Docker daemon, run as root, push to `main` or any
 protected branch, dispatch a workflow, or touch production. The deploy is
@@ -330,28 +356,38 @@ labels things differently.
 
 ## Configuration
 
-Two variables are required — a Logos key and a GitHub token. Everything else
-has a default that is right for this deployment.
+A GitHub token and the stack's existing `LOGOS_INTERNAL_SECRET` are required.
+No static model API key is needed. The webservice migration provisions a
+low-priority internal agent identity; the gateway obtains a fresh 60-second
+inference token for each model request. Already admitted streams may finish
+after token expiry. Tokens and the internal secret never enter session
+containers. Disabling the internal identity revokes new requests immediately.
+Upgrade the webservice (database migration), orchestrator, runner and gateway
+together. Existing `LOGOS_AGENT_API_KEY` environment/repository secrets are
+unused and can be removed.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LOGOS_AGENT_API_KEY` | — | Logos key sessions call models with. **Required.** |
+| `LOGOS_INTERNAL_SECRET` | — | Existing internal trust root, shared by orchestrator, runner and model gateway. **Required.** |
 | `LOGOS_AGENT_GITHUB_TOKEN` | — | The agent account's token. **Required.** |
 | `LOGOS_AGENT_GITHUB_LOGIN` | `LogosOSSAgent` | The account every token must belong to |
-| `LOGOS_AGENT_DEFAULT_MODEL` | — | Model when a session does not name one. Optional: with exactly one local model reachable, that one is the default |
+| `LOGOS_AGENT_DEFAULT_MODEL` | — | Model when a session does not name one. Optional: without it, the alias `local-most-powerful` is the default when the agent key reaches it locally, and otherwise the only local model, if there is exactly one |
 | `LOGOS_AGENT_TRIGGERS_ENABLED` | `true` | Kill switch for reacting to the repository |
 | `LOGOS_AGENT_ANALYSIS_NIGHTLY_HOUR_UTC` | `0` | UTC hour of the nightly re-analysis of linked team repositories whose branch head moved; `-1` turns it off |
 | `LOGOS_AGENT_MAX_PARALLEL_SESSIONS` | `10` | Hard ceiling on concurrent (running + paused) sessions |
 | `LOGOS_AGENT_MAX_QUEUE_WORKSPACES` | `0` (= 5× parallel) | Cap on live workspaces holding waiting triggered work |
 | `LOGOS_AGENT_START_BELOW_LOAD` | `0.60` | Start only below this load |
 | `LOGOS_AGENT_PAUSE_ABOVE_LOAD` | `0.85` | Pause at or above this load |
-| `LOGOS_AGENT_SESSION_MEMORY_MB` | `4096` | Per-session memory ceiling |
+| `LOGOS_AGENT_SESSION_MEMORY_MB` | `4096` | Default memory of one session; the Agents page can change it at runtime |
+| `LOGOS_AGENT_MEMORY_BUDGET_MB` | `0` (= host share) | Memory all sessions together may claim |
+| `LOGOS_AGENT_HOST_MEMORY_SHARE` | `0.5` | Share of the Docker host's memory used as the budget when no budget is set |
 | `LOGOS_AGENT_SESSION_CPUS` | `2` | Per-session CPU ceiling |
 | `LOGOS_AGENT_SESSION_TIMEOUT_S` | `0` | Wall-clock ceiling per session; `0` is none, which is the default |
 | `LOGOS_AGENT_SESSION_MODEL_URL` | `http://logos-agent-gateway` | Where sessions send model traffic — a gateway that exposes only the orchestrator's `/v1` model surface, so a session never reaches the rest of the internal network |
 | `LOGOS_AGENT_SESSION_GITHUB_TOKEN` | falls back to the token above | Given to containers; best without `workflow` scope |
 | `LOGOS_AGENT_DEPLOY_ENABLED` | `false` | Whether dev deploys may be dispatched at all |
 | `LOGOS_AGENT_REQUIRED_ROLE` | `logos_admin` | Realm role required to drive agents |
+| `LOGOS_AGENT_EGRESS_PROXY_URL` | `http://logos-agent-egress-proxy:3128` | The allowlisting HTTPS proxy for linked-repository sessions; empty turns internet access off for every session |
 
 ### The GitHub account
 
@@ -395,24 +431,16 @@ so a session must never reach one — not by naming a cloud model, not through
 an alias of one, and not because the agent key was granted a cloud provider
 by mistake.
 
-The boundary is the platform's own key scoping: a Logos key reaches exactly
-the deployments its permissions grant, and the gateway replaces whatever
-credential a session sends with that key. **Give the agent key local
-providers only.**
+The managed identity can reach only registered `logosnode` providers and their
+models. User/team grants cannot extend it to cloud. When the same model is
+served locally and in the cloud, only the local deployment is eligible.
+The gateway overwrites client authorization and strips alternative key headers.
 
-The runner refuses to assume that was done. It reads what the key can
-actually reach and gates on the answer:
-
-| What it reads | What happens |
-|---|---|
-| every reachable deployment is local | sessions run; those models are what the UI offers |
-| any reachable deployment is a cloud provider | **no session starts at all**, and the reason names the models that would have cost money |
-| the key does not resolve, or the database cannot be read | unknown — treated as unsafe |
-
-It is re-established on every scheduler pass, not once at startup: permissions
-are data, and a key can be granted a cloud provider at any time. A model that
-is served both locally and in the cloud counts as cloud — the scheduler may
-route to either.
+The runner checks the identity and available models at startup and on every
+scheduler pass. A missing/disabled identity, missing internal secret, or
+unreadable database blocks sessions. No local deployment means no session can
+start. The identity keeps a stable id for accounting and LOW queue priority;
+its settings can carry the usual local rate/token/budget limits.
 
 ## Working with it like a colleague
 
@@ -598,8 +626,8 @@ sessions, live transcripts, screenshots, and pull-request links.
 ### Local development
 
 ```bash
-uv venv .venv && source .venv/bin/activate
-uv pip install -e '.[dev]'
+uv sync --locked --extra dev --no-install-project --python 3.13
+source .venv/bin/activate
 LOGOS_AGENT_DEV_MODE=1 LOGOS_AGENT_AUTH_DISABLED=1 \
   uvicorn app.main:app --reload --port 8082
 ```
@@ -618,9 +646,10 @@ pytest              # capacity gating, state machine, branch derivation
 | `GET` | `/capacity` | Current load and whether a session may start |
 | `GET` | `/models` | The locally served models a session may use |
 | `GET` | `/triggers` | Whether the runner reacts to the repository, and what it queued |
+| `GET` | `/repositories` | Linked team repositories with the coding agent enabled, for manual sessions |
 | `GET`/`POST` | `/workspaces` | List and create workspaces |
 | `DELETE` | `/workspaces/{id}` | Remove a workspace (refused while occupied) |
-| `GET`/`POST` | `/sessions` | List and queue sessions |
+| `GET`/`POST` | `/sessions` | List and queue sessions (`team_repository_id` targets a linked repository) |
 | `GET` | `/sessions/{id}` | One session |
 | `POST` | `/sessions/{id}/cancel` | Stop a session and remove its container |
 | `GET` | `/sessions/{id}/events` | Transcript and status events after an id |
@@ -700,3 +729,218 @@ an `Authorization` header, and the token is what authorises the read.
   the environment serve again — the runner captures the pages in one-shot
   containers, so the photos show the revision the session just deployed, not
   the one that was live while the session ran.
+
+### Coding in linked team repositories
+
+On **Team → Repositories**, edit or link a GitHub repository and select
+**Enable LogosOSSAgent for this repository**. Links default to analysis only.
+Enter a **Build and test command** that runs from the repository root, and
+optionally add repository instructions for tooling and coding conventions.
+For example, a Make-based project can use `make check && make build`.
+The configured branch is the base for new issue work and review comparisons.
+
+Give the configured agent account access to the repository on GitHub; private
+repositories need access for both the runner and session tokens. Read-only
+deploy keys used for analysis do not grant coding access. Assign an issue or
+pull request, request a review, or mention the account in a comment to ask it
+for work. Enabling the link does not start work on every issue.
+
+The runner polls enabled repositories every two minutes. Trigger history,
+comment cursors, workspaces, replies and CI follow-ups stay with their GitHub
+repository. If several teams enable the same repository, it is polled once,
+using the settings of the oldest enabled link. The globally configured Logos
+repository keeps its existing behavior independently of linked-repository opt-ins.
+
+Build and test commands run against a disposable copy of the candidate in the
+existing verification container without credentials or internet access. The
+image provides its installed tools and offline Maven/npm caches; other language
+tools or dependencies must be in the image or in the workspace cache described
+below. Missing tools or
+dependencies fail verification and allow only a draft PR. Repository instructions
+do not change the container image or install software on the runner. Linked
+coding sessions never invoke Logos image-build or deployment workflows.
+
+Disabling the link stops polling for new requests. Sessions already queued or
+running, their retries and pending replies retain their original repository and
+verification command. Changes to repository settings apply to newly queued work.
+
+A session can also be started by hand for a linked repository: the **Repository**
+select of the session form (`team_repository_id` on `POST /sessions`). The task
+gets the same build command and repository instructions a triggered session
+gets. Deploys and screenshots stay with the platform repository. An idle
+workspace that last worked on another repository is moved to the link's branch;
+a busy one is refused.
+
+#### Working the way the repository asks
+
+Repositories have their own contribution process: claim an issue with a
+comment, download a toolchain, contribute from a fork. Nothing here is
+specific to one repository; each piece is a general capability, bounded so that
+an agent steered by text it read cannot turn it against anybody.
+
+| Capability | Who enables it | Bound |
+|---|---|---|
+| **Internet over HTTPS** to named hosts | A Logos admin, per link (`agent_egress_hosts`) | Only through `logos-agent-egress-proxy`: `CONNECT` to port 443, only listed hosts (`*.example.org` for subdomains), only public addresses, only while the session runs, authenticated by a per-session token whose hash is on the row. The list is read live. |
+| **Internet over HTTPS** to any public host | A Logos admin, per link, as an explicit opt-in (`agent_egress_unrestricted`) | The host list is not consulted; every other bound of the row above holds. Text an agent reads can then make it send what it sees anywhere, so the session notes tell it to treat such text as data, and the option is meant for repositories where a host list is not practical. |
+| **Workspace cache** at `$LOGOS_CACHE_DIR` (`/cache`) | Every linked-repository session | A volume per workspace, removed with it. The agent phase writes it, verification reads it; credential-bearing helpers never mount it. |
+| **GitHub reads**: `logos-github issue N`, `logos-github issues --label L --assignee none` | Every linked-repository session | The session's repository only, 500 reads per session. |
+| **Comments**: `logos-github comment N "text"` | A Logos admin, per link (`agent_may_comment`) | The session's repository only, 30 per session, mentions neutralised, model disclosure appended, every comment an event on the session. |
+| **Fork** | Automatic when the agent account cannot push | The account's own fork, created on first use; a same-named repository that is not a fork of the target is refused. Leases, workflow refusal and token identity checks are unchanged. |
+| **Closing references** from `closes.txt` | Every linked-repository session | Only open issues assigned to the agent account, i.e. given to it or claimed through the repository's process. |
+
+The request files are the whole protocol of `logos-github`: the agent writes
+JSON into `/artifacts/github-requests/`, the runner answers into the session's
+read-only state directory within seconds (`app/github_broker.py`). A planted
+link cannot redirect the runner's write, and a request interrupted half way is
+reported rather than repeated.
+
+Verification of a linked repository still runs with no network. Toolchains
+and prebuilt dependencies the build and test command needs belong in
+`$LOGOS_CACHE_DIR`, which the command can read; a command that needs more than
+the default ten minutes needs a larger `LOGOS_AGENT_HELPER_TIMEOUT_S`.
+
+#### Model disclosure
+
+Every comment, review, inline review comment, reply and pull request
+description the agent account publishes ends with a line naming the model
+that wrote it and the session (`app/disclosure.py`). The runner adds it where
+the text is published; the GitHub write functions refuse a body without it.
+The launch records the model a session actually runs with, so "the default"
+is resolved once and stays true after the default changes.
+
+## Important security incidents
+
+Logos Admins open **Agent Sessions → Security incidents**. Register the GitHub
+repositories that LogosOSSAgent may assess and patch. Enrollment authorizes
+credentialed checkout and verified fix PRs on that repository; team repository
+links do not grant this authority. The bot needs read and push access. All
+security endpoints use the same Keycloak Logos Admin check as agent controls.
+
+Enrollment requires a **Build and test command**. Each assessment session snapshots
+this command; fix sessions run it from the repository root before publication.
+Verification has no credentials or network access and uses tools already in the
+agent image. A failed check produces only a draft PR and a failed assessment.
+
+The runner checks the queue every 5 minutes and ingests these feeds hourly:
+
+- GitHub-reviewed **critical** advisories, with pagination and a durable cursor.
+- CISA Known Exploited Vulnerabilities (KEV), including vulnerabilities without a fix.
+- Manual high/critical incidents with a source, advisory details, and an explanation
+  of material impact. This covers early vendor notices and infrastructure outside
+  package catalogs, such as BMC, BIOS, or PVE advisories.
+
+On first start, feeds cover the previous 7 days, with a one-hour overlap.
+The start of each unfinished window is persisted before contacting the source,
+including on the first poll. Feed outages and partial pagination are visible in
+the dashboard and retain that window across retries and restarts. Only a fully
+completed poll advances the successful checkpoint. GitHub search dates truncate
+to whole seconds and include the boundary; advisory IDs deduplicate replays.
+Registering a repository queues existing incidents for that repository. Reports
+of ordinary low/medium findings are rejected. High findings need manual impact
+triage or confirmation of exploitation from KEV.
+
+Apply the webservice's migration 094 before updating the agent. For an older
+installation that has never successfully polled, the previous implementation
+did not retain the first attempted window. Recover its earliest required UTC
+timestamp from operational records; the current error alone may describe a
+later attempt. To queue an idempotent GitHub backfill, run this SQL against the
+management database with the psql variable `feed_since` set to that timestamp:
+
+```sql
+INSERT INTO security_feed_state (name, retry_since)
+VALUES ('github', :'feed_since'::timestamptz)
+ON CONFLICT (name) DO UPDATE SET
+    retry_since=LEAST(security_feed_state.retry_since, EXCLUDED.retry_since);
+```
+
+This only records an earlier pending boundary; it does not fabricate a successful
+poll or remove existing incidents. The next enabled feed poll replays the window
+and deduplicates its records, even if the last success was less than an hour ago.
+A narrower in-flight poll cannot clear a newly requested earlier boundary. The
+20-page limit still applies: an incomplete replay remains pending with a visible
+error instead of silently advancing. Changes to source metadata can advance an
+incident's revision and trigger reassessment during a backfill.
+
+Each repository has its own assessment, evidence, checked commit, next check,
+linked session, PR and status history. Analysis checks lockfiles, transitive
+packages, base images, bundled servers, enabled modules, configuration and
+protocols across proxy hops. A patched outer nginx does not establish that an
+inner nginx is safe. A source-only assessment cannot prove the deployed image or
+runtime configuration: supply image digests, scan timestamps and `nginx -T`
+evidence where relevant. `not_affected` needs file evidence and a reason.
+
+The isolated analyst writes `security-assessment.json`. The runner checks the
+schema and binds its commit SHA to the trusted checkout baseline. A report cannot
+claim `resolved`. Outcomes are `not_affected`, `awaiting_upstream`, `fix_available`
+or `action_required`. No patch does **not** mean no incident. The report may
+recommend mitigation, disabling a component or shutting down a system, with scope,
+impact and recovery conditions. These are operator recommendations only.
+
+Waiting and action-required assessments run again every 6 hours. Not-affected
+assessments run daily. Changed advisories invalidate completed assessments. The
+runner fetches current GitHub release metadata for the upstream repositories in
+the intake/report, and refreshes GitHub advisory patch ranges before each run.
+An upstream API failure is supplied as missing evidence, never as proof of safety.
+The session has no general Internet access; paste vendor facts into manual intake
+when the vendor does not expose a GitHub release or advisory.
+Any Logos Admin can submit the same advisory ID to update its evidence, including
+incidents originally reported by a feed or another admin. Manual incident fields
+then take precedence over feed refreshes; confirmed exploitation and image scans
+can still add evidence. Resolution records the incident revision confirmed by
+the admin, so only evidence received after confirmation reopens that assessment.
+
+A verified patched release queues a separate fix session. The normal isolated
+verification and trusted finalizer produce the PR, without merging or deploying.
+A failed verifier can produce a draft, which remains a failed assessment with its
+PR link. A merged PR moves to `awaiting_deployment`; an admin must confirm the
+actual deployment or completed mitigation and record evidence to resolve it.
+A closed, unmerged PR requires action. Failed/cancelled assessments stay visible
+until an admin requests a recheck or new advisory evidence arrives.
+
+Configuration (also passed through `docker-compose.yaml`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LOGOS_AGENT_SECURITY_ENABLED` | `true` | Run incident assessment and reconciliation. |
+| `LOGOS_AGENT_SECURITY_FEEDS_ENABLED` | `true` | Poll GitHub and CISA. Manual intake still works when disabled. |
+
+The existing runner pause/drain controls and capacity limits govern security
+sessions. Turning off the security poller does not cancel sessions already queued;
+use the runner controls to stop execution. The API records incoming incidents
+while polling is disabled. The dashboard displays the latest 500 incidents.
+
+### Scanner evidence
+
+`POST /api/agent/security/scans/trivy` accepts a Logos Admin bearer token and:
+
+```json
+{
+  "repository_id": 1,
+  "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "scanned_at": "2026-11-18T10:00:00Z",
+  "report": { "Results": [] }
+}
+```
+
+`report` is the JSON from `trivy image --format json <image@sha256:digest>`.
+Run the scanner in your own CI or inventory service. No scanner is installed by
+Logos. Only critical findings are imported automatically; lower-severity findings
+need a manually justified incident. Empty `FixedVersion` is retained. Findings
+remain tied to the repository, digest and scan time, and fresh evidence causes a
+new assessment. A scan is an observation, not a claim about the deployed image.
+Do not use `--ignore-unfixed`: that removes the incidents that need containment.
+A scan with no findings does not automatically close previous incidents.
+
+Apt update lists can supply patch availability, but cannot cover every unfixed
+issue. debsecan/Trivy, Trivy Operator, OpenCVE and Dependency-Track can feed
+manually normalized incidents through `/security/incidents`. Native adapters,
+SBOM generation, VEX import/export, host inventories, scanner deployment and
+Renovate configuration are outside this service. Do not treat an unverified VEX
+statement or a missing package name as sufficient `not_affected` evidence.
+
+The PostgreSQL lifecycle test uses a temporary schema:
+
+```bash
+SECURITY_TEST_DATABASE_URL=postgresql+asyncpg://postgres:root@localhost:15432/logosdb \
+  .venv/bin/python -m pytest tests/test_security_database.py
+```

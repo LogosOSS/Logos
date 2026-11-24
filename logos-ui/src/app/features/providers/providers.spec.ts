@@ -1,4 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ModelManagementService } from '../../core/services/model-management.service';
@@ -26,7 +27,7 @@ const makeProvider = (overrides: Partial<Provider> = {}): Provider => ({
   id: 7,
   name: 'Hetzner',
   base_url: 'https://inference.hetzner.com/api/v1',
-  api_key: 'hz-secret',
+  api_key_hint: '••••ret',
   auth_name: '',
   auth_format: '',
   provider_type: 'cloud',
@@ -52,6 +53,7 @@ describe('Providers', () => {
   let component: Providers;
   let addProvider: ReturnType<typeof vi.fn>;
   let updateProvider: ReturnType<typeof vi.fn>;
+  let replaceCloudKey: ReturnType<typeof vi.fn>;
   let refreshModels: ReturnType<typeof vi.fn>;
   let modelSyncStatus: ReturnType<typeof vi.fn>;
   let getModels: ReturnType<typeof vi.fn>;
@@ -66,18 +68,28 @@ describe('Providers', () => {
     modelSyncStatus = vi.fn().mockResolvedValue({ running: false });
     getModels = vi.fn().mockResolvedValue([]);
     getProviderModels = vi.fn().mockResolvedValue([]);
+    replaceCloudKey = vi.fn().mockResolvedValue({ api_key_hint: '••••new' });
     const providerService = {
+      replaceCloudKey,
       getProviders: vi.fn().mockResolvedValue([makeProvider()]),
+      rotateWorkerKey: vi.fn().mockResolvedValue({ api_key: 'synthetic-worker-replacement' }),
       addProvider,
       updateProvider,
       refreshModels,
       modelSyncStatus,
       getProviderModels,
+      getNodeInsights: vi.fn().mockResolvedValue({
+        provider_id: 4,
+        worker: { online: true, supports_actions: {}, config_revision: 1 },
+        gpus: [],
+        models: [],
+      }),
     };
 
     await TestBed.configureTestingModule({
       imports: [Providers],
       providers: [
+        provideRouter([]),
         { provide: ProviderManagementService, useValue: providerService },
         { provide: ModelManagementService, useValue: { getModels } },
       ],
@@ -85,6 +97,67 @@ describe('Providers', () => {
     fixture = TestBed.createComponent(Providers);
     component = fixture.componentInstance;
     await component.fetchProviders();
+  });
+
+  it('shows the cloud key hint as text and saves other settings independently', async () => {
+    component.openEditDialog(makeProvider());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(document.querySelector('.key-value-row code')?.textContent).toBe('••••ret');
+    expect(document.querySelector('#replacement-key')).toBeNull();
+    await component.submitEdit();
+    expect(updateProvider.mock.calls[0][0].api_key).toBeUndefined();
+    expect(replaceCloudKey).not.toHaveBeenCalled();
+  });
+
+  it('only replaces a cloud key on explicit confirmation and preserves pending edits', async () => {
+    const provider = makeProvider();
+    component.openEditDialog(provider);
+    component.editName.set('Unsaved name');
+    component.requestKeyChange(provider);
+    await component.confirmKeyChange();
+    component.replacementKey.set('synthetic-cancelled');
+    component.closeKeyChange();
+    expect(replaceCloudKey).not.toHaveBeenCalled();
+    component.requestKeyChange(provider);
+    expect(component.replacementKey()).toBe('');
+    component.replacementKey.set('synthetic-new');
+    await component.confirmKeyChange();
+    expect(replaceCloudKey).toHaveBeenCalledWith(provider.id, 'synthetic-new', undefined);
+    expect(updateProvider).not.toHaveBeenCalled();
+    expect(component.editName()).toBe('Unsaved name');
+    expect(component.editTarget()?.api_key_hint).toBe('••••new');
+    expect(component.replacementKey()).toBe('');
+  });
+
+  it('removes only the selected connection key after confirmation', async () => {
+    const provider = makeProvider();
+    const connection = { model_id: 11, model_name: 'example-model', endpoint: '/test', api_key_hint: '••••old' };
+    component.openEditConnDialog(provider, connection);
+    component.requestKeyChange(provider, connection, true);
+    component.closeKeyChange();
+    expect(replaceCloudKey).not.toHaveBeenCalled();
+    replaceCloudKey.mockResolvedValue({ api_key_hint: null });
+    component.requestKeyChange(provider, connection, true);
+    await component.confirmKeyChange();
+    expect(replaceCloudKey).toHaveBeenCalledWith(provider.id, null, connection.model_id);
+    expect(component.editConnModel()?.api_key_hint).toBeNull();
+  });
+
+  it('discards the rotated worker key when the dialog closes', async () => {
+    component.openEditDialog(makeProvider({ provider_type: 'logosnode' }));
+    component.requestKeyChange(component.editTarget()!);
+    await component.confirmKeyChange();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(document.querySelector<HTMLInputElement>('#rotated-key')?.value).toBe('synthetic-worker-replacement');
+    component.discardWorkerKey();
+    fixture.detectChanges();
+    expect(component.rotatedKey()).toBeNull();
+    await fixture.whenStable();
+    expect(document.querySelector('#rotated-key')).toBeNull();
+    component.openEditDialog(makeProvider({ provider_type: 'logosnode' }));
+    expect(component.rotatedKey()).toBeNull();
   });
 
   describe('the cloud provider type field', () => {
@@ -133,6 +206,132 @@ describe('Providers', () => {
       component.onAddProviderTypeChange('logosnode');
       expect(component.addProviderType()).toBe('logosnode');
       expect(component.addCloudProviderType()).toBe('none');
+    });
+  });
+
+  describe('the provider overview', () => {
+    it('lists cloud and local providers apart', async () => {
+      component.providers.set([
+        makeProvider({ id: 1, name: 'Anthropic', cloud_provider_type: 'anthropic' }),
+        makeProvider({ id: 2, name: 'GPU box', provider_type: 'logosnode', privacy_level: 'LOCAL' }),
+        makeProvider({ id: 3, name: 'Hetzner' }),
+      ]);
+
+      expect(component.cloudProviders().map((p) => p.name)).toEqual(['Anthropic', 'Hetzner']);
+      expect(component.localProviders().map((p) => p.name)).toEqual(['GPU box']);
+    });
+
+    it('keeps the search across both lists', () => {
+      component.providers.set([
+        makeProvider({ id: 1, name: 'Anthropic' }),
+        makeProvider({ id: 2, name: 'GPU box', provider_type: 'logosnode', privacy_level: 'LOCAL' }),
+      ]);
+      component.search.set('gpu');
+
+      expect(component.cloudProviders()).toEqual([]);
+      expect(component.localProviders().map((p) => p.name)).toEqual(['GPU box']);
+    });
+
+    it('names the vendor of a cloud provider', () => {
+      expect(component.typeLabel(makeProvider({ cloud_provider_type: 'anthropic' }))).toBe('anthropic');
+      expect(component.typeLabel(makeProvider())).toBe('other (OpenAI-compatible)');
+    });
+  });
+
+  describe('the privacy level', () => {
+    it('offers readable choices instead of the stored values', () => {
+      component.openAddDialog();
+      expect(component.addPrivacyLevelOptions().map((o) => o.label)).toEqual([
+        'Cloud in the EU, EU provider',
+        'Cloud in the EU, US provider',
+        'Cloud outside the EU, US provider',
+      ]);
+
+      component.onAddProviderTypeChange('logosnode');
+      expect(component.addPrivacyLevelOptions().map((o) => o.label)).toEqual([
+        'Local hardware',
+        'Third-party hardware',
+      ]);
+    });
+
+    it('still saves the stored value', async () => {
+      component.openAddDialog();
+      component.addName.set('Anthropic');
+      component.addPrivacyLevel.set('CLOUD_NOT_IN_EU_BY_US_PROVIDER');
+      await component.submitAdd();
+
+      expect((addProvider.mock.calls[0][0] as AddProviderPayload).privacy_level).toBe(
+        'CLOUD_NOT_IN_EU_BY_US_PROVIDER',
+      );
+    });
+  });
+
+  describe('the base URL proposal', () => {
+    it('proposes the vendor endpoint once the cloud provider is picked', () => {
+      component.openAddDialog();
+      expect(component.addBaseUrl()).toBe('');
+
+      component.onAddCloudProviderTypeChange('anthropic');
+      expect(component.addBaseUrl()).toBe('https://api.anthropic.com');
+      expect(component.addBaseUrlIsSuggestion()).toBe(true);
+    });
+
+    it('follows a vendor change while the field still holds the proposal', () => {
+      component.openAddDialog();
+      component.onAddCloudProviderTypeChange('anthropic');
+      component.onAddCloudProviderTypeChange('openai');
+      expect(component.addBaseUrl()).toBe('https://api.openai.com/v1');
+
+      component.onAddCloudProviderTypeChange('azure');
+      expect(component.addBaseUrl()).toBe('');
+    });
+
+    it('never replaces a URL the operator typed', () => {
+      component.openAddDialog();
+      component.onAddCloudProviderTypeChange('anthropic');
+      component.addBaseUrl.set('https://proxy.example.org/anthropic');
+      component.onAddCloudProviderTypeChange('openai');
+
+      expect(component.addBaseUrl()).toBe('https://proxy.example.org/anthropic');
+      expect(component.addBaseUrlIsSuggestion()).toBe(false);
+    });
+
+    it('drops the proposal when the provider becomes a logosnode', () => {
+      component.openAddDialog();
+      component.onAddCloudProviderTypeChange('anthropic');
+      component.onAddProviderTypeChange('logosnode');
+      expect(component.addBaseUrl()).toBe('');
+    });
+
+    it('keeps the stored URL of an existing provider when the vendor changes', () => {
+      component.openEditDialog(makeProvider({ base_url: 'https://gateway.example.org/v1' }));
+      component.onEditCloudProviderTypeChange('anthropic');
+      expect(component.editBaseUrl()).toBe('https://gateway.example.org/v1');
+    });
+
+    it('fills an empty URL of an existing provider when the vendor changes', () => {
+      component.openEditDialog(makeProvider({ base_url: null }));
+      component.onEditCloudProviderTypeChange('anthropic');
+      expect(component.editBaseUrl()).toBe('https://api.anthropic.com');
+    });
+
+    it('sends the proposed URL with the new provider', async () => {
+      component.openAddDialog();
+      component.addName.set('Anthropic');
+      component.onAddCloudProviderTypeChange('anthropic');
+      await component.submitAdd();
+
+      const payload = addProvider.mock.calls[0][0] as AddProviderPayload;
+      expect(payload.cloud_provider_type).toBe('anthropic');
+      expect(payload.base_url).toBe('https://api.anthropic.com');
+    });
+
+    it('advertises the auth header the vendor is actually sent', () => {
+      component.openAddDialog();
+      expect(component.addAuthPlaceholders()).toEqual({ name: 'Authorization', format: 'Bearer {}' });
+
+      component.onAddCloudProviderTypeChange('anthropic');
+      expect(component.addAuthPlaceholders()).toEqual({ name: 'x-api-key', format: '{}' });
     });
   });
 
@@ -317,7 +516,7 @@ describe('Providers', () => {
       model_id: 92,
       model_name: 'gpt-5.6-luna',
       endpoint: 'https://res.openai.azure.com/openai/deployments/gpt-5.6-luna/responses',
-      api_key: null,
+      api_key_hint: null,
       ...overrides,
     });
 
@@ -344,6 +543,56 @@ describe('Providers', () => {
     it('treats a connection without batch information as unchecked', () => {
       expect(component.batchLabel(connection())).toBe('Batch unchecked');
       expect(component.batchLabel(connection({ batch_support: 'logos' }))).toBe('Batch in Logos');
+    });
+  });
+
+  describe('the expanded row of a logosnode', () => {
+    const expand = async (provider: Provider): Promise<HTMLElement> => {
+      // The first change detection starts the component's own fetch; let it finish first.
+      fixture.detectChanges();
+      await fixture.whenStable();
+      component.providers.set([provider]);
+      fixture.detectChanges();
+      component.toggleExpand(provider);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      return fixture.nativeElement as HTMLElement;
+    };
+
+    it('lists the models of the node instead of connected models', async () => {
+      const root = await expand(makeProvider({ id: 4, name: 'hochbruegge', provider_type: 'logosnode' }));
+
+      expect(root.querySelector('app-node-models')).not.toBeNull();
+      expect(root.textContent).toContain('Node models');
+      expect(root.textContent).not.toContain('Connected Models');
+    });
+
+    it('keeps two providers open at once', async () => {
+      const node = makeProvider({ id: 4, name: 'hochbruegge', provider_type: 'logosnode' });
+      const cloud = makeProvider({ id: 5, name: 'azure' });
+      const root = await expand(node);
+      component.providers.set([node, cloud]);
+      component.toggleExpand(cloud);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      expect(root.querySelector('app-node-models')).not.toBeNull();
+      expect(root.textContent).toContain('Connected Models');
+
+      component.toggleExpand(node);
+      fixture.detectChanges();
+
+      expect(root.querySelector('app-node-models')).toBeNull();
+      expect(root.textContent).toContain('Connected Models');
+    });
+
+    it('keeps the connected models of a cloud provider', async () => {
+      const root = await expand(makeProvider());
+
+      expect(root.querySelector('app-node-models')).toBeNull();
+      expect(root.textContent).toContain('Connected Models');
     });
   });
 });

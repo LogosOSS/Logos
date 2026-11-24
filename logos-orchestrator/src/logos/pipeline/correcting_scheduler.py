@@ -29,14 +29,17 @@ import math
 import os
 import random
 import time
+from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Tuple
 
 from logos import perf_trace
 from logos.benchmarks.reservations import benchmark_reservations
-from logos.context_budget import estimate_prompt_tokens
+from logos.context_budget import estimate_prompt_tokens, required_context_tokens
 from logos.monitoring import prometheus_metrics as prom
 from logos.queue.priority_queue import Priority
-from logos.residency_policy import configured_residency_policy
+from logos.request_content import is_multipart_payload
+from logos.residency_policy import DEFAULT_RESIDENCY_POLICY, configured_residency_policy
+from logos.sdi.models import ModelSchedulerView
 from logos.terminal_logging import style_model, style_provider
 from logos.timeouts import global_timeout_s
 
@@ -135,7 +138,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 logger.warning("Invalid ECCS_WEIGHT_OVERRIDE, ignoring: %s", _override_raw)
 
     def _uses_ettft_routing(self) -> bool:
-        return getattr(self, "_residency_policy", "demand") != "simple"
+        return getattr(self, "_residency_policy", DEFAULT_RESIDENCY_POLICY) != "simple"
 
     @staticmethod
     def _simple_candidate_key(candidate: tuple) -> tuple:
@@ -196,6 +199,23 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         except OSError:
             logger.debug("Failed to write ECCS decision log", exc_info=True)
 
+    def _snapshot_candidates(self, scored: list) -> list[dict]:
+        """Copy decision-time observations without changing candidate order or scores."""
+        return [
+            {
+                "model_id": model_id,
+                "provider_id": provider_id,
+                "provider_type": provider_type,
+                "state": estimate.tier.value,
+                # The scheduler queue is shared by all deployments of a model.
+                "queue_depth": (
+                    self._queue_mgr.get_total_depth_by_model(model_id) if provider_type == "logosnode" else None
+                ),
+                "expected_wait_s": (estimate.expected_wait_s if math.isfinite(estimate.expected_wait_s) else None),
+            }
+            for model_id, provider_id, provider_type, _score, _priority, estimate in scored
+        ]
+
     async def schedule(self, request: SchedulingRequest) -> Optional[SchedulingResult]:
         """
         Select a model from candidates based on ETTFT ranking.
@@ -217,6 +237,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
 
         with perf_trace.phase(request.request_id, "schedule.tokens"):
             input_tokens = estimate_prompt_tokens(request.payload)
+            context_tokens = self._simple_context_tokens(request, input_tokens)
         classified = request.classified_models or []
         named_model_peers = self._named_model_peer_ranking(classified, self._ettft_enabled)
         with perf_trace.phase(request.request_id, "schedule.score"):
@@ -228,9 +249,11 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 request_id=request.request_id,
             )
 
+        routing_candidates = self._snapshot_candidates(scored)
+
         # Try immediate selection
         with perf_trace.phase(request.request_id, "schedule.reserve"):
-            best = self._try_immediate_select(scored, request.request_id)
+            best = self._try_immediate_select(scored, request.request_id, affinity, context_tokens)
         if best is not None:
             model_id, provider_id, provider_type, score, priority_int, ettft = best
             self._record_affinity(request, model_id, provider_id, provider_type, affinity)
@@ -248,7 +271,9 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             )
             result.ettft_estimate_ms = ettft.ettft_ms
             result.ettft_tier = ettft.tier.value
+            result.ettft_provider_id = provider_id
             result.warmth_state = ettft.warmth_state
+            result.routing_candidates = routing_candidates
             return result
 
         # No immediate candidate — queue on the best logosnode candidate.
@@ -302,8 +327,9 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         )
         lc_model_id, lc_provider_id, _, _, _, lc_ettft = logosnode_candidate
         self._record_scheduling_metrics(lc_model_id, lc_provider_id, lc_ettft)
-        result = await self._queue_and_wait(logosnode_candidate, request)
+        result = await self._queue_and_wait(logosnode_candidate, request, context_tokens)
         if result is not None:
+            result.routing_candidates = routing_candidates
             self._record_affinity(request, result.model_id, result.provider_id, result.provider_type, affinity)
         return result
 
@@ -344,11 +370,12 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         candidates = [c for c in (request.classified_models or []) if c[0] == model_id]
         if not candidates:
             return None
+        input_tokens = estimate_prompt_tokens(request.payload)
         scored = self._compute_candidate_scores(
             candidates,
             deployments,
             None,
-            input_tokens=estimate_prompt_tokens(request.payload),
+            input_tokens=input_tokens,
             request_id=request.request_id,
         )
         ready = [
@@ -359,7 +386,10 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         ]
         if not ready:
             return None
-        best = self._try_immediate_select(ready, request.request_id)
+        routing_candidates = self._snapshot_candidates(scored)
+        best = self._try_immediate_select(
+            ready, request.request_id, context_tokens=self._simple_context_tokens(request, input_tokens)
+        )
         if best is None:
             logger.info(
                 "Reroute of request %s found no free slot on another deployment; " "keeps its reservation on worker=%s",
@@ -389,7 +419,9 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         )
         result.ettft_estimate_ms = ettft.ettft_ms
         result.ettft_tier = ettft.tier.value
+        result.ettft_provider_id = provider_id
         result.warmth_state = ettft.warmth_state
+        result.routing_candidates = routing_candidates
         return result
 
     # ------------------------------------------------------------------
@@ -764,61 +796,22 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                     )
                     view = None
 
-            if view is None:
-                # No lanes visible — treat as COLD (capacity planner can
-                # cold-load during context resolution).  Consult the latency
-                # store so that the provider-specific learned cold overhead
-                # (or size-derived prior) is used instead of the static
-                # constant, which matters for cold-provider selection when a
-                # lane has been removed but history is still persisted.
-                cold_s = OVERHEAD_COLD_S
-                _nl_learned_ttft: Optional[float] = None
-                _nl_prefill_s: Optional[float] = None
-                if self._latency_store is not None:
-                    _no_lane_model_name = self._logosnode.get_model_name(model_id, provider_id)
-                    if _no_lane_model_name:
-                        _nl_vram_mb = 0.0
-                        _nl_tp_size = 1
-                        try:
-                            _profiles = self._logosnode.get_model_profiles(provider_id)
-                            if _no_lane_model_name in _profiles:
-                                _p = _profiles[_no_lane_model_name]
-                                _nl_vram_mb = _p.estimate_vram_mb()
-                                _nl_tp_size = int(_p.tensor_parallel_size or 1)
-                        except KeyError:
-                            pass
-                        except Exception:  # noqa: BLE001
-                            logger.warning(
-                                "Unexpected error reading model profile for no-lane estimate" " model=%s provider=%s",
-                                model_id,
-                                provider_id,
-                                exc_info=True,
-                            )
-                        cold_s = self._latency_store.get_overhead_s(
-                            _no_lane_model_name,
-                            provider_id,
-                            ReadinessTier.COLD,
-                            model_vram_mb=_nl_vram_mb,
-                            tp_size=_nl_tp_size,
-                        )
-                        _nl_learned_ttft = self._latency_store.get_ttft_s(_no_lane_model_name, provider_id)
-                        if input_tokens > 0:
-                            _nl_prefill_s = self._latency_store.get_prefill_s(
-                                _no_lane_model_name, provider_id, input_tokens
-                            )
-                _nl_added = (_nl_learned_ttft or 0.0) + (_nl_prefill_s or 0.0)
-                _nl_parts: list[str] = [f"cold {cold_s:.2f}s"]
-                if _nl_learned_ttft is not None:
-                    _nl_parts.append(f"TTFT {_nl_learned_ttft:.2f}s")
-                if _nl_prefill_s is not None:
-                    _nl_parts.append(f"prefill {_nl_prefill_s:.2f}s ({input_tokens} tok)")
-                return EttftEstimate(
-                    expected_wait_s=cold_s + _nl_added,
-                    tier=ReadinessTier.COLD,
-                    reasoning=f"No lanes for logosnode model {model_id}: {' + '.join(_nl_parts)}",
-                    state_overhead_s=cold_s,
-                    prefill_s=_nl_prefill_s or 0.0,
-                    warmth_state=-1,
+            no_visible_lane = view is None
+            if no_visible_lane:
+                # A declared deployment can be cold-loaded, but it must pay the
+                # same queue and VRAM-reclaim costs as a visible cold lane.
+                view = ModelSchedulerView(
+                    model_id=model_id,
+                    model_name=self._logosnode.get_model_name(model_id, provider_id) or str(model_id),
+                    provider_id=provider_id,
+                    is_loaded=False,
+                    best_lane_state="cold",
+                    best_sleep_state="unknown",
+                    aggregate_active_requests=0,
+                    aggregate_queue_waiting=0.0,
+                    warmest_ttft_p95_seconds=0.0,
+                    warmest_e2e_latency_p50_seconds=0.0,
+                    gpu_cache_pressure_max=None,
                 )
 
             with perf_trace.phase(request_id, "schedule.infra"):
@@ -914,12 +907,20 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                             overhead_overrides[tier] = self._latency_store.get_overhead_s(
                                 model_name_for_store, provider_id, tier, **_store_kwargs
                             )
-                    # Replace the live e2e p50 with the learned value when the
-                    # store has sufficient history (learned value is more stable
-                    # across the session than a single-lane histogram p50).
+                    # The store learns new histogram increments rather than
+                    # lifetime medians, so it follows workload changes.
                     learned_e2e = self._latency_store.get_e2e_latency_s(model_name_for_store, provider_id)
                     if learned_e2e is not None:
                         observed_e2e_p50_s = learned_e2e
+                    # Reclaim depends on the victims' work, not the target's
+                    # service time. Apply recent observations to each victim.
+                    updated_lanes = []
+                    for lane in all_provider_lanes or []:
+                        service_s = self._latency_store.get_e2e_latency_s(lane.model_name, provider_id)
+                        if service_s is not None and math.isfinite(service_s) and service_s > 0:
+                            lane = dataclasses.replace(lane, e2e_latency_p50_seconds=service_s)
+                        updated_lanes.append(lane)
+                    all_provider_lanes = updated_lanes
                     # Learned TTFT (decode-only first-token time) for this provider —
                     # added once for this request (queue_wait already embeds TTFT of
                     # preceding requests via e2e_p50 as service time, no double-counting).
@@ -944,6 +945,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                     observed_e2e_p50_s=observed_e2e_p50_s,
                     all_provider_lanes=all_provider_lanes,
                     overhead_overrides=overhead_overrides,
+                    allow_cold_start=no_visible_lane,
                 )
             if (learned_ttft is not None or estimated_prefill_s is not None) and (
                 estimate.tier != ReadinessTier.UNAVAILABLE
@@ -1093,7 +1095,37 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             order.append(remaining.pop(picked))
         return order
 
-    def _try_immediate_select(self, scored: list, request_id: str):
+    def _simple_context_tokens(self, request: SchedulingRequest, input_tokens: int) -> int:
+        if self._uses_ettft_routing() or is_multipart_payload(request.payload):
+            return 0
+        return required_context_tokens(request.payload, prompt_tokens=input_tokens) or 0
+
+    def _order_simple_peers(self, scored: list, affinity: dict[int, int], context_tokens: int) -> list:
+        ordered = sorted(scored, key=self._simple_candidate_key)
+        # Only exchange positions occupied by ready replicas of the same scored
+        # model. Classification, cloud ordering and cold placement stay intact.
+        groups = defaultdict(list)
+        for index, (mid, _pid, ptype, score, _priority, estimate) in enumerate(ordered):
+            if ptype == "logosnode" and estimate.tier in {ReadinessTier.WARM, ReadinessTier.BUSY}:
+                groups[mid, score].append(index)
+        for (mid, _score), indices in groups.items():
+            if len(indices) < 2:
+                continue
+            peers = sorted(
+                (ordered[i] for i in indices),
+                key=lambda peer: (
+                    self._warm_lane_rank(mid, peer[1], context_tokens),
+                    affinity.get(mid) != peer[1],
+                    peer[1],
+                ),
+            )
+            for i, peer in zip(indices, peers):
+                ordered[i] = peer
+        return ordered
+
+    def _try_immediate_select(
+        self, scored: list, request_id: str, affinity: dict[int, int] | None = None, context_tokens: int = 0
+    ):
         """Try to reserve capacity on the best available candidate.
 
         Returns the winning tuple or None if no candidate can be reserved
@@ -1112,7 +1144,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         scored = (
             self._weighted_shuffle_tied(scored)
             if self._uses_ettft_routing()
-            else sorted(scored, key=self._simple_candidate_key)
+            else self._order_simple_peers(scored, affinity or {}, context_tokens)
         )
         for idx, (
             model_id,
@@ -1142,6 +1174,12 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                     )
                     return None
 
+                if (
+                    not self._uses_ettft_routing()
+                    and context_tokens
+                    and context_tokens > self._logosnode.unqueued_context_limit(model_id, provider_id)
+                ):
+                    continue
                 try:
                     reserved = self._logosnode.try_reserve_capacity(model_id, provider_id, request_id)
                 except (KeyError, Exception):
@@ -1152,6 +1190,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                     )
                     continue
                 if reserved:
+                    if not self._uses_ettft_routing():
+                        self._logosnode.book_warm_lane(model_id, provider_id, request_id, context_tokens)
                     logger.info(
                         "Reserved logosnode model=%s worker=%s " "(score=%.2f, tier=%s, wait=%.1fs)",
                         style_model(self._logosnode.get_model_name(model_id, provider_id) or model_id),
@@ -1226,7 +1266,9 @@ class ClassificationCorrectingScheduler(BaseScheduler):
         pending.add(task)
         task.add_done_callback(pending.discard)
 
-    async def _queue_and_wait(self, best_scored: tuple, request: SchedulingRequest) -> Optional[SchedulingResult]:
+    async def _queue_and_wait(
+        self, best_scored: tuple, request: SchedulingRequest, context_tokens: int = 0
+    ) -> Optional[SchedulingResult]:
         """Queue on the best-scored candidate and wait for release."""
         model_id, provider_id, provider_type, score, priority_int, ettft = best_scored
         priority = Priority.from_int(priority_int)
@@ -1248,6 +1290,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             priority,
             is_cold_at_queue=is_cold_at_queue,
             provider_affinity=request.required_provider_id,
+            context_tokens=context_tokens,
+            allowed_provider_ids=frozenset(d["provider_id"] for d in request.deployments if d["model_id"] == model_id),
             raw_priority=priority_int,
             role_rank=request.role_rank,
             api_key_id=request.api_key_id,
@@ -1288,6 +1332,7 @@ class ClassificationCorrectingScheduler(BaseScheduler):
             # the estimate and warmth as seen when the request was enqueued)
             result.ettft_estimate_ms = ettft.ettft_ms
             result.ettft_tier = ettft.tier.value
+            result.ettft_provider_id = provider_id
             result.warmth_state = ettft.warmth_state
 
             if provider_type == "logosnode":
@@ -1321,6 +1366,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
 
             return result
         except asyncio.TimeoutError:
+            if not self._uses_ettft_routing():
+                self._logosnode.cancel_warm_booking(request.request_id)
             benchmark_reservations.finish_request(request.request_id)
             self._queue_mgr.remove(entry_id)
             raise QueueTimeoutError(
@@ -1330,6 +1377,8 @@ class ClassificationCorrectingScheduler(BaseScheduler):
                 timeout_s=timeout,
             )
         except asyncio.CancelledError:
+            if not self._uses_ettft_routing():
+                self._logosnode.cancel_warm_booking(request.request_id)
             benchmark_reservations.finish_request(request.request_id)
             self._queue_mgr.remove(entry_id)
             raise

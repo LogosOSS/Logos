@@ -1083,6 +1083,187 @@ async def test_auto_place_gpu_devices_picks_best_fit_single_gpu() -> None:
     assert placed.gpu_devices == "0"
 
 
+def _two_gpu_manager(selection: str, *, with_profile: bool = True) -> LaneManager:
+    """GPU 0 has the most free memory; the model's own choice may point to GPU 1 instead."""
+    from logos_worker_node.model_profiles import ModelProfileRecord, ModelProfileRegistry
+
+    profiles = ModelProfileRegistry()
+    if with_profile:
+        profiles._profiles["Qwen/Qwen2.5-0.5B-Instruct"] = ModelProfileRecord(  # noqa: SLF001
+            loaded_vram_mb=6000.0,
+            engine="vllm",
+        )
+
+    async def _snapshot() -> DeviceSummary:
+        return DeviceSummary(
+            timestamp=datetime.now(timezone.utc),
+            mode="nvidia",
+            nvidia_smi_available=True,
+            devices=[
+                DeviceInfo(
+                    device_id=f"gpu{index}",
+                    kind="nvidia",
+                    memory_total_mb=40960.0,
+                    memory_free_mb=free,
+                    extra={"index": index},
+                )
+                for index, free in enumerate((40000.0, 30000.0))
+            ],
+            total_memory_mb=2 * 40960.0,
+            free_memory_mb=70000.0,
+        )
+
+    return LaneManager(
+        WorkerConfig(gpu_devices="all"),
+        lane_port_start=15100,
+        lane_port_end=15110,
+        model_profiles=profiles,
+        gpu_snapshot=_snapshot,
+        model_gpu_selection=lambda _model: selection,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_lane_takes_only_the_gpus_chosen_for_its_model() -> None:
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+
+    unrestricted = await _two_gpu_manager("")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+    chosen = await _two_gpu_manager("1")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    # Without a choice the roomier GPU 0 wins; with GPU 1 chosen the lane never leaves it.
+    assert unrestricted.gpu_devices == "0"
+    assert chosen.gpu_devices == "1"
+
+
+def _launch_visible_devices(lane: LaneConfig) -> str | None:
+    """CUDA_VISIBLE_DEVICES the engine process would get for *lane* on a worker whose pool is every GPU."""
+    from logos_worker_node.vllm_process import VllmProcessHandle
+
+    env = VllmProcessHandle("lane", 19000, WorkerConfig(gpu_devices="all"))._build_env(lane)  # noqa: SLF001
+    return env.get("CUDA_VISIBLE_DEVICES")
+
+
+@pytest.mark.asyncio
+async def test_a_choice_outside_the_worker_pool_is_rejected() -> None:
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+
+    # No GPU of the choice exists: leaving the lane unpinned would open every GPU.
+    with pytest.raises(RuntimeError, match="matches no GPU"):
+        await _two_gpu_manager("7")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_choice_too_small_for_the_parallel_size_is_rejected() -> None:
+    lane = LaneConfig(
+        model="Qwen/Qwen2.5-0.5B-Instruct",
+        vllm=True,
+        vllm_config=VllmConfig(tensor_parallel_size=2),
+    )
+
+    with pytest.raises(RuntimeError, match="leaves only 1 usable GPU"):
+        await _two_gpu_manager("1")._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_missing_memory_estimate_still_launches_on_the_chosen_gpu() -> None:
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+
+    placed = await _two_gpu_manager("1", with_profile=False)._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    assert placed.gpu_devices == "1"
+    assert _launch_visible_devices(placed) == "1"
+
+
+@pytest.mark.asyncio
+async def test_restart_places_an_automatic_pin_again_after_the_choice_changes() -> None:
+    selection = {"value": ""}
+    manager = _two_gpu_manager("")
+    manager._model_gpu_selection = lambda _model: selection["value"]  # noqa: SLF001
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+
+    first = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+    assert first.gpu_devices == "0"
+
+    selection["value"] = "1"
+    restarted = await manager._auto_place_gpu_devices("lane", first)  # noqa: SLF001
+
+    assert restarted.gpu_devices == "1"
+    assert _launch_visible_devices(restarted) == "1"
+
+
+@pytest.mark.asyncio
+async def test_restart_places_an_automatic_pin_again_after_the_pool_is_narrowed() -> None:
+    manager = _two_gpu_manager("")
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+    first = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+    assert first.gpu_devices == "0"
+
+    manager._global_config.gpu_devices = "1"  # noqa: SLF001
+    restarted = await manager._auto_place_gpu_devices("lane", first)  # noqa: SLF001
+
+    assert restarted.gpu_devices == "1"
+
+
+@pytest.mark.asyncio
+async def test_restart_drops_an_automatic_pin_when_the_pool_is_disabled() -> None:
+    from logos_worker_node.vllm_process import VllmProcessHandle
+
+    manager = _two_gpu_manager("")
+    lane = LaneConfig(model="Qwen/Qwen2.5-0.5B-Instruct", vllm=True, vllm_config=VllmConfig(tensor_parallel_size=1))
+    first = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    manager._global_config.gpu_devices = "none"  # noqa: SLF001
+    restarted = await manager._auto_place_gpu_devices("lane", first)  # noqa: SLF001
+
+    env = VllmProcessHandle("lane", 19000, manager._global_config)._build_env(restarted)  # noqa: SLF001
+    assert restarted.gpu_devices == ""
+    assert env["CUDA_VISIBLE_DEVICES"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_forced_restart_that_moves_an_automatic_pin_waits_for_the_destination_gpu() -> None:
+    selection = {"value": ""}
+    manager = _two_gpu_manager("")
+    manager._model_gpu_selection = lambda _model: selection["value"]  # noqa: SLF001
+    lane = LaneConfig(
+        model="Qwen/Qwen2.5-0.5B-Instruct",
+        vllm=True,
+        gpu_devices="0",
+        vllm_config=VllmConfig(tensor_parallel_size=1),
+    )
+    manager._handles["lane"] = _StubHandle(lane)  # noqa: SLF001
+    manager._auto_pins["lane"] = "0"  # noqa: SLF001
+    manager._restart_lane_unlocked = AsyncMock()  # noqa: SLF001
+    manager._get_status_unlocked = AsyncMock()  # noqa: SLF001
+    manager._validate_vllm_runtime_requirements = MagicMock()  # noqa: SLF001
+    selection["value"] = "1"
+
+    # Another load holds GPU 1 while the restart wants to move there.
+    async with manager._lock.scoped(["other"], frozenset({1})):  # noqa: SLF001
+        task = asyncio.create_task(manager.reconfigure_lane("lane", {}, force_restart=True))
+        await asyncio.sleep(0.1)
+        assert not manager._restart_lane_unlocked.await_count  # noqa: SLF001
+    await asyncio.wait_for(task, timeout=5)
+
+    assert manager._restart_lane_unlocked.await_args.kwargs["scoped"] is False  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_restart_keeps_an_explicit_pin_the_choice_does_not_cover() -> None:
+    manager = _two_gpu_manager("1")
+    lane = LaneConfig(
+        model="Qwen/Qwen2.5-0.5B-Instruct",
+        vllm=True,
+        gpu_devices="0",
+        vllm_config=VllmConfig(tensor_parallel_size=1),
+    )
+
+    placed = await manager._auto_place_gpu_devices("lane", lane)  # noqa: SLF001
+
+    # The operator's own pin is authoritative.
+    assert placed.gpu_devices == "0"
+
+
 def _faulted_gpu0_manager(
     *,
     lost: bool = False,
@@ -2470,6 +2651,159 @@ async def test_stuck_lane_is_automatically_restarted(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_restarted_lane_runs_with_the_overrides_the_node_has_now(monkeypatch) -> None:
+    """The lane's saved config predates a change to engines.vllm.model_overrides."""
+    lane_id = "planner-Qwen_Qwen3-8B"
+    lane_config = LaneConfig(lane_id=lane_id, model="Qwen/Qwen3-8B", vllm=True, vllm_config=VllmConfig())
+    engine = VllmEngineConfig(model_overrides={})
+    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15000, lane_port_end=15010)
+    spawned: list[LaneConfig] = []
+
+    class OldHandle:
+        def __init__(self) -> None:
+            self.lane_id, self.port, self.lane_config = lane_id, 15000, lane_config
+
+        async def stop(self) -> ProcessStatus:
+            return ProcessStatus(state=ProcessState.STOPPED, pid=1, return_code=0)
+
+        async def destroy(self) -> None:
+            await asyncio.sleep(0)
+
+        async def close(self) -> None:
+            await asyncio.sleep(0)
+
+    class NewHandle:
+        def __init__(self, lid: str, port: int) -> None:
+            self.lane_id, self.port, self.lane_config = lid, port, None
+
+        async def init(self) -> None:
+            await asyncio.sleep(0)
+
+        async def spawn(self, lc: LaneConfig) -> ProcessStatus:
+            await asyncio.sleep(0)
+            self.lane_config = lc
+            spawned.append(lc)
+            return ProcessStatus(state=ProcessState.RUNNING, pid=2)
+
+    manager._handles[lane_id] = OldHandle()  # noqa: SLF001
+    manager._port_alloc._used[lane_id] = 15000  # noqa: SLF001
+    monkeypatch.setattr(
+        "logos_worker_node.lane_manager._create_handle", lambda lid, port, *_a, **_k: NewHandle(lid, port)
+    )
+    monkeypatch.setattr(PortAllocator, "_is_port_available", staticmethod(lambda _port: True))
+    engine.model_overrides["Qwen/Qwen3-8B"] = {"quantization": "awq"}
+
+    await manager._restart_stuck_lane(lane_id, lane_config)  # noqa: SLF001
+
+    assert spawned[0].vllm_config.quantization == "awq"
+
+
+def _overridden_lane(overrides: dict) -> tuple[LaneManager, VllmEngineConfig, LaneConfig]:
+    engine = VllmEngineConfig(model_overrides={"org/model": overrides})
+    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15000, lane_port_end=15010)
+    lane = LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig(extra_args=["--own"]))
+    return manager, engine, lane
+
+
+def test_a_removed_engine_override_gives_the_original_back_on_restart() -> None:
+    manager, engine, lane = _overridden_lane({"extra_args": ["--from-node"], "quantization": "awq"})
+    launched = manager._apply_model_vllm_overrides(lane, "l1")  # noqa: SLF001
+    assert launched.vllm_config.extra_args == ["--from-node"]
+
+    engine.model_overrides["org/model"] = {"quantization": "awq"}
+    restarted = manager._refresh_node_overrides("l1", launched)  # noqa: SLF001
+    manager._settle_node_overrides("l1")  # noqa: SLF001
+
+    assert restarted.vllm_config.extra_args == ["--own"]
+    assert restarted.vllm_config.quantization == "awq"
+
+
+def test_a_changed_engine_override_replaces_the_old_one_and_keeps_the_original() -> None:
+    manager, engine, lane = _overridden_lane({"quantization": "awq"})
+    launched = manager._apply_model_vllm_overrides(lane, "l1")  # noqa: SLF001
+
+    engine.model_overrides["org/model"] = {"quantization": "gptq"}
+    changed = manager._refresh_node_overrides("l1", launched)  # noqa: SLF001
+    manager._settle_node_overrides("l1")  # noqa: SLF001
+    engine.model_overrides.pop("org/model")
+    removed = manager._refresh_node_overrides("l1", changed)  # noqa: SLF001
+
+    assert changed.vllm_config.quantization == "gptq"
+    assert removed.vllm_config.quantization == ""
+
+
+def test_an_explicit_lane_keeps_its_values_whatever_the_overrides_say() -> None:
+    manager, engine, lane = _overridden_lane({"quantization": "awq"})
+    launched = manager._apply_model_vllm_overrides(lane, "l1")  # noqa: SLF001
+    manager._explicit_lanes.add("l1")  # noqa: SLF001
+    engine.model_overrides.pop("org/model")
+
+    assert manager._refresh_node_overrides("l1", launched) is launched  # noqa: SLF001
+
+
+def test_a_lane_that_is_forgotten_has_no_baseline_left() -> None:
+    manager, _, lane = _overridden_lane({"quantization": "awq"})
+    manager._apply_model_vllm_overrides(lane, "l1")  # noqa: SLF001
+    manager._explicit_lanes.add("l1")  # noqa: SLF001
+
+    manager._forget_lane_overrides("l1")  # noqa: SLF001
+
+    assert "l1" not in manager._override_baselines and "l1" not in manager._explicit_lanes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_forced_restart_leaves_the_baseline_for_the_retry() -> None:
+    manager, engine, lane = _overridden_lane({"extra_args": ["--from-node"]})
+    launched = manager._apply_model_vllm_overrides(lane, "benchmark-lane")  # noqa: SLF001
+    manager._handles["benchmark-lane"] = _StubHandle(launched)
+    manager._restart_lane_unlocked = AsyncMock()
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+    engine.model_overrides.pop("org/model")
+    manager._active_requests["benchmark-lane"] = 1  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="active request"):
+        await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+    manager._active_requests["benchmark-lane"] = 0  # noqa: SLF001
+    await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+
+    assert manager._restart_lane_unlocked.await_args.args[1].vllm_config.extra_args == ["--own"]  # noqa: SLF001
+    assert "benchmark-lane" not in manager._override_baselines  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_failed_forced_restart_leaves_the_baseline_for_the_retry() -> None:
+    manager, engine, lane = _overridden_lane({"extra_args": ["--from-node"]})
+    launched = manager._apply_model_vllm_overrides(lane, "benchmark-lane")  # noqa: SLF001
+    manager._handles["benchmark-lane"] = _StubHandle(launched)
+    manager._restart_lane_unlocked = AsyncMock(side_effect=[RuntimeError("spawn failed"), None])
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+    engine.model_overrides.pop("org/model")
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+    await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+
+    assert manager._restart_lane_unlocked.await_args.args[1].vllm_config.extra_args == ["--own"]  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_forced_restart_after_removing_an_override_launches_without_it() -> None:
+    manager, engine, lane = _overridden_lane({"extra_args": ["--from-node"]})
+    launched = manager._apply_model_vllm_overrides(lane, "benchmark-lane")  # noqa: SLF001
+    manager._handles["benchmark-lane"] = _StubHandle(launched)
+    manager._restart_lane_unlocked = AsyncMock()
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+    engine.model_overrides.pop("org/model")
+
+    await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+
+    assert manager._restart_lane_unlocked.await_args.args[1].vllm_config.extra_args == ["--own"]
+
+
+@pytest.mark.asyncio
 async def test_stuck_lane_no_restart_when_auto_restart_false(monkeypatch) -> None:
     """When auto_restart=False (lock held), stuck lane is stopped but NOT restarted."""
     lane_id = "planner-Qwen_Qwen3-Embedding-8B"
@@ -3569,6 +3903,91 @@ async def test_benchmark_reconfigure_only_protects_requests_on_restarted_lane(bu
 
 
 @pytest.mark.asyncio
+async def test_benchmark_candidate_values_beat_the_node_overrides_on_restart() -> None:
+    engine = VllmEngineConfig(model_overrides={"org/model": {"max_model_len": 8192, "quantization": "awq"}})
+    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110)
+    current = LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig(max_model_len=8192))
+    manager._handles["benchmark-lane"] = _StubHandle(current)
+    manager._restart_lane_unlocked = AsyncMock()
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+    updates = {"vllm_config": {**current.vllm_config.model_dump(), "max_model_len": 16384}}
+
+    await manager.reconfigure_lane("benchmark-lane", updates, require_idle=True)
+
+    restarted = manager._restart_lane_unlocked.await_args.args[1]
+    assert restarted.vllm_config.max_model_len == 16384
+
+
+def _reconfigurable(restart: AsyncMock | None = None) -> tuple[LaneManager, dict]:
+    engine = VllmEngineConfig(model_overrides={"org/model": {"max_model_len": 8192}})
+    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110)
+    current = LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig(max_model_len=8192))
+    manager._handles["benchmark-lane"] = _StubHandle(current)
+    manager._restart_lane_unlocked = restart or AsyncMock()
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+    return manager, {"vllm_config": {**current.vllm_config.model_dump(), "max_model_len": 16384}}
+
+
+@pytest.mark.asyncio
+async def test_a_successful_reconfiguration_with_new_values_marks_the_lane_explicit() -> None:
+    manager, updates = _reconfigurable()
+
+    await manager.reconfigure_lane("benchmark-lane", updates, require_idle=True)
+
+    assert "benchmark-lane" in manager._explicit_lanes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_reconfiguration_does_not_mark_the_lane_explicit() -> None:
+    manager, updates = _reconfigurable()
+    manager._active_requests["benchmark-lane"] = 1  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="active request"):
+        await manager.reconfigure_lane("benchmark-lane", updates, require_idle=True)
+
+    assert "benchmark-lane" not in manager._explicit_lanes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_reconfiguration_keeps_an_earlier_explicit_mark() -> None:
+    manager, updates = _reconfigurable()
+    manager._explicit_lanes.add("benchmark-lane")  # noqa: SLF001
+    manager._active_requests["benchmark-lane"] = 1  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="active request"):
+        await manager.reconfigure_lane("benchmark-lane", updates, require_idle=True)
+
+    assert "benchmark-lane" in manager._explicit_lanes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restart_does_not_mark_the_lane_explicit() -> None:
+    manager, updates = _reconfigurable(AsyncMock(side_effect=RuntimeError("spawn failed")))
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        await manager.reconfigure_lane("benchmark-lane", updates, require_idle=True)
+
+    assert "benchmark-lane" not in manager._explicit_lanes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_forced_restart_without_new_values_picks_up_the_node_overrides() -> None:
+    engine = VllmEngineConfig(model_overrides={"org/model": {"quantization": "awq"}})
+    manager = LaneManager(WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110)
+    current = LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig())
+    manager._handles["benchmark-lane"] = _StubHandle(current)
+    manager._restart_lane_unlocked = AsyncMock()
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+
+    await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+
+    assert manager._restart_lane_unlocked.await_args.args[1].vllm_config.quantization == "awq"
+
+
+@pytest.mark.asyncio
 async def test_benchmark_reconfigure_unchanged_settings_allow_active_requests() -> None:
     manager = LaneManager(WorkerConfig(), lane_port_start=15100, lane_port_end=15110)
     current = LaneConfig(model="org/model", vllm=True)
@@ -4326,6 +4745,97 @@ async def test_apply_lanes_replans_after_rollback_restores_the_original_floor(mo
     # The restart re-planned for the replacement model, and the post-rollback
     # re-plan saw the RESTORED model — its footprint is the final floor.
     assert replan_models == ["org/small", "org/big"]
+
+
+@pytest.mark.asyncio
+async def test_a_rolled_back_batch_keeps_the_explicit_marks_it_started_with(monkeypatch) -> None:
+    original = LaneConfig(model="org/a", vllm=True, lane_id="org_a", vllm_config=VllmConfig())
+    other = LaneConfig(model="org/other", vllm=True, lane_id="org_a", vllm_config=VllmConfig())
+    to_add = LaneConfig(model="org/add", vllm=True, lane_id="org_b", vllm_config=VllmConfig())
+    manager = LaneManager(WorkerConfig(), nvidia_smi_available=lambda: True)
+    manager._handles["org_a"] = SimpleNamespace(lane_id="org_a", lane_config=original)  # noqa: SLF001
+    manager._port_alloc._used["org_a"] = 15071  # noqa: SLF001
+    manager._override_baselines["org_a"] = {"quantization": ""}  # noqa: SLF001
+
+    async def _restart(lid: str, new_lc: LaneConfig) -> None:
+        manager._handles[lid] = SimpleNamespace(lane_id=lid, lane_config=new_lc)  # noqa: SLF001
+        manager._override_baselines.pop(lid, None)  # noqa: SLF001
+
+    async def _failing_add(_lid: str, _lc: LaneConfig) -> None:
+        raise RuntimeError("simulated add failure")
+
+    monkeypatch.setattr(manager, "_restart_lane_unlocked", _restart)
+    monkeypatch.setattr(manager, "_add_lane_unlocked", _failing_add)
+    monkeypatch.setattr(manager, "_rollback_unlocked", AsyncMock())
+    monkeypatch.setattr(manager, "_collect_statuses_unlocked", AsyncMock(return_value=[]))
+    monkeypatch.setattr(manager, "_sleep_handle_and_replan", AsyncMock())
+
+    result = await manager.apply_lanes([other, to_add])
+
+    assert result.rolled_back is True
+    assert "org_a" not in manager._explicit_lanes  # noqa: SLF001
+    assert manager._override_baselines == {"org_a": {"quantization": ""}}  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_batch_that_succeeds_keeps_the_explicit_mark_of_a_restarted_lane(monkeypatch) -> None:
+    original = LaneConfig(model="org/a", vllm=True, lane_id="org_a", vllm_config=VllmConfig())
+    other = LaneConfig(model="org/other", vllm=True, lane_id="org_a", vllm_config=VllmConfig())
+    manager = LaneManager(WorkerConfig(), nvidia_smi_available=lambda: True)
+    manager._handles["org_a"] = SimpleNamespace(lane_id="org_a", lane_config=original)  # noqa: SLF001
+    manager._port_alloc._used["org_a"] = 15071  # noqa: SLF001
+    monkeypatch.setattr(manager, "_restart_lane_unlocked", AsyncMock())
+    monkeypatch.setattr(manager, "_collect_statuses_unlocked", AsyncMock(return_value=[]))
+    monkeypatch.setattr(manager, "_sleep_handle_and_replan", AsyncMock())
+
+    await manager.apply_lanes([other])
+
+    assert "org_a" in manager._explicit_lanes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_a_forced_restart_follows_a_parallel_layout_the_overrides_now_ask_for() -> None:
+    engine = VllmEngineConfig(model_overrides={"org/model": {"extra_args": ["--pipeline-parallel-size=2"]}})
+    manager = LaneManager(
+        WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110, gpu_device_count=lambda: 2
+    )
+    current = LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig(), gpu_devices="0")
+    manager._handles["benchmark-lane"] = _StubHandle(current)
+    manager._restart_lane_unlocked = AsyncMock()
+    manager._get_status_unlocked = AsyncMock()
+    manager._validate_vllm_runtime_requirements = MagicMock()
+
+    await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+
+    restarted = manager._restart_lane_unlocked.await_args.args[1]
+    assert restarted.vllm_config.parallel_gpu_count == 2
+    assert restarted.gpu_devices == ""
+    assert restarted.auto_tensor_parallel is False
+
+
+@pytest.mark.asyncio
+async def test_a_forced_restart_refuses_a_layout_the_node_has_no_gpus_for() -> None:
+    engine = VllmEngineConfig(model_overrides={"org/model": {"extra_args": ["--pipeline-parallel-size=2"]}})
+    manager = LaneManager(
+        WorkerConfig(), engine, lane_port_start=15100, lane_port_end=15110, gpu_device_count=lambda: 1
+    )
+    manager._handles["benchmark-lane"] = _StubHandle(
+        LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig(), gpu_devices="0")
+    )
+    manager._restart_lane_unlocked = AsyncMock()
+
+    with pytest.raises(ValueError, match="requires 2 GPUs"):
+        await manager.reconfigure_lane("benchmark-lane", {}, force_restart=True)
+
+    manager._restart_lane_unlocked.assert_not_awaited()
+
+
+def test_an_automatic_restart_keeps_the_parallel_layout_it_has() -> None:
+    manager, _, lane = _overridden_lane({"extra_args": ["--pipeline-parallel-size=2"]})
+    running = LaneConfig(model="org/model", vllm=True, vllm_config=VllmConfig(), gpu_devices="0")
+
+    assert manager._refresh_node_overrides("l1", running) is running  # noqa: SLF001
+    assert "l1" not in manager._staged_baselines  # noqa: SLF001
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,14 @@ import {
   AddProviderPayload,
   UpdateProviderPayload,
 } from '../../shared/models/provider.model';
+import {
+  NodeConfig,
+  NodeConfigEntry,
+  NodeInsights,
+  NodeSettings,
+  NodeSettingsSaved,
+  NodeSettingsValues,
+} from '../../shared/models/node-config.model';
 
 @Injectable({ providedIn: 'root' })
 export class ProviderManagementService {
@@ -43,6 +51,19 @@ export class ProviderManagementService {
     }));
   }
 
+  rotateWorkerKey(id: number): Promise<{ api_key: string }> {
+    return firstValueFrom(this.http.post<{ api_key: string }>(
+      `/api/logosdb/providers/${id}/rotate_worker_key`, {},
+    ));
+  }
+
+  replaceCloudKey(id: number, apiKey: string | null, modelId?: number): Promise<{ api_key_hint: string | null }> {
+    return firstValueFrom(this.http.post<{ api_key_hint: string | null }>(
+      `/api/logosdb/providers/${id}/replace_cloud_key`,
+      apiKey === null ? { clear: true, model_id: modelId } : { api_key: apiKey, model_id: modelId },
+    ));
+  }
+
   deleteProvider(id: number): Promise<void> {
     return firstValueFrom(this.http.post<void>('/api/logosdb/delete_provider', { provider_id: id }));
   }
@@ -66,6 +87,73 @@ export class ProviderManagementService {
    */
   modelSyncStatus(): Promise<{ running: boolean | null }> {
     return firstValueFrom(this.http.post<{ running: boolean | null }>('/api/logosdb/model_sync_status', {}));
+  }
+
+  /** The stored model list of a logosnode and its revision. */
+  getNodeConfig(providerId: number): Promise<NodeConfig> {
+    return firstValueFrom(this.http.post<NodeConfig>('/api/logosdb/node_config/get', { provider_id: providerId }));
+  }
+
+  /**
+   * Replaces the whole list. `expectedRevision` is the revision that was read:
+   * another save in between answers 409, a worker that refuses the list 400.
+   */
+  replaceNodeConfig(
+    providerId: number,
+    expectedRevision: number,
+    entries: NodeConfigEntry[],
+  ): Promise<{ provider_id: number; config_revision: number }> {
+    return firstValueFrom(
+      this.http.post<{ provider_id: number; config_revision: number }>('/api/logosdb/node_config/replace', {
+        provider_id: providerId,
+        expected_revision: expectedRevision,
+        entries,
+      }),
+    );
+  }
+
+  /** Measured and benchmarked values next to the models of a logosnode. */
+  getNodeInsights(providerId: number): Promise<NodeInsights> {
+    return firstValueFrom(this.http.post<NodeInsights>('/api/logosdb/node_config/insights', { provider_id: providerId }));
+  }
+
+  getNodeSettings(providerId: number): Promise<NodeSettings> {
+    return firstValueFrom(this.http.post<NodeSettings>('/api/logosdb/node_settings/get', { provider_id: providerId }));
+  }
+
+  /** Saves the whole settings document; expectedRevision is the one the admin read. */
+  replaceNodeSettings(
+    providerId: number,
+    expectedRevision: number,
+    settings: NodeSettingsValues,
+  ): Promise<NodeSettingsSaved> {
+    return firstValueFrom(
+      this.http.post<NodeSettingsSaved>('/api/logosdb/node_settings/replace', {
+        provider_id: providerId,
+        expected_revision: expectedRevision,
+        settings,
+      }),
+    );
+  }
+
+  /** Starts a calibration of one model; the worker measures it right away. */
+  calibrateModel(providerId: number, model: string): Promise<{ message?: string; count?: number }> {
+    return firstValueFrom(
+      this.http.post<{ message?: string; count?: number }>('/api/logosdb/providers/logosnode/calibrate_uncalibrated', {
+        provider_id: providerId,
+        model,
+      }),
+    );
+  }
+
+  /** Stops the calibration session of the node; the model in progress stays uncalibrated. */
+  stopCalibration(providerId: number): Promise<{ message?: string; was_active?: boolean; current_model?: string }> {
+    return firstValueFrom(
+      this.http.post<{ message?: string; was_active?: boolean; current_model?: string }>(
+        '/api/logosdb/providers/logosnode/stop_calibration',
+        { provider_id: providerId },
+      ),
+    );
   }
 
   getProviderModels(providerId: number): Promise<ModelConnection[]> {

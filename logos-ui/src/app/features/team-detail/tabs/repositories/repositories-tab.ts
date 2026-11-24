@@ -12,13 +12,15 @@ import { ModalFormComponent } from '../../../../shared/components/modal/modal-fo
 import { ModalConfirmComponent } from '../../../../shared/components/modal/modal-confirm/modal-confirm';
 import { ErrorMessageComponent } from '../../../../shared/components/error-message/error-message';
 import { TeamManagementService } from '../../../../core/services/team-management.service';
-import { TeamRepository } from '../../../../shared/models/team.model';
+import { RepositoryAgentSettings, TeamRepository } from '../../../../shared/models/team.model';
 
 /**
  * Team → Repositories.
  *
  * Links GitHub repositories for AI-workflow analysis. Owners can store a
- * deploy key for private repos or queue an agent analysis session.
+ * deploy key for private repos or queue an agent analysis session. The
+ * agent sandbox permissions (allowed network hosts, commenting during a
+ * session) are editable for Logos admins only; team owners see them read-only.
  */
 @Component({
   selector: 'app-repositories-tab',
@@ -37,6 +39,7 @@ import { TeamRepository } from '../../../../shared/models/team.model';
 export class RepositoriesTabComponent implements OnChanges {
   @Input() teamId!: number;
   @Input() canEdit = false;
+  @Input() isLogosAdmin = false;
 
   private teamService = inject(TeamManagementService);
 
@@ -63,6 +66,14 @@ export class RepositoriesTabComponent implements OnChanges {
   credPem = signal('');
   credLoading = signal(false);
   credError = signal('');
+
+  formAutomaticAnalysis = signal(true);
+  formAgentEnabled = signal(false);
+  formAgentInstructions = signal('');
+  formVerificationCommand = signal('');
+  formEgressHosts = signal('');
+  formEgressUnrestricted = signal(false);
+  formMayComment = signal(false);
 
   busyLinkId = signal<number | null>(null);
 
@@ -93,6 +104,13 @@ export class RepositoriesTabComponent implements OnChanges {
     this.formUrl.set('');
     this.formBranch.set('main');
     this.formPaths.set('');
+    this.formAutomaticAnalysis.set(true);
+    this.formAgentEnabled.set(false);
+    this.formAgentInstructions.set('');
+    this.formVerificationCommand.set('');
+    this.formEgressHosts.set('');
+    this.formEgressUnrestricted.set(false);
+    this.formMayComment.set(false);
     this.formError.set('');
     this.formOpen.set(true);
   }
@@ -102,6 +120,13 @@ export class RepositoriesTabComponent implements OnChanges {
     this.formUrl.set(repo.repo_url);
     this.formBranch.set(repo.branch || 'main');
     this.formPaths.set((repo.paths ?? []).join(', '));
+    this.formAutomaticAnalysis.set(repo.automatic_workflow_analysis ?? true);
+    this.formAgentEnabled.set(repo.agent_enabled ?? false);
+    this.formAgentInstructions.set(repo.agent_instructions ?? '');
+    this.formVerificationCommand.set(repo.verification_command ?? '');
+    this.formEgressHosts.set((repo.agent_egress_hosts ?? []).join('\n'));
+    this.formEgressUnrestricted.set(repo.agent_egress_unrestricted ?? false);
+    this.formMayComment.set(repo.agent_may_comment ?? false);
     this.formError.set('');
     this.formOpen.set(true);
   }
@@ -114,6 +139,10 @@ export class RepositoriesTabComponent implements OnChanges {
   async submitForm(): Promise<void> {
     const url = this.formUrl().trim();
     if (!url || this.formLoading()) return;
+    if (this.formAgentEnabled() && !this.formVerificationCommand().trim()) {
+      this.formError.set('Enter a build and test command before enabling the coding agent.');
+      return;
+    }
     this.formLoading.set(true);
     this.formError.set('');
     this.actionError.set('');
@@ -121,16 +150,30 @@ export class RepositoriesTabComponent implements OnChanges {
     const paths = parsePaths(this.formPaths());
     const branch = this.formBranch().trim() || 'main';
     const editing = this.formEditing();
+    const agentSettings: RepositoryAgentSettings = {
+      automatic_workflow_analysis: this.formAutomaticAnalysis(),
+      agent_enabled: this.formAgentEnabled(),
+      agent_instructions: this.formAgentInstructions().trim(),
+      verification_command: this.formVerificationCommand().trim(),
+    };
+    // The API refuses these fields from anyone but a Logos admin.
+    if (this.isLogosAdmin) {
+      agentSettings.agent_egress_hosts = parseHosts(this.formEgressHosts());
+      agentSettings.agent_egress_unrestricted = this.formEgressUnrestricted();
+      agentSettings.agent_may_comment = this.formMayComment();
+    }
 
     try {
       if (editing) {
         await this.teamService.updateTeamRepository(this.teamId, editing.id, {
+          ...agentSettings,
           repo_url: url,
           branch,
           paths: paths ?? [],
         });
       } else {
         await this.teamService.createTeamRepository(this.teamId, {
+          ...agentSettings,
           repo_url: url,
           branch,
           paths,
@@ -234,6 +277,10 @@ export class RepositoriesTabComponent implements OnChanges {
     return repo.paths.join(', ');
   }
 
+  hostCount(repo: TeamRepository): number {
+    return repo.agent_egress_hosts?.length ?? 0;
+  }
+
   analysisLabel(repo: TeamRepository): string {
     const a = repo.latest_analysis;
     if (!a) return 'None';
@@ -248,6 +295,15 @@ function parsePaths(raw: string): string[] | null {
     .map((p) => p.trim().replace(/^\/+|\/+$/g, ''))
     .filter(Boolean);
   return parts.length === 0 ? null : parts;
+}
+
+function parseHosts(raw: string): string[] {
+  const hosts: string[] = [];
+  for (const line of raw.split(/[\s,]+/)) {
+    const host = line.trim().toLowerCase();
+    if (host && !hosts.includes(host)) hosts.push(host);
+  }
+  return hosts;
 }
 
 function extractDetail(err: unknown): string {

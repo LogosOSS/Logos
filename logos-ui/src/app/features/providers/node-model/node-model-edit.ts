@@ -1,0 +1,124 @@
+import { CalibrationPair, CalibrationResult, NodeConfigEntry } from '../../../shared/models/node-config.model';
+import { errorDetail } from '../../../shared/utils/error-detail';
+import { AdvancedDraft, applyAdvanced } from './node-model-advanced';
+
+const CONTEXT_STEP = 1024;
+
+export interface Placement {
+  tp: number;
+  kvGb: number;
+  ctx: number;
+}
+
+export interface ErrorItem {
+  model: string | null;
+  key: string | null;
+  message: string;
+  suggestion: string | null;
+}
+
+export type FailureKind = 'conflict' | 'rejected' | 'unreachable' | 'other';
+
+export interface SaveFailure {
+  kind: FailureKind;
+  message: string;
+  items: ErrorItem[];
+}
+
+/** Whole GB the KV slider may take, inside the measured window. */
+export function kvWindowGb(result: CalibrationResult | null): { min: number; max: number } | null {
+  if (!result || result.kv_min_mb == null || result.kv_max_mb == null) {
+    return null;
+  }
+  const min = Math.max(1, Math.ceil(result.kv_min_mb / 1024));
+  const max = Math.floor(result.kv_max_mb / 1024);
+  return max >= min ? { min, max } : null;
+}
+
+/**
+ * The longest context the calibration vouches for at this KV size, in steps of 1,024.
+ *
+ * Only the points at or below the chosen KV size count: a point measured with a larger cache says
+ * nothing about a smaller one. Logos and the worker judge a placement by the same rule, so a context
+ * offered here is never marked outdated at once.
+ */
+export function contextCapacity(pairs: CalibrationPair[], kvGb: number, limit: number | null | undefined): number | null {
+  const points = pairs
+    .filter((p) => p.kv_mb != null && p.max_model_len != null)
+    .map((p) => ({ kv: p.kv_mb as number, len: p.max_model_len as number }));
+  if (points.length === 0) {
+    return limit ?? null;
+  }
+  const kv = kvGb * 1024;
+  const reachable = points.filter((p) => p.kv <= kv + 1e-6).map((p) => p.len);
+  const len = reachable.length > 0 ? Math.max(...reachable) : 0;
+  const capped = limit ? Math.min(len, limit) : len;
+  // One step is the smallest context to offer, but never more than the model itself allows.
+  const stepped = Math.max(CONTEXT_STEP, Math.floor(capped / CONTEXT_STEP) * CONTEXT_STEP);
+  return limit ? Math.min(stepped, limit) : stepped;
+}
+
+/** The list with one model's placement written as the orchestrator expects. */
+export function withPlacement(
+  entries: NodeConfigEntry[],
+  model: string,
+  placement: Placement,
+  advanced?: AdvancedDraft,
+): NodeConfigEntry[] {
+  const placed = (entry: NodeConfigEntry): NodeConfigEntry => {
+    const overrides = { ...entry.overrides };
+    // TP and KV cache live in capability; a copy in overrides would conflict.
+    delete overrides['tensor_parallel_size'];
+    delete overrides['kv_cache_memory_bytes'];
+    overrides['max_model_len'] = placement.ctx;
+    const capability = { ...entry.capability };
+    // The context length lives in overrides; a copy in capability would win on the next read.
+    delete capability['max_model_len'];
+    const result = {
+      ...entry,
+      capability: {
+        ...capability,
+        tensor_parallel_size: placement.tp,
+        kv_cache_memory_bytes: `${placement.kvGb}G`,
+      },
+      overrides,
+    };
+    return advanced ? applyAdvanced(result, advanced) : result;
+  };
+  if (entries.some((e) => e.model_name === model)) {
+    return entries.map((e) => (e.model_name === model ? placed(e) : e));
+  }
+  return [...entries, placed({ model_name: model, capability: {}, overrides: {} })];
+}
+
+/** The list with the settings of one model changed and its placement left as it is. */
+export function withSettings(entries: NodeConfigEntry[], model: string, advanced: AdvancedDraft): NodeConfigEntry[] {
+  const current = entries.find((e) => e.model_name === model) ?? { model_name: model, capability: {}, overrides: {} };
+  const changed = applyAdvanced(current, advanced);
+  return entries.some((e) => e.model_name === model)
+    ? entries.map((e) => (e.model_name === model ? changed : e))
+    : [...entries, changed];
+}
+
+/** What a failed save means for the editor, from the HTTP answer of Logos. */
+export function saveFailure(e: unknown): SaveFailure {
+  const response = (e as { status?: number; error?: { error?: string; errors?: ErrorItem[] }; message?: string }) ?? {};
+  const text = response.error?.error || response.message || 'The configuration could not be saved.';
+  switch (response.status) {
+    case 409:
+      return { kind: 'conflict', message: text, items: [] };
+    case 400:
+      return { kind: 'rejected', message: text, items: response.error?.errors ?? [] };
+    case 0:
+    case 502:
+    case 503:
+      return { kind: 'unreachable', message: text, items: [] };
+    default:
+      return { kind: 'other', message: text, items: [] };
+  }
+}
+
+/** Why a page could not load: the message of the server, else the transport's, else the page's own wording. */
+export function loadFailure(e: unknown, fallback: string): string {
+  return errorDetail(e) || (e as { message?: string } | null)?.message || fallback;
+}

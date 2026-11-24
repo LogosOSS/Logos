@@ -23,7 +23,11 @@ public class ExportImportService {
 
     static final List<String> TABLES = List.of(
         "users", "teams", "team_repositories", "team_repository_credentials",
-        "team_members", "api_keys", "providers", "models",
+        "team_members", "api_keys", "providers",
+        // What an admin set for each node. Importing providers truncates them with CASCADE,
+        // so they travel with the export.
+        "node_model_config", "node_config_state", "node_settings",
+        "models",
         "model_provider", "team_model_permissions", "api_key_model_permissions",
         "team_provider_permissions", "api_key_provider_permissions", "policies",
         "team_provider_budgets",
@@ -33,10 +37,11 @@ public class ExportImportService {
     private static final Set<String> TABLE_WHITELIST = Set.copyOf(TABLES);
 
     /** Tables added after exports already existed; an export without one restores it empty. */
-    private static final Set<String> OPTIONAL_TABLES = Set.of("team_provider_budgets");
+    private static final Set<String> OPTIONAL_TABLES = Set.of(
+        "team_provider_budgets", "node_model_config", "node_config_state", "node_settings");
 
     private static final List<String> SEQUENCE_TABLES = List.of(
-        "users", "teams", "team_repositories", "api_keys", "providers", "models",
+        "users", "teams", "team_repositories", "api_keys", "providers", "node_model_config", "models",
         "model_provider", "policies",
         "ai_workflow_analyses", "ai_workflows", "ai_llm_call_recommendations",
         "log_entry", "token_types", "usage_tokens", "token_prices", "jobs"
@@ -78,6 +83,9 @@ public class ExportImportService {
         Map<String, Object> data = new LinkedHashMap<>();
         for (String table : TABLES) {
             List<Map<String, Object>> rows = jdbc.queryForList("SELECT * FROM " + safeTable(table)); // NOSONAR table name from the TABLES allow-list (safeTable); not bindable
+            if (table.equals("providers") || table.equals("model_provider")) {
+                rows.forEach(row -> row.remove("api_key"));
+            }
             data.put(table, decodeJsonbColumns(rows));
         }
         return Map.of("result", data);
@@ -206,6 +214,12 @@ public class ExportImportService {
             }
             if ("models".equals(table) && copy.get("profile_ratings") == null) {
                 copy.put("profile_ratings", Map.of());
+            }
+            if ("team_repositories".equals(table)) {
+                copy.putIfAbsent("automatic_workflow_analysis", true);
+            }
+            if ("ai_workflow_analyses".equals(table)) {
+                copy.putIfAbsent("automatically_queued", false);
             }
             if ("ai_llm_call_recommendations".equals(table)) {
                 // Dumps taken before the sla → slo column rename still carry the

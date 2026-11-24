@@ -9,7 +9,6 @@ tests import the app and inspect what it built.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -267,7 +266,7 @@ class TestTheEndpointsThatCombineModules:
             assert discount_own is False
             return capacity.Reading(load=0.1, busy_slots=2, total_slots=20, queue_total=0, ok=True, own_slots=1)
 
-        async def key_id(_key):
+        async def key_id():
             return 7
 
         monkeypatch.setattr(db, "count_sessions_by_status", counts)
@@ -592,7 +591,6 @@ class TestTheSchedulerPassAnEndpointStarts:
         async def get_session(session_id):
             return {**TestRunningWorkAgain.ROW, "id": session_id, "status": "queued"}
 
-        monkeypatch.setattr(main, "settings", replace(main.settings, agent_api_key="a-key"))
         monkeypatch.setattr(db, "get_workspace", get_workspace)
         monkeypatch.setattr(model_policy, "refresh", refresh)
         monkeypatch.setattr(db, "create_session", create_session)
@@ -602,3 +600,34 @@ class TestTheSchedulerPassAnEndpointStarts:
         await main.create_session(SessionCreate(workspace_id=3, task="Fix the flaky test"), principal=_principal())
 
         await self.assert_one_held_pass(passes, release)
+
+
+async def test_session_messages_require_operator_and_read_only_the_selected_artifact(monkeypatch, tmp_path):
+    import json
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from app.auth import require_agent_operator
+
+    monkeypatch.setattr(main, "artifact_dir", lambda sid: tmp_path / str(sid))
+    monkeypatch.setattr(main.db, "get_session", AsyncMock(side_effect=lambda sid: {"id": sid} if sid == 7 else None))
+    directory = tmp_path / "7"
+    directory.mkdir()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+        assert (await client.get("/sessions/7/messages")).status_code == 401
+        monkeypatch.setitem(main.app.dependency_overrides, require_agent_operator, lambda: None)
+        assert (await client.get("/sessions/8/messages")).status_code == 404
+        assert (await client.get("/sessions/7/messages")).json() == {"messages": [], "omitted": 0}
+        path = directory / "messages.json"
+        row = {"id": "a" * 32, "actor": "main", "text": "Two\nparagraphs", "truncated": False}
+        path.write_text(json.dumps({"messages": [{**row, "internal": "ignored"}], "omitted": 0}))
+        first = await client.get("/sessions/7/messages")
+        assert first.json() == {"messages": [row], "omitted": 0}
+        assert (
+            await client.get("/sessions/7/messages", headers={"If-None-Match": first.headers["etag"]})
+        ).status_code == 304
+        path.write_text("x" * (512 * 1024 + 1))
+        assert (await client.get("/sessions/7/messages")).status_code == 503
+        path.unlink()
+        path.symlink_to(tmp_path / "outside")
+        assert (await client.get("/sessions/7/messages")).status_code == 503

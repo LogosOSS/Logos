@@ -11,6 +11,10 @@ class StateError(RuntimeError):
     """A deployment record is unreadable, or a request contradicts a record that exists."""
 
 
+class ComposeError(RuntimeError):
+    """The compose file of a tag could not be taken out of its image. The text says why, without any secret."""
+
+
 class Interrupted(Exception):
     """The daemon was asked to stop.
 

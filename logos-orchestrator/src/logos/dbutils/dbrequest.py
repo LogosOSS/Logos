@@ -2,7 +2,7 @@ from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from logos.benchmarks.configuration import BenchmarkBatch, BenchmarkSettings
+from logos.benchmarks.configuration import BenchmarkBatch, BenchmarkRunSettings
 from logos.dbutils.dbmodules import ThresholdLevel
 
 
@@ -20,6 +20,10 @@ class NightlyUpdateRequest(NightlyStatusRequest):
     expected_enabled: StrictBool
     workload_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     expected_workload_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+class RecentBenchmarkWorkloadRequest(NightlyStatusRequest):
+    lookback_days: Literal[1, 3, 7] | None = None
 
 
 class BenchmarkWorkloadRequest(BaseModel):
@@ -158,6 +162,8 @@ class LogosNodeModelProfilesRequest(BaseModel):
     calibration_key_hashes: dict[str, str] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
     # model name -> GPUs the node can calibrate and serve the model on
     slice_gpu_counts: dict[str, int] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
+    # model name -> hash of the whole configuration, the KV cache choice included
+    config_fingerprints: dict[str, str] = Field(default_factory=dict, max_length=_MAX_PROFILE_MODELS)
 
 
 class LogosNodeCalibrationReservationRequest(BaseModel):
@@ -195,6 +201,10 @@ class LogosNodeConfigRequest(BaseModel):
 
 class LogosNodeConfigImportRequest(LogosNodeConfigRequest):
     entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
+
+
+class LogosNodeSettingsImportRequest(LogosNodeConfigRequest):
+    settings: dict[str, Any] = Field(default_factory=dict, max_length=32)
 
 
 class LogosNodeConfigGetRequest(LogosKeyModel):
@@ -270,6 +280,26 @@ class LaneLockChangedRequest(BaseModel):
 
 class InternalCalibrateRequest(BaseModel):
     provider_id: int
+    # Calibrate only this model; empty calibrates everything that needs it.
+    model: str | None = None
+
+
+class InternalNodeConfigRequest(BaseModel):
+    provider_id: int
+
+
+class InternalNodeConfigReplaceRequest(InternalNodeConfigRequest):
+    # The admin's user id from the JWT; None stores no author
+    user_id: Optional[int] = None
+    expected_revision: int = Field(ge=0)
+    entries: list[NodeConfigEntry] = Field(max_length=_MAX_PROFILE_MODELS)
+
+
+class InternalNodeSettingsReplaceRequest(InternalNodeConfigRequest):
+    # The admin's user id from the JWT; None stores no author
+    user_id: Optional[int] = None
+    expected_revision: int = Field(ge=0)
+    settings: dict[str, Any] = Field(default_factory=dict, max_length=32)
 
 
 class InternalStopCalibrationRequest(BaseModel):
@@ -325,11 +355,10 @@ class InternalWakeLaneRequest(BaseModel):
     lane_id: str
 
 
-class InternalBenchmarkRequest(BenchmarkSettings):
+class InternalBenchmarkRequest(BenchmarkRunSettings):
+    model_config = ConfigDict(extra="ignore")
     batch: BenchmarkBatch | None = None
     model_provider_id: int = Field(gt=0)
-    samples: int = Field(default=5, gt=0, le=100)
-    max_output_tokens: int = Field(default=512, gt=0, le=4096)
 
 
 class DatasetSearchRequest(BaseModel):

@@ -207,6 +207,17 @@ is on `:18085`, DB on `127.0.0.1:15432`. Tear down with
 `docker compose -f docker-compose.screenshots.yaml --project-name logos-doks down -v`
 when finished.
 
+The screenshots stack does not run the agent runner, so the capture script
+skips the `logos-admin-agents*.png` shots unless you name them. For these
+shots, serve the `logos-agent` API against `doks-db` (`DB_PORT=15432`)
+without its scheduler, because the scheduler starts the seeded sessions. Add a
+`/api/agent` entry (path rewrite to `/`) before `/api` in the proxy
+configuration. Set `LOGOS_AGENT_API_KEY` to a key of the team **Logos** that
+reaches only the models of **Docs Local Worker**; otherwise the page shows a
+model policy error. For the expanded message view, copy `docs/seed/agent-messages.json`
+to `<fixture-runner-artifact-root>/<seeded-session-id>/messages.json` for the running
+`docs-role-screenshots` session whose task starts with “Fix the flaky login spec”.
+
 The ordinary `docker-compose.dev.yaml` + `ng serve` on `:4200` also works; point
 `psql` at that stack's DB instead of `15432`.
 
@@ -241,6 +252,8 @@ capturing.
    providers and three models (capabilities, aliases, prices); policies;
    priced `log_entry` rows (billing + statistics + My Workspace usage bars);
    one `in_progress` and one `completed` batch; agent workspaces/sessions;
+   the linked repository `docs-example/sample-app` with the coding agent,
+   2 allowed network hosts and the comment permission, and 1 session on it;
    and team budget / default rate limits for the team-detail overview. It
    also creates a fourth, catalog-only model (`gpt-4o-mini`), gives it usage,
    and deletes it again — the delete trigger keeps that usage under the
@@ -302,9 +315,10 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-statistics-worker-lock.png` | `tobias.wasner` | `/statistics` — **Local Providers**, a worker locked with two lanes (e2e stack; capture the lane panel) | `roles/logos-admin.md#worker-locks` |
 | `logos-admin-statistics-requesters.png` | `tobias.wasner` | `/statistics?tab=requests` — **Requesters** list open | `roles/logos-admin.md` |
 | `logos-admin-models.png` | `tobias.wasner` | `/models` | `roles/logos-admin.md` |
-| `logos-admin-nightly-enable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — activation dialog | `roles/logos-admin.md#nightly-benchmarks` |
-| `logos-admin-nightly-benchmarks.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark controls and active nightly plan | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-enable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — nightly schedule ready to enable | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-benchmarks.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Run a benchmark** and compact nightly status | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-automatic-source.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — automatic recent-user source policy | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-plan.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Manage → Schedule and test plan** | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-workload.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — request dataset form | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-results.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Currently deployed** summary and **Timeline** record chart | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-notification.png` | `tobias.wasner` | Notification inbox — benchmark with captured result link | `roles/logos-admin.md#nightly-benchmarks` |
@@ -323,13 +337,32 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-model-request-measurements.png` | `tobias.wasner` | `/models/<id>/details` — **Performance → Request measurements** of a model with requests at more than one reasoning effort (local or cloud provider) | `roles/logos-admin.md#models` |
 | `logos-admin-providers.png` | `tobias.wasner` | `/providers` | `roles/logos-admin.md` |
 | `logos-admin-provider-connections.png` | `tobias.wasner` | `/providers` — a cloud provider expanded, connected models with their **Batch** labels | `roles/logos-admin.md` |
+| `logos-admin-add-provider.png` | `tobias.wasner` | `/providers` — **Add Provider** dialog, cloud provider **anthropic** selected, proposed base URL | `roles/logos-admin.md#add-a-provider` |
+| `logos-admin-edit-cloud-key.png` | `tobias.wasner` | **Edit Provider** for a cloud provider with a configured key | `roles/logos-admin.md#add-a-provider` |
+| `logos-admin-rotate-cloud-key.png` | `tobias.wasner` | **Rotate** for a cloud provider, empty **New API key** field | `roles/logos-admin.md#add-a-provider` |
+| `logos-admin-remove-cloud-key.png` | `tobias.wasner` | **Remove** confirmation for a cloud provider key | `roles/logos-admin.md#add-a-provider` |
+| `logos-admin-rotate-worker-key.png` | `tobias.wasner` | **Rotate** confirmation for a worker node | `roles/logos-admin.md#provision-a-worker-key` |
+| `logos-admin-worker-key-created.png` | `tobias.wasner` | **Worker key rotated** with a disposable example key | `roles/logos-admin.md#provision-a-worker-key` |
+| `logos-admin-node-models.png` | `tobias.wasner` | `/providers` — the documentation worker expanded: **Node models** list, **Node settings** and **Connect model** | `roles/logos-admin.md` |
+| `logos-admin-node-model-view.png` | `tobias.wasner` | `/providers/:id/models?model=llama-3.1-8b-instruct` — the model page in view mode | `roles/logos-admin.md` |
+| `logos-admin-node-model-edit.png` | `tobias.wasner` | the same page after **Edit configuration**: TP tiles, KV cache, context, **Advanced settings** | `roles/logos-admin.md` |
+| `logos-admin-node-model-calibrate.png` | `tobias.wasner` | the page of `mistral-small-3.2-24b`: **Calibration settings** with **Calibrate model** | `roles/logos-admin.md` |
+| `logos-admin-node-connect-model.png` | `tobias.wasner` | the **Connect model** dialog; the capture adds a fourth catalog model to the answer of `get_models` | `roles/logos-admin.md` |
+| `logos-admin-node-settings.png` | `tobias.wasner` | `/providers/:id/node-settings` — **GPU pool**, **Engine defaults**, **Node care** | `roles/logos-admin.md` |
 | `logos-admin-policies.png` | `tobias.wasner` | `/policies` | `roles/logos-admin.md` |
 | `logos-admin-billing.png` | `tobias.wasner` | `/billing` | `roles/logos-admin.md` |
 | `logos-admin-user-management.png` | `tobias.wasner` | `/user-management` | `roles/logos-admin.md` |
 | `logos-admin-team-management.png` | `tobias.wasner` | `/team-management` | `roles/logos-admin.md` |
 | `logos-admin-permission-audit.png` | `tobias.wasner` | `/permission-audit-log` | `roles/logos-admin.md#permission-audit` |
 | `logos-admin-new-team.png` | `tobias.wasner` | `/team-management` — **New Team** dialog, Keycloak group filled | `roles/logos-admin.md#keycloak-group-links` |
-| `logos-admin-agents.png` | `tobias.wasner` | `/agents` | `roles/logos-admin.md` |
+| `logos-admin-security-incidents.png` | `tobias.wasner` | `/agents/security` — all statuses; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-repositories.png` | `tobias.wasner` | `/agents/security` — Monitored repositories expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-intake.png` | `tobias.wasner` | `/agents/security` — Report an important incident expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-evidence.png` | `tobias.wasner` | `/agents/security` — Evidence & history expanded; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-security-confirm.png` | `tobias.wasner` | `/agents/security` — Confirm resolved form; `seed/security-incidents.sql` after the role seed | `roles/logos-admin.md#security-incidents` |
+| `logos-admin-agents.png` | `tobias.wasner` | `/agents` — current RAM, observed peak, and container limit (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#agent-sessions` |
+| `logos-admin-agents-messages.png` | `tobias.wasner` | Expanded **Agent messages** with parent and child output, a list and code | `roles/logos-admin.md#agent-sessions` |
+| `logos-admin-agents-new-session.png` | `tobias.wasner` | `/agents` — **New session**, **Repository** `docs-example/sample-app (develop)` selected (needs the agent runner API on `/api/agent`) | `roles/logos-admin.md#start-a-session` |
 | `logos-admin-my-workspace.png` | `tobias.wasner` | `/my-workspace` | `roles/logos-admin.md` |
 | `app-admin-models.png` | `alexandra.szuminska` | `/models` | `roles/app-admin.md` |
 | `app-admin-user-management.png` | `alexandra.szuminska` | `/user-management` | `roles/app-admin.md` |
@@ -338,6 +371,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `team-detail-members.png` | same | `/teams/<id>` — **Members** | same |
 | `team-detail-application-keys.png` | owner or `logos_admin` | `/teams/<id>` — **Application Keys** | same |
 | `team-detail-repositories.png` | owner or `logos_admin` | `/teams/<id>` — **Repositories** | same |
+| `team-detail-repository-agent.png` | same | `/teams/<id>` — **Repositories → Edit**, coding agent enabled and automatic workflow analysis off | `roles/app-admin.md#enable-the-coding-agent` |
 | `team-detail-workflows.png` | owner or `logos_admin` | `/teams/<id>` — **Workflows** | same |
 | `team-detail-models.png` | owner or `logos_admin` | `/teams/<id>` — **Models** | same |
 | `team-detail-activity.png` | owner or `logos_admin` | `/teams/<id>` — **Activity** | same |
@@ -348,6 +382,7 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `batches.png` | any admin role | `/batches` | `roles/app-admin.md#batches` (Logos Admin links) |
 | `app-developer-models.png` | `henriette.huhn` | `/models` | `roles/app-developer.md` |
 | `app-developer-my-workspace.png` | `henriette.huhn` | `/my-workspace` | `roles/app-developer.md` |
+| `app-developer-my-workspace-budget.png` | `henriette.huhn` | `/my-workspace` — exhausted cloud budget, available models expanded | `roles/app-developer.md#my-workspace` |
 | `ai-tools-step-tool.png` | any role with a key | `/ai-tools` — step **Tool** | `roles/app-developer.md#ai-tools` |
 | `ai-tools-step-team.png` | same (needs **>1** API key) | `/ai-tools` — step **Team** | same |
 | `ai-tools-step-model.png` | same | `/ai-tools` — step **Model** | same |

@@ -39,6 +39,16 @@ from typing import Any
 LANE_ENV_MARKER = "LOGOS_LANE_ID"
 PROBE_ENV_MARKER = "LOGOS_CALIBRATION_PROBE"
 
+# -----------------------------------------------------------------------------
+# GPU memory
+# -----------------------------------------------------------------------------
+
+# --gpu-memory-utilization for a lane or calibration probe that has neither an
+# override nor a calibrated footprint. It is always passed explicitly: with the
+# extensible KV cache on, vLLM's own default is 1.0 (the whole GPU), which
+# would take more memory than the reservation admission plans with.
+FALLBACK_GMU = 0.9
+
 
 def strip_host_args(args: list[str]) -> list[str]:
     """Remove bind-host overrides, including vLLM's single-dash aliases and abbreviations."""

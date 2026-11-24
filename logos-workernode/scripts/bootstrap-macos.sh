@@ -30,10 +30,8 @@
 # dialog on first launch — off a machine that is meant to run headless in a
 # server room.
 #
-# Registry note: ghcr.io, public, and never Harbor — a Mac worker should not
-# need Harbor credentials just to bootstrap. The other Logos images are on
-# Harbor and mirrored to the same public GHCR namespace; this one is published
-# there alone.
+# Registry: ghcr.io/logososs, public like all Logos images. A Mac worker
+# needs no registry credentials to bootstrap.
 # =============================================================================
 set -euo pipefail
 
@@ -265,7 +263,7 @@ $LAYERS
 EOF
 
 [ -d "$LOWER/payload" ] || die "The image contains no /payload directory — is $IMAGE the MLX worker image?"
-[ -f "$LOWER/payload/requirements.txt" ] || die "Extracted payload looks incomplete (requirements.txt missing)."
+[ -f "$LOWER/payload/requirements-standalone.lock" ] || die "Extracted payload looks incomplete (requirements-standalone.lock missing)."
 mv "$LOWER/payload/." "$STAGING/" 2>/dev/null || cp -R "$LOWER/payload/." "$STAGING/"
 log "Payload staged in $STAGING"
 

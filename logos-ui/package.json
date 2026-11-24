@@ -9,7 +9,7 @@
     "test": "ng test",
     "e2e": "playwright test --config e2e/playwright.config.ts",
     "e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",
-    "e2e:install": "playwright install --with-deps chromium"
+    "e2e:install": "playwright install chromium"
   },
   "private": true,
   "packageManager": "npm@11.21.1",
@@ -17,13 +17,13 @@
     "node": "^22.22.3 || ^24.15.0 || >=26.0.0"
   },
   "dependencies": {
-    "@angular/cdk": "22.2.6",
-    "@angular/common": "22.2.5",
-    "@angular/compiler": "22.2.5",
-    "@angular/core": "22.2.5",
-    "@angular/forms": "22.2.5",
-    "@angular/platform-browser": "22.2.5",
-    "@angular/router": "22.2.5",
+    "@angular/cdk": "22.3.0",
+    "@angular/common": "22.3.0",
+    "@angular/compiler": "22.3.0",
+    "@angular/core": "22.3.0",
+    "@angular/forms": "22.3.0",
+    "@angular/platform-browser": "22.3.0",
+    "@angular/router": "22.3.0",
     "@tumaet/ui-angular": "0.2.0",
     "keycloak-js": "26.2.5",
     "mermaid": "12.3.0",
@@ -32,18 +32,18 @@
     "tslib": "2.9.1"
   },
   "devDependencies": {
-    "@angular/build": "22.2.6",
-    "@angular/cli": "22.2.6",
-    "@angular/compiler-cli": "22.2.5",
-    "@playwright/test": "1.65.0",
+    "@angular/build": "22.3.0",
+    "@angular/cli": "22.3.0",
+    "@angular/compiler-cli": "22.3.0",
+    "@playwright/test": "1.65.1",
     "@tailwindcss/postcss": "4.3.5",
     "@types/node": "26.6.6",
-    "@vitest/coverage-v8": "5.1.0",
-    "jsdom": "31.0.0",
-    "postcss": "8.5.32",
+    "@vitest/coverage-v8": "5.1.1",
+    "jsdom": "31.0.1",
+    "postcss": "8.5.33",
     "tailwindcss": "4.3.5",
     "typescript": "6.0.3",
-    "vitest": "5.1.0"
+    "vitest": "5.1.1"
   },
   "overrides": {
     "@angular/aria": "$@angular/cdk",

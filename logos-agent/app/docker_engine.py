@@ -48,6 +48,11 @@ async def _request(method: str, path: str, **kwargs: Any) -> httpx.Response:
     return response
 
 
+def _memory_bytes(memory_mb: int | None) -> int:
+    """The memory limit of a session's container: the session's own, or the configured default."""
+    return (memory_mb if memory_mb else settings.session_memory_mb) * 1024 * 1024
+
+
 async def ping() -> bool:
     try:
         await _request("GET", "/_ping")
@@ -170,6 +175,8 @@ async def create_session_container(
     session_id: int,
     labels: dict[str, str] | None = None,
     network: str | None = None,
+    cache_volume: str | None = None,
+    memory_mb: int | None = None,
 ) -> str:
     """Create the container an agent session runs in.
 
@@ -214,6 +221,14 @@ async def create_session_container(
     ]
     if state_host_path:
         binds.append(f"{state_host_path}:/logos/state:ro")
+    if cache_volume:
+        # Toolchains and downloads that outlive one session of a workspace.
+        # Only the agent phase writes it; verification reads it. The trusted
+        # helpers never mount it, so nothing a session put there runs where
+        # a credential is.
+        if env.get("LOGOS_SESSION_PHASE") not in {"agent", "verify"}:
+            raise ValueError("only the agent and verification phases may mount the workspace cache")
+        binds.append(f"{cache_volume}:/cache{mount_mode}")
     trust_only = env.get("LOGOS_SESSION_PHASE") == "ssh-trust"
     if trust_only:
         # Host-key learning cannot see any session-writable files, including
@@ -238,8 +253,8 @@ async def create_session_container(
         },
         "CapDrop": ["ALL"],
         "SecurityOpt": ["no-new-privileges:true"],
-        "Memory": settings.session_memory_mb * 1024 * 1024,
-        "MemorySwap": settings.session_memory_mb * 1024 * 1024,  # no swap: OOM instead of thrash
+        "Memory": _memory_bytes(memory_mb),
+        "MemorySwap": _memory_bytes(memory_mb),  # no swap: OOM instead of thrash
         "NanoCpus": int(settings.session_cpus * 1_000_000_000),
         "PidsLimit": settings.session_pids_limit,
         "AutoRemove": False,  # keep exit status readable after the run
@@ -276,6 +291,7 @@ async def create_screenshot_container(
     output_path: str,
     artifact_host_path: str,
     session_id: int,
+    memory_mb: int | None = None,
 ) -> str:
     """Create a one-shot container that renders one page to a PNG.
 
@@ -295,8 +311,8 @@ async def create_screenshot_container(
         "Tmpfs": {"/tmp": "rw,nosuid,size=2g"},  # NOSONAR - a private tmpfs inside the container
         "CapDrop": ["ALL"],
         "SecurityOpt": ["no-new-privileges:true"],
-        "Memory": settings.session_memory_mb * 1024 * 1024,
-        "MemorySwap": settings.session_memory_mb * 1024 * 1024,
+        "Memory": _memory_bytes(memory_mb),
+        "MemorySwap": _memory_bytes(memory_mb),
         "NanoCpus": int(settings.session_cpus * 1_000_000_000),
         "PidsLimit": settings.session_pids_limit,
         "AutoRemove": False,  # keep exit status readable
@@ -532,12 +548,21 @@ async def wait_container(container_id: str, timeout_s: int) -> int | None:
         return None
 
 
-async def list_managed_containers() -> list[dict[str, Any]]:
+async def container_memory_usage(container_id: str) -> int | None:
+    """Bytes charged to the Linux memory cgroup, including file cache."""
+    response = await _request(
+        "GET", f"/containers/{container_id}/stats", params={"stream": "false", "one-shot": "true"}, timeout=2
+    )
+    usage = (response.json().get("memory_stats") or {}).get("usage")
+    return usage if type(usage) is int and usage >= 0 else None
+
+
+async def list_managed_containers(*, all_states: bool = True) -> list[dict[str, Any]]:
     """Every container this service owns, including ones it has forgotten.
 
     Used on startup to reconcile: a restart of the runner must not orphan
     running sessions, and must not leave dead ones marked running.
     """
     filters = json.dumps({"label": ["logos.agent.managed=true"]})
-    response = await _request("GET", "/containers/json", params={"all": "true", "filters": filters})
+    response = await _request("GET", "/containers/json", params={"all": str(all_states).lower(), "filters": filters})
     return response.json()

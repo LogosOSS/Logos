@@ -114,6 +114,41 @@ class TestDefaultModel:
         assert "Name one" in policy.refusal(None)
         assert policy.allows("Llama-3-70B")
 
+    def test_without_configuration_the_most_powerful_alias_is_the_default(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, default_model=""))
+        policy = model_policy.evaluate(
+            [
+                deployment("Qwen3-8B", "logosnode"),
+                deployment("Qwen3.8-27B", "logosnode", aliases="local-most-powerful"),
+            ]
+        )
+        assert policy.default_model == "local-most-powerful"
+        assert policy.allows(None)
+        assert policy.canonical(policy.resolve(None)) == "Qwen3.8-27B"
+        # Capacity is read on the model the alias points at, not on every lane.
+        assert policy.lane(policy.resolve(None)) == policy.lane("Qwen3.8-27B")
+
+    def test_the_alias_of_a_cloud_model_is_no_default(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, default_model=""))
+        policy = model_policy.evaluate(
+            [
+                deployment("Qwen3-8B", "logosnode"),
+                deployment("Llama-3-70B", "logosnode"),
+                deployment("gpt-4o", "azure", aliases="local-most-powerful"),
+            ]
+        )
+        assert policy.default_model == ""
+
+    def test_a_configured_default_wins_over_the_alias(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, default_model="Qwen3-8B"))
+        policy = model_policy.evaluate(
+            [
+                deployment("Qwen3-8B", "logosnode"),
+                deployment("Qwen3.8-27B", "logosnode", aliases="local-most-powerful"),
+            ]
+        )
+        assert policy.default_model == "Qwen3-8B"
+
     def test_a_configured_default_wins(self, monkeypatch):
         monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, default_model="Llama-3-70B"))
         policy = model_policy.evaluate(
@@ -150,40 +185,47 @@ class TestRefusalWording:
 
 class TestLoad:
     @pytest.mark.asyncio
-    async def test_an_unconfigured_key_yields_an_unknown_policy(self, monkeypatch):
-        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, agent_api_key=""))
+    async def test_missing_internal_secret_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, internal_secret=""))
         policy = await model_policy.load()
-        assert not policy.ok
-        assert policy.unknown
+        assert not policy.ok and policy.unknown
 
     @pytest.mark.asyncio
-    async def test_a_key_the_platform_does_not_know_yields_unknown(self, monkeypatch):
-        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, agent_api_key="lg-nope"))
+    async def test_missing_or_revoked_identity_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, internal_secret="internal"))
 
-        async def no_such_key(_key: str) -> bool:
-            return False
+        async def no_identity():
+            return None
 
-        monkeypatch.setattr(model_policy.db, "agent_key_exists", no_such_key)
+        monkeypatch.setattr(model_policy.db, "agent_key_id", no_identity)
         policy = await model_policy.load()
-        assert not policy.ok
-        assert policy.unknown
-        assert "not an active key" in policy.detail
+        assert not policy.ok and policy.unknown
+        assert "missing or disabled" in policy.detail
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_database_is_not_permission(self, monkeypatch):
-        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, agent_api_key="lg-key"))
+    async def test_no_static_api_key_needed(self, monkeypatch):
+        monkeypatch.delenv("LOGOS_AGENT_API_KEY", raising=False)
+        monkeypatch.setattr(
+            model_policy, "settings", replace(model_policy.settings, internal_secret="internal", default_model="")
+        )
 
-        async def key_exists(_key: str) -> bool:
-            return True
+        async def rows():
+            return [deployment("local-model", "logosnode")]
 
-        async def boom(_key: str):
+        monkeypatch.setattr(model_policy.db, "reachable_deployments", rows)
+        policy = await model_policy.load()
+        assert policy.ok and policy.allows("local-model")
+
+    @pytest.mark.asyncio
+    async def test_unreadable_database_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, internal_secret="internal"))
+
+        async def boom():
             raise RuntimeError("connection refused")
 
-        monkeypatch.setattr(model_policy.db, "agent_key_exists", key_exists)
         monkeypatch.setattr(model_policy.db, "reachable_deployments", boom)
         policy = await model_policy.load()
-        assert not policy.ok
-        assert policy.unknown
+        assert not policy.ok and policy.unknown
 
 
 class TestTheLane:

@@ -26,6 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DOCKERFILE: logos-workernode/Dockerfile
+      LOCK: logos-workernode/requirements.lock
+      # Every lock lock-requirements.sh writes; --upgrade refreshes all of them.
+      LOCKS: logos-workernode/requirements.lock logos-workernode/requirements-standalone.lock e2e/requirements.lock
       EFFORT_MODULE: logos-orchestrator/src/logos/pipeline/effort_normalization.py
     steps:
       - name: Checkout repository
@@ -97,6 +100,31 @@ jobs:
           }
           git diff -- "$DOCKERFILE"
 
+      - name: Install uv
+        if: steps.check.outputs.needed == 'true'
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          # Same uv release as the images (ghcr.io/astral-sh/uv:0.13.9).
+          version: "0.13.9"
+
+      - name: Re-lock the worker image
+        id: lock
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          # The image installs only requirements.lock, so the new pin has no
+          # effect until the lock is regenerated for it. If the worker's own
+          # pins in requirements.txt no longer fit the new vLLM, resolution
+          # fails: the PR is still opened (with the stale lock, which fails
+          # its checks) so the conflict is fixed there by hand.
+          if scripts/lock-requirements.sh --upgrade; then
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+            # shellcheck disable=SC2086 # LOCKS is a space-separated path list
+            git diff --stat -- $LOCKS
+          else
+            echo "::warning::requirements.lock could not be resolved for the new vLLM pin; fix requirements.txt in the PR."
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Update reasoning-effort snapshot label
         if: steps.check.outputs.needed == 'true'
         env:
@@ -127,13 +155,15 @@ jobs:
           GH_TOKEN: ${{ secrets.LOGOS_VLLM_UPDATE_PAT || github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           BRANCH: ${{ steps.version.outputs.branch }}
+          LOCK_FAILED: ${{ steps.lock.outputs.failed }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add "$DOCKERFILE" "$EFFORT_MODULE"
-          git commit -m "\`Logos\`: Update vLLM to v$VERSION"
+          # shellcheck disable=SC2086 # LOCKS is a space-separated path list
+          git add "$DOCKERFILE" "$EFFORT_MODULE" $LOCKS
+          git commit -m "Update vLLM to v$VERSION"
           git push -u origin "$BRANCH"
 
           # Embed the upstream release notes in the PR body so reviewers do not
@@ -148,12 +178,13 @@ jobs:
             echo "::warning::Could not fetch vLLM v$VERSION release notes; linking to the release page instead."
             : >"$NOTES_RAW"
           fi
-          DOCKERFILE="$DOCKERFILE" EFFORT_MODULE="$EFFORT_MODULE" VERSION="$VERSION" \
-          NOTES_RAW="$NOTES_RAW" BODY_FILE="$BODY_FILE" python3 <<'PY'
+          DOCKERFILE="$DOCKERFILE" EFFORT_MODULE="$EFFORT_MODULE" VERSION="$VERSION" LOCK="$LOCK" \
+          LOCK_FAILED="$LOCK_FAILED" NOTES_RAW="$NOTES_RAW" BODY_FILE="$BODY_FILE" python3 <<'PY'
           import os, pathlib, re, textwrap
 
           version = os.environ["VERSION"]
           dockerfile = os.environ["DOCKERFILE"]
+          lock = os.environ["LOCK"]
           effort_module = os.environ["EFFORT_MODULE"]
           release_url = f"https://github.com/vllm-project/vllm/releases/tag/v{version}"
           notes = pathlib.Path(os.environ["NOTES_RAW"]).read_text(encoding="utf-8").strip()
@@ -173,6 +204,19 @@ jobs:
                   f"see [{release_url}]({release_url})."
               )
 
+          if os.environ["LOCK_FAILED"] == "true":
+              lock_note = (
+                  f"**`{lock}` could not be resolved for this vLLM release** and still pins the previous one, "
+                  f"so the image build and the lock check fail. The new vLLM conflicts with a pin in "
+                  f"`logos-workernode/requirements.txt`: adjust that pin, run "
+                  f"`scripts/lock-requirements.sh`, and commit it with the regenerated locks."
+              )
+          else:
+              lock_note = (
+                  f"`{lock}` is regenerated for the new pin with "
+                  f"`scripts/lock-requirements.sh --upgrade` (which also refreshes the standalone worker and e2e locks); the image installs only that lock."
+              )
+
           body = textwrap.dedent(f"""\
           ## Motivation
 
@@ -180,7 +224,9 @@ jobs:
 
           ## Description
 
-          Bumps the version in the `VLLM_PIP_SPEC` build arg default in `{dockerfile}` to v{version} — extras carried by the pin (e.g. `[audio]`, which the speech-to-text endpoints need) are preserved — and the `VLLM_REASONING_EFFORT_VALUES` snapshot label in `{effort_module}` alongside it. Torch and FlashInfer are resolved from vLLM's own dependency pins at build time, so no other changes are needed.
+          Bumps the version in the `VLLM_PIP_SPEC` build arg default in `{dockerfile}` to v{version} — extras carried by the pin (e.g. `[audio]`, which the speech-to-text endpoints need) are preserved — and the `VLLM_REASONING_EFFORT_VALUES` snapshot label in `{effort_module}` alongside it.
+
+          {lock_note}
 
           Please check the release notes for new `ChatCompletionRequest.reasoning_effort` values: only the label is bumped automatically, the tuple is not. A new value must be placed in `EFFORT_LEVELS` (a unit test checks this); runtime normalization is unaffected either way — unknown values fall back to the learned scale's default.
 
@@ -199,7 +245,7 @@ jobs:
           rm -f "$NOTES_RAW"
 
           PR_URL=$(gh pr create \
-            --title "\`Logos\`: Update vLLM to v$VERSION" \
+            --title "Update vLLM to v$VERSION" \
             --body-file "$BODY_FILE")
           rm -f "$BODY_FILE"
           echo "Created $PR_URL"

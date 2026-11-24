@@ -48,19 +48,71 @@ def test_the_yaml_import_is_only_granted_once():
 
 def test_an_unconfigured_node_reads_as_revision_zero_without_entries():
     db = _db()
-    db.session.execute.return_value.fetchone.return_value = None
-    db.session.execute.return_value.fetchall.return_value = []
+    db.session.execute.return_value.fetchone.return_value = SimpleNamespace(
+        config_revision=None, yaml_imported_at=None, entries=[]
+    )
     assert db.get_node_config(7) == {"revision": 0, "yaml_imported": False, "entries": []}
 
 
 def test_a_configured_node_reads_its_revision_and_models():
     db = _db()
-    db.session.execute.return_value.fetchone.return_value = SimpleNamespace(config_revision=5, yaml_imported_at="t")
+    entries = [{"model_name": "org/a", "capability": {"tensor_parallel_size": 2}, "overrides": {}}]
+    db.session.execute.return_value.fetchone.return_value = SimpleNamespace(
+        config_revision=5, yaml_imported_at="t", entries=entries
+    )
+    assert db.get_node_config(7) == {"revision": 5, "yaml_imported": True, "entries": entries}
+
+
+def test_a_node_is_read_in_one_statement_in_list_order():
+    db = _db()
+    db.session.execute.return_value.fetchone.return_value = SimpleNamespace(
+        config_revision=1, yaml_imported_at=None, entries=[]
+    )
+    db.get_node_config(7)
+    assert db.session.execute.call_count == 1
+    source = inspect.getsource(DBManager.get_node_config)
+    assert "ORDER BY position, id" in source and "LEFT JOIN node_config_state" in source
+
+
+def test_a_known_user_id_exists_and_an_unknown_one_does_not():
+    db = _db()
+    db.session.execute.return_value.fetchone.return_value = SimpleNamespace()
+    assert db.user_exists(5) is True
+    assert db.session.execute.call_args.args[1] == {"uid": 5}
+    db.session.execute.return_value.fetchone.return_value = None
+    assert db.user_exists(6) is False
+
+
+def test_the_sources_pairs_and_runs_are_read_as_maps():
+    import datetime
+
+    db = _db()
+    db.session.execute.return_value.fetchall.return_value = [SimpleNamespace(model_name="org/a", source="ui")]
+    assert db.get_node_config_sources(7) == {"org/a": "ui"}
+    db.session.execute.return_value.fetchall.return_value = [SimpleNamespace(name="org/a", id=11)]
+    assert db.get_model_provider_pairs(7) == {"org/a": 11}
+    when = datetime.datetime(2026, 11, 1)
     db.session.execute.return_value.fetchall.return_value = [
-        SimpleNamespace(model_name="org/a", capability={"tensor_parallel_size": 2}, overrides={})
+        SimpleNamespace(id=2, serving={"tensor_parallel_size": 2}, recorded_at=when, ttft_ms="470.0", latency_ms=5500),
+        SimpleNamespace(id=3, serving=None, recorded_at=None, ttft_ms=None, latency_ms="x"),
     ]
-    assert db.get_node_config(7) == {
-        "revision": 5,
-        "yaml_imported": True,
-        "entries": [{"model_name": "org/a", "capability": {"tensor_parallel_size": 2}, "overrides": {}}],
+    assert db.get_benchmark_runs([2, 3]) == {
+        2: {"serving": {"tensor_parallel_size": 2}, "recorded_at": when.isoformat(), "ttft_s": 0.47, "latency_s": 5.5},
+        3: {"serving": {}, "recorded_at": None, "ttft_s": None, "latency_s": None},
     }
+
+
+def test_catalog_ids_are_looked_up_by_name_and_an_empty_list_asks_nothing():
+    db = _db()
+    db.session.execute.return_value.fetchall.return_value = [SimpleNamespace(id=7, name="org/a")]
+
+    assert db.get_catalog_model_ids(["org/a", "org/missing"]) == {"org/a": 7}
+    db.session.execute.reset_mock()
+    assert db.get_catalog_model_ids([]) == {}
+    db.session.execute.assert_not_called()
+
+
+def test_no_run_ids_ask_the_database_nothing():
+    db = _db()
+    assert db.get_benchmark_runs([]) == {}
+    db.session.execute.assert_not_called()

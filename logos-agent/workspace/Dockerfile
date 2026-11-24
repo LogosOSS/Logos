@@ -7,7 +7,10 @@
 # Resolve the same Maven toolchain and project dependencies as the application
 # image while build-time network access is available. Running test-compile
 # warms compiler/plugin dependencies that dependency:go-offline can miss.
-FROM maven:3.10-eclipse-temurin-25 AS java-verification
+FROM maven:3.10-eclipse-temurin-25@sha256:4ed0327629de542aefd6ea9fd5da0c52e80143bf8405e5dc32ac2bde55d70d88 AS java-verification
+COPY logos-webservice/install-temurin.sh /tmp/install-temurin.sh
+RUN sh /tmp/install-temurin.sh jdk && rm /tmp/install-temurin.sh
+ENV JAVA_VERSION=jdk-25.0.5.1+2
 WORKDIR /build/logos-webservice
 COPY logos-webservice/pom.xml ./pom.xml
 COPY logos-webservice/src ./src
@@ -20,7 +23,7 @@ RUN --network=none rm -rf target \
 # Keep the content-addressed npm cache so npm ci can validate each session's
 # actual lockfile offline; changed dependency versions fail instead of using
 # node_modules from a different revision.
-FROM node:22-bookworm-slim AS ui-verification
+FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS ui-verification
 WORKDIR /build/logos-ui
 COPY logos-ui/package.json logos-ui/package-lock.json ./
 RUN npm ci --cache /opt/logos-verification/npm-cache --no-audit --no-fund
@@ -33,7 +36,7 @@ RUN --network=none npm ci --offline --cache /opt/logos-verification/npm-cache --
   && node node_modules/@angular/cli/bin/ng.js build --configuration production \
   && node node_modules/@angular/cli/bin/ng.js test --watch=false
 
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -42,22 +45,41 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # read-only root filesystem still permits at build time.
     PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 
+# apt installs exact versions from a fixed Debian archive snapshot, so every
+# build gets the same packages; bump APT_SNAPSHOT, the pins and the base image
+# digest together. Snapshot lists are older than their Valid-Until date by
+# design, hence the apt setting. The snapshot is fetched over HTTPS, and the
+# slim Node.js base has no CA bundle yet (the ca-certificates package below
+# installs the real one), so borrow the bundle of a digest-pinned image; the
+# packages themselves are still verified against Debian's signed InRelease.
+COPY --from=python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 \
+     /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+ARG APT_SNAPSHOT=20261117T000000Z
+RUN sed -i -E \
+      -e "s#https?://deb\.debian\.org/debian-security/?#https://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}/#g" \
+      -e "s#https?://deb\.debian\.org/debian/?#https://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}/#g" \
+      /etc/apt/sources.list.d/debian.sources \
+  && ! grep -q deb.debian.org /etc/apt/sources.list.d/debian.sources \
+  && printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/99snapshot
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git \
-      openssh-client \
-      ca-certificates \
-      curl \
-      gnupg \
-      jq \
-      ripgrep \
-      python3 \
-      python3-venv \
-      python3-pip \
+      git=1:2.39.5-0+deb12u3 \
+      openssh-client=1:9.2p1-2+deb12u10 \
+      ca-certificates=20250419~deb12u2 \
+      curl=7.88.1-10+deb12u15 \
+      gnupg=2.2.40-1.1+deb12u2 \
+      jq=1.6-2.1+deb12u3 \
+      ripgrep=13.0.0-4+b2 \
+      python3=3.11.2-1+b1 \
+      python3-venv=3.11.2-1+b1 \
+      python3-pip=23.0.1+dfsg-1 \
       # Chromium's runtime dependencies. Installed explicitly rather than via
       # `playwright install-deps` so the layer is reproducible.
-      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-      libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-      libgbm1 libpango-1.0-0 libcairo2 libasound2 \
+      libnss3=2:3.87.1-1+deb12u4 libnspr4=2:4.35-1 libatk1.0-0=2.46.0-5 \
+      libatk-bridge2.0-0=2.46.0-5 libcups2=2.4.2-3+deb12u9 libdrm2=2.4.114-1+b1 \
+      libxkbcommon0=1.5.0-1 libxcomposite1=1:0.4.5-1 libxdamage1=1:1.1.6-1 \
+      libxfixes3=1:6.0.0-2 libxrandr2=2:1.5.2-2+b1 libgbm1=22.3.6-1+deb12u2 \
+      libpango-1.0-0=1.50.12+ds-1 libcairo2=1.16.0-7 libasound2=1.2.8-1+b1 \
   && rm -rf /var/lib/apt/lists/*
 
 # A JDK, so a session can build and test logos-webservice. It targets Java 25
@@ -65,25 +87,40 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # so it comes from Adoptium rather than from the distribution. The service's
 # Maven distribution and offline repository come from the build stage below.
 ARG JDK_VERSION=25
+# The exact package version from Adoptium's repository (it keeps old releases).
+ARG JDK_PACKAGE_VERSION=25.0.5.1.0+2-0
 RUN curl --proto =https -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
       | gpg --dearmor -o /usr/share/keyrings/adoptium.gpg \
   && echo "deb [signed-by=/usr/share/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
       > /etc/apt/sources.list.d/adoptium.list \
   && apt-get update \
-  && apt-get install -y --no-install-recommends "temurin-${JDK_VERSION}-jdk" \
+  && apt-get install -y --no-install-recommends "temurin-${JDK_VERSION}-jdk=${JDK_PACKAGE_VERSION}" \
+  && java -version 2>&1 | grep -F 'build 25.0.5.1+2' \
   && rm -rf /var/lib/apt/lists/*
 
-# GitHub CLI, from the official apt repository.
-RUN curl --proto =https -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
-  && chmod a+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
-  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-      > /etc/apt/sources.list.d/github-cli.list \
-  && apt-get update && apt-get install -y --no-install-recommends gh \
-  && rm -rf /var/lib/apt/lists/*
+# GitHub CLI, the release package of an exact version verified against its
+# SHA-256. The official apt repository only serves the newest release, so a
+# version pinned there stops resolving with the next gh release. Its only
+# dependency, git, is installed above. Bump GH_VERSION and both hashes together
+# (from the release's gh_<version>_checksums.txt).
+ARG GH_VERSION=2.104.0
+ARG GH_SHA256_AMD64=f90d578cbc4c3b067dfc4a1a540cef41faef64eebfb280b548ab32455977a21f
+ARG GH_SHA256_ARM64=95b0632a7e1b12761248b7266825b0eab0853cefb84a1e272d905acb6e436f6c
+RUN arch="$(dpkg --print-architecture)" \
+  && case "$arch" in \
+       amd64) sha256="$GH_SHA256_AMD64" ;; \
+       arm64) sha256="$GH_SHA256_ARM64" ;; \
+       *) echo "no pinned gh package for $arch" >&2; exit 1 ;; \
+     esac \
+  && curl --proto =https -fsSL -o /tmp/gh.deb \
+       "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.deb" \
+  && echo "${sha256}  /tmp/gh.deb" | sha256sum -c - \
+  && dpkg -i /tmp/gh.deb \
+  && rm /tmp/gh.deb \
+  && gh --version | grep -q "gh version ${GH_VERSION} "
 
 # uv, matching the pin used by the other Logos images.
-COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
 
 # Logos targets Python 3.13; Debian bookworm ships 3.11. Install the interpreter
 # at build time into a shared location, so a session runs `uv venv --python
@@ -94,7 +131,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv
 # `language_version: python3.12`, and without that interpreter its hook
 # environment cannot be built at all.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
-RUN uv python install 3.13 3.12 && chmod -R a+rX /opt/uv-python
+RUN uv python install 3.13.18 3.12.16 && chmod -R a+rX /opt/uv-python
 
 # The coding agent itself — this image exists to run Claude Code — and
 # Playwright for screenshots. Both pinned so a session's behaviour does not
@@ -116,11 +153,10 @@ RUN npx --yes playwright@${PLAYWRIGHT_VERSION} install chromium \
 # neither. Sessions were pushing unformatted code and finding out from a red
 # check nobody told them about.
 #
-# The environments are keyed by hook repository and revision, so they are
-# reused as long as the pinned revisions in the configs match. When they stop
-# matching, the session's `pre-commit run` says so rather than silently
-# skipping — which is why the config is copied in and resolved here, not
-# guessed.
+# Logos' hooks are `language: system` and run the tools locked in
+# tools/pre-commit/requirements.lock, all installed into this venv, so they
+# need no hook environments; install-hooks still validates the copied config
+# and prepares the store at PRE_COMMIT_STORE.
 # A venv of its own at the shared location the other Logos images use, not
 # a tool install under /root: the session runs as `agent`, and everything it
 # needs has to be readable without opening up root's home. Deliberately no
@@ -129,8 +165,10 @@ RUN npx --yes playwright@${PLAYWRIGHT_VERSION} install chromium \
 ENV PATH=/opt/venv/bin:$PATH \
     PRE_COMMIT_STORE=/opt/pre-commit
 COPY .pre-commit-config.yaml /tmp/hooks/.pre-commit-config.yaml
-RUN uv venv --python 3.13 /opt/venv \
-  && uv pip install --python /opt/venv pre-commit==4.6.2 \
+COPY tools/pre-commit/requirements.lock /tmp/hooks/pre-commit.lock
+RUN uv venv --python 3.13.18 /opt/venv \
+  && uv pip install --python /opt/venv --no-deps --require-hashes -r /tmp/hooks/pre-commit.lock \
+  && uv pip check --python /opt/venv \
   && cd /tmp/hooks \
   && git init -q . \
   && git config user.email agent@logos.invalid \
@@ -147,13 +185,22 @@ RUN chmod -R a+rX /usr/share/maven /opt/logos-verification
 
 # Unprivileged user. The runner starts the container as `agent`; nothing in a
 # session ever runs as root.
+# /cache is the mount point of a linked repository's workspace cache. Docker
+# fills an empty named volume from the image directory it is mounted over,
+# ownership included, so a fresh cache volume belongs to the session user.
 RUN useradd --create-home --shell /bin/bash --uid 10001 agent \
-  && mkdir -p /workspace /artifacts \
-  && chown -R agent:agent /workspace /artifacts /home/agent
+  && mkdir -p /workspace /artifacts /cache \
+  && chown -R agent:agent /workspace /artifacts /cache /home/agent
 
+COPY logos-agent/workspace/session_activity.py /usr/local/lib/session_activity.py
 COPY --chown=agent:agent logos-agent/workspace/run_session.py /usr/local/lib/run_session.py
 COPY --chown=agent:agent logos-agent/workspace/verify_checkout.py /usr/local/lib/verify_checkout.py
 COPY --chown=agent:agent logos-agent/workspace/screenshot.js /usr/local/lib/screenshot.js
+# `logos-github`: how a session of a linked repository asks the runner to
+# read or comment on GitHub, since the session holds no credential.
+COPY logos-agent/workspace/logos_github.py /usr/local/lib/logos_github.py
+RUN printf '#!/bin/sh\nexec python3 /usr/local/lib/logos_github.py "$@"\n' > /usr/local/bin/logos-github \
+  && chmod 0755 /usr/local/bin/logos-github && chmod 0644 /usr/local/lib/logos_github.py
 
 USER agent
 WORKDIR /workspace

@@ -5,23 +5,22 @@ description = "End-to-end suite for Logos: simulated GPUs, simulated worker node
 requires-python = ">=3.13"
 
 dependencies = [
-    "pytest==9.1.1",
-    "pytest-asyncio==1.4.1",
+    "pytest==9.2.0",
+    "pytest-asyncio==1.5.0",
     "pytest-timeout==2.4.0",
     "httpx==0.28.1",
     "pyyaml==6.0.3",
-    "websockets==14.2",
     # The client tier drives the real OpenAI SDK on purpose: its parsers are
     # the actual contract Logos' users depend on, and a hand-rolled HTTP
     # client would not notice when we break them.
-    "openai==3.39.0",
+    "openai==3.57.0",
 ]
 
 [project.optional-dependencies]
 # Tier 1 imports the worker package directly. Installed editable from the
 # sibling directory rather than vendored, so the tests always run against the
 # working tree.
-worker = ["pydantic==2.14.1"]
+worker = ["pydantic==2.14.4"]
 
 [build-system]
 requires = ["setuptools==84.2.1"]

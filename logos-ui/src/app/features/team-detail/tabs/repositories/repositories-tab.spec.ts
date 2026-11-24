@@ -73,6 +73,10 @@ describe('RepositoriesTabComponent', () => {
     component.formPaths.set('src/ai, services/llm');
     await component.submitForm();
     expect(createTeamRepository).toHaveBeenCalledWith(7, {
+      automatic_workflow_analysis: true,
+      agent_enabled: false,
+      agent_instructions: '',
+      verification_command: '',
       repo_url: 'https://github.com/ls1intum/Artemis',
       branch: 'develop',
       paths: ['src/ai', 'services/llm'],
@@ -83,10 +87,15 @@ describe('RepositoriesTabComponent', () => {
   it('updates an existing link', async () => {
     const component = setup();
     component.openEdit(sample);
+    component.formAutomaticAnalysis.set(false);
     component.formBranch.set('release');
     component.formPaths.set('');
     await component.submitForm();
     expect(updateTeamRepository).toHaveBeenCalledWith(7, 11, {
+      automatic_workflow_analysis: false,
+      agent_enabled: false,
+      agent_instructions: '',
+      verification_command: '',
       repo_url: sample.repo_url,
       branch: 'release',
       paths: [],
@@ -103,6 +112,115 @@ describe('RepositoriesTabComponent', () => {
       11,
       expect.objectContaining({ paths: [] }),
     );
+  });
+
+  it('requires verification before opting in', async () => {
+    const component = setup();
+    component.openEdit(sample);
+    component.formAgentEnabled.set(true);
+    await component.submitForm();
+    expect(updateTeamRepository).not.toHaveBeenCalled();
+    expect(component.formError()).toContain('build and test command');
+  });
+
+  it('saves repository-specific instructions and verification', async () => {
+    const component = setup();
+    component.openEdit(sample);
+    component.formAgentEnabled.set(true);
+    component.formVerificationCommand.set('npm test && npm run build');
+    component.formAgentInstructions.set('Use the project lint config.');
+    await component.submitForm();
+    expect(updateTeamRepository).toHaveBeenCalledWith(7, 11, expect.objectContaining({
+      agent_enabled: true,
+      verification_command: 'npm test && npm run build',
+      agent_instructions: 'Use the project lint config.',
+    }));
+  });
+
+  it('loads opt-in settings for editing and resets them for a new link', () => {
+    const component = setup();
+    component.openEdit({ ...sample, agent_enabled: true, verification_command: 'make check' });
+    expect(component.formAgentEnabled()).toBe(true);
+    expect(component.formVerificationCommand()).toBe('make check');
+    component.openCreate();
+    expect(component.formAgentEnabled()).toBe(false);
+    expect(component.formVerificationCommand()).toBe('');
+  });
+
+  it('sends the sandbox permissions only for a Logos admin', async () => {
+    const component = setup();
+    component.isLogosAdmin = true;
+    component.openEdit({
+      ...sample,
+      agent_enabled: true,
+      verification_command: 'make check',
+      agent_egress_hosts: ['github.com'],
+      agent_may_comment: false,
+    });
+    expect(component.formEgressHosts()).toBe('github.com');
+    component.formEgressHosts.set(' GitHub.com\n\n*.githubusercontent.com\ngithub.com ');
+    component.formMayComment.set(true);
+    await component.submitForm();
+    expect(updateTeamRepository).toHaveBeenCalledWith(7, 11, expect.objectContaining({
+      agent_egress_hosts: ['github.com', '*.githubusercontent.com'],
+      agent_may_comment: true,
+    }));
+  });
+
+  it('leaves the sandbox permissions out of a team owner request', async () => {
+    const component = setup();
+    component.openEdit({
+      ...sample,
+      agent_enabled: true,
+      verification_command: 'make check',
+      agent_egress_hosts: ['github.com'],
+      agent_may_comment: true,
+    });
+    await component.submitForm();
+    const payload = updateTeamRepository.mock.calls[0][2];
+    expect(payload).not.toHaveProperty('agent_egress_hosts');
+    expect(payload).not.toHaveProperty('agent_egress_unrestricted');
+    expect(payload).not.toHaveProperty('agent_may_comment');
+    component.openCreate();
+    component.formUrl.set('https://github.com/ls1intum/Artemis');
+    await component.submitForm();
+    expect(createTeamRepository.mock.calls[0][1]).not.toHaveProperty('agent_egress_hosts');
+  });
+
+  it('sends unrestricted internet access as an explicit Logos admin choice', async () => {
+    const component = setup();
+    component.isLogosAdmin = true;
+    component.openEdit({
+      ...sample,
+      agent_enabled: true,
+      verification_command: 'make check',
+      agent_egress_hosts: ['github.com'],
+      agent_egress_unrestricted: false,
+    });
+    expect(component.formEgressUnrestricted()).toBe(false);
+    component.formEgressUnrestricted.set(true);
+    await component.submitForm();
+    expect(updateTeamRepository).toHaveBeenCalledWith(7, 11, expect.objectContaining({
+      agent_egress_hosts: ['github.com'],
+      agent_egress_unrestricted: true,
+    }));
+    component.openEdit({ ...sample, agent_egress_unrestricted: true });
+    expect(component.formEgressUnrestricted()).toBe(true);
+    component.openCreate();
+    expect(component.formEgressUnrestricted()).toBe(false);
+  });
+
+  it('resets the sandbox permissions for a new link and counts hosts', () => {
+    const component = setup();
+    component.isLogosAdmin = true;
+    component.openEdit({ ...sample, agent_egress_hosts: ['a.example.com', 'b.example.com'], agent_may_comment: true });
+    expect(component.formEgressHosts()).toBe('a.example.com\nb.example.com');
+    expect(component.formMayComment()).toBe(true);
+    component.openCreate();
+    expect(component.formEgressHosts()).toBe('');
+    expect(component.formMayComment()).toBe(false);
+    expect(component.hostCount(sample)).toBe(0);
+    expect(component.hostCount({ ...sample, agent_egress_hosts: ['github.com'] })).toBe(1);
   });
 
   it('unlinks a repository after confirm', async () => {

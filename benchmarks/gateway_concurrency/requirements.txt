@@ -1,0 +1,6 @@
+# The benchmark's direct dependencies. Input of scripts/lock-requirements.sh,
+# never installed directly: install requirements.lock with --no-deps
+# --require-hashes.
+fastapi==0.165.0
+uvicorn[standard]==0.54.0
+httpx==0.28.1

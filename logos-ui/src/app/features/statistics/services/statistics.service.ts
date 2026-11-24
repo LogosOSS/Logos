@@ -94,7 +94,7 @@ export interface RequestCursor {
   request_id: string;
 }
 
-/** One page of the request feed, as `POST /api/logosdb/latest_requests` returns it. */
+/** One page of the request feed, as `QUERY /api/logosdb/latest_requests` returns it. */
 export interface LatestRequestsPage {
   requests: RequestItem[];
   total: number;
@@ -106,6 +106,24 @@ export interface LatestRequestsPage {
 export interface RequestPayloads {
   input_payload: unknown;
   response_payload: unknown;
+}
+
+/** Values observed at scheduling time; null means the scheduler had no estimate. */
+export interface RoutingCandidate {
+  model_id: number;
+  provider_id: number;
+  model_name: string | null;
+  provider_name: string | null;
+  provider_type: string;
+  state: string;
+  queue_depth: number | null;
+  expected_wait_s: number | null;
+}
+
+export interface RequestRouting {
+  candidates: RoutingCandidate[];
+  selected_model_id: number | null;
+  selected_provider_id: number | null;
 }
 
 /** Narrowing of the request feed. `null` on a field means "do not narrow by it". */
@@ -143,7 +161,13 @@ export class StatisticsService {
   private http = inject(HttpClient);
 
   getRequestPayloads(requestId: string): Promise<RequestPayloads> {
-    return firstValueFrom(this.http.post<RequestPayloads>('/api/logosdb/request_payloads', {
+    return firstValueFrom(this.http.query<RequestPayloads>('/api/logosdb/request_payloads', {
+      request_id: requestId,
+    }));
+  }
+
+  getRequestRouting(requestId: string): Promise<RequestRouting> {
+    return firstValueFrom(this.http.query<RequestRouting>('/api/logosdb/request_routing', {
       request_id: requestId,
     }));
   }
@@ -173,7 +197,7 @@ export class StatisticsService {
       errorsOnly: boolean;
     },
   ): Promise<ScopeOptions> {
-    return firstValueFrom(this.http.post<ScopeOptions>('/api/logosdb/request_log_scope_options', {
+    return firstValueFrom(this.http.query<ScopeOptions>('/api/logosdb/request_log_scope_options', {
       start_date: startIso,
       end_date: endIso,
       team_id: scope.teamId,
@@ -191,7 +215,7 @@ export class StatisticsService {
    * per model and provider, narrowed to the page scope.
    */
   getRequestLatencyStats(startIso: string, endIso: string, scope: RequestLatencyScope): Promise<RequestLatencyStats> {
-    return firstValueFrom(this.http.post<RequestLatencyStats>('/api/logosdb/request_latency_stats', {
+    return firstValueFrom(this.http.query<RequestLatencyStats>('/api/logosdb/request_latency_stats', {
       start_date: startIso,
       end_date: endIso,
       team_id: scope.teamId,
@@ -223,7 +247,7 @@ export class StatisticsService {
     cursor: RequestCursor | null,
   ): Promise<LatestRequestsPage> {
     return firstValueFrom(
-      this.http.post<LatestRequestsPage>('/api/logosdb/latest_requests', {
+      this.http.query<LatestRequestsPage>('/api/logosdb/latest_requests', {
         start: startIso,
         end: endIso,
         limit,

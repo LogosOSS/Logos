@@ -12,10 +12,14 @@
  *   NODE_PATH=../logos-ui/node_modules node seed/capture-screenshots.cjs
  *   NODE_PATH=../logos-ui/node_modules node seed/capture-screenshots.cjs roles/batches.png roles/team-detail-overview.png
  *
+ * The Deployments shots need seed/deployments.sql after the role seed. The shot of the running deployment adds
+ * seed/deployments-running.sql for that one shot and removes the deployment again.
+ *
  * Arguments limit the run to the named files (paths relative to static/img/).
  * Without arguments, shots marked `needs` are left out: the seed does not
  * create their example state, and the committed PNG stays in place.
  * OUT_DIR writes the PNGs to another folder instead of overwriting static/img/.
+ * CHROMIUM_PATH names a browser to use when Playwright does not find its own build.
  * LOGOS_SCREENSHOT_WIDTH overrides the viewport width for mobile PR screenshots.
  * The nightly shots change the schedule of llama-3.1-8b-instruct on Docs Local
  * Worker. Use only the isolated documentation stack.
@@ -31,6 +35,10 @@ const IMG = path.join(__dirname, "..", "static", "img");
 const OUT = process.env.OUT_DIR || IMG;
 const ONLY = process.argv.slice(2);
 const WIDTH = Number(process.env.LOGOS_SCREENSHOT_WIDTH || 1440);
+
+// The screenshots stack does not run the agent runner; /api/agent must reach one
+// that reads the documentation database.
+const AGENT_API = "the agent runner API on /api/agent";
 
 const ADMIN = "tobias.wasner";
 const APP_ADMIN = "alexandra.szuminska";
@@ -50,6 +58,7 @@ function lookupIds() {
   );
   return {
     team: sql("SELECT id FROM teams WHERE name = 'Logos'"),
+    worker: sql("SELECT id FROM providers WHERE name = 'Docs Local Worker'"),
     model,
     // The second nightly night: its variant is the linked result in the guide.
     linkedBenchmark: sql(
@@ -130,6 +139,20 @@ async function details(page, text, open = true) {
 
 const button = (page, name) => page.getByRole("button", { name, exact: true }).first();
 
+// The Providers page with the documentation worker expanded to its node models.
+async function expandWorker(page) {
+  await page.goto(BASE + "/providers");
+  await settle(page);
+  await page.getByRole("button", { name: "Expand Docs Local Worker" }).first().click();
+  await page.locator("app-node-models .table-row").first().waitFor();
+}
+
+// The page of one model of the documentation worker (view mode).
+async function nodeModel(page, ids, model) {
+  await page.goto(`${BASE}/providers/${ids.worker}/models?model=${encodeURIComponent(model)}`);
+  await page.locator("h1.page-title").waitFor();
+}
+
 // The shell scrolls inside .main-content; unlock it for a full-page shot and
 // stretch fixed full-viewport layers (dialog backdrops) over the whole page.
 async function unlock(page) {
@@ -153,6 +176,23 @@ async function unlock(page) {
       });
     }
   });
+  await page.evaluate(() => {
+    for (const dialog of document.querySelectorAll(".tumaet-ui-dialog")) {
+      if (!dialog.getClientRects().length) continue;
+      dialog.style.setProperty("max-height", "none", "important");
+      const content = dialog.querySelector(".tumaet-ui-dialog-content");
+      content?.style.setProperty("overflow-y", "visible", "important");
+      const height = dialog.getBoundingClientRect().height;
+      if (height > innerHeight - 48) {
+        const wrapper = dialog.closest(".cdk-global-overlay-wrapper");
+        wrapper?.style.setProperty("align-items", "flex-start", "important");
+        wrapper?.style.setProperty("padding-top", "24px", "important");
+        wrapper?.style.setProperty("box-sizing", "border-box", "important");
+        const full = Math.max(document.documentElement.scrollHeight, Math.ceil(height) + 48);
+        document.querySelector(".shell-layout")?.style.setProperty("min-height", full + "px", "important");
+      }
+    }
+  });
   await page.waitForTimeout(300);
   await page.evaluate(() => {
     const full = document.documentElement.scrollHeight;
@@ -173,23 +213,40 @@ async function unlock(page) {
   await page.waitForTimeout(300);
 }
 
-// Sets the nightly schedule through the UI (button + confirmation dialog).
+async function manageNightly(page) {
+  if (!await page.getByRole("dialog", { name: /^Nightly benchmarks ·/ }).isVisible()) {
+    await page.getByRole("button", { name: /^Manage nightly benchmarks on / }).first().click();
+  }
+  await page.locator(".nightly-management").waitFor({ state: "visible" });
+}
+
+// Sets the schedule through the management dialog, then returns to the page.
 async function setNightly(page, enabled) {
-  const toggle = page.getByRole("button", { name: /nightly runs…$/ }).first();
-  await toggle.waitFor({ timeout: 30000 });
+  const customization = page.getByRole("dialog", { name: "Customize benchmark", exact: true });
+  if (await customization.isVisible()) {
+    await button(page, "Done").evaluate(b => b.click());
+    await customization.waitFor({ state: "hidden" });
+  }
   await page.waitForFunction(
     () => ![...document.querySelectorAll(".nightly__status")].some((e) => e.textContent.includes("Loading")),
-    null,
-    { timeout: 30000 },
+    null, { timeout: 30000 },
   );
+  await manageNightly(page);
+  const toggle = page.getByRole("dialog", { name: /^Nightly benchmarks ·/ }).getByRole("button", { name: /nightly runs…?$/ });
   const label = (await toggle.textContent()).trim();
-  if (label.startsWith("Disable") === enabled) return;
-  await toggle.click();
-  await button(page, enabled ? "Enable nightly runs" : "Disable nightly runs").click();
-  await page.getByRole("button", { name: enabled ? "Disable nightly runs…" : "Enable nightly runs…" }).waitFor({
-    timeout: 30000,
-  });
-  await page.waitForTimeout(1000);
+  if (label.startsWith("Disable") === enabled) {
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog", { name: /^Nightly benchmarks ·/ }).waitFor({ state: "hidden" });
+    return;
+  }
+  await toggle.and(page.locator("button:enabled")).waitFor();
+  await toggle.evaluate(b => b.click());
+  if (!enabled) await button(page, "Disable nightly runs").evaluate(b => b.click());
+  await page.waitForFunction((enabled) => {
+    const status = document.querySelector(".nightly__status");
+    return status?.textContent.includes(enabled ? "Enabled" : "Disabled");
+  }, enabled, { timeout: 30000 });
+  await page.waitForTimeout(600);
 }
 
 async function performance(page, ids, view, query = "") {
@@ -199,23 +256,29 @@ async function performance(page, ids, view, query = "") {
   await settle(page, 800);
 }
 
-// Run benchmark view with every disclosure closed; `open` lists those to open.
+// Opens customization or nightly management only when the shot needs those controls.
 async function runView(page, ids, { nightly, open = [] }) {
   await performance(page, ids, "Run benchmark");
   await setNightly(page, nightly);
-  for (const text of ["Request workload", "Schedule and test plan", "Initial parameter values", "Latest round results", "Dataset and settings", "Repeat or compare settings", "Glossary & abbreviations"]) {
-    await details(page, text, open.includes(text)).catch(() => {});
+  if (open.includes("Dataset and settings") || open.includes("Repeat or compare settings")) await button(page, "Customize").click();
+  else if (open.some(text => ["Request workload", "Schedule and test plan", "Latest round results"].includes(text))) await manageNightly(page);
+  for (const text of open) {
+    if (!["Dataset and settings", "Request workload"].includes(text)) await details(page, text);
   }
   await page.waitForTimeout(600);
 }
 
 async function resultsView(page, ids, sections = [], query = "") {
   await performance(page, ids, null, query);
-  for (const section of sections) await details(page, section);
+  for (const section of sections) {
+    if (section === "Request measurements") await page.getByRole("navigation", { name: "Performance sections" }).getByRole("button", { name: section, exact: true }).click();
+    else await details(page, section);
+  }
 }
 
 async function analysisView(page, ids, section) {
-  await resultsView(page, ids, ["More analysis & details", section]);
+  await performance(page, ids, "Analysis");
+  if (section !== "Charts and comparison") await details(page, section);
 }
 
 async function selectSavedDataset(page) {
@@ -258,6 +321,36 @@ async function aiTools(page, target, model) {
   await settle(page, 600);
 }
 
+// The Deployments page. seed/deployments.sql makes two deployers and the finished deployments #139 to #142.
+// Logos counts a deployer as online for 90 s after its last request, so every shot marks the example deployers as
+// seen first. The running deployment (#143) exists for one shot only: it switches the button Deploy off.
+const RUNNING_DEPLOYMENT = fs.readFileSync(path.join(__dirname, "deployments-running.sql"), "utf8");
+
+function psql(input) {
+  execFileSync("docker", ["exec", "-i", DB_CONTAINER, "psql", "-U", "postgres", "-d", "logosdb", "-q", "-v", "ON_ERROR_STOP=1"], { input }); // NOSONAR - developer tool: uses the docker CLI from the developer's PATH
+}
+
+function prepareDeployments() {
+  sql("DELETE FROM deployment_plans WHERE number = 143");
+  sql("DELETE FROM deployers WHERE name = 'Docs standby host'");
+  sql("UPDATE deployers SET last_seen_at = now() WHERE name IN ('Docs core host', 'Docs Local Worker')");
+}
+
+async function deploymentsPage(page) {
+  prepareDeployments();
+  await page.goto(BASE + "/deployments");
+  await page.locator("table.deployers").waitFor();
+  await page.locator("table.deployers .lg-dot--succeeded").nth(1).waitFor();
+}
+
+// The page of one finished deployment, by its number on this Logos.
+async function deploymentPage(page, number) {
+  prepareDeployments();
+  const id = sql(`SELECT id FROM deployment_plans WHERE number = ${number}`);
+  await page.goto(`${BASE}/deployments/${id}`);
+  await page.locator("ol.timeline").first().waitFor();
+}
+
 // ---------------------------------------------------------------- shot list
 // file: path relative to static/img/; full: full-page shot (else 1440×900).
 
@@ -298,6 +391,131 @@ const SHOTS = [
       await p.locator('[data-testid="batch-support"]').first().waitFor();
     },
   },
+  {
+    file: "roles/logos-admin-add-provider.png",
+    user: ADMIN,
+    go: async (p) => {
+      await p.goto(BASE + "/providers");
+      await settle(p);
+      await button(p, "Add Provider").click();
+      await p.locator("select#add-cloud-type").selectOption("anthropic");
+      await p.locator("#add-name").fill("Anthropic");
+    },
+    after: (p) => p.keyboard.press("Escape"),
+  },
+  {
+    file: "roles/logos-admin-node-models.png",
+    user: ADMIN,
+    go: expandWorker,
+  },
+  {
+    file: "roles/logos-admin-node-model-view.png",
+    user: ADMIN,
+    full: true,
+    go: (p, ids) => nodeModel(p, ids, "llama-3.1-8b-instruct"),
+  },
+  {
+    file: "roles/logos-admin-node-model-edit.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await nodeModel(p, ids, "llama-3.1-8b-instruct");
+      await button(p, "Edit configuration").click();
+      await p.locator(".savebar").waitFor();
+      // The save bar sticks to the window; in a full-page shot it belongs at the end.
+      await p.addStyleTag({ content: ".savebar { position: static !important; }" });
+    },
+  },
+  {
+    file: "roles/logos-admin-node-model-calibrate.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await nodeModel(p, ids, "mistral-small-3.2-24b");
+      await p.getByRole("button", { name: "Calibrate model" }).waitFor();
+    },
+  },
+  {
+    file: "roles/logos-admin-node-connect-model.png",
+    user: ADMIN,
+    go: async (p, ids) => {
+      // The documentation catalog lists only the three models the worker already has.
+      // Add a fourth to the catalog answer, so the dialog shows a choice.
+      await p.route("**/api/logosdb/get_models", async (route) => {
+        const response = await route.fetch();
+        const models = await response.json();
+        await route.fulfill({ response, json: [...models, { ...models[0], id: 9999, name: "gemma-3-27b-it" }] });
+      });
+      await expandWorker(p);
+      await button(p, "Connect model").click();
+      await p.getByText("Add a model from the Logos catalog to this node.").waitFor();
+      await p.getByRole("combobox").last().selectOption({ label: "gemma-3-27b-it" });
+    },
+    after: async (p) => {
+      await button(p, "Cancel").evaluate((b) => b.click());
+      await p.unroute("**/api/logosdb/get_models");
+    },
+  },
+  {
+    file: "roles/logos-admin-node-settings.png",
+    user: ADMIN,
+    full: true,
+    go: async (p, ids) => {
+      await p.goto(`${BASE}/providers/${ids.worker}/node-settings`);
+      await p.locator(".seg").waitFor();
+      await p.addStyleTag({ content: ".savebar { position: static !important; }" });
+    },
+  },
+  {
+    file: "roles/logos-admin-deployments.png",
+    user: ADMIN,
+    full: true,
+    go: async (p) => {
+      await deploymentsPage(p);
+      await p.fill("#deploy-tag", "1.0.3");
+    },
+  },
+  {
+    file: "roles/logos-admin-deployments-running.png",
+    user: ADMIN,
+    go: async (p) => {
+      prepareDeployments();
+      psql(RUNNING_DEPLOYMENT);
+      await p.goto(BASE + "/deployments");
+      await p.locator(".node").nth(1).waitFor();
+    },
+    after: () => sql("DELETE FROM deployment_plans WHERE number = 143"),
+  },
+  {
+    file: "roles/logos-admin-deployments-confirm.png",
+    user: ADMIN,
+    go: async (p) => {
+      await deploymentsPage(p);
+      await p.fill("#deploy-tag", "1.0.3");
+      await button(p, "Deploy").click();
+      await p.getByText("Deploy 1.0.3?").waitFor();
+    },
+    // Never confirm: the dialog would start a deployment.
+    after: (p) => button(p, "Cancel").evaluate((b) => b.click()),
+  },
+  { file: "roles/logos-admin-deployment-detail.png", user: ADMIN, full: true, go: (p) => deploymentPage(p, 142) },
+  { file: "roles/logos-admin-deployment-rolled-back.png", user: ADMIN, full: true, go: (p) => deploymentPage(p, 140) },
+  {
+    file: "roles/logos-admin-deployer-key.png",
+    user: ADMIN,
+    go: async (p) => {
+      await deploymentsPage(p);
+      await button(p, "Add a core deployer").click();
+      await p.fill("#deployer-name", "Docs standby host");
+      await button(p, "Make the deployer").click();
+      await p.locator('[data-testid="deployer-key"]').waitFor();
+    },
+    // The key is made up for the shot: the deployer goes away again.
+    after: async (p) => {
+      await button(p, "I have copied the key").evaluate((b) => b.click());
+      sql("DELETE FROM deployers WHERE name = 'Docs standby host'");
+    },
+  },
   { file: "roles/logos-admin-policies.png", user: ADMIN, go: (p) => p.goto(BASE + "/policies") },
   { file: "roles/logos-admin-billing.png", user: ADMIN, go: (p) => p.goto(BASE + "/billing") },
   { file: "roles/logos-admin-user-management.png", user: ADMIN, go: (p) => p.goto(BASE + "/user-management") },
@@ -315,9 +533,52 @@ const SHOTS = [
       await p.locator("#team-keycloak-group").blur();
     },
   },
+  {
+    file: "roles/logos-admin-agents.png",
+    user: ADMIN,
+    full: true,
+    needs: AGENT_API,
+    go: async (p) => {
+      await p.goto(BASE + "/agents");
+      await p.getByText("Add input validation to the signup form").waitFor();
+    },
+  },
+  {
+    file: "roles/logos-admin-agents-messages.png",
+    user: ADMIN,
+    full: true,
+    needs: AGENT_API,
+    go: async (p) => {
+      await p.goto(BASE + "/agents");
+      const session = p.locator("li.session").filter({ hasText: "Fix the flaky login spec" });
+      await session.locator(".session__head").click();
+      await session.locator(".agent-message code").waitFor();
+    },
+  },
+  {
+    file: "roles/logos-admin-agents-new-session.png",
+    user: ADMIN,
+    full: true,
+    needs: AGENT_API,
+    go: async (p) => {
+      await p.goto(BASE + "/agents");
+      await settle(p);
+      await button(p, "New session").click();
+      await p.getByRole("combobox", { name: "Repository", exact: true }).selectOption({ label: "docs-example/sample-app (develop)" });
+      await p.getByRole("combobox", { name: "Workspace", exact: true }).selectOption({ label: "sample-app" });
+      await p.locator(".form-card textarea").first().fill("Fix the date format in the export of the order list");
+      await p.locator(".form-card textarea").first().blur();
+      await p.getByText("Deploy to dev and screenshots are available only for the platform repository.").waitFor();
+    },
+  },
   { file: "roles/logos-admin-my-workspace.png", user: ADMIN, go: (p) => p.goto(BASE + "/my-workspace") },
   { file: "roles/team-detail-providers.png", user: ADMIN, go: (p, ids) => teamTab(p, ids, "Providers") },
-  { file: "roles/team-detail-repositories.png", user: ADMIN, go: (p, ids) => teamTab(p, ids, "Repositories") },
+  { file: "roles/team-detail-repositories.png", user: ADMIN, full: true, go: (p, ids) => teamTab(p, ids, "Repositories") },
+  { file: "roles/team-detail-repository-agent.png", user: ADMIN, full: true, go: async (p, ids) => {
+    await teamTab(p, ids, "Repositories");
+    await p.locator('.table-row').filter({ hasText: 'docs-example/sample-app' }).getByRole('button', { name: 'Edit repository link' }).click();
+    await p.locator('.tumaet-ui-dialog-title').filter({ hasText: 'Edit repository link' }).waitFor();
+  } },
   { file: "roles/team-detail-settings.png", user: ADMIN, full: true, go: (p, ids) => teamTab(p, ids, "Settings") },
   {
     file: "roles/team-detail-workflows.png",
@@ -378,7 +639,14 @@ const SHOTS = [
     user: ADMIN,
     full: true,
     go: (p, ids) =>
-      runView(p, ids, { nightly: true, open: ["Schedule and test plan"] }),
+      runView(p, ids, { nightly: true }),
+    after: (p) => setNightly(p, false),
+  },
+  {
+    file: "roles/logos-admin-nightly-plan.png",
+    user: ADMIN,
+    full: true,
+    go: (p, ids) => runView(p, ids, { nightly: true, open: ["Schedule and test plan"] }),
     after: (p) => setNightly(p, false),
   },
   {
@@ -387,21 +655,14 @@ const SHOTS = [
     full: true,
     go: async (p, ids) => {
       await runView(p, ids, { nightly: false, open: ["Request workload"] });
-      await details(p, "Create a fixed dataset from FULL request logs");
+      await p.getByRole("combobox", { name: "Request workload", exact: true }).selectOption("recent");
     },
   },
   {
     file: "roles/logos-admin-nightly-enable.png",
     user: ADMIN,
     full: true,
-    go: async (p, ids) => {
-      await runView(p, ids, {
-        nightly: false,
-        open: ["Schedule and test plan"],
-      });
-      await p.getByRole("button", { name: "Enable nightly runs…" }).click();
-      await p.waitForTimeout(800);
-    },
+    go: (p, ids) => runView(p, ids, { nightly: false, open: ["Request workload"] }),
   },
   {
     file: "roles/logos-admin-nightly-disable.png",
@@ -416,7 +677,7 @@ const SHOTS = [
       await p.waitForTimeout(800);
     },
     after: async (p) => {
-      await button(p, "Cancel").click();
+      await button(p, "Cancel").evaluate(b => b.click());
       await setNightly(p, false);
     },
   },
@@ -427,7 +688,7 @@ const SHOTS = [
     go: async (p, ids) => {
       await runView(p, ids, { nightly: false, open: ["Dataset and settings"] });
       await selectSavedDataset(p);
-      await p.locator(".benchmark-settings-panel select").filter({ has: p.locator('option[value="concurrent"]') }).first().selectOption("concurrent");
+      await p.locator(".benchmark-customization select").filter({ has: p.locator('option[value="concurrent"]') }).first().selectOption("concurrent");
       await p.getByLabel("Concurrent requests", { exact: true }).fill("4");
       await p.locator("body").click({ position: { x: 5, y: 890 } });
       await p.waitForTimeout(600);
@@ -440,7 +701,6 @@ const SHOTS = [
     go: async (p, ids) => {
       await runView(p, ids, { nightly: true, open: ["Dataset and settings"] });
       await selectSavedDataset(p);
-      await details(p, "Dataset and settings", false);
       await details(p, "Repeat or compare settings");
       await p.getByLabel("Run a batch").check();
       await p.locator('input[aria-label="Repetitions per configuration"]').fill("1");
@@ -504,6 +764,7 @@ const SHOTS = [
     needs: "LOGOS_NIGHTLY_REQUEST_USERNAME in the documentation orchestrator",
     go: async (p, ids) => {
       await runView(p, ids, { nightly: true });
+      await manageNightly(p);
       await p.getByText(/Latest \d+ successful FULL requests/).waitFor();
     },
     after: (p) => setNightly(p, false),
@@ -564,7 +825,7 @@ const SHOTS = [
   // they run only when named on the command line.
   const selected = SHOTS.filter((s) => (ONLY.length ? ONLY.includes(s.file) : !s.needs));
   for (const s of SHOTS) if (!ONLY.length && s.needs) console.log("not selected", s.file, "- needs", s.needs);
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   let session = null;
   const failed = [];
   for (const shot of selected) {

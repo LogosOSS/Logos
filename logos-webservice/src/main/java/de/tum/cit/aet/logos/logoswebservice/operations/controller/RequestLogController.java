@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
+import de.tum.cit.aet.logos.logoswebservice.common.ReadOnlyQuery;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.RequestLogService;
 
@@ -37,6 +38,7 @@ public class RequestLogController {
      * as {@code cursor_ts}/{@code cursor_id}. Without a body the service returns
      * the newest page of the last 30 days.
      */
+    @ReadOnlyQuery
     @PostMapping("/latest_requests")
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> latestRequests(@RequestAttribute("authContext") AuthContext auth,
@@ -70,6 +72,7 @@ public class RequestLogController {
     }
 
     /** Payloads are excluded from the feed and fetched explicitly for one row. */
+    @ReadOnlyQuery
     @PostMapping("/request_payloads")
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> requestPayloads(@RequestBody Map<String, Object> body) {
@@ -79,6 +82,18 @@ public class RequestLogController {
         return ResponseEntity.ok(requestLogService.getRequestPayloads(requestId));
     }
 
+    /** Candidate observations use the same administrator access as the request feed. */
+    @ReadOnlyQuery
+    @PostMapping("/request_routing")
+    @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
+    public ResponseEntity<?> requestRouting(@RequestBody Map<String, Object> body) {
+        if (!(body.get("request_id") instanceof String requestId) || requestId.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "request_id must be a non-empty string"));
+        }
+        return ResponseEntity.ok(requestLogService.getRequestRouting(requestId));
+    }
+
+    @ReadOnlyQuery
     @PostMapping("/request_logs")
     public ResponseEntity<?> requestLogs(@RequestAttribute("authContext") AuthContext auth,
                                          @RequestBody Map<String, Object> body) {

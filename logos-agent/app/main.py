@@ -6,13 +6,15 @@ health check requires a Keycloak token carrying the operator role.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
 
 from . import (
@@ -23,8 +25,14 @@ from . import (
     db,
     docker_engine,
     github,
+    memory_budget,
+    memory_usage,
     model_policy,
     pulse,
+    repository_context,
+    security_incidents,
+    security_scans,
+    security_store,
     triggers,
 )
 from .artifacts import read_artifact
@@ -33,6 +41,7 @@ from .config import settings
 from .schemas import (
     TERMINAL_STATUSES,
     CapacityState,
+    CodingRepository,
     ControlState,
     ControlUpdate,
     EventKind,
@@ -41,12 +50,16 @@ from .schemas import (
     QueueMove,
     SessionCreate,
     SessionEvent,
+    SessionMessages,
     SessionStatus,
     SessionSummary,
     Workspace,
     WorkspaceCreate,
 )
-from .sessions import artifact_dir, manager
+from .security_models import AssessmentAction, IncidentInput, RepositoryInput
+from .sessions import artifact_dir, cache_volume_for, manager, memory_admission_block
+from .sessions import reserved_memory_mb as sessions_reserved_memory_mb
+from .sessions import resumption_base
 
 logging.basicConfig(
     level=logging.INFO,
@@ -84,11 +97,13 @@ async def lifespan(_app: FastAPI):
             "account without 'workflow' scope as LOGOS_AGENT_SESSION_GITHUB_TOKEN to "
             "keep that out of the agent's reach."
         )
+    await memory_budget.establish()
     await manager.start()
     triggers.poller.on_queued = manager.scheduler_pass
     await triggers.poller.start()
     analysis_triggers.poller.on_queued = manager.scheduler_pass
     await analysis_triggers.poller.start()
+    await security_incidents.poller.start()
     logger.info(
         "agent runner ready: max %s parallel sessions, start below %.0f%% load, " "pause above %.0f%%",
         settings.max_parallel_sessions,
@@ -98,6 +113,7 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        await security_incidents.poller.stop()
         await analysis_triggers.poller.stop()
         await triggers.poller.stop()
         await manager.stop()
@@ -115,6 +131,51 @@ app = FastAPI(
 
 
 # --- health ---------------------------------------------------------------
+
+
+@app.get("/security", tags=["security"])
+async def get_security(_: Principal = Depends(require_agent_operator)) -> dict:
+    return {
+        **await security_store.overview(),
+        "enabled": settings.security_enabled,
+        "feeds_enabled": settings.security_feeds_enabled,
+        "poll_error": security_incidents.poller.last_error,
+    }
+
+
+@app.post("/security/repositories", status_code=201, tags=["security"])
+async def add_security_repository(
+    body: RepositoryInput, principal: Principal = Depends(require_agent_operator)
+) -> dict:
+    # Explicit admin enrollment is the repository authorization boundary.
+    # Team-controlled clone URLs never enter credentialed security sessions.
+    try:
+        return await security_store.enroll(body, principal.username)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/security/incidents", status_code=201, tags=["security"])
+async def add_security_incident(body: IncidentInput, principal: Principal = Depends(require_agent_operator)) -> dict:
+    return await security_store.ingest(body, principal.username, manual=True)
+
+
+@app.get("/security/assessments/{assessment_id}/events", tags=["security"])
+async def security_history(assessment_id: int, _: Principal = Depends(require_agent_operator)) -> list[dict]:
+    return await security_store.history(assessment_id)
+
+
+@app.post("/security/assessments/{assessment_id}/actions", tags=["security"])
+async def security_action(
+    assessment_id: int, body: AssessmentAction, principal: Principal = Depends(require_agent_operator)
+) -> dict:
+    try:
+        found = await security_store.act(assessment_id, body.action, body.reason, principal.username)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not found:
+        raise HTTPException(404, "Assessment not found")
+    return {"ok": True}
 
 
 @app.get("/health", tags=["monitoring"])
@@ -179,7 +240,7 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     # Admission uses the measured figure (who filled the lane does not
     # matter). Own-slot colouring on the page still needs the per-key split,
     # so the key is passed with discount_own=False.
-    own_key = await db.agent_key_id(settings.agent_api_key)
+    own_key = await db.agent_key_id()
     reading = await capacity.read_load(
         lane=model_policy.current().lane(),
         own_api_key_id=own_key,
@@ -195,6 +256,10 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     blocked = control.admission_block()
     if blocked:
         may_start, reason = False, blocked
+    elif may_start:
+        memory_block = await memory_admission_block(control)
+        if memory_block:
+            may_start, reason = False, memory_block
     # The local-only model policy gates admission as hard as load does, so
     # the page that explains why nothing starts has to show it too — an
     # operator staring at an idle platform should not have to read the logs
@@ -223,7 +288,14 @@ async def get_capacity(_: Principal = Depends(require_agent_operator)) -> Capaci
     )
 
 
-def _control_state(state: controls.Controls) -> ControlState:
+async def _control_state(state: controls.Controls) -> ControlState:
+    budget = memory_budget.current()
+    reserved = 0
+    if budget is not None:
+        try:
+            reserved = await sessions_reserved_memory_mb()
+        except Exception as exc:  # noqa: BLE001 - the page still shows the controls
+            logger.info("could not read the reserved session memory: %s", exc)
     return ControlState(
         mode=state.mode,
         mode_reason=state.mode_reason,
@@ -232,6 +304,13 @@ def _control_state(state: controls.Controls) -> ControlState:
         max_parallel=state.max_parallel,
         max_parallel_override=state.max_parallel_override,
         max_parallel_configured=settings.max_parallel_sessions,
+        max_parallel_available=state.max_parallel_available,
+        session_memory_mb=state.session_memory_mb,
+        session_memory_override=state.session_memory_override,
+        session_memory_configured=settings.session_memory_mb,
+        memory_budget_mb=budget.budget_mb if budget is not None else None,
+        host_memory_mb=budget.host_mb if budget is not None else None,
+        memory_reserved_mb=reserved,
         updated_by=state.updated_by,
     )
 
@@ -239,7 +318,7 @@ def _control_state(state: controls.Controls) -> ControlState:
 @app.get("/controls", response_model=ControlState, tags=["capacity"])
 async def get_controls(_: Principal = Depends(require_agent_operator)) -> ControlState:
     """The kill switch and the ceiling, as they stand."""
-    return _control_state(await controls.current())
+    return await _control_state(await controls.current())
 
 
 @app.post("/controls", response_model=ControlState, tags=["capacity"])
@@ -263,10 +342,14 @@ async def update_controls(body: ControlUpdate, principal: Principal = Depends(re
         limit = None if body.clear_max_parallel else body.max_parallel
         state = await controls.set_max_parallel(limit=limit, by=principal.username)
         logger.info("%s set the parallel ceiling to %s", principal.username, limit if limit is not None else "default")
+    if body.clear_session_memory_mb or body.session_memory_mb is not None:
+        memory = None if body.clear_session_memory_mb else body.session_memory_mb
+        state = await controls.set_session_memory(memory_mb=memory, by=principal.username)
+        logger.info("%s set the memory per session to %s", principal.username, f"{memory} MiB" if memory else "default")
     # A pause takes effect on the next pass anyway; running one now means the
     # operator sees it happen instead of waiting a tick for it.
     manager.request_scheduler_pass()
-    return _control_state(state)
+    return await _control_state(state)
 
 
 @app.get("/models", tags=["capacity"])
@@ -296,6 +379,28 @@ async def get_triggers(_: Principal = Depends(require_agent_operator)) -> dict[s
 
 
 # --- workspaces -----------------------------------------------------------
+
+
+@app.get("/repositories", response_model=list[CodingRepository], tags=["workspaces"])
+async def list_coding_repositories(_: Principal = Depends(require_agent_operator)) -> list[CodingRepository]:
+    """Linked team repositories a session can be started for."""
+    return [CodingRepository(**_coding_repository_fields(row)) for row in await db.enabled_coding_repositories()]
+
+
+def _coding_repository_fields(row: dict) -> dict:
+    hosts = row.get("agent_egress_hosts") or []
+    if isinstance(hosts, str):
+        hosts = json.loads(hosts)
+    return {
+        "id": int(row["id"]),
+        "team_id": int(row["team_id"]),
+        "repo_slug": str(row["repo_slug"]),
+        "branch": str(row.get("branch") or "main"),
+        "verification_command": row.get("verification_command"),
+        "agent_egress_hosts": [str(host) for host in hosts],
+        "agent_egress_unrestricted": bool(row.get("agent_egress_unrestricted")),
+        "agent_may_comment": bool(row.get("agent_may_comment")),
+    }
 
 
 @app.get("/workspaces", response_model=list[Workspace], tags=["workspaces"])
@@ -336,6 +441,7 @@ async def delete_workspace(workspace_id: int, _: Principal = Depends(require_age
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     await docker_engine.remove_volume(workspace["volume_name"], force=True)
+    await docker_engine.remove_volume(cache_volume_for(workspace), force=True)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -368,11 +474,6 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Deploys are disabled on this runner (LOGOS_AGENT_DEPLOY_ENABLED)",
         )
-    if not settings.agent_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="LOGOS_AGENT_API_KEY is not configured; sessions have no way to reach a model",
-        )
     # Refuse a model that is not served locally at the point where a person
     # asks for it, rather than accepting the session and failing it later:
     # agent work must never bill a cloud provider, and the operator finds out
@@ -381,15 +482,47 @@ async def create_session(body: SessionCreate, principal: Principal = Depends(req
     if not policy.allows(body.model):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=policy.refusal(body.model))
 
+    task = body.task
+    target: dict = {}
+    if body.team_repository_id is not None:
+        link = await db.coding_repository(body.team_repository_id)
+        if link is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No linked repository with the coding agent enabled has this id",
+            )
+        if body.deploy_to_dev or body.screenshot_paths:
+            # The dev deployment and its screenshots belong to the platform's
+            # own repository; a linked repository has neither.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Deploys and screenshots are only available for the platform repository",
+            )
+        # The same task a triggered session for this repository gets: the
+        # request, followed by the repository's build command and the
+        # instructions its team wrote.
+        with repository_context.scope(link):
+            task = await conventions.for_task(body.task)
+        target = {
+            "repo_url": link["repo_url"],
+            "repo_slug": link["repo_slug"],
+            "team_repository_id": int(link["id"]),
+            "verification_command": link.get("verification_command"),
+            "repo_base_branch": link.get("branch") or "main",
+        }
     try:
         session_id = await db.create_session(
             workspace_id=body.workspace_id,
-            task=body.task,
+            task=task,
             model=body.model,
             created_by=principal.username,
             open_pull_request=body.open_pull_request,
             deploy_to_dev=body.deploy_to_dev,
             screenshot_paths=body.screenshot_paths,
+            # An idle workspace that last worked on another repository moves
+            # to this one's branch; a busy one is refused (db.WorkspaceBusy).
+            point_workspace_at=target.get("repo_base_branch") or "main",
+            **target,
         )
     except ValueError as exc:
         # The workspace was deleted between the 404 check above and the
@@ -479,6 +612,11 @@ async def retry_session(session_id: int, principal: Principal = Depends(require_
             repo_url=row.get("repo_url"),
             repo_slug=row.get("repo_slug"),
             team_repository_id=row.get("team_repository_id"),
+            verification_command=row.get("verification_command"),
+            repo_base_branch=row.get("repo_base_branch"),
+            automatic_analysis=False if row.get("trigger_kind") == "analysis" else None,
+            retry_analysis_session_id=session_id if row.get("trigger_kind") == "analysis" else None,
+            point_workspace_at=resumption_base(row),
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -516,6 +654,30 @@ async def move_session_in_queue(
         )
     logger.info("session %s moved %s in the queue by %s", session_id, body.move, principal.username)
     return SessionSummary(**_summary_fields(moved))
+
+
+@app.get("/sessions/{session_id}/messages", response_model=SessionMessages, tags=["sessions"])
+async def session_messages(
+    session_id: int, request: Request, response: Response, _: Principal = Depends(require_agent_operator)
+) -> SessionMessages | Response:
+    if await db.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        data = await asyncio.to_thread(read_artifact, artifact_dir(session_id), "messages.json", limit=512 * 1024)
+    except FileNotFoundError:
+        return SessionMessages()
+    except OSError:
+        raise HTTPException(status_code=503, detail="Session messages could not be read")
+    etag = '"' + hashlib.sha256(data).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache", "Vary": "Authorization"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    try:
+        messages = SessionMessages.model_validate_json(data, strict=True)
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Session messages could not be read")
+    response.headers.update(headers)
+    return messages
 
 
 @app.get("/sessions/{session_id}/events", response_model=list[SessionEvent], tags=["sessions"])
@@ -642,4 +804,20 @@ async def session_pull_request(session_id: int, _: Principal = Depends(require_a
 def _summary_fields(row: dict) -> dict:
     """Project a database row onto the response model's fields."""
     keys = set(SessionSummary.model_fields)
-    return {k: v for k, v in row.items() if k in keys}
+    fields = {k: v for k, v in row.items() if k in keys}
+    live = memory_usage.current(row["id"], row["status"])
+    fields["memory_current_bytes"] = live
+    if live is not None:
+        # The sampler may commit a newer peak after this request's SELECT.
+        fields["memory_peak_bytes"] = max(live, row.get("memory_peak_bytes") or 0)
+    return fields
+
+
+@app.post("/security/scans/trivy", tags=["security"])
+async def import_security_scan(
+    body: security_scans.ScanInput, principal: Principal = Depends(require_agent_operator)
+) -> dict:
+    try:
+        return await security_scans.ingest_scan(body, principal.username)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc

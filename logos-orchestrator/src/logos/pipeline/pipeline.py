@@ -388,6 +388,7 @@ class RequestPipeline:
             priority_when_scheduled=scheduling_result.priority_when_scheduled,
             queue_depth_at_schedule=scheduling_result.queue_depth_at_schedule,
             provider_metrics=scheduling_result.provider_metrics,
+            routing_candidates=scheduling_result.routing_candidates,
         )
 
         # Record demand for capacity planner
@@ -586,6 +587,7 @@ class RequestPipeline:
                         priority_when_scheduled=rerouted.priority_when_scheduled,
                         queue_depth_at_schedule=rerouted.queue_depth_at_schedule,
                         provider_metrics=rerouted.provider_metrics,
+                        routing_candidates=rerouted.routing_candidates,
                     )
                     scheduling_result = rerouted
                     if pipeline_request is not None:
@@ -655,6 +657,7 @@ class RequestPipeline:
             "is_cold_start": scheduling_result.is_cold_start,
             "ettft_estimate_ms": scheduling_result.ettft_estimate_ms,
             "ettft_tier": scheduling_result.ettft_tier,
+            "ettft_provider_id": scheduling_result.ettft_provider_id,
             "warmth_state": scheduling_result.warmth_state,
         }
         if schedule_start_s is not None:

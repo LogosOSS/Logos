@@ -45,7 +45,7 @@ import urllib.error
 import urllib.request
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
@@ -55,6 +55,7 @@ from logos_worker_node.vllm_compat import (
     _BAKED_QUANT_METHODS_FILENAME,
     _FATAL_LOAD_ERROR_PATTERNS,
     ENGINE_WARMUP_STALLED,
+    FALLBACK_GMU,
     LANE_ENV_MARKER,
     PROBE_ENV_MARKER,
     FatalLoadErrorPattern,
@@ -1162,7 +1163,10 @@ def _build_vllm_cmd(
     speculative_config = str(plan.get("speculative_config") or "").strip()
     kv_bytes = str(plan.get("kv_cache_memory_bytes") or kv_cache_memory_bytes)
     kv_cache_dtype = str(plan.get("kv_cache_dtype") or "")
-    explicit_gmu = plan.get("gpu_memory_utilization")
+    # Probe with the fraction the lane starts with when nothing is calibrated
+    # yet, never vLLM's own whole-GPU default.
+    gmu = plan.get("gpu_memory_utilization")
+    gmu = FALLBACK_GMU if gmu is None else gmu
 
     cmd = [
         vllm_binary,
@@ -1182,8 +1186,7 @@ def _build_vllm_cmd(
     if enable_sleep_mode:
         cmd.append("--enable-sleep-mode")
     cmd.append("--enable-prefix-caching" if enable_prefix_caching else "--no-enable-prefix-caching")
-    if explicit_gmu is not None:
-        cmd.extend(["--gpu-memory-utilization", str(explicit_gmu)])
+    cmd.extend(["--gpu-memory-utilization", str(gmu)])
     if max_model_len:
         cmd.extend(["--max-model-len", str(int(max_model_len))])
     else:
@@ -2110,6 +2113,9 @@ class CalibrationResult:
     # ``spawn_vllm``). Reported alongside the result so the orchestrator can
     # persist what was actually run, not just the outcome.
     probe_command: str = ""
+    # The runs at the other tensor-parallel sizes that also worked; the result
+    # itself is the one the lane uses. Filled by the TP search, never by a probe.
+    other_tp_results: list[CalibrationResult] = field(default_factory=list)
 
 
 def _sample_host_ram_available_mb() -> float | None:
@@ -2391,6 +2397,11 @@ def calibrate_model(
     # inside the probe's closures is observable here without a shared
     # mutable object threaded through every level.
     cache_use_reserved: list[bool] = [False]
+    from logos_worker_node.profile_fingerprint import calibration_plan  # noqa: PLC0415
+
+    # The lane's KV size and context length are a choice inside the range this
+    # measures; only a KV size pinned for calibration itself is kept.
+    plan = calibration_plan(plan, keep_tensor_parallel=True)
     try:
         return _calibrate_model_probe(
             plan,
@@ -3198,7 +3209,7 @@ def _calibrate_model_probe(
         anchors_parallelity: dict[float, float] = {}
 
         def _probe_kv(kv_mb: float) -> int | None:
-            nonlocal model_default_max_len, kv_needed_for_full_mb, best_kv, resolved_max_num_seqs
+            nonlocal model_default_max_len, kv_needed_for_full_mb, resolved_max_num_seqs
             probe_overrides: dict[str, Any] = {"max_model_len": None, "_max_model_len_retry_count": 0}
             p = _try_start(kv_mb, plan_overrides=probe_overrides, record_blacklist=False, allow_whitelist=False)
             if p is None:
@@ -3987,6 +3998,45 @@ def _calibrate_model_probe(
 # ---------------------------------------------------------------------------
 
 
+def _pairs_of(r: CalibrationResult) -> list[dict[str, Any]] | None:
+    """The KV cache to context sweep of a result, as profile entries."""
+    if r.kv_max_model_len_parallelity_pairs:
+        return [
+            {
+                "kv_mb": round(kv_mb, 1),
+                "max_model_len": int(max_model_len),
+                "parallelity": (round(float(parallelity), 3) if parallelity else None),
+            }
+            for kv_mb, max_model_len, parallelity in r.kv_max_model_len_parallelity_pairs
+        ]
+    return [
+        {"kv_mb": round(kv_mb, 1), "max_model_len": int(max_model_len)}
+        for kv_mb, max_model_len in (r.kv_max_model_len_pairs or [])
+    ] or None
+
+
+def calibrations_by_tp(r: CalibrationResult) -> list[dict[str, Any]]:
+    """What each worked tensor-parallel size measured, smallest first."""
+    runs = {run.tensor_parallel_size: run for run in [*r.other_tp_results, r]}
+    return [
+        {
+            "tp": tp,
+            "base_residency_mb": round(run.base_residency_mb, 1),
+            "loaded_vram_mb": round(run.loaded_vram_mb, 1),
+            "calibrated_kv_mb": round(run.kv_cache_sent_mb, 1) if run.kv_cache_sent_mb > 0 else None,
+            "min_kv_cache_mb": round(run.min_kv_cache_mb, 1) if run.min_kv_cache_mb > 0 else None,
+            "max_kv_cache_mb": round(run.max_kv_cache_mb, 1) if run.max_kv_cache_mb > 0 else None,
+            "kv_cache_to_max_model_len_pairs": _pairs_of(run),
+            "cold_load_time_s": round(run.cold_load_time_s, 1) if run.cold_load_time_s is not None else None,
+            "wake_from_sleep_time_s": (
+                round(run.wake_from_sleep_time_s, 1) if run.wake_from_sleep_time_s is not None else None
+            ),
+            "enforce_eager": run.enforce_eager,
+        }
+        for tp, run in sorted(runs.items())
+    ]
+
+
 def result_to_profile_dict(r: CalibrationResult) -> dict[str, Any]:
     """Build a profile dict compatible with ``ModelProfileRecord.to_dict()``.
 
@@ -4006,6 +4056,8 @@ def result_to_profile_dict(r: CalibrationResult) -> dict[str, Any]:
         "disk_size_bytes": None,
         "base_residency_mb": round(r.base_residency_mb, 1),
         "kv_budget_mb": round(r.kv_cache_sent_mb, 1),
+        "calibrated_kv_mb": round(r.kv_cache_sent_mb, 1) if r.kv_cache_sent_mb > 0 else None,
+        "calibrated_footprint_mb": round(r.base_residency_mb, 1) if r.kv_cache_sent_mb > 0 else None,
         "min_kv_cache_mb": (round(r.min_kv_cache_mb, 1) if r.min_kv_cache_mb > 0 else None),
         "max_kv_cache_mb": (round(r.max_kv_cache_mb, 1) if r.max_kv_cache_mb > 0 else None),
         "engine": "vllm",
@@ -4066,6 +4118,8 @@ def result_to_profile_dict(r: CalibrationResult) -> dict[str, Any]:
         # None/omitted means no cap was needed. The lane spawner reuses it so
         # production runs with the same ceiling the successful probe proved.
         "calibration_max_num_seqs": int(r.max_num_seqs) if r.max_num_seqs else None,
+        # Every tensor-parallel size that worked, for choosing a placement.
+        "calibrations_by_tp": calibrations_by_tp(r),
     }
 
 
@@ -4076,69 +4130,13 @@ def result_to_profile_dict(r: CalibrationResult) -> dict[str, Any]:
 
 def plans_from_config(config_path: Path) -> list[dict[str, Any]]:
     """Read ``capabilities_models`` from *config.yml* and return calibration plans."""
+    from logos_worker_node.node_config import entries_from_yaml, plans_from_entries  # noqa: PLC0415
+
     with config_path.open() as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
-
-    logos = raw.get("logos") or {}
-    caps_raw = logos.get("capabilities_models") or []
-    caps_overrides: dict[str, dict] = dict(logos.get("capabilities_overrides") or {})
     vllm_engine: dict[str, Any] = (raw.get("engines") or {}).get("vllm") or {}
-    vllm_model_overrides: dict[str, dict] = vllm_engine.get("model_overrides") or {}
     global_args = [str(arg) for arg in (vllm_engine.get("global_extra_args") or [])]
-
-    plans: list[dict[str, Any]] = []
-    for entry in caps_raw:
-        if isinstance(entry, str):
-            plan: dict[str, Any] = {"model": entry}
-        elif isinstance(entry, dict):
-            plan = dict(entry)
-            # config format: top-level key is the model name when no "model:" key
-            if "model" not in plan:
-                model_name = next(iter(plan), None)
-                if model_name:
-                    plan = {**plan, "model": model_name}
-        else:
-            continue
-
-        model = plan.get("model", "")
-        if not model:
-            continue
-
-        # Merge capabilities_overrides (don't override explicit plan values)
-        for k, v in (caps_overrides.get(model) or {}).items():
-            plan.setdefault(k, v)
-
-        # Merge vllm model_overrides. Everything the operator pins for the
-        # serving lane comes through, because the profile is only meaningful if
-        # it describes the lane that actually runs.
-        #
-        # This used to be an allow-list of seven keys, which silently dropped
-        # the rest. What it dropped mattered: extra_args carries --hf-overrides
-        # (a YaRN rope_scaling that quadruples the context window on
-        # hochbruegge's Qwen2.5-Coder, an architecture swap on deioma's
-        # Qwen3-Reranker), and speculative_config loads a second model worth
-        # ~1.7 GiB per GPU. Calibrating without those measures a different model
-        # than the one being served, and the planner then sizes KV budgets
-        # against a residency that was never real.
-        #
-        # An allow-list also fails in the dangerous direction: a new vLLM
-        # setting is dropped by default and nothing reports it. Unknown keys are
-        # harmless here — the calibration command builder reads the ones it
-        # knows and ignores the rest — so only the plan's own bookkeeping is
-        # excluded, plus "model", which the loop above already resolved.
-        for k, v in (vllm_model_overrides.get(model) or {}).items():
-            if k == "model" or k.startswith("_"):
-                continue
-            plan.setdefault(k, v)
-
-        # Same order as the serving spawners: worker-wide flags first, so a
-        # model's own extra_args still win (argparse keeps the last one).
-        if global_args:
-            plan["extra_args"] = [*global_args, *(plan.get("extra_args") or [])]
-
-        plans.append(plan)
-
-    return plans
+    return plans_from_entries(entries_from_yaml(raw), global_args)
 
 
 # ---------------------------------------------------------------------------
@@ -4314,6 +4312,9 @@ def calibrate_with_tp_escalation(
 
     ``available_gpus`` defaults to the host's current GPU count.
     """
+    # The tensor-parallel size chosen for the lane is a selection, not a bound of
+    # the search: it is dropped here, before the search sets the size of each attempt.
+    plan = {k: v for k, v in plan.items() if k != "tensor_parallel_size"}
     model_name = plan["model"]
     _reset_calibration_log(log_dir, model_name)
 
@@ -4433,23 +4434,23 @@ def calibrate_with_tp_escalation(
         plan, result = _retry_with_trust_remote_code_if_needed(plan, tp, result)
         _fatal = _is_fatal(result)
 
-    # If max tp fails, try the configured (original) tp before giving up —
-    # handles head-count divisibility quirks. Skip it on a genuine capacity
-    # shortfall (lower tp needs *more* VRAM/GPU, not less) unless the
+    # If max tp fails, walk down the smaller sizes before giving up — a failure
+    # that belongs to one size (head-count divisibility) leaves a smaller size
+    # that works, and the size in between may be the only one. Stop at a genuine
+    # capacity shortfall (lower tp needs *more* VRAM/GPU, not less) unless the
     # operator/orchestrator explicitly pinned that lower tp themselves.
     _skip_capacity_fallback = _is_capacity_exhausted(result) and not explicit_tp
     if not result.success and not _fatal and tp > original_tp and not _skip_capacity_fallback:
-        logger.info(
-            "  %s failed at max tp=%d — falling back to configured tp=%d",
-            model_name,
-            tp,
-            original_tp,
-        )
-        tp = original_tp
-        current_plan = {**plan, "tensor_parallel_size": tp}
-        result = _try_calibrate(current_plan, **cal_kwargs)
-        plan, result = _retry_with_trust_remote_code_if_needed(plan, tp, result)
-        _fatal = _is_fatal(result)
+        while tp > original_tp:
+            failed_tp = tp
+            tp = max(tp // 2, original_tp)
+            logger.info("  %s failed at tp=%d — falling back to tp=%d", model_name, failed_tp, tp)
+            current_plan = {**plan, "tensor_parallel_size": tp}
+            result = _try_calibrate(current_plan, **cal_kwargs)
+            plan, result = _retry_with_trust_remote_code_if_needed(plan, tp, result)
+            _fatal = _is_fatal(result)
+            if result.success or _fatal or (_is_capacity_exhausted(result) and not explicit_tp):
+                break
     elif _skip_capacity_fallback and tp > original_tp:
         logger.info(
             "  %s failed at tp=%d with a genuine VRAM shortfall — skipping "
@@ -4473,6 +4474,8 @@ def calibrate_with_tp_escalation(
         )
     best_result = result
     best_tp = tp
+    # Every size that works is kept; the smallest one is what the lane uses.
+    worked: dict[int, CalibrationResult] = {tp: result}
 
     # Binary search: try progressively smaller tp values.
     # tp must be a power of 2 in vLLM, so we halve each step.
@@ -4494,6 +4497,7 @@ def calibrate_with_tp_escalation(
         mid_plan = {**plan, "tensor_parallel_size": mid_tp}
         mid_result = _try_calibrate(mid_plan, **cal_kwargs)
         if mid_result.success:
+            worked[mid_tp] = mid_result
             best_result = mid_result
             best_tp = mid_tp
             high_tp = mid_tp
@@ -4509,4 +4513,5 @@ def calibrate_with_tp_escalation(
             max_tp,
         )
 
+    best_result.other_tp_results = [run for size, run in sorted(worked.items()) if run is not best_result]
     return best_result

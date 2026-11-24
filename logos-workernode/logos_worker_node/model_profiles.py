@@ -23,6 +23,7 @@ change back in its runtime status.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, fields
@@ -37,14 +38,58 @@ ORIGIN_SHARED = "shared"
 _EMA_ALPHA = 0.3  # weight for new measurement vs historical average
 
 
+def _calibrated_measurement(profile: Any, gpu_count: int) -> tuple[float, float, int] | None:
+    """The footprint, the cache per GPU and the GPU count of one calibration measurement.
+
+    A calibration records its footprint together with the cache that footprint holds
+    (``calibrated_footprint_mb`` and ``calibrated_kv_mb``) for the tensor-parallel size it ran
+    with. Only values from one measurement belong together. The result for ``gpu_count`` wins when
+    the calibration measured that size. Otherwise the stored pair counts, with the GPU count it
+    was measured at. ``None`` when an operator replaced ``base_residency_mb`` or the profile has
+    no pair: the caller keeps the live total then.
+    """
+    footprint = getattr(profile, "calibrated_footprint_mb", None)
+    cache = getattr(profile, "calibrated_kv_mb", None)
+    base = float(getattr(profile, "base_residency_mb", None) or 0.0)
+    if not footprint or not cache or abs(base - float(footprint)) > 0.5:
+        return None
+    runs = [r for r in (getattr(profile, "calibrations_by_tp", None) or []) if isinstance(r, dict)]
+    for run in runs:
+        if run.get("tp") == gpu_count and run.get("base_residency_mb") and run.get("calibrated_kv_mb"):
+            return float(run["base_residency_mb"]), float(run["calibrated_kv_mb"]), gpu_count
+    measured_at = next(
+        (
+            run.get("tp")
+            for run in runs
+            if run.get("base_residency_mb") and abs(float(run["base_residency_mb"]) - float(footprint)) <= 0.5
+        ),
+        None,
+    )
+    # The configured size can differ from the measured one (an operator override replaces it).
+    count = measured_at or getattr(profile, "tensor_parallel_size", None)
+    return (float(footprint), float(cache), int(count)) if count else None
+
+
 def reconfigured_vram_mb(profile: Any, measured_mb: float, gpu_count: int, cache_per_gpu_mb: float) -> float:
     """Adjust a calibrated total for a different number/size of per-rank KV caches.
 
     Keep measured weights and overhead; replace only the known KV allocation.
     Unknown or inconsistent metadata retains the conservative measured total.
+
+    ``measured_mb`` is a live total, observed under whatever cache the lane ran with, and
+    taking a calibrated cache out of it would take out too much. The calibration's own
+    measurement (see ``_calibrated_measurement``) is used when the profile has one; profiles
+    measured before it existed keep the old arithmetic.
     """
-    old_count = getattr(profile, "tensor_parallel_size", None)
-    old_cache = getattr(profile, "kv_budget_mb", None)
+    pair = _calibrated_measurement(profile, gpu_count)
+    if pair:
+        total, old_cache, old_count = pair
+    else:
+        total = measured_mb
+        # kv_budget_mb follows the configured and the observed cache, so it only stands in
+        # for profiles measured before the calibration kept its own.
+        old_cache = getattr(profile, "kv_budget_mb", None)
+        old_count = getattr(profile, "tensor_parallel_size", None)
     if (
         getattr(profile, "residency_source", None) != "calibrated"
         or not old_count
@@ -53,10 +98,10 @@ def reconfigured_vram_mb(profile: Any, measured_mb: float, gpu_count: int, cache
         or old_cache <= 0
         or cache_per_gpu_mb <= 0
         or gpu_count <= 0
-        or measured_mb <= old_count * old_cache
+        or total <= old_count * old_cache
     ):
         return measured_mb
-    return measured_mb - old_count * old_cache + gpu_count * cache_per_gpu_mb
+    return total - old_count * old_cache + gpu_count * cache_per_gpu_mb
 
 
 def _ema(previous: float | None, current: float) -> float:
@@ -72,6 +117,13 @@ class ModelProfileRecord:
     disk_size_bytes: int | None = None  # informational; legacy field — still read from persisted profiles
     base_residency_mb: float | None = None  # full awake footprint; semantics depend on residency_source (see below)
     kv_budget_mb: float | None = None  # last observed kv_cache_sent (informational)
+    # The KV cache for each GPU that base_residency_mb includes, as the calibration gave it to vLLM.
+    # Only a calibration sets it: a configured or observed cache never changes it, so the footprint
+    # of another cache size can be worked out from the measured total.
+    calibrated_kv_mb: float | None = None
+    # The footprint that cache belongs to: base_residency_mb as the calibration measured it. Live
+    # observations never change it, so the pair stays usable after the lane ran with another cache.
+    calibrated_footprint_mb: float | None = None
     # KV cache envelope discovered by calibration on this hardware. The planner
     # picks a runtime kv_cache_memory_bytes value inside [min, max] based on
     # how much VRAM is free at load time — small enough to coexist with other
@@ -213,6 +265,12 @@ class ModelProfileRecord:
     calibration_origin: str | None = None
     calibration_stale: bool | None = None
     calibration_key: dict[str, Any] | None = None
+    # Hash of the whole configuration the calibration was measured under, the
+    # KV cache and context choice included; used to prefer a matching snapshot.
+    config_fingerprint: str | None = None
+    # What each tensor-parallel size that worked measured, smallest first; the
+    # fields above describe the size the lane uses.
+    calibrations_by_tp: list[dict[str, Any]] | None = None
     calibration_duration_s: float | None = None
 
     def known_base_residency_mb(self) -> float | None:
@@ -273,6 +331,78 @@ class ModelProfileRecord:
         return self.estimate_host_ram_mb()
 
 
+# Keys _apply_manual_overrides reads; a test keeps this set in step with it.
+PROFILE_OVERRIDE_KEYS = frozenset(
+    {
+        "base_residency_mb",
+        "sleeping_residual_mb",
+        "loaded_vram_mb",
+        "kv_budget_mb",
+        "min_kv_cache_mb",
+        "max_kv_cache_mb",
+        "kv_per_token_bytes",
+        "max_context_length",
+        "calibration_max_model_len",
+        "calibration_max_num_seqs",
+        "kv_cache_to_max_model_len_pairs",
+        "min_context_fraction",
+        "engine",
+        "tensor_parallel_size",
+        "host_ram_mb",
+        "host_ram_residual_mb",
+        "metal_capacity_floor_mb",
+    }
+)
+
+
+_FLOAT_OVERRIDES = (
+    "base_residency_mb",
+    "sleeping_residual_mb",
+    "loaded_vram_mb",
+    "kv_budget_mb",
+    "min_kv_cache_mb",
+    "max_kv_cache_mb",
+    "host_ram_mb",
+    "host_ram_residual_mb",
+    "min_context_fraction",
+)
+_INT_OVERRIDES = (
+    "kv_per_token_bytes",
+    "max_context_length",
+    "calibration_max_model_len",
+    "calibration_max_num_seqs",
+    "tensor_parallel_size",
+)
+
+
+def _convertible(convert: Any, value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(convert(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def profile_override_errors(overrides: dict[str, Any]) -> list[str]:
+    """Why a profile override value would fail where it is applied.
+
+    ``_apply_manual_overrides`` converts these at a lane start, and a value it
+    cannot convert stops that start, so it must not be stored.
+    """
+    errors = []
+    for key, value in overrides.items():
+        if key in _FLOAT_OVERRIDES and not _convertible(float, value):
+            errors.append(f"{key}: must be a number")
+        elif key in _INT_OVERRIDES and not _convertible(int, value):
+            errors.append(f"{key}: must be an integer")
+        elif key == "metal_capacity_floor_mb" and value is not None and not _convertible(float, value):
+            errors.append(f"{key}: must be a number or null")
+        elif key == "kv_cache_to_max_model_len_pairs" and not isinstance(value, list):
+            errors.append(f"{key}: must be a list")
+    return errors
+
+
 class ModelProfileRegistry:
     """Model VRAM profiles, held in memory and synced with Logos."""
 
@@ -284,8 +414,12 @@ class ModelProfileRegistry:
         self._lock = threading.Lock()
         # model -> (calibration key this node computes for it now, its hash)
         self._calibration_keys: dict[str, tuple[dict[str, Any], str]] = {}
+        self._config_fingerprints: dict[str, str] = {}
         self._slice_gpu_counts: dict[str, int] = {}
+        # config.yml's model_profile_overrides never change; the ones Logos'
+        # node configuration owns are replaced as a whole when it changes.
         self._manual_overrides: dict[str, dict[str, Any]] = {}
+        self._config_overrides: dict[str, dict[str, Any]] = {}
         if model_profile_overrides:
             for model_name, ov in model_profile_overrides.items():
                 if isinstance(ov, dict):
@@ -353,11 +487,11 @@ class ModelProfileRegistry:
             for model_name, ov in overrides.items():
                 if not isinstance(ov, dict) or not ov:
                     continue
-                existing = self._manual_overrides.get(model_name)
+                existing = self._config_overrides.get(model_name)
                 if existing is not None:
                     existing.update(ov)
                 else:
-                    self._manual_overrides[model_name] = dict(ov)
+                    self._config_overrides[model_name] = dict(ov)
             for model_name in overrides:
                 profile = self._profiles.get(model_name)
                 if profile is not None:
@@ -368,10 +502,53 @@ class ModelProfileRegistry:
             ", ".join(sorted(overrides)),
         )
 
+    def _overrides_for(self, model_name: str) -> dict[str, Any]:
+        return {**self._manual_overrides.get(model_name, {}), **self._config_overrides.get(model_name, {})}
+
+    def overrides_removed_by(self, overrides: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+        """Profile keys that stop applying when ``overrides`` replace the config-owned set."""
+        with self._lock:
+            return self._removed_by(overrides)
+
+    def _removed_by(self, overrides: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+        removed = {}
+        for model_name, old in self._config_overrides.items():
+            gone = sorted(
+                set(old) - set(overrides.get(model_name, {})) - set(self._manual_overrides.get(model_name, {}))
+            )
+            if gone and model_name in self._profiles:
+                removed[model_name] = gone
+        return removed
+
+    def replace_config_overrides(
+        self, overrides: dict[str, dict[str, Any]], central: dict[str, Any] | None = None
+    ) -> None:
+        """Make ``overrides`` all that Logos' node configuration owns.
+
+        A key that disappeared stops applying, and its field takes the value
+        Logos stores beneath the override (``central``), or none when Logos has
+        none or could not be asked.
+        """
+        with self._lock:
+            removed = self._removed_by(overrides)
+            self._config_overrides = {str(m): dict(ov) for m, ov in overrides.items() if isinstance(ov, dict) and ov}
+            for model_name, keys in removed.items():
+                profile = self._profiles[model_name]
+                stored = (central or {}).get(model_name)
+                for key in keys:
+                    if key not in _RECORD_FIELDS:
+                        continue
+                    underlying = stored if isinstance(stored, dict) and key in stored else None
+                    setattr(profile, key, underlying[key] if underlying else None)
+                    if key == "base_residency_mb":
+                        profile.residency_source = underlying.get("residency_source") if underlying else None
+            for model_name, profile in self._profiles.items():
+                self._apply_manual_overrides(model_name, profile)
+
     def _apply_manual_overrides(self, model_name: str, profile: ModelProfileRecord) -> bool:
         """Apply operator-provided overrides from config.yml."""
-        overrides = self._manual_overrides.get(model_name)
-        if overrides is None:
+        overrides = self._overrides_for(model_name)
+        if not overrides:
             return False
 
         applied = []
@@ -817,7 +994,7 @@ class ModelProfileRegistry:
             # Read under the lock too — add_overrides also runs under it, and
             # reading this beforehand risks a stale empty dict racing a
             # just-added override, letting the HF value overwrite it below.
-            overrides = self._manual_overrides.get(model_name) or {}
+            overrides = self._overrides_for(model_name)
             profile = self._profiles.setdefault(model_name, ModelProfileRecord())
             changed = False
 
@@ -878,30 +1055,53 @@ class ModelProfileRegistry:
                     entry["calibration_key_hash"] = key_hash(profile.calibration_key)
                 else:
                     entry["calibration_key_hash"] = self._calibration_keys.get(name, (None, None))[1]
+                if profile.config_fingerprint is None:
+                    entry["config_fingerprint"] = self._config_fingerprints.get(name)
                 entry["overridden_fields"] = self._overridden_fields(name)
                 result[name] = entry
             return result
 
     def _overridden_fields(self, model_name: str) -> list[str]:
-        overrides = self._manual_overrides.get(model_name) or {}
+        overrides = self._overrides_for(model_name)
         return sorted(key for key in overrides if key in _RECORD_FIELDS)
 
-    def set_calibration_keys(self, keys: dict[str, dict[str, Any]]) -> list[str]:
-        """Adopt the node's current keys; returns the models whose key changed.
+    def set_calibration_keys(
+        self,
+        keys: dict[str, dict[str, Any]],
+        fingerprints: dict[str, str] | None = None,
+        selections: dict[str, tuple[float | None, int | None, int | None]] | None = None,
+    ) -> list[str]:
+        """Adopt the node's current keys; returns the models to re-measure.
 
-        Their stored calibration no longer describes how the node runs them,
-        so it is re-measured like a stale one.
+        A changed key means the stored calibration no longer describes how the
+        node runs the model. So does a choice of KV cache size, context length
+        or tensor-parallel size outside what was measured (``selections``: per
+        model the KV size in MB, the context length and the size, ``None`` for
+        not configured). A calibration measured under the current configuration
+        fingerprint is left alone: a repeat could not cover the choice either.
         """
         from logos_worker_node.profile_fingerprint import key_hash  # noqa: PLC0415
 
         with self._lock:
             previous = self._calibration_keys
             self._calibration_keys = {name: (key, key_hash(key)) for name, key in keys.items()}
+            if fingerprints is not None:
+                self._config_fingerprints = dict(fingerprints)
             changed = [
                 name
                 for name, (_, digest) in self._calibration_keys.items()
                 if name in previous and previous[name][1] != digest
             ]
+            for name, (kv_mb, context, tp) in (selections or {}).items():
+                profile = self._profiles.get(name)
+                if name in changed or profile is None or selection_covered(profile, kv_mb, context, tp):
+                    continue
+                # Measured under this very configuration: another run would end the same way, so a choice
+                # the hardware cannot reach does not make it stale again and again.
+                fingerprint = self._config_fingerprints.get(name)
+                if profile.config_fingerprint is not None and profile.config_fingerprint == fingerprint:
+                    continue
+                changed.append(name)
             for name in changed:
                 profile = self._profiles.get(name)
                 if profile is not None and profile.calibration_id is not None:
@@ -925,6 +1125,10 @@ class ModelProfileRegistry:
     def slice_gpu_counts(self) -> dict[str, int]:
         with self._lock:
             return dict(self._slice_gpu_counts)
+
+    def config_fingerprints(self) -> dict[str, str]:
+        with self._lock:
+            return dict(self._config_fingerprints)
 
     def calibration_key_hashes(self) -> dict[str, str]:
         with self._lock:
@@ -982,12 +1186,60 @@ class ModelProfileRegistry:
             record.calibration_stale = False
             key = self._calibration_keys.get(model_name)
             record.calibration_key = dict(key[0]) if key is not None else None
+            record.config_fingerprint = self._config_fingerprints.get(model_name)
             record.calibration_duration_s = round(duration_s, 1) if duration_s is not None else None
             self._profiles[model_name] = record
             self._apply_manual_overrides(model_name, record)
 
 
 _RECORD_FIELDS = frozenset(field.name for field in fields(ModelProfileRecord))
+
+
+def _measurement_of(profile: ModelProfileRecord, tp: int | None) -> tuple[float | None, float | None, list[Any]] | None:
+    """The KV range and the context sweep that belong to one tensor-parallel size; None when it was not measured.
+
+    Without a size, or without the list of measured sizes and a size to compare with, the profile's own values
+    (those of the size its lane uses) stand for it.
+    """
+    own = (profile.min_kv_cache_mb, profile.max_kv_cache_mb, profile.kv_cache_to_max_model_len_pairs or [])
+    if tp is None:
+        return own
+    sizes = [run for run in (profile.calibrations_by_tp or []) if isinstance(run, dict)]
+    if sizes:
+        run = next((r for r in sizes if r.get("tp") == tp), None)
+        if run is None:
+            return None
+        return run.get("min_kv_cache_mb"), run.get("max_kv_cache_mb"), run.get("kv_cache_to_max_model_len_pairs") or []
+    # An older calibration knows one size only: the one its lane uses.
+    if profile.tensor_parallel_size and int(profile.tensor_parallel_size) != tp:
+        return None
+    return own
+
+
+def selection_covered(
+    profile: ModelProfileRecord, kv_mb: float | None, context: int | None, tp: int | None = None
+) -> bool:
+    """Whether a calibration covers the KV cache size, context length and tensor-parallel size chosen for the lane.
+
+    Nothing chosen, or nothing known about the measured range, is covered: only
+    a value the calibration can show to be out of range counts against it. The range is
+    that of the chosen tensor-parallel size; a size that was not measured is not covered.
+    """
+    measured = _measurement_of(profile, tp)
+    if measured is None:
+        return False
+    low, high, pairs = measured
+    if kv_mb is not None and low is not None and high is not None and not (low - 1e-6 <= kv_mb <= high + 1e-6):
+        return False
+    if context is not None and pairs:
+        reachable = [
+            int(pair.get("max_model_len") or 0)
+            for pair in pairs
+            if isinstance(pair, dict) and (kv_mb is None or float(pair.get("kv_mb") or 0) <= kv_mb + 1e-6)
+        ]
+        best = max(reachable, default=0)
+        return context <= best if best > 0 else True
+    return True
 
 
 def _awaits_snapshot(profile: ModelProfileRecord) -> bool:
@@ -1059,6 +1311,7 @@ def _record_from_dict(data: dict[str, Any]) -> ModelProfileRecord:
         calibration_max_model_len=_optional_int(data.get("calibration_max_model_len")),
         calibration_max_num_seqs=_optional_int(data.get("calibration_max_num_seqs")),
         kv_cache_to_max_model_len_pairs=pairs if isinstance(pairs, list) else None,
+        calibrations_by_tp=data.get("calibrations_by_tp") if isinstance(data.get("calibrations_by_tp"), list) else None,
         sync_revision=int(data.get("sync_revision", 0) or 0),
         calibration_id=_optional_int(data.get("calibration_id")),
         calibration_key=key if isinstance(key, dict) else None,

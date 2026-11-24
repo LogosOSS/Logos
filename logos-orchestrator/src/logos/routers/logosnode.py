@@ -33,12 +33,18 @@ from logos.dbutils.dbrequest import (
     LogosNodeReconfigureLaneRequest,
     LogosNodeRegisterRequest,
     LogosNodeResetProfilesRequest,
+    LogosNodeSettingsImportRequest,
     LogosNodeSleepLaneRequest,
     LogosNodeStatusRequest,
     LogosNodeWakeLaneRequest,
 )
 from logos.errors import admin_error_response
-from logos.logosnode_registry import LogosNodeCommandError, LogosNodeOfflineError, LogosNodeSessionConflictError
+from logos.logosnode_registry import (
+    LogosNodeCommandError,
+    LogosNodeCommandRejectedError,
+    LogosNodeOfflineError,
+    LogosNodeSessionConflictError,
+)
 from logos.logosnode_snapshot import _LOGOSNODE_STATS_STALE_AFTER_SECONDS, _parse_iso_datetime
 from logos.main import (
     _benchmark_sessions_by_job,
@@ -50,12 +56,25 @@ from logos.main import (
 )
 from logos.model_profile_store import shared_profiles_enabled
 from logos.model_profile_sync import profile_sync
-from logos.node_config import SYNC_NODE_CONFIG_ACTION, conflict_warnings, entry_errors, name_errors
+from logos.node_config import (
+    SYNC_NODE_CONFIG_ACTION,
+    VALIDATE_NODE_CONFIG_ACTION,
+    conflict_warnings,
+    entry_errors,
+    error_items,
+    name_errors,
+)
+from logos.node_settings import SETTING_KEYS, SYNC_NODE_SETTINGS_ACTION
+from logos.node_settings import error_items as settings_error_items
+from logos.node_settings import settings_errors
 from logos.notifications import emit_notification
 from logos.notifications.deployment import deployment_notification
 from logos.role_auth import require_logos_admin_key
 
 logger = logging.getLogger("LogosLogger")
+
+# One imported node setting may not be larger than this; a worker could otherwise store any amount of data.
+_MAX_SETTING_BYTES = 64 * 1024
 
 router = APIRouter()
 
@@ -138,6 +157,18 @@ async def _republish_latest_runtime(provider_id: int) -> None:
     if not isinstance(runtime, dict) or not runtime:
         return
     await profile_sync.capture_status(provider_id, runtime, cold_mark_changed=True)
+
+
+def _key_report_of(payload: Dict[str, Any]) -> Dict[str, Any] | None:
+    """The keys, GPU slices and fingerprints a status carries after they changed; None when it has none."""
+    report = payload.get("key_report")
+    if not isinstance(report, dict):
+        return None
+    return {
+        "calibration_key_hashes": _string_map(report.get("calibration_key_hashes")),
+        "slice_gpu_counts": _int_map(report.get("slice_gpu_counts")),
+        "config_fingerprints": _string_map(report.get("config_fingerprints")),
+    }
 
 
 def _int_map(value: Any) -> Dict[str, int]:
@@ -353,7 +384,9 @@ async def logosnode_model_profiles(data: LogosNodeModelProfilesRequest, request:
 
     def _load() -> Dict[str, Dict[str, Any]]:
         if data.calibration_key_hashes:
-            profile_sync.update_reported_keys(provider_id, data.calibration_key_hashes, data.slice_gpu_counts)
+            profile_sync.update_reported_keys(
+                provider_id, data.calibration_key_hashes, data.slice_gpu_counts, data.config_fingerprints
+            )
         return profile_sync.load_effective_profiles(provider_id)
 
     profile_sync.write_cache.forget(provider_id)
@@ -520,7 +553,10 @@ async def logosnode_session(websocket: WebSocket, token: str):
                     ticket.provider_id,
                     calibration_key_hashes=_string_map(payload.get("calibration_key_hashes")),
                     slice_gpu_counts=_int_map(payload.get("slice_gpu_counts")),
+                    config_fingerprints=_string_map(payload.get("config_fingerprints")),
                 )
+                _schedule_node_config_push(ticket.provider_id)
+                _schedule_node_settings_push(ticket.provider_id)
             elif msg_type == "status":
                 runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
                 await _main._logosnode_registry.update_runtime(
@@ -539,6 +575,10 @@ async def logosnode_session(websocket: WebSocket, token: str):
                     ),
                 )
                 await profile_sync.capture_status(ticket.provider_id, runtime)
+                reported = _key_report_of(payload)
+                if reported is not None:
+                    # A live edit changed what the node knows about its calibrations; judge them by it.
+                    profile_sync.schedule_push(ticket.provider_id, **reported)
             elif msg_type == "event":
                 event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
                 await _main._logosnode_registry.append_event(
@@ -879,6 +919,14 @@ def _load_node_config(provider_id: int) -> Dict[str, Any] | None:
         return db.get_node_config(provider_id)
 
 
+def _load_node_settings(provider_id: int) -> Dict[str, Any] | None:
+    """The stored settings of a node, or None when the node is unknown."""
+    with DBManager() as db:
+        if db.get_provider(provider_id) is None:
+            return None
+        return db.get_node_settings(provider_id)
+
+
 def _require_admin_user(logos_key: str) -> int:
     """The id of the Logos admin the key belongs to."""
     with DBManager() as db:
@@ -886,18 +934,67 @@ def _require_admin_user(logos_key: str) -> int:
         return int(db.get_user_by_api_key(logos_key)["id"])
 
 
-async def _push_node_config(provider_id: int) -> None:
-    """Send a node's stored configuration to a worker that applies it."""
-    if not _main._logosnode_registry.supports_action(provider_id, SYNC_NODE_CONFIG_ACTION):
-        return
+async def _push_stored(provider_id: int, action: str, load: Any, what: str) -> Dict[str, Any] | None:
+    """Send a node's stored ``what`` to a worker that applies it; the worker's answer, None without one."""
+    if not _main._logosnode_registry.supports_action(provider_id, action):
+        return None
     try:
-        config = await asyncio.to_thread(_load_node_config, provider_id)
-        await _main._logosnode_registry.send_command(
-            provider_id, SYNC_NODE_CONFIG_ACTION, params=config, timeout_seconds=30
-        )
+        params = await asyncio.to_thread(load, provider_id)
+        result = await _main._logosnode_registry.send_command(provider_id, action, params=params, timeout_seconds=30)
+        return result if isinstance(result, dict) else None
     except Exception:
-        # The worker keeps its current configuration until the next push.
-        logger.warning("Failed to push node config to provider %s", _resolve_provider_name(provider_id), exc_info=True)
+        # The worker keeps what it has until the next push.
+        logger.warning(
+            "Failed to push node %s to provider %s", what, _resolve_provider_name(provider_id), exc_info=True
+        )
+        return None
+
+
+async def _push_node_config(provider_id: int) -> Dict[str, Any] | None:
+    return await _push_stored(provider_id, SYNC_NODE_CONFIG_ACTION, _load_node_config, "config")
+
+
+async def _push_node_settings(provider_id: int) -> Dict[str, Any] | None:
+    return await _push_stored(provider_id, SYNC_NODE_SETTINGS_ACTION, _load_node_settings, "settings")
+
+
+def _schedule_push(push: Any, provider_id: int) -> None:
+    """Push in the background: the worker's answer arrives on the caller's socket."""
+    task = asyncio.create_task(push(provider_id))
+    _main._background_tasks.add(task)
+    task.add_done_callback(_main._background_tasks.discard)
+
+
+def _schedule_node_config_push(provider_id: int) -> None:
+    _schedule_push(_push_node_config, provider_id)
+
+
+def _schedule_node_settings_push(provider_id: int) -> None:
+    _schedule_push(_push_node_settings, provider_id)
+
+
+async def _worker_refusal(provider_id: int, rows: list[Dict[str, Any]]) -> JSONResponse | None:
+    """An error response when the connected worker would not accept ``rows``."""
+    registry = _main._logosnode_registry
+    if registry.peek_runtime_snapshot(provider_id) is None:
+        return admin_error_response(503, "Worker not connected")
+    if not registry.supports_action(provider_id, VALIDATE_NODE_CONFIG_ACTION):
+        return admin_error_response(409, "The worker is too old to validate a configuration; update it first")
+    try:
+        await registry.send_command(
+            provider_id, VALIDATE_NODE_CONFIG_ACTION, params={"entries": rows}, timeout_seconds=30
+        )
+    except LogosNodeOfflineError:
+        return admin_error_response(503, "Worker not connected")
+    except LogosNodeCommandRejectedError as exc:
+        # The worker lists its problems one by one; an older one only sends them joined.
+        problems = exc.errors or str(exc).split("; ")
+        return admin_error_response(
+            400, "; ".join(problems), error_items(problems, [row["model_name"] for row in rows])
+        )
+    except LogosNodeCommandError as exc:
+        return admin_error_response(502, f"The worker could not validate the configuration: {exc}")
+    return None
 
 
 @router.post("/logosdb/providers/logosnode/node-config", tags=["logosnode"])
@@ -938,6 +1035,47 @@ async def logosnode_node_config_import(data: LogosNodeConfigImportRequest, reque
     return {"imported": imported, "warnings": warnings}
 
 
+@router.post("/logosdb/providers/logosnode/node-settings", tags=["logosnode"])
+async def logosnode_node_settings(data: LogosNodeConfigRequest, request: Request):
+    """The node-wide settings a worker starts with."""
+    _require_tls_request(request)
+    provider_id = int((await asyncio.to_thread(_logosnode_provider_for_key, data.shared_key))["id"])
+    return await asyncio.to_thread(_load_node_settings, provider_id)
+
+
+@router.post("/logosdb/providers/logosnode/node-settings/import", tags=["logosnode"])
+async def logosnode_node_settings_import(data: LogosNodeSettingsImportRequest, request: Request):
+    """Store a worker's YAML settings once; later calls change nothing.
+
+    Kept as given: a value the checks would refuse today must not keep an
+    existing node from starting.
+    """
+    _require_tls_request(request)
+    provider_id = int((await asyncio.to_thread(_logosnode_provider_for_key, data.shared_key))["id"])
+    known = {
+        key: value
+        for key, value in data.settings.items()
+        if key in SETTING_KEYS and len(json.dumps(value, default=str)) <= _MAX_SETTING_BYTES
+    }
+    dropped = sorted(set(data.settings) - set(known))
+    if dropped:
+        logger.warning("Node settings import of provider %s ignored: %s", provider_id, ", ".join(dropped))
+    invalid = settings_errors(known)
+    if invalid:
+        logger.warning("Node settings imported as given although the checks refuse them: %s", "; ".join(invalid))
+
+    def _import() -> bool:
+        with DBManager() as db:
+            if not db.claim_settings_import(provider_id):
+                db.session.rollback()
+                return False
+            db.replace_node_settings(provider_id, known, 0, None)
+            db.session.commit()
+            return True
+
+    return {"imported": await asyncio.to_thread(_import)}
+
+
 @router.post("/logosdb/providers/logosnode/node-config/get", tags=["logosnode"])
 async def logosnode_node_config_get(data: LogosNodeConfigGetRequest):
     """A node's configured models and revision."""
@@ -948,34 +1086,115 @@ async def logosnode_node_config_get(data: LogosNodeConfigGetRequest):
     return {"provider_id": data.provider_id, **config}
 
 
-@router.post("/logosdb/providers/logosnode/node-config/replace", tags=["logosnode"])
-async def logosnode_node_config_replace(data: LogosNodeConfigReplaceRequest):
-    """Replace a node's configured models.
+def _stored_author(db: DBManager, user_id: int | None) -> int | None:
+    """The admin to store as author; one the database does not know is stored as none."""
+    return user_id if user_id is not None and db.user_exists(user_id) else None
 
-    expected_revision is the revision the admin edited; another save in the
-    meantime answers 409 with the current one.
+
+async def _replace_stored(provider_id: int, write: Any, current_revision: Any) -> tuple[str, int]:
+    """Run one revision-checked write in a transaction.
+
+    ``write`` returns the new revision, or None when the one the admin edited is
+    stale; ``current_revision`` then reads the revision that is stored. The outcome
+    is "missing", "stale" or "saved", with the revision that applies to it.
     """
-    admin_id = await asyncio.to_thread(_require_admin_user, data.logos_key)
-    errors = entry_errors(data.entries)
-    if errors:
-        return admin_error_response(400, "; ".join(errors))
-    rows = [{**entry.model_dump(), "model_name": entry.model_name.strip()} for entry in data.entries]
 
-    def _replace() -> tuple[str, int]:
+    def _run() -> tuple[str, int]:
         with DBManager() as db:
-            if db.get_provider(data.provider_id) is None:
+            if db.get_provider(provider_id) is None:
                 return "missing", 0
-            revision = db.replace_node_config(data.provider_id, rows, data.expected_revision, admin_id, "ui")
+            revision = write(db)
             if revision is None:
                 db.session.rollback()
-                return "stale", db.get_node_config(data.provider_id)["revision"]
+                return "stale", current_revision(db)
             db.session.commit()
             return "saved", revision
 
-    outcome, revision = await asyncio.to_thread(_replace)
+    return await asyncio.to_thread(_run)
+
+
+async def save_node_config(
+    provider_id: int,
+    entries: list[Any],
+    expected_revision: int,
+    updated_by: int | None,
+    source: str = "ui",
+) -> Dict[str, Any] | JSONResponse:
+    """Check and store a node's whole model list; the one path of every caller.
+
+    expected_revision is the revision the admin edited; another save in the
+    meantime answers 409 with the current one. The connected worker checks the
+    models first, so nothing it would refuse at a lane start is stored.
+    """
+    errors = entry_errors(entries)
+    if errors:
+        return admin_error_response(
+            400, "; ".join(errors), error_items(errors, [entry.model_name.strip() or "<blank>" for entry in entries])
+        )
+    rows = [{**entry.model_dump(), "model_name": entry.model_name.strip()} for entry in entries]
+    if rows:
+        if await asyncio.to_thread(_load_node_config, provider_id) is None:
+            return admin_error_response(404, f"Provider {provider_id} not found")
+        refusal = await _worker_refusal(provider_id, rows)
+        if refusal is not None:
+            return refusal
+
+    outcome, revision = await _replace_stored(
+        provider_id,
+        lambda db: db.replace_node_config(provider_id, rows, expected_revision, _stored_author(db, updated_by), source),
+        lambda db: db.get_node_config(provider_id)["revision"],
+    )
     if outcome == "missing":
-        return admin_error_response(404, f"Provider {data.provider_id} not found")
+        return admin_error_response(404, f"Provider {provider_id} not found")
     if outcome == "stale":
         return admin_error_response(409, f"Configuration changed meanwhile (revision {revision}); reload it")
-    await _push_node_config(data.provider_id)
-    return {"provider_id": data.provider_id, "config_revision": revision}
+    await _push_node_config(provider_id)
+    return {"provider_id": provider_id, "config_revision": revision}
+
+
+async def save_node_settings(
+    provider_id: int, settings: Dict[str, Any], expected_revision: int, updated_by: int | None
+) -> Dict[str, Any] | JSONResponse:
+    """Check and store a node's settings; expected_revision is the one the admin edited.
+
+    Only a value that differs from the stored one is checked: a value imported
+    from config.yml as given must not keep the admin from changing another one.
+    The comparison is made only when the stored revision is the one the admin
+    edited; otherwise every value is checked and the write itself answers 409.
+    The answer says which settings need a restart of the worker, once it applied them.
+    """
+    stored = await asyncio.to_thread(_load_node_settings, provider_id)
+    if stored is None:
+        return admin_error_response(404, f"Provider {provider_id} not found")
+    kept = stored["settings"] if stored["revision"] == expected_revision else {}
+    changed = {key: value for key, value in settings.items() if key not in kept or kept[key] != value}
+    errors = settings_errors(changed)
+    if errors:
+        return admin_error_response(400, "; ".join(errors), settings_error_items(errors))
+
+    outcome, revision = await _replace_stored(
+        provider_id,
+        lambda db: db.replace_node_settings(provider_id, settings, expected_revision, _stored_author(db, updated_by)),
+        lambda db: db.get_node_settings(provider_id)["revision"],
+    )
+    if outcome == "missing":
+        return admin_error_response(404, f"Provider {provider_id} not found")
+    if outcome == "stale":
+        return admin_error_response(409, f"Settings changed meanwhile (revision {revision}); reload them")
+    pushed = await _push_node_settings(provider_id)
+    restart = (pushed or {}).get("restart_needed")
+    return {
+        "provider_id": provider_id,
+        "settings_revision": revision,
+        # False: the worker is offline or too old; it takes the settings when it connects.
+        "applied": bool(pushed and pushed.get("applied")),
+        "deferred": bool(pushed and pushed.get("deferred")),
+        "restart_needed": [str(key) for key in restart] if isinstance(restart, list) else [],
+    }
+
+
+@router.post("/logosdb/providers/logosnode/node-config/replace", tags=["logosnode"])
+async def logosnode_node_config_replace(data: LogosNodeConfigReplaceRequest):
+    """Replace a node's configured models (root key); see save_node_config."""
+    admin_id = await asyncio.to_thread(_require_admin_user, data.logos_key)
+    return await save_node_config(data.provider_id, data.entries, data.expected_revision, admin_id)

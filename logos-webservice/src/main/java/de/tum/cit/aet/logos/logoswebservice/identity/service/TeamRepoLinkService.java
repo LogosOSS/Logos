@@ -38,6 +38,14 @@ public class TeamRepoLinkService {
         "^git@github\\.com:([^/\\s]+)/([^/\\s#?]+?)(?:\\.git)?/?$",
         Pattern.CASE_INSENSITIVE);
 
+    // One DNS label, and the last label of a hostname: it must start with a
+    // letter, which rules out IPv4 literals. A hostname is checked label by
+    // label rather than with one repeating pattern.
+    private static final Pattern DNS_LABEL = Pattern.compile("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$");
+    private static final Pattern TOP_LEVEL_LABEL = Pattern.compile("^[a-z][a-z0-9-]{0,61}[a-z0-9]$");
+    private static final int MAX_EGRESS_HOSTS = 64;
+    private static final int MAX_HOST_LENGTH = 253;
+
     private static final String UNIQUE_TEAM_SLUG = "uq_team_repositories_team_slug";
 
     private final TeamRepoLinkRepository repoLinkRepository;
@@ -95,6 +103,9 @@ public class TeamRepoLinkService {
         link.setRepoSlug(slug);
         link.setBranch(normalizeBranch(body.branch()));
         link.setPaths(normalizePaths(body.paths()));
+        configureAgent(link, body.agentEnabled(), body.agentInstructions(), body.verificationCommand());
+        configureSandbox(link, body.agentEgressHosts(), body.agentEgressUnrestricted(), body.agentMayComment());
+        link.setAutomaticWorkflowAnalysis(!Boolean.FALSE.equals(body.automaticWorkflowAnalysis()));
         link.setCreatedAt(now);
         link.setUpdatedAt(now);
         return toMap(saveLink(link, slug));
@@ -111,6 +122,7 @@ public class TeamRepoLinkService {
         TeamRepoLink link = existing.get();
         String previousSlug = link.getRepoSlug();
         String conflictSlug = previousSlug;
+        boolean repositoryChanged = false;
         if (body.repoUrl() != null) {
             String url = requireUrl(body.repoUrl());
             String slug = parseGithubSlug(url)
@@ -127,8 +139,21 @@ public class TeamRepoLinkService {
             // a different repository and must not stay as "latest succeeded"
             // coverage for the new URL.
             if (!slug.equals(previousSlug)) {
+                // Network access and commenting were granted for the previous
+                // repository; they do not carry over to another one, not even
+                // when the same request repeats them (the edit dialog sends
+                // its current values). The new repository needs a grant of
+                // its own, in a later request.
+                repositoryChanged = true;
+                link.setAgentEgressHosts(List.of());
+                link.setAgentEgressUnrestricted(false);
+                link.setAgentMayComment(false);
                 analysisRepository.deleteByTeamRepositoryId(linkId);
                 cancelOrphanedAnalysisSessions(linkId);
+                entityManager.createNativeQuery(
+                    "UPDATE team_repositories SET agent_comments_scanned_at = NULL WHERE id = :linkId")
+                    .setParameter("linkId", linkId)
+                    .executeUpdate();
             }
         }
         if (body.branch() != null) {
@@ -136,6 +161,16 @@ public class TeamRepoLinkService {
         }
         if (body.paths() != null) {
             link.setPaths(normalizePaths(body.paths()));
+        }
+        configureAgent(link, body.agentEnabled(), body.agentInstructions(), body.verificationCommand());
+        if (!repositoryChanged) {
+            configureSandbox(link, body.agentEgressHosts(), body.agentEgressUnrestricted(), body.agentMayComment());
+        }
+        if (body.automaticWorkflowAnalysis() != null) {
+            link.setAutomaticWorkflowAnalysis(body.automaticWorkflowAnalysis());
+            if (!link.isAutomaticWorkflowAnalysis()) {
+                cancelQueuedAutomaticAnalyses(linkId);
+            }
         }
         link.setUpdatedAt(Instant.now());
         return Optional.of(toMap(saveLink(link, conflictSlug)));
@@ -151,6 +186,26 @@ public class TeamRepoLinkService {
         cancelOrphanedAnalysisSessions(linkId);
         repoLinkRepository.delete(existing.get());
         return true;
+    }
+
+    private void cancelQueuedAutomaticAnalyses(int linkId) {
+        entityManager.createNativeQuery("""
+            WITH cancelled AS (
+                UPDATE agent_sessions s
+                   SET status = 'cancelled', finished_at = CURRENT_TIMESTAMP,
+                       error = 'Automatic workflow analysis disabled'
+                  FROM ai_workflow_analyses a
+                 WHERE a.team_repository_id = :linkId AND a.automatically_queued
+                   AND s.team_repository_id = :linkId AND s.trigger_kind = 'analysis'
+                   AND s.id = a.agent_session_id AND s.status = 'queued'
+                RETURNING s.id
+            )
+            UPDATE ai_workflow_analyses
+               SET status = 'skipped', finished_at = CURRENT_TIMESTAMP,
+                   error = 'Automatic workflow analysis disabled'
+             WHERE team_repository_id = :linkId AND automatically_queued AND status IN ('queued', 'running')
+               AND (agent_session_id IN (SELECT id FROM cancelled) OR agent_session_id IS NULL)
+            """).setParameter("linkId", linkId).executeUpdate();
     }
 
     /**
@@ -224,6 +279,83 @@ public class TeamRepoLinkService {
         return repoUrl.trim();
     }
 
+    private static void configureAgent(TeamRepoLink link, Boolean enabled, String instructions, String command) {
+        if (enabled != null) link.setAgentEnabled(enabled);
+        if (instructions != null) link.setAgentInstructions(agentText(instructions, 12000, "agent_instructions"));
+        if (command != null) link.setVerificationCommand(agentText(command, 4000, "verification_command"));
+        if (link.isAgentEnabled() && (link.getVerificationCommand() == null || link.getVerificationCommand().isBlank())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "verification_command is required when the coding agent is enabled");
+        }
+    }
+
+    private static void configureSandbox(
+        TeamRepoLink link, List<String> egressHosts, Boolean egressUnrestricted, Boolean mayComment) {
+        if (egressHosts != null) link.setAgentEgressHosts(normalizeEgressHosts(egressHosts));
+        if (egressUnrestricted != null) link.setAgentEgressUnrestricted(egressUnrestricted);
+        if (mayComment != null) link.setAgentMayComment(mayComment);
+    }
+
+    /**
+     * Trims, lowercases, drops blanks and duplicates (first occurrence wins) and
+     * checks each entry is a DNS hostname, optionally with a leading {@code *.}
+     * wildcard that covers at least two labels. Rejects schemes, ports, paths,
+     * IP literals, {@code localhost} and bare top-level wildcards such as
+     * {@code *.com}.
+     */
+    static List<String> normalizeEgressHosts(List<String> hosts) {
+        List<String> cleaned = new ArrayList<>();
+        for (String host : hosts) {
+            if (host == null) {
+                continue;
+            }
+            String value = host.trim().toLowerCase(Locale.ROOT);
+            if (value.isEmpty() || cleaned.contains(value)) {
+                continue;
+            }
+            if (value.length() > MAX_HOST_LENGTH || !isEgressHost(value)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "agent_egress_hosts entry '" + abbreviate(host.trim()) + "' is not a valid hostname "
+                        + "(use a name such as github.com or *.githubusercontent.com, without scheme, port or path)");
+            }
+            cleaned.add(value);
+        }
+        if (cleaned.size() > MAX_EGRESS_HOSTS) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "agent_egress_hosts allows at most " + MAX_EGRESS_HOSTS + " entries");
+        }
+        return List.copyOf(cleaned);
+    }
+
+    /**
+     * A DNS hostname of at least two labels, optionally behind a leading
+     * {@code *.} wildcard, so {@code *.com} and {@code localhost} fail.
+     */
+    static boolean isEgressHost(String value) {
+        String host = value.startsWith("*.") ? value.substring(2) : value;
+        String[] labels = host.split("\\.", -1);
+        if (labels.length < 2) {
+            return false;
+        }
+        for (int i = 0; i < labels.length - 1; i++) {
+            if (!DNS_LABEL.matcher(labels[i]).matches()) {
+                return false;
+            }
+        }
+        return TOP_LEVEL_LABEL.matcher(labels[labels.length - 1]).matches();
+    }
+
+    private static String abbreviate(String value) {
+        return value.length() <= 80 ? value : value.substring(0, 80) + "...";
+    }
+
+    private static String agentText(String value, int limit, String field) {
+        if (value.length() > limit || value.indexOf('\0') >= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, field + " is too long or contains a NUL byte");
+        }
+        return value.trim();
+    }
+
     private static String normalizeBranch(String branch) {
         if (branch == null || branch.isBlank()) {
             return "main";
@@ -290,6 +422,13 @@ public class TeamRepoLinkService {
         m.put("repo_url", link.getRepoUrl());
         m.put("repo_slug", link.getRepoSlug());
         m.put("branch", link.getBranch());
+        m.put("automatic_workflow_analysis", link.isAutomaticWorkflowAnalysis());
+        m.put("agent_enabled", link.isAgentEnabled());
+        m.put("agent_instructions", link.getAgentInstructions());
+        m.put("verification_command", link.getVerificationCommand());
+        m.put("agent_egress_hosts", List.copyOf(link.getAgentEgressHosts()));
+        m.put("agent_egress_unrestricted", link.isAgentEgressUnrestricted());
+        m.put("agent_may_comment", link.isAgentMayComment());
         m.put("paths", link.getPaths());
         m.put("created_at", link.getCreatedAt() != null ? link.getCreatedAt().toString() : null);
         m.put("updated_at", link.getUpdatedAt() != null ? link.getUpdatedAt().toString() : null);

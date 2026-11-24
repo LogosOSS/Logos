@@ -98,14 +98,101 @@ providers serve. The **Models** page shows the models that you can use now.
 
 This tab shows the GitHub repositories that contain the applications of the
 team. Owners link a repository URL, a branch and optional path filters. For
-private repositories, owners can paste a read-only deploy key. LogosOSSAgent
-finds a newly linked repository automatically within a few minutes. To start
-an analysis sooner, queue it on the same tab. You can queue only one analysis
-at a time. Logos refuses a second request while an analysis is queued or runs.
-Each night, LogosOSSAgent analyzes again each repository whose branch has new
-commits. It does not analyze a repository that has no change.
+private repositories, owners can paste a read-only deploy key. Only one workflow analysis per repository can be in progress at a time.
+**Automatic workflow analysis** is on by default. It includes the repository in the first analysis, nightly checks for new commits, and bulk analyses.
+Clear the checkbox to cancel queued automatic analyses. Analyses that already started can finish.
+Use **Queue agent analysis** to request one analysis at any time. The coding agent has a separate setting.
 
 ![Team detail — Repositories](/img/roles/team-detail-repositories.png)
+
+#### Enable the Coding Agent
+
+Repository analysis uses read-only access. The coding agent can also change
+files and create pull requests after a repository owner requests work on GitHub.
+
+1. Give the configured agent account access to the repository on GitHub.
+2. Select **Edit repository link** for the repository.
+3. Select **Enable LogosOSSAgent for this repository**.
+4. Enter the **Build and test command** that the agent must run from the repository root.
+5. Optionally enter **Repository instructions** for the tools and conventions of the project.
+6. Select **Save**.
+
+![Team detail — Repository coding agent settings](/img/roles/team-detail-repository-agent.png)
+
+The example enables the coding agent and disables **Automatic workflow analysis**.
+The **Branch** is the base for new issue work. The command runs without
+credentials or internet access. The required tools and dependencies must exist
+in the agent image or in the workspace cache (see below). A failed command
+permits only a draft pull request.
+
+Assign an issue or pull request to the agent on GitHub to request work.
+You can also request a review or mention the agent in a comment.
+The agent checks enabled repositories every 2 minutes. Analysis deploy keys
+remain read-only and do not give the coding agent access.
+
+The list shows **Coding agent: Enabled** when the option is active.
+Clear the option and select **Save** to stop new requests.
+Queued work and retries keep their saved repository and command.
+If several teams enable the same repository, the oldest enabled link supplies
+the settings. Linked repositories do not use Logos deployment workflows.
+
+##### Agent Sandbox Permissions
+
+Three settings in the coding agent section control access outside the
+sandbox. Only a Logos Admin can change them:
+
+| Setting | Effect |
+|---|---|
+| **Allow unrestricted internet access (HTTPS to any public host)** | If selected, agent sessions for this repository can reach all public HTTPS hosts. Logos then does not use the list of allowed network hosts. This setting is off by default. |
+| **Allowed network hosts** | The HTTPS hosts that agent sessions for this repository can reach, for example to download toolchains. Write one host per line. If the list is empty, then sessions have no internet access. |
+| **Let LogosOSSAgent comment on issues and pull requests during a session** | If selected, the agent can comment on issues and pull requests of this repository while a session runs. The comments use the GitHub account of the agent. |
+
+The screenshot in [Enable the Coding Agent](#enable-the-coding-agent) shows
+the settings as a Logos Admin sees them. An App Admin sees them in the
+read-only block **Agent sandbox permissions** of the dialog. If a link has
+these permissions, then the list shows, for example, **Network: 2 hosts** (or
+**Network: Any public host**) and **Comments during sessions: Allowed**.
+
+A host is a DNS name, for example `github.com`. A leading `*.` permits all
+subdomains, for example `*.githubusercontent.com`. Logos refuses a scheme, a
+port, a path, an IP address, `localhost` and a top-level wildcard such as
+`*.com`. The list holds a maximum of 64 hosts. Logos always blocks private and
+internal addresses.
+
+Select unrestricted internet access only if a list of hosts is not
+practical. The agent reads issues and comments that other persons write. If
+the agent has unrestricted internet access, then such text can make the agent
+send repository content or session data to a server. Also with this setting,
+sessions can use only HTTPS on port 443 to public addresses, and only while
+the session runs.
+
+Changing the repository URL of a link resets the three settings, because they
+were granted for the previous repository. Logos ignores the three settings in
+the same save. To grant them for the new repository, edit the link again
+after the save.
+
+Every session on a linked repository also gets the following, independent of
+the three settings:
+
+- **Workspace cache.** `$LOGOS_CACHE_DIR` (`/cache`) keeps toolchains and
+  downloaded dependencies between the sessions of a workspace. The build and
+  test command can read it, but it still runs without credentials or internet
+  access.
+- **GitHub reads.** The command `logos-github` in the session reads issues
+  and pull requests of the repository. With the comment permission it also
+  posts comments, for example to claim an issue as the contribution guide of
+  the repository asks.
+- **Fork.** If the agent account cannot push to the repository, the agent
+  pushes to its own fork and opens the pull request from there.
+- **Closing references.** The pull request closes the issues that the agent
+  names, but only open issues that are assigned to the agent account.
+- **Model disclosure.** Every comment, review and pull request description of
+  the agent names the model that wrote it.
+
+An App Admin sees the two settings read-only in the edit dialog, as
+**Network access** and **Comments during sessions**. To change them, ask a
+Logos Admin. The list shows **Network: N hosts** if the repository permits
+hosts, and **Comments during sessions: Allowed** if the agent can comment.
 
 ### Workflows
 
@@ -176,7 +263,11 @@ See [Logos Admin → Keycloak Group Links](logos-admin.md#keycloak-group-links).
 Under **Public stats** you decide whether the team appears on the public
 statistics page (`/stats`). There you can also give the team a **Category**,
 for example "Research" or "Teaching". The public page groups teams by this
-label. The field suggests the categories that other teams already use.
+label. Select an existing category from the list, explicitly create a new one, or
+select **Uncategorized** to clear it. Apply these choices with **Save Public Stats**
+in the same section; **Save Settings** below only saves the budget and rate limits.
+A confirmation appears after saving. The public page refreshes periodically, so
+changes may take up to 30 minutes to appear with the default cache setting.
 
 Provider batches do not reserve budget. At batch creation, Logos checks only costs that it already settled.
 A provider batch counts against the budget only after it finishes and Logos settles its costs.

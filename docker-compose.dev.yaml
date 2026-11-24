@@ -20,7 +20,7 @@
 
 services:
   traefik:
-    image: traefik:v3.7.16
+    image: traefik:v3.7.19
     container_name: traefik
     restart: unless-stopped
     command:
@@ -164,6 +164,8 @@ services:
       LOGOS_DOMAIN: "${LOGOS_DOMAIN:-localhost}"
       LOGOS_SCHEDULER_ETTFT_ENABLED: "${LOGOS_SCHEDULER_ETTFT_ENABLED:-true}"
       LOGOS_CAPACITY_PLANNER_ENABLED: "${LOGOS_CAPACITY_PLANNER_ENABLED:-true}"
+      # Read at startup; recreate the orchestrator after changing this value.
+      LOGOS_RESIDENCY_POLICY: "${LOGOS_RESIDENCY_POLICY:-simple}"
       # Seconds a vLLM lane may stay idle before the capacity planner puts it to
       # sleep (level 1). Waking a sleeping lane costs seconds on the next
       # request, so the default keeps lanes warm through ordinary pauses.
@@ -287,6 +289,7 @@ services:
       LOGOS_REPO_CREDENTIALS_DEV_FALLBACK: "${LOGOS_REPO_CREDENTIALS_DEV_FALLBACK:-true}"
       LOGOS_REPO_CREDENTIALS_KEY: "${LOGOS_REPO_CREDENTIALS_KEY:-}"
       LOGOS_GATEWAY_ENABLED: "${LOGOS_GATEWAY_ENABLED:-true}"
+      LOGOS_GATEWAY_MAX_IN_FLIGHT: "${LOGOS_GATEWAY_MAX_IN_FLIGHT:-0}"
       LOGOS_GATEWAY_BUDGET_CACHE_TTL_SECONDS: "${LOGOS_GATEWAY_BUDGET_CACHE_TTL_SECONDS:-15}"
       LOGOS_GATEWAY_BUDGET_CACHE_MAX_STALE_SECONDS: "${LOGOS_GATEWAY_BUDGET_CACHE_MAX_STALE_SECONDS:-60}"
       LOGOS_GATEWAY_BUDGET_RESERVATION_MICRO_CENTS: "${LOGOS_GATEWAY_BUDGET_RESERVATION_MICRO_CENTS:-1000000}"
@@ -317,6 +320,11 @@ services:
       KEYCLOAK_SYNC_ENABLED: "${KEYCLOAK_SYNC_ENABLED:-false}"
       KEYCLOAK_SYNC_CLIENT_ID: "${KEYCLOAK_SYNC_CLIENT_ID:-logos-sync}"
       KEYCLOAK_SYNC_CLIENT_SECRET: "${KEYCLOAK_SYNC_CLIENT_SECRET:-}"
+      # Deployments from Logos. A Logos deploys only itself. A protected Logos (the default) asks for a confirmation in
+      # a dialog and accepts only latest and release versions such as 1.0.2. Set LOGOS_DEPLOYMENTS_PROTECTED to false
+      # on Dev and Test. See docs/deployment.md#deployments-from-logos.
+      LOGOS_DEPLOYMENTS_PROTECTED: "${LOGOS_DEPLOYMENTS_PROTECTED:-true}"
+      LOGOS_DEPLOYMENTS_SILENCE_LIMIT: "${LOGOS_DEPLOYMENTS_SILENCE_LIMIT:-30m}"
       # See prod docker-compose.yaml for why this must be set: browsers send an
       # Origin on POST/WebSocket even same-origin, so an empty allowlist makes the
       # CorsFilter reject every POST/WS. Default to the dev UI origin (Traefik UI
@@ -391,6 +399,15 @@ services:
       - "traefik.http.routers.webservice-admin.middlewares=strip-api,rl-admin"
       - "traefik.http.routers.webservice-admin.priority=200"
 
+      # === Routing: /api/deployments (the deployments page, and the deployers of the hosts) ===
+      # The page uses a JWT. The deployers use a key of their own, checked in the controller. Their requests wait up
+      # to 30 s for an order (long polling), which the rate limit counts as one request.
+      - "traefik.http.routers.webservice-deployments.rule=PathPrefix(`/api/deployments`)"
+      - "traefik.http.routers.webservice-deployments.entrypoints=internal8090"
+      - "traefik.http.routers.webservice-deployments.service=logos-webservice-svc"
+      - "traefik.http.routers.webservice-deployments.middlewares=strip-api,rl-admin"
+      - "traefik.http.routers.webservice-deployments.priority=200"
+
       # === Routing: /api/ws/stats, /api/ws/stats/v2, /api/ws/notifications (WebSocket) ===
       - "traefik.http.routers.webservice-ws.rule=Path(`/api/ws/stats`) || Path(`/api/ws/stats/v2`) || Path(`/api/ws/notifications`)"
       - "traefik.http.routers.webservice-ws.entrypoints=internal8090"
@@ -445,7 +462,7 @@ services:
       - internal
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.8
+    image: quay.io/keycloak/keycloak:26.8.2-3@sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3
     container_name: logos-keycloak
     restart: unless-stopped
     command: ["start-dev", "--import-realm", "--health-enabled=true"]

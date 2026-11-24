@@ -1,13 +1,12 @@
 # docker-compose.yaml — Production (pulls pre-built images)
 # For local development, use: docker compose -f docker-compose.dev.yaml up --build
 #
-# REGISTRY defaults to the public GHCR mirror the build workflow publishes to,
-# so a self-hosted install pulls with no registry configuration and no login.
-# Deployments override it: the deploy workflows write Harbor into each node's
-# .env, and a self-built stack points it at wherever those images were pushed.
+# REGISTRY defaults to ghcr.io/logososs, where all Logos images are public.
+# The deploy workflows use the same registry; no registry login is required.
+# Self-built installations can override REGISTRY with their own image source.
 services:
   traefik:
-    image: traefik:v3.7.16
+    image: traefik:v3.7.19
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -223,6 +222,8 @@ services:
       LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS: "${LOGOS_RATE_LIMIT_TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}"
       LOGOS_DOMAIN: "${LOGOS_DOMAIN:-localhost}"
       LOGOS_CAPACITY_PLANNER_ENABLED: "${LOGOS_CAPACITY_PLANNER_ENABLED:-true}"
+      # Read at startup; recreate the orchestrator after changing this value.
+      LOGOS_RESIDENCY_POLICY: "${LOGOS_RESIDENCY_POLICY:-simple}"
       # Seconds a vLLM lane may stay idle before the capacity planner puts it to
       # sleep (level 1). Waking a sleeping lane costs seconds on the next
       # request, so the default keeps lanes warm through ordinary pauses.
@@ -243,6 +244,7 @@ services:
       LOGOS_MAINTENANCE_TIMEZONE: "${LOGOS_MAINTENANCE_TIMEZONE:-Europe/Berlin}"
       # Leave empty on Dev to keep its fixed pilot workload. Opt in on Prod only.
       LOGOS_NIGHTLY_REQUEST_USERNAME: "${LOGOS_NIGHTLY_REQUEST_USERNAME:-}"
+      LOGOS_NIGHTLY_MAX_PAIRS: "${LOGOS_NIGHTLY_MAX_PAIRS:-2}"
       LOGOS_CALIB_SLEEP_LEVEL: "${LOGOS_CALIB_SLEEP_LEVEL:-1}"
       # Nightly benchmarks are opt-in per model/worker in the administration UI.
       # The schedule is persisted in PostgreSQL (Europe/Berlin, starts 05:00–07:50).
@@ -400,6 +402,7 @@ services:
       # webservice still accepts /v1|/openai|/jobs but proxies every request to
       # the orchestrator after API-key auth.
       LOGOS_GATEWAY_ENABLED: "${LOGOS_GATEWAY_ENABLED:-true}"
+      LOGOS_GATEWAY_MAX_IN_FLIGHT: "${LOGOS_GATEWAY_MAX_IN_FLIGHT:-0}"
       LOGOS_GATEWAY_BUDGET_CACHE_TTL_SECONDS: "${LOGOS_GATEWAY_BUDGET_CACHE_TTL_SECONDS:-15}"
       LOGOS_GATEWAY_BUDGET_CACHE_MAX_STALE_SECONDS: "${LOGOS_GATEWAY_BUDGET_CACHE_MAX_STALE_SECONDS:-60}"
       LOGOS_GATEWAY_BUDGET_RESERVATION_MICRO_CENTS: "${LOGOS_GATEWAY_BUDGET_RESERVATION_MICRO_CENTS:-1000000}"
@@ -432,6 +435,11 @@ services:
       KEYCLOAK_SYNC_ENABLED: "${KEYCLOAK_SYNC_ENABLED:-false}"
       KEYCLOAK_SYNC_CLIENT_ID: "${KEYCLOAK_SYNC_CLIENT_ID:-logos-sync}"
       KEYCLOAK_SYNC_CLIENT_SECRET: "${KEYCLOAK_SYNC_CLIENT_SECRET:-}"
+      # Deployments from Logos. A Logos deploys only itself. A protected Logos (the default) asks for a confirmation in
+      # a dialog and accepts only latest and release versions such as 1.0.2. Set LOGOS_DEPLOYMENTS_PROTECTED to false
+      # on Dev and Test. See docs/deployment.md#deployments-from-logos.
+      LOGOS_DEPLOYMENTS_PROTECTED: "${LOGOS_DEPLOYMENTS_PROTECTED:-true}"
+      LOGOS_DEPLOYMENTS_SILENCE_LIMIT: "${LOGOS_DEPLOYMENTS_SILENCE_LIMIT:-30m}"
       # Origins the webservice accepts browser requests from. Browsers attach an
       # Origin header to POST requests and WebSocket handshakes even when the UI
       # and API share an origin, so the Spring CorsFilter rejects every POST/WS
@@ -512,6 +520,15 @@ services:
       - "traefik.http.routers.webservice-admin.service=logos-webservice-svc"
       - "traefik.http.routers.webservice-admin.middlewares=strip-api,rl-admin"
       - "traefik.http.routers.webservice-admin.priority=200"
+
+      # === Routing: /api/deployments (the deployments page, and the deployers of the hosts) ===
+      # The page uses a JWT. The deployers use a key of their own, checked in the controller. Their requests wait up
+      # to 30 s for an order (long polling), which the rate limit counts as one request.
+      - "traefik.http.routers.webservice-deployments.rule=PathPrefix(`/api/deployments`)"
+      - "traefik.http.routers.webservice-deployments.entrypoints=internal8090"
+      - "traefik.http.routers.webservice-deployments.service=logos-webservice-svc"
+      - "traefik.http.routers.webservice-deployments.middlewares=strip-api,rl-admin"
+      - "traefik.http.routers.webservice-deployments.priority=200"
 
       # === Routing: /api/ws/stats, /api/ws/stats/v2, /api/ws/notifications (WebSocket) ===
       - "traefik.http.routers.webservice-ws.rule=Path(`/api/ws/stats`) || Path(`/api/ws/stats/v2`) || Path(`/api/ws/notifications`)"
@@ -614,6 +631,10 @@ services:
       # or every session's model call fails DNS resolution.
       logos-agent-gateway:
         condition: service_healthy
+      # Sessions of linked repositories with allowed hosts reach the internet
+      # only through this proxy.
+      logos-agent-egress-proxy:
+        condition: service_healthy
     environment:
       DB_HOST: logos-db
       DB_PORT: 5432
@@ -639,9 +660,7 @@ services:
       KEYCLOAK_ROLES_LOGOS_ADMIN: "${KEYCLOAK_ROLES_LOGOS_ADMIN:-itg-admin}"
       LOGOS_AGENT_REQUIRED_ROLE: "${LOGOS_AGENT_REQUIRED_ROLE:-logos_admin}"
 
-      # The Logos key sessions call models with. Give it LOW priority so agent
-      # traffic never outranks a user at the scheduler.
-      LOGOS_AGENT_API_KEY: "${LOGOS_AGENT_API_KEY:-}"
+      # Optional default among the managed identity's locally served models.
       LOGOS_AGENT_DEFAULT_MODEL: "${LOGOS_AGENT_DEFAULT_MODEL:-}"
 
       # Sessions run in this image, on this network, under these ceilings.
@@ -655,8 +674,13 @@ services:
       # Where sessions send model traffic: the gateway that exposes only the
       # orchestrator's /v1 model surface on the session network.
       LOGOS_AGENT_SESSION_MODEL_URL: "${LOGOS_AGENT_SESSION_MODEL_URL:-http://logos-agent-gateway}"
+      # The allowlisting HTTPS proxy on the session network; empty disables
+      # internet access for every session.
+      LOGOS_AGENT_EGRESS_PROXY_URL: "${LOGOS_AGENT_EGRESS_PROXY_URL-http://logos-agent-egress-proxy:3128}"
       LOGOS_AGENT_MAX_PARALLEL_SESSIONS: "${LOGOS_AGENT_MAX_PARALLEL_SESSIONS:-10}"
       LOGOS_AGENT_SESSION_MEMORY_MB: "${LOGOS_AGENT_SESSION_MEMORY_MB:-4096}"
+      LOGOS_AGENT_MEMORY_BUDGET_MB: "${LOGOS_AGENT_MEMORY_BUDGET_MB:-0}"
+      LOGOS_AGENT_HOST_MEMORY_SHARE: "${LOGOS_AGENT_HOST_MEMORY_SHARE:-0.5}"
       LOGOS_AGENT_SESSION_CPUS: "${LOGOS_AGENT_SESSION_CPUS:-2}"
       # The uid the session image runs as; the runner chowns the per-session
       # artefact directories it creates to this user.
@@ -699,6 +723,8 @@ services:
       # it queue sessions. On unless explicitly switched off — running this
       # service is already the deliberate step, and the assignment or the
       # mention is the per-item consent.
+      LOGOS_AGENT_SECURITY_ENABLED: "${LOGOS_AGENT_SECURITY_ENABLED:-true}"
+      LOGOS_AGENT_SECURITY_FEEDS_ENABLED: "${LOGOS_AGENT_SECURITY_FEEDS_ENABLED:-true}"
       LOGOS_AGENT_TRIGGERS_ENABLED: "${LOGOS_AGENT_TRIGGERS_ENABLED:-true}"
       LOGOS_AGENT_DEPLOY_ENABLED: "${LOGOS_AGENT_DEPLOY_ENABLED:-false}"
       LOGOS_AGENT_DEV_BASE_URL: "${LOGOS_AGENT_DEV_BASE_URL:-https://logos-dev.aet.cit.tum.de}"
@@ -767,12 +793,46 @@ services:
     depends_on:
       - logos-orchestrator
     environment:
-      # The Logos key the gateway injects into the agent's model calls. The
-      # image ships the configuration as a template, and its entrypoint runs
-      # envsubst at container start, so the key enters the running
-      # configuration here and never has to be passed to a session
-      # container — nor does it sit in an image layer.
-      LOGOS_AGENT_API_KEY: "${LOGOS_AGENT_API_KEY:-}"
+      # Existing internal trust root; only short-lived inference tokens are
+      # forwarded, never this secret or credentials to session containers.
+      LOGOS_INTERNAL_SECRET: "${LOGOS_INTERNAL_SECRET:-}"
+    networks:
+      - internal
+      - agent
+
+  # The only route from the session network to the internet, and only for
+  # sessions of a linked repository whose link names allowed hosts: HTTPS
+  # CONNECT to those hosts, to public addresses, authenticated with a
+  # per-session token. Everything else is refused. See app/egress_proxy.py.
+  logos-agent-egress-proxy:
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-agent:${IMAGE_TAG:-latest}
+    container_name: logos-agent-egress-proxy
+    command: ["python", "-m", "app.egress_proxy"]
+    # Unlike the runner it needs no Docker socket and no root.
+    user: "65534:65534"
+    restart: unless-stopped
+    profiles: ["agent"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    depends_on:
+      logos-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 3128), 3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      # Reads only the session's status, token hash and its repository's
+      # host list.
+      DB_HOST: logos-db
+      DB_PORT: 5432
+      DB_NAME: logosdb
+      DB_USER: postgres
+      DB_PASSWORD: "${LOGOS_DB_PASSWORD:?LOGOS_DB_PASSWORD must be set}"
     networks:
       - internal
       - agent

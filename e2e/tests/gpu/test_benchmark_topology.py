@@ -23,6 +23,8 @@ from harness.benchmark_topology import (
 )
 from harness.gpusim.scenario import GpuProfile, VllmScript
 
+from logos_worker_node.vllm_compat import FALLBACK_GMU
+
 ADA = GpuProfile.load(BENCHMARK_GPU_PROFILE)
 
 
@@ -77,11 +79,12 @@ async def test_sleep_mode_argv_follows_lane_config(gpu_sim, lane, enable_sleep):
         assert has_flag is enable_sleep
 
 
-async def test_kv_cache_bytes_without_explicit_gmu_omits_gmu_flag(gpu_sim, lane):
-    """KV-sized lanes must not inject a default GMU.
+async def test_kv_cache_bytes_without_explicit_gmu_passes_the_fallback_gmu(gpu_sim, lane):
+    """A KV-sized lane without override or profile starts with FALLBACK_GMU.
 
-    GMU acts as a startup guard only when KV is explicit; an operator override
-    of GMU still wins when set.
+    GMU is still the startup guard when KV is explicit. Omitting it would leave
+    vLLM at its own default, the whole GPU, instead of the fraction admission
+    plans with.
     """
     env = gpu_sim(dual_ada_node(), VllmScript(vram_mb=12_000.0))
     async with lane() as handle:
@@ -92,7 +95,7 @@ async def test_kv_cache_bytes_without_explicit_gmu_omits_gmu_flag(gpu_sim, lane)
             )
         )
         assert env.arg_value("--kv-cache-memory-bytes") == "8589934592"
-        assert env.arg_value("--gpu-memory-utilization") is None
+        assert env.arg_value("--gpu-memory-utilization") == str(FALLBACK_GMU)
 
 
 async def test_pinned_revisions_cover_every_benchmark_model():

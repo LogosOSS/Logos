@@ -1,13 +1,9 @@
 package de.tum.cit.aet.logos.logoswebservice.auth;
 
-import java.util.concurrent.Executor;
-
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.AsyncTaskExecutor;
-import org.springframework.core.task.support.TaskExecutorAdapter;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.config.annotation.AsyncSupportConfigurer;
@@ -23,17 +19,20 @@ import jakarta.servlet.http.HttpServletResponse;
 public class WebConfig implements WebMvcConfigurer {
 
     private final JwtAuthInterceptor jwtAuthInterceptor;
-    private final ObjectProvider<Executor> applicationTaskExecutor;
+    private final AsyncTaskExecutor gatewayResponseExecutor;
+    private final GatewayRelayCleanup relayCleanup = new GatewayRelayCleanup();
 
     public WebConfig(
             JwtAuthInterceptor jwtAuthInterceptor,
-            @Qualifier("applicationTaskExecutor") ObjectProvider<Executor> applicationTaskExecutor) {
+            @Qualifier("gatewayResponseExecutor") AsyncTaskExecutor gatewayResponseExecutor) {
         this.jwtAuthInterceptor = jwtAuthInterceptor;
-        this.applicationTaskExecutor = applicationTaskExecutor;
+        this.gatewayResponseExecutor = gatewayResponseExecutor;
     }
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(relayCleanup)
+            .addPathPatterns("/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**");
         registry.addInterceptor(jwtAuthInterceptor)
             // get_model_health and models_discovered authenticate API key /
             // internal secret in their controllers, not a JWT. The inference
@@ -43,6 +42,8 @@ public class WebConfig implements WebMvcConfigurer {
                 "/logosdb/get_model_health", "/internal/models_discovered",
                 "/internal/notifications",
                 "/internal/gateway_relay_stats", "/internal/gateway_relay_stats/**",
+                // The deployers of the hosts authenticate with their own key in the controller.
+                "/deployments/deployer/**",
                 "/v1", "/v1/**", "/openai", "/openai/**", "/jobs", "/jobs/**");
         // Registered after the auth interceptor, so it marks where authentication
         // ends and the controller begins for the request timing log.
@@ -59,17 +60,8 @@ public class WebConfig implements WebMvcConfigurer {
     public void configureAsyncSupport(AsyncSupportConfigurer configurer) {
         // A cloud relay's upstream reader starts before the relay task runs;
         // this closes it however the async request ends.
-        configurer.registerCallableInterceptors(new GatewayRelayCleanup());
-        // StreamingResponseBody (inference gateway) runs on this pool — keep it
-        // bounded via spring.task.execution.pool.* in application.properties.
-        Executor executor = applicationTaskExecutor.getIfAvailable();
-        if (executor == null) {
-            return;
-        }
-        AsyncTaskExecutor async = executor instanceof AsyncTaskExecutor ate
-            ? ate
-            : new TaskExecutorAdapter(executor);
-        configurer.setTaskExecutor(async);
+        configurer.registerCallableInterceptors(relayCleanup);
+        configurer.setTaskExecutor(gatewayResponseExecutor);
     }
 
     @Bean

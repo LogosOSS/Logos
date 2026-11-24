@@ -12,7 +12,25 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from app import controls, conventions, db, docker_engine, model_policy, sessions, upstream
+from app import controls, conventions, db, docker_engine, memory_budget, model_policy, sessions, upstream
+
+
+@pytest.fixture(autouse=True)
+def no_memory_budget(monkeypatch):
+    """No host memory budget unless a test sets one: the suite's host is not a deployment's."""
+
+    async def establish():
+        return None
+
+    monkeypatch.setattr(memory_budget, "establish", establish)
+
+    async def no_recorded_memory(_session_id):
+        return None
+
+    monkeypatch.setattr(db, "session_memory_mb", no_recorded_memory)
+    memory_budget.set_for_tests(None)
+    yield
+    memory_budget.set_for_tests(None)
 
 
 @pytest.fixture(autouse=True)
@@ -193,7 +211,7 @@ def own_key_by_default(monkeypatch):
     not resolve set their own answer.
     """
 
-    async def the_key(_key_value: str):
+    async def the_key():
         return 7
 
     monkeypatch.setattr(db, "agent_key_id", the_key)
@@ -216,3 +234,11 @@ def no_session_address_by_default(monkeypatch):
 
     monkeypatch.setattr(docker_engine, "container_ip", no_address)
     monkeypatch.setattr(upstream, "cancel_client_requests", nothing_cancelled)
+
+
+@pytest.fixture(autouse=True)
+def no_linked_coding_repositories(monkeypatch):
+    async def enabled():
+        return []
+
+    monkeypatch.setattr(db, "enabled_coding_repositories", enabled)

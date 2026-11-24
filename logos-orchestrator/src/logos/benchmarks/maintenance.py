@@ -51,20 +51,24 @@ class MaintenanceCoordinator:
     async def start_calibration(self, provider_id, send):
         from logos.logosnode_registry import LogosNodeCommandError, LogosNodeCommandRejectedError, MaintenanceBusyError
 
-        with store.cluster_lock() as connection:
+        automatic = AUTOMATIC_CALIBRATION.get()
+        # Manual starts may dispatch together. The per-worker primary key arbitrates
+        # competing starts while the shared lease fences benchmark, stop and recovery.
+        with store.cluster_lock(shared=not automatic) as connection:
             if connection is None:
                 raise MaintenanceBusyError("Calibration or benchmarks already own the maintenance slot")
             occupied = {claim["provider_id"] for claim in store.calibration_claims()}
             occupied.update(pid for pid in self.registry.active_provider_ids() if self.registry.is_calibrating(pid))
             if (
                 provider_id in occupied
-                or len(occupied) >= maintenance_node_limit()
+                or (automatic and len(occupied) >= maintenance_node_limit())
                 or store.has_active_benchmarks()
                 or store.has_recovery()
             ):
                 raise MaintenanceBusyError("Calibration, benchmarks or recovery already own the maintenance slot")
             token = str(uuid.uuid4())
-            store.claim_calibration(provider_id, token, AUTOMATIC_CALIBRATION.get())
+            if not store.claim_calibration(provider_id, token, automatic):
+                raise MaintenanceBusyError("This worker already has a calibration claim")
             dispatched = False
 
             def on_dispatched(_):

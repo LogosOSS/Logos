@@ -30,6 +30,7 @@ import org.springframework.web.client.HttpClientErrorException;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import static org.hamcrest.Matchers.containsString;
@@ -40,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -105,7 +107,98 @@ class ProviderControllerTest {
            .andExpect(jsonPath("$[0].id").value(6001))
            .andExpect(jsonPath("$[0].name").value("openai-provider"))
            .andExpect(jsonPath("$[0].authentication_configured").doesNotExist())
-           .andExpect(jsonPath("$[0].api_key").value("stored-provider-secret"));
+           .andExpect(jsonPath("$[0].api_key").doesNotExist())
+           .andExpect(jsonPath("$[0].api_key_hint").value("••••ret"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"a", "ab", "abc", "🙂bc"})
+    void shortKeysHaveNoVisibleSuffix(String key) throws Exception {
+        jdbc.update("UPDATE providers SET api_key = ? WHERE id = 6001", key);
+        mvc.perform(post("/logosdb/get_providers").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+           .andExpect(jsonPath("$[0].api_key_hint").value("••••"));
+    }
+
+    @Test
+    void maskedSuffixKeepsTheLastThreeUnicodeCodePoints() throws Exception {
+        jdbc.update("UPDATE providers SET api_key = ? WHERE id = 6001", "synthetic-a🙂z");
+        mvc.perform(post("/logosdb/get_providers").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+           .andExpect(jsonPath("$[0].api_key_hint").value("••••a🙂z"));
+    }
+
+    @Test
+    void rotateWorkerKeyRequiresWorkerAndAdminAndReplacesTheAuthenticationKey() throws Exception {
+        String url = "/logosdb/providers/6001/rotate_worker_key";
+        mvc.perform(post(url).with(TestJwt.logosAdmin())).andExpect(status().isBadRequest());
+        jdbc.update("UPDATE providers SET provider_type = 'logosnode', api_key = 'synthetic-old' WHERE id = 6001");
+        mvc.perform(post(url).with(TestJwt.adminUser())).andExpect(status().isForbidden());
+        String body = mvc.perform(post(url).with(TestJwt.logosAdmin()))
+            .andExpect(status().isOk())
+            .andExpect(header().string("Cache-Control", containsString("no-store")))
+            .andExpect(jsonPath("$.api_key").value(org.hamcrest.Matchers.matchesPattern("[A-Za-z0-9_-]{64}")))
+            .andReturn().getResponse().getContentAsString();
+        String replacement = new com.fasterxml.jackson.databind.ObjectMapper().readTree(body).get("api_key").asText();
+        assertEquals(replacement, jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+        mvc.perform(post("/logosdb/get_providers").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+           .andExpect(jsonPath("$[0].api_key").doesNotExist())
+           .andExpect(jsonPath("$[0].api_key_hint").value("••••" + replacement.substring(replacement.length() - 3)));
+    }
+
+    @Test
+    void cloudKeysSurviveUnrelatedEditsAndAcceptReplacements() throws Exception {
+        jdbc.update("UPDATE providers SET api_key = 'synthetic-original' WHERE id = 6001");
+        jdbc.update("UPDATE model_provider SET api_key = 'synthetic-override' WHERE id = 7001");
+        mvc.perform(post("/logosdb/update_provider").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001,\"provider_name\":\"renamed\"}"))
+           .andExpect(status().isOk());
+        mvc.perform(post("/logosdb/connect_model_provider").with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"provider_id\":6001,\"model_id\":5001,\"endpoint\":\"/new\"}"))
+           .andExpect(status().isOk());
+        assertEquals("synthetic-original", jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+        assertEquals("synthetic-override", jdbc.queryForObject("SELECT api_key FROM model_provider WHERE id = 7001", String.class));
+        mvc.perform(post("/logosdb/update_provider").with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"provider_id\":6001,\"api_key\":\"synthetic-replacement\"}"))
+           .andExpect(status().isOk()).andExpect(jsonPath("$.api_key").doesNotExist());
+        assertEquals("synthetic-replacement", jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+    }
+
+    @Test
+    void rotationChangesOnlyTheSelectedCloudCredential() throws Exception {
+        String url = "/logosdb/providers/6001/replace_cloud_key";
+        String body = "{\"api_key\":\"synthetic-model-new\",\"model_id\":5001}";
+        mvc.perform(post(url).with(TestJwt.adminUser()).contentType("application/json").content(body))
+           .andExpect(status().isForbidden());
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json").content(body))
+           .andExpect(status().isOk()).andExpect(jsonPath("$.api_key_hint").value("••••new"))
+           .andExpect(jsonPath("$.api_key").doesNotExist());
+        assertNull(jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"api_key\":\"synthetic-provider-old\"}"))
+           .andExpect(status().isOk()).andExpect(jsonPath("$.api_key_hint").value("••••old"));
+        assertEquals("synthetic-provider-old", jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+        assertEquals("synthetic-model-new", jdbc.queryForObject("SELECT api_key FROM model_provider WHERE id = 7001", String.class));
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json").content("{}"))
+           .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void explicitRemovalRestoresProviderInheritanceOrUnauthenticatedAccess() throws Exception {
+        String url = "/logosdb/providers/6001/replace_cloud_key";
+        jdbc.update("UPDATE providers SET api_key = 'synthetic-default' WHERE id = 6001");
+        jdbc.update("UPDATE model_provider SET api_key = 'synthetic-override' WHERE id = 7001");
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"clear\":true,\"api_key\":\"ambiguous\"}")).andExpect(status().isBadRequest());
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"clear\":true,\"model_id\":5001}")).andExpect(status().isOk())
+           .andExpect(jsonPath("$.api_key_hint").value(nullValue()));
+        assertNull(jdbc.queryForObject("SELECT api_key FROM model_provider WHERE id = 7001", String.class));
+        assertEquals("synthetic-default", jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
+        mvc.perform(post(url).with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"clear\":true}")).andExpect(status().isOk());
+        assertNull(jdbc.queryForObject("SELECT api_key FROM providers WHERE id = 6001", String.class));
     }
 
     @Test
@@ -156,7 +249,7 @@ class ProviderControllerTest {
     }
 
     @Test
-    void addProvider_logosnodeGeneratesApiKeyWhenAbsent() throws Exception {
+    void addProvider_logosnodeWaitsForProvisioningWhenKeyIsAbsent() throws Exception {
         mvc.perform(post("/logosdb/add_provider")
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
@@ -165,14 +258,13 @@ class ProviderControllerTest {
                     + "\"auth_name\":\"\",\"auth_format\":\"{}\"}"))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.result").value("Created Provider."))
-           .andExpect(jsonPath("$.api_key")
-               .value(org.hamcrest.Matchers.matchesPattern("[A-Za-z0-9_-]{64}")));
+           .andExpect(jsonPath("$.api_key").doesNotExist());
         assertNull(jdbc.queryForObject(
-            "SELECT parallel_capacity FROM providers WHERE name = 'local-node'", Integer.class));
+            "SELECT api_key FROM providers WHERE name = 'local-node'", String.class));
     }
 
     @Test
-    void addProvider_logosnodeEchoesExplicitlyProvidedKey() throws Exception {
+    void addProvider_logosnodeKeepsExplicitlyProvidedKeyPrivate() throws Exception {
         mvc.perform(post("/logosdb/add_provider")
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
@@ -180,7 +272,7 @@ class ProviderControllerTest {
                     + "\"provider_type\":\"logosnode\",\"privacy_level\":\"LOCAL\","
                     + "\"auth_name\":\"\",\"auth_format\":\"{}\",\"api_key\":\"my-shared-key\"}"))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$.api_key").value("my-shared-key"));
+           .andExpect(jsonPath("$.api_key").doesNotExist());
     }
 
     @Test
@@ -380,7 +472,8 @@ class ProviderControllerTest {
            .andExpect(jsonPath("$").isArray())
            .andExpect(jsonPath("$[0].model_id").value(5001))
            .andExpect(jsonPath("$[0].authentication_configured").doesNotExist())
-           .andExpect(jsonPath("$[0].api_key").value("stored-model-secret"));
+           .andExpect(jsonPath("$[0].api_key").doesNotExist())
+           .andExpect(jsonPath("$[0].api_key_hint").value("••••ret"));
     }
 
     @Test
@@ -694,6 +787,34 @@ class ProviderControllerTest {
     }
 
     @Test
+    void calibrateUncalibrated_passesTheModelOfTheRequest() throws Exception {
+        when(workerAdminClient.calibrateUncalibrated(6001, "org/a"))
+            .thenReturn(ResponseEntity.ok(Map.of("count", 1)));
+
+        mvc.perform(post("/logosdb/providers/logosnode/calibrate_uncalibrated")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"model\":\"org/a\"}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.count").value(1));
+
+        verify(workerAdminClient).calibrateUncalibrated(eq(6001), eq("org/a"));
+    }
+
+    @Test
+    void calibrateUncalibrated_withoutAModelCalibratesEverything() throws Exception {
+        when(workerAdminClient.calibrateUncalibrated(eq(6001), org.mockito.ArgumentMatchers.isNull()))
+            .thenReturn(ResponseEntity.ok(Map.of("count", 2)));
+
+        mvc.perform(post("/logosdb/providers/logosnode/calibrate_uncalibrated")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.count").value(2));
+    }
+
+    @Test
     void stopCalibration_requiresProviderId() throws Exception {
         mvc.perform(post("/logosdb/providers/logosnode/stop_calibration")
                 .with(TestJwt.logosAdmin())
@@ -701,6 +822,214 @@ class ProviderControllerTest {
                 .content("{}"))
            .andExpect(status().isBadRequest())
            .andExpect(jsonPath("$.error").value("provider_id is required"));
+    }
+
+    // ------------------------------------------------------------ node configuration
+
+    @Test
+    void nodeConfigGet_bindsTheProviderAndPassesTheAnswerThrough() throws Exception {
+        when(workerAdminClient.getNodeConfig(6001))
+            .thenReturn(ResponseEntity.ok(Map.of("provider_id", 6001, "revision", 4)));
+
+        mvc.perform(post("/logosdb/node_config/get")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.revision").value(4));
+
+        verify(workerAdminClient).getNodeConfig(eq(6001));
+    }
+
+    @Test
+    void nodeConfigInsights_bindsTheProvider() throws Exception {
+        when(workerAdminClient.nodeConfigInsights(6001))
+            .thenReturn(ResponseEntity.ok(Map.of("provider_id", 6001)));
+
+        mvc.perform(post("/logosdb/node_config/insights")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.provider_id").value(6001));
+    }
+
+    @Test
+    void nodeConfigReplace_sendsTheListTheRevisionAndTheTokensUser() throws Exception {
+        Integer adminId = jdbc.queryForObject("SELECT id FROM users WHERE username = 'logosadmin'", Integer.class);
+        when(workerAdminClient.replaceNodeConfig(anyInt(), any(), anyInt(), any()))
+            .thenReturn(ResponseEntity.ok(Map.of("config_revision", 5)));
+
+        mvc.perform(post("/logosdb/node_config/replace")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"expected_revision\":4,\"entries\":["
+                    + "{\"model_name\":\"org/a\",\"capability\":{\"tensor_parallel_size\":2},\"overrides\":{}}]}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.config_revision").value(5));
+
+        verify(workerAdminClient).replaceNodeConfig(
+            eq(6001), eq(adminId), eq(4),
+            eq(java.util.List.of(Map.of("model_name", "org/a", "capability", Map.of("tensor_parallel_size", 2),
+                "overrides", Map.of()))));
+    }
+
+    // ------------------------------------------------------------ node settings
+
+    @Test
+    void nodeSettingsGet_bindsTheProviderAndPassesTheAnswerThrough() throws Exception {
+        when(workerAdminClient.getNodeSettings(6001))
+            .thenReturn(ResponseEntity.ok(Map.of("provider_id", 6001, "revision", 2)));
+
+        mvc.perform(post("/logosdb/node_settings/get")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.revision").value(2));
+
+        verify(workerAdminClient).getNodeSettings(eq(6001));
+    }
+
+    @Test
+    void nodeSettingsReplace_sendsTheSettingsTheRevisionAndTheTokensUser() throws Exception {
+        Integer adminId = jdbc.queryForObject("SELECT id FROM users WHERE username = 'logosadmin'", Integer.class);
+        when(workerAdminClient.replaceNodeSettings(anyInt(), any(), anyInt(), any()))
+            .thenReturn(ResponseEntity.ok(Map.of("settings_revision", 3)));
+
+        mvc.perform(post("/logosdb/node_settings/replace")
+                .with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"expected_revision\":2,\"settings\":{\"gpu_devices\":\"0\"}}"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.settings_revision").value(3));
+
+        verify(workerAdminClient).replaceNodeSettings(eq(6001), eq(adminId), eq(2), eq(Map.of("gpu_devices", "0")));
+    }
+
+    @Test
+    void nodeSettingsEndpoints_requireTheirFieldsAndLogosAdmin() throws Exception {
+        mvc.perform(post("/logosdb/node_settings/get").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("provider_id is required"));
+        mvc.perform(post("/logosdb/node_settings/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"expected_revision\":1,\"settings\":{}}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("provider_id is required"));
+        mvc.perform(post("/logosdb/node_settings/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001,\"settings\":{}}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("expected_revision is required"));
+        mvc.perform(post("/logosdb/node_settings/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001,\"expected_revision\":1}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("settings is required"));
+
+        for (String path : new String[] {"/logosdb/node_settings/get", "/logosdb/node_settings/replace"}) {
+            mvc.perform(post(path).with(TestJwt.adminUser()).contentType("application/json")
+                    .content("{\"provider_id\":6001,\"expected_revision\":1,\"settings\":{}}"))
+               .andExpect(status().isForbidden());
+            mvc.perform(post(path).contentType("application/json").content("{}"))
+               .andExpect(status().isUnauthorized());
+        }
+        verify(workerAdminClient, never()).getNodeSettings(anyInt());
+        verify(workerAdminClient, never()).replaceNodeSettings(anyInt(), any(), anyInt(), any());
+    }
+
+    @Test
+    void nodeSettingsEndpoints_passTheOrchestratorsRefusalThroughOrAnswer503() throws Exception {
+        when(workerAdminClient.replaceNodeSettings(anyInt(), any(), anyInt(), any())).thenThrow(
+            HttpClientErrorException.create(HttpStatus.CONFLICT, "Conflict", HttpHeaders.EMPTY,
+                "{\"error\":\"Settings changed meanwhile (revision 5); reload them\"}"
+                    .getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8));
+        when(workerAdminClient.getNodeSettings(6001)).thenThrow(new RuntimeException("connection refused"));
+
+        mvc.perform(post("/logosdb/node_settings/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"expected_revision\":1,\"settings\":{}}"))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.error").value("Settings changed meanwhile (revision 5); reload them"));
+        mvc.perform(post("/logosdb/node_settings/get").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001}"))
+           .andExpect(status().isServiceUnavailable());
+    }
+
+    @Test
+    void nodeConfigEndpoints_requireTheirFields() throws Exception {
+        for (String path : new String[] {"/logosdb/node_config/get", "/logosdb/node_config/insights"}) {
+            mvc.perform(post(path).with(TestJwt.logosAdmin()).contentType("application/json").content("{}"))
+               .andExpect(status().isBadRequest())
+               .andExpect(jsonPath("$.error").value("provider_id is required"));
+        }
+        mvc.perform(post("/logosdb/node_config/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"expected_revision\":1,\"entries\":[]}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("provider_id is required"));
+        mvc.perform(post("/logosdb/node_config/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001,\"entries\":[]}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("expected_revision is required"));
+        mvc.perform(post("/logosdb/node_config/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001,\"expected_revision\":1}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.error").value("entries is required"));
+        verify(workerAdminClient, never()).replaceNodeConfig(anyInt(), any(), anyInt(), any());
+    }
+
+    @Test
+    void nodeConfigEndpoints_requireLogosAdmin() throws Exception {
+        for (String path : new String[] {"/logosdb/node_config/get", "/logosdb/node_config/insights",
+                "/logosdb/node_config/replace"}) {
+            mvc.perform(post(path).with(TestJwt.adminUser()).contentType("application/json")
+                    .content("{\"provider_id\":6001,\"expected_revision\":1,\"entries\":[]}"))
+               .andExpect(status().isForbidden());
+            mvc.perform(post(path).contentType("application/json").content("{}"))
+               .andExpect(status().isUnauthorized());
+        }
+        verify(workerAdminClient, never()).getNodeConfig(anyInt());
+        verify(workerAdminClient, never()).nodeConfigInsights(anyInt());
+        verify(workerAdminClient, never()).replaceNodeConfig(anyInt(), any(), anyInt(), any());
+    }
+
+    @Test
+    void nodeConfigEndpoints_passTheOrchestratorsRefusalThrough() throws Exception {
+        when(workerAdminClient.getNodeConfig(6001)).thenThrow(HttpClientErrorException.create(
+            HttpStatus.NOT_FOUND, "Not Found", HttpHeaders.EMPTY,
+            "{\"error\":\"Provider 6001 not found\"}".getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8));
+        when(workerAdminClient.replaceNodeConfig(anyInt(), any(), anyInt(), any())).thenThrow(
+            HttpClientErrorException.create(HttpStatus.CONFLICT, "Conflict", HttpHeaders.EMPTY,
+                "{\"error\":\"Configuration changed meanwhile (revision 5); reload it\"}"
+                    .getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8));
+
+        mvc.perform(post("/logosdb/node_config/get").with(TestJwt.logosAdmin())
+                .contentType("application/json").content("{\"provider_id\":6001}"))
+           .andExpect(status().isNotFound())
+           .andExpect(jsonPath("$.error").value("Provider 6001 not found"));
+        mvc.perform(post("/logosdb/node_config/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"expected_revision\":4,\"entries\":[]}"))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.error").value(containsString("revision 5")));
+    }
+
+    @Test
+    void nodeConfigEndpoints_answer503WhenTheOrchestratorIsUnreachable() throws Exception {
+        when(workerAdminClient.nodeConfigInsights(6001)).thenThrow(new IllegalStateException("not configured"));
+        when(workerAdminClient.replaceNodeConfig(anyInt(), any(), anyInt(), any()))
+            .thenThrow(new IllegalStateException("not configured"));
+        when(workerAdminClient.getNodeConfig(6001)).thenThrow(new IllegalStateException("not configured"));
+
+        for (String path : new String[] {"/logosdb/node_config/get", "/logosdb/node_config/insights"}) {
+            mvc.perform(post(path).with(TestJwt.logosAdmin()).contentType("application/json")
+                    .content("{\"provider_id\":6001}"))
+               .andExpect(status().isServiceUnavailable())
+               .andExpect(jsonPath("$.error").value("not configured"));
+        }
+        mvc.perform(post("/logosdb/node_config/replace").with(TestJwt.logosAdmin())
+                .contentType("application/json")
+                .content("{\"provider_id\":6001,\"expected_revision\":4,\"entries\":[]}"))
+           .andExpect(status().isServiceUnavailable());
     }
 
     // ------------------------------------------------------------ maintenance slot

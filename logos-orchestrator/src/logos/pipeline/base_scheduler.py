@@ -225,6 +225,10 @@ class BaseScheduler(SchedulerInterface):
         """
         self.reevaluate_model_queues(f"provider-{provider_id}")
 
+    def _warm_lane_rank(self, model_id: int, provider_id: int, context_tokens: int = 0) -> tuple:
+        rank = self._logosnode.warm_lane_rank(model_id, provider_id, context_tokens)
+        return rank if rank is not None else (float("inf"), 0, 0, 0)
+
     def reevaluate_model_queues(self, model_name: str) -> None:
         """Reevaluate queued requests for a model after state change (load/wake).
 
@@ -232,127 +236,139 @@ class BaseScheduler(SchedulerInterface):
         dispatches as many queued futures as the gate allows rather than
         drip-feeding one at a time.
         """
+        if not self._queue_mgr.get_total_depth_all():
+            return
+        fair = self._residency_policy == "simple"
+        budgets = {}
         for (model_id, provider_id), ptype in self._model_registry.items():
-            if ptype != "logosnode":
+            if ptype != "logosnode" or not self._queue_mgr.get_total_depth_by_model(model_id):
                 continue
+            slots = self._available_queue_slots(model_id, provider_id)
+            if slots > 0:
+                budgets.setdefault(model_id, {})[provider_id] = slots
 
-            # Symmetric with the offline-worker gate in
-            # `ClassificationCorrectingScheduler._compute_candidate_scores`:
-            # `_model_registry` is DB-derived and includes every deployment
-            # regardless of session state. Without this check, a queued
-            # future could be dispatched onto a worker whose session was
-            # popped after enqueue — the pipeline would then crash at
-            # execution-context resolution with
-            # LogosNodeOfflineError("No active logosnode worker session").
-            try:
-                if not self._logosnode.is_provider_online(provider_id):
-                    continue
-            except Exception:
-                continue
+        for model_id, slots in budgets.items():
+            while slots and self._queue_mgr.get_total_depth_by_model(model_id):
+                provider_id = next(iter(slots))
+                if fair and len(slots) > 1:
+                    provider_id = min(slots, key=lambda pid: (self._warm_lane_rank(model_id, pid), pid))
+                if self._dispatch_queued(model_id, provider_id, fair):
+                    slots[provider_id] -= 1
+                else:
+                    slots[provider_id] = 0
+                if slots[provider_id] == 0:
+                    del slots[provider_id]
 
-            # A worker whose container is being replaced takes nothing from the
-            # queue, not even the request that a finishing one would have
-            # handed on: a peer picks the request up, or it waits for the
-            # worker to come back.
-            try:
-                if self._logosnode.is_provider_cordoned(provider_id):
-                    continue
-            except Exception:
-                continue
+    def _available_queue_slots(self, model_id: int, provider_id: int) -> int:
+        try:
+            if not self._logosnode.is_provider_online(provider_id):
+                return 0
+        except Exception:
+            return 0
 
-            # Use lane readiness as the primary check — it reads the runtime
-            # snapshot directly, bypassing the 5s refresh_interval cache in
-            # _loaded_models that can be stale right after a cold load confirms.
-            try:
-                if not self._logosnode.is_model_lane_ready(model_id, provider_id):
-                    continue
-            except Exception:
-                continue
+        # A worker whose container is being replaced takes nothing from the
+        # queue, not even the request that a finishing one would have
+        # handed on: a peer picks the request up, or it waits for the
+        # worker to come back.
+        try:
+            if self._logosnode.is_provider_cordoned(provider_id):
+                return 0
+        except Exception:
+            return 0
 
-            try:
-                status = self._logosnode.get_model_status(model_id, provider_id)
-            except (ValueError, KeyError):
-                continue
+        # Use lane readiness as the primary check — it reads the runtime
+        # snapshot directly, bypassing the 5s refresh_interval cache in
+        # _loaded_models that can be stale right after a cold load confirms.
+        try:
+            if not self._logosnode.is_model_lane_ready(model_id, provider_id):
+                return 0
+        except Exception:
+            return 0
 
-            # Determine how many requests we can dispatch
-            try:
-                max_capacity, _ = self._logosnode.get_parallel_capacity(model_id, provider_id)
-            except (KeyError, Exception):
-                max_capacity = 1
-            current_active = status.active_requests
-            available_slots = max(0, max_capacity - current_active)
+        try:
+            status = self._logosnode.get_model_status(model_id, provider_id)
+        except (ValueError, KeyError):
+            return 0
 
-            # Bound the batch by what the lane signals justify releasing in
-            # one pass. Without this, a wake/load event drains the whole
-            # orchestrator queue onto one worker at once — precisely the
-            # forwarding we want to avoid, since a request sitting in the
-            # engine's own queue can no longer be reordered by priority,
-            # re-routed to a peer, or given up when the worker drains.
-            batch_limit = self._admission_batch_limit(model_id, provider_id)
-            if batch_limit is not None:
-                available_slots = min(available_slots, batch_limit)
+        try:
+            max_capacity, _ = self._logosnode.get_parallel_capacity(model_id, provider_id)
+        except Exception:
+            max_capacity = 1
+        current_active = status.active_requests
+        available_slots = max(0, max_capacity - current_active)
 
-            dispatched = 0
-            while dispatched < available_slots:
-                task, entry = benchmark_reservations.admit_queued(
-                    provider_id,
-                    self._logosnode.get_model_name(model_id, provider_id),
-                    lambda reserved_job: self._queue_mgr.dequeue_with_entry(
-                        model_id,
-                        provider_id,
-                        **({"required_api_key_id": -reserved_job} if reserved_job is not None else {}),
-                    ),
-                )
-                if task is None:
-                    break
-                if not isinstance(task, asyncio.Future) or task.done():
-                    continue
+        # Bound the batch by what the lane signals justify releasing in
+        # one pass. Without this, a wake/load event drains the whole
+        # orchestrator queue onto one worker at once — precisely the
+        # forwarding we want to avoid, since a request sitting in the
+        # engine's own queue can no longer be reordered by priority,
+        # re-routed to a peer, or given up when the worker drains.
+        batch_limit = self._admission_batch_limit(model_id, provider_id)
+        if batch_limit is not None:
+            available_slots = min(available_slots, batch_limit)
 
-                priority_str = entry.current_priority.name.lower() if entry else Priority.NORMAL.name.lower()
-                queue_depth = self._queue_mgr.get_total_depth_by_deployment(model_id, provider_id)
+        return available_slots
 
-                provider_metrics = {}
-                try:
-                    cap = self._logosnode.get_capacity_info(provider_id)
-                    provider_metrics["available_vram_mb"] = cap.available_vram_mb
-                except Exception:
-                    pass
+    @staticmethod
+    def _resolve_queued(task: asyncio.Future, result: SchedulingResult) -> None:
+        if not task.done():
+            task.set_result(result)
 
-                result = SchedulingResult(
-                    model_id=model_id,
-                    provider_id=provider_id,
-                    provider_type="logosnode",
-                    queue_entry_id=None,
-                    was_queued=True,
-                    queue_depth_at_schedule=queue_depth,
-                    queue_depth_at_arrival=queue_depth,
-                    priority_when_scheduled=priority_str,
-                    # Trust the cold flag captured at enqueue time — wakes
-                    # from sleep aren't cold even though a state change
-                    # triggered the dispatcher.
-                    is_cold_start=bool(entry.is_cold_at_queue) if entry else None,
-                    provider_metrics=provider_metrics,
-                    available_vram_mb=provider_metrics.get("available_vram_mb"),
-                )
+    def _dispatch_queued(self, model_id: int, provider_id: int, fair: bool) -> bool:
+        # Read worker state before the benchmark/queue locks. A narrow idle
+        # sibling cannot release a long request onto a backlogged wide lane.
+        limit = self._logosnode.unqueued_context_limit(model_id, provider_id) if fair else None
 
-                logger.info(
-                    "Reevaluation: resolving queued request for model=%s "
-                    "(worker=%s, dispatched=%d/%d) after state change",
-                    model_name,
-                    self._logosnode.get_provider_name(provider_id) or provider_id,
-                    dispatched + 1,
-                    available_slots,
-                )
-                task.get_loop().call_soon_threadsafe(task.set_result, result)
-                dispatched += 1
+        def dequeue(reserved_job):
+            return self._queue_mgr.dequeue_with_entry(
+                model_id,
+                provider_id,
+                required_api_key_id=-reserved_job if reserved_job is not None else None,
+                context_limit=limit,
+            )
 
-            if dispatched > 0:
-                logger.info(
-                    "Reevaluation complete: dispatched %d queued requests for model=%s (worker=%s)",
-                    dispatched,
-                    model_name,
-                    self._logosnode.get_provider_name(provider_id) or provider_id,
-                )
+        while True:
+            task, entry = benchmark_reservations.admit_queued(
+                provider_id,
+                self._logosnode.get_model_name(model_id, provider_id),
+                dequeue,
+            )
+            if task is None:
+                return False
+            if isinstance(task, asyncio.Future) and not task.done():
+                break
+
+        priority_str = entry.current_priority.name.lower() if entry else Priority.NORMAL.name.lower()
+        queue_depth = self._queue_mgr.get_total_depth_by_deployment(model_id, provider_id)
+
+        provider_metrics = {}
+        try:
+            cap = self._logosnode.get_capacity_info(provider_id)
+            provider_metrics["available_vram_mb"] = cap.available_vram_mb
+        except Exception:
+            pass
+
+        result = SchedulingResult(
+            model_id=model_id,
+            provider_id=provider_id,
+            provider_type="logosnode",
+            queue_entry_id=None,
+            was_queued=True,
+            queue_depth_at_schedule=queue_depth,
+            queue_depth_at_arrival=queue_depth,
+            priority_when_scheduled=priority_str,
+            # Trust the cold flag captured at enqueue time — wakes
+            # from sleep aren't cold even though a state change
+            # triggered the dispatcher.
+            is_cold_start=bool(entry.is_cold_at_queue) if entry else None,
+            provider_metrics=provider_metrics,
+            available_vram_mb=provider_metrics.get("available_vram_mb"),
+        )
+
+        if fair and entry and entry.request_id:
+            self._logosnode.book_queued_warm_lane(model_id, provider_id, entry.request_id, entry.context_tokens)
+        task.get_loop().call_soon_threadsafe(self._resolve_queued, task, result)
+        return True
 
     def _admission_batch_limit(self, model_id: int, provider_id: int) -> int | None:
         """How many queued requests this worker may be handed in one pass.

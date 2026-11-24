@@ -24,18 +24,44 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
-from . import attachments, capacity, controls, conventions, db, docker_engine, github, model_policy, triggers, upstream
+from . import (
+    attachments,
+    capacity,
+    controls,
+    conventions,
+    db,
+    disclosure,
+    docker_engine,
+    egress_proxy,
+    github,
+    github_broker,
+    memory_budget,
+    memory_usage,
+    model_policy,
+    repository_context,
+    triggers,
+    upstream,
+)
 from .artifacts import read_artifact_text
 from .asyncio_tasks import cancel_and_wait
-from .config import INTERRUPTION_FILE, REPLY_DIR, REPLY_FILE, REVIEW_COMMENTS_FILE, REVIEWED_SHA_FILE, settings
+from .config import (
+    CLOSES_FILE,
+    INTERRUPTION_FILE,
+    REPLY_DIR,
+    REPLY_FILE,
+    REVIEW_COMMENTS_FILE,
+    REVIEWED_SHA_FILE,
+    settings,
+)
 from .schemas import TERMINAL_STATUSES, EventKind, SessionStatus
 
 logger = logging.getLogger(__name__)
@@ -56,6 +82,8 @@ LOG_QUEUE_MAX = 2000
 # before Docker stops waiting.
 STAND_DOWN_S = 20.0
 MAINTENANCE_INTERVAL_S = 15.0
+# How often running sessions' GitHub requests are looked for (github_broker).
+GITHUB_BROKER_INTERVAL_S = 3.0
 
 # What the agent phase prints when it wants its spending known — the only
 # channel it has, holding no credential and reaching nothing but the model
@@ -160,8 +188,205 @@ _MAX_ATTEMPTS_PER_REQUEST = 3
 _WORKSPACE_IDLE_GRACE = timedelta(minutes=10)
 
 
+def _footer(session_id: int, session: dict[str, Any] | None) -> str:
+    """The model disclosure for text a session publishes.
+
+    The launch records the model the session was actually driven by; a row
+    from before that record falls back to what the policy resolves now.
+    """
+    model = str((session or {}).get("model") or "").strip() or model_policy.current().resolve(None)
+    return disclosure.footer(model=model, session_id=session_id)
+
+
+# Memory held for containers whose rows no longer count in the budget: a
+# session being cancelled or settled until its container has stopped, and
+# the screenshots that run after a session settled. Each holder owns its own
+# entry, so one actor can never release what another one holds; two holds
+# for the same container only over-reserve for a moment.
+_held_memory: dict[object, int] = {}
+
+# Docker states that confirm a container has no running processes.
+_STOPPED_CONTAINER_STATES = frozenset({"created", "exited", "dead", "gone"})
+
+
+def _hold(memory_mb: int) -> object:
+    token = object()
+    _held_memory[token] = memory_mb
+    return token
+
+
+def _release(token: object | None) -> None:
+    if token is not None:
+        _held_memory.pop(token, None)
+
+
+async def _release_when_stopped(
+    token: object | None,
+    container_id: str | None,
+    *,
+    helper: _Helper | None = None,
+    launch: _Launch | None = None,
+    poll_s: float = 5,
+) -> None:
+    """Return memory only after Docker confirms that every owner has stopped."""
+    if token is None:
+        return
+    try:
+        if launch is not None:
+            await launch.settled.wait()
+        if container_id:
+            await _wait_for_container_stop(container_id, poll_s)
+        if helper is not None:
+            helper_id = await helper.started_container()
+            if helper_id:
+                await _wait_for_container_stop(helper_id, poll_s)
+    finally:
+        _release(token)
+
+
+async def _wait_for_container_stop(container_id: str, poll_s: float) -> None:
+    while True:
+        try:
+            state, _ = await docker_engine.container_state(container_id)
+            if state in _STOPPED_CONTAINER_STATES:
+                return
+        except Exception as exc:
+            logger.info("could not inspect container %s: %s", container_id, exc)
+        await asyncio.sleep(poll_s)
+
+
+_release_tasks: set[asyncio.Task] = set()
+
+
+def _release_in_background(
+    token: object | None, container_id: str | None, helper: _Helper | None = None, launch: _Launch | None = None
+) -> None:
+    """Release a hold once its container stopped, without making the caller wait for it.
+
+    The caller may be a settlement that runs under the admission lock (a
+    failed launch); waiting there for a container to stop would stall the
+    scheduler.
+    """
+    if token is None:
+        return
+    if not container_id and helper is None and launch is None:
+        _release(token)
+        return
+    task = asyncio.create_task(_release_when_stopped(token, container_id, helper=helper, launch=launch))
+    _release_tasks.add(task)
+    task.add_done_callback(_release_tasks.discard)
+
+
+async def _remove_held_container(token: object, container_id: str | None) -> None:
+    """Return a container's memory after removal or hand the hold to the stop watcher."""
+    try:
+        if container_id:
+            await docker_engine.remove_container(container_id)
+            container_id = None
+    except Exception as exc:
+        logger.warning("could not remove container %s: %s", container_id, exc)
+    finally:
+        _release_in_background(token, container_id)
+
+
+def _memory_of(session: dict[str, Any] | None) -> int:
+    return int((session or {}).get("memory_mb") or settings.session_memory_mb)
+
+
+async def reserved_memory_mb() -> int:
+    """The memory live sessions and the held containers of finished ones reserve."""
+    return await db.reserved_memory_mb(settings.session_memory_mb) + sum(_held_memory.values())
+
+
+async def memory_admission_block(control: controls.Controls) -> str:
+    """Why the host's memory budget has no room for one more session, or an empty string."""
+    budget = memory_budget.current()
+    if budget is None:
+        return ""
+    return budget.admission_block(reserved_mb=await reserved_memory_mb(), session_mb=control.session_memory_mb)
+
+
+# The memory each session was started with, from the claim or, after a
+# restart, from its row. Its helpers get the same limit.
+_session_memory: dict[int, int] = {}
+
+
+def _remember_memory(session: dict[str, Any]) -> None:
+    value = session.get("memory_mb")
+    if value:
+        _session_memory[int(session["id"])] = int(value)
+
+
+async def _session_memory_mb(session_id: int) -> int | None:
+    """The memory a session was started with, or None for a row that recorded none."""
+    if session_id in _session_memory:
+        return _session_memory[session_id]
+    value = await db.session_memory_mb(session_id)
+    if value:
+        _session_memory[session_id] = int(value)
+    return value
+
+
+def cache_volume_for(workspace: dict[str, Any]) -> str:
+    """The workspace's cache volume: toolchains and downloads kept between its sessions."""
+    return f"logos_agent_cache_{workspace['name']}"
+
+
+def _proxy_url(base: str, session_id: int, token: str) -> str:
+    """The proxy address with the session's credentials in it."""
+    parts = urlsplit(base)
+    netloc = f"session-{session_id}:{quote(token, safe='')}@{parts.hostname}"
+    if parts.port:
+        netloc += f":{parts.port}"
+    return f"{parts.scheme or 'http'}://{netloc}"
+
+
+def resumption_base(session: dict[str, Any]) -> str:
+    """The branch a workspace moves to when it takes this session's work up again.
+
+    The work's own branch when it exists on GitHub — published by the
+    session, or a pull request handed over — and otherwise the repository's
+    base branch the work started from.
+    """
+    branch = str(session.get("branch_name") or "")
+    if branch and (session.get("pr_url") or not branch.startswith(settings.branch_prefix)):
+        return branch
+    return str(session.get("repo_base_branch") or "main")
+
+
+def _fork_environment(push_repo_slug: str | None) -> dict[str, str]:
+    """The finalizer's view of a fork the session pushes to, if any."""
+    if not push_repo_slug:
+        return {}
+    return {
+        "LOGOS_PUSH_REPO_URL": f"https://github.com/{push_repo_slug}.git",
+        "LOGOS_PUSH_REPO_SLUG": push_repo_slug,
+    }
+
+
+def _uses_repository_sandbox(session: dict[str, Any]) -> bool:
+    """Whether a session works on a linked repository (cache, proxy, GitHub requests)."""
+    return bool(session.get("repo_slug")) and session.get("team_repository_id") is not None
+
+
 def container_name(session_id: int) -> str:
     return f"{_CONTAINER_PREFIX}{session_id}"
+
+
+def _sessions_lane(
+    sessions: list[dict[str, Any]], policy: model_policy.ModelPolicy
+) -> frozenset[tuple[str, str]] | None:
+    """The deployments these sessions are served by, or None without sessions.
+
+    Whether to hand capacity back is a question about the models the
+    runner's sessions use. A model of the key that no session uses — an
+    embedding or speech lane that reports no engine observation — must not
+    make that reading unknown and pause, or hold back, unrelated work.
+    """
+    if not sessions:
+        return None
+    lanes = [policy.lane(policy.resolve(session.get("model"))) or frozenset() for session in sessions]
+    return frozenset().union(*lanes)
 
 
 def _ours_by_model(running: list[dict[str, Any]], policy: model_policy.ModelPolicy) -> dict[str, int]:
@@ -190,7 +415,7 @@ def _fallback_subject(session: dict[str, Any]) -> str:
     better and is preferred, but a commit should never be titled after the
     first line of the task it was handed.
     """
-    ref = str(session.get("trigger_ref") or "")
+    ref = repository_context.local_ref(str(session.get("trigger_ref") or ""))
     match = re.match(r"^(issue|pr|thread)-(\d+)", ref)
     if not match:
         return ""
@@ -293,6 +518,13 @@ class _Helper:
         self.created = asyncio.Event()
         self.started = asyncio.Event()
 
+    async def started_container(self) -> str | None:
+        """Wait for any in-flight create and start before attempting to stop or inspect the helper."""
+        await self.created.wait()
+        if self.container_id:
+            await self.started.wait()
+        return self.container_id
+
 
 class _Launch:
     """One session's launch, from before its first await until it settles.
@@ -372,7 +604,9 @@ class SessionManager:
         self._last_helper_output: dict[int, str] = {}
         self._scheduler_task: asyncio.Task | None = None
         self._capacity_watch_task: asyncio.Task | None = None
+        self._memory_task: asyncio.Task | None = None
         self._maintenance_task: asyncio.Task | None = None
+        self._github_broker_task: asyncio.Task | None = None
         self._yield_lock = asyncio.Lock()
         self._capacity_quiet_since: float | None = None
         self._capacity_quiet_sample: tuple = ()
@@ -420,13 +654,17 @@ class SessionManager:
         await self.resume_retries()
         self._scheduler_task = asyncio.create_task(self._scheduler_loop(), name="agent-scheduler")
         self._capacity_watch_task = asyncio.create_task(self._capacity_watch_loop(), name="agent-capacity-watch")
+        self._memory_task = asyncio.create_task(memory_usage.monitor(), name="agent-memory-usage")
         self._maintenance_task = asyncio.create_task(self._maintenance_loop(), name="agent-maintenance")
+        self._github_broker_task = asyncio.create_task(self._github_broker_loop(), name="agent-github-broker")
 
     async def stop(self) -> None:
         self._stopping.set()
         await cancel_and_wait(self._scheduler_task)
         await cancel_and_wait(self._capacity_watch_task)
+        await cancel_and_wait(self._memory_task)
         await cancel_and_wait(self._maintenance_task)
+        await cancel_and_wait(self._github_broker_task)
         await self._stand_down()
         for task in list(self._supervisors.values()):
             task.cancel()
@@ -521,23 +759,8 @@ class SessionManager:
         settlement, so a later cancel or cleanup can still reach the
         credential-bearing agent.
         """
-        live: dict[int, dict[str, Any]] = {}
-        try:
-            for container in await docker_engine.list_managed_containers():
-                labels = container.get("Labels") or {}
-                if labels.get("logos.agent.helper"):
-                    # A transient prepare/finalize container: never the
-                    # supervised session container. A restart mid-helper is
-                    # the only way one survives this far, so remove it
-                    # instead of re-adopting it as a session.
-                    await docker_engine.remove_container(container.get("Id", ""))
-                    continue
-                label = labels.get("logos.agent.session")
-                if label and label.isdigit():
-                    live[int(label)] = container
-        except Exception as exc:
-            logger.warning("could not list managed containers during reconcile: %s", exc)
-            return
+        # Enumeration must succeed before any work is resumed or admitted.
+        containers = await docker_engine.list_managed_containers()
 
         # Snapshot the occupying rows before committing any of the
         # transitions: the status queries must see the state as it was at
@@ -549,7 +772,26 @@ class SessionManager:
         occupying: list[tuple[SessionStatus, dict[str, Any]]] = []
         for status in (SessionStatus.STARTING, SessionStatus.RUNNING, SessionStatus.PAUSED, SessionStatus.FINALIZING):
             for session in await db.sessions_in_status(status):
+                # Its helpers keep the memory it was started with across a
+                # restart of the runner.
+                _remember_memory(session)
                 occupying.append((status, session))
+
+        # Recover every leftover before any supervisor or finalizer can start.
+        # A single session can leave several helpers and screenshots behind.
+        active_ids = {session["id"] for _, session in occupying}
+        live: dict[int, dict[str, Any]] = {}
+        for container in containers:
+            labels = container.get("Labels") or {}
+            label = labels.get("logos.agent.session", "")
+            sid = int(label) if label.isdigit() else None
+            helper = labels.get("logos.agent.helper") or labels.get("logos.agent.screenshot")
+            if sid in active_ids and not helper:
+                if sid in live:
+                    raise RuntimeError(f"multiple agent containers for session {sid} during recovery")
+                live[sid] = container
+            else:
+                await self._remove_recovered_leftover(container["Id"], active_session=sid in active_ids)
 
         for status, session in occupying:
             sid = session["id"]
@@ -598,18 +840,14 @@ class SessionManager:
                     try:
                         await docker_engine.start_container(container_id)
                     except Exception as exc:
+                        await self._relinquish_container(container_id, _memory_of(session))
                         await self._settle(sid, exit_code=None, error=f"could not start recovered container: {exc}")
-                        # The start failed before the transition below,
-                        # so the id is not in the row and settlement's
-                        # cleanup cannot reach the container; remove it
-                        # by the id Docker told us about.
-                        await self._relinquish_container(container_id)
                     else:
                         if not await db.transition_session(sid, SessionStatus.RUNNING, **fields):
                             # A cancel that landed in the restart window
                             # owns the row; the agent must not keep
                             # running.
-                            await self._relinquish_container(container_id)
+                            await self._relinquish_container(container_id, _memory_of(session))
                         else:
                             self._supervise(sid, container_id)
                 else:
@@ -622,18 +860,18 @@ class SessionManager:
                     # platform paused inside the start window normalizes
                     # through running first.
                     if not await db.transition_session(sid, SessionStatus.RUNNING, **fields):
-                        await self._relinquish_container(container_id)
+                        await self._relinquish_container(container_id, _memory_of(session))
                         continue
                     fields = {}
                     if not await db.transition_session(sid, SessionStatus.PAUSED):
-                        await self._relinquish_container(container_id)
+                        await self._relinquish_container(container_id, _memory_of(session))
                         continue
                 elif status != target:
                     # A validated transition, not a raw update: a cancel
                     # that landed inside the restart window must not be
                     # overwritten with running/paused.
                     if not await db.transition_session(sid, target, **fields):
-                        await self._relinquish_container(container_id)
+                        await self._relinquish_container(container_id, _memory_of(session))
                         continue
                 self._supervise(sid, container_id)
             else:
@@ -647,7 +885,7 @@ class SessionManager:
                         # the row and saw no container id yet; the
                         # exited container is removed here, by the id
                         # Docker told us about.
-                        await self._relinquish_container(container_id)
+                        await self._relinquish_container(container_id, _memory_of(session))
                         continue
                     fields = {}
                 # A finalizing row can also land here (the exited agent
@@ -657,10 +895,27 @@ class SessionManager:
                 _, exit_code = await docker_engine.container_state(container_id)
                 await self._settle(sid, exit_code=exit_code, error=None)
 
-        # Containers with no live session row: leftovers, remove them.
-        for sid, container in live.items():
-            logger.info("removing orphaned container for session %s", sid)
-            await docker_engine.remove_container(container.get("Id", ""))
+    @staticmethod
+    async def _remove_recovered_leftover(container_id: str, *, active_session: bool) -> None:
+        try:
+            await docker_engine.remove_container(container_id)
+            return
+        except Exception as exc:
+            logger.warning("could not remove leftover container %s during startup: %s", container_id, exc)
+
+        # The original process's holds are gone. Docker's configured cap also
+        # covers screenshots, legacy rows and containers whose row was deleted.
+        info = await docker_engine.inspect_container(container_id)
+        if info is None or info.get("State", {}).get("Status") in _STOPPED_CONTAINER_STATES:
+            return
+        if active_session:
+            # Replaying finalization beside its old helper can repeat its side effects.
+            raise RuntimeError(f"helper {container_id} is still active during session recovery")
+        limit = info.get("HostConfig", {}).get("Memory")
+        if not isinstance(limit, int) or limit <= 0:
+            raise RuntimeError(f"cannot establish the memory limit of leftover container {container_id}")
+        megabyte = 1024 * 1024
+        _release_in_background(_hold((limit + megabyte - 1) // megabyte), container_id)
 
     # --- scheduling -------------------------------------------------------
 
@@ -747,6 +1002,51 @@ class SessionManager:
             except asyncio.TimeoutError:
                 pass
 
+    async def _github_broker_loop(self) -> None:
+        """Answer the GitHub requests of running sessions within seconds.
+
+        Its own loop: an agent waiting for "did my claim go through" should
+        not wait for the maintenance cadence, and a slow GitHub answer must
+        not delay capacity decisions.
+        """
+        while not self._stopping.is_set():
+            try:
+                await self.serve_github_requests(await db.sessions_in_status(SessionStatus.RUNNING))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("answering GitHub requests of sessions failed")
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=GITHUB_BROKER_INTERVAL_S)
+            except asyncio.TimeoutError:
+                pass
+
+    async def serve_github_requests(self, sessions: list[dict[str, Any]]) -> None:
+        """Carry out what the given sessions asked of GitHub (see github_broker)."""
+        for session in sessions:
+            link = session.get("team_repository_id")
+            if link is None or not session.get("repo_slug"):
+                # The platform repository's sessions answer through the
+                # runner's settlement only, as they always have.
+                continue
+            sid = int(session["id"])
+            permissions = await db.sandbox_permissions(int(link), str(session["repo_slug"]))
+
+            async def record(line: str, sid: int = sid) -> None:
+                await db.add_event(sid, EventKind.LOG, {"lines": [line]})
+
+            try:
+                with repository_context.scope(session):
+                    await github_broker.process(
+                        session,
+                        artifacts=artifact_dir(sid),
+                        state=state_dir(sid),
+                        may_comment=bool(permissions["agent_may_comment"]),
+                        record=record,
+                    )
+            except Exception:
+                logger.exception("could not answer the GitHub requests of session %s", sid)
+
     def _observe_capacity(self, reading: capacity.Reading) -> None:
         """Track continuous quiet time without treating pacing as saturation."""
         if not reading.ok or not reading.reclaimable or capacity.pause_decision(reading)[0]:
@@ -781,9 +1081,13 @@ class SessionManager:
                 {provider: (session, observed) for provider, session, observed in reading.sample_id}
             )
 
-    async def _yield_for_capacity(self, reading: capacity.Reading, control) -> bool:
-        """Serialize yielding without holding the lock through any launch."""
-        should_pause, why = capacity.pause_decision(reading)
+    async def _yield_for_capacity(self, reading: capacity.Reading, control, *, running: bool = True) -> bool:
+        """Serialize yielding without holding the lock through any launch.
+
+        Without running sessions there is nothing to hand back: only the
+        operator's pause stops the pass then.
+        """
+        should_pause, why = capacity.pause_decision(reading) if running else (False, "")
         if control.paused:
             should_pause, why = True, control.admission_block()
         if not should_pause:
@@ -804,12 +1108,15 @@ class SessionManager:
         policy = await model_policy.refresh()
         control = await controls.current()
         running = await db.sessions_in_status(SessionStatus.RUNNING)
+        lane = _sessions_lane(running, policy)
         measured, reading = await capacity.read_load_pair(
-            lane=policy.lane(), ours=_ours_by_model(running, policy), own_api_key_id=await self._own_api_key_id()
+            lane=lane if lane is not None else policy.lane(),
+            ours=_ours_by_model(running, policy),
+            own_api_key_id=await self._own_api_key_id(),
         )
         self._last_reading = measured
         self._observe_capacity(reading)
-        await self._yield_for_capacity(reading, control)
+        await self._yield_for_capacity(reading, control, running=bool(running))
 
     async def _capacity_watch_loop(self) -> None:
         while not self._stopping.is_set():
@@ -836,7 +1143,7 @@ class SessionManager:
         fall back to counting sessions while it is.
         """
         if self._cached_own_api_key_id is None:
-            self._cached_own_api_key_id = await db.agent_key_id(settings.agent_api_key)
+            self._cached_own_api_key_id = await db.agent_key_id()
         return self._cached_own_api_key_id
 
     def request_scheduler_pass(self) -> None:
@@ -884,8 +1191,11 @@ class SessionManager:
         # Both answers use one HTTP snapshot. Attribution is applied while
         # the per-model figures still exist, before aggregation.
         own_key = await self._own_api_key_id()
+        # On the models the runner's sessions use; with none, on everything
+        # the key reaches, which then only informs the page.
+        lane = _sessions_lane(running + paused, policy)
         measured, reading = await capacity.read_load_pair(
-            lane=policy.lane(),
+            lane=lane if lane is not None else policy.lane(),
             ours=_ours_by_model(running, policy),
             own_api_key_id=own_key,
         )
@@ -895,7 +1205,7 @@ class SessionManager:
         # 1. Give capacity back first. Yielding always takes precedence over
         #    admitting, so a burst of user traffic is never met by the runner
         #    starting another session in the same pass.
-        if await self._yield_for_capacity(reading, control):
+        if await self._yield_for_capacity(reading, control, running=bool(running)):
             return
 
         # 2. Resume what was paused, oldest first.
@@ -1000,7 +1310,8 @@ class SessionManager:
             # in it: with its quota used up, only work a person queued is
             # claimable. The quota is about what is *running*, so the
             # backlog behind it stays queued and visible.
-            quota = triggers.max_active_sessions(control.max_parallel)
+            person_waiting = await db.next_queued_session(include_triggered=False) is not None
+            quota = triggers.max_active_sessions(control.max_parallel, person_waiting=person_waiting)
             triggered = await db.count_active_trigger_sessions()
             include_triggered = triggered < quota
             candidate = await db.next_queued_session(include_triggered=include_triggered)
@@ -1024,6 +1335,9 @@ class SessionManager:
             )
             if not may_start:
                 return
+            # The host's memory: what live sessions reserved, plus this one.
+            if await memory_admission_block(control):
+                return
             if not self._capacity_sample_available(reading):
                 return
             # The row that was measured, not "the next one": between the
@@ -1034,9 +1348,16 @@ class SessionManager:
             # taken in the same statement: this one was read before the
             # capacity call above, and another scheduler could have used the
             # room in between.
-            taken = await db.claim_session(int(candidate["id"]), trigger_quota=quota)
+            # The memory is written by the claim itself, so the next admission
+            # counts it, and kept for the session's life: a later change of
+            # the per-session memory applies to sessions started later.
+            taken = await db.claim_session(
+                int(candidate["id"]), trigger_quota=quota, memory_mb=control.session_memory_mb
+            )
             if taken:
                 self._spend_capacity_sample(reading)
+                taken = {**taken, "memory_mb": control.session_memory_mb}
+                _remember_memory(taken)
             claimed = [taken] if taken else []
             # The claim is what makes these rows this pass's to launch, so
             # the launch record is taken here rather than inside _launch:
@@ -1177,6 +1498,8 @@ class SessionManager:
         if not attached:
             logger.error("session %s could not be reattached to the session network; leaving it paused", sid)
             return False
+        if session.get("active_seconds") is not None:
+            self._publish_active_origin(sid, time.time() - session["active_seconds"])
         try:
             thawed = await docker_engine.unpause_container(container_id)
         except Exception as exc:
@@ -1291,12 +1614,28 @@ class SessionManager:
         if not policy.allows(session.get("model")):
             await self._settle(sid, exit_code=None, error=policy.refusal(session.get("model")))
             return
+        # What the session will actually be driven by, recorded on the row:
+        # everything it publishes names this model, and "the default" says
+        # nothing once the default has changed.
+        resolved = policy.resolve(session.get("model"))
+        if resolved and resolved != session.get("model"):
+            session = {**session, "model": resolved}
+            try:
+                await db.update_session(sid, model=resolved)
+            except Exception as exc:
+                # Publishing falls back to the policy's default; the launch
+                # does not fail over a record.
+                logger.info("could not record the model of session %s: %s", sid, exc)
 
         container_id: str | None = None
         try:
             await docker_engine.ensure_volume(
                 workspace["volume_name"], labels={"logos.agent.workspace": workspace["name"]}
             )
+            if _uses_repository_sandbox(session):
+                await docker_engine.ensure_volume(
+                    cache_volume_for(workspace), labels={"logos.agent.workspace-cache": workspace["name"]}
+                )
             # The state the runner writes for a session (the pause mark) must
             # reach the child container, and a bind source is resolved on the
             # daemon host — so it is backed by a named volume, whose
@@ -1322,7 +1661,7 @@ class SessionManager:
             # screenshot is unreadable to the sandbox otherwise. Analysis
             # tasks embed owner-controlled path text and must not trigger
             # authenticated fetches against the shared bot identity.
-            if str(session.get("trigger_kind") or "") == "analysis":
+            if str(session.get("trigger_kind") or "") in {"analysis", "security-analysis", "security-fix"}:
                 images: list[str] = []
             else:
                 images = await self._collect_attachments(sid, str(session.get("task") or ""))
@@ -1363,7 +1702,29 @@ class SessionManager:
             # Kept on the row as well as handed over: these are editable,
             # so "the exact prompt this session was given" stops being true
             # the moment somebody edits them. The page reads it from here.
-            notes = (await conventions.current()).environment_notes
+            sandboxed = _uses_repository_sandbox(session) and session.get("trigger_kind") != "analysis"
+            permissions = (
+                await db.sandbox_permissions(int(session["team_repository_id"]), str(session["repo_slug"]))
+                if sandboxed
+                else {"agent_egress_hosts": [], "agent_egress_unrestricted": False, "agent_may_comment": False}
+            )
+            egress_token = ""
+            if sandboxed and settings.egress_proxy_url:
+                # The session's credential at the egress proxy. Only its hash
+                # is stored; the proxy accepts it while the session runs and
+                # applies the repository's live host list.
+                egress_token = secrets.token_urlsafe(32)
+                await db.update_session(sid, egress_token_hash=egress_proxy.token_hash(egress_token))
+            notes = (
+                conventions.repository_environment_notes(
+                    egress_hosts=permissions["agent_egress_hosts"] if egress_token else [],
+                    egress_unrestricted=bool(egress_token and permissions["agent_egress_unrestricted"]),
+                    may_comment=bool(permissions["agent_may_comment"]),
+                    sandboxed=sandboxed,
+                )
+                if session.get("repo_slug") and session.get("trigger_kind") != "analysis"
+                else (await conventions.current()).environment_notes
+            )
             try:
                 await db.update_session(sid, environment_notes=notes)
             except Exception as exc:
@@ -1378,6 +1739,8 @@ class SessionManager:
                     continuing=continuing,
                     images=images,
                     notes=notes,
+                    egress_token=egress_token,
+                    sandboxed=sandboxed,
                 ),
                 workspace_volume=workspace["volume_name"],
                 artifact_host_path=artifact_host_path,
@@ -1388,12 +1751,14 @@ class SessionManager:
                 # directory the child mounts read-only.
                 state_host_path=state_host_path,
                 session_id=sid,
+                cache_volume=cache_volume_for(workspace) if sandboxed else None,
+                memory_mb=session.get("memory_mb"),
             )
             # Boundary: the container exists but has not run. Give it back
             # rather than starting an agent for a cancelled session.
             if launch.cancelled:
                 logger.info("session %s was cancelled before its agent started; removing its container", sid)
-                await self._relinquish_container(container_id)
+                await self._relinquish_container(container_id, _memory_of(session))
                 return
             await docker_engine.start_container(container_id)
         except Exception as exc:
@@ -1403,17 +1768,14 @@ class SessionManager:
                 # settling it again would only record a spurious error.
                 logger.info("launch of cancelled session %s ended: %s", sid, exc)
                 if container_id:
-                    await self._relinquish_container(container_id)
+                    await self._relinquish_container(container_id, _memory_of(session))
                 return
             logger.exception("failed to launch session %s", sid)
             # Settlement removes the container by the id stored in the
             # database, which is still null on a failed start — remove the
             # created container here or it survives until a reconcile.
             if container_id:
-                try:
-                    await docker_engine.remove_container(container_id)
-                except Exception:
-                    logger.warning("could not remove container for session %s after failed launch", sid)
+                await _remove_held_container(_hold(_memory_of(session)), container_id)
             await self._settle(sid, exit_code=None, error=f"launch failed: {exc}")
             return
 
@@ -1422,7 +1784,7 @@ class SessionManager:
             # The transition would lose anyway, but stopping here keeps the
             # started container from living until that check.
             logger.info("session %s was cancelled as its agent started; removing its container", sid)
-            await self._relinquish_container(container_id)
+            await self._relinquish_container(container_id, _memory_of(session))
             return
 
         if not await db.transition_session(
@@ -1437,11 +1799,7 @@ class SessionManager:
             # remove the container we just started, and do nothing else — no
             # running event, no supervision, no settlement side effects.
             logger.warning("session %s was cancelled during launch; removing its container", sid)
-            try:
-                await docker_engine.stop_container(container_id, timeout_s=5)
-                await docker_engine.remove_container(container_id)
-            except Exception:
-                logger.warning("could not remove the container of cancelled session %s", sid)
+            await self._relinquish_container(container_id, _memory_of(session))
             return
 
         await db.add_event(sid, EventKind.STATUS, {"status": "running", "branch": branch})
@@ -1519,6 +1877,8 @@ class SessionManager:
         continuing: bool = False,
         images: list[str] | None = None,
         notes: str = "",
+        egress_token: str = "",
+        sandboxed: bool = False,
     ) -> dict[str, str]:
         """The environment the untrusted agent phase runs with.
 
@@ -1573,6 +1933,21 @@ class SessionManager:
             # to anything else in the container that wants it.
             "LOGOS_SESSION_REPLY_FILE": f"/artifacts/{REPLY_FILE}",
         }
+        if sandboxed:
+            # Toolchains and downloads that outlive this session, kept per
+            # workspace on a volume of their own.
+            env["LOGOS_CACHE_DIR"] = "/cache"
+        if egress_token:
+            proxy = _proxy_url(settings.egress_proxy_url, int(session["id"]), egress_token)
+            gateway = urlsplit(settings.session_model_url).hostname or ""
+            # HTTPS goes through the allowlisting proxy, which refuses hosts
+            # the repository was not granted. Plain HTTP is not proxied at all
+            # (the proxy only tunnels HTTPS), so the model gateway, reached
+            # over plain HTTP, keeps its direct route even for a tool that
+            # ignores NO_PROXY.
+            bypass = ",".join(host for host in (gateway, "localhost", "127.0.0.1") if host)
+            env["HTTPS_PROXY"] = env["https_proxy"] = proxy
+            env["NO_PROXY"] = env["no_proxy"] = bypass
         if model:
             for key in (
                 "ANTHROPIC_MODEL",
@@ -1591,6 +1966,7 @@ class SessionManager:
         env: dict[str, str],
         workspace_volume: str,
         artifact_host_path: str,
+        cache_volume: str | None = None,
     ) -> int | None:
         """Run one trusted one-shot helper container to completion, remove it.
 
@@ -1644,6 +2020,7 @@ class SessionManager:
         self._helpers[session_id] = helper
         try:
             try:
+                memory_mb = await _session_memory_mb(session_id)
                 container_id = await docker_engine.create_session_container(
                     name=f"logos-agent-{phase}-{session_id}",
                     image=settings.workspace_image,
@@ -1655,6 +2032,10 @@ class SessionManager:
                     labels={"logos.agent.helper": phase},
                     ssh_known_hosts_host_path=known_hosts_host_path,
                     ssh_key_host_path=ssh_key_host_path,
+                    # Only verification reads the workspace cache, read-only;
+                    # credential-bearing helpers never mount it.
+                    cache_volume=cache_volume if phase == "verify" else None,
+                    memory_mb=memory_mb,
                 )
                 helper.container_id = container_id
             finally:
@@ -1695,12 +2076,19 @@ class SessionManager:
                 )
             return code
         finally:
-            self._helpers.pop(session_id, None)
-            if helper.container_id:
-                try:
-                    await docker_engine.remove_container(helper.container_id)
-                except Exception:
-                    logger.warning("could not remove %s helper container for session %s", phase, session_id)
+            remaining = helper.container_id
+            try:
+                if remaining:
+                    await docker_engine.remove_container(remaining)
+                    remaining = None
+            except Exception:
+                logger.warning("could not remove %s helper container for session %s", phase, session_id)
+            finally:
+                if self._helpers.get(session_id) is helper:
+                    self._helpers.pop(session_id)
+                    if remaining:
+                        # Cancellation has not assumed this helper's reservation.
+                        _release_in_background(_hold(memory_mb or settings.session_memory_mb), remaining)
 
     @staticmethod
     async def _what_it_printed(container_id: str, *, lines: int = 12) -> str:
@@ -1721,6 +2109,38 @@ class SessionManager:
         except Exception as exc:
             return f"(its output could not be read: {exc})"
         return " / ".join(kept)
+
+    @staticmethod
+    async def _push_environment(session: dict[str, Any]) -> dict[str, str]:
+        """Settle where a linked repository's session pushes, before its checkout.
+
+        The repository itself when the agent account may push to it, else the
+        account's own fork. Recorded on the row so that finalization, pull
+        request look-ups and later sessions agree on it.
+        """
+        handed_over = str(session.get("branch_name") or "")
+        if (
+            not _uses_repository_sandbox(session)
+            or session.get("no_push")
+            or str(session.get("trigger_kind") or "") == "analysis"
+            or not settings.session_github_token
+            # A pull request handed over keeps its own branch on the
+            # repository; a fork could never update it.
+            or (handed_over and not handed_over.startswith(settings.branch_prefix))
+        ):
+            return {}
+        with repository_context.scope(session):
+            target = await github.push_target(str(session["repo_slug"]), settings.github_login)
+        fork = "" if target.lower() == str(session["repo_slug"]).lower() else target
+        await db.update_session(int(session["id"]), push_repo_slug=fork or None)
+        session["push_repo_slug"] = fork or None
+        if fork:
+            await db.add_event(
+                int(session["id"]),
+                EventKind.LOG,
+                {"lines": [f"[github] the agent account cannot push to {session['repo_slug']}; using its fork {fork}"]},
+            )
+        return _fork_environment(fork)
 
     @staticmethod
     async def _continues_earlier_work(session: dict[str, Any], branch: str) -> bool:
@@ -1777,9 +2197,18 @@ class SessionManager:
             "LOGOS_SESSION_BRANCH": branch,
             "LOGOS_SESSION_BASE_BRANCH": workspace["base_branch"],
             "LOGOS_SESSION_PR_BASE_BRANCH": pr_base,
+            "LOGOS_SESSION_REPOSITORY_BRANCH": session.get("repo_base_branch") or "",
             "LOGOS_REPO_URL": session.get("repo_url") or settings.repo_url,
             "LOGOS_REPO_SLUG": session.get("repo_slug") or settings.repo_slug,
             "LOGOS_ARTIFACT_DIR": "/artifacts",
+            **(await self._push_environment(session)),
+            # A workspace that continues published agent work starts from
+            # that branch, which lives on the fork when the session uses one.
+            "LOGOS_SESSION_BASE_ON_FORK": (
+                "1"
+                if session.get("push_repo_slug") and str(workspace["base_branch"]).startswith(settings.branch_prefix)
+                else ""
+            ),
             # The account the session's commits belong to. The helper
             # configures git with it, and the finalizer refuses to push if
             # the token turns out to be somebody else's.
@@ -1814,7 +2243,7 @@ class SessionManager:
                 )
             else:
                 logger.info(
-                    "session %s linked analysis has no active deploy key; " "anonymous public checkout only",
+                    "session %s linked analysis has no active deploy key; anonymous public checkout only",
                     session["id"],
                 )
         elif is_analysis:
@@ -1936,9 +2365,18 @@ class SessionManager:
                 "LOGOS_SESSION_PHASE": "verify",
                 "LOGOS_VERIFICATION_PATHS": json.dumps(paths),
                 "LOGOS_VERIFICATION_TREE": tree,
+                **(
+                    {
+                        "LOGOS_VERIFICATION_MODE": "repository",
+                        "LOGOS_VERIFICATION_COMMAND": env.get("LOGOS_VERIFICATION_COMMAND", ""),
+                    }
+                    if env.get("LOGOS_VERIFICATION_MODE") == "repository"
+                    else {}
+                ),
             },
             workspace_volume=workspace["volume_name"],
             artifact_host_path=artifact_host_path,
+            cache_volume=cache_volume_for(workspace) if _uses_repository_sandbox(row) else None,
         )
         output = self._last_helper_output.pop(session_id, "")
         status = "passed" if code == 0 else "failed"
@@ -1957,6 +2395,45 @@ class SessionManager:
             "LOGOS_SESSION_VERIFICATION": status,
             "LOGOS_SESSION_VERIFICATION_OUTPUT": output[-4000:],
         }
+
+    async def _claimed_issues(self, session_id: int, session: dict[str, Any]) -> list[str]:
+        """Issues the agent asks its pull request to close, that are its own to close.
+
+        The agent names them in ``closes.txt``; a name alone is not an
+        authorization, so only open issues currently assigned to the agent
+        account are kept — the ones it was given or claimed through the
+        repository's own process.
+        """
+        try:
+            text = read_artifact_text(artifact_dir(session_id), CLOSES_FILE, limit=4096)
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            logger.info("could not read the issues session %s wants to close: %s", session_id, exc)
+            return []
+        numbers = list(dict.fromkeys(re.findall(r"#?(\d{1,9})\b", text)))[:50]
+        kept: list[str] = []
+        with repository_context.scope(session):
+            for number in numbers:
+                try:
+                    issue = await github.issue_summary(int(number))
+                except github.GitHubError as exc:
+                    logger.info("session %s: could not read #%s: %s", session_id, number, exc)
+                    continue
+                login = settings.github_login.lower()
+                if (
+                    not issue["is_pull_request"]
+                    and issue["state"] == "open"
+                    and login in {assignee.lower() for assignee in issue["assignees"]}
+                ):
+                    kept.append(number)
+                else:
+                    await db.add_event(
+                        session_id,
+                        EventKind.LOG,
+                        {"lines": [f"[github] not closing #{number}: it is not an open issue assigned to {login}"]},
+                    )
+        return kept
 
     async def _finalize(self, session_id: int) -> bool:
         """Phase three: commit, push, and open the pull request, if asked.
@@ -2001,9 +2478,12 @@ class SessionManager:
         # number to give; anything else leaves the body empty.
         closes = ""
         if session.get("open_pull_request") and session.get("trigger_kind") == "issue":
-            number = str(session.get("trigger_ref") or "").removeprefix("issue-")
+            number = repository_context.local_ref(str(session.get("trigger_ref") or "")).removeprefix("issue-")
             if number.isdigit():
                 closes = number
+        if session.get("open_pull_request") and _uses_repository_sandbox(session):
+            claimed = await self._claimed_issues(session_id, session)
+            closes = ",".join(dict.fromkeys([*([closes] if closes else []), *claimed]))
         env = {
             "LOGOS_SESSION_PHASE": "finalize",
             "LOGOS_SESSION_ID": str(session_id),
@@ -2018,10 +2498,11 @@ class SessionManager:
             "LOGOS_SESSION_CLOSES": closes,
             # Who to ask for a review when this session opens (or reuses) a
             # pull request. Empty means nobody beyond CODEOWNERS.
-            "LOGOS_SESSION_PR_REVIEWERS": ",".join(settings.pr_reviewers),
+            "LOGOS_SESSION_PR_REVIEWERS": "" if session.get("repo_slug") else ",".join(settings.pr_reviewers),
             "LOGOS_REPO_URL": session.get("repo_url") or settings.repo_url,
             "LOGOS_REPO_SLUG": session.get("repo_slug") or settings.repo_slug,
             "LOGOS_ARTIFACT_DIR": "/artifacts",
+            **_fork_environment(session.get("push_repo_slug")),
             "LOGOS_AGENT_GITHUB_LOGIN": settings.github_login,
             # Whether this session's work may include CI workflow files. With
             # a separate session token GitHub decides — a token without
@@ -2034,7 +2515,13 @@ class SessionManager:
             # sentence about the request beats a commit titled after the
             # first line of its task.
             "LOGOS_SESSION_SUBJECT": _fallback_subject(session),
+            # The model disclosure the pull request description ends with;
+            # written by the runner so the agent cannot change it.
+            "LOGOS_SESSION_DISCLOSURE": _footer(session_id, session),
         }
+        if session.get("repo_slug"):
+            env["LOGOS_VERIFICATION_MODE"] = "repository"
+            env["LOGOS_VERIFICATION_COMMAND"] = session.get("verification_command") or ""
         if settings.session_github_token:
             env["GITHUB_TOKEN"] = settings.session_github_token
             env["GH_TOKEN"] = settings.session_github_token
@@ -2104,6 +2591,56 @@ class SessionManager:
         self._supervisors[session_id] = task
         task.add_done_callback(lambda _t: self._supervisors.pop(session_id, None))
 
+    @staticmethod
+    def _publish_active_origin(session_id: int, origin: float) -> None:
+        # Only the runner writes this directory. An immutable origin between
+        # transitions lets tool hooks measure active seconds without runner RPCs.
+        path = state_dir(session_id) / "active-origin"
+        try:
+            value = str(origin)
+            if path.exists() and path.read_text() == value:
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.parent.chmod(0o755)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(value)
+            temporary.chmod(0o644)  # NOSONAR - visible on the read-only state mount
+            temporary.replace(path)
+        except OSError as exc:
+            logger.debug("Cannot publish the active clock of session %s: %s", session_id, exc)
+
+    @staticmethod
+    async def _collect_activity(session_id: int, row: dict | None = None) -> None:
+        try:
+            data = json.loads(read_artifact_text(artifact_dir(session_id), "activity.json", limit=1024))
+            if not isinstance(data, dict):
+                return
+            count = data.get("subagent_count")
+            if type(count) is not int or not 0 < count < 2**31 or count <= ((row or {}).get("subagent_count") or 0):
+                count = None
+            percent, elapsed, stamp = (
+                data.get(key) for key in ("progress_percent", "progress_active_s", "progress_reported_us")
+            )
+            reported = None
+            if (
+                type(percent) is int
+                and 0 <= percent <= 100
+                and type(elapsed) is int
+                and 0 <= elapsed <= 2**31
+                and type(stamp) is int
+                and 0 < stamp <= (time.time() + 5) * 1_000_000
+            ):
+                timestamp = datetime.fromtimestamp(stamp / 1_000_000, timezone.utc)
+                previous = (row or {}).get("progress_reported_at")
+                if previous is None or previous < timestamp:
+                    reported = timestamp
+            if count is not None or reported is not None:
+                await db.record_session_activity(session_id, count, percent, elapsed, reported)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.debug("Cannot collect activity for session %s: %s", session_id, exc)
+
     async def _supervise_session(self, session_id: int, container_id: str) -> None:
         """Follow a container to its end, persisting its output as it goes.
 
@@ -2157,6 +2694,9 @@ class SessionManager:
                 # we wait on Docker; stop here so occupancy can free cleanly.
                 row = await db.get_session(session_id)
                 if row is not None:
+                    if row.get("active_since") and state == "running":
+                        self._publish_active_origin(session_id, row["active_since"].timestamp() - row["active_seconds"])
+                    await self._collect_activity(session_id, row)
                     status_now = str(row.get("status") or "")
                     err_now = str(row.get("error") or "")
                     if status_now == SessionStatus.CANCELLED.value or err_now.startswith("cancel_requested:"):
@@ -2302,6 +2842,8 @@ class SessionManager:
         request has had its three goes": the first is worth waiting for, the
         second would keep a settled session owing an answer forever.
         """
+        if session.get("trigger_kind") in {"security-analysis", "security-fix"}:
+            return False
         ref = str(session.get("trigger_ref") or "")
         if not ref:
             return False
@@ -2329,6 +2871,10 @@ class SessionManager:
         minutes would otherwise forget the pull request entirely; the row
         says the follow-up is owed, and any later pass can pick it up.
         """
+        # Security work can target other repositories and owns its assessment
+        # lifecycle. The general watcher uses the runner's default repository.
+        if session.get("trigger_kind") in {"security-analysis", "security-fix"}:
+            return
         branch = str(session.get("branch_name") or "")
         if not branch or not session.get("trigger_ref"):
             # A session queued by a person is that person's to follow up.
@@ -2419,7 +2965,8 @@ class SessionManager:
             logger.info("could not close the check watch of session %s: %s", session_id, exc)
 
     async def _take_up_a_red_build(self, session: dict[str, Any], branch: str, pushed_sha: str) -> None:
-        status, detail = await github.wait_for_checks(pushed_sha)
+        with repository_context.scope(session):
+            status, detail = await github.wait_for_checks(pushed_sha)
         if status == "timeout":
             # Not an answer. The checks may still be running, or may never
             # have been queued; either way there is no failure to fix, and
@@ -2458,6 +3005,8 @@ class SessionManager:
 
         Returns the new session's id, or None when it was not taken up.
         """
+        if session.get("trigger_kind") in {"security-analysis", "security-fix"}:
+            return None
         ref = str(session.get("trigger_ref") or "")
         if ref:
             try:
@@ -2492,6 +3041,10 @@ class SessionManager:
                 repo_url=session.get("repo_url"),
                 repo_slug=session.get("repo_slug"),
                 team_repository_id=session.get("team_repository_id"),
+                verification_command=session.get("verification_command"),
+                repo_base_branch=session.get("repo_base_branch"),
+                retry_analysis_session_id=session.get("id") if session.get("trigger_kind") == "analysis" else None,
+                point_workspace_at=resumption_base(session),
             )
         except Exception as exc:
             logger.warning("could not take session %s up again: %s", session.get("id"), exc)
@@ -2517,7 +3070,22 @@ class SessionManager:
             logger.info("could not react on %s: %s", target, exc)
 
     async def _settle(self, session_id: int, *, exit_code: int | None, error: str | None) -> None:
-        """Record the outcome of a finished session and clean up after it."""
+        """Record the outcome of a finished session and clean up after it.
+
+        The row stops counting in the memory budget when it reaches its
+        final state, which can be before its container has stopped (a
+        supervision error settles a container that may still run). Its
+        memory is held until the container is seen stopped.
+        """
+        # A request written just before the agent exited — a release note on
+        # an issue it gave up — is still carried out.
+        try:
+            finished = await db.get_session(session_id)
+            if finished and finished.get("status") == SessionStatus.RUNNING.value:
+                await self.serve_github_requests([finished])
+        except Exception as exc:
+            logger.info("could not look for last GitHub requests of session %s: %s", session_id, exc)
+        await self._collect_activity(session_id)
         if exit_code == 0 and not error:
             # A clean agent exit is not yet a finished session: the agent
             # phase carried no GitHub credential, so the trusted finalizer
@@ -2591,30 +3159,39 @@ class SessionManager:
         if result.get("pr_url"):
             fields["pr_url"] = str(result["pr_url"])
 
-        moved = await db.transition_session(
-            session_id,
-            SessionStatus.SUCCEEDED if succeeded else SessionStatus.FAILED,
-            **fields,
-        )
-        if not moved:
-            # A competing actor reached the terminal row first — most often a
-            # cancel winning against a settlement that restart reconciliation
-            # kicks off for an exited container. The session already belongs
-            # to that actor: give the container back, but emit no status
-            # event, dispatch no deploy, and take no screenshots for a
-            # session whose state is already final.
-            logger.warning(
-                "settlement of session %s lost the race to another transition; only cleaning up",
-                session_id,
+        # The finalizing row covers its helpers. Transfer the agent's memory just
+        # before the terminal transition, including on a supervision error.
+        row = await db.get_session(session_id)
+        container_id = (row or {}).get("container_id")
+        token = _hold(_memory_of(row)) if container_id else None
+        try:
+            moved = await db.transition_session(
+                session_id, SessionStatus.SUCCEEDED if succeeded else SessionStatus.FAILED, **fields
             )
-            await self._cleanup_container(session_id)
-            return
+            if moved:
+                await self._record_outcome(session_id, succeeded, fields, result)
+            else:
+                logger.warning("settlement of session %s lost the terminal transition; only cleaning up", session_id)
+            if await self._cleanup_container(session_id) == container_id:
+                container_id = None  # Removal confirmed. Screenshots may use this memory immediately.
+        finally:
+            _release_in_background(token, container_id)
+
+        if moved and succeeded:
+            # Keep dispatch, the wait for that deployment and its screenshots together.
+            async with self._deploy_screenshot_lock:
+                deploy, after_run_id = await self._maybe_deploy(session_id, result)
+                await self._capture_screenshots(session_id, deploy, after_run_id)
+
+    async def _record_outcome(
+        self, session_id: int, succeeded: bool, fields: dict[str, Any], result: dict[str, Any]
+    ) -> None:
         await db.add_event(
             session_id,
             EventKind.STATUS,
             {
                 "status": "succeeded" if succeeded else "failed",
-                "exit_code": exit_code,
+                "exit_code": fields["exit_code"],
                 "error": fields.get("error"),
             },
         )
@@ -2673,25 +3250,6 @@ class SessionManager:
         # waiting.
         await self._post_reply(session_id)
 
-        deploy: str | None = None
-        after_run_id: int | None = None
-        if succeeded:
-            # Hold the shared-environment lock across the whole
-            # dispatch-to-screenshot sequence, so a second settling session
-            # cannot dispatch in the middle of this one's wait or photograph
-            # this one's deploy (see the lock in __init__).
-            async with self._deploy_screenshot_lock:
-                deploy, after_run_id = await self._maybe_deploy(session_id, result)
-
-                # Give the container back before the post-deploy wait: a
-                # deploy can take minutes, and the capacity a session holds
-                # is worth reclaiming without waiting for its screenshots.
-                await self._cleanup_container(session_id)
-
-                await self._capture_screenshots(session_id, deploy, after_run_id)
-        else:
-            await self._cleanup_container(session_id)
-
     @staticmethod
     async def _still_wanted(workspace: dict[str, Any]) -> bool:
         """Whether a workspace belongs to work that is not finished yet.
@@ -2709,7 +3267,8 @@ class SessionManager:
         if not branch or branch in settings.protected_branches:
             return False
         try:
-            pull = await github.open_pull_request_for(branch)
+            with repository_context.scope(workspace):
+                pull = await github.open_pull_request_for(branch)
         except Exception:
             logger.info("keeping workspace '%s': its pull request could not be looked up", workspace.get("name"))
             return True
@@ -2752,6 +3311,7 @@ class SessionManager:
             # would leave a volume nothing knows about.
             try:
                 await docker_engine.remove_volume(str(volume), force=True)
+                await docker_engine.remove_volume(cache_volume_for(workspace), force=True)
             except Exception as exc:
                 logger.warning("could not remove the volume of finished workspace '%s': %s", name, exc)
                 continue
@@ -2789,8 +3349,12 @@ class SessionManager:
             await self._post_reply_once(session_id)
 
     async def _post_reply_once(self, session_id: int) -> None:
-        """The body of :meth:`_post_reply`, run with the reply lock held."""
         session = await db.get_session(session_id)
+        with repository_context.scope(session):
+            await self._post_repository_reply(session_id, session)
+
+    async def _post_repository_reply(self, session_id: int, session: dict[str, Any] | None) -> None:
+        """The body of :meth:`_post_reply`, run with the reply lock held."""
         target = str((session or {}).get("reply_target") or "")
         if not target:
             return
@@ -2856,7 +3420,9 @@ class SessionManager:
         try:
             url = ""
             if not await github.pull_review_contains(number, marker):
-                url = await github.create_pull_review(number, review_body, comments, commit_id=commit_id)
+                url = await github.create_pull_review(
+                    number, review_body, comments, commit_id=commit_id, footer=_footer(session_id, session)
+                )
         except github.GitHubError as exc:
             if exc.status == 422:
                 logger.info("session %s: GitHub refused the inline comments, posting them as text: %s", session_id, exc)
@@ -2996,7 +3562,7 @@ class SessionManager:
                         logger.info("session %s found its answer chunk %s already at %s", session_id, index, target)
                         continue
                 chunk += "\n\n" + marker
-                url = await self._send_reply(target, chunk)
+                url = await self._send_reply(target, chunk, footer=_footer(session_id, session))
         except Exception as exc:
             # Counted, not given up on: the next scheduler pass resumes
             # after the chunks whose marks it finds, and tries again until
@@ -3135,7 +3701,9 @@ class SessionManager:
         goes, so an attempt that dies halfway resumes instead of answering
         a thread twice.
         """
-        reference = re.fullmatch(r"pr-(\d+)-review-(\d+)", str(session.get("trigger_ref") or ""))
+        reference = re.fullmatch(
+            r"pr-(\d+)-review-(\d+)", repository_context.local_ref(str(session.get("trigger_ref") or ""))
+        )
         ask = re.fullmatch(r"issue:(\d+)", target)
         if reference is None or ask is None or reference.group(1) != ask.group(1):
             # A review session whose row does not name the review it
@@ -3239,7 +3807,7 @@ class SessionManager:
                 logger.info("session %s found its answer to comment %s already in the thread", session_id, comment_id)
                 continue
             body = self._truncate_reply(per_comment[comment_id]) + "\n\n" + marker
-            url = await github.reply_to_review_comment(number, comment_id, body)
+            url = await github.reply_to_review_comment(number, comment_id, body, footer=_footer(session_id, session))
             state["replied"].append(comment_id)
             self._write_review_reply_state(state_path, state)
             await db.add_event(session_id, EventKind.PULL_REQUEST, {"url": url, "reply": True, "comment": comment_id})
@@ -3259,7 +3827,9 @@ class SessionManager:
                 self._write_review_reply_state(state_path, state)
                 logger.info("session %s found its summary already on pull request %s", session_id, number)
             else:
-                url = await github.post_issue_comment(number, self._truncate_reply(summary) + "\n\n" + marker)
+                url = await github.post_issue_comment(
+                    number, self._truncate_reply(summary) + "\n\n" + marker, footer=_footer(session_id, session)
+                )
                 state["summary_posted"] = True
                 self._write_review_reply_state(state_path, state)
                 await db.add_event(session_id, EventKind.PULL_REQUEST, {"url": url, "reply": True})
@@ -3367,7 +3937,7 @@ class SessionManager:
         path.write_text(json.dumps(state))
 
     @staticmethod
-    async def _send_reply(target: str, body: str) -> str:
+    async def _send_reply(target: str, body: str, *, footer: str) -> str:
         """Post one answer where its question was asked.
 
         ``target`` is what the trigger recorded: ``issue:<n>`` for a thread,
@@ -3377,10 +3947,10 @@ class SessionManager:
         """
         kind, _, rest = target.partition(":")
         if kind == "issue":
-            return await github.post_issue_comment(int(rest), body)
+            return await github.post_issue_comment(int(rest), body, footer=footer)
         if kind == "review_comment":
             number, _, comment_id = rest.partition(":")
-            return await github.reply_to_review_comment(int(number), int(comment_id), body)
+            return await github.reply_to_review_comment(int(number), int(comment_id), body, footer=footer)
         raise ValueError(f"unknown reply target '{target}'")
 
     def _read_result(self, session_id: int) -> dict[str, Any]:
@@ -3417,6 +3987,8 @@ class SessionManager:
         session's.
         """
         session = await db.get_session(session_id)
+        if session and session.get("repo_slug"):
+            return None, None
         if not session or not session.get("deploy_to_dev"):
             return None, None
         if not settings.deploy_enabled:
@@ -3557,6 +4129,26 @@ class SessionManager:
         for name in await self._take_screenshots(session_id, paths):
             await db.add_event(session_id, EventKind.SCREENSHOT, {"name": name})
 
+    async def _hold_memory(self, memory_mb: int, *, timeout_s: float = 600, poll_s: float = 10) -> object | None:
+        """Reserve memory for a container that runs after its session settled.
+
+        Taken under the admission lock, so a session admitted at the same
+        moment counts it. Waits while the budget is full and gives up after
+        ``timeout_s``.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        while True:
+            async with self._admission_lock:
+                budget = memory_budget.current()
+                if budget is None or not budget.admission_block(
+                    reserved_mb=await reserved_memory_mb(), session_mb=memory_mb
+                ):
+                    return _hold(memory_mb)
+            if loop.time() >= deadline:
+                return None
+            await asyncio.sleep(poll_s)
+
     async def _wait_dev_ready(self, *, timeout_s: float = 5 * 60, poll_s: float = 5.0) -> bool:
         """Wait until the dev environment serves the freshly deployed revision.
 
@@ -3596,9 +4188,18 @@ class SessionManager:
             Path(await docker_engine.volume_mountpoint(settings.artifact_volume)) / str(session_id)
         )
 
+        memory = await _session_memory_mb(session_id) or settings.session_memory_mb
         taken: list[str] = []
         for index, path in enumerate(paths[:10]):
             name = f"{index:02d}-{re.sub(r'[^a-zA-Z0-9]+', '-', path).strip('-') or 'page'}.png"
+            token = await self._hold_memory(memory)
+            if token is None:
+                await db.add_event(
+                    session_id,
+                    EventKind.SCREENSHOT,
+                    {"status": "skipped", "reason": "the memory budget had no room for the screenshot container"},
+                )
+                break
             container_id: str | None = None
             try:
                 container_id = await docker_engine.create_screenshot_container(
@@ -3608,6 +4209,7 @@ class SessionManager:
                     output_path=f"/artifacts/screenshots/{name}",
                     artifact_host_path=artifact_host_path,
                     session_id=session_id,
+                    memory_mb=memory,
                 )
                 await docker_engine.start_container(container_id)
                 exit_code = await docker_engine.wait_container(container_id, timeout_s=180)
@@ -3618,25 +4220,23 @@ class SessionManager:
             except Exception as exc:
                 logger.warning("screenshot of %s%s failed: %s", base, path, exc)
             finally:
-                if container_id:
-                    try:
-                        await docker_engine.remove_container(container_id)
-                    except Exception:
-                        logger.warning("could not remove the screenshot container for session %s", session_id)
+                await _remove_held_container(token, container_id)
         return taken
 
-    async def _cleanup_container(self, session_id: int) -> None:
+    async def _cleanup_container(self, session_id: int) -> str | None:
         session = await db.get_session(session_id)
         container_id = (session or {}).get("container_id")
         if container_id:
             try:
                 await docker_engine.remove_container(container_id)
+                return container_id
             except Exception:
                 # Another actor (usually the cancel this cleanup races) may
                 # already have removed it.
                 logger.debug("could not remove the container of session %s", session_id)
+        return None
 
-    async def _relinquish_container(self, container_id: str) -> None:
+    async def _relinquish_container(self, container_id: str, memory_mb: int) -> None:
         """Give a container back that a lost transition no longer owns.
 
         Called when restart reconciliation loses a recovered session's
@@ -3646,81 +4246,67 @@ class SessionManager:
         the stop-and-remove happens here: a credential-bearing agent must
         not outlive the row that manages it.
         """
+        token = _hold(memory_mb)
         try:
             await docker_engine.stop_container(container_id)
         except Exception:
-            # Already exited or removed: only the removal below can still
-            # matter.
-            pass
-        try:
-            await docker_engine.remove_container(container_id)
-        except Exception:
-            logger.warning("could not remove the relinquished container %s", container_id)
+            logger.debug("could not stop relinquished container %s before removal", container_id)
+        finally:
+            await _remove_held_container(token, container_id)
 
     # --- operator actions -------------------------------------------------
 
     async def cancel(self, session_id: int) -> bool:
-        session = await db.get_session(session_id)
-        if session is None:
-            return False
-        status = SessionStatus(session["status"])
-        if status in (SessionStatus.SUCCEEDED, SessionStatus.FAILED, SessionStatus.CANCELLED):
-            return False
+        while session := await db.get_session(session_id):
+            status = SessionStatus(session["status"])
+            if status in TERMINAL_STATUSES:
+                return False
+            # The claim writes starting and memory_mb together. Compare the status
+            # under the row lock so a concurrent claim forces a fresh reservation.
+            token = _hold(_memory_of(session)) if status != SessionStatus.QUEUED else None
+            container_id = session.get("container_id")
+            helper = None
+            launch = None
+            try:
+                moved = await db.transition_session(
+                    session_id, SessionStatus.CANCELLED, expected_status=status, finished_at=datetime.now(timezone.utc)
+                )
+                if not moved:
+                    _release(token)
+                    token = None
+                    continue
 
-        container_id = session.get("container_id")
-        # Claim the terminal state before any container I/O: stopping the
-        # container is what produces the exit the supervisor settles, and
-        # that settle must lose this race — otherwise the cancellation lands
-        # as FAILED or SUCCEEDED, complete with the deploy and screenshot
-        # side effects of a finished session.
-        moved = await db.transition_session(session_id, SessionStatus.CANCELLED, finished_at=datetime.now(timezone.utc))
-        if not moved:
-            return False
+                # Mark the launch and capture its current helper before yielding.
+                launch = self._launches.get(session_id)
+                if launch is not None:
+                    launch.cancelled = True
+                helper = self._helpers.pop(session_id, None)
+                try:
+                    await db.add_event(session_id, EventKind.STATUS, {"status": "cancelled"})
+                finally:
+                    await self._stop_cancelled_session(session_id, container_id, helper, launch)
+                return True
+            finally:
+                _release_in_background(token, container_id, helper, launch)
+        return False
 
-        # Mark an in-flight launch in the same step as the transition, before
-        # any further await: from here on the launch observes the
-        # cancellation at its next phase boundary and starts nothing. Every
-        # await between the transition and this line would be another
-        # scheduling point in which a racing launch could still reach a
-        # container. Marked, not removed, because a launch that has not
-        # started yet has to find this record rather than take a fresh,
-        # uncancelled one — its own cleanup removes it, and so does the wait
-        # below.
-        launch = self._launches.get(session_id)
-        if launch is not None:
-            launch.cancelled = True
-        await db.add_event(session_id, EventKind.STATUS, {"status": "cancelled"})
+    async def _stop_cancelled_session(
+        self, session_id: int, container_id: str | None, helper: _Helper | None, launch: _Launch | None
+    ) -> None:
         # The credential-bearing helper first: a finalizer mid-push would
         # otherwise keep committing, pushing, or opening a pull request after
         # the API has already reported the session cancelled. It is tracked
         # per session rather than read from the supervisor because restart
         # reconciliation finalizes without one.
-        helper = self._helpers.pop(session_id, None)
         if helper is not None:
-            # Wait for the create to settle before anything else: a cancel
-            # that lands while the create request is in flight must not
-            # report success before the credential-bearing container is
-            # known to exist — and the helper must never start one.
-            await helper.created.wait()
-            if helper.container_id is not None:
-                # Wait for the in-flight start to settle before stopping: a
-                # stop that lands first is a 304 no-op, and the pending
-                # start would complete after this returns — a
-                # credential-bearing container, running, with no one left
-                # to stop it. Settled, the stop is a real stop (or a 304
-                # for a container the helper was cancelled before starting,
-                # which is the desired state), and the force-remove after
-                # it makes the cancellation final, so a success here can
-                # never be followed by a running helper. The helper's own
-                # cleanup removes the container as well; it tolerates the
-                # one that is already gone.
-                await helper.started.wait()
+            helper_id = await helper.started_container()
+            if helper_id:
                 try:
-                    await docker_engine.stop_container(helper.container_id, timeout_s=5)
+                    await docker_engine.stop_container(helper_id, timeout_s=5)
                 except Exception:
                     logger.warning("could not stop the helper of cancelled session %s", session_id)
                 try:
-                    await docker_engine.remove_container(helper.container_id)
+                    await docker_engine.remove_container(helper_id)
                 except Exception:
                     logger.warning("could not remove the helper of cancelled session %s", session_id)
         if launch is not None:
@@ -3764,7 +4350,8 @@ class SessionManager:
                 await docker_engine.remove_container(container_id)
             except Exception:
                 logger.warning("could not remove the container of cancelled session %s", session_id)
-        return True
+
+        await self._collect_activity(session_id)
 
 
 manager = SessionManager()

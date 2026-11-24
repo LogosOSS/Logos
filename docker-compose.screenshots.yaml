@@ -34,7 +34,7 @@ services:
       - doks-internal
 
   logos-doks-keycloak:
-    image: quay.io/keycloak/keycloak:26.8
+    image: quay.io/keycloak/keycloak:26.8.2-3@sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3
     container_name: doks-keycloak
     restart: unless-stopped
     command: ["start-dev", "--import-realm", "--health-enabled=true"]

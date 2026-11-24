@@ -11,6 +11,18 @@ export type AgentSessionStatus =
 export type AgentEventKind =
   'log' | 'status' | 'pull_request' | 'deploy' | 'screenshot' | 'capacity' | 'error';
 
+export interface AgentMessage {
+  id: string;
+  actor: string;
+  text: string;
+  truncated: boolean;
+}
+
+export interface SessionMessages {
+  messages: AgentMessage[];
+  omitted: number;
+}
+
 export interface AgentWorkspace {
   id: number;
   name: string;
@@ -40,12 +52,24 @@ export interface AgentSession {
   tokens_out: number;
   /** What the agent reported spending, in US dollars. */
   cost_usd: number;
+  memory_mb?: number | null;
+  memory_current_bytes?: number | null;
+  memory_peak_bytes?: number | null;
+  subagent_count?: number | null;
+  progress_percent?: number | null;
+  progress_active_s?: number | null;
+  progress_reported_at?: string | null;
+  active_seconds?: number;
+  active_since?: string | null;
   screenshot_count: number;
   /** Set when the runner queued this session itself: 'issue' or 'review'. */
   trigger_kind: string | null;
   /** Which event it reacted to, e.g. 'issue'.*/
   trigger_ref: string | null;
-  /** For a repository analysis: the linked repository (owner/name). */
+  /**
+   * The linked team repository (owner/name) the session works on or
+   * analyses; null for a session on the platform repository.
+   */
   repo_slug?: string | null;
   /** For a repository analysis: the team that linked the repository. */
   team_name?: string | null;
@@ -108,9 +132,21 @@ export interface AgentControls {
   admits_new_sessions: boolean;
   /** The ceiling in force right now. */
   max_parallel: number;
-  /** Null when the deployment's configured ceiling applies. */
+  /** Null when the ceiling is the maximum the memory budget allows. */
   max_parallel_override: number | null;
   max_parallel_configured: number;
+  /** The most sessions at once with the current memory per session. */
+  max_parallel_available: number;
+  /** The memory limit of a session started now, in MiB. */
+  session_memory_mb: number;
+  /** Null when the deployment's default memory per session applies. */
+  session_memory_override: number | null;
+  session_memory_configured: number;
+  /** The memory all sessions together may use, in MiB; null without a budget. */
+  memory_budget_mb: number | null;
+  host_memory_mb: number | null;
+  /** What running, paused and starting sessions have reserved, in MiB. */
+  memory_reserved_mb: number;
   updated_by: string;
 }
 
@@ -143,6 +179,23 @@ export interface CreateSessionRequest {
   open_pull_request: boolean;
   deploy_to_dev: boolean;
   screenshot_paths: string[];
+  /** A linked team repository to work on; null works on the platform repository. */
+  team_repository_id?: number | null;
+}
+
+/** A linked team repository with the coding agent enabled. */
+export interface AgentRepository {
+  id: number;
+  team_id: number;
+  repo_slug: string;
+  branch: string;
+  verification_command: string | null;
+  /** HTTPS hosts sessions for this repository may reach; empty means no internet. */
+  agent_egress_hosts: string[];
+  /** Whether sessions may reach any public HTTPS host instead of only the listed ones. */
+  agent_egress_unrestricted: boolean;
+  /** Whether the agent may comment on issues and pull requests during a session. */
+  agent_may_comment: boolean;
 }
 
 /** Sessions in these states still hold a container and a workspace. */

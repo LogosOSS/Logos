@@ -122,7 +122,7 @@ class LatencyStore:
         """Record an observed load / wake duration for a (model, node, tier)."""
         if tier in _ZERO_TIERS or tier == ReadinessTier.UNAVAILABLE:
             return
-        if duration_s < _MIN_PLAUSIBLE_S:
+        if not math.isfinite(duration_s) or duration_s < _MIN_PLAUSIBLE_S:
             return
         key = (model_name, int(provider_id), tier)
         with self._lock:
@@ -156,7 +156,7 @@ class LatencyStore:
 
     def record_e2e_latency(self, model_name: str, provider_id: int, e2e_s: float) -> None:
         """Record an observed end-to-end request latency for a (model, provider)."""
-        if e2e_s < _MIN_PLAUSIBLE_S:
+        if not math.isfinite(e2e_s) or e2e_s <= 0:
             return
         key = (model_name, int(provider_id))
         with self._lock:
@@ -177,9 +177,11 @@ class LatencyStore:
                            when the worker reports delta_tokens / delta_requests.
         The scheduler later estimates prefill cost as  rate × current_input_tokens.
         """
-        if input_tokens <= 0 or duration_s < _MIN_PLAUSIBLE_S:
+        if not math.isfinite(input_tokens) or not math.isfinite(duration_s) or input_tokens <= 0 or duration_s <= 0:
             return
         rate = duration_s / input_tokens
+        if not math.isfinite(rate):
+            return
         key = (model_name, int(provider_id))
         with self._lock:
             state = self._prefill_s_per_token.get(key)

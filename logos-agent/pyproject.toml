@@ -4,17 +4,17 @@ version = "0.1.0"
 description = "Runs coding agents in isolated containers on capacity Logos is not otherwise using"
 requires-python = ">=3.13,<4.0"
 dependencies = [
-    "fastapi[standard]==0.162.2",
+    "fastapi[standard]==0.165.0",
     # Pinned explicitly: starlette arrives transitively through fastapi.
     "starlette==1.10.0",
     "uvicorn[standard]==0.54.0",
     "httpx==0.28.1",
-    "sqlalchemy[asyncio]==2.1.8",
+    "sqlalchemy[asyncio]==2.1.9",
     "asyncpg==0.32.0",
-    "pydantic==2.14.3",
+    "pydantic==2.14.4",
     "pyjwt[crypto]==2.15.1",
     # Security floors for transitive packages (fastapi[standard] / httpx).
-    "certifi==2026.10.23",
+    "certifi==2026.11.20",
     "dnspython==2.9.2",
     # The exporter requires the matching opentelemetry-sdk release, which in
     # turn pins opentelemetry-api exactly. Declaring only the exporter keeps
@@ -26,9 +26,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest==9.2.0",
-    "pytest-asyncio==1.4.1.post1",
+    "pytest-asyncio==1.5.0",
     # Coverage of the test run, imported by the SonarQube Cloud analysis.
-    "coverage[toml]==7.17.2",
+    "coverage[toml]==7.17.4",
     "black==26.10.1",
     "flake8==7.5.0",
     "isort==9.0.2",

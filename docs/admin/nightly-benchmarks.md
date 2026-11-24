@@ -5,9 +5,7 @@ title: Nightly Benchmarks
 # Nightly Benchmarks
 
 Logos admins enable or disable a nightly schedule for each model/worker pair on
-**Model Details → Performance**. Both actions require confirmation. Schedules
-show the model and concrete parameter values to be tested, in the
-**Run benchmark** view with its manual benchmark editor. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
+**Model Details → Performance**. Select **Benchmarks → Manage** to inspect the schedule and parameter values for a worker. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
 settings; the scheduler builds the plan again when the nightly run starts.
 
 Schedules are off by default and persist in PostgreSQL. The nightly plan is independent
@@ -17,29 +15,33 @@ restores the worker before it returns to production.
 ## Enable, Inspect and Disable a Schedule
 
 See the [illustrated admin walkthrough](../roles/logos-admin.md#nightly-benchmarks)
-for screenshots of the plan and both confirmation dialogs.
+for screenshots of the plan and schedule controls.
 
-![Manual benchmark controls and active nightly test plan](../static/img/roles/logos-admin-nightly-benchmarks.png)
+![Run a benchmark and compact nightly status](../static/img/roles/logos-admin-nightly-benchmarks.png)
+
+Select **Manage** beside the intended worker to inspect its workload, schedule and results.
+
+![Nightly management with the schedule and test plan](../static/img/roles/logos-admin-nightly-plan.png)
 
 1. Sign in as a Logos Admin and open **Models**.
 2. Open the model's **Model Details → Performance** tab.
 3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Expand **Schedule and test plan**.
-5. Select **Enable nightly runs…**, then confirm **Enable nightly runs**.
+4. Select **Manage** and review the time window and request workload.
+5. Select **Enable nightly runs**. The dialog explains any missing prerequisite.
 6. Check that the card shows **Enabled · in nightly rotation**.
 
 The schedule persists after a page reload or browser close. To remove the pair
-from rotation, select **Disable nightly runs…** and confirm **Disable nightly runs**.
-Cancelling either dialog leaves the saved state unchanged. Activation requires
+from rotation, select **Manage → Disable nightly runs…** and confirm **Disable nightly runs**.
+Activation requires
 an updated, connected worker. Run admission also checks the lane and the other
 available workers.
 
-The card shows a plan for this pair, not a guaranteed reservation for tonight.
-The scheduler selects eligible pairs at runtime. Use **Manual benchmark** for the dataset editor and question previews.
+Select **Manage** to inspect the plan for this pair. The plan does not guarantee a reservation for tonight.
+The scheduler selects eligible pairs at runtime. Use **Run a benchmark** for the dataset editor and question previews.
 These controls configure manual runs. They do not alter the nightly workload.
 
-The next day, expand **Latest round results** and inspect each configuration's
-outcome, attempt and benchmark ID. Use the performance comparison below for
+The next day, select **Manage**, then expand **Latest round results** and inspect each configuration's
+outcome, attempt and benchmark ID. Use **Overview** or **Analysis** for
 successful measurements. A finished plan can contain failed configurations;
 review individual outcomes before comparing throughput.
 
@@ -54,11 +56,11 @@ Select **Run**, **Measured from → to**, **Before**, **After** or **Change** to
 Each sort control cycles through the initial order, ascending order and descending order.
 The third selection restores the initial order. Missing measurements remain last.
 A dash means the value or baseline is unavailable. Historical timestamps are not reconstructed.
-Expand **Charts and comparison** or **Run details and saved configurations** for more information.
+Select **Performance → Analysis** for **Charts and comparison** or **Run details and saved configurations**.
 
 ## Automatic Pair Rotation
 
-Each night admits at most 2 enabled model/worker pairs, one after the other.
+Each night admits at most `LOGOS_NIGHTLY_MAX_PAIRS` enabled model/worker pairs, one after the other.
 Pairs without a previous attempt come first, followed by the oldest previous attempt.
 The pair ID determines the initial order when previous attempt dates match.
 After a restored round, the pair waits behind the other admitted pair.
@@ -149,12 +151,13 @@ Hugging Face runs retain the original production settings.
 Use **Request workload** to replace Hugging Face data for a nightly schedule.
 The manual benchmark editor remains independent.
 
-1. Collect successful requests with `FULL` logging.
-2. Open **Create a fixed dataset from FULL request logs**.
-3. Enter a name and 1–100 distinct request IDs for the same model.
-4. Select **Synthetic test requests** or **Production requests**.
-5. Select **Create dataset**.
-6. Check the selected dataset and select **Apply dataset**.
+1. Choose **Recent FULL request logs** in the **Dataset** menu.
+2. Keep **Latest 100 requests** to use recent traffic regardless of age. For a time window, choose **Last 24 hours**, **Last 3 days** or **Last 7 days**.
+3. Select **Create and apply dataset**. Logos shows the number of requests saved. The selection ends when you create the dataset.
+
+On production, Logos reads the selected model’s most recent successful, replayable FULL requests from the production request log. The default selection takes up to 100 requests. A time window can include up to 500. Both selections stop at 5 MB. Benchmark traffic is excluded. Every baseline and candidate uses the same saved inputs until you apply another dataset. An empty window leaves the current selection in place.
+
+For a hand-picked dataset, open **Select individual request IDs**, enter a name and 1–100 distinct IDs, choose the provenance, then select **Create dataset** and **Apply dataset**.
 
 The database stores an ordered copy of the inputs and inference settings.
 It excludes request headers, API keys, user identities and response bodies.
@@ -261,18 +264,15 @@ After an application restart, recovery completes the recorded adoption or restor
 A disabled schedule cancels pending adoption.
 The round report identifies an adopted benchmark or an adoption failure.
 
-The **Performance** tab contains the **Timeline** section.
-The vertical axis shows throughput in output tokens per second (tok/s).
-The solid line shows complete measurements, including slower runs and repeated baselines.
-The dashed line shows the measured production baseline of each round.
-The visible legend identifies square baselines, circular trials and outlined points that fail selection checks.
-Each point represents a complete benchmark run. It does not represent one request or confirm production deployment.
-Each new round measures the current production settings first, including previously adopted improvements.
-Each point keeps its measurement date and configuration. Its percentage change uses the captured baseline from the same round.
-Outlined points fail automatic selection checks. They remain visible so that the chart shows measurement variation.
-Select a point to open its benchmark. Expand **Measured configurations** to read dates and parameters.
-The chart separates captured workloads and test settings. Measurements can span worker releases.
-A historical record does not replace the fresh comparison required for production adoption.
+The **Performance → Overview** section contains the **Timeline** section.
+Each completed run has one dot. Runs appear from left to right in completion order.
+The vertical axis shows output tokens per second (tok/s). Each stem starts at zero. An open circle marks a baseline.
+Trials show their change from the baseline of the same round, if available.
+Slower runs and excluded trials remain visible. Select a run to see its configuration and result.
+Select **Show all** to see more than the latest 6 runs.
+The timeline separates workloads and test settings. Measurements can span worker releases.
+Read **When settings change** for the nightly adoption rule.
+Expand **What does Logos check?** for the limits on output length and request latency.
 Expand **Currently deployed → Configuration & selection details** to inspect current settings and selection failures.
 A completed eligible winner is saved before the next trial starts.
 Recovery can apply this saved winner if a later trial is interrupted. Disabling the schedule cancels pending adoption.
@@ -418,10 +418,10 @@ Benchmarks start only after these attempts finish and before 08:00.
 If new calibration work appears during a benchmark, the current run finishes first.
 The scheduler restores the worker and stops the remaining benchmark plan with `calibration_pending`.
 
-`LOGOS_MAINTENANCE_MAX_NODES` limits simultaneous maintenance workers. The default is `1`.
-Set it to `2` to permit 2 calibrations or 2 benchmarks on different workers at the same time.
+`LOGOS_MAINTENANCE_MAX_NODES` limits simultaneous workers in automatic calibration and benchmark runs. The default is `1`.
+Set it to `2` to permit 2 automatic calibrations or 2 benchmarks on different workers at the same time.
 Calibration and benchmark phases remain separate. Each worker runs only 1 maintenance operation at a time.
-This limit also applies to manual calibration and manual benchmarks, including cloud benchmarks.
+Manual benchmarks, including cloud benchmarks, also use the limit. Manual calibrations can run concurrently on distinct workers.
 Conflicting manual starts return HTTP 409. They do not enter a queue.
 Automatic calibration stops at the end of its window. The 50% completion rule applies only to benchmarks.
 
@@ -455,14 +455,14 @@ or release it with **Release recovery** (see [Release a recovery](#release-a-rec
 
 ## Maintenance Capacity
 
-`LOGOS_MAINTENANCE_MAX_NODES=1` keeps maintenance sequential, including installations with only 1 worker.
+`LOGOS_MAINTENANCE_MAX_NODES=1` runs automatic calibration and benchmarks sequentially.
 A larger positive integer permits parallel maintenance on different workers.
 The nightly quota remains 2 model/worker pairs per date, independent of this limit.
 Two pairs on the same worker run sequentially.
 Use the same limit on all orchestrators. Invalid values prevent startup.
 The old `LOGOS_NIGHTLY_ALLOW_SINGLE_WORKER` variable no longer controls admission.
 
-The configured maintenance limit applies to manual and nightly runs.
+The configured maintenance limit applies to benchmarks and automatic calibration. An operator can start manual calibration on separate workers concurrently. Each worker accepts one calibration at a time, and active benchmarks or recovery block new calibrations.
 The selected worker must still be online, healthy and free of calibration.
 Existing requests drain first. New normal requests cannot enter a reserved worker.
 If all workers are reserved, normal requests must wait.

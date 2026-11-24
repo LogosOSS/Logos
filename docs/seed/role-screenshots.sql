@@ -619,14 +619,14 @@ WHERE id = 1;
 INSERT INTO agent_sessions (
     workspace_id, task, model, status,
     open_pull_request, created_by, created_at, started_at, finished_at,
-    tokens_in, tokens_out, cost_usd
+    tokens_in, tokens_out, cost_usd, memory_mb
 )
 SELECT w.id, s.task, 'qwen-2.5-72b-instruct', s.status,
        true, 'docs-role-screenshots',
        now() - s.created_ago,
        CASE WHEN s.status = 'queued' THEN NULL ELSE now() - s.started_ago END,
        CASE WHEN s.status IN ('succeeded', 'failed') THEN now() - s.finished_ago ELSE NULL END,
-       s.tin, s.tout, s.cost
+       s.tin, s.tout, s.cost, CASE WHEN s.status = 'running' THEN 2048 END
 FROM agent_workspaces w
 JOIN (VALUES
     ('edutelligence', 'queued',
@@ -648,6 +648,12 @@ WHERE NOT EXISTS (
     WHERE a.created_by = 'docs-role-screenshots' AND a.task = s.task
 );
 
+-- Illustrative parent estimate and one child on the running documentation session.
+UPDATE agent_sessions SET subagent_count = 1, progress_percent = 40,
+    progress_active_s = 1200, progress_reported_at = now() - interval '2 minutes',
+    active_seconds = 1200, active_since = now() - interval '2 minutes'
+WHERE created_by = 'docs-role-screenshots' AND status = 'running';
+
 -- Team → Repositories / Workflows tabs (role-guide PNGs).
 INSERT INTO team_repositories (team_id, repo_url, repo_slug, branch, paths)
 SELECT t.id,
@@ -660,6 +666,54 @@ WHERE t.name = 'Logos'
   AND NOT EXISTS (
       SELECT 1 FROM team_repositories tr
       WHERE tr.team_id = t.id AND tr.repo_slug = 'LogosOSS/Logos'
+  );
+
+-- Fictional application link for the coding-agent editor. No GitHub work runs here.
+-- The agent sandbox permissions fill the Logos Admin fields of the editor.
+INSERT INTO team_repositories (
+    team_id, repo_url, repo_slug, branch, paths,
+    agent_enabled, automatic_workflow_analysis, verification_command, agent_instructions,
+    agent_egress_hosts, agent_may_comment
+)
+SELECT t.id, 'https://github.com/docs-example/sample-app.git', 'docs-example/sample-app',
+       'develop', '["src"]'::jsonb, TRUE, FALSE, 'make check && make build',
+       'Use the project Makefile. Keep API behavior compatible.',
+       '["github.com", "*.githubusercontent.com"]'::jsonb, TRUE
+FROM teams t
+WHERE t.name = 'Logos'
+ON CONFLICT (team_id, repo_slug) DO UPDATE SET
+    branch = EXCLUDED.branch,
+    paths = EXCLUDED.paths,
+    agent_enabled = EXCLUDED.agent_enabled,
+    automatic_workflow_analysis = EXCLUDED.automatic_workflow_analysis,
+    verification_command = EXCLUDED.verification_command,
+    agent_instructions = EXCLUDED.agent_instructions,
+    agent_egress_hosts = EXCLUDED.agent_egress_hosts,
+    agent_may_comment = EXCLUDED.agent_may_comment;
+
+-- A finished session on the linked repository: the Agents page shows its repository.
+INSERT INTO agent_workspaces (name, base_branch, volume_name, created_by)
+SELECT 'sample-app', 'develop', 'docs-role-vol-sample', 'docs-role-screenshots'
+WHERE NOT EXISTS (SELECT 1 FROM agent_workspaces w WHERE w.name = 'sample-app');
+
+INSERT INTO agent_sessions (
+    workspace_id, task, model, status,
+    open_pull_request, created_by, created_at, started_at, finished_at,
+    tokens_in, tokens_out, cost_usd, memory_mb, memory_peak_bytes,
+    repo_url, repo_slug, team_repository_id, verification_command, repo_base_branch
+)
+SELECT w.id, 'Add input validation to the signup form', 'qwen-2.5-72b-instruct', 'succeeded',
+       true, 'docs-role-screenshots',
+       now() - interval '5 hours', now() - interval '5 hours', now() - interval '4 hours',
+       9000, 2500, 0.24, 2048, 1460::bigint * 1048576,
+       tr.repo_url, tr.repo_slug, tr.id, tr.verification_command, tr.branch
+FROM agent_workspaces w
+JOIN teams t ON t.name = 'Logos'
+JOIN team_repositories tr ON tr.team_id = t.id AND tr.repo_slug = 'docs-example/sample-app'
+WHERE w.name = 'sample-app'
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_sessions a
+      WHERE a.created_by = 'docs-role-screenshots' AND a.task = 'Add input validation to the signup form'
   );
 
 INSERT INTO ai_workflow_analyses (
@@ -840,6 +894,46 @@ WHERE v.configuration->'metadata'->>'purpose' = 'docs-role-screenshots'
 
 UPDATE model_provider_benchmarks SET configuration = jsonb_set(configuration, '{nightly,baseline_id}', to_jsonb(id))
 WHERE configuration->'metadata'->>'purpose' = 'docs-role-screenshots' AND NOT configuration->'nightly' ? 'parameters';
+
+-- ---------------------------------------------------------------------------
+-- Node models and node settings of the documentation worker (Providers page).
+-- Illustrative measurements, not GPU results. The provider rows are wiped and
+-- re-created above, so these tables start empty here (foreign keys cascade).
+-- llama: calibrated at two sizes and configured; qwen: calibrated, not
+-- configured; mistral: not calibrated.
+-- ---------------------------------------------------------------------------
+INSERT INTO model_calibrations (model_name, calibration_key_hash, profile, source_provider_id, calibrated_at)
+SELECT v.name, 'docs-key-' || v.name, v.profile::jsonb, (SELECT id FROM providers WHERE name = 'Docs Local Worker'),
+       now() - interval '3 days'
+FROM (VALUES
+  ('llama-3.1-8b-instruct',
+   '{"tensor_parallel_size":1,"base_residency_mb":16200,"loaded_vram_mb":16050,"calibrated_kv_mb":4096,"min_kv_cache_mb":1024,"max_kv_cache_mb":8192,"max_context_length":131072,"cold_load_time_s":48.2,"wake_from_sleep_time_s":2.1,"enforce_eager_at_calibration":true,"kv_cache_to_max_model_len_pairs":[{"kv_mb":1024,"max_model_len":8192},{"kv_mb":4096,"max_model_len":32768},{"kv_mb":8192,"max_model_len":65536}],"calibrations_by_tp":[{"tp":1,"base_residency_mb":16200,"loaded_vram_mb":16050,"calibrated_kv_mb":4096,"min_kv_cache_mb":1024,"max_kv_cache_mb":8192,"kv_cache_to_max_model_len_pairs":[{"kv_mb":1024,"max_model_len":8192},{"kv_mb":4096,"max_model_len":32768},{"kv_mb":8192,"max_model_len":65536}],"cold_load_time_s":48.2,"wake_from_sleep_time_s":2.1,"enforce_eager":true},{"tp":2,"base_residency_mb":8300,"loaded_vram_mb":8150,"calibrated_kv_mb":4096,"min_kv_cache_mb":1024,"max_kv_cache_mb":16384,"kv_cache_to_max_model_len_pairs":[{"kv_mb":1024,"max_model_len":16384},{"kv_mb":8192,"max_model_len":65536},{"kv_mb":16384,"max_model_len":131072}],"cold_load_time_s":61.4,"wake_from_sleep_time_s":2.6,"enforce_eager":true}]}'),
+  ('qwen-2.5-72b-instruct',
+   '{"tensor_parallel_size":2,"base_residency_mb":38400,"loaded_vram_mb":38100,"calibrated_kv_mb":4096,"min_kv_cache_mb":1024,"max_kv_cache_mb":4096,"max_context_length":32768,"cold_load_time_s":142.0,"wake_from_sleep_time_s":6.4,"enforce_eager_at_calibration":true,"kv_cache_to_max_model_len_pairs":[{"kv_mb":1024,"max_model_len":6144},{"kv_mb":4096,"max_model_len":24576}]}')
+) AS v(name, profile);
+
+INSERT INTO model_profiles (provider_id, model_name, profile, calibration_id, calibration_key_hash, sync_revision)
+SELECT (SELECT id FROM providers WHERE name = 'Docs Local Worker'), c.model_name,
+       c.profile || '{"residency_source":"calibrated","engine":"vllm"}'::jsonb, c.id, c.calibration_key_hash, 1
+FROM model_calibrations c
+WHERE c.source_provider_id = (SELECT id FROM providers WHERE name = 'Docs Local Worker');
+
+INSERT INTO node_config_state (provider_id, config_revision, yaml_imported_at)
+VALUES ((SELECT id FROM providers WHERE name = 'Docs Local Worker'), 3, now());
+
+INSERT INTO node_model_config (provider_id, model_name, position, capability, overrides, source)
+SELECT (SELECT id FROM providers WHERE name = 'Docs Local Worker'), v.name, v.position, v.capability::jsonb,
+       v.overrides::jsonb, 'ui'
+FROM (VALUES
+  ('llama-3.1-8b-instruct', 0, '{"tensor_parallel_size":1,"kv_cache_memory_bytes":"4G","min_context_fraction":1}',
+   '{"max_model_len":32768,"max_num_seqs":20,"enable_prefix_caching":true}'),
+  ('mistral-small-3.2-24b', 1, '{}', '{"quantization":"awq"}')
+) AS v(name, position, capability, overrides);
+
+INSERT INTO node_settings (provider_id, settings, settings_revision, yaml_imported_at)
+VALUES ((SELECT id FROM providers WHERE name = 'Docs Local Worker'),
+        '{"gpu_devices":"all","global_extra_args":["--safetensors-load-strategy=prefetch"],"gpu_poll_interval":5}'::jsonb,
+        2, now());
 
 COMMIT;
 

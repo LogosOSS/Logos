@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="087-agent-sandbox-permissions" author="LogosOSS">
+        <sql>
+            ALTER TABLE team_repositories
+                ADD COLUMN agent_egress_hosts JSONB NOT NULL DEFAULT '[]'::jsonb,
+                ADD COLUMN agent_may_comment BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE agent_sessions
+                ADD COLUMN push_repo_slug TEXT,
+                ADD COLUMN egress_token_hash TEXT;
+        </sql>
+        <rollback>
+            <sql>
+                ALTER TABLE agent_sessions DROP COLUMN egress_token_hash, DROP COLUMN push_repo_slug;
+                ALTER TABLE team_repositories
+                    DROP COLUMN agent_may_comment,
+                    DROP COLUMN agent_egress_hosts;
+            </sql>
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Hash of the whole configuration a node runs a model with, KV cache
+         size and context length included. Unlike calibration_key_hash it never
+         invalidates a calibration; it only ranks the shared calibrations a node
+         may adopt, so one measured under the same configuration comes first.
+         A snapshot carries its own fingerprint inside its profile. -->
+    <changeSet id="082-model-profile-config-fingerprint" author="logos">
+        <preConditions onFail="MARK_RAN">
+            <not><columnExists tableName="model_profiles" columnName="config_fingerprint"/></not>
+        </preConditions>
+        <addColumn tableName="model_profiles">
+            <column name="config_fingerprint" type="TEXT"/>
+        </addColumn>
+        <rollback>
+            <dropColumn tableName="model_profiles" columnName="config_fingerprint"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

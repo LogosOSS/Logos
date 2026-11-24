@@ -54,98 +54,38 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# --- what the agent key may reach -----------------------------------------
-
-# Which model deployments the runner's own Logos key is permitted to use, and
-# what kind of provider serves each. The permission rules are the platform's,
-# not this service's: the CTEs mirror the orchestrator's
-# `DBManager.get_deployments_for_api_key` exactly — a key with custom
-# permissions is scoped by its own grants, otherwise by its team's — so the
-# runner sees the same deployments a request with that key would be routed
-# to. `app/model_policy.py` turns the rows into the local-only decision;
-# duplicating the rules there instead of here would put the permission logic
-# two joins away from the tables it is about.
-_REACHABLE_DEPLOYMENTS = """
-    WITH key_info AS (
-        SELECT ak.id AS aki,
-               ak.team_id AS tid,
-               ak.use_custom_permissions AS custom
-          FROM api_keys ak
-         WHERE ak.key_value = :key_value
-           AND ak.is_active = true
-    ),
-    effective_providers AS (
-        SELECT akpp.provider_id
-          FROM api_key_provider_permissions akpp, key_info ki
-         WHERE akpp.api_key_id = ki.aki AND ki.custom = true
-        UNION
-        SELECT tpp.provider_id
-          FROM team_provider_permissions tpp, key_info ki
-         WHERE tpp.team_id = ki.tid AND ki.custom = false
-    ),
-    effective_models AS (
-        SELECT akmp.model_id
-          FROM api_key_model_permissions akmp, key_info ki
-         WHERE akmp.api_key_id = ki.aki AND ki.custom = true
-        UNION
-        SELECT tmp.model_id
-          FROM team_model_permissions tmp, key_info ki
-         WHERE tmp.team_id = ki.tid AND ki.custom = false
-    )
-    SELECT m.id AS model_id,
-           m.name AS model_name,
-           p.id AS provider_id,
-           p.provider_type AS provider_type,
-           (SELECT string_agg(a.alias, ',' ORDER BY a.alias)
-              FROM model_aliases a
-             WHERE a.model_id = m.id) AS aliases
-      FROM models m
-      JOIN model_provider mp ON m.id = mp.model_id
-      JOIN providers p ON mp.provider_id = p.id
-      JOIN effective_models em ON m.id = em.model_id
-      JOIN effective_providers ep ON p.id = ep.provider_id
-     ORDER BY m.name, p.id
-"""
+# --- the managed local-only agent identity -------------------------------
 
 
-async def agent_key_exists(key_value: str) -> bool:
-    """Whether the runner's Logos key is an active key of this platform.
+async def agent_key_id() -> int | None:
+    """Stable accounting id; revocation is shared by runner and issuer."""
+    async with sessionmaker()() as db:
+        value = (
+            await db.execute(text("SELECT id FROM api_keys WHERE internal_service = 'agent' AND is_active = true"))
+        ).scalar_one_or_none()
+    return int(value) if value is not None else None
 
-    A key that does not resolve has no permissions to read, which is not the
-    same as having none: the difference decides whether the model policy is
-    'nothing reachable' or 'unknown', and only the first is safe to run on.
+
+async def reachable_deployments() -> list[dict[str, Any]]:
+    """Same local-only scope as DBManager.get_deployments_for_api_key.
+
+    Explicit user/team grants cannot extend this service identity to cloud.
+    Even a model offered by both provider types reaches only its local copy.
     """
     async with sessionmaker()() as db:
-        row = (
-            await db.execute(
-                text("SELECT 1 FROM api_keys WHERE key_value = :key_value AND is_active = true"),
-                {"key_value": key_value},
-            )
-        ).first()
-    return row is not None
-
-
-async def agent_key_id(key_value: str) -> int | None:
-    """The platform id of the runner's key, or ``None`` if it does not resolve.
-
-    The orchestrator splits a model's in-flight requests by this id, so the
-    runner discounts the requests its own sessions — and the subagents those
-    sessions start — are actually making, rather than guessing one per session.
-    """
-    async with sessionmaker()() as db:
-        row = (
-            await db.execute(
-                text("SELECT id FROM api_keys WHERE key_value = :key_value AND is_active = true"),
-                {"key_value": key_value},
-            )
-        ).first()
-    return int(row[0]) if row is not None else None
-
-
-async def reachable_deployments(key_value: str) -> list[dict[str, Any]]:
-    """Every model deployment the given Logos key is permitted to use."""
-    async with sessionmaker()() as db:
-        rows = (await db.execute(text(_REACHABLE_DEPLOYMENTS), {"key_value": key_value})).mappings().all()
+        rows = (await db.execute(text("""
+            SELECT m.id AS model_id, m.name AS model_name,
+                   p.id AS provider_id, p.provider_type,
+                   (SELECT string_agg(a.alias, ',' ORDER BY a.alias)
+                    FROM model_aliases a WHERE a.model_id = m.id) AS aliases
+            FROM models m
+            JOIN model_provider mp ON mp.model_id = m.id
+            JOIN providers p ON p.id = mp.provider_id
+            WHERE p.provider_type = 'logosnode'
+              AND EXISTS (SELECT 1 FROM api_keys
+                          WHERE internal_service = 'agent' AND is_active = true)
+            ORDER BY m.name, p.id
+        """))).mappings().all()
     return [dict(row) for row in rows]
 
 
@@ -221,7 +161,7 @@ async def get_controls() -> dict[str, Any] | None:
     """The one row of runtime controls, or None if it is missing."""
     async with sessionmaker()() as db:
         row = (await db.execute(text("""
-                    SELECT mode, mode_reason, max_parallel, comments_scanned_at,
+                    SELECT mode, mode_reason, max_parallel, session_memory_mb, comments_scanned_at,
                            updated_by, updated_at
                       FROM agent_controls WHERE id = 1
                     """))).mappings().first()
@@ -234,6 +174,8 @@ async def set_controls(
     mode_reason: str | None = None,
     max_parallel: int | None = None,
     clear_max_parallel: bool = False,
+    session_memory_mb: int | None = None,
+    clear_session_memory_mb: bool = False,
     updated_by: str,
 ) -> None:
     """Change the runtime controls, leaving untouched what was not named.
@@ -245,10 +187,13 @@ async def set_controls(
     async with sessionmaker()() as db:
         await db.execute(
             text("""
-                INSERT INTO agent_controls (id, mode, mode_reason, max_parallel, updated_by, updated_at)
+                INSERT INTO agent_controls (id, mode, mode_reason, max_parallel, session_memory_mb,
+                                            updated_by, updated_at)
                 VALUES (1, COALESCE(:mode, 'running'), :mode_reason,
                         CASE WHEN CAST(:clear AS BOOLEAN) THEN NULL
                              ELSE CAST(:max_parallel AS INTEGER) END,
+                        CASE WHEN CAST(:clear_memory AS BOOLEAN) THEN NULL
+                             ELSE CAST(:session_memory_mb AS INTEGER) END,
                         :updated_by, :now)
                 ON CONFLICT (id) DO UPDATE SET
                     mode = COALESCE(:mode, agent_controls.mode),
@@ -267,6 +212,11 @@ async def set_controls(
                         WHEN CAST(:max_parallel AS INTEGER) IS NULL THEN agent_controls.max_parallel
                         ELSE CAST(:max_parallel AS INTEGER)
                     END,
+                    session_memory_mb = CASE
+                        WHEN CAST(:clear_memory AS BOOLEAN) THEN NULL
+                        WHEN CAST(:session_memory_mb AS INTEGER) IS NULL THEN agent_controls.session_memory_mb
+                        ELSE CAST(:session_memory_mb AS INTEGER)
+                    END,
                     updated_by = :updated_by,
                     updated_at = :now
                 """),
@@ -275,6 +225,8 @@ async def set_controls(
                 "mode_reason": mode_reason,
                 "max_parallel": max_parallel,
                 "clear": clear_max_parallel,
+                "session_memory_mb": session_memory_mb,
+                "clear_memory": clear_session_memory_mb,
                 "updated_by": updated_by,
                 "now": _now(),
             },
@@ -414,6 +366,142 @@ async def get_workspace(workspace_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+_CODING_REPOSITORY_COLUMNS = """
+    id, team_id, repo_url, repo_slug, branch, agent_instructions, verification_command,
+    agent_egress_hosts, agent_egress_unrestricted, agent_may_comment
+"""
+
+
+async def enabled_coding_repositories() -> list[dict[str, Any]]:
+    """Linked repositories whose teams opted into coding work."""
+    async with sessionmaker()() as db:
+        rows = (
+            await db.execute(
+                text(
+                    f"SELECT {_CODING_REPOSITORY_COLUMNS} FROM team_repositories WHERE agent_enabled = TRUE ORDER BY id"
+                )
+            )
+        ).mappings()
+        return [dict(row) for row in rows]
+
+
+async def coding_repository(link_id: int) -> dict[str, Any] | None:
+    """One linked repository with coding work enabled, or None."""
+    async with sessionmaker()() as db:
+        row = (
+            (
+                await db.execute(
+                    text(
+                        f"SELECT {_CODING_REPOSITORY_COLUMNS} FROM team_repositories "
+                        "WHERE id = :id AND agent_enabled = TRUE"
+                    ),
+                    {"id": link_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    return dict(row) if row else None
+
+
+async def sandbox_permissions(link_id: int | None, repo_slug: str | None) -> dict[str, Any]:
+    """What sessions of a linked repository may do beyond the default sandbox.
+
+    Read live rather than copied onto the session: a permission an
+    administrator withdraws must stop applying to work that is already
+    queued or running. Bound to the repository the session works on as well
+    as to the link: a link moved to another repository grants nothing to the
+    sessions of the one it pointed at before.
+    """
+    none: dict[str, Any] = {"agent_egress_hosts": [], "agent_egress_unrestricted": False, "agent_may_comment": False}
+    if link_id is None or not repo_slug:
+        return none
+    async with sessionmaker()() as db:
+        row = (
+            (
+                await db.execute(
+                    text("""
+                    SELECT agent_egress_hosts, agent_egress_unrestricted, agent_may_comment
+                      FROM team_repositories
+                     WHERE id = :id AND agent_enabled = TRUE AND lower(repo_slug) = lower(:slug)
+                    """),
+                    {"id": link_id, "slug": repo_slug},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    if row is None:
+        return none
+    hosts = row["agent_egress_hosts"]
+    if isinstance(hosts, str):
+        hosts = json.loads(hosts)
+    return {
+        "agent_egress_hosts": [str(host) for host in hosts or []],
+        "agent_egress_unrestricted": bool(row["agent_egress_unrestricted"]),
+        "agent_may_comment": bool(row["agent_may_comment"]),
+    }
+
+
+async def egress_grant(session_id: int) -> dict[str, Any] | None:
+    """What the egress proxy needs to decide about one session's connection."""
+    async with sessionmaker()() as db:
+        row = (
+            (
+                await db.execute(
+                    text("""
+                    SELECT s.status, s.egress_token_hash, tr.agent_egress_hosts, tr.agent_egress_unrestricted
+                      FROM agent_sessions s
+                      LEFT JOIN team_repositories tr
+                        ON tr.id = s.team_repository_id
+                       AND tr.agent_enabled = TRUE
+                       -- A link moved to another repository grants nothing
+                       -- to the sessions of the previous one.
+                       AND lower(tr.repo_slug) = lower(s.repo_slug)
+                     WHERE s.id = :id
+                    """),
+                    {"id": session_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    if row is None:
+        return None
+    hosts = row["agent_egress_hosts"] or []
+    if isinstance(hosts, str):
+        hosts = json.loads(hosts)
+    return {
+        "status": row["status"],
+        "token_hash": row["egress_token_hash"],
+        "hosts": [str(h) for h in hosts],
+        "unrestricted": bool(row["agent_egress_unrestricted"]),
+    }
+
+
+async def repository_comments_scanned_at(repository_id: int) -> datetime | None:
+    async with sessionmaker()() as db:
+        return (
+            await db.execute(
+                text("""
+            SELECT agent_comments_scanned_at FROM team_repositories WHERE id = :id
+        """),
+                {"id": repository_id},
+            )
+        ).scalar_one_or_none()
+
+
+async def mark_repository_comments_scanned(repository_id: int, moment: datetime) -> None:
+    async with sessionmaker()() as db:
+        await db.execute(
+            text("""
+            UPDATE team_repositories SET agent_comments_scanned_at = :moment WHERE id = :id
+        """),
+            {"id": repository_id, "moment": moment},
+        )
+        await db.commit()
+
+
 async def comments_scanned_at() -> datetime | None:
     """How far the comment scan has got, across restarts."""
     async with sessionmaker()() as db:
@@ -457,7 +545,11 @@ async def disposable_workspaces(idle_before: datetime) -> list[dict[str, Any]]:
             (
                 await db.execute(
                     text("""
-                    SELECT w.id, w.name, w.volume_name
+                    SELECT w.id, w.name, w.volume_name, w.base_branch,
+                           (SELECT s.repo_slug FROM agent_sessions s WHERE s.workspace_id = w.id
+                            ORDER BY s.id DESC LIMIT 1) AS repo_slug,
+                           (SELECT s.push_repo_slug FROM agent_sessions s WHERE s.workspace_id = w.id
+                            ORDER BY s.id DESC LIMIT 1) AS push_repo_slug
                       FROM agent_workspaces w
                      WHERE w.ephemeral = TRUE
                        AND w.archived_at IS NULL
@@ -564,6 +656,19 @@ async def delete_workspace(workspace_id: int) -> bool:
 # --- sessions -------------------------------------------------------------
 
 
+class WorkspaceBusy(ValueError):
+    """A workspace is still working on another repository."""
+
+
+# Old poller-created sessions predate the per-analysis flag. Its reserved
+# identity is also the discriminator used by the provenance migration.
+_ANALYSIS_IS_AUTOMATIC = """
+    (s.created_by = 'logos-agent (analysis)' OR EXISTS (
+        SELECT 1 FROM ai_workflow_analyses a
+         WHERE a.agent_session_id = s.id AND a.team_repository_id = s.team_repository_id AND a.automatically_queued))
+"""
+
+
 async def create_session(
     *,
     workspace_id: int,
@@ -584,8 +689,64 @@ async def create_session(
     repo_url: str | None = None,
     repo_slug: str | None = None,
     team_repository_id: int | None = None,
+    verification_command: str | None = None,
+    repo_base_branch: str | None = None,
+    point_workspace_at: str | None = None,
+    automatic_analysis: bool | None = None,
+    retry_analysis_session_id: int | None = None,
 ) -> int:
+    """Queue a session. Returns its id.
+
+    A workspace holds one repository's checkout at a time. A session for
+    another repository than the workspace last worked on is refused while
+    the workspace has work in flight (``WorkspaceBusy``), and
+    ``point_workspace_at``, when given, is the base branch an idle workspace
+    moves to. The check and the move happen under the workspace lock that
+    also covers the insert, so concurrent requests cannot both find the
+    workspace idle — whichever path inserts the session.
+    """
     async with sessionmaker()() as db:
+        if automatic_analysis is not None or retry_analysis_session_id is not None:
+            # Every producer takes the link before the workspace or in-flight slot.
+            link = (
+                (
+                    await db.execute(
+                        text(
+                            "SELECT team_id, automatic_workflow_analysis FROM team_repositories "
+                            "WHERE id = :id FOR UPDATE"
+                        ),
+                        {"id": team_repository_id},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if link is None:
+                raise ValueError("the repository link was removed")
+            if automatic_analysis is None:
+                automatic_analysis = await db.scalar(
+                    text(
+                        f"SELECT {_ANALYSIS_IS_AUTOMATIC} FROM agent_sessions s "
+                        "WHERE s.id = :parent AND s.team_repository_id = :repo AND s.trigger_kind = 'analysis'"
+                    ),
+                    {"parent": retry_analysis_session_id, "repo": team_repository_id},
+                )
+                if automatic_analysis is None:
+                    raise ValueError("the parent analysis session does not belong to this repository")
+            if automatic_analysis and not link["automatic_workflow_analysis"]:
+                raise ValueError("automatic workflow analysis is disabled")
+            if retry_analysis_session_id is not None:
+                await db.execute(
+                    text("""
+                        UPDATE ai_workflow_analyses a SET status = 'failed', finished_at = now(),
+                               error = COALESCE(a.error, 'agent session ended without ingest')
+                          FROM agent_sessions s WHERE s.id = :parent
+                           AND s.status IN ('failed', 'cancelled', 'succeeded')
+                           AND a.agent_session_id = s.id AND a.team_repository_id = :repo
+                           AND a.status IN ('queued', 'running')
+                        """),
+                    {"parent": retry_analysis_session_id, "repo": team_repository_id},
+                )
         # Lock the workspace row before inserting. delete_workspace takes
         # the same lock before it counts active sessions and deletes, so
         # the two transactions are serialized on the row: either the delete
@@ -602,6 +763,33 @@ async def create_session(
         if workspace is None:
             await db.rollback()
             raise ValueError(f"workspace {workspace_id} does not exist")
+        state = (
+            (
+                await db.execute(
+                    text("""
+                    SELECT (SELECT s.repo_slug FROM agent_sessions s WHERE s.workspace_id = :id
+                             ORDER BY s.id DESC LIMIT 1) AS repo_slug,
+                           EXISTS (SELECT 1 FROM agent_sessions s WHERE s.workspace_id = :id
+                                    AND s.status IN ('queued', 'starting', 'running', 'paused', 'finalizing'))
+                             AS busy
+                    """),
+                    {"id": workspace_id},
+                )
+            )
+            .mappings()
+            .one()
+        )
+        if (state["repo_slug"] or "").lower() != (repo_slug or "").lower():
+            if state["busy"]:
+                await db.rollback()
+                raise WorkspaceBusy(
+                    "This workspace has work in flight for another repository; " "choose or create another workspace"
+                )
+            if point_workspace_at is not None:
+                await db.execute(
+                    text("UPDATE agent_workspaces SET base_branch = :base WHERE id = :id"),
+                    {"id": workspace_id, "base": point_workspace_at},
+                )
         session_id = (
             await db.execute(
                 text("""
@@ -610,7 +798,7 @@ async def create_session(
                          open_pull_request, deploy_to_dev, screenshot_paths,
                          no_push, trigger_kind, trigger_ref, branch_name,
                          reply_target, reaction_target, priority, priority_reason,
-                         repo_url, repo_slug, team_repository_id)
+                         repo_url, repo_slug, team_repository_id, verification_command, repo_base_branch)
                     VALUES
                         (:workspace_id, :task, :model, 'queued', :created_by,
                          :open_pr, :deploy, CAST(:paths AS jsonb),
@@ -618,7 +806,7 @@ async def create_session(
                          :reply_target,
                          :reaction_target,
                          :priority, :priority_reason,
-                         :repo_url, :repo_slug, :team_repository_id)
+                         :repo_url, :repo_slug, :team_repository_id, :verification_command, :repo_base_branch)
                     RETURNING id
                     """),
                 {
@@ -649,9 +837,29 @@ async def create_session(
                     "repo_url": repo_url,
                     "repo_slug": repo_slug,
                     "team_repository_id": team_repository_id,
+                    "verification_command": verification_command,
+                    "repo_base_branch": repo_base_branch,
                 },
             )
         ).scalar_one()
+        if automatic_analysis is not None:
+            attached = await db.scalar(
+                text("""
+                    INSERT INTO ai_workflow_analyses
+                        (team_id, team_repository_id, status, source, started_at,
+                         automatically_queued, agent_session_id)
+                    VALUES (:team, :repo, 'queued', 'agent', now(), :automatic, :session)
+                    ON CONFLICT (team_repository_id) WHERE status IN ('queued', 'running') DO NOTHING RETURNING id
+                    """),
+                {
+                    "team": link["team_id"],
+                    "repo": team_repository_id,
+                    "session": session_id,
+                    "automatic": automatic_analysis,
+                },
+            )
+            if attached is None:
+                raise ValueError("workflow analysis is already in flight")
         await db.commit()
     return int(session_id)
 
@@ -853,7 +1061,9 @@ _SESSION_SELECT = """
            s.screenshot_paths, s.no_push, s.trigger_kind, s.trigger_ref,
            s.reply_target, s.reaction_target,
            s.priority, s.priority_reason, s.environment_notes,
-           s.repo_url, s.repo_slug, s.team_repository_id,
+           s.repo_url, s.repo_slug, s.team_repository_id, s.verification_command, s.repo_base_branch,
+           s.push_repo_slug, s.memory_mb, s.memory_peak_bytes, s.subagent_count, s.progress_percent,
+           s.progress_active_s, s.progress_reported_at, s.active_seconds, s.active_since,
            t.name AS team_name,
            COALESCE(s.tokens_in, 0) AS tokens_in,
            COALESCE(s.tokens_out, 0) AS tokens_out,
@@ -1064,7 +1274,9 @@ async def next_queued_session(*, include_triggered: bool = True) -> dict[str, An
     return dict(row) if row else None
 
 
-async def claim_session(session_id: int, *, trigger_quota: int | None = None) -> dict[str, Any] | None:
+async def claim_session(
+    session_id: int, *, trigger_quota: int | None = None, memory_mb: int | None = None
+) -> dict[str, Any] | None:
     """Take this exact queued session, or nothing.
 
     Admission measures the lane of the session it intends to start, and the
@@ -1084,6 +1296,10 @@ async def claim_session(session_id: int, *, trigger_quota: int | None = None) ->
     names exactly the branch the claim checks; the lock is held to the
     end of this transaction, and the check below re-reads the branch only
     after the previous holder has committed.
+
+    ``memory_mb`` is written in the same transaction: from the moment the
+    row is ``starting`` the memory budget counts what the session's
+    containers will actually get.
     """
     async with sessionmaker()() as db:
         if trigger_quota is not None:
@@ -1156,8 +1372,11 @@ async def claim_session(session_id: int, *, trigger_quota: int | None = None) ->
             await db.rollback()
             return None
         await db.execute(
-            text("UPDATE agent_sessions SET status = 'starting' WHERE id = :session_id"),
-            {"session_id": session_id},
+            text(
+                "UPDATE agent_sessions SET status = 'starting', "
+                "memory_mb = COALESCE(CAST(:memory_mb AS INTEGER), memory_mb) WHERE id = :session_id"
+            ),
+            {"session_id": session_id, "memory_mb": memory_mb},
         )
         row = (
             (await db.execute(text(_SESSION_SELECT + " WHERE s.id = :session_id"), {"session_id": session_id}))
@@ -1358,7 +1577,8 @@ async def sessions_awaiting_checks() -> list[dict[str, Any]]:
         rows = (await db.execute(text("""
                     SELECT id, workspace_id, task, model, branch_name, checks_sha,
                            trigger_kind, trigger_ref, reply_target, reaction_target,
-                           priority, priority_reason, open_pull_request, finished_at
+                           priority, priority_reason, open_pull_request, finished_at,
+                           repo_url, repo_slug, team_repository_id, verification_command, repo_base_branch, no_push
                       FROM agent_sessions
                      WHERE checks_watch = 'pending'
                      ORDER BY id
@@ -1386,14 +1606,20 @@ async def sessions_owing_a_replacement(*, max_attempts: int, since: datetime) ->
     async with sessionmaker()() as db:
         rows = (
             await db.execute(
-                text("""
+                text(f"""
                     SELECT s.id, s.workspace_id, s.task, s.model, s.branch_name,
                            s.trigger_kind, s.trigger_ref, s.reply_target, s.reaction_target,
                            s.priority, s.priority_reason, s.open_pull_request, s.error,
-                           s.finished_at
+                           s.finished_at, s.repo_url, s.repo_slug, s.team_repository_id,
+                           s.verification_command, s.repo_base_branch, s.no_push
                       FROM agent_sessions s
                      WHERE s.status = 'failed'
                        AND COALESCE(s.trigger_ref, '') <> ''
+                       AND COALESCE(s.trigger_kind, '') NOT IN ('security-analysis', 'security-fix')
+                       AND (s.trigger_kind IS DISTINCT FROM 'analysis' OR EXISTS (
+                             SELECT 1 FROM team_repositories tr
+                              WHERE tr.id = s.team_repository_id
+                                AND (tr.automatic_workflow_analysis OR NOT ({_ANALYSIS_IS_AUTOMATIC}))))
                        AND s.finished_at IS NOT NULL
                        AND s.finished_at > :since
                        AND NOT EXISTS (
@@ -1433,6 +1659,17 @@ async def update_session(session_id: int, **fields: Any) -> None:
         # The text this session was handed, as opposed to the text sessions
         # are handed now — the instructions are editable.
         "environment_notes",
+        # The model the session is driven by, once the launch has resolved
+        # "no model named" to the actual default.
+        "model",
+        # The hash of the token the session's egress proxy credentials carry.
+        "egress_token_hash",
+        # The memory limit its containers get, reserved from the host's
+        # memory budget while the session runs or is paused.
+        "memory_mb",
+        # Where the session's branch is pushed when the agent account cannot
+        # push to the repository itself: its own fork.
+        "push_repo_slug",
         # The commit whose checks somebody still has to look at, and whether
         # anybody still owes that.
         "checks_sha",
@@ -1448,7 +1685,9 @@ async def update_session(session_id: int, **fields: Any) -> None:
         await db.commit()
 
 
-async def transition_session(session_id: int, target: SessionStatus, **fields: Any) -> bool:
+async def transition_session(
+    session_id: int, target: SessionStatus, *, expected_status: SessionStatus | None = None, **fields: Any
+) -> bool:
     """Move a session to `target`, but only from a state that allows it.
 
     Returns False when the row was already in another state — the caller then
@@ -1463,7 +1702,7 @@ async def transition_session(session_id: int, target: SessionStatus, **fields: A
                 {"id": session_id},
             )
         ).scalar_one_or_none()
-        if current is None:
+        if current is None or (expected_status is not None and current != expected_status.value):
             await db.rollback()
             return False
         if not can_transition(SessionStatus(current), target):
@@ -1471,6 +1710,13 @@ async def transition_session(session_id: int, target: SessionStatus, **fields: A
             return False
         payload: dict[str, Any] = {**fields, "status": target.value, "id": session_id}
         assignments = ", ".join(f"{k} = :{k}" for k in payload if k != "id")
+        if target == SessionStatus.RUNNING:
+            assignments += ", active_since = clock_timestamp()"
+        elif current == SessionStatus.RUNNING.value:
+            assignments += (
+                ", active_seconds = active_seconds + COALESCE(GREATEST(0, "
+                "EXTRACT(EPOCH FROM clock_timestamp() - active_since)), 0), active_since = NULL"
+            )
         await db.execute(text(f"UPDATE agent_sessions SET {assignments} WHERE id = :id"), payload)
         await db.commit()
     return True
@@ -1484,6 +1730,74 @@ async def count_sessions_by_status() -> dict[str, int]:
             .all()
         )
     return {r["status"]: int(r["n"]) for r in rows}
+
+
+async def record_session_activity(
+    session_id: int, count: int | None, percent: int | None, elapsed: int | None, reported: datetime | None
+) -> None:
+    async with sessionmaker()() as conn:
+        if count is not None:
+            await conn.execute(
+                text(
+                    "UPDATE agent_sessions SET subagent_count = :count WHERE id = :id "
+                    "AND (subagent_count IS NULL OR subagent_count < :count)"
+                ),
+                {"count": count, "id": session_id},
+            )
+        if reported is not None:
+            await conn.execute(
+                text(
+                    "UPDATE agent_sessions SET progress_percent = :percent, progress_active_s = :elapsed, "
+                    "progress_reported_at = :reported WHERE id = :id AND "
+                    "(progress_reported_at IS NULL OR progress_reported_at < :reported)"
+                ),
+                {"id": session_id, "percent": percent, "elapsed": elapsed, "reported": reported},
+            )
+        await conn.commit()
+
+
+async def record_memory_peaks(samples: dict[int, int]) -> None:
+    """Only a higher observed total writes the row, even across runner restarts."""
+    async with sessionmaker()() as conn:
+        await conn.execute(
+            text("""
+                UPDATE agent_sessions SET memory_peak_bytes = :usage
+                 WHERE id = :id AND (memory_peak_bytes IS NULL OR memory_peak_bytes < :usage)
+                """),
+            [{"id": session_id, "usage": usage} for session_id, usage in samples.items()],
+        )
+        await conn.commit()
+
+
+async def session_memory_mb(session_id: int) -> int | None:
+    """The memory limit a session was started with, or None when it recorded none."""
+    async with sessionmaker()() as db:
+        value = (
+            await db.execute(text("SELECT memory_mb FROM agent_sessions WHERE id = :id"), {"id": session_id})
+        ).scalar_one_or_none()
+    return int(value) if value else None
+
+
+async def reserved_memory_mb(default_mb: int) -> int:
+    """The memory the sessions that hold a container, or are about to, have reserved.
+
+    A session reserves its memory from its claim until it is finished: the
+    preparation and finalization helpers run in its place, and a paused
+    container keeps its memory. A row without a recorded figure counts with
+    ``default_mb``.
+    """
+    async with sessionmaker()() as db:
+        value = (
+            await db.execute(
+                text("""
+                SELECT COALESCE(SUM(COALESCE(memory_mb, :default_mb)), 0)
+                  FROM agent_sessions
+                 WHERE status IN ('starting', 'running', 'paused', 'finalizing')
+                """),
+                {"default_mb": default_mb},
+            )
+        ).scalar()
+    return int(value or 0)
 
 
 async def sessions_in_status(status: SessionStatus) -> list[dict[str, Any]]:

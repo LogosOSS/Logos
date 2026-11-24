@@ -8,6 +8,9 @@ A worker node runs local vLLM models. It opens an outbound connection to the
 Logos orchestrator over a secure WebSocket. It does not need an inbound
 firewall rule or its own TLS certificate.
 
+Use the [worker key procedure](../roles/logos-admin.md#provision-a-worker-key) to provision a worker from the web application.
+For the root-only API enrollment procedure, follow these steps.
+
 1. Register the provider with the Logos API.
 2. Save the `provider_id` and the `shared_key` of the provider.
 3. On the worker host, go to the worker directory. In a repository checkout,
@@ -25,10 +28,10 @@ any lane, so it waits — logging `Waiting for model profiles from Logos` —
 until the orchestrator is reachable.
 
 By default, the production Compose file pulls the worker image
-`${REGISTRY}/logos-workernode-vllm` from the public mirror at
-`ghcr.io/logososs`. No login is necessary. To pull a version tag
-from the deployment registry or from your own mirror, set `REGISTRY` and
-`IMAGE_TAG` in the `.env` file of the worker. Do this only for that purpose.
+`${REGISTRY}/logos-workernode-vllm` from public GHCR at
+`ghcr.io/logososs`. No login is necessary. Set `IMAGE_TAG` in the worker's
+`.env` to select a published version or PR build. The default is `latest`.
+Set `REGISTRY` only if you publish your own images elsewhere.
 
 The optional node manager can replace the worker container for you. It checks
 the new container. If the new container does not become healthy, the node

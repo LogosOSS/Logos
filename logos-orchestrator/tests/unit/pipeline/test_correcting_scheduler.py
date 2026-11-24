@@ -142,6 +142,21 @@ class MockLogosNodeFacade:
     def try_reserve_capacity(self, model_id, provider_id, request_id):
         return self._reserve_results.get((model_id, provider_id), True)
 
+    def unqueued_context_limit(self, model_id, provider_id):
+        return float("inf")
+
+    def warm_lane_rank(self, model_id, provider_id, context_tokens=0):
+        return None
+
+    def cancel_warm_booking(self, request_id):
+        pass
+
+    def book_queued_warm_lane(self, model_id, provider_id, request_id, context_tokens=0):
+        pass
+
+    def book_warm_lane(self, model_id, provider_id, request_id, context_tokens=0):
+        pass
+
     def on_request_start(self, request_id, **kwargs):
         if self.raise_on_request_start:
             raise ValueError("Model not registered")
@@ -180,12 +195,15 @@ class MockAzureFacade:
 
 def _make_scheduler(logosnode=None, azure=None, ettft_enabled=True):
     queue_mgr = PriorityQueueManager()
-    return ClassificationCorrectingScheduler(
+    scheduler = ClassificationCorrectingScheduler(
         queue_manager=queue_mgr,
         logosnode_facade=logosnode or MockLogosNodeFacade(),
         azure_facade=azure or MockAzureFacade(),
         ettft_enabled=ettft_enabled,
     )
+    # This fixture exercises ETTFT ranking and its optional affinity bonus.
+    scheduler._residency_policy = "demand"
+    return scheduler
 
 
 def _make_request(candidates, deployments, request_id="req-1"):
@@ -371,6 +389,9 @@ def test_estimate_ettft_no_lane_uses_prior_when_no_learned_value():
     # No observations — store will compute a prior.
 
     class _MockFacadeWithProfile(MockLogosNodeFacade):
+        def get_capacity_info(self, provider_id):
+            return MagicMock(available_vram_mb=60000)
+
         def get_model_profiles(self, provider_id):
             profile = MagicMock()
             profile.estimate_vram_mb.return_value = 50_000.0
@@ -442,3 +463,66 @@ async def test_schedule_attaches_warmth_state_to_result():
     assert result is not None
     # _make_view(running) has one active request and empty queues → 1 + 0
     assert result.warmth_state == 1
+
+
+def test_no_lane_estimate_includes_queue_and_fresh_victim_drain():
+    store = LatencyStore()
+    store.record_overhead("target", 10, ReadinessTier.COLD, 100)
+    store.record_e2e_latency("target", 10, 5)
+    store.record_e2e_latency("victim", 10, 20)
+    facade = MockLogosNodeFacade()
+    facade.set_model_name(1, 10, "target")
+    facade.get_capacity_info = MagicMock(return_value=MagicMock(available_vram_mb=0))
+    profile = MagicMock(kv_budget_mb=1000, tensor_parallel_size=1)
+    profile.estimate_vram_mb.return_value = 8000
+    facade.get_model_profiles = MagicMock(return_value={"target": profile})
+    victim = _make_view(model_name="victim").lanes[0]
+    victim.active_requests = 4
+    victim.requests_running = 4
+    victim.num_parallel = 2
+    facade.get_all_provider_lane_signals = MagicMock(return_value=[victim])
+    queue = PriorityQueueManager()
+    queue.get_total_depth_by_deployment = MagicMock(return_value=3)
+    scheduler = ClassificationCorrectingScheduler(
+        queue_manager=queue, logosnode_facade=facade, azure_facade=MockAzureFacade(), latency_store=store
+    )
+    estimate = scheduler._estimate_ettft(1, 10, "logosnode")
+    assert estimate.tier == ReadinessTier.COLD_RECLAIM
+    assert estimate.state_overhead_s == 100
+    assert estimate.reclaim_overhead_s == 43  # ceil(4/2)*20 + 3
+    assert estimate.queue_wait_s == 15
+    assert estimate.expected_wait_s == 158
+    assert victim.e2e_latency_p50_seconds == 0.5  # Facade's snapshot is not mutated.
+
+
+@pytest.mark.asyncio
+async def test_queue_preserves_prediction_provider_when_dispatch_changes_provider():
+    from logos.pipeline.ettft_estimator import EttftEstimate
+    from logos.pipeline.pipeline import RequestPipeline
+    from logos.pipeline.scheduler_interface import SchedulingResult
+
+    scheduler = _make_scheduler()
+    result = SchedulingResult(
+        model_id=1,
+        provider_id=20,
+        provider_type="logosnode",
+        queue_entry_id="entry",
+        was_queued=True,
+        queue_depth_at_schedule=1,
+    )
+
+    def dispatch(future, *args, **kwargs):
+        future.set_result(result)
+        return "entry"
+
+    scheduler._queue_mgr.enqueue = MagicMock(side_effect=dispatch)
+    estimate = EttftEstimate(expected_wait_s=12, tier=ReadinessTier.COLD, reasoning="cold")
+    request = _make_request([(1, 1, 0)], [{"model_id": 1, "provider_id": 10, "type": "logosnode"}])
+    actual = await scheduler._queue_and_wait((1, 10, "logosnode", 1, 0, estimate), request)
+    assert actual.provider_id == 20
+    assert actual.ettft_provider_id == 10
+    assert actual.ettft_estimate_ms == 12000
+    stats = RequestPipeline._scheduling_stats(None, actual, request.request_id, schedule_start_s=1.0)
+    assert stats["provider_id"] == 20
+    assert stats["ettft_provider_id"] == 10
+    assert scheduler._logosnode._tracking[request.request_id]["provider_id"] == 20

@@ -1,6 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.identity.entity;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.hibernate.annotations.JdbcTypeCode;
@@ -44,10 +45,53 @@ public class TeamRepoLink {
     private List<String> paths;
 
     @Column(nullable = false)
+    private boolean agentEnabled;
+
+    @Column(nullable = false)
+    private boolean automaticWorkflowAnalysis = true;
+
+    @Column(columnDefinition = "text")
+    private String agentInstructions;
+
+    @Column(columnDefinition = "text")
+    private String verificationCommand;
+
+    /** HTTPS hosts that agent sessions for this repository may reach through the egress proxy. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "jsonb", nullable = false)
+    private List<String> agentEgressHosts = new ArrayList<>();
+
+    /**
+     * Whether agent sessions for this repository may reach any public HTTPS host
+     * through the egress proxy, instead of only {@link #agentEgressHosts}.
+     */
+    @Column(nullable = false)
+    private boolean agentEgressUnrestricted;
+
+    /** Whether the agent may comment on issues and pull requests while a session runs. */
+    @Column(nullable = false)
+    private boolean agentMayComment;
+
+    @Column(nullable = false)
     private Instant createdAt;
 
     @Column(nullable = false)
     private Instant updatedAt;
+
+    public boolean isAutomaticWorkflowAnalysis() { return automaticWorkflowAnalysis; }
+    public void setAutomaticWorkflowAnalysis(boolean value) { automaticWorkflowAnalysis = value; }
+    public boolean isAgentEnabled() { return agentEnabled; }
+    public String getAgentInstructions() { return agentInstructions; }
+    public String getVerificationCommand() { return verificationCommand; }
+    public void setAgentEnabled(boolean value) { agentEnabled = value; }
+    public void setAgentInstructions(String value) { agentInstructions = value; }
+    public void setVerificationCommand(String value) { verificationCommand = value; }
+    public List<String> getAgentEgressHosts() { return agentEgressHosts == null ? List.of() : agentEgressHosts; }
+    public void setAgentEgressHosts(List<String> value) { agentEgressHosts = value == null ? new ArrayList<>() : new ArrayList<>(value); }
+    public boolean isAgentEgressUnrestricted() { return agentEgressUnrestricted; }
+    public void setAgentEgressUnrestricted(boolean value) { agentEgressUnrestricted = value; }
+    public boolean isAgentMayComment() { return agentMayComment; }
+    public void setAgentMayComment(boolean value) { agentMayComment = value; }
 
     public Integer getId() { return id; }
     public Integer getTeamId() { return teamId; }

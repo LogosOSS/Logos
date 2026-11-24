@@ -23,7 +23,7 @@ from logos.benchmarks.reservations import benchmark_reservations
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeRuntimeRegistry
 from logos.monitoring import prometheus_metrics as prom
 from logos.pipeline.latency_store import LatencyStore
-from logos.residency_policy import RESIDENCY_POLICIES, parse_residency_policy
+from logos.residency_policy import DEFAULT_RESIDENCY_POLICY, RESIDENCY_POLICIES, parse_residency_policy
 from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
 from logos.sdi.models import CapacityPlanAction, LaneSchedulerSignals, ModelProfile
 from logos.terminal_logging import (
@@ -281,8 +281,9 @@ class CapacityPlanner:
     # deriving from a calibrated footprint locally as a last resort — prefer
     # worker-published startup_gmu_by_model.
     VLLM_GMU_FLOOR = 0.5
-    # vLLM default when --gpu-memory-utilization is omitted (current engines).
-    VLLM_DEFAULT_GMU = 0.9
+    # The worker's FALLBACK_GMU: the --gpu-memory-utilization it passes for a
+    # lane without an override or calibrated profile.
+    FALLBACK_GMU = 0.9
 
     # ─── Host-RAM headroom model ────────────────────────────────────────────
     #
@@ -609,7 +610,7 @@ class CapacityPlanner:
     def residency_policy(self) -> str:
         # getattr default keeps planners built via __new__ (unit tests) on the
         # production policy without having to set the attribute explicitly.
-        return getattr(self, "_residency_policy", "demand")
+        return getattr(self, "_residency_policy", DEFAULT_RESIDENCY_POLICY)
 
     def _lru_policy_active(self) -> bool:
         return self.residency_policy in {"lru", "simple"}
@@ -1754,6 +1755,27 @@ class CapacityPlanner:
             self._log_action_plan(all_actions)
 
         validated = self._validate_vram_budget(all_actions)
+        if not self._uses_demand_ordering():
+            # A rejected restore releases the model for FIFO placement on other
+            # eligible workers. Never allocate a second lane around a local pin.
+            serving = {a.model_name for a in validated if a.action in {"load", "wake"}}
+            refused: dict[str, set[int]] = {}
+            for action in all_actions:
+                if action.restore and action.action == "load" and action.model_name not in serving:
+                    refused.setdefault(action.model_name, set()).add(action.provider_id)
+            if refused:
+                used = {a.provider_id for a in validated}
+                fallback = self._compute_simple_cycle_actions(
+                    provider_ids,
+                    serving,
+                    cycle_reserved_lane_ids,
+                    cycle_claimed_gpus_by_provider,
+                    refused_restores=refused,
+                    used_providers=used,
+                )
+                admitted = self._validate_vram_budget(fallback)
+                placed = {a.provider_id for a in admitted if a.action in {"load", "wake"}}
+                validated.extend(a for a in admitted if a.provider_id in placed)
 
         for action in validated:
             key = (action.provider_id, action.lane_id)
@@ -5966,6 +5988,9 @@ class CapacityPlanner:
         planned: set[str],
         reserved_ids: dict[int, set[str]],
         claimed_gpus: dict[int, set[int]],
+        *,
+        refused_restores: Optional[dict[str, set[int]]] = None,
+        used_providers: Optional[set[int]] = None,
     ) -> list[CapacityPlanAction]:
         """Plan feasible models globally in FIFO order, with stable worker selection."""
         providers = [pid for pid in sorted(provider_ids) if self._is_plannable(pid) and not self.is_worker_locked(pid)]
@@ -5974,6 +5999,8 @@ class CapacityPlanner:
         for pid in providers:
             models.update(self._facade.get_worker_capabilities(pid))
             models.update(self._lane_waiter_models(pid))
+        if refused_restores is not None:
+            models.intersection_update(refused_restores)
         ordered = sorted(
             models,
             key=lambda model: (
@@ -5982,7 +6009,7 @@ class CapacityPlanner:
             ),
         )
         actions: list[CapacityPlanAction] = []
-        used_providers: set[int] = set()
+        used_providers = set(used_providers or ())
         for model in ordered:
             if model in planned:
                 continue
@@ -5997,7 +6024,7 @@ class CapacityPlanner:
             ):
                 continue
             for pid in providers:
-                if pid in used_providers:
+                if pid in used_providers or (refused_restores and pid in refused_restores[model]):
                     continue
                 result = self._compute_demand_actions(
                     pid,
@@ -7826,6 +7853,10 @@ class CapacityPlanner:
             params = action.params if isinstance(action.params, dict) else {}
             pinned = self._parse_gpu_device_ids(params.get("gpu_devices") if params else None)
             required_gpus: Optional[tuple[int, ...]] = pinned if pinned else None
+            if action.restore and required_gpus:
+                # The saved selector is the width of the lane being restored. A
+                # newer calibration may describe a different parallel topology.
+                tp = len(required_gpus)
             free_map = _ensure_working(provider_id)
 
             if free_map is not None:
@@ -7839,6 +7870,16 @@ class CapacityPlanner:
                         required_gpus=required_gpus,
                         model_name=action.model_name,
                     )
+                    if selected is None and action.restore and required_gpus:
+                        alternate = self._restore_gpu_candidates(action, required_gpus, free_map)
+                        selected = self._select_cold_load_gpus(
+                            provider_id,
+                            profile,
+                            estimated_vram,
+                            tp=tp,
+                            per_gpu_free=alternate,
+                            model_name=action.model_name,
+                        )
                     if selected is None:
                         gmu = self._startup_gmu_for_model(provider_id, action.model_name, profile)
                         logger.warning(
@@ -7852,7 +7893,7 @@ class CapacityPlanner:
                         continue
                     # Communicate auto-chosen placement so later accounting and the
                     # worker share one concrete set. Pinned sets stay unchanged.
-                    if required_gpus is None:
+                    if selected != required_gpus:
                         if action.params is None:
                             action.params = {}
                         if isinstance(action.params, dict):
@@ -10133,8 +10174,8 @@ class CapacityPlanner:
         Prefer worker-published ``startup_gmu_by_model`` (configured / derived /
         default — never mislabeled as observed). Fallbacks: explicit
         configured_vllm override, live lane config, profile observed/min
-        fields. When nothing is known, admit against vLLM's omitted-flag
-        default (``VLLM_DEFAULT_GMU`` = 0.9). An empty configured map does
+        fields. When nothing is known, admit against the worker's fallback
+        (``FALLBACK_GMU`` = 0.9), which it passes to vLLM explicitly. An empty configured map does
         **not** imply the auto-derive floor 0.5.
         """
         if provider_id is not None and model_name:
@@ -10179,8 +10220,8 @@ class CapacityPlanner:
             if best is not None:
                 return best
 
-        # No published/override/profile pin: honor vLLM's omitted-flag default.
-        return float(self.VLLM_DEFAULT_GMU)
+        # No published/override/profile pin: the worker starts with its fallback.
+        return float(self.FALLBACK_GMU)
 
     def _cold_start_per_gpu_need_mb(
         self,
@@ -10267,6 +10308,32 @@ class CapacityPlanner:
         # Prefer more free headroom above each card's own need.
         feasible.sort(key=lambda gpu_id: free_map[gpu_id] - _need(gpu_id), reverse=True)
         return tuple(sorted(feasible[:tp]))
+
+    def _restore_gpu_candidates(self, action, previous, free):
+        """Move a historical placement only within a worker-confirmed pool of equivalent cards."""
+        config = (action.params or {}).get("vllm_config") or {}
+        env = config.get("env_overrides") or {}
+        # Visible-device overrides change physical numbering. Parallel layouts
+        # beyond simple tensor parallelism need their own placement evidence.
+        if (
+            self._kept_asleep(action.provider_id)
+            or "CUDA_VISIBLE_DEVICES" in env
+            or env.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID") != "PCI_BUS_ID"
+            or any(config.get(key, 1) != 1 for key in ("pipeline_parallel_size", "data_parallel_size"))
+            or config.get("tensor_parallel_size", len(previous)) != len(previous)
+        ):
+            return {}
+        runtime = self._runtime_dict_for_provider(action.provider_id)
+        pool = (runtime.get("restore_gpu_pool_by_model") or {}).get(action.model_name, [])
+        names = {
+            int(device["extra"]["index"]): device.get("name")
+            for device in (runtime.get("devices") or {}).get("devices", [])
+            if str((device.get("extra") or {}).get("index", "")).isdigit()
+        }
+        kinds = {names.get(gpu) for gpu in previous}
+        if len(kinds) != 1 or not all(kinds):
+            return {}
+        return {gpu: free[gpu] for gpu in pool if gpu in free and names.get(gpu) in kinds}
 
     def _gpus_can_admit_cold_load(
         self,

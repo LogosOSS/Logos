@@ -82,5 +82,22 @@
     <include file="liquibase/changelog/075_answer_cache.xml"/>
     <include file="liquibase/changelog/076_team_show_on_public_stats.xml"/>
     <include file="liquibase/changelog/077_team_public_category.xml"/>
-    <include file="liquibase/changelog/078_log_entry_cache_lookup.xml"/>
+    <include file="liquibase/changelog/078_repository_coding_agent.xml"/>
+    <include file="liquibase/changelog/079_gateway_pricing_performance.xml"/>
+    <include file="liquibase/changelog/080_security_incidents.xml"/>
+    <include file="liquibase/changelog/081_security_manual_updates.xml"/>
+    <include file="liquibase/changelog/082_model_profile_config_fingerprint.xml"/>
+    <include file="liquibase/changelog/083_node_settings.xml"/>
+    <include file="liquibase/changelog/084_benchmark_workload_size.xml"/>
+    <include file="liquibase/changelog/085_recent_model_full_requests.xml"/>
+    <include file="liquibase/changelog/086_agent_service_identity.xml"/>
+    <include file="liquibase/changelog/087_agent_sandbox_permissions.xml"/>
+    <include file="liquibase/changelog/088_agent_unrestricted_egress.xml"/>
+    <include file="liquibase/changelog/089_deployments.xml"/>
+    <include file="liquibase/changelog/090_agent_session_memory.xml"/>
+    <include file="liquibase/changelog/091_agent_observed_memory.xml"/>
+    <include file="liquibase/changelog/092_automatic_workflow_analysis.xml"/>
+    <include file="liquibase/changelog/093_agent_activity.xml"/>
+    <include file="liquibase/changelog/094_security_feed_retry_window.xml"/>
+    <include file="liquibase/changelog/096_log_entry_cache_lookup.xml"/>
 </databaseChangeLog>

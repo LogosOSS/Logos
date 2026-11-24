@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import text
+from starlette.concurrency import run_in_threadpool
 
 import logos.main as main
 from logos.benchmarks import nightly_store as store
@@ -11,7 +12,12 @@ from logos.benchmarks.guidellm_runner import extract_serving_configuration
 from logos.benchmarks.nightly import local_now, parameter_plan
 from logos.benchmarks.nightly_overview import overview
 from logos.dbutils.dbmanager import DBManager
-from logos.dbutils.dbrequest import BenchmarkWorkloadRequest, NightlyStatusRequest, NightlyUpdateRequest
+from logos.dbutils.dbrequest import (
+    BenchmarkWorkloadRequest,
+    NightlyStatusRequest,
+    NightlyUpdateRequest,
+    RecentBenchmarkWorkloadRequest,
+)
 from logos.maintenance_window import MaintenanceWindow, maintenance_node_limit
 from logos.routers.internal import _require_internal_secret
 
@@ -24,6 +30,10 @@ def target_for(pair_id):
     if not target or target["provider_type"] != "logosnode":
         raise HTTPException(status_code=400, detail="Nightly benchmarks require a Logos worker")
     return target
+
+
+def worker_ready(snapshot, online):
+    return online and bool(((snapshot or {}).get("runtime") or {}).get("supports_benchmark_restart"))
 
 
 @router.post("/status")
@@ -64,15 +74,19 @@ async def nightly_status(data: NightlyStatusRequest, request: Request):
             ),
             {"provider_id": target["provider_id"]},
         ).scalar()
+    online = main._logosnode_registry.is_provider_online(target["provider_id"])
+    result["worker_ready"] = worker_ready(snapshot, online)
     result["deployment"] = deployment_snapshot(
         snapshot,
         target["model_name"],
-        online=main._logosnode_registry.is_provider_online(target["provider_id"]),
+        online=online,
         series_key=search["series_key"] if search else None,
         maintenance=bool(active_benchmark)
         or result["recovery_required"]
         or result["status"] in {"preparing", "running", "recovery_required"},
     )
+    if result["deployment"]["configuration"] != current:
+        result["deployment"]["series_key"] = None
     result["selection"] = store.selection_summary(data.model_provider_id, result.get("workload_id"))
     result["window"] = MaintenanceWindow.from_env().describe()
     result["timezone"] = result["window"]["timezone"]
@@ -86,7 +100,7 @@ async def configure_nightly(data: NightlyUpdateRequest, request: Request):
     target = target_for(data.model_provider_id)
     if data.enabled:
         snapshot = main._logosnode_registry.peek_runtime_snapshot(target["provider_id"]) or {}
-        if not (snapshot.get("runtime") or {}).get("supports_benchmark_restart"):
+        if not worker_ready(snapshot, main._logosnode_registry.is_provider_online(target["provider_id"])):
             raise HTTPException(status_code=409, detail="Update and connect this worker before enabling nightly runs")
     try:
         if "workload_id" in data.model_fields_set:
@@ -108,9 +122,13 @@ async def configure_nightly(data: NightlyUpdateRequest, request: Request):
 
 
 @router.post("/workloads")
-async def create_workload(data: BenchmarkWorkloadRequest, request: Request):
+async def create_workload(data: BenchmarkWorkloadRequest | RecentBenchmarkWorkloadRequest, request: Request):
     _require_internal_secret(request)
     try:
+        if isinstance(data, RecentBenchmarkWorkloadRequest):
+            return await run_in_threadpool(
+                workloads.create_recent, target_for(data.model_provider_id), data.lookback_days
+            )
         return workloads.create(data.log_ids, data.name, data.provenance)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

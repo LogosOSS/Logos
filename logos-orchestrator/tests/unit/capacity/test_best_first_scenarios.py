@@ -192,6 +192,7 @@ def _planner(providers: List[_MockProvider]) -> CapacityPlanner:
     demand.get_score.return_value = 0.0
 
     planner = CapacityPlanner.__new__(CapacityPlanner)
+    planner._residency_policy = "demand"
     planner._facade = facade
     planner._registry = registry
     planner._demand = demand

@@ -854,7 +854,7 @@ class TestSurvivingAPause:
         """Each run is (exit code, lines it printed)."""
         seen: list[list[str]] = []
 
-        def fake_drive(cmd):
+        def fake_drive(cmd, activity):
             seen.append(cmd)
             code, lines = runs[len(seen) - 1]
             interrupted = False
@@ -1934,3 +1934,249 @@ def test_main_reports_success_only_after_result_is_persisted(tmp_path, monkeypat
     assert run_session.main() == 0
     assert json.loads((tmp_path / "artifacts" / "result.json").read_text())["candidate_tree"] == "trusted"
     assert "phase complete" in capsys.readouterr().out
+
+
+class TestSuccessiveSessionsOnAFork:
+    """A second session in a workspace whose first session published to the agent's fork."""
+
+    def test_the_second_session_starts_from_the_fork_and_targets_the_repository(self, tmp_path, monkeypatch):
+        import run_session
+
+        origin, _ = _remote_with_a_feature(tmp_path)
+        fork = tmp_path / "fork.git"
+        subprocess.run(["git", "clone", "--quiet", "--bare", str(origin), str(fork)], check=True)
+        first = "logos/agent/ws/session-1"
+        seed = tmp_path / "seed"
+        _git("checkout", "--quiet", "main", cwd=seed)
+        _git("checkout", "--quiet", "-b", first, cwd=seed)
+        (seed / "proof.txt").write_text("first session\n")
+        _git("add", "proof.txt", cwd=seed)
+        _git("commit", "--quiet", "-m", "first session", cwd=seed)
+        _git("push", "--quiet", str(fork), first, cwd=seed)
+        first_tip = _git("rev-parse", "HEAD", cwd=seed).stdout.strip()
+        main_tip = _git("rev-parse", "main", cwd=seed).stdout.strip()
+
+        workspace = tmp_path / "ws"
+        _patch_workspace(monkeypatch, workspace)
+        monkeypatch.setenv("LOGOS_PUSH_REPO_URL", f"file://{fork}")
+        monkeypatch.setenv("LOGOS_PUSH_REPO_SLUG", "LogosOSSAgent/r")
+        monkeypatch.setenv("LOGOS_SESSION_BASE_ON_FORK", "1")
+        monkeypatch.setenv("LOGOS_SESSION_REPOSITORY_BRANCH", "main")
+        monkeypatch.delenv("LOGOS_REPO_SLUG", raising=False)
+        monkeypatch.delenv("LOGOS_SESSION_PR_BASE_BRANCH", raising=False)
+        second = "logos/agent/ws/session-2"
+
+        run_session.prepare_checkout(f"file://{origin}", first, second, "a-token")
+        checkout = workspace / "repo"
+        branch_sha = run_session._remote_branch_sha(second)
+        comparison, target = run_session._checkout_comparison(first, second, branch_sha)
+
+        # The checkout continues the first session's published work ...
+        assert _git("rev-parse", "HEAD", cwd=checkout).stdout.strip() == first_tip
+        assert branch_sha == ""
+        # ... and the pull request targets a branch the repository has,
+        # compared from where the two lines meet.
+        assert target == "main"
+        assert comparison == main_tip
+
+        # Publication: the commit goes to the fork, the pull request to the
+        # repository's main from the fork's branch.
+        (checkout / "proof.txt").write_text("first session\nsecond session\n")
+        monkeypatch.setenv("LOGOS_SESSION_BRANCH_SHA", "")
+        monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+        assert run_session.commit_and_push(second, "Prove the second lemma") == 1
+        pushed = subprocess.run(
+            ["git", "--git-dir", str(fork), "rev-parse", second], text=True, capture_output=True, check=True
+        )
+        assert pushed.stdout.strip() == _git("rev-parse", "HEAD", cwd=checkout).stdout.strip()
+        assert (
+            subprocess.run(
+                ["git", "--git-dir", str(origin), "rev-parse", "--verify", "--quiet", second], capture_output=True
+            ).returncode
+            != 0
+        )
+
+        created: list = []
+
+        def fake_run(cmd, **kwargs):
+            created.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="https://github.com/o/r/pull/2\n", stderr="")
+
+        monkeypatch.setenv("LOGOS_REPO_SLUG", "o/r")
+        monkeypatch.setattr(run_session, "run", fake_run)
+        assert (
+            run_session.open_pull_request(second, target, "Prove the second lemma") == "https://github.com/o/r/pull/2"
+        )
+        command = created[0]
+        assert command[command.index("--base") + 1] == "main"
+        assert command[command.index("--head") + 1] == f"LogosOSSAgent:{second}"
+
+
+def test_child_count_correlates_tool_and_local_task_in_either_order_and_survives_continuation(tmp_path, monkeypatch):
+    from session_activity import SessionActivity
+
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
+    activity = SessionActivity()
+
+    def tool(call, name="Agent"):
+        return {
+            "type": "assistant",
+            "session_id": "root",
+            "parent_tool_use_id": None,
+            "message": {"content": [{"type": "tool_use", "name": name, "id": call}]},
+        }
+
+    def start(call, child, kind="local_agent"):
+        return {
+            "type": "system",
+            "session_id": "root",
+            "subtype": "task_started",
+            "task_type": kind,
+            "tool_use_id": call,
+            "task_id": child,
+        }
+
+    for event in [
+        tool("a"),
+        start("a", "one"),
+        start("a", "one"),
+        start("b", "two"),
+        tool("b"),
+        tool("c", "SendMessage"),
+        start("c", "one"),
+        tool("d", "Bash"),
+        start("d", "shell", "local_bash"),
+        start("old", "from-previous-logos-session"),
+        {**start("a", "foreign"), "session_id": "elsewhere"},
+    ]:
+        activity.observe(event, "root")
+    assert json.loads((tmp_path / "activity.json").read_text()) == {"subagent_count": 2}
+    assert SessionActivity().data == {}
+
+
+def test_root_progress_reminder_and_replayed_estimates(tmp_path, monkeypatch):
+    import session_activity as activity
+
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("LOGOS_STATE_DIR", str(tmp_path))
+    now = 10000
+    monkeypatch.setattr(activity.time, "time", lambda: now)
+    (tmp_path / "active-origin").write_text(str(now - 599))
+    marker = tmp_path / "reminder"
+    hook = {"hook_event_name": "PostToolUse"}
+    assert activity.remind(hook, marker) is None
+    now += 1
+    assert activity.remind({**hook, "agent_id": "child"}, marker) is None
+    assert activity.remind(hook, marker)["hookSpecificOutput"]["additionalContext"]
+    assert activity.remind(hook, marker) is None
+    # An hour frozen passes; the runner advances the origin at resume.
+    now += 3600
+    (tmp_path / "active-origin").write_text(str(now - 600))
+    assert activity.remind(hook, marker) is None
+    now += 600
+    assert activity.remind({**hook, "hook_event_name": "PostToolUseFailure"}, marker)
+    session = activity.SessionActivity()
+
+    def report(message_id, value, parent=None):
+        return {
+            "type": "assistant",
+            "parent_tool_use_id": parent,
+            "session_id": "root",
+            "message": {"id": message_id, "content": [{"type": "text", "text": f"Logos progress: {value}%"}]},
+        }
+
+    for event in (report("a", 40, "child"), report("b", -1), report("c", 101), report("d", 4.5)):
+        session.observe(event, "root")
+    assert session.data == {}
+    session.observe(report("e", 40), "root")
+    assert session.data["progress_active_s"] == 1200
+    session.observe(report("f", 30), "root")
+    session.observe(report("e", 40), "root")
+    assert session.data["progress_percent"] == 30
+
+
+def test_visible_messages_preserve_blocks_and_origin_across_continuation(tmp_path, monkeypatch):
+    from session_activity import SessionActivity
+
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("HTTPS_PROXY", "https://session:example-proxy-secret@proxy.invalid")
+    activity = SessionActivity()
+    base = {"type": "assistant", "session_id": "root", "parent_tool_use_id": None, "uuid": "event-a"}
+    message = {
+        "id": "msg-a",
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "private reasoning"},
+            {"type": "text", "text": "A paragraph.\n\n- One\n- Two"},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "internal path"}},
+        ],
+    }
+    event = {**base, "message": message}
+    for ignored in [
+        {**event, "type": "user"},
+        {**event, "type": "result"},
+        {**event, "isMeta": True},
+        {**event, "session_id": "other"},
+        {**event, "isReplay": True},
+        {**event, "message": {**message, "model": "<synthetic>"}},
+    ]:
+        activity.observe(ignored, "root")
+    assert not (tmp_path / "messages.json").exists()
+    activity.observe(event, "root")
+    next_block = {"type": "text", "text": "Use example-proxy-secret.\n\n```sh\necho 'hello'\n```"}
+    activity.observe({**event, "uuid": "event-b", "message": {**message, "content": [next_block]}}, "root")
+    for call in ("first-call", "resumed-call"):
+        activity.observe(
+            {
+                "type": "system",
+                "subtype": "task_started",
+                "task_type": "local_agent",
+                "session_id": "root",
+                "tool_use_id": call,
+                "task_id": "child",
+            },
+            "root",
+        )
+        activity.observe(
+            {
+                **event,
+                "parent_tool_use_id": call,
+                "uuid": call,
+                "message": {**message, "id": call, "content": [{"type": "text", "text": "Child reply"}]},
+            },
+            "root",
+        )
+    activity.observe(event, "root")
+    activity.observe({**event, "uuid": "new-envelope", "isReplay": True}, "root")
+    raw = (tmp_path / "messages.json").read_text()
+    rows = json.loads(raw)["messages"]
+    assert len(rows) == 3
+    assert rows[0]["actor"] == "main"
+    assert rows[0]["text"] == "A paragraph.\n\n- One\n- Two\n\nUse ***.\n\n```sh\necho 'hello'\n```"
+    assert rows[1]["actor"].startswith("child-") and rows[1]["actor"] == rows[2]["actor"]
+    assert not any(value in raw for value in ["private reasoning", "internal path", "example-proxy-secret"])
+
+
+def test_message_snapshot_limits_each_message_and_total_history(tmp_path, monkeypatch):
+    from session_activity import SessionActivity
+
+    monkeypatch.setenv("LOGOS_ARTIFACT_DIR", str(tmp_path))
+    activity = SessionActivity()
+    for i in range(70):
+        event = {
+            "type": "assistant",
+            "session_id": "r",
+            "parent_tool_use_id": None,
+            "uuid": str(i),
+            "message": {"id": str(i), "role": "assistant", "content": [{"type": "text", "text": str(i)}]},
+        }
+        activity.observe(event, "r")
+    snapshot = json.loads((tmp_path / "messages.json").read_text())
+    assert snapshot["omitted"] == 6 and len(snapshot["messages"]) == 64
+    for i in range(5):
+        event["uuid"] = event["message"]["id"] = f"large-{i}"
+        event["message"]["content"][0]["text"] = "A" * 20000
+        activity.observe(event, "r")
+    snapshot = json.loads((tmp_path / "messages.json").read_text())
+    assert len(snapshot["messages"]) == 4 and snapshot["omitted"] == 71
+    assert all(row["truncated"] and len(row["text"]) == 16384 for row in snapshot["messages"])

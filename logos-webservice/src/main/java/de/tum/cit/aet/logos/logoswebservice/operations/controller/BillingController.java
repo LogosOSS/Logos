@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
+import de.tum.cit.aet.logos.logoswebservice.common.ReadOnlyQuery;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.identity.service.ApiKeyAdminService;
 import de.tum.cit.aet.logos.logoswebservice.operations.service.BillingService;
@@ -42,6 +43,7 @@ public class BillingController {
         }
     }
 
+    @ReadOnlyQuery
     @PostMapping("/logosdb/billing/team_budget_history")
     @PreAuthorize("hasAuthority('" + Role.Names.LOGOS_ADMIN + "')")
     public ResponseEntity<?> teamBudgetHistory(@RequestAttribute("authContext") AuthContext auth,
@@ -51,6 +53,7 @@ public class BillingController {
         return ResponseEntity.ok(billingService.getTeamBudgetHistory(startIso, endIso));
     }
 
+    @ReadOnlyQuery
     @PostMapping("/logosdb/billing/key_budget_history/{teamId}")
     @PreAuthorize("hasAnyAuthority('" + Role.Names.LOGOS_ADMIN + "', '" + Role.Names.APP_ADMIN + "')")
     public ResponseEntity<?> keyBudgetHistory(@RequestAttribute("authContext") AuthContext auth,

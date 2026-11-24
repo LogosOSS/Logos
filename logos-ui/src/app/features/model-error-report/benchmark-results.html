@@ -9,6 +9,7 @@
     </dl>
     <p>{{ row.comparisonNote }}</p>
     @if (row.selectionNote) { <p>{{ row.selectionNote }}</p> }
+    <p>{{ configuration(row.run) }}</p>
     <h4>Changed parameters</h4>
     @for (change of row.changes; track change) { <p>{{ change }}</p> }
     @empty { <p>Current settings · no parameter changes</p> }
@@ -49,63 +50,78 @@
   </section>
 }
 @if (showProgress()) {
-@if (activeProgress(); as chart) {
   <section class="benchmark-progress" aria-label="Performance timeline">
-    <div class="results-heading"><h3>Timeline</h3>
-      <div class="timeline-headline"><strong>{{ chart.latest.rate | number:'1.1-1' }} tok/s</strong>
-        @if (chart.latest.gain !== null) { <span>{{ chart.latest.gain > 0 ? '+' : '' }}{{ chart.latest.gain | number:'1.1-1' }}% vs. baseline #{{ chart.latest.baselineId }}</span> }
-      </div>
-    </div>
-    @if (progress().length > 1) {
-      <select class="timeline-dataset" aria-label="Timeline dataset" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
-        @for (group of progress(); track group.key) { <option [value]="group.key">{{ group.label }}</option> }
-      </select>
-    } @else { <p class="results-note timeline-context">{{ datasetLabel(chart.reference) }}</p> }
-    <p class="results-note timeline-baseline">Latest round baseline #{{ chart.reference.id }} · {{ chart.baselineRate | number:'1.1-1' }} tok/s</p>
-    <ul class="timeline-legend" aria-label="Timeline legend">
-      <li><span class="timeline-symbol timeline-symbol--baseline" aria-hidden="true"></span>Round baseline</li>
-      <li><span class="timeline-symbol" aria-hidden="true"></span>Measured trial</li>
-      <li><span class="timeline-symbol timeline-symbol--rejected" aria-hidden="true"></span>Not eligible for adoption</li>
-      <li><span class="timeline-symbol timeline-symbol--line" aria-hidden="true"></span>All measured runs</li>
-      <li><span class="timeline-symbol timeline-symbol--reference" aria-hidden="true"></span>Baseline of each round</li>
-    </ul>
-    <p class="results-note timeline-explanation">Each point is a complete benchmark run, not one request. Trials can be slower than their baseline. A filled point does not mean the configuration was deployed.</p>
-    <div class="progress-plot" role="group" aria-label="Measured throughput in output tokens per second">
-      <span class="progress-axis progress-axis--top">{{ chart.maxRate | number }} tok/s</span>
-      <span class="progress-axis progress-axis--zero">0</span>
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-        <line x1="0" x2="100" y1="100" y2="100" class="progress-zero" />
-        <polyline [attr.points]="chart.baselineLine" class="progress-baseline" />
-        @if (chart.points.length > 1) { <polyline [attr.points]="chart.line" class="progress-line" /> }
-      </svg>
-      @for (point of chart.points; track point.key) {
-        <a class="progress-point" [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }" [class.progress-point--last]="point.x > 80" [class.progress-point--first]="point.x < 20" [class.progress-point--baseline]="point.isBaseline" [class.progress-point--rejected]="point.selectionNote !== null" [style.left.%]="point.x" [style.top.%]="point.y"
-          [attr.aria-label]="'Benchmark #' + point.run.id + ', ' + (point.time | date:'dd MMM yyyy, HH:mm') + ': ' + (point.rate | number:'1.1-1') + ' tok/s, ' + point.configuration + (point.isBaseline ? ', round baseline' : point.gain !== null ? ', ' + (point.gain | number:'1.1-1') + '% vs. baseline #' + point.baselineId : ', no linked baseline') + (point.selectionNote ? ', ' + point.selectionNote : '')">
-          <span class="progress-tooltip">#{{ point.run.id }} · {{ point.rate | number:'1.1-1' }} tok/s
-            <small>{{ point.time | date:'dd MMM yyyy, HH:mm' }}</small><small>{{ point.configuration }}</small>
-            @if (point.isBaseline) { <small>Round baseline</small> }
-            @else if (point.gain !== null) {
-              <small>{{ point.gain > 0 ? '+' : '' }}{{ point.gain | number:'1.1-1' }}% vs. baseline #{{ point.baselineId }} · {{ point.baselineRate | number:'1.1-1' }} tok/s</small>
-            } @else { <small>No linked baseline</small> }
-            @if (point.selectionNote) { <small>{{ point.selectionNote }}</small> }
-          </span></a>
+    <h3><i class="pi pi-chart-line" aria-hidden="true"></i> Timeline</h3>
+    @if (activeProgress(); as chart) {
+      @if (progress().length > 1) {
+        <select class="timeline-dataset" aria-label="Timeline dataset" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
+          @for (group of progress(); track group.key) { <option [value]="group.key" [selected]="group.key === chart.key">{{ group.label }}</option> }
+        </select>
+      } @else { <p class="results-note">{{ chart.context }}</p> }
+
+      <figure class="timeline-chart">
+        <figcaption>Output throughput <span>(tok/s)</span></figcaption>
+        <div class="timeline-axes">
+          <div class="timeline-ticks" aria-hidden="true">
+            @for (tick of chart.ticks; track $index) {
+              <span [style.bottom.%]="100 * (tick / chart.axisMax)">{{ tick | number:'1.0-6' }}</span>
+            }
+          </div>
+          <div class="timeline-scroll">
+            <div class="timeline-plot">
+              <ol class="timeline-runs" aria-label="Benchmark runs in completion order">
+                @for (point of timelineRuns(); track point.run.id) {
+                  @let kind = point.isBaseline ? 'Baseline' : point.run.configuration['nightly'] ? 'Trial' : 'Manual run';
+                  @let change = point.gain === null ? '' : (point.gain > 0 ? '+' : '') + (point.gain | number:'1.1-1') + '%';
+                  @let rate = point.rate | number:'1.1-1';
+                  @let description = kind + ' #' + point.run.id + ' · ' + rate + ' tok/s · ' + (point.time | date:'dd MMM yyyy, HH:mm') +
+                    (point.isBaseline ? '' : point.baselineId && change ? ' · ' + change + ' vs. baseline #' + point.baselineId : ' · No linked baseline') +
+                    (point.selectionNote ? ' · Excluded from adoption' : '');
+                  <li><a class="timeline-run" [class.timeline-run--baseline]="point.isBaseline"
+                    [class.timeline-run--excluded]="!!point.selectionNote" [attr.aria-label]="description" [title]="description"
+                    [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }">
+                    <span class="timeline-measure" aria-hidden="true" [attr.data-rate]="rate">
+                      <span class="timeline-stem" [style.height.%]="100 * (point.rate / chart.axisMax)">
+                        <span class="timeline-dot"></span><strong class="timeline-value">{{ rate }}</strong>
+                      </span>
+                    </span>
+                    <strong class="timeline-id">#{{ point.run.id }}</strong>
+                    <small [title]="point.baselineId ? 'Change vs. baseline #' + point.baselineId : kind">{{ point.isBaseline ? 'Baseline' : change || kind }}</small>
+                    @if (point.selectionNote) { <small>Excluded</small> }
+                  </a></li>
+                }
+              </ol>
+            </div>
+          </div>
+        </div>
+        <p class="timeline-axis-title">Benchmark run <span>· oldest to newest</span></p>
+      </figure>
+      @if (chart.points.length > timelineLimit) {
+        <button type="button" class="timeline-toggle" [attr.aria-expanded]="expandedTimeline() === chart.key"
+          (click)="expandedTimeline.set(expandedTimeline() === chart.key ? null : chart.key)">
+          {{ expandedTimeline() === chart.key ? 'Show latest ' + timelineLimit : 'Show all ' + chart.points.length + ' runs' }}
+        </button>
       }
+    } @else {
+      <p class="results-note" role="status">No comparable completed rounds yet. A complete baseline and matching workload are required.</p>
+    }
+    <div class="timeline-policy">
+      <h4>When settings change</h4>
+      <p>Logos measures the current settings first, then tests each trial on the same requests at the same load. It adopts the fastest trial that passes all checks and beats that night’s baseline.</p>
+      <details><summary>What does Logos check?</summary>
+        <ul>
+          <li>Every request must finish successfully in the same environment and with the same finish reason as its baseline.</li>
+          <li>Each answer must stay within 20% of its baseline output token count.</li>
+          <li>The time to finish 95% of requests (p95) can rise by at most 10%.</li>
+        </ul>
+        <p>Small gains can still reflect normal variation between runs. If no trial qualifies, Logos keeps the current settings. See <strong>Currently deployed</strong> for the confirmed configuration.</p>
+      </details>
     </div>
-    <div class="progress-dates"><span>{{ chart.first | date:'dd MMM yyyy' }}</span>@if (chart.first !== chart.last) { <span>{{ chart.last | date:'dd MMM yyyy' }}</span> }</div>
-    <details class="timeline-records"><summary>Measured configurations · {{ chart.points.length }}</summary>
-      <p class="results-note">Complete runs, including slower results and repeated baselines. Select a point for its configuration and results.</p>
-      @for (point of chart.points; track point.key) {
-        <a [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }"><strong>#{{ point.run.id }} · {{ point.rate | number:'1.1-1' }} tok/s</strong><span>{{ point.time | date:'dd MMM yyyy, HH:mm' }} · {{ point.configuration }}</span></a>
-      }
-      <p class="results-note">{{ chart.context }}</p>
-      <p class="results-note">Outlined points failed selection checks. Each comparison uses its captured round baseline. Deployment requires a fresh comparison.</p>
-    </details>
   </section>
-} @else { <section class="benchmark-progress"><h3>Timeline</h3><p class="results-note" role="status">No comparable completed rounds yet. A complete baseline and matching workload are required.</p></section> }
 }
 @if (showHistory()) {
 <details class="run-history" [open]="selectedRunId() !== null">
-  <summary><h3>Benchmark runs <small>{{ rows().length }} results · output tok/s</small></h3></summary>
+  <summary><h3><i class="pi pi-history" aria-hidden="true"></i> Benchmark runs <small>{{ rows().length }} results · output tok/s</small></h3></summary>
   <p class="results-note">Each run compared with its recorded nightly baseline. Starting measurements show 0% change.</p>
   <table>
     <thead><tr>

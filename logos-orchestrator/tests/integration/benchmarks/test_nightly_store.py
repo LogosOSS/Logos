@@ -72,6 +72,10 @@ def database(monkeypatch):
         workloads_migration = migration.with_name("068_benchmark_request_workloads.xml")
         for sql in ElementTree.parse(workloads_migration).findall("{*}changeSet/{*}sql"):
             connection.execute(text(sql.text))
+        for sql in ElementTree.parse(migration.with_name("084_benchmark_workload_size.xml")).findall(
+            "{*}changeSet/{*}sql"
+        ):
+            connection.execute(text(sql.text))
         for sql in ElementTree.parse(migration.with_name("069_nightly_request_sources.xml")).findall(
             "{*}changeSet/{*}sql"
         ):
@@ -123,6 +127,96 @@ def test_frozen_inputs_survive_log_deletion_and_selection_is_compare_and_set(dat
     with pytest.raises(ValueError):
         workloads.create([7], "Missing", "synthetic")
     assert store.status(31)["workload_id"] == created["id"]
+
+
+def test_recent_workload_window_filters_and_freezes_hundreds_of_inputs(database, monkeypatch):
+    from importlib import import_module
+
+    from logos.benchmarks import workloads
+    from logos.benchmarks.configuration import BenchmarkRunSettings
+    from logos.dbutils.dbrequest import InternalBenchmarkRequest
+
+    engine, database_type = database
+    monkeypatch.setattr(import_module("logos.dbutils.dbmanager"), "DBManager", database_type)
+    target = {"model_id": 11, "model_name": "model-a"}
+    with engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO log_entry(id, model_id, privacy_level, result_status, input_payload,
+                                  timestamp_request, timestamp_response)
+            SELECT n, 11, 'FULL', 'success',
+                   '{"messages":[{"role":"user","content":"demo"}],"user":"private","headers":{"x":"private"}}'::jsonb,
+                   now() - interval '2 days', now() - interval '2 days'
+            FROM generate_series(1,510) n
+        """))
+        connection.execute(text("UPDATE log_entry SET privacy_level='BASIC' WHERE id=510"))
+        connection.execute(text("UPDATE log_entry SET result_status='failure' WHERE id=509"))
+        connection.execute(text("UPDATE log_entry SET environment='model-provider-benchmark' WHERE id=508"))
+        connection.execute(text("UPDATE log_entry SET model_id=12 WHERE id=507"))
+        connection.execute(text("UPDATE log_entry SET input_payload='{}'::jsonb WHERE id=506"))
+        connection.execute(text("UPDATE log_entry SET timestamp_response=now() + interval '1 day' WHERE id=505"))
+    with pytest.raises(ValueError, match="No replayable"):
+        workloads.create_recent(target, 1)
+    created = workloads.create_recent(target, 3)
+    assert created["request_count"] == 500 and "requests" not in created
+    assert workloads.create_recent(target, 3) == created
+    # A low-traffic model can need logs older than the longest time window.
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE log_entry SET timestamp_request = timestamp_request - interval '8 days'"))
+        connection.execute(
+            text(
+                "UPDATE log_entry SET timestamp_request = now() - interval '1 hour', "
+                "timestamp_response = now() WHERE id=1"
+            )
+        )
+    latest = workloads.create_recent(target)
+    assert latest["request_count"] == 100 and latest["provenance"] == "production"
+    assert workloads.create_recent(target) == latest
+    selected_ids = [row["source_log_id"] for row in workloads.load(latest["id"], 11)["requests"]]
+    assert selected_ids == [1, *range(504, 405, -1)]
+    partial = workloads.create_recent(target, 7)
+    assert partial["request_count"] == 1
+    for settings in [BenchmarkRunSettings, InternalBenchmarkRequest]:
+        args = {"model_provider_id": 31} if settings == InternalBenchmarkRequest else {}
+        assert settings(samples=500, workload_id=created["id"], **args).samples == 500
+        with pytest.raises(ValueError):
+            settings(samples=101, **args)
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM log_entry"))
+    saved = workloads.load(created["id"], 11)["requests"]
+    assert [row["source_log_id"] for row in saved] == list(range(504, 4, -1))
+    assert saved[0]["body"] == {"messages": [{"role": "user", "content": "demo"}]}
+
+
+def test_recent_workload_endpoint_uses_logged_inputs_when_only_the_pair_is_given(database, monkeypatch):
+    from importlib import import_module
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    router = import_module("logos.routers.nightly_benchmarks")
+    engine, database_type = database
+    monkeypatch.setattr(import_module("logos.dbutils.dbmanager"), "DBManager", database_type)
+    monkeypatch.setattr(import_module("logos.routers.internal"), "_INTERNAL_SECRET", "test-only")
+    monkeypatch.setattr(router, "target_for", {31: {"model_id": 11, "model_name": "model-a"}}.__getitem__)
+    app = FastAPI()
+    app.include_router(router.router)
+    path = "/internal/model_benchmarks/nightly/workloads"
+    with TestClient(app) as client:
+        assert client.post(path, json={"model_provider_id": 31}).status_code == 401
+        client.headers["Authorization"] = "Bearer test-only"
+        assert client.post(path, json={"model_provider_id": 31}).status_code == 400
+        with engine.begin() as connection:
+            connection.execute(text("""
+                INSERT INTO log_entry(id, model_id, privacy_level, result_status, input_payload,
+                                      timestamp_request, timestamp_response)
+                VALUES (1, 11, 'FULL', 'success', '{"messages":[{"role":"user","content":"test"}]}',
+                        now() - interval '1 month', now() - interval '1 month')
+            """))
+        result = client.post(path, json={"model_provider_id": 31})
+        assert result.status_code == 200
+        assert result.json()["provenance"] == "production" and result.json()["request_count"] == 1
+        assert "requests" not in result.json()
+        assert client.post(path, json={"model_provider_id": 31, "lookback_days": 3}).status_code == 400
 
 
 async def test_completion_event_survives_failed_delivery_and_deduplicates_finish(database, monkeypatch):
@@ -639,9 +733,10 @@ def test_selection_diagnostics_keep_workloads_separate_and_explain_rejected_fast
 
 
 async def test_failed_adoption_alert_is_delivered_even_with_pending_worker_recovery(database, monkeypatch):
+    from importlib import import_module
     from unittest.mock import AsyncMock
 
-    from logos import notifications
+    notifications = import_module("logos.notifications")
 
     failure = {
         "status": "adoption_failed",
@@ -674,3 +769,44 @@ async def test_failed_adoption_alert_is_delivered_even_with_pending_worker_recov
     assert payload["model_id"] == 11 and payload["benchmark_id"] == 164
     assert recipients == [{"kind": "role", "role": "logos_admin"}]
     assert emit.await_args.kwargs["event_key"] == "nightly-adoption-failed:31:164"
+
+
+async def test_manual_starts_share_admission_but_exclude_same_worker_and_automatic_dispatch(database, monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from logos.benchmarks.maintenance import AUTOMATIC_CALIBRATION, MaintenanceCoordinator
+    from logos.logosnode_registry import MaintenanceBusyError
+
+    monkeypatch.setenv("LOGOS_MAINTENANCE_MAX_NODES", "1")
+    service = MaintenanceCoordinator(MagicMock())
+    sent, finish = asyncio.Event(), asyncio.Event()
+
+    async def wait_for_ack(callback):
+        callback(None)
+        sent.set()
+        await finish.wait()
+
+    async def dispatch(callback):
+        callback(None)
+        return "started"
+
+    first = asyncio.create_task(service.start_calibration(1, wait_for_ack))
+    await asyncio.wait_for(sent.wait(), 5)
+    try:
+        assert await service.start_calibration(2, dispatch) == "started"
+        with pytest.raises(MaintenanceBusyError):
+            await service.start_calibration(1, dispatch)
+        assert not store.claim_calibration(1, "other-replica")
+        with store.cluster_lock() as exclusive:
+            assert exclusive is None
+    finally:
+        finish.set()
+        await first
+    assert {row["provider_id"] for row in store.calibration_claims() if row["confirmed"]} == {1, 2}
+    context = AUTOMATIC_CALIBRATION.set(True)
+    try:
+        with pytest.raises(MaintenanceBusyError):
+            await service.start_calibration(3, dispatch)
+    finally:
+        AUTOMATIC_CALIBRATION.reset(context)

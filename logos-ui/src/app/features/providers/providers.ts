@@ -7,6 +7,7 @@ import {
   OnDestroy,
   ChangeDetectionStrategy,
 } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
 import { ProviderManagementService } from '../../core/services/provider-management.service';
@@ -19,6 +20,7 @@ import {
   ProviderType,
   CloudProviderType,
   PrivacyLevel,
+  PRIVACY_LEVEL_LABELS,
 } from '../../shared/models/provider.model';
 import { Model } from '../../shared/models/model.model';
 import { isInteractiveClick } from '../../shared/utils/interactive-click';
@@ -26,19 +28,23 @@ import { SearchInputComponent } from '../../shared/components/search-input/searc
 import { DataTableComponent } from '../../shared/components/data-table/data-table';
 import { ErrorMessageComponent } from '../../shared/components/error-message/error-message';
 import { SelectComponent, AppSelectOption } from '../../shared/components/select/select';
+import { NodeModels } from './node-models/node-models';
 
 @Component({
   selector: 'app-providers',
   standalone: true,
   imports: [
+    NgTemplateOutlet,
     ModalFormComponent,
     ModalConfirmComponent,
     SearchInputComponent,
     DataTableComponent,
     ErrorMessageComponent,
     SelectComponent,
+    NodeModels,
   ],
   templateUrl: './providers.html',
+  host: { '(window:pagehide)': 'discardWorkerKey()' },
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './providers.scss',
 })
@@ -58,11 +64,12 @@ export class Providers implements OnInit, OnDestroy {
     'logos',
     'none',
   ];
+  // Most private first within each provider type.
   readonly privacyLevels: PrivacyLevel[] = [
     'LOCAL',
+    'CLOUD_IN_EU_BY_EU_PROVIDER',
     'CLOUD_IN_EU_BY_US_PROVIDER',
     'CLOUD_NOT_IN_EU_BY_US_PROVIDER',
-    'CLOUD_IN_EU_BY_EU_PROVIDER',
     // Hardware outside operator control — use it for a personal Mac MLX
     // worker so that LOCAL-threshold requests never route onto a machine
     // whose owner can inspect the running processes.
@@ -87,6 +94,51 @@ export class Providers implements OnInit, OnDestroy {
   private readonly defaultCloudProviderType: CloudProviderType = 'none';
   private readonly defaultCloudPrivacyLevel: PrivacyLevel = 'CLOUD_IN_EU_BY_US_PROVIDER';
 
+  // Where each vendor serves its public API, proposed as the base URL once the
+  // operator picks the vendor. Only a proposal: a proxy or regional endpoint
+  // is typed over it. Vendors whose endpoint names the operator's own resource
+  // or instance (azure, bedrock, logos) have none to propose, and neither does
+  // gemini, whose OpenAI-compatible root does not end in an API version and
+  // so cannot be addressed by the model sync's /v1/models rule.
+  private readonly suggestedBaseUrls: Partial<Record<CloudProviderType, string>> = {
+    openai: 'https://api.openai.com/v1',
+    anthropic: 'https://api.anthropic.com',
+    deepseek: 'https://api.deepseek.com',
+    groq: 'https://api.groq.com/openai/v1',
+  };
+
+  // What the orchestrator and the gateway send when the auth fields are left
+  // empty. Anthropic reads x-api-key and ignores an Authorization header, so
+  // advertising "Authorization: Bearer {}" for it invites a wrong entry.
+  private readonly defaultAuthHeaders: Partial<Record<CloudProviderType, { name: string; format: string }>> = {
+    anthropic: { name: 'x-api-key', format: '{}' },
+  };
+
+  suggestedBaseUrl(type: ProviderType, cloud: CloudProviderType): string {
+    return type === 'cloud' ? (this.suggestedBaseUrls[cloud] ?? '') : '';
+  }
+
+  /**
+   * The base URL after the vendor changed. An empty field, or one still
+   * holding the previous vendor's proposal, takes the new vendor's proposal;
+   * a URL the operator typed is never replaced.
+   */
+  private rebasedUrl(current: string, previous: string, next: string): string {
+    const trimmed = current.trim();
+    return trimmed === '' || trimmed === previous ? next : current;
+  }
+
+  private baseUrlPlaceholder(type: ProviderType, cloud: CloudProviderType): string {
+    return this.suggestedBaseUrl(type, cloud) || 'https://...';
+  }
+
+  private authPlaceholders(type: ProviderType, cloud: CloudProviderType): { name: string; format: string } {
+    return (type === 'cloud' ? this.defaultAuthHeaders[cloud] : undefined) ?? {
+      name: 'Authorization',
+      format: 'Bearer {}',
+    };
+  }
+
   private cloudProviderTypeOptionsFor(type: ProviderType): AppSelectOption[] {
     if (type === 'logosnode') {
       // Never rendered — the field is hidden for a logosnode — but the value
@@ -108,7 +160,7 @@ export class Providers implements OnInit, OnDestroy {
       type === 'logosnode'
         ? this.privacyLevels.filter((l) => l === 'LOCAL' || l === 'THIRD_PARTY_HARDWARE')
         : this.privacyLevels.filter((l) => l !== 'LOCAL' && l !== 'THIRD_PARTY_HARDWARE');
-    return levels.map((l) => ({ value: l, label: l }));
+    return levels.map((l) => ({ value: l, label: PRIVACY_LEVEL_LABELS[l] }));
   }
 
   readonly addCloudProviderTypeOptions = computed(() =>
@@ -123,6 +175,28 @@ export class Providers implements OnInit, OnDestroy {
   readonly editPrivacyLevelOptions = computed(() =>
     this.privacyLevelOptionsFor(this.editProviderType()),
   );
+  readonly addBaseUrlPlaceholder = computed(() =>
+    this.baseUrlPlaceholder(this.addProviderType(), this.addCloudProviderType()),
+  );
+  readonly editBaseUrlPlaceholder = computed(() =>
+    this.baseUrlPlaceholder(this.editProviderType(), this.editCloudProviderType()),
+  );
+  readonly addAuthPlaceholders = computed(() =>
+    this.authPlaceholders(this.addProviderType(), this.addCloudProviderType()),
+  );
+  readonly editAuthPlaceholders = computed(() =>
+    this.authPlaceholders(this.editProviderType(), this.editCloudProviderType()),
+  );
+  // Shown under the field while it holds the proposal, so the operator knows
+  // the value came from the vendor choice and may need adjusting.
+  readonly addBaseUrlIsSuggestion = computed(() => {
+    const suggestion = this.suggestedBaseUrl(this.addProviderType(), this.addCloudProviderType());
+    return suggestion !== '' && this.addBaseUrl().trim() === suggestion;
+  });
+  readonly editBaseUrlIsSuggestion = computed(() => {
+    const suggestion = this.suggestedBaseUrl(this.editProviderType(), this.editCloudProviderType());
+    return suggestion !== '' && this.editBaseUrl().trim() === suggestion;
+  });
 
   private coercedForType(
     type: ProviderType,
@@ -146,7 +220,9 @@ export class Providers implements OnInit, OnDestroy {
   }
 
   onAddProviderTypeChange(type: ProviderType): void {
+    const previous = this.suggestedBaseUrl(this.addProviderType(), this.addCloudProviderType());
     this.addProviderType.set(type);
+    this.addApiKey.set('');
     const { cloud, privacy } = this.coercedForType(
       type,
       this.addCloudProviderType(),
@@ -154,9 +230,18 @@ export class Providers implements OnInit, OnDestroy {
     );
     this.addCloudProviderType.set(cloud);
     this.addPrivacyLevel.set(privacy);
+    this.addBaseUrl.set(this.rebasedUrl(this.addBaseUrl(), previous, this.suggestedBaseUrl(type, cloud)));
+  }
+
+  onAddCloudProviderTypeChange(cloud: CloudProviderType): void {
+    const type = this.addProviderType();
+    const previous = this.suggestedBaseUrl(type, this.addCloudProviderType());
+    this.addCloudProviderType.set(cloud);
+    this.addBaseUrl.set(this.rebasedUrl(this.addBaseUrl(), previous, this.suggestedBaseUrl(type, cloud)));
   }
 
   onEditProviderTypeChange(type: ProviderType): void {
+    const previous = this.suggestedBaseUrl(this.editProviderType(), this.editCloudProviderType());
     this.editProviderType.set(type);
     const { cloud, privacy } = this.coercedForType(
       type,
@@ -165,6 +250,14 @@ export class Providers implements OnInit, OnDestroy {
     );
     this.editCloudProviderType.set(cloud);
     this.editPrivacyLevel.set(privacy);
+    this.editBaseUrl.set(this.rebasedUrl(this.editBaseUrl(), previous, this.suggestedBaseUrl(type, cloud)));
+  }
+
+  onEditCloudProviderTypeChange(cloud: CloudProviderType): void {
+    const type = this.editProviderType();
+    const previous = this.suggestedBaseUrl(type, this.editCloudProviderType());
+    this.editCloudProviderType.set(cloud);
+    this.editBaseUrl.set(this.rebasedUrl(this.editBaseUrl(), previous, this.suggestedBaseUrl(type, cloud)));
   }
 
   readonly connectableModelOptions = computed<AppSelectOption[]>(() => [
@@ -183,7 +276,7 @@ export class Providers implements OnInit, OnDestroy {
   refreshError = signal(false);
 
   // ── Expand state ─────────────────────────────────────────────────────────
-  expandedId = signal<number | null>(null);
+  expandedIds = signal<ReadonlySet<number>>(new Set());
   providerModels = signal<Record<number, ModelConnection[]>>({});
 
   // ── All models (for connect picker) ──────────────────────────────────────
@@ -207,20 +300,17 @@ export class Providers implements OnInit, OnDestroy {
   addLoading = signal(false);
   addError = signal('');
 
-  // ── Created-provider key modal ───────────────────────────────────────────
-  // Logosnode providers are given a generated shared key on creation; the
-  // operator must be able to copy it to configure the worker node, so we
-  // surface it in a follow-up modal once the add flow succeeds.
-  createdKeyOpen = signal(false);
-  createdKeyName = signal('');
-  createdKey = signal('');
-  createdKeyCopied = signal(false);
+  keyChange = signal<{ provider: Provider; connection?: ModelConnection; remove: boolean } | null>(null);
+  replacementKey = signal('');
+  rotationLoading = signal(false);
+  rotationError = signal('');
+  rotatedKey = signal<{ name: string; value: string } | null>(null);
+  rotatedKeyCopied = signal(false);
 
   // ── Edit modal ────────────────────────────────────────────────────────────
   editTarget = signal<Provider | null>(null);
   editName = signal('');
   editBaseUrl = signal('');
-  editApiKey = signal('');
   editAuthName = signal('');
   editAuthFormat = signal('');
   editProviderType = signal<ProviderType>('cloud');
@@ -241,7 +331,6 @@ export class Providers implements OnInit, OnDestroy {
   editConnProvider = signal<Provider | null>(null);
   editConnModel = signal<ModelConnection | null>(null);
   editConnEndpoint = signal('');
-  editConnApiKey = signal('');
   editConnLoading = signal(false);
   editConnError = signal('');
 
@@ -259,6 +348,10 @@ export class Providers implements OnInit, OnDestroy {
       (p) => p.name.toLowerCase().includes(q) || (p.base_url ?? '').toLowerCase().includes(q),
     );
   });
+  // Listed apart: a cloud provider is configured by vendor and endpoint, a
+  // local one is a worker node with its own models and GPU settings.
+  cloudProviders = computed(() => this.filteredProviders().filter((p) => p.provider_type === 'cloud'));
+  localProviders = computed(() => this.filteredProviders().filter((p) => p.provider_type !== 'cloud'));
 
   addValid = computed(() => this.addName().trim().length > 0);
   editValid = computed(() => this.editName().trim().length > 0);
@@ -327,6 +420,7 @@ export class Providers implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.discardWorkerKey();
     if (this.refreshPollTimer !== null) clearTimeout(this.refreshPollTimer);
   }
 
@@ -367,29 +461,27 @@ export class Providers implements OnInit, OnDestroy {
 
   /**
    * Refetch the model lists this page shows — the global model catalogue and,
-   * for an expanded row, that provider's connections. Both move
+   * for each expanded row, that provider's connections. Both move
    * independently: the sync writes per provider, preserving the links the
    * operator configured by hand.
    */
   private async refetchModelLists(): Promise<void> {
     const models = await this.modelService.getModels();
     this.allModels.set(models);
-    const expanded = this.expandedId();
-    if (expanded !== null) {
-      const conns = await this.providerService.getProviderModels(expanded);
-      this.providerModels.update((m) => ({ ...m, [expanded]: conns }));
-    }
+    const expanded = [...this.expandedIds()];
+    const lists = await Promise.all(expanded.map((id) => this.providerService.getProviderModels(id)));
+    this.providerModels.update((m) => ({ ...m, ...Object.fromEntries(expanded.map((id, i) => [id, lists[i]])) }));
   }
 
   formatPrivacy(level: PrivacyLevel): string {
-    const map: Record<PrivacyLevel, string> = {
-      LOCAL: 'LOCAL',
-      CLOUD_IN_EU_BY_US_PROVIDER: 'EU (US)',
-      CLOUD_NOT_IN_EU_BY_US_PROVIDER: 'Non-EU (US)',
-      CLOUD_IN_EU_BY_EU_PROVIDER: 'EU (EU)',
-      THIRD_PARTY_HARDWARE: 'Third-party HW',
-    };
-    return map[level] ?? level;
+    return PRIVACY_LEVEL_LABELS[level] ?? level;
+  }
+
+  typeLabel(provider: Provider): string {
+    if (provider.provider_type !== 'cloud') return provider.provider_type;
+    return provider.cloud_provider_type && provider.cloud_provider_type !== 'none'
+      ? provider.cloud_provider_type
+      : this.untypedCloudLabel;
   }
 
   // ── Expand ────────────────────────────────────────────────────────────────
@@ -398,12 +490,17 @@ export class Providers implements OnInit, OnDestroy {
     this.toggleExpand(provider);
   }
 
+  isExpanded(providerId: number): boolean {
+    return this.expandedIds().has(providerId);
+  }
+
+  /** Any number of rows may be open at once; a click opens a closed row and closes an open one. */
   toggleExpand(provider: Provider): void {
-    if (this.expandedId() === provider.id) {
-      this.expandedId.set(null);
+    if (this.isExpanded(provider.id)) {
+      this.expandedIds.update((ids) => new Set([...ids].filter((id) => id !== provider.id)));
       return;
     }
-    this.expandedId.set(provider.id);
+    this.expandedIds.update((ids) => new Set(ids).add(provider.id));
     if (!this.providerModels()[provider.id]) {
       void this.loadProviderModels(provider.id);
     }
@@ -514,19 +611,10 @@ export class Providers implements OnInit, OnDestroy {
       privacy_level: this.addPrivacyLevel(),
     };
     try {
-      const res = await this.providerService.addProvider(payload);
+      await this.providerService.addProvider(payload);
+      this.addApiKey.set('');
       await this.fetchProviders();
       this.addOpen.set(false);
-      const generatedKey: string = (res && (res as { api_key?: string }).api_key) || '';
-      // Only surface the key when we actually generated one, i.e. the operator
-      // left the key field empty. An operator-supplied key is echoed back by the
-      // application server too, and there is nothing new to show for that case.
-      if (generatedKey && payload.api_key === undefined) {
-        this.createdKeyName.set(payload.name);
-        this.createdKey.set(generatedKey);
-        this.createdKeyCopied.set(false);
-        this.createdKeyOpen.set(true);
-      }
     } catch {
       this.addError.set('Failed to add provider, please try again.');
     } finally {
@@ -534,21 +622,73 @@ export class Providers implements OnInit, OnDestroy {
     }
   }
 
-  async copyCreatedKey(): Promise<void> {
-    const key = this.createdKey();
-    if (!key) return;
+  requestKeyChange(provider: Provider, connection?: ModelConnection, remove = false): void {
+    this.replacementKey.set('');
+    this.rotationError.set('');
+    this.keyChange.set({ provider, connection, remove });
+  }
+
+  closeKeyChange(): void {
+    if (this.rotationLoading()) return;
+    this.replacementKey.set('');
+    this.keyChange.set(null);
+  }
+
+  async confirmKeyChange(): Promise<void> {
+    const target = this.keyChange();
+    if (!target || this.rotationLoading()) return;
+    const { provider, connection } = target;
+    const worker = provider.provider_type === 'logosnode';
+    const replacement = this.replacementKey().trim();
+    if (!worker && !target.remove && !replacement) return;
+    this.rotationLoading.set(true);
+    this.rotationError.set('');
     try {
-      await navigator.clipboard.writeText(key);
-      this.createdKeyCopied.set(true);
-      setTimeout(() => this.createdKeyCopied.set(false), 2000);
+      if (worker) {
+        const response = await this.providerService.rotateWorkerKey(provider.id);
+        if (this.keyChange() !== target) return;
+        this.editTarget.set(null);
+        this.rotatedKeyCopied.set(false);
+        this.rotatedKey.set({ name: provider.name, value: response.api_key });
+      } else {
+        const { api_key_hint } = await this.providerService.replaceCloudKey(provider.id, target.remove ? null : replacement, connection?.model_id);
+        if (this.keyChange() !== target) return;
+        if (connection) {
+          this.editConnModel.set({ ...connection, api_key_hint });
+        } else {
+          this.editTarget.set({ ...provider, api_key_hint });
+        }
+      }
+      this.keyChange.set(null);
+      this.replacementKey.set('');
+      if (connection) await this.loadProviderModels(provider.id);
+      else await this.fetchProviders();
     } catch {
-      // Clipboard unavailable (e.g. non-secure context) — the key is still
-      // visible in the field above for manual copying.
+      this.rotationError.set(worker
+        ? 'Could not confirm rotation. Rotate again if the replacement key was lost.'
+        : 'Could not update the key. Please try again.');
+    } finally {
+      this.rotationLoading.set(false);
     }
   }
 
-  closeCreatedKeyDialog(): void {
-    this.createdKeyOpen.set(false);
+  async copyRotatedKey(): Promise<void> {
+    const key = this.rotatedKey();
+    if (!key) return;
+    try {
+      await navigator.clipboard.writeText(key.value);
+      if (this.rotatedKey() === key) this.rotatedKeyCopied.set(true);
+    } catch {
+      // The readonly field also supports manual copying.
+    }
+  }
+
+  discardWorkerKey(): void {
+    this.keyChange.set(null);
+    this.replacementKey.set('');
+    this.rotatedKey.set(null);
+    this.rotatedKeyCopied.set(false);
+    this.editTarget.set(null);
   }
 
   // ── Edit flow ─────────────────────────────────────────────────────────────
@@ -556,7 +696,6 @@ export class Providers implements OnInit, OnDestroy {
     this.editTarget.set(provider);
     this.editName.set(provider.name);
     this.editBaseUrl.set(provider.base_url ?? '');
-    this.editApiKey.set(provider.api_key ?? '');
     this.editAuthName.set(provider.auth_name ?? '');
     this.editAuthFormat.set(provider.auth_format ?? '');
     this.editProviderType.set(provider.provider_type);
@@ -584,7 +723,6 @@ export class Providers implements OnInit, OnDestroy {
       provider_id: target.id,
       name: this.editName().trim() || undefined,
       base_url: this.editBaseUrl().trim(),
-      api_key: this.editApiKey().trim(),
       auth_name: this.editAuthName().trim(),
       auth_format: this.editAuthFormat().trim(),
       provider_type: this.editProviderType(),
@@ -645,7 +783,6 @@ export class Providers implements OnInit, OnDestroy {
     this.editConnProvider.set(provider);
     this.editConnModel.set(conn);
     this.editConnEndpoint.set(conn.endpoint ?? '');
-    this.editConnApiKey.set(conn.api_key ?? '');
     this.editConnError.set('');
   }
 
@@ -666,7 +803,6 @@ export class Providers implements OnInit, OnDestroy {
         provider.id,
         conn.model_id,
         this.editConnEndpoint().trim() || undefined,
-        this.editConnApiKey().trim() || undefined,
       );
       await this.loadProviderModels(provider.id);
       this.editConnProvider.set(null);

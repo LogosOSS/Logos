@@ -51,11 +51,12 @@ def _fake_vllm_version() -> str:
 #: keeps ``from harness.gpusim.server import FAKE_VLLM_VERSION`` stable.
 FAKE_VLLM_VERSION = _DEFAULT_FAKE_VLLM_VERSION
 
-#: vLLM's own default when ``--gpu-memory-utilization`` is omitted. The fake
-#: EngineCore still gates startup on this reservation even when
-#: ``--kv-cache-memory-bytes`` pins the steady-state KV pool (real
-#: ``request_memory`` behaviour).
-VLLM_DEFAULT_GMU = 0.9
+#: vLLM's own default when ``--gpu-memory-utilization`` is omitted: the whole
+#: GPU, as with the extensible KV cache on. The fake EngineCore still gates
+#: startup on this reservation even when ``--kv-cache-memory-bytes`` pins the
+#: steady-state KV pool (real ``request_memory`` behaviour), so a worker that
+#: omits the flag fails to start next to anything else on the card.
+VLLM_DEFAULT_GMU = 1.0
 
 #: Canned completion text. Short and deterministic so streaming tests can
 #: assert on exact chunk counts.
@@ -562,8 +563,8 @@ def run(
 
     ``startup_gmu`` is the free≥gmu×total gate (real ``request_memory``). It is
     independent of ``vram_by_device``, which is the synthetic/script ledger claim
-    (model+KV footprint). When omitted, the vLLM default 0.9 is used — matching
-    admission when the CLI flag is absent.
+    (model+KV footprint). When omitted, vLLM's default ``VLLM_DEFAULT_GMU``
+    (the whole GPU) is used.
 
     ``max_model_len`` is advertised on ``/v1/models`` (worker reads it for
     calibration). Defaults to 32768 when the CLI omits ``--max-model-len``.

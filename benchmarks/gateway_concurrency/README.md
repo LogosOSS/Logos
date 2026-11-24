@@ -10,16 +10,17 @@ of 2+ replicas under real load is visible to clients.
 Companion to `../per_request_overhead`, which measures the *local* path
 (orchestrator → workernode) with no concurrency. This benchmark is the
 *cloud* path (webservice gateway → cloud provider) under concurrent
-streaming load — different bottleneck (a bounded thread pool + queue vs. a
-GPU lane), different tool.
+streaming load. Servlet requests and response callbacks use virtual threads. An optional I/O
+limit bounds requests and detached provider drains; the default is zero
+(no configured gateway cap). GPU capacity is separate.
 
 ## What is measured (and what is not)
 
 - **Measured:** the webservice's own concurrency ceiling under held-open
-  streaming responses (`spring.task.execution.pool.*`, see
-  `application.properties`), added per-request latency vs. a direct call to
+  streaming responses (`logos.gateway.max-in-flight` /
+  `LOGOS_GATEWAY_MAX_IN_FLIGHT`, default 0: unlimited), added per-request latency vs. a direct call to
   the same fake upstream, behaviour once the ceiling is crossed (graceful
-  backpressure vs. hangs/crashes), and — with 2+ replicas up — whether
+  rejection vs. hangs/crashes), and — with 2+ replicas up — whether
   killing one is visible to clients under real concurrent load (a heavier,
   automated version of `../../scripts/gateway-failover-demo.sh`'s light
   polling check).
@@ -34,7 +35,18 @@ GPU lane), different tool.
   `/internal/gateway_relay_stats`). Counting at the upstream would
   over-count: `GatewayCloudForwarder.forward()` opens the upstream response
   before that executor task runs, so bytes can sit buffered in the socket
-  without occupying a pool slot.
+  before the response callback runs. The report reads the independent limit
+  and executor kind from replica stats; an unavailable live limit is labeled
+  as an environment/default fallback. Old JSON reports remain readable.
+  Without a configured cap, the default ramp measures 8, 64, 256, 512 and
+  1024 held responses. Set `LOGOS_BENCH_GW_STEPS` for another measured range;
+  these steps are test sizes, not deployment limits. A positive configured cap
+  rejects excess requests with HTTP 503 immediately, without a gateway queue.
+  The background task pool retains its own queue. Authentication, routing and
+  waiting for initial upstream headers also use virtual servlet threads.
+  Socket, file descriptor, memory and database pool limits still apply. Each
+  admitted request can retain a body up to 51 MiB; a cloud response pump can
+  buffer up to 8 MiB. Use a positive cap when that memory bound is required.
   A streaming request counts as successful only once its terminal
   `data: [DONE]` event arrives. The status line is written before the
   completion is relayed, so a stream cut off midway — what killing a
@@ -101,7 +113,8 @@ export LOGOS_BENCH_GW_URL=http://localhost:18081
 
 # 5. Venv + run
 uv venv benchmarks/gateway_concurrency/.venv
-uv pip install --python benchmarks/gateway_concurrency/.venv/bin/python fastapi 'uvicorn[standard]' httpx
+uv pip install --python benchmarks/gateway_concurrency/.venv/bin/python --no-deps --require-hashes \
+  -r benchmarks/gateway_concurrency/requirements.lock
 benchmarks/gateway_concurrency/.venv/bin/python benchmarks/gateway_concurrency/run_benchmark.py
 ```
 
@@ -152,7 +165,7 @@ The leg (`budget_admission.py`) then:
 
 The report shows baseline vs. load percentiles, the time in Logos, latency per
 send-time window (a slow refresh shows as a window whose requests all finish
-late together), the status histogram (5xx = pool exhaustion), and both query
+late together), the status histogram (503 = I/O capacity exhaustion), and both query
 timings.
 
 **Threshold.** Set `LOGOS_BENCH_GW_BUDGET_LOGOS_P50_MAX_MS` and/or
@@ -169,18 +182,28 @@ cd benchmarks/gateway_concurrency
 
 ## Environment
 
+The failover leg records requests before the kill, requests interrupted by the
+kill, requests during the routing update, and requests sent after recovery.
+`LOGOS_BENCH_GW_FAILOVER_RECOVERY_S` fixes the routing allowance before the run
+(default 5 seconds). CI sets `LOGOS_BENCH_GW_FAILOVER_REQUIRE_RECOVERY=1`:
+traffic must succeed before the kill and after that allowance, and those phases
+must contain requests. Authorization, routing and rate-limit errors fail the gate
+in every phase. A missing or skipped measurement also fails. Requests are never
+retried to make the gate pass. Interrupted streams remain failures in the total;
+successful recovery does not mean seamless stream failover.
+
 See the module docstrings in `run_benchmark.py`, `gateway_client.py`,
 `load_generator.py`, `latency_diff.py`, `failover_under_load.py`, and
 `budget_admission.py` for the full list of tunables (concurrency steps, sample counts, durations, the
-informational `LOGOS_GATEWAY_ASYNC_MAX_SIZE`/`_QUEUE_CAPACITY` used to
-annotate the report against the webservice's actual config).
+fallback `LOGOS_GATEWAY_MAX_IN_FLIGHT` used only when the report cannot read
+the live per-replica I/O limits).
 
 ### CI measurement order
 
 The budget-admission latency gate runs after the interleaved latency warmup
 and before the concurrency ramp and failover experiments. The ramp deliberately
-saturates the executor; measuring admission immediately afterwards mixes
-recovery from overload into the steady-load result. Budget measurement also
+can saturate the gateway or a configured I/O limit; measuring admission
+immediately afterwards mixes recovery from overload into the steady-load result. Budget measurement also
 uses a fixed 15-second warmup at its measured concurrency, recorded separately
 in `budget.warmup`, before opening the database measurement window.
 `LOGOS_BENCH_GW_BUDGET_WARMUP_S` controls this fixed preparation interval.

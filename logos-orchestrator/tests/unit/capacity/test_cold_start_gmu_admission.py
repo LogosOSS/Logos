@@ -5,7 +5,7 @@ pins the steady-state KV pool. Admission must check the exact requested GPU
 set (when pinned), debit accepted load/wake footprints across the batch, never
 invent free VRAM for victims without known placement, filter mixed-size cards
 by each card's own need, and read calculated startup GMU from the worker
-(configured / derived / default 0.9) rather than inventing the auto-derive floor.
+(configured / derived / worker fallback 0.9) rather than inventing the auto-derive floor.
 """
 
 from __future__ import annotations
@@ -351,7 +351,7 @@ def test_e_empty_configured_map_does_not_imply_floor_half():
         include_startup_gmu_field=False,
         available_mb=free,
     )
-    # No startup_gmu publish, no profile pin → vLLM default 0.9.
+    # No startup_gmu publish, no profile pin → the worker fallback 0.9.
     assert planner._startup_gmu_for_model(PROVIDER_ID, MODEL, _profile(observed_gmu=None)) == 0.9  # noqa: SLF001
     assert planner._validate_vram_budget([_load(gpu_devices="0")]) == []  # noqa: SLF001
 
@@ -455,3 +455,48 @@ def test_startup_context_headroom_applies_when_gmu_dominates():
 def test_startup_context_headroom_is_not_counted_twice_for_large_footprint():
     planner = _planner(free={0: 40000.0})
     assert planner._cold_start_per_gpu_need_mb(30000.0, 49140.0, gmu=0.5) == 30500.0  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "pool,other_free,other_name,expected",
+    [
+        ([0, 1], 49136, "Card A", "1"),
+        ([0], 49136, "Card A", None),
+        ([0, 1], 20945, "Card A", None),
+        ([0, 1], 49136, "Card B", None),
+        ([], 49136, "Card A", None),
+    ],
+)
+def test_saved_lane_on_busy_gpu_uses_feasible_equivalent_card(pool, other_free, other_name, expected):
+    planner = _planner(free={0: 20945, 1: other_free}, total={0: 49136, 1: 49136})
+    runtime = planner._registry.peek_runtime_snapshot(PROVIDER_ID)["runtime"]
+    runtime["restore_gpu_pool_by_model"] = {MODEL: pool}
+    runtime["devices"] = {
+        "devices": [{"extra": {"index": 0}, "name": "Card A"}, {"extra": {"index": 1}, "name": other_name}]
+    }
+    lane = "planner-saved"
+    records = [(lane, {lane: {"lane_config": {"model": MODEL, "lane_id": lane, "gpu_devices": "0"}}})]
+    actions = planner._plan_restore(PROVIDER_ID, records, {}, set(), {})
+    admitted = planner._validate_vram_budget(actions)
+    assert [(a.lane_id, a.params["gpu_devices"]) for a in admitted] == ([(lane, expected)] if expected else [])
+
+
+@pytest.mark.parametrize(
+    "free,expected",
+    [
+        ({0: 49136, 1: 49136}, "0,1"),
+        ({0: 20945, 1: 49136, 2: 49136}, "1,2"),
+        ({0: 20945, 1: 49136}, None),
+    ],
+)
+def test_restore_preserves_two_card_lane_with_single_card_profile(free, expected):
+    planner = _planner(free=free, profiles={MODEL: _profile(tp=1)})
+    runtime = planner._registry.peek_runtime_snapshot(PROVIDER_ID)["runtime"]
+    runtime["restore_gpu_pool_by_model"] = {MODEL: list(free)}
+    runtime["devices"] = {"devices": [{"extra": {"index": gpu}, "name": "Card A"} for gpu in free]}
+    action = _load(gpu_devices="0,1")
+    action.restore = True
+    action.params["vllm_config"] = {"tensor_parallel_size": 2}
+    admitted = planner._validate_vram_budget([action])
+    assert [a.params["gpu_devices"] for a in admitted] == ([expected] if expected else [])
+    assert action.params["vllm_config"]["tensor_parallel_size"] == 2

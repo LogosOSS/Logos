@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from logos_worker_node.model_profiles import ModelProfileRecord
-from logos_worker_node.vllm_process import GMU_AUTO_CEILING, GMU_AUTO_FLOOR, VLLM_DEFAULT_GMU, resolve_startup_gmu
+from logos_worker_node.vllm_compat import FALLBACK_GMU
+from logos_worker_node.vllm_process import GMU_AUTO_CEILING, GMU_AUTO_FLOOR, resolve_startup_gmu
 
 
 def test_configured_override_wins_verbatim():
@@ -65,7 +66,7 @@ def test_derived_clamped_to_floor_and_ceiling():
     assert res_hi.value_for_admission == GMU_AUTO_CEILING
 
 
-def test_unknown_profile_omits_spawn_flag_admits_vllm_default():
+def test_unknown_profile_spawns_and_admits_the_fallback():
     res = resolve_startup_gmu(
         explicit_gmu=None,
         loaded_vram_mb=None,
@@ -74,5 +75,5 @@ def test_unknown_profile_omits_spawn_flag_admits_vllm_default():
         profile=None,
     )
     assert res.source == "default"
-    assert res.value_for_spawn is None
-    assert res.value_for_admission == VLLM_DEFAULT_GMU
+    assert res.value_for_spawn == FALLBACK_GMU
+    assert res.value_for_admission == FALLBACK_GMU

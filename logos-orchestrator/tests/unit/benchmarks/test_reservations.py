@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from logos.benchmarks.reservations import BenchmarkReservations, benchmark_reservations
-from logos.logosnode_registry import LogosNodeCommandError, LogosNodeRuntimeRegistry
+from logos.logosnode_registry import LogosNodeCommandError, LogosNodeRuntimeRegistry, ProviderSession
 from logos.queue.models import Priority
 from logos.queue.priority_queue import PriorityQueueManager
 from logos.sdi.logosnode_facade import LogosNodeSchedulingDataFacade
@@ -75,7 +75,9 @@ async def test_lane_selection_excludes_production_but_allows_benchmark(lease):
     registry = LogosNodeRuntimeRegistry()
     lane = {"lane_id": "lane", "model": "model", "runtime_state": "running"}
     registry._get_active_session = AsyncMock(
-        return_value=SimpleNamespace(capabilities_models=["model"], latest_runtime={"lanes": [lane]})
+        return_value=ProviderSession(
+            9001, "worker", MagicMock(), capabilities_models={"model"}, latest_runtime={"lanes": [lane]}
+        )
     )
     assert await registry.select_lane_for_model(9001, "model", request_id="production") is None
     lease.register_request(9001, "model", 9002, "benchmark")
@@ -226,7 +228,9 @@ async def test_nightly_drain_preserves_admitted_requests_through_lane_selection_
     facade.on_request_start("admitted", 1, 9001, api_key_id=31)
     facade.reserve_worker_for_drain(9001, -31)
     lane = {"lane_id": "lane", "model": "model", "runtime_state": "running"}
-    session = SimpleNamespace(provider_id=9001, capabilities_models=["model"], latest_runtime={"lanes": [lane]})
+    session = ProviderSession(
+        9001, "worker", MagicMock(), capabilities_models={"model"}, latest_runtime={"lanes": [lane]}
+    )
     registry = LogosNodeRuntimeRegistry()
     registry._get_active_session = AsyncMock(return_value=session)
     try:
@@ -344,7 +348,9 @@ def test_lost_execution_lease_blocks_worker_mutations_but_allows_cleanup():
 async def test_admitted_production_survives_reservation_until_completion(action):
     registry = LogosNodeRuntimeRegistry()
     lane = {"lane_id": "lane", "model": "drain-model", "runtime_state": "running"}
-    session = SimpleNamespace(provider_id=9010, capabilities_models=["drain-model"], latest_runtime={"lanes": [lane]})
+    session = ProviderSession(
+        9010, "worker", MagicMock(), capabilities_models={"drain-model"}, latest_runtime={"lanes": [lane]}
+    )
     registry._get_active_session = AsyncMock(return_value=session)
     facade = LogosNodeSchedulingDataFacade(MagicMock())
     provider = MagicMock(provider_id=9010)
@@ -414,7 +420,9 @@ async def test_rerouted_production_keeps_destination_admission_during_benchmark(
         classified_models=[(model_id, 1.0, 1)],
     )
     lane = {"lane_id": "destination-lane", "model": model, "runtime_state": "running"}
-    session = SimpleNamespace(provider_id=destination, capabilities_models=[model], latest_runtime={"lanes": [lane]})
+    session = ProviderSession(
+        destination, "worker", MagicMock(), capabilities_models={model}, latest_runtime={"lanes": [lane]}
+    )
     registry = LogosNodeRuntimeRegistry()
     registry._get_active_session = AsyncMock(return_value=session)
     try:
@@ -471,6 +479,7 @@ def test_reclaim_selects_unreserved_alternative(lease):
     planner = object.__new__(CapacityPlanner)
     planner._facade = MagicMock()
     planner._facade.get_scheduler_queue_depth_by_model_name.return_value = 0
+    planner._lane_idle_since = {}
     target = SimpleNamespace(lane_id="target", model_name="target", gpu_devices=None)
     reserved = SimpleNamespace(lane_id="reserved", model_name="model")
     alternative = SimpleNamespace(
@@ -524,23 +533,20 @@ async def test_queue_dispatch_admits_request_before_waiter_resumes():
 async def test_released_queue_request_keeps_transport_access_during_benchmark(action):
     import asyncio
 
-    from logos.pipeline.base_scheduler import BaseScheduler
+    from logos.pipeline.correcting_scheduler import ClassificationCorrectingScheduler
 
     queue = PriorityQueueManager()
     future = asyncio.get_running_loop().create_future()
     queue.enqueue(future, 1, request_id="released-production", api_key_id=12)
     facade = MagicMock()
     facade.is_provider_cordoned.return_value = False
+    facade.unqueued_context_limit.return_value = float("inf")
     facade.get_model_name.return_value = "queued-model"
     facade.get_model_status.return_value = SimpleNamespace(active_requests=0)
     facade.get_parallel_capacity.return_value = (1, None)
-    scheduler = SimpleNamespace(
-        _model_registry={(1, 9030): "logosnode"},
-        _logosnode=facade,
-        _queue_mgr=queue,
-        _admission_batch_limit=lambda *args: 1,
-    )
-    BaseScheduler.reevaluate_model_queues(scheduler, "queued-model")
+    scheduler = ClassificationCorrectingScheduler(queue, facade, MagicMock(), {(1, 9030): "logosnode"})
+    scheduler._admission_batch_limit = lambda *_: 1
+    scheduler.reevaluate_model_queues("queued-model")
     # The queue release is scheduled, but its waiter has not resumed yet.
     benchmark_reservations.reserve(9030, "queued-model", 9031)
     try:

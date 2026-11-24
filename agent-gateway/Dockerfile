@@ -12,8 +12,11 @@
 #
 # It stays a *template*: the image's entrypoint runs envsubst over
 # /etc/nginx/templates at container start, which is what puts
-# ${LOGOS_AGENT_API_KEY} into the live configuration — the key belongs in
-# the running container, not in an image layer.
+# ${LOGOS_INTERNAL_SECRET} into the live configuration — the key belongs in
+# the running container, not in an image layer. internal-secret.envsh runs
+# just before envsubst and escapes the secret for the quoted string it is
+# placed in.
 FROM nginx:1.31-alpine
 
 COPY agent-gateway/nginx.conf /etc/nginx/templates/default.conf.template
+COPY --chmod=755 agent-gateway/internal-secret.envsh /docker-entrypoint.d/18-internal-secret.envsh

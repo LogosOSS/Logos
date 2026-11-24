@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -203,16 +204,30 @@ class TestLaunchAndSupervision:
 
         return fake
 
-    async def test_failed_launch_removes_its_container_and_binds_its_own_artifacts(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("remove_fails", [False, True])
+    async def test_failed_launch_removes_its_container_and_binds_its_own_artifacts(
+        self, monkeypatch, tmp_path, remove_fails
+    ):
         # A start that fails after the container exists must not leak it:
         # settlement removes the container by the id in the database, which is
         # still null at that point. And the artefact bind must be this
         # session's own directory on the host, not the shared volume.
-        from app import sessions
+        from app import controls, memory_budget, sessions
 
         patched = replace(sessions.settings, artifact_root=str(tmp_path))
         monkeypatch.setattr(sessions, "settings", patched)
         monkeypatch.setattr(sessions.os, "chown", lambda *args, **kwargs: None)
+        memory_budget.set_for_tests(memory_budget.Budget(5800, None, "test"))
+        monkeypatch.setattr(sessions, "_held_memory", {})
+        monkeypatch.setattr(sessions.db, "reserved_memory_mb", self._async_value(0))
+        can_exit = asyncio.Event()
+
+        async def container_state(cid):
+            assert cid == "cid-7"
+            await can_exit.wait()
+            return "gone", None
+
+        monkeypatch.setattr(sessions.docker_engine, "container_state", container_state)
         created: list = []
         removed: list = []
         starts: list = []
@@ -233,6 +248,16 @@ class TestLaunchAndSupervision:
 
         async def fake_remove(cid, **_kwargs):
             removed.append(cid)
+            if remove_fails and cid == "cid-7":
+                raise OSError("removal failed")
+
+        async def transition(_sid, target, **_fields):
+            assert target == SessionStatus.FAILED
+            assert (
+                bool(await sessions.memory_admission_block(controls.Controls(session_memory_override=4096)))
+                == remove_fails
+            )
+            return True
 
         async def noop(*_args, **_kwargs):
             return None
@@ -251,10 +276,13 @@ class TestLaunchAndSupervision:
         monkeypatch.setattr(
             sessions.db, "get_session", self._async_value({"container_id": None, "deploy_to_dev": False})
         )
-        monkeypatch.setattr(sessions.db, "transition_session", self._async_value(True))
+        monkeypatch.setattr(sessions.db, "transition_session", transition)
         monkeypatch.setattr(sessions.db, "add_event", noop)
 
-        await sessions.manager._launch(self.SESSION)
+        await sessions.manager._launch({**self.SESSION, "memory_mb": 4096})
+        can_exit.set()
+        await asyncio.gather(*sessions._release_tasks)
+        assert await sessions.reserved_memory_mb() == 0
 
         # Neither container leaks: the helper removes its own, the launch
         # removes the agent container it just failed to start.
@@ -1021,7 +1049,7 @@ class TestAnAnswerThatWasNeverWritten:
         async def get_session(_session_id):
             return row
 
-        async def post_issue_comment(number, body):
+        async def post_issue_comment(number, body, *, footer):
             posted.append((number, body))
             return f"https://github.com/x/y/issues/{number}#issuecomment-1"
 
@@ -1132,7 +1160,7 @@ class TestAnAnswerThatWasNeverWritten:
         async def get_session(_session_id):
             return row
 
-        async def post_issue_comment(number, body):
+        async def post_issue_comment(number, body, *, footer):
             await asyncio.sleep(0)  # let a concurrent caller in, as the loop does
             posted.append((number, body))
             return f"https://github.com/x/y/issues/{number}#issuecomment-1"
@@ -2825,14 +2853,32 @@ class TestScreenshotOrchestration:
         return sessions
 
     async def test_screenshots_are_captured_in_settlement_without_a_deploy(self, monkeypatch, tmp_path):
-        from app import sessions
+        from app import controls, memory_budget, sessions
 
         self._patch_base(monkeypatch, tmp_path)
+        row = {**self.SESSION_ROW, "memory_mb": 4096}
+        memory_budget.set_for_tests(memory_budget.Budget(5800, None, "test"))
+        monkeypatch.setattr(sessions, "_held_memory", {})
+        manager = sessions.SessionManager()
+        monkeypatch.setattr(sessions.db, "session_memory_mb", self._async_value(4096))
+        monkeypatch.setattr(sessions, "_session_memory", {})
+        # Fail on the first admission attempt if settlement retained the only slot.
+        monkeypatch.setattr(manager, "_hold_memory", partial(manager._hold_memory, timeout_s=0))
+
+        async def transition(_sid, status, **_fields):
+            row["status"] = status.value
+            return True
+
+        async def reserved(_default_mb):
+            return 0 if row["status"] == "succeeded" else 4096
+
         created: list = []
         removed: list = []
         events: list = []
 
         async def fake_create(**kwargs):
+            assert row["status"] == "succeeded" and "cid-7" in removed
+            assert await sessions.reserved_memory_mb() == 4096
             created.append(kwargs)
             return f"cid-shot-{len(created)}"
 
@@ -2840,6 +2886,9 @@ class TestScreenshotOrchestration:
             return 0
 
         async def fake_remove(cid, **_kwargs):
+            if cid == "cid-7":
+                assert row["status"] == "succeeded"
+                assert await sessions.memory_admission_block(controls.Controls(session_memory_override=4096))
             removed.append(cid)
 
         async def fake_start(_cid):
@@ -2852,11 +2901,14 @@ class TestScreenshotOrchestration:
         monkeypatch.setattr(sessions.docker_engine, "start_container", fake_start)
         monkeypatch.setattr(sessions.docker_engine, "wait_container", fake_wait)
         monkeypatch.setattr(sessions.docker_engine, "remove_container", fake_remove)
-        monkeypatch.setattr(sessions.db, "get_session", self._async_value(self.SESSION_ROW))
-        monkeypatch.setattr(sessions.db, "transition_session", self._async_value(True))
+        monkeypatch.setattr(sessions.db, "get_session", self._async_value(row))
+        monkeypatch.setattr(sessions.db, "transition_session", transition)
         monkeypatch.setattr(sessions.db, "add_event", fake_event)
 
-        await sessions.manager._settle(7, exit_code=0, error=None)
+        monkeypatch.setattr(sessions.db, "reserved_memory_mb", reserved)
+
+        await manager._settle(7, exit_code=0, error=None)
+        assert await sessions.reserved_memory_mb() == 0
 
         base = sessions.settings.dev_base_url.rstrip("/")
         # One one-shot container per requested page, pointed at the session's
@@ -2870,6 +2922,49 @@ class TestScreenshotOrchestration:
         assert removed == ["cid-7", "cid-shot-1", "cid-shot-2"]
         names = [p["name"] for k, p in events if k == EventKind.SCREENSHOT]
         assert names == ["00-dashboard.png", "01-models.png"]
+
+    @pytest.mark.parametrize(("budget_mb", "expected_count"), [(5800, 1), (8192, 2)])
+    async def test_surviving_screenshots_each_keep_their_memory(self, monkeypatch, tmp_path, budget_mb, expected_count):
+        from app import memory_budget, sessions
+
+        self._patch_base(monkeypatch, tmp_path)
+        memory_budget.set_for_tests(memory_budget.Budget(budget_mb, None, "test"))
+        monkeypatch.setattr(sessions, "_held_memory", {})
+        monkeypatch.setattr(sessions, "_session_memory", {7: 4096})
+        manager = sessions.SessionManager()
+        monkeypatch.setattr(manager, "_hold_memory", partial(manager._hold_memory, timeout_s=0))
+        monkeypatch.setattr(sessions.db, "get_session", self._async_value(self.SESSION_ROW))
+        monkeypatch.setattr(sessions.db, "reserved_memory_mb", self._async_value(0))
+        monkeypatch.setattr(sessions.db, "add_event", self._async_value(None))
+        monkeypatch.setattr(sessions.docker_engine, "start_container", self._async_value(None))
+        monkeypatch.setattr(sessions.docker_engine, "wait_container", self._async_value(None))
+        created = []
+        stopped = asyncio.Event()
+
+        async def create(**kwargs):
+            created.append(kwargs["name"])
+            assert await sessions.reserved_memory_mb() == len(created) * 4096
+            return created[-1]
+
+        async def remove(_cid):
+            raise OSError("still running")
+
+        async def state(cid):
+            await stopped.wait()
+            return "gone", None
+
+        monkeypatch.setattr(sessions.docker_engine, "create_screenshot_container", create)
+        monkeypatch.setattr(sessions.docker_engine, "remove_container", remove)
+        monkeypatch.setattr(sessions.docker_engine, "container_state", state)
+
+        try:
+            await manager._capture_screenshots(7, None)
+            assert len(created) == expected_count
+            assert await sessions.reserved_memory_mb() == expected_count * 4096
+        finally:
+            stopped.set()
+            await asyncio.gather(*sessions._release_tasks)
+        assert await sessions.reserved_memory_mb() == 0
 
     async def test_screenshots_wait_for_a_dispatched_deploy_to_finish(self, monkeypatch, tmp_path):
         from app import sessions
@@ -3940,7 +4035,7 @@ class TestReplyDelivery:
         (tmp_path / "7" / "reply.md").write_text("the answer")
         attempts: list = []
 
-        async def failing_reply(_target, _body):
+        async def failing_reply(_target, _body, *, footer):
             raise RuntimeError("502 from GitHub")
 
         async def record(session_id, *, delivered):
@@ -3968,7 +4063,7 @@ class TestReplyDelivery:
         async def owing(_max_attempts):
             return [{"id": 7, "reply_target": "issue:772", "reply_attempts": 1}]
 
-        async def send(target, body):
+        async def send(target, body, *, footer):
             posted.append((target, body))
             return "https://github.com/x/y#c9"
 
@@ -3995,7 +4090,7 @@ class TestReplyDelivery:
         (tmp_path / "7" / "reply.md").write_text("the answer")
         posted: list = []
 
-        async def send(target, body):
+        async def send(target, body, *, footer):
             posted.append(target)
             return "url"
 
@@ -4029,7 +4124,7 @@ class TestReplyDelivery:
         async def record(session_id, *, delivered):
             attempts.append((session_id, delivered))
 
-        async def send(_target, _body):
+        async def send(_target, _body, *, footer):
             raise AssertionError("a failed look-up must not reach the POST")
 
         monkeypatch.setattr(sessions.db, "get_session", self._async_value({"reply_target": "issue:772"}))
@@ -4050,7 +4145,7 @@ class TestReplyDelivery:
         (tmp_path / "7" / "reply.md").write_text("x" * 80_000)
         posted: list = []
 
-        async def send(_target, body):
+        async def send(_target, body, *, footer):
             posted.append(body)
             return "url"
 
@@ -4098,7 +4193,7 @@ class TestReplyDelivery:
         posted: list = []
         attempts: list = []
 
-        async def send(target, body):
+        async def send(target, body, *, footer):
             posted.append((target, body))
             if len(posted) == 1:
                 raise RuntimeError("the confirmation never arrived")
@@ -4217,11 +4312,11 @@ class TestReviewReplyDelivery:
                 ]
             )
 
-        async def fake_reply(number, comment_id, body):
+        async def fake_reply(number, comment_id, body, *, footer):
             recorded["threads"].append((number, comment_id, body))
             return f"https://github.com/x/y#issuecomment-{comment_id}"
 
-        async def fake_summary(number, body):
+        async def fake_summary(number, body, *, footer):
             recorded["summaries"].append((number, body))
             return f"https://github.com/x/y#issuecomment-{number}"
 
@@ -4559,7 +4654,7 @@ class TestReviewReplyDelivery:
         (directory / "replies" / "101.md").write_text("one")
         posted_remotely = {"n": 0}
 
-        async def lost_confirmation(number, comment_id, body):
+        async def lost_confirmation(number, comment_id, body, *, footer):
             posted_remotely["n"] += 1
             if posted_remotely["n"] == 1:
                 raise RuntimeError("the confirmation never arrived")
@@ -4600,7 +4695,7 @@ class TestReviewReplyDelivery:
         (directory / "reply.md").write_text("the body point")
         posted_remotely = {"n": 0}
 
-        async def lost_summary(number, body):
+        async def lost_summary(number, body, *, footer):
             posted_remotely["n"] += 1
             if posted_remotely["n"] == 1:
                 raise RuntimeError("the confirmation never arrived")
@@ -4639,7 +4734,7 @@ class TestReviewReplyDelivery:
         async def gone(_number, _review_id):
             raise sessions.github.GitHubError("the review is gone (404)", status=404)
 
-        async def lost_summary(number, body):
+        async def lost_summary(number, body, *, footer):
             posted_remotely["n"] += 1
             if posted_remotely["n"] == 1:
                 raise RuntimeError("the confirmation never arrived")
@@ -4688,7 +4783,7 @@ class TestReviewReplyDelivery:
                 raise RuntimeError("rate limited")
             recorded["re_requests"].extend(logins)
 
-        async def post_summary(number, body):
+        async def post_summary(number, body, *, footer):
             posted["summary"] = True
             recorded["summaries"].append((number, body))
             return f"https://github.com/x/y#issuecomment-{number}"
@@ -4877,7 +4972,7 @@ class TestReviewReplyDelivery:
         (directory / "reply.md").write_text("a" * 40_000)
         posted = {"n": 0}
 
-        async def flaky_post(number, body):
+        async def flaky_post(number, body, *, footer):
             posted["n"] += 1
             if posted["n"] == 1:
                 raise RuntimeError("the confirmation never arrived")
@@ -5127,7 +5222,8 @@ class TestWorkspaceHousekeeping:
 
         await sessions.SessionManager().sweep_workspaces()
 
-        assert removed_volumes == ["logos_agent_ws_issue-812-oom"]
+        # The workspace's cache volume goes with it.
+        assert removed_volumes == ["logos_agent_ws_issue-812-oom", "logos_agent_cache_issue-812-oom"]
         assert archived == [3]
         # Deleting the row would cascade into every finished session in it:
         # the history, the trigger references that keep assignments from
@@ -5355,7 +5451,7 @@ class TestAdmissionMeasuresTheRightLane:
         async def claim(_limit, *, include_triggered: bool = True):
             return []
 
-        async def claim_session(_session_id, *, trigger_quota=None):
+        async def claim_session(_session_id, *, trigger_quota=None, memory_mb=None):
             return None
 
         async def none(_status):
@@ -5376,6 +5472,75 @@ class TestAdmissionMeasuresTheRightLane:
         # one model it is about to admit.
         assert lanes[0] == policy.local_deployments
         assert lanes[-1] == frozenset({("15", "2")})
+
+    async def test_an_unrelated_model_without_telemetry_does_not_hold_back_the_default(self, monkeypatch):
+        """A queued session on the default alias starts while another lane of the key is unknown."""
+        from app import capacity, model_policy, sessions
+
+        healthy = frozenset({("15", "1")})
+        policy = model_policy.ModelPolicy(
+            local_models=frozenset({"big-model", "local-most-powerful", "embedder"}),
+            offered=("big-model", "embedder"),
+            local_deployments=frozenset({("15", "1"), ("15", "2")}),
+            deployments_by_model={
+                "big-model": healthy,
+                "local-most-powerful": healthy,
+                "embedder": frozenset({("15", "2")}),
+            },
+            canonical_names={"local-most-powerful": "big-model"},
+            ok=True,
+            unknown=False,
+            detail="two local models",
+        )
+        monkeypatch.setattr(model_policy, "settings", replace(model_policy.settings, default_model=""))
+        claimed: list = []
+
+        async def refresh():
+            return policy
+
+        async def read_load(timeout_s: float = 5.0, lane=None, ours=None, own_api_key_id=None):
+            if lane == healthy:
+                return capacity.Reading(
+                    load=0.0, busy_slots=0, total_slots=20, queue_total=0, ok=True, dynamic=True, available_slots=3
+                )
+            return capacity.Reading(
+                load=1.0,
+                busy_slots=0,
+                total_slots=0,
+                queue_total=0,
+                ok=False,
+                dynamic=True,
+                detail="no fresh engine-capacity observation for the runner's models",
+            )
+
+        async def peek(*, include_triggered: bool = True):
+            return {"id": 7, "model": None, "workspace_id": 1}
+
+        async def claim_session(session_id, *, trigger_quota=None, memory_mb=None):
+            claimed.append(session_id)
+            return None
+
+        async def none(_status):
+            return []
+
+        monkeypatch.setattr(model_policy, "refresh", refresh)
+        monkeypatch.setattr(model_policy, "_current", policy)
+        monkeypatch.setattr(capacity, "read_load", read_load)
+        monkeypatch.setattr(sessions.db, "next_queued_session", peek)
+        monkeypatch.setattr(sessions.db, "claim_session", claim_session)
+        monkeypatch.setattr(sessions.db, "sessions_in_status", none)
+
+        async def no_triggers():
+            return 0
+
+        monkeypatch.setattr(sessions.db, "count_active_trigger_sessions", no_triggers)
+        manager = sessions.SessionManager()
+        monkeypatch.setattr(manager, "_capacity_sample_available", lambda _reading: True)
+
+        await manager.scheduler_pass()
+
+        assert policy.resolve(None) == "local-most-powerful"
+        assert claimed == [7]
 
     async def test_nothing_queued_means_nothing_measured_twice(self, monkeypatch):
         from app import capacity, sessions
@@ -5477,7 +5642,7 @@ def _claim_one(fake_claim):
     existing fakes honest without each of them growing a second one.
     """
 
-    async def claim_session(_session_id: int, *, trigger_quota=None):
+    async def claim_session(_session_id: int, *, trigger_quota=None, memory_mb=None):
         taken = await fake_claim(1)
         return taken[0] if taken else None
 
@@ -5717,7 +5882,7 @@ class TestAPausedSessionThatCannotComeBack:
         async def peek(*, include_triggered: bool = True):
             return {"id": 37, "model": None, "workspace_id": 1}
 
-        async def claim_session(session_id, *, trigger_quota=None):
+        async def claim_session(session_id, *, trigger_quota=None, memory_mb=None):
             admitted.append(session_id)
             return None
 
@@ -6687,7 +6852,7 @@ class TestRequestedReviewDelivery:
             (tmp_path / "state" / "31").mkdir(parents=True, exist_ok=True)
             (tmp_path / "state" / "31" / "reviewed-sha").write_text(sha + "\n")
 
-        async def fake_create(number, body, comments, *, commit_id):
+        async def fake_create(number, body, comments, *, commit_id, footer):
             if refuse is not None:
                 raise github.GitHubError("refused", status=refuse)
             recorded["commits"].append(commit_id)

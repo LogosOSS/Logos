@@ -54,9 +54,13 @@ class SchedulingResult:
     is_cold_start: Optional[bool] = None
     ettft_estimate_ms: Optional[float] = None
     ettft_tier: Optional[str] = None
+    # The original prediction can refer to a different provider after queue dispatch.
+    ettft_provider_id: Optional[int] = None
     # Warmth of the chosen deployment at decision time:
     # -1 = cold, 0 = warm but idle, 1+x = running with x queued (None = cloud)
     warmth_state: Optional[int] = None
+    # Observed candidates, captured before reservation; never used for routing.
+    routing_candidates: Optional[List[Dict[str, Any]]] = None
 
     def __post_init__(self):
         if self.provider_metrics is None:
