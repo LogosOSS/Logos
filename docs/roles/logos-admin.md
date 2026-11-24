@@ -569,10 +569,14 @@ does not know. If the name looks like a known one, then Logos suggests the corre
 
 ### Calibrate a model
 
-A model without a calibration has no placement. The page shows **Calibration settings**
-instead of the editor.
+A model without a calibration has no placement. The page shows its running settings and calibration settings.
 
 ![Model page of a model that is not calibrated](/img/roles/logos-admin-node-model-calibrate.png)
+
+Select **Edit settings** to adjust the engine settings before calibration.
+Select **Save** to apply your changes.
+
+![Editing the settings of a model before calibration](/img/roles/logos-admin-node-model-edit-settings.png)
 
 1. Open the model page.
 2. Select **Calibrate model**.
@@ -582,6 +586,11 @@ The button shows **Calibrating…** while the worker measures the model.
 Before it starts, the page asks you to confirm. The page shows the result when the calibration is done.
 You can calibrate a model if its calibration is outdated in the same way.
 Select **Stop calibration** and confirm to end the calibration of the node. The model in progress stays uncalibrated.
+
+If the page shows **Calibration not supported**, the worker cannot load the model.
+Select **Open the error report** to see the **Error report** for that model.
+
+![Unsupported calibration with the link to the model error report](/img/roles/logos-admin-node-model-unsupported.png)
 
 ### Connect a model
 

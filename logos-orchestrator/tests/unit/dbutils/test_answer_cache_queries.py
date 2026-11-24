@@ -156,14 +156,46 @@ def test_a_cache_miss_is_written_as_false_not_dropped():
     assert any(params.get("cache_hit") is False for params in written)
 
 
+def test_a_miss_writes_its_similarity_nearest_entry_and_agreement():
+    db = _db()
+
+    db.update_log_entry_metrics(
+        request_id="req-3",
+        cache_hit=False,
+        cache_similarity=0.84,
+        cache_nearest_entry_id=7,
+        cache_top_k_agreed=True,
+    )
+
+    written = [_params_of(call) for call in db.session.execute.call_args_list]
+    assert any(
+        params.get("cache_similarity") == 0.84
+        and params.get("cache_nearest_entry_id") == 7
+        and params.get("cache_top_k_agreed") is True
+        for params in written
+    )
+
+
+def test_disagreement_is_written_as_false_not_dropped():
+    # False means "the top k disagreed"; dropping it would look like
+    # "no comparison ran".
+    db = _db()
+
+    db.update_log_entry_metrics(request_id="req-4", cache_hit=False, cache_top_k_agreed=False)
+
+    written = [_params_of(call) for call in db.session.execute.call_args_list]
+    assert any(params.get("cache_top_k_agreed") is False for params in written)
+
+
 def test_a_cache_hit_settles_its_log_row_and_counts_the_hit_in_one_commit():
     db = _db()
 
-    db.finalize_cache_hit_row(55, 7, request_id="req-1")
+    db.finalize_cache_hit_row(55, 7, similarity=0.93, request_id="req-1")
 
     log_params, hit_params = (_params_of(call) for call in db.session.execute.call_args_list)
     assert log_params["log_id"] == 55
     assert log_params["entry_id"] == 7
+    assert log_params["similarity"] == 0.93
     assert log_params["request_id"] == "req-1"
     assert log_params["timestamp"] is not None
     assert hit_params == {"entry_id": 7}
@@ -178,17 +210,18 @@ def test_a_cache_hit_is_settled_at_zero_cost_and_finalised(monkeypatch):
     monkeypatch.setattr(dbmanager, "text", lambda sql: sql)  # keep the statement inspectable
     db = _db()
 
-    db.finalize_cache_hit_row(55, 7)
+    db.finalize_cache_hit_row(55, 7, similarity=0.93)
 
     log_update = " ".join(str(db.session.execute.call_args_list[0].args[0]).split())
     assert "settled_cost_micro_cents = 0" in log_update
     assert "cost_finalized = TRUE" in log_update
+    assert "cache_top_k_agreed = TRUE" in log_update
 
 
 def test_a_pending_log_reference_is_not_written_as_a_row():
     db = _db()
 
-    db.finalize_cache_hit_row("pending", 7)
+    db.finalize_cache_hit_row("pending", 7, similarity=0.93)
 
     db.session.execute.assert_not_called()
     db.session.commit.assert_not_called()

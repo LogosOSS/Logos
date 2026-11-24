@@ -99,6 +99,7 @@
     <include file="liquibase/changelog/092_automatic_workflow_analysis.xml"/>
     <include file="liquibase/changelog/093_agent_activity.xml"/>
     <include file="liquibase/changelog/094_security_feed_retry_window.xml"/>
+    <include file="liquibase/changelog/096_log_entry_cache_lookup.xml"/>
     <include file="liquibase/changelog/097_requested_model_license.xml"/>
     <include file="liquibase/changelog/098_model_license_approvals_nullable_user.xml"/>
     <include file="liquibase/changelog/099_requested_model_use_policy.xml"/>

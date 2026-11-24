@@ -80,12 +80,20 @@ class Match:
             there was nothing to compare with). Set for rejected questions
             too.
         label: The label of the most similar vector, or None.
+        agreed: Whether the ``k`` most similar vectors all carry the same label.
+            Does not depend on the threshold. False when there were fewer than
+            ``k`` vectors.
+        entry_id: The stored entry's database id for ``index``. Never set here
+            (this module sees only vectors); the answer cache fills it in.
+            None when there was nothing to compare with.
     """
 
     accepted: bool
     index: Optional[int]
     similarity: float
     label: Optional[str]
+    agreed: bool = False
+    entry_id: Optional[int] = None
 
 
 def best_match(
@@ -136,10 +144,11 @@ def best_match(
     best_similarity = float(similarities[best])
     best_label = labels[best]
 
-    accepted = (
-        len(vectors) >= k and best_similarity >= threshold and all(labels[int(i)] == best_label for i in order[:k])
-    )
-    return Match(accepted=accepted, index=best, similarity=best_similarity, label=best_label)
+    agreed = len(vectors) >= k and all(labels[int(i)] == best_label for i in order[:k])
+
+    accepted = agreed and best_similarity >= threshold
+
+    return Match(accepted=accepted, index=best, similarity=best_similarity, label=best_label, agreed=agreed)
 
 
 def decide_reuse(

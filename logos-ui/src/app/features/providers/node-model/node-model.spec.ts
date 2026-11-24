@@ -950,6 +950,24 @@ describe('NodeModel', () => {
       expect(root.textContent).not.toContain('when it calibrates this model');
     });
 
+    it('links an unsupported model to the error report of its calibration', async () => {
+      service['getNodeInsights'].mockResolvedValue(
+        insights([
+          insight({
+            row: false,
+            configured: false,
+            model_id: 9,
+            calibration: { status: 'unsupported', reason: 'Needs more memory than the node has.', results: [] },
+          }),
+        ]),
+      );
+      const root = await create();
+
+      const link = root.querySelector<HTMLAnchorElement>('.banner--err a.banner-action')!;
+      expect(link.textContent).toContain('Open the error report');
+      expect(link.getAttribute('href')).toBe('/models/9/details?tab=error_report');
+    });
+
     it('offers it again for an outdated calibration and says why', async () => {
       service['getNodeInsights'].mockResolvedValue(
         insights([insight({ calibration: { status: 'outdated', reason: null, results: [] } })]),
@@ -1260,6 +1278,20 @@ describe('NodeModel', () => {
       expect(root.textContent).toContain('can mark the calibration of this model as outdated');
     });
 
+    it('points the toggle of All engine settings to the right when closed and down when open', async () => {
+      const root = await open();
+      const toggle = (): HTMLElement => root.querySelector<HTMLElement>('.all-toggle')!;
+
+      expect(toggle().querySelector('.pi-chevron-right')).not.toBeNull();
+      expect(toggle().querySelector('.pi-chevron-down')).toBeNull();
+
+      toggle().click();
+      fixture.detectChanges();
+
+      expect(toggle().querySelector('.pi-chevron-down')).not.toBeNull();
+      expect(toggle().querySelector('.pi-chevron-right')).toBeNull();
+    });
+
     it('narrows the list to what the filter matches and opens the lower part for it', async () => {
       const root = await open();
 
@@ -1353,6 +1385,29 @@ describe('NodeModel', () => {
       expect(button().textContent).toContain('Use recommendation');
     });
 
+    it.each([
+      ['a fractional KV size', { tensor_parallel_size: 4, kv_cache_memory_bytes: '2.5G', max_model_len: 5120 }],
+      ['a context that is no multiple of 1,024', { tensor_parallel_size: 4, kv_cache_memory_bytes: '2G', max_model_len: 5000 }],
+      ['a KV size above what was measured', { tensor_parallel_size: 4, kv_cache_memory_bytes: '64G', max_model_len: 5120 }],
+    ])('shows the recommendation as in use after applying it with %s', async (_name, settings) => {
+      const best = { benchmark_id: 7, throughput: 52.3, settings, recorded_at: null };
+      service['getNodeInsights'].mockResolvedValue({
+        ...insights([
+          insight({ benchmark: { best_eligible: best, best_observed: best, current: { tensor_parallel_size: 4, max_model_len: 32768 }, eligible_for_comparison: true } }),
+        ]),
+        gpus,
+      });
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+      const button = (): HTMLButtonElement => root.querySelector<HTMLButtonElement>('.banner--rec button')!;
+      button().click();
+      fixture.detectChanges();
+      // The editor takes whole GB inside the measured range and contexts in steps of 1,024; that counts as applied.
+      expect(button().disabled).toBe(true);
+      expect(button().textContent).toContain('Recommendation in use');
+    });
+
     it('offers batch values of a benchmark that the stored entry does not set, and puts them in the editor', async () => {
       const best = { benchmark_id: 7, throughput: 52.3, settings: { max_num_seqs: 64, max_num_batched_tokens: 4096 }, recorded_at: null };
       service['getNodeInsights'].mockResolvedValue({
@@ -1420,6 +1475,26 @@ describe('NodeModel', () => {
       fixture.detectChanges();
 
       expect(root.querySelector('[aria-labelledby="cur-title"]')).toBeNull();
+    });
+
+    it('uses the full width while editing a model with neither a stored placement nor a benchmark', async () => {
+      service['getNodeInsights'].mockResolvedValue(insights([insight({ row: false, configured: false })]));
+      service['getNodeConfig'].mockResolvedValue({ ...config, entries: [] });
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      expect(root.querySelector('.grid')!.classList).toContain('grid--single');
+      expect(root.querySelectorAll('.grid > .stack').length).toBe(1);
+    });
+
+    it('keeps the right column while editing a model that has a stored placement', async () => {
+      const root = await create();
+      root.querySelector<HTMLElement>('.head button.btn-primary')!.click();
+      fixture.detectChanges();
+
+      expect(root.querySelector('.grid')!.classList).not.toContain('grid--single');
+      expect(root.querySelector('[aria-labelledby="cur-title"]')).not.toBeNull();
     });
   });
 

@@ -405,6 +405,21 @@ def test_an_answer_cache_miss_rides_the_completion_write_as_false(monkeypatch):
     assert [call["cache_hit"] for call in calls if call["request_id"] == "req-miss"] == [False]
 
 
+def test_an_answer_cache_miss_carries_its_lookup_values_to_the_completion_write(monkeypatch):
+    """The threshold sweep recomputes each decision from these three values."""
+    recorder, calls = _make_recorder(monkeypatch, {}, {})
+    _patch_prom(monkeypatch)
+
+    recorder.record_answer_reuse_miss("req-miss", similarity=0.84, nearest_entry_id=7, agreed=False)
+    recorder.record_complete("req-miss", result_status="success")
+
+    [row] = [call for call in calls if call["request_id"] == "req-miss"]
+    assert row["cache_hit"] is False
+    assert row["cache_similarity"] == 0.84
+    assert row["cache_nearest_entry_id"] == 7
+    assert row["cache_top_k_agreed"] is False
+
+
 def test_record_provider_call_rides_the_completion_write(monkeypatch):
     """The statistics page splits a finished request's wall time at the
     provider call, not at scheduling — the value must land on the same

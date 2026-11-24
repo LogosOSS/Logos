@@ -289,7 +289,7 @@ describe('NodeSettingsPage', () => {
 
     saveButton(root).click();
     await settle();
-    expect(root.textContent).toContain('Another admin saved');
+    expect(root.textContent).toContain('This node was saved elsewhere');
 
     service['getNodeSettings'].mockResolvedValue(stored({ gpu_devices: '0' }, 5));
     (Array.from(root.querySelectorAll('button')).find((b) => b.textContent?.includes('Reload')) as HTMLButtonElement).click();

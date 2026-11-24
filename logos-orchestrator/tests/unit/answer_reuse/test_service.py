@@ -223,6 +223,7 @@ def test_a_close_agreeing_neighbourhood_returns_the_closest_entry():
     assert answer.intent == "track_order"
     assert answer.similarity == pytest.approx(match.similarity)
     assert match.accepted
+    assert match.entry_id == 7
 
 
 def test_the_question_is_embedded_with_prefix_and_without_placeholders():
@@ -243,6 +244,7 @@ def test_a_far_question_is_a_miss_that_reports_its_similarity():
     assert answer is None
     assert not match.accepted
     assert match.similarity == pytest.approx(0.0, abs=1e-6)
+    assert match.entry_id == 0
 
 
 def test_an_empty_scope_is_a_miss_without_running_the_model():
@@ -253,6 +255,7 @@ def test_an_empty_scope_is_a_miss_without_running_the_model():
     assert answer is None
     assert match.index is None
     assert encoded == []
+    assert match.entry_id is None
 
 
 def test_a_scope_with_fewer_entries_than_k_is_a_miss_without_running_the_model():
@@ -264,6 +267,7 @@ def test_a_scope_with_fewer_entries_than_k_is_a_miss_without_running_the_model()
     assert answer is None
     assert not match.accepted
     assert encoded == []
+    assert match.entry_id is None
 
 
 def test_a_scope_never_answers_from_another_scope():
