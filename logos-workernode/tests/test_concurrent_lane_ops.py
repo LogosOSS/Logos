@@ -282,6 +282,25 @@ async def test_second_load_places_on_a_gpu_no_other_load_starts_on() -> None:
 
 
 @pytest.mark.asyncio
+async def test_nightly_gpu_hold_excludes_new_loads_and_keeps_existing_requests_admitted() -> None:
+    manager = _placement_manager({0: 20000.0, 1: 15000.0})
+    manager._handles["production"] = _Handle(_lane("0"))  # noqa: SLF001
+    async with manager._lock.scoped(["benchmark"], [0]):  # noqa: SLF001
+        manager._claim_nightly_gpus("benchmark", frozenset({0}))  # noqa: SLF001
+        await asyncio.wait_for(manager.increment_active_requests("production"), timeout=2)
+    assert manager._active_requests["production"] == 1  # noqa: SLF001
+
+    placed = await manager._auto_place_gpu_devices("new", _lane())  # noqa: SLF001
+    assert placed.gpu_devices == "1"
+    with pytest.raises(RuntimeError, match="reserved for a nightly benchmark"):
+        await manager._auto_place_gpu_devices("explicit", _lane("0"))  # noqa: SLF001
+
+    await manager.release_nightly_gpu_budget("benchmark")
+    placed = await manager._auto_place_gpu_devices("explicit", _lane("0"))  # noqa: SLF001
+    assert placed.gpu_devices == "0"
+
+
+@pytest.mark.asyncio
 async def test_load_waits_when_only_a_starting_load_s_gpu_fits() -> None:
     manager = _placement_manager({0: 20000.0, 1: 1000.0})
     placed: list[str] = []

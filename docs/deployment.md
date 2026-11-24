@@ -623,16 +623,16 @@ This setting reads the deployment's own database. It does not copy Prod requests
 
 Nightly benchmarks require updates to the webservice, orchestrator, web application and selected workers.
 The webservice applies changelog `065_nightly_benchmarks.xml` before the new scheduler starts.
-Workers report `supports_benchmark_restart` in their runtime status.
-The activation API rejects workers without this capability.
+Workers report `supports_benchmark_restart` and `supports_nightly_gpu_budget` in their runtime status.
+These capabilities allow Logos to reserve the benchmark lane's GPUs and check capacity before each restart.
 All schedules default to disabled.
 
-The selected model requires 1 loaded, awake vLLM lane on its worker.
+Logos selects 1 vLLM lane or starts a temporary lane when needed.
 `LOGOS_MAINTENANCE_MAX_NODES` limits simultaneous maintenance workers. Its default is `1`.
 A value of `2` permits 2 workers at the same time.
 This limit also applies to manual calibration and benchmarks.
-The scheduler waits for each selected worker's existing requests to finish.
-No spare worker is required. If all workers are reserved, normal requests must wait.
+The scheduler waits for existing requests for the benchmarked model to finish.
+Other models on that worker keep serving. The round waits when the GPU group has insufficient memory for warm-up.
 The old `LOGOS_NIGHTLY_ALLOW_SINGLE_WORKER` variable no longer controls admission.
 
 Each night selects at most `LOGOS_NIGHTLY_MAX_PAIRS` enabled model/worker pairs.
@@ -647,7 +647,7 @@ A run stops after 5 minutes without output content or a successful request compl
 A stalled configuration gets at most 1 retry before 08:00.
 The existing 2-hour measurement timeout also applies.
 
-The scheduler restores the original worker configuration after each round.
+The scheduler restores the original lane configuration or removes the temporary lane after each round.
 The admitted pairs rotate through further rounds until 08:00.
 The daily limit counts distinct pairs. It does not limit the number of rounds.
 Completion is reported only after the final restoration.

@@ -4,9 +4,10 @@ title: Nightly Benchmarks
 
 # Nightly Benchmarks
 
-Logos admins enable or disable a nightly schedule for each model/worker pair on
-**Model Details → Performance**. Select **Benchmarks → Manage** to inspect the schedule and parameter values for a worker. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
-settings; the scheduler builds the plan again when the nightly run starts.
+Logos admins manage each model/worker pair under **Model Details → Performance → Overview → Nightly rotation**.
+Each worker tile shows its schedule status. Select a tile to see its maintenance window and request workload.
+The scheduler uses the worker's current settings to build the plan when the nightly run starts.
+Trials use explicit serving limits when the current settings are automatic.
 
 Schedules are off by default and persist in PostgreSQL. The nightly plan is independent
 of the manual benchmark editor. Disabling a schedule cancels its active run and
@@ -15,35 +16,30 @@ restores the worker before it returns to production.
 ## Enable, Inspect and Disable a Schedule
 
 See the [illustrated admin walkthrough](../roles/logos-admin.md#nightly-benchmarks)
-for screenshots of the plan and schedule controls.
+for screenshots of the schedule controls.
 
-![Run a benchmark and compact nightly status](../static/img/roles/logos-admin-nightly-benchmarks.png)
-
-Select **Manage** beside the intended worker to inspect its workload, schedule and results.
-
-![Nightly management with the schedule and test plan](../static/img/roles/logos-admin-nightly-plan.png)
+![Enabled nightly rotation in the performance overview](../static/img/roles/logos-admin-nightly-benchmarks.png)
 
 1. Sign in as a Logos Admin and open **Models**.
 2. Open the model's **Model Details → Performance** tab.
-3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Select **Manage** and review the time window and request workload.
-5. Select **Enable nightly runs**. The dialog explains any missing prerequisite.
-6. Check that the card shows **Enabled · in nightly rotation**.
+3. In **Overview**, select the worker tile under **Nightly rotation**.
+4. Review the time window and **Request workload**. Apply any dataset change before enabling the schedule.
+5. Select **Enable nightly rotation**. The worker shows any missing prerequisite beside the controls.
+6. Check for **Enabled** and a green dot beside the worker.
 
-The schedule persists after a page reload or browser close. To remove the pair
-from rotation, select **Manage → Disable nightly runs…** and confirm **Disable nightly runs**.
+The schedule persists after a page reload or browser close.
+To remove the pair from rotation, open its tile and select **Disable nightly rotation**.
+Confirm with **Disable nightly rotation**.
 Activation requires
 an updated, connected worker. Run admission also checks the lane and the other
 available workers.
 
-Select **Manage** to inspect the plan for this pair. The plan does not guarantee a reservation for tonight.
-The scheduler selects eligible pairs at runtime. Use **Run a benchmark** for the dataset editor and question previews.
-These controls configure manual runs. They do not alter the nightly workload.
+The scheduler selects eligible pairs at runtime. Use **Benchmarks → Customize** for the manual dataset editor and question previews.
 
-The next day, select **Manage**, then expand **Latest round results** and inspect each configuration's
-outcome, attempt and benchmark ID. Use **Overview** or **Analysis** for
-successful measurements. A finished plan can contain failed configurations;
-review individual outcomes before comparing throughput.
+After the nightly run, open **Overview**.
+If the model has more than one worker, then select the worker under **Worker**.
+Use **Timeline** and **Currently deployed** to inspect the results for that worker.
+Open **Analysis → Inspect saved runs** to inspect individual saved measurements.
 
 ## Results
 
@@ -56,7 +52,7 @@ Select **Run**, **Measured from → to**, **Before**, **After** or **Change** to
 Each sort control cycles through the initial order, ascending order and descending order.
 The third selection restores the initial order. Missing measurements remain last.
 A dash means the value or baseline is unavailable. Historical timestamps are not reconstructed.
-Select **Performance → Analysis** for **Charts and comparison** or **Run details and saved configurations**.
+Under **Performance → Analysis**, open **Compare parameter values** for matching runs or **Inspect saved runs** for individual configurations.
 
 ## Automatic Pair Rotation
 
@@ -141,23 +137,22 @@ The fixed output cap is not itself an optimization parameter.
 
 Completed GuideLLM reports are stored in `model_provider_benchmarks` and appear
 in the existing performance comparison. Internal inference requests use the
-existing `log_entry` logging path. The nightly control shows per-configuration
+existing `log_entry` logging path. The status endpoint reports per-configuration
 outcomes, retries and benchmark IDs. Failed or incomplete runs are not stored
-as successful throughput measurements. For saved request datasets, Logos automatically applies eligible improvements over the current production baseline.
-Hugging Face runs retain the original production settings.
+as successful throughput measurements. With a saved request dataset and one
+existing serving replica, Logos can apply an eligible improvement over the
+production baseline. Hugging Face runs retain the original production settings.
 
 ## Fixed Request Workloads
 
-Use **Request workload** to replace Hugging Face data for a nightly schedule.
-The manual benchmark editor remains independent.
+Select the worker tile under **Nightly rotation** to open **Request workload**.
+Use **Request workload** to replace Hugging Face data for the schedule.
 
-1. Choose **Recent FULL request logs** in the **Dataset** menu.
+1. Choose **Recent FULL request logs** in **Request workload**.
 2. Keep **Latest 100 requests** to use recent traffic regardless of age. For a time window, choose **Last 24 hours**, **Last 3 days** or **Last 7 days**.
 3. Select **Create and apply dataset**. Logos shows the number of requests saved. The selection ends when you create the dataset.
 
 On production, Logos reads the selected model’s most recent successful, replayable FULL requests from the production request log. The default selection takes up to 100 requests. A time window can include up to 500. Both selections stop at 5 MB. Benchmark traffic is excluded. Every baseline and candidate uses the same saved inputs until you apply another dataset. An empty window leaves the current selection in place.
-
-For a hand-picked dataset, open **Select individual request IDs**, enter a name and 1–100 distinct IDs, choose the provenance, then select **Create dataset** and **Apply dataset**.
 
 The database stores an ordered copy of the inputs and inference settings.
 It excludes request headers, API keys, user identities and response bodies.
@@ -247,7 +242,8 @@ Among eligible candidates, Logos saves the highest observed aggregate throughput
 The historical winner remains until an eligible measurement exceeds its recorded throughput.
 These checks prevent selection through shorter or truncated answers. They do not measure answer quality.
 After each completed plan, Logos selects the fastest eligible measurement from that plan.
-If it exceeds the current production baseline, then Logos applies its sequence and batch-token limits.
+When it beats the production baseline and the round used a single existing
+serving replica, Logos applies its sequence and batch-token limits.
 Logos compares measurements from the same frozen dataset and environment.
 An older throughput record alone cannot trigger adoption.
 If no eligible configuration improves throughput, then the original production settings return.
@@ -259,21 +255,28 @@ Automatic adoption applies to the running lane. Central node model configuration
 Logos allows up to 15 minutes for fresh readiness telemetry after a restart command succeeds.
 If adoption fails, then Logos records a separate notification for Logos Admins and tries to restore the original configuration.
 The notification links to the eligible benchmark and shows the parameter values, throughput gain, and failure reason.
-If rollback fails, then the worker remains reserved until recovery succeeds.
+If rollback fails, then the benchmark lane and its GPUs remain reserved until recovery succeeds.
 After an application restart, recovery completes the recorded adoption or restores the original settings.
 A disabled schedule cancels pending adoption.
 The round report identifies an adopted benchmark or an adoption failure.
 
-The **Performance → Overview** section contains the **Timeline** section.
+If the model has more than one worker, then use **Worker** in **Performance → Overview**.
+The selection changes **Currently deployed** and **Timeline**.
 Each completed run has one dot. Runs appear from left to right in completion order.
 The vertical axis shows output tokens per second (tok/s). Each stem starts at zero. An open circle marks a baseline.
 Trials show their change from the baseline of the same round, if available.
-Slower runs and excluded trials remain visible. Select a run to see its configuration and result.
-Select **Show all** to see more than the latest 6 runs.
+Slower runs and excluded trials remain visible. Select a run to open its configuration and result in a dialog.
+The collapsed timeline shows up to six runs, including the current deployment when measured.
+A blue ring marks its benchmark. Select **Deployed** to find it or **Show all** to see the full timeline.
+If the live settings cannot be matched, select **Last adoption** to find the last confirmed adoption in its timeline.
 The timeline separates workloads and test settings. Measurements can span worker releases.
-Read **When settings change** for the nightly adoption rule.
-Expand **What does Logos check?** for the limits on output length and request latency.
-Expand **Currently deployed → Configuration & selection details** to inspect current settings and selection failures.
+Expand **What does Logos check?** for the nightly adoption checks and examples of the request latency limit.
+Expand **Currently deployed → Configuration & selection details** to inspect **Serving settings** and **Run selection**.
+If a batching limit is unavailable, it shows **Not reported**.
+If no benchmark matches, then **Last confirmed adoption** can show the last adopted result and link to its benchmark.
+If a limit is unavailable and there is no saved adoption, then the summary shows **Live benchmark unverified**.
+Open **Why other runs were excluded** when it appears to see each run and its exclusion reasons.
+**Answer length changes** shows the baseline and trial token counts for each answer more than 20% shorter or longer. Request numbers follow the saved dataset order.
 A completed eligible winner is saved before the next trial starts.
 Recovery can apply this saved winner if a later trial is interrupted. Disabling the schedule cancels pending adoption.
 These measurements do not establish statistical significance.
@@ -320,23 +323,23 @@ The lock excludes new manual benchmarks until the batch finishes cleanup. A pers
 local-date claim limits distinct pairs after an application restart. Restored rounds can continue within the same window.
 Existing manual benchmarks finish before nightly admission.
 
-The selected worker must be online, healthy and not calibrating.
-No spare worker is required. The model must have exactly one existing,
-loaded and awake vLLM lane. Production requests cannot enter the reserved node;
-existing traffic drains before a benchmark starts.
-Requests already accepted by the scheduler can finish, including requests that still wait for transport access.
-New requests cannot use these exceptions. The exceptions end when each request finishes.
-Other workers remain available. Normal capacity-planner and manual lane mutations cannot alter the
-reserved node.
+The selected worker must be online, healthy and not calibrating. Logos measures one vLLM lane.
+If the model has no ready lane, then Logos can start a temporary lane.
+If the model has several replicas on the worker, then Logos directs benchmark requests to the selected lane.
+The scheduler lets requests already accepted for that model finish before the round starts.
+Other models on the same worker and other workers continue to serve requests.
 
-Original settings are journaled before mutation and restored when no eligible improvement exists,
-on cancellation and before a retry. Cleanup restarts the lane even when the
-settings did not change. A failed restart that removed the lane can recreate it
-from its original configuration. If restoration fails, the reservation and
-journal remain, and further nightly plans pause. The scheduler retries recovery
-before admitting other work, including after an application restart. It does
-not interrupt existing production requests if initial draining fails before
-any benchmark changed the worker.
+The worker reserves the selected GPU group for the benchmark lane. It checks the estimated GPU memory for the lane and its warm-up.
+The check uses live NVIDIA memory telemetry, an explicit KV-cache budget, and a calibrated or measured lane footprint.
+Existing production lanes can continue to serve on those GPUs. New loads and other changes that increase memory use on the group wait.
+If the benchmark cannot fit alongside existing lanes, then Logos waits for capacity and can retry within the maintenance window.
+Logos preserves existing production lanes when a temporary lane needs more capacity.
+
+Logos saves the benchmark lane configuration before it changes the lane. After testing, it restores that configuration or removes the temporary lane.
+Automatic adoption applies to rounds that use one existing serving replica.
+Cancellation and recovery use the same saved state.
+If restoration fails, then Logos keeps the reservation and journal and pauses further nightly plans.
+The scheduler checks for recovery after an application restart.
 
 Recovery uses a separate execution lock to detect an interrupted nightly run.
 A live execution, an unrelated job, or a manual benchmark claim prevents recovery.
@@ -345,7 +348,8 @@ It marks the job as failed only after the worker confirms that its requests ende
 The journal selects the production configuration. Unknown worker status keeps the recovery journal active.
 Job age alone never permits recovery.
 
-Recovery waits only for the lane it restores, and for other lanes of the same model.
+Recovery waits for the benchmark lane and other lanes of the same model.
+If a journal from an earlier version includes additional lanes, then recovery waits for those lanes too.
 It reads the request counters from the worker itself.
 Production traffic on other lanes of the worker does not hold the recovery back.
 The worker also refuses the restart while the lane still has requests.
@@ -357,21 +361,21 @@ The orchestrator's own request counter does not delay a recovery.
 A recovery that cannot finish keeps the maintenance slot.
 The **Maintenance** status on the statistics page offers **Release recovery** for it.
 Logos first asks the worker for its lanes.
-It releases the recovery only if the lane runs its original settings again.
+It releases the recovery only after the worker confirms the original settings,
+the restored lanes and the removal of any temporary benchmark lane.
 Then it marks the recovery as `interrupted_recovered` and frees the worker.
 Open benchmark jobs of this recovery are marked as failed.
 
-If the worker is offline, the lane is missing, or its settings differ, Logos refuses (HTTP 409).
+If the worker is offline or the lane inventory differs from the saved state, Logos refuses (HTTP 409).
 The box then offers **Force release**.
-A forced release does not check the lane.
-The lane keeps whatever settings it runs now, and those can be benchmark settings.
+A forced release leaves the worker in its current state, which can include a
+temporary benchmark lane, changed settings or lanes waiting to be restored.
 Check or restore the lane on the worker before you force the release.
 Logos refuses both actions while a recovery or one of its jobs is running.
 The orchestrator log and the audit log (`provider.nightly_recovery_released`) record every release.
 
-Metal workers with valid measured telemetry support `max_num_seqs` and `max_num_batched_tokens` changes.
-Metal does not permit GPU topology, memory, or attention backend overrides through this benchmark path.
-The scheduler checks worker support before it reserves the worker or consumes a nightly slot.
+Nightly GPU budgets require NVIDIA GPU telemetry. The scheduler checks worker support before it admits a round.
+Manual benchmarks on Metal support changes to `max_num_seqs` and `max_num_batched_tokens` with valid measured telemetry.
 
 The application retains its existing single-orchestrator routing architecture;
 this feature does not introduce multi-process worker-session sharing.
@@ -464,8 +468,7 @@ The old `LOGOS_NIGHTLY_ALLOW_SINGLE_WORKER` variable no longer controls admissio
 
 The configured maintenance limit applies to benchmarks and automatic calibration. An operator can start manual calibration on separate workers concurrently. Each worker accepts one calibration at a time, and active benchmarks or recovery block new calibrations.
 The selected worker must still be online, healthy and free of calibration.
-Existing requests drain first. New normal requests cannot enter a reserved worker.
-If all workers are reserved, normal requests must wait.
+Existing requests for the benchmarked model finish first. Other models on the same worker can continue to serve.
 All time limits, recovery checks and configuration restoration still apply.
 This setting does not enable schedules. Enable each intended model/worker pair separately.
 
@@ -559,7 +562,9 @@ last successful measurement. The current pair limit is the code constant
 |---|---|
 | `scheduled` | Enabled and waiting in the rotation. Check the time window and other pairs' priority. |
 | `unavailable` | Admission skipped the pair. Read the report for worker, lane or capacity requirements. No nightly slot was consumed. |
-| `preparing` / `running` | The pair has a nightly slot. The scheduler reserves the worker and executes its plan. |
+| `preparing` / `running` | The scheduler reserves the benchmark lane's GPU group and executes the plan. |
+| `waiting_for_capacity` | The round needs more GPU capacity. The scheduler can retry within the current maintenance window. |
+| `capacity_deferred` | The maintenance window ended while the round waited for GPU capacity. |
 | `continuing` | The production configuration is confirmed. Another round waits for its turn within this window. |
 | `completed` | The night finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
 | `window_closed` | No further configuration can start after 08:00. |
@@ -605,6 +610,7 @@ Before the first production activation, complete these steps:
 10. Test both sides of the 08:00 completion threshold with that clock.
 11. Set the maintenance limit to `2`.
 12. Verify parallel runs on different workers and sequential runs on the same worker.
-13. Verify that other workers still accept production traffic.
+13. Verify that other models on the selected worker still accept production traffic.
+14. Fill the selected GPUs and verify that the nightly round waits for capacity.
 
 A UI or database test alone does not verify an overnight run on real GPU hardware.

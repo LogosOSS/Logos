@@ -1,53 +1,30 @@
-@if (selectedRow(); as row) {
-  <section #selectedResult class="selected-result" tabindex="-1" aria-label="Selected benchmark result">
-    <h3>Benchmark #{{ row.run.id }}</h3>
-    <p>{{ datasetLabel(row.run) }} · {{ row.run.provider_name }} · {{ row.kind }}</p>
-    <dl class="results-summary">
-      <div><dt>Baseline (tok/s)</dt><dd>{{ row.before === null ? '—' : (row.before | number:'1.1-1') }}</dd></div>
-      <div><dt>Result (tok/s)</dt><dd>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }}</dd></div>
-      <div><dt>Change</dt><dd>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</dd></div>
-    </dl>
-    <p>{{ row.comparisonNote }}</p>
-    @if (row.selectionNote) { <p>{{ row.selectionNote }}</p> }
-    <p>{{ configuration(row.run) }}</p>
-    <h4>Changed parameters</h4>
-    @for (change of row.changes; track change) { <p>{{ change }}</p> }
-    @empty { <p>Current settings · no parameter changes</p> }
-    <p>Measured {{ (row.measurement?.started_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }} → {{ (row.measurement?.ended_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }}</p>
-  </section>
-} @else if (selectedRunId() !== null) {
-  <p role="status">Benchmark #{{ selectedRunId() }} is no longer available. Other saved results are shown below.</p>
-}
-@if (showHistory() && !activeProgress() && topRuns().length) {
-  <section class="top-configurations" aria-label="Top configurations so far">
-    <h3>Highest recorded throughput</h3>
-    <p class="results-note">Latest captured workload per provider. Older workloads are not ranked against it.</p>
-    @for (top of topRuns(); track top.run.model_provider_id) {
-      <article class="top-configuration">
-        <div class="results-heading">
-          <div><strong>{{ top.run.provider_name }}</strong><small>Run #{{ top.run.id }} · {{ top.run.recorded_at | date:'dd MMM yyyy, HH:mm Z' }}</small></div>
-          <strong class="top-configuration__rate">{{ top.rate | number:'1.1-1' }} <small>tok/s</small></strong>
-        </div>
-        <p class="results-note">{{ datasetLabel(top.run) }} · {{ top.run.sample_size }} requests
-          @for (setting of top.workload; track setting.key) {
-            @if (setting.captured && (setting.key === 'profile' || setting.key === 'max_concurrency' || setting.key === 'max_output_tokens')) { · {{ setting.label }}: {{ setting.value }} }
-          }
-        </p>
-        <div class="top-configuration__parameters">
-          @for (parameter of top.parameters; track parameter.key) {
-            @if (parameter.captured && ['max_num_seqs', 'max_num_batched_tokens', 'tensor_parallel_size', 'kv_cache_dtype'].includes(parameter.key)) { <span>{{ parameter.label }} <strong>{{ parameter.value }}</strong></span> }
-          }
-        </div>
-        <details>
-          <summary>Measured configuration</summary>
-          <div class="top-configuration__details">
-            <div><h4>Benchmark settings</h4><dl>@for (item of top.workload; track item.key) { <dt>{{ item.label }}</dt><dd>{{ item.value }}</dd> }</dl></div>
-            <div><h4>Serving parameters</h4><dl>@for (item of top.parameters; track item.key) { <dt>{{ item.label }}</dt><dd>{{ item.value }}</dd> }</dl></div>
-          </div>
-        </details>
-      </article>
-    }
-  </section>
+@if (selectedRunId(); as benchmarkId) {
+  <app-modal-form [visible]="true" [title]="'Benchmark #' + benchmarkId" (visibleChange)="$event || closeSelectedRun.emit()">
+    <div class="benchmark-result-dialog">
+      @if (selectedRow(); as row) {
+        <p>{{ datasetLabel(row.run) }} · {{ row.run.provider_name }} · {{ row.kind }}</p>
+        <dl class="results-summary">
+          <div><dt>Baseline (tok/s)</dt><dd>{{ row.before === null ? '—' : (row.before | number:'1.1-1') }}</dd></div>
+          <div><dt>Result (tok/s)</dt><dd>{{ row.after === null ? '—' : (row.after | number:'1.1-1') }}</dd></div>
+          <div><dt>Change</dt><dd>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</dd></div>
+        </dl>
+        <p>{{ row.comparisonNote }}</p>
+        @if (row.selectionNote) { <p>{{ row.selectionNote }}</p> }
+        <p>{{ configuration(row.run) }}</p>
+        <h4>Changed parameters</h4>
+        @for (change of row.changes; track change) { <p>{{ change }}</p> }
+        @empty { <p>Current settings · no parameter changes</p> }
+        <p>Measured {{ (row.measurement?.started_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }} → {{ (row.measurement?.ended_at | date:'dd MMM yyyy, HH:mm:ss Z') ?? '—' }}</p>
+      } @else if (loading()) {
+        <p role="status">Loading benchmark…</p>
+      } @else if (loadError()) {
+        <p role="alert">Could not load benchmark results.</p>
+      } @else {
+        <p role="status">This benchmark is no longer available.</p>
+      }
+    </div>
+    <div modal-footer><button type="button" class="btn-secondary" (click)="closeSelectedRun.emit()">Close</button></div>
+  </app-modal-form>
 }
 @if (showProgress()) {
   <section class="benchmark-progress" aria-label="Performance timeline">
@@ -55,31 +32,48 @@
     @if (activeProgress(); as chart) {
       @if (progress().length > 1) {
         <select class="timeline-dataset" aria-label="Timeline dataset" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
-          @for (group of progress(); track group.key) { <option [value]="group.key" [selected]="group.key === chart.key">{{ group.label }}</option> }
+          @for (group of progress(); track group.key) {
+            <option [value]="group.key" [selected]="group.key === chart.key">{{ deploymentGroups().has(group.key) ? 'Deployed · ' : '' }}{{ group.label }}</option>
+          }
         </select>
       } @else { <p class="results-note">{{ chart.context }}</p> }
 
       <figure class="timeline-chart">
-        <figcaption>Output throughput <span>(tok/s)</span></figcaption>
+        <figcaption>
+          <div>Output throughput <span>(tok/s)</span></div>
+          @if (deployedPoint(); as deployed) {
+            <button type="button" class="timeline-deployment" (click)="focusTimelineBenchmark(deployed.run.id)"
+              [attr.aria-label]="'Show currently deployed benchmark #' + deployed.run.id">Deployed · #{{ deployed.run.id }}</button>
+          } @else if (lastAdoptionPoint(); as adopted) {
+            <button type="button" class="timeline-deployment timeline-deployment--historical" (click)="focusTimelineBenchmark(adopted.run.id)"
+              [attr.title]="deploymentNote()" [attr.aria-label]="'Show last confirmed adoption, benchmark #' + adopted.run.id">Last adoption · #{{ adopted.run.id }}</button>
+          } @else if (deploymentNote(); as note) {
+            <span role="status">{{ note }}</span>
+          }
+        </figcaption>
         <div class="timeline-axes">
           <div class="timeline-ticks" aria-hidden="true">
             @for (tick of chart.ticks; track $index) {
               <span [style.bottom.%]="100 * (tick / chart.axisMax)">{{ tick | number:'1.0-6' }}</span>
             }
           </div>
-          <div class="timeline-scroll">
+          <div class="timeline-scroll" #timelineScroll>
             <div class="timeline-plot">
               <ol class="timeline-runs" aria-label="Benchmark runs in completion order">
                 @for (point of timelineRuns(); track point.run.id) {
+                  @let isDeployed = deployedBenchmarkIds().has(point.run.id);
                   @let kind = point.isBaseline ? 'Baseline' : point.run.configuration['nightly'] ? 'Trial' : 'Manual run';
                   @let change = point.gain === null ? '' : (point.gain > 0 ? '+' : '') + (point.gain | number:'1.1-1') + '%';
                   @let rate = point.rate | number:'1.1-1';
                   @let description = kind + ' #' + point.run.id + ' · ' + rate + ' tok/s · ' + (point.time | date:'dd MMM yyyy, HH:mm') +
                     (point.isBaseline ? '' : point.baselineId && change ? ' · ' + change + ' vs. baseline #' + point.baselineId : ' · No linked baseline') +
-                    (point.selectionNote ? ' · Excluded from adoption' : '');
+                    (point.selectionNote ? ' · Excluded from adoption' : '') +
+                    (isDeployed ? ' · Currently deployed' : point.run.id === lastAdoptionId() ? ' · Last confirmed adoption' : '');
                   <li><a class="timeline-run" [class.timeline-run--baseline]="point.isBaseline"
-                    [class.timeline-run--excluded]="!!point.selectionNote" [attr.aria-label]="description" [title]="description"
-                    [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }">
+                    [class.timeline-run--deployed]="isDeployed" [attr.aria-label]="description" [title]="description"
+                    [attr.data-benchmark-id]="point.run.id"
+                    [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }"
+                    queryParamsHandling="merge" [preserveFragment]="true" aria-haspopup="dialog">
                     <span class="timeline-measure" aria-hidden="true" [attr.data-rate]="rate">
                       <span class="timeline-stem" [style.height.%]="100 * (point.rate / chart.axisMax)">
                         <span class="timeline-dot"></span><strong class="timeline-value">{{ rate }}</strong>
@@ -99,29 +93,76 @@
       @if (chart.points.length > timelineLimit) {
         <button type="button" class="timeline-toggle" [attr.aria-expanded]="expandedTimeline() === chart.key"
           (click)="expandedTimeline.set(expandedTimeline() === chart.key ? null : chart.key)">
-          {{ expandedTimeline() === chart.key ? 'Show latest ' + timelineLimit : 'Show all ' + chart.points.length + ' runs' }}
+          {{ expandedTimeline() === chart.key ? 'Show recent runs' : 'Show all ' + chart.points.length + ' runs' }}
         </button>
       }
     } @else {
-      <p class="results-note" role="status">No comparable completed rounds yet. A complete baseline and matching workload are required.</p>
+      <p class="results-note" role="status">No comparable completed rounds{{ workerName() ? ' on ' + workerName() : '' }} yet. A complete baseline and matching workload are required.</p>
     }
-    <div class="timeline-policy">
-      <h4>When settings change</h4>
-      <p>Logos measures the current settings first, then tests each trial on the same requests at the same load. It adopts the fastest trial that passes all checks and beats that night’s baseline.</p>
-      <details><summary>What does Logos check?</summary>
-        <ul>
-          <li>Every request must finish successfully in the same environment and with the same finish reason as its baseline.</li>
-          <li>Each answer must stay within 20% of its baseline output token count.</li>
-          <li>The time to finish 95% of requests (p95) can rise by at most 10%.</li>
+    <details class="timeline-policy">
+      <summary>What does Logos check?</summary>
+      <ul class="timeline-policy__checks" role="list">
+        <li>
+          <i class="pi pi-sync" aria-hidden="true"></i>
+          <div><strong>Matched baseline</strong><p>Same requests, model, worker environment and load.</p></div>
+        </li>
+        <li>
+          <i class="pi pi-shield" aria-hidden="true"></i>
+          <div><strong>Complete responses</strong><p>All requests finish successfully with the same finish reasons and 80–120% of baseline answer length.</p></div>
+        </li>
+        <li>
+          <i class="pi pi-chart-line" aria-hidden="true"></i>
+          <div><strong>Higher throughput</strong><p>More output tokens/s. The time to finish 95% of requests (p95) can rise by at most 10%.</p></div>
+        </li>
+      </ul>
+      <div class="timeline-policy__examples">
+        <strong>Example with a 2.0 s p95 baseline</strong>
+        <ul role="list">
+          <li><i class="pi pi-check-circle" aria-hidden="true"></i> <strong>Pass</strong> 2.1 s (+5%)</li>
+          <li><i class="pi pi-times-circle" aria-hidden="true"></i> <strong>Fail</strong> 2.3 s (+15%)</li>
         </ul>
-        <p>Small gains can still reflect normal variation between runs. If no trial qualifies, Logos keeps the current settings. See <strong>Currently deployed</strong> for the confirmed configuration.</p>
-      </details>
-    </div>
+      </div>
+      <p class="timeline-policy__adoption">With a saved workload and one existing serving lane, Logos can apply the fastest passing trial that beats the baseline.</p>
+    </details>
   </section>
 }
 @if (showHistory()) {
-<details class="run-history" [open]="selectedRunId() !== null">
-  <summary><h3><i class="pi pi-history" aria-hidden="true"></i> Benchmark runs <small>{{ rows().length }} results · output tok/s</small></h3></summary>
+<details class="run-history">
+  <summary>
+    <h3><i class="pi pi-history" aria-hidden="true"></i> Benchmark runs</h3>
+    <small>{{ rows().length }} results · output tok/s</small>
+  </summary>
+  @if (!activeProgress() && topRuns().length) {
+    <section class="top-configurations" aria-label="Top configurations so far">
+      <h3>Highest recorded throughput</h3>
+      <p class="results-note">Latest captured workload per provider.</p>
+      @for (top of topRuns(); track top.run.model_provider_id) {
+        <article class="top-configuration">
+          <div class="results-heading">
+            <div><strong>{{ top.run.provider_name }}</strong><small>Run #{{ top.run.id }} · {{ top.run.recorded_at | date:'dd MMM yyyy, HH:mm Z' }}</small></div>
+            <strong class="top-configuration__rate">{{ top.rate | number:'1.1-1' }} <small>tok/s</small></strong>
+          </div>
+          <p class="results-note">{{ datasetLabel(top.run) }} · {{ top.run.sample_size }} requests
+            @for (setting of top.workload; track setting.key) {
+              @if (setting.captured && (setting.key === 'profile' || setting.key === 'max_concurrency' || setting.key === 'max_output_tokens')) { · {{ setting.label }}: {{ setting.value }} }
+            }
+          </p>
+          <div class="top-configuration__parameters">
+            @for (parameter of top.parameters; track parameter.key) {
+              @if (parameter.captured && ['max_num_seqs', 'max_num_batched_tokens', 'tensor_parallel_size', 'kv_cache_dtype'].includes(parameter.key)) { <span>{{ parameter.label }} <strong>{{ parameter.value }}</strong></span> }
+            }
+          </div>
+          <details>
+            <summary>Measured configuration</summary>
+            <div class="top-configuration__details">
+              <div><h4>Benchmark settings</h4><dl>@for (item of top.workload; track item.key) { <dt>{{ item.label }}</dt><dd>{{ item.value }}</dd> }</dl></div>
+              <div><h4>Serving parameters</h4><dl>@for (item of top.parameters; track item.key) { <dt>{{ item.label }}</dt><dd>{{ item.value }}</dd> }</dl></div>
+            </div>
+          </details>
+        </article>
+      }
+    </section>
+  }
   <p class="results-note">Each run compared with its recorded nightly baseline. Starting measurements show 0% change.</p>
   <table>
     <thead><tr>
@@ -136,8 +177,13 @@
     <tbody [attr.aria-label]="group.label">
       <tr class="dataset-heading"><th scope="rowgroup" colspan="6">{{ group.label }} <small>{{ group.rows.length }} {{ group.rows.length === 1 ? 'run' : 'runs' }}</small></th></tr>
       @for (row of group.visible; track row.run.id) {
-        <tr [class.selected-run]="row.run.id === selectedRunId()">
-          <td data-label="Run"><strong>#{{ row.run.id }} · {{ row.kind }}</strong><small>{{ row.run.provider_name }}</small></td>
+        <tr>
+          <td data-label="Run">
+            <strong><a class="benchmark-run-link" [routerLink]="['/models', row.run.model_id, 'details']"
+              [queryParams]="{ tab: 'performance', benchmark: row.run.id }" queryParamsHandling="merge" [preserveFragment]="true"
+              aria-haspopup="dialog">#{{ row.run.id }}</a> · {{ row.kind }}</strong>
+            <small>{{ row.run.provider_name }}</small>
+          </td>
           <td data-label="Changed parameters">
             @if (row.isBaseline || row.currentSettings) { Current settings }
             @else { @for (change of row.changes; track change) { <span>{{ change }}</span> } @empty { — } }

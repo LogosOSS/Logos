@@ -7,10 +7,26 @@ import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { NightlyStatus } from './nightly-benchmarks';
 import { benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
 import { benchmarkResultRow } from './benchmark-result-row';
-import { benchmarkProgress } from './benchmark-progress';
+import { benchmarkProgress, recordConfiguration } from './benchmark-progress';
 import { comparisonValue } from './benchmark-comparison';
 
-interface SelectionComparison { benchmark_id: number; baseline_id: number | null; throughput: number | null; issues: string[]; }
+interface AnswerLengthChange {
+  request_number: number;
+  baseline_tokens: number;
+  trial_tokens: number;
+  change_percent: number | null;
+}
+
+interface SelectionComparison {
+  benchmark_id: number;
+  baseline_id: number | null;
+  throughput: number | null;
+  issues: string[];
+  length_mismatches?: number;
+  length_changes?: AnswerLengthChange[];
+}
+
+type AnswerLengthDetails = AnswerLengthChange[] | 'loading' | 'error';
 interface DeploymentStatus extends NightlyStatus { deployment?: DeploymentSnapshot; selection?: { best_observed: SelectionComparison | null; best_eligible: SelectionComparison | null; comparisons: SelectionComparison[] }; }
 
 export interface DeploymentSnapshot {
@@ -36,7 +52,8 @@ function canonical(value: unknown): string {
 
 /** A recorded winner alone does not establish what the worker serves now. */
 export function deployedMeasurement(deployment: DeploymentSnapshot | undefined, runs: readonly ModelProviderBenchmark[], sameEnvironment = true) {
-  if (!deployment?.available || deployment.maintenance || (sameEnvironment && !deployment.series_key) || !Object.keys(deployment.configuration).length) return null;
+  if (!deployment?.available || deployment.maintenance || deployment.mixed_configuration
+    || (sameEnvironment && !deployment.series_key) || !Object.keys(deployment.configuration).length) return null;
   const current = canonical(deployment.configuration);
   return [...runs].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at) || b.id - a.id).find(run => {
     const nightly = run.configuration['nightly'] as { series_key?: string } | undefined;
@@ -71,6 +88,7 @@ export class DeployedConfiguration implements OnDestroy {
   private readonly http = inject(HttpClient);
   readonly state = signal<DeploymentStatus | null>(null);
   readonly error = signal(false);
+  readonly answerLengthDetails = signal<ReadonlyMap<number, AnswerLengthDetails>>(new Map());
   readonly datasetLabel = benchmarkDatasetLabel;
   readonly deployment = computed(() => this.state()?.deployment);
   readonly workerStatus = computed(() => {
@@ -86,23 +104,77 @@ export class DeployedConfiguration implements OnDestroy {
     };
     return labels[deployment?.status ?? ''] ?? 'No live status';
   });
-  readonly measurement = computed(() => deployedMeasurement(this.deployment(), this.runs().filter(run => run.model_provider_id === this.pairId())));
+  readonly measurement = computed(() => {
+    const deployment = this.deployment();
+    return deployment ? deployedMeasurement(deployment, this.runs().filter(run => run.model_provider_id === this.pairId())) : null;
+  });
+  readonly deployedRun = computed(() => {
+    const adopted = this.adoptionRun();
+    if (!adopted || this.hasUnreportedBatchingLimit()) return this.measurement();
+    // The ring identifies the applied settings. Live throughput still requires the same measurement series.
+    return deployedMeasurement(this.deployment(), [adopted], false) ?? this.measurement();
+  });
   readonly historicalMeasurement = computed(() => this.measurement() ?? deployedMeasurement(this.deployment(),
     this.runs().filter(run => run.model_provider_id === this.pairId()), false));
   readonly result = computed(() => this.historicalMeasurement() ? deployedResult(this.historicalMeasurement()!, this.runs()) : null);
-  readonly parameters = computed(() => servingConfigurationItems({ configuration: { serving: this.deployment()?.configuration } }).filter(item => item.captured));
+  private readonly servingParameters = computed(() => servingConfigurationItems({
+    configuration: { serving: this.deployment()?.configuration },
+  }).map(item => item.key === 'max_num_seqs' && item.value === '0' ? { ...item, value: 'Auto' } : item));
+  readonly parameters = computed(() => this.servingParameters().filter(item => item.captured));
   readonly configuredParameters = computed(() => servingConfigurationItems({
     configuration: { serving: this.deployment()?.configured_settings },
   }).filter(item => item.captured));
-  readonly keyParameters = computed(() => this.parameters().filter(item => ['max_num_seqs', 'max_num_batched_tokens'].includes(item.key)));
+  readonly keyParameters = computed(() => this.servingParameters()
+    .filter(item => ['max_num_seqs', 'max_num_batched_tokens'].includes(item.key)));
+  readonly hasUnreportedBatchingLimit = computed(() => this.keyParameters().some(item => !item.captured));
   readonly selection = computed(() => this.state()?.selection);
+  readonly excludedComparisons = computed(() => this.selection()?.comparisons.filter(comparison => comparison.issues.length) ?? []);
   readonly adoption = computed(() => this.state()?.optimizer?.production_adoption);
+  readonly adoptionRun = computed(() => {
+    const benchmarkId = this.adoption()?.benchmark_id;
+    return this.runs().find(run => run.id === benchmarkId && run.model_provider_id === this.pairId());
+  });
+  readonly recordedConfiguration = recordConfiguration;
   private timer?: ReturnType<typeof setTimeout>;
   private generation = 0;
   private destroyed = false;
 
   constructor() {
-    effect(() => { const id = this.pairId(); this.state.set(null); this.error.set(false); void this.load(id, ++this.generation); });
+    effect(() => {
+      const id = this.pairId();
+      this.state.set(null);
+      this.error.set(false);
+      this.answerLengthDetails.set(new Map());
+      void this.load(id, ++this.generation);
+    });
+  }
+
+  async loadAnswerLengthDetails(benchmarkId: number): Promise<void> {
+    const current = this.answerLengthDetails().get(benchmarkId);
+    if (current !== undefined && current !== 'error') return;
+    const pairId = this.pairId();
+    const generation = this.generation;
+    this.setAnswerLengthDetails(benchmarkId, 'loading');
+    let details: AnswerLengthDetails;
+    try {
+      const status = await firstValueFrom(this.http.post<DeploymentStatus>(
+        '/api/logosdb/model_benchmarks/nightly/status', { model_provider_id: pairId, length_comparison_id: benchmarkId }));
+      details = status.selection?.comparisons.find(item => item.benchmark_id === benchmarkId)?.length_changes ?? [];
+    } catch {
+      details = 'error';
+    }
+    if (!this.destroyed && generation === this.generation && pairId === this.pairId()) {
+      this.setAnswerLengthDetails(benchmarkId, details);
+    }
+  }
+
+  lengthChangeNearBoundary(percent: number): boolean {
+    // Two decimal places can otherwise make a rejected value look exactly at the limit.
+    return Math.abs(percent) < 20.005;
+  }
+
+  private setAnswerLengthDetails(benchmarkId: number, details: AnswerLengthDetails): void {
+    this.answerLengthDetails.update(current => new Map(current).set(benchmarkId, details));
   }
   ngOnDestroy(): void { this.destroyed = true; this.generation++; clearTimeout(this.timer); }
   private async load(id: number, generation: number): Promise<void> {

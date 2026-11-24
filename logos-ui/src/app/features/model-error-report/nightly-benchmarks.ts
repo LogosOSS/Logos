@@ -1,8 +1,7 @@
-import { Component, Input, OnChanges, OnDestroy, inject, signal } from '@angular/core';
+import { Component, Input, OnChanges, OnDestroy, SimpleChanges, TemplateRef, inject, input, output, signal, viewChild } from '@angular/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { FormsModule } from '@angular/forms';
-import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
 import { requestDatasetLabel } from './benchmark-configuration';
 
@@ -13,21 +12,19 @@ export interface NightlyStatus {
   workload_id?: string | null;
   workloads?: SavedWorkload[];
   optimizer?: { production_adoption?: { benchmark_id: number; baseline_id: number; baseline_throughput: number; throughput: number }; reference_id?: number; best_benchmark_id?: number; iterations?: number; nightly_session?: { date: string; rounds: number; successful_configurations: number } };
-  max_maintenance_nodes?: number;
   window?: { start: string; end: string; benchmark_start_cutoff: string; timezone: string };
   enabled: boolean;
   status: string;
   recovery_required: boolean;
   worker_ready?: boolean;
-  last_run_date?: string;
-  plan?: { serving_overrides: Record<string, number | null> }[];
+  deployment?: { status?: string };
   report: { configuration?: number; attempt?: number; status: string; reason?: string; benchmark_id?: number; job_id?: number }[];
 }
 
 @Component({
   selector: 'app-nightly-benchmarks',
   standalone: true,
-  imports: [ModalConfirmComponent, ModalFormComponent, FormsModule],
+  imports: [ModalConfirmComponent, FormsModule],
   templateUrl: './nightly-benchmarks.html',
   styleUrl: './nightly-benchmarks.scss',
 })
@@ -35,9 +32,11 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   readonly datasetLabel = requestDatasetLabel;
   @Input({ required: true }) pairId!: number;
   @Input({ required: true }) providerName!: string;
+  readonly selected = input(false);
+  readonly selectionChange = output<void>();
+  readonly details = viewChild.required<TemplateRef<unknown>>('details');
   private readonly http = inject(HttpClient);
   readonly state = signal<NightlyStatus | null>(null);
-  readonly managing = signal(false);
   readonly confirming = signal(false);
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
@@ -45,14 +44,12 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   sourceEdited = false;
   lookbackDays: 1 | 3 | 7 | null = null;
   readonly sourceNotice = signal<string | null>(null);
-  workloadName = '';
-  logIds = '';
-  provenance = 'synthetic';
   private version = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private destroyed = false;
 
-  ngOnChanges(): void {
+  ngOnChanges(changes: SimpleChanges): void {
+    if (!changes['pairId']) return;
     this.version++;
     this.state.set(null);
     this.selectedWorkload = null;
@@ -61,10 +58,7 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     this.sourceNotice.set(null);
     this.saving.set(false);
     this.error.set(null);
-    this.workloadName = '';
-    this.logIds = '';
     this.confirming.set(false);
-    this.managing.set(false);
     clearTimeout(this.timer);
     void this.refresh();
   }
@@ -151,29 +145,6 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     } finally { if (version === this.version) this.saving.set(false); }
   }
 
-  async createWorkload(): Promise<void> {
-    if (this.sourceLocked || !this.state()) return;
-    const ids = this.logIds.trim().split(/[\s,]+/).map(Number);
-    if (!this.workloadName.trim() || !ids.length || ids.some(id => !Number.isSafeInteger(id) || id <= 0)) {
-      this.error.set('Enter a name and positive request IDs separated by commas.');
-      return;
-    }
-    const version = this.version;
-    this.saving.set(true);
-    try {
-      const workload = await firstValueFrom(this.http.post<{ id: string }>('/api/logosdb/model_benchmarks/workloads/create', {
-        name: this.workloadName.trim(), log_ids: ids, provenance: this.provenance,
-      }));
-      if (version !== this.version || this.destroyed) return;
-      this.selectedWorkload = workload.id;
-      this.sourceEdited = true;
-      this.error.set(null);
-      await this.refresh();
-    } catch (error) {
-      if (version === this.version && !this.destroyed) this.showError(error);
-    } finally { if (version === this.version) this.saving.set(false); }
-  }
-
   private showError(error: unknown): void {
     this.error.set(error instanceof HttpErrorResponse && (typeof error.error?.detail === 'string' || typeof error.error?.error === 'string')
       ? (error.error.detail ?? error.error.error) : 'Could not update the request workload. Refresh and try again.');
@@ -183,7 +154,8 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
 
   statusLabel(value: string): string {
     const labels: Record<string, string> = {
-      scheduled: 'Waiting in nightly rotation', unavailable: 'Waiting for an available worker', preparing: 'Preparing worker', running: 'Benchmark in progress',
+      scheduled: 'Waiting in nightly rotation', unavailable: 'Waiting for an available worker', preparing: 'Preparing benchmark lane', running: 'Benchmark in progress',
+      waiting_for_capacity: 'Waiting for GPU capacity', capacity_deferred: 'Deferred until another maintenance window',
       continuing: 'Ready for another optimization round', completed: 'Finished — see results', disabled: 'Deactivated', success: 'Successful', failed: 'Failed',
       stalled: 'Stopped after five minutes without progress', preparation_timeout: 'Preparation timed out',
       window_closed: this.window ? `No new runs after ${this.window.benchmark_start_cutoff}` : 'Benchmark start window closed', window_closed_below_half: this.window ? `Stopped at ${this.window.end} below 50% complete` : 'Stopped below 50% at the maintenance cutoff',
@@ -196,10 +168,9 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
 
   async toggleNightly(): Promise<void> {
     const state = this.state();
-    if (!this.managing() || !state || this.saving() || this.enableBlocker) return;
+    if (!state || this.saving() || this.enableBlocker) return;
     this.error.set(null);
     if (state.enabled) {
-      this.managing.set(false);
       this.confirming.set(true);
     } else {
       await this.setEnabled(true);
@@ -220,9 +191,8 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
           model_provider_id: this.pairId, enabled, expected_enabled: !enabled,
         }));
       if (version !== this.version || this.destroyed) return;
-      this.state.set({ ...this.state(), ...state, plan: state.plan ?? this.state()?.plan, window: state.window ?? this.state()?.window, max_maintenance_nodes: state.max_maintenance_nodes ?? this.state()?.max_maintenance_nodes });
+      this.state.set({ ...this.state(), ...state, window: state.window ?? this.state()?.window });
       this.confirming.set(false);
-      this.managing.set(false);
       this.error.set(null);
     } catch (error) {
       if (version !== this.version || this.destroyed) return;

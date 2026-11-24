@@ -33,6 +33,7 @@ from logos.benchmarks.huggingface_datasets import dataset_metadata, search_datas
 from logos.benchmarks.nightly import (
     NIGHTLY_CONTEXT,
     PROGRESS,
+    NightlyCapacityDeferred,
     NightlyStopped,
     RunProgress,
     can_start,
@@ -740,12 +741,18 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
                 raise HTTPException(status_code=503, detail="Provider has not sent its first status yet")
 
         model_name = str(target["model_name"])
+        pinned_lane = benchmark_reservations.pinned_lane(provider_id, model_name) if owns_nightly_reservation else None
+        if provider_type == "logosnode" and NIGHTLY_CONTEXT.get() and pinned_lane is None:
+            raise HTTPException(status_code=409, detail="Nightly benchmark no longer owns its pinned lane")
         try:
+            limits = worker_limits(runtime_snapshot, model_name, lane_id=pinned_lane)
             for settings in configurations:
-                validate_worker_overrides(settings.serving_overrides, worker_limits(runtime_snapshot, model_name))
+                validate_worker_overrides(settings.serving_overrides, limits)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        serving_configuration = extract_serving_configuration(runtime_snapshot, model_name)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        serving_configuration = limits["current"]
         job_payload = {
             "nightly": NIGHTLY_CONTEXT.get(),
             "model_provider_id": data.model_provider_id,
@@ -783,6 +790,13 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
         if is_internal_worker_benchmark
         else None
     )
+
+    def read_serving_configuration():
+        if pinned_lane is not None and benchmark_reservations.pinned_lane(provider_id, model_name) != pinned_lane:
+            raise RuntimeError("Nightly benchmark no longer owns its pinned lane")
+        return extract_serving_configuration(
+            _main._logosnode_registry.peek_runtime_snapshot(provider_id), model_name, lane_id=pinned_lane
+        )
 
     async def execute_run(
         settings: BenchmarkRunSettings | InternalBenchmarkRequest,
@@ -828,9 +842,7 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
             settings=settings,
             max_output_tokens=settings.max_output_tokens,
             serving_configuration=serving_configuration,
-            serving_configuration_getter=lambda: extract_serving_configuration(
-                _main._logosnode_registry.peek_runtime_snapshot(provider_id), model_name
-            ),
+            serving_configuration_getter=read_serving_configuration,
             request_headers=request_headers,
             worker_preparer=worker_preparer,
             worker_session_is_current=(
@@ -845,7 +857,12 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
         )
 
     if is_internal_worker_benchmark:
-        benchmark_reservations.reserve(provider_id, model_name, job_id)
+        benchmark_reservations.reserve(
+            provider_id,
+            model_name,
+            job_id,
+            nightly_owner=-data.model_provider_id if owns_nightly_reservation else None,
+        )
 
     async def nightly_run():
         progress = RunProgress(data.samples)
@@ -856,7 +873,8 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
             )
         except NightlyStopped as exc:
             with DBManager() as db:
-                db.update_job_status(job_id, "failed", error_message=exc.reason)
+                detail = exc.detail[:1000] if isinstance(exc, NightlyCapacityDeferred) else exc.reason
+                db.update_job_status(job_id, "failed", error_message=detail)
             raise
         finally:
             PROGRESS.pop(job_id, None)
@@ -1129,7 +1147,7 @@ def _why_not_calibrated(model: str, snapshot: Dict[str, Any], needing: List[str]
 async def internal_logosnode_calibrate_uncalibrated(data: InternalCalibrateRequest, request: Request):
     """Calibrate uncalibrated models on a worker, called by Spring after JWT validation."""
     _require_internal_secret(request)
-    if benchmark_reservations.owner(data.provider_id, "*") is not None:
+    if benchmark_reservations.is_nightly_reserved(data.provider_id):
         raise HTTPException(status_code=409, detail="Worker is reserved for nightly benchmarks")
     snap = _main._logosnode_registry.peek_runtime_snapshot(data.provider_id)
     if snap is None:

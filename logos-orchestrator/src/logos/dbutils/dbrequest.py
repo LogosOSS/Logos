@@ -15,6 +15,10 @@ class NightlyStatusRequest(BaseModel):
     model_provider_id: int = Field(gt=0)
 
 
+class NightlySelectionStatusRequest(NightlyStatusRequest):
+    length_comparison_id: int | None = Field(default=None, gt=0)
+
+
 class NightlyUpdateRequest(NightlyStatusRequest):
     enabled: StrictBool
     expected_enabled: StrictBool

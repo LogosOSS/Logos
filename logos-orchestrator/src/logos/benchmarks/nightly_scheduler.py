@@ -10,14 +10,19 @@ from starlette.requests import Request
 from logos.benchmarks import nightly_store as store
 from logos.benchmarks import optimization, recent_requests, workloads
 from logos.benchmarks.configuration import ServingOverrides
-from logos.benchmarks.guidellm_runner import apply_serving_overrides, extract_serving_configuration
+from logos.benchmarks.guidellm_runner import apply_serving_overrides, lane_is_serving, lane_serving_configuration
 from logos.benchmarks.maintenance import AUTOMATIC_CALIBRATION
 from logos.benchmarks.nightly import (
+    CAPACITY_RETRY_SECONDS,
+    CAPACITY_WAITING,
     LEASE_CHECK,
     MAX_PAIRS_PER_NIGHT,
     NIGHTLY_CONTEXT,
+    NIGHTLY_GPU_BUDGET_REASON,
+    NightlyCapacityDeferred,
     NightlyStopped,
     can_start,
+    configured_lane_id,
     local_now,
     parameter_plan,
 )
@@ -25,6 +30,7 @@ from logos.benchmarks.reservations import benchmark_reservations
 from logos.benchmarks.worker_limits import validate_worker_overrides, worker_limits
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import InternalBenchmarkRequest
+from logos.logosnode_registry import LogosNodeCommandError
 from logos.maintenance_window import maintenance_node_limit
 
 logger = logging.getLogger(__name__)
@@ -44,7 +50,7 @@ class NightlyScheduler:
         # Reinstall persisted reservations before accepting production traffic.
         for row in store.rows():
             if row["recovery"]:
-                benchmark_reservations.reserve(row["recovery"]["provider_id"], "*", -row["model_provider_id"])
+                self._reserve_recovery(row["model_provider_id"], row["recovery"])
         self.task = asyncio.create_task(self._loop(), name="nightly-benchmarks")
 
     async def stop(self):
@@ -128,9 +134,15 @@ class NightlyScheduler:
                         break
                     if not row["enabled"]:
                         continue
-                    if row["last_run_date"] == day and row.get("status") != "continuing":
-                        continue
-                    if row["last_run_date"] != day and store.claimed_today(day) >= MAX_PAIRS_PER_NIGHT:
+                    claimed_today = row["last_run_date"] == day
+                    if claimed_today:
+                        if row.get("status") == CAPACITY_WAITING:
+                            updated = row.get("updated_at")
+                            if updated and (local_now() - updated).total_seconds() < CAPACITY_RETRY_SECONDS:
+                                continue
+                        elif row.get("status") != "continuing":
+                            continue
+                    if not claimed_today and store.claimed_today(day) >= MAX_PAIRS_PER_NIGHT:
                         continue
                     if len(selected) >= maintenance_node_limit():
                         deferred.append(row)
@@ -138,7 +150,9 @@ class NightlyScheduler:
                     try:
                         target, _, _ = self.target_lane(pair_id)
                     except RuntimeError as exc:
-                        store.save(pair_id, "unavailable", [{"status": "skipped", "reason": str(exc)[:1000]}], None)
+                        # Keep claimed rounds eligible for retry or window finalization.
+                        if not claimed_today:
+                            store.save(pair_id, "unavailable", [{"status": "skipped", "reason": str(exc)[:1000]}], None)
                         continue
                     provider_id = int(target["provider_id"])
                     if self.planner.is_worker_locked(provider_id):
@@ -175,8 +189,44 @@ class NightlyScheduler:
 
     async def restore(self, pair_id, recovery):
         """Confirm the selected production configuration before releasing traffic."""
-        if not recovery.get("mutated", True):
+        if not recovery.get("mutated", True) and not recovery.get("gpu_budget"):
             return
+        provider_id = recovery["provider_id"]
+        if not self.healthy(provider_id):
+            raise RuntimeError("Worker is offline, calibrating or cordoned; restoration is pending")
+        self._reserve_recovery(pair_id, recovery)
+        if recovery.get("temporary_lane") and recovery.get("mutated", True):
+            if recovery.get("model_scoped"):
+                benchmark_reservations.pin_lane(provider_id, recovery["model"], -pair_id, recovery["lane_id"])
+            removed = await self._remove_lane(
+                provider_id,
+                recovery["lane_id"],
+                expected_model=recovery["model"] if recovery.get("model_scoped") else None,
+            )
+            if removed:
+                self.registry.update_desired_lane_remove(provider_id, recovery["lane_id"])
+        elif recovery.get("mutated", True) and recovery.get("benchmark_lane_mutated", True):
+            await self._restore_lane(recovery)
+        for lane_config in recovery.get("slept_lanes", []):
+            await self._restore_slept_lane(provider_id, lane_config)
+        for lane_config in recovery.get("removed_lanes", []):
+            await self._add_removed_lane(provider_id, lane_config)
+        if recovery.get("gpu_budget"):
+            self._require_lease()
+            await self.registry.send_command(
+                provider_id, "release_nightly_gpu_budget", {"lane_id": recovery["lane_id"]}, timeout_seconds=30
+            )
+
+    @staticmethod
+    def _reserve_recovery(pair_id, recovery):
+        provider_id = recovery["provider_id"]
+        if recovery.get("model_scoped"):
+            benchmark_reservations.reserve_nightly(provider_id, recovery["model"], -pair_id)
+        else:
+            # Old journals may need to restore another model displaced by a round.
+            benchmark_reservations.reserve(provider_id, "*", -pair_id)
+
+    async def _restore_lane(self, recovery, *, force_restart=False):
         recovery = copy.deepcopy(recovery)
         if recovery.get("adoption"):
             recovery["vllm_config"] = apply_serving_overrides(
@@ -184,17 +234,23 @@ class NightlyScheduler:
             )
             recovery["lane_config"]["vllm_config"] = recovery["vllm_config"]
         provider_id, lane_id = recovery["provider_id"], recovery["lane_id"]
-        if not self.healthy(provider_id):
-            raise RuntimeError("Worker is offline, calibrating or cordoned; restoration is pending")
-        benchmark_reservations.reserve(provider_id, "*", -pair_id)
+        self._require_lease()
         runtime = await self.registry.send_command(provider_id, "get_lanes", {}, timeout_seconds=30)
         lane = next((item for item in runtime.get("lanes", []) if item.get("lane_id") == lane_id), None)
-        if recovery.get("adoption") and self._restored_lane_is_ready(lane, recovery):
+        budget = {"nightly_gpu_budget": True} if recovery.get("gpu_budget") else {}
+        if not force_restart and (budget or recovery.get("adoption")) and self._restored_lane_is_ready(lane, recovery):
             return
+        self._require_lease()
         replies = []
         if lane is None:
+            if budget and not recovery.get("adoption") and recovery.get("required_mib_by_gpu"):
+                budget["nightly_restore_mib_by_gpu"] = recovery["required_mib_by_gpu"]
             result = await self.registry.send_command(
-                provider_id, "add_lane", recovery["lane_config"], timeout_seconds=900, on_dispatched=replies.append
+                provider_id,
+                "add_lane",
+                {**recovery["lane_config"], **budget},
+                timeout_seconds=900,
+                on_dispatched=replies.append,
             )
         else:
             result = await self.registry.send_command(
@@ -205,6 +261,7 @@ class NightlyScheduler:
                     "updates": {"vllm_config": recovery["vllm_config"]},
                     "require_idle": False,
                     "force_restart": True,
+                    **budget,
                 },
                 timeout_seconds=900,
                 on_dispatched=replies.append,
@@ -215,7 +272,101 @@ class NightlyScheduler:
 
         # The command can return before the routing snapshot catches up with
         # the restart. Wait for that lane instead of asking the planner to load it again.
-        answer = replies[0].result()
+        await self._wait_for_lane_status(provider_id, lane_id, replies[0].result(), recovery)
+
+    @staticmethod
+    def _require_lease():
+        if not LEASE_CHECK.get()():
+            raise NightlyStopped("lease_lost")
+
+    async def _remove_lane(self, provider_id, lane_id, *, expected_model=None):
+        self._require_lease()
+        replies = []
+        params = {"lane_id": lane_id}
+        if expected_model is not None:
+            params["expected_model"] = expected_model
+        try:
+            await self.registry.send_command(
+                provider_id, "delete_lane", params, timeout_seconds=900, on_dispatched=replies.append
+            )
+        except LogosNodeCommandError as exc:
+            if expected_model is not None and exc.reason_code == "nightly_lane_identity":
+                return False
+            if not self._lane_not_found(exc, lane_id):
+                raise
+        await self._wait_for_lane_status(provider_id, lane_id, replies[0].result(), None)
+        return True
+
+    @staticmethod
+    def _lane_not_found(error, lane_id):
+        return str(error) == str(KeyError(f"Lane '{lane_id}' not found"))
+
+    async def _add_removed_lane(self, provider_id, config):
+        self._require_lease()
+        lane_id = configured_lane_id(config)
+        expectation = {"model": config["model"], "lane_config": config, "exact": True}
+        replies = []
+        try:
+            # Dispatch even when the lane appears present. The worker serializes
+            # mutations of this ID, including a deletion whose reply was lost.
+            lane = await self.registry.send_command(
+                provider_id, "add_lane", config, timeout_seconds=900, on_dispatched=replies.append
+            )
+        except LogosNodeCommandError:
+            if not replies:
+                raise
+            runtime = await self.registry.send_command(provider_id, "get_lanes", {}, timeout_seconds=30)
+            lane = next((item for item in runtime.get("lanes", []) if item.get("lane_id") == lane_id), None)
+            if lane is None:
+                raise
+        if lane.get("model") != config["model"] or lane.get("lane_id") != lane_id:
+            raise RuntimeError(f"Worker returned a different lane while restoring {lane_id}")
+        actual = lane.get("lane_config")
+        if actual is None:
+            raise RuntimeError(f"Worker did not report the configuration for lane {lane_id}")
+        if actual != config:
+            self._require_lease()
+            # A normal add applies node defaults. Restore any explicit live
+            # overrides a previous operation had set on the original lane.
+            await self.registry.send_command(
+                provider_id,
+                "reconfigure_lane",
+                {"lane_id": lane_id, "updates": config, "require_idle": True, "force_restart": True},
+                timeout_seconds=900,
+                on_dispatched=replies.append,
+            )
+        await self._wait_for_lane_status(provider_id, lane_id, replies[-1].result(), expectation)
+        self.registry.update_desired_lane_add(provider_id, config, lane_id=lane_id)
+
+    async def _restore_slept_lane(self, provider_id, config):
+        self._require_lease()
+        lane_id = configured_lane_id(config)
+        expectation = {"model": config["model"], "lane_config": config, "exact": True}
+        replies = []
+        try:
+            # Wait behind a possibly in-flight sleep/wake without restarting it.
+            lane = await self.registry.send_command(
+                provider_id,
+                "reconfigure_lane",
+                {"lane_id": lane_id, "updates": {}, "require_idle": True},
+                timeout_seconds=900,
+                on_dispatched=replies.append,
+            )
+        except LogosNodeCommandError as exc:
+            if not self._lane_not_found(exc, lane_id):
+                raise
+            await self._add_removed_lane(provider_id, config)
+            return
+        if lane.get("lane_config") != config:
+            raise RuntimeError(f"Static lane {lane_id} no longer has its original configuration")
+        if lane.get("sleep_state") == "sleeping":
+            self._require_lease()
+            await self.registry.send_command(
+                provider_id, "wake_lane", {"lane_id": lane_id}, timeout_seconds=900, on_dispatched=replies.append
+            )
+        await self._wait_for_lane_status(provider_id, lane_id, replies[-1].result(), expectation)
+
+    async def _wait_for_lane_status(self, provider_id, lane_id, answer, recovery):
         state = "awaiting a fresh status"
         try:
             async with asyncio.timeout(LANE_READY_STATUS_TIMEOUT_SECONDS):
@@ -226,7 +377,17 @@ class NightlyScheduler:
                         snapshot = self.registry.peek_runtime_snapshot(provider_id) or {}
                         lanes = (snapshot.get("runtime") or {}).get("lanes") or []
                         lane = next((item for item in lanes if item.get("lane_id") == lane_id), None)
-                        if self._restored_lane_is_ready(lane, recovery):
+                        if recovery is None:
+                            confirmed = lane is None
+                        elif recovery.get("sleeping"):
+                            confirmed = (
+                                lane is not None
+                                and lane.get("sleep_state") == "sleeping"
+                                and lane.get("transition") is None
+                            )
+                        else:
+                            confirmed = self._restored_lane_is_ready(lane, recovery)
+                        if confirmed:
                             return
                         state = (
                             "lane missing"
@@ -238,9 +399,13 @@ class NightlyScheduler:
                         )
                     await asyncio.sleep(1)
         except TimeoutError as exc:
+            expected = (
+                "absent"
+                if recovery is None
+                else "sleeping" if recovery.get("sleeping") else "ready with those settings"
+            )
             raise RuntimeError(
-                f"Worker {provider_id} applied the configuration for lane {lane_id}, "
-                f"but it did not report that lane ready with those settings "
+                f"Worker {provider_id} did not report that lane {lane_id} {expected} "
                 f"within {LANE_READY_STATUS_TIMEOUT_SECONDS:g}s ({state})."
             ) from exc
 
@@ -249,8 +414,12 @@ class NightlyScheduler:
         return (
             lane is not None
             and lane.get("model") == recovery["model"]
-            and (lane.get("lane_config") or {}).get("vllm_config") == recovery["vllm_config"]
-            and lane.get("runtime_state") in {"loaded", "running"}
+            and (
+                lane.get("lane_config") == recovery["lane_config"]
+                if recovery.get("exact")
+                else (lane.get("lane_config") or {}).get("vllm_config") == recovery["vllm_config"]
+            )
+            and lane_is_serving(lane)
             and lane.get("sleep_state") in {"awake", "unsupported"}
             and lane.get("transition") is None
             and lane.get("active_requests") == 0
@@ -303,22 +472,91 @@ class NightlyScheduler:
         if self.planner.is_worker_locked(pid):
             raise RuntimeError("The selected worker is locked")
         snapshot = self.registry.peek_runtime_snapshot(pid)
-        if not (snapshot.get("runtime") or {}).get("supports_benchmark_restart"):
-            raise RuntimeError("Update this worker before enabling nightly benchmarks")
-        lanes = (snapshot.get("runtime") or {}).get("lanes", [])
-        target_lanes = [lane for lane in lanes if lane.get("model") == model]
-        if len(target_lanes) != 1 or not (target_lanes[0].get("lane_config") or {}).get("vllm"):
-            raise RuntimeError("Nightly tuning requires exactly one existing vLLM lane for this model")
-        lane = target_lanes[0]
-        if lane.get("runtime_state") not in {"loaded", "running"} or lane.get("sleep_state") == "sleeping":
-            raise RuntimeError("Nightly tuning requires the production model to be loaded and awake")
-        try:
-            limits = worker_limits(snapshot, model)
-            baseline = parameter_plan(limits["current"])[0]
-            validate_worker_overrides(baseline.serving_overrides, limits)
-        except ValueError as exc:
-            raise RuntimeError(str(exc)) from exc
+        if not (snapshot.get("runtime") or {}).get("supports_nightly_gpu_budget"):
+            raise RuntimeError("Update this worker to support Nightly GPU budgets")
+        lane = self._select_lane(pid, model, snapshot)
+        if lane is not None:
+            try:
+                limits = worker_limits(snapshot, model, lane=lane)
+                baseline = parameter_plan(limits["current"])[0]
+                validate_worker_overrides(baseline.serving_overrides, limits)
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
         return target, snapshot, lane
+
+    def _select_lane(self, provider_id, model, snapshot):
+        candidates = [
+            lane
+            for lane in snapshot["runtime"].get("lanes", [])
+            if lane.get("model") == model
+            and lane_is_serving(lane)
+            and (lane.get("lane_config") or {}).get("vllm")
+            and not self.planner.is_lane_locked(provider_id, lane["lane_id"])
+        ]
+        return min(candidates, key=lambda lane: (not lane.get("is_static"), lane["lane_id"]), default=None)
+
+    def _temporary_config(self, pair_id, provider_id, model, lanes):
+        ids = {lane["lane_id"] for lane in lanes}
+        lane_id = f"nightly-{pair_id}"
+        while lane_id in ids:
+            lane_id += "-temp"
+        saved = next(
+            (
+                lane["lane_config"]
+                for lane in lanes
+                if lane.get("model") == model and (lane.get("lane_config") or {}).get("vllm")
+            ),
+            None,
+        )
+        if saved:
+            # The worker assigns a port to the temporary identifier.
+            return {**copy.deepcopy(saved), "lane_id": lane_id}
+        profile = self.planner._safe_get_profiles(provider_id).get(model)
+        if profile and profile.engine != "vllm":
+            raise RuntimeError("Nightly tuning requires a vLLM model")
+        params = self.planner._build_load_params(
+            model, lane_id, profile, self.planner._safe_get_capacity(provider_id), provider_id
+        )
+        return {**params, "vllm": True}
+
+    def preview_configuration(self, pair_id, provider_id, model, snapshot):
+        """Estimate the baseline settings before the worker confirms a ready lane."""
+        runtime = (snapshot or {}).get("runtime") or {}
+        if not runtime.get("supports_nightly_gpu_budget"):
+            return None
+        try:
+            lane = self._select_lane(provider_id, model, snapshot)
+            if lane is None:
+                config = self._temporary_config(pair_id, provider_id, model, runtime.get("lanes") or [])
+                lane = {"lane_config": config}
+            return lane_serving_configuration(lane)
+        except RuntimeError:
+            return None
+
+    async def _create_temporary_lane(self, recovery):
+        self._require_lease()
+        provider_id, lane_id, model = recovery["provider_id"], recovery["lane_id"], recovery["model"]
+        profile = self.planner._safe_get_profiles(provider_id).get(model)
+        projected_ram = self.planner._estimate_lane_host_ram_mb(
+            provider_id, lane_id, model, profile, runtime_state="cold"
+        )
+        if projected_ram > 0:
+            ram_ok, _, _ = self.planner._check_host_ram_headroom_for_cold_load(provider_id, model, projected_ram)
+            if not ram_ok:
+                raise NightlyCapacityDeferred(f"Worker lacks host memory to safely load the benchmark model {model}")
+        replies = []
+        lane = await self.registry.send_command(
+            provider_id,
+            "add_lane",
+            {**recovery["lane_config"], "nightly_gpu_budget": True},
+            timeout_seconds=900,
+            on_dispatched=replies.append,
+        )
+        config = lane.get("lane_config")
+        if lane.get("lane_id") != lane_id or lane.get("model") != model or not (config or {}).get("vllm"):
+            raise RuntimeError("Worker did not confirm the temporary benchmark lane")
+        recovery.update(lane_config=config, vllm_config=config.get("vllm_config") or {})
+        await self._wait_for_lane_status(provider_id, lane_id, replies[0].result(), recovery)
 
     async def recover(self, row, connection):
         """Fence an orphaned nightly execution, confirm drain, then restore its journal."""
@@ -387,11 +625,9 @@ class NightlyScheduler:
         counter can stay above zero after a request ended, and it cannot see
         requests from the crashed execution anyway.
 
-        The check covers the journal's lane and any lane of the same model:
-        those are the only lanes the old execution sent benchmark traffic to,
-        and the only ones the restore restarts. Other lanes keep serving
-        production and do not hold the recovery back. A journal without lane
-        and model falls back to requiring the whole worker to be idle.
+        Check lanes of the benchmarked model and lanes the journal will
+        restore. A legacy journal without lane and model requires the whole
+        worker to be idle.
         """
         provider_id = recovery["provider_id"]
         if not self.healthy(provider_id):
@@ -403,11 +639,13 @@ class NightlyScheduler:
         if not isinstance(lanes, list):
             return False
         lane_id, model = recovery.get("lane_id"), recovery.get("model")
-        if lane_id or model:
+        affected_ids = {configured_lane_id(config) for config in recovery.get("removed_lanes", [])}
+        affected_ids.update(configured_lane_id(config) for config in recovery.get("slept_lanes", []))
+        if lane_id:
+            affected_ids.add(lane_id)
+        if affected_ids or model:
             lanes = [
-                lane
-                for lane in lanes
-                if (lane_id and lane.get("lane_id") == lane_id) or (model and lane.get("model") == model)
+                lane for lane in lanes if lane.get("lane_id") in affected_ids or (model and lane.get("model") == model)
             ]
         for lane in lanes:
             if lane.get("active_requests") != 0:
@@ -433,12 +671,87 @@ class NightlyScheduler:
         report = []
         recovery = None
         search = None
+        can_adopt = False
         state = "completed"
         try:
-            target, snapshot, lane = self.target_lane(pair_id)
+            target, _, _ = self.target_lane(pair_id)
             pid, model = int(target["provider_id"]), str(target["model_name"])
-            lanes = (snapshot.get("runtime") or {}).get("lanes", [])
-            current = extract_serving_configuration(snapshot, model)
+            self._require_lease()
+            self.planner._facade.reserve_model_for_drain(pid, model, -pair_id)
+            runtime = await self.registry.send_command(pid, "get_runtime", {}, timeout_seconds=30)
+            if not isinstance(runtime.get("lanes"), list) or (runtime.get("node_health") or {}).get("healthy") is False:
+                raise RuntimeError("Could not confirm the worker's existing lanes")
+            snapshot = {"runtime": runtime}
+            lanes = runtime["lanes"]
+            lane = self._select_lane(pid, model, snapshot)
+            temporary = lane is None
+            can_adopt = not temporary and sum(item.get("model") == model for item in lanes) == 1
+            config = (
+                self._temporary_config(pair_id, pid, model, lanes) if temporary else copy.deepcopy(lane["lane_config"])
+            )
+            recovery = {
+                "provider_id": pid,
+                "model": model,
+                "lane_id": config["lane_id"] if temporary else lane["lane_id"],
+                "vllm_config": config.get("vllm_config") or {},
+                "lane_config": config,
+                "model_scoped": True,
+                "mutated": False,
+                "benchmark_lane_mutated": False,
+                **({"temporary_lane": True} if temporary else {}),
+            }
+            # Journal first; a process restart must not lose the original settings or lane layout.
+            store.save(pair_id, "preparing", report, recovery)
+            async with asyncio.timeout(900):
+                while self.planner._facade.model_inflight_requests(pid, model) > 0:
+                    self._require_lease()
+                    await asyncio.sleep(1)
+                # Fresh counters from the test model are sufficient. Co-resident
+                # models keep serving, including on the same GPU.
+                while not await self.recovery_worker_idle(recovery):
+                    self._require_lease()
+                    await asyncio.sleep(1)
+            if any(
+                item.get("transition") or item.get("runtime_state") == "starting"
+                for item in lanes
+                if item["model"] == model
+            ):
+                raise RuntimeError("Worker lanes are still changing; nightly benchmark will wait")
+            self._require_lease()
+            if not store.status(pair_id)["enabled"]:
+                raise NightlyStopped("disabled")
+            if not can_start(local_now()):
+                raise NightlyStopped("window_closed")
+            benchmark_reservations.pin_lane(pid, model, -pair_id, recovery["lane_id"])
+            # The worker's budget check acquires a GPU hold. Journal its stable
+            # lane key before dispatch, including when the reply gets lost.
+            recovery["gpu_budget"] = True
+            recovery["mutated"] = temporary
+            store.save(pair_id, "preparing", report, recovery)
+            if temporary:
+                await self._create_temporary_lane(recovery)
+                snapshot = self.registry.peek_runtime_snapshot(pid) or {}
+                lane = next(
+                    (
+                        item
+                        for item in (snapshot.get("runtime") or {}).get("lanes", [])
+                        if item.get("lane_id") == recovery["lane_id"]
+                    ),
+                    None,
+                )
+                if lane is None:
+                    raise RuntimeError("Worker no longer reports the temporary benchmark lane")
+            else:
+                assessment = await self.registry.send_command(
+                    pid, "check_nightly_gpu_budget", {"lane_id": recovery["lane_id"]}, timeout_seconds=30
+                )
+                required_mib = assessment.get("required_mib_by_gpu")
+                if not isinstance(required_mib, dict) or not required_mib:
+                    raise RuntimeError("Worker did not report the original lane's GPU budget")
+                recovery["required_mib_by_gpu"] = required_mib
+                store.save(pair_id, "preparing", report, recovery)
+            current = lane_serving_configuration(lane)
+            limits = worker_limits(snapshot, model, lane=lane)
             plan = parameter_plan(current)
             schedule = store.status(pair_id)
             if recent_requests.username() or schedule.get("workload_id"):
@@ -450,27 +763,10 @@ class NightlyScheduler:
                 if recent_requests.username():
                     store.bind_workload(pair_id, workload["id"])
                 search = optimization.context(current, snapshot, workload, schedule.get("optimizer") or {})
+                recovery["search"] = search
                 plan = optimization.plan(
                     current, search, round_index=optimization.round_index(search["state"], local_now().date())
                 )
-            recovery = {
-                "provider_id": pid,
-                "model": model,
-                "lane_id": lane["lane_id"],
-                "vllm_config": copy.deepcopy(lane["lane_config"].get("vllm_config") or {}),
-                "lane_config": copy.deepcopy(lane["lane_config"]),
-                "mutated": False,
-                **({"search": search} if search else {}),
-            }
-            # Journal first; a process restart must not lose the original settings.
-            store.save(pair_id, "preparing", report, recovery)
-            self.planner._facade.reserve_worker_for_drain(pid, -pair_id)
-            async with asyncio.timeout(900):
-                for item in lanes:
-                    while self.planner._facade.model_inflight_requests(pid, item["model"]) > 0:
-                        await asyncio.sleep(1)
-                    if not await self.planner._drain_lane(pid, item["lane_id"], 900):
-                        raise RuntimeError("Could not drain the worker's existing traffic")
             for index, settings in enumerate(plan):
                 if self.calibration and self.calibration.benchmarks_must_wait():
                     state = "calibration_pending"
@@ -487,8 +783,9 @@ class NightlyScheduler:
                     if not LEASE_CHECK.get()():
                         raise NightlyStopped("lease_lost")
                     try:
-                        validate_worker_overrides(settings.serving_overrides, worker_limits(snapshot, model))
+                        validate_worker_overrides(settings.serving_overrides, limits)
                         recovery["mutated"] = True
+                        recovery["benchmark_lane_mutated"] = True
                         store.save(pair_id, "running", report, recovery)
                         job_id, task = await self.submit(pair_id, settings)
                         result = await task
@@ -526,15 +823,15 @@ class NightlyScheduler:
                             "parameters": settings.serving_overrides.model_dump(exclude_none=True),
                         }
                         report.append(outcome)
-                        if search:
+                        if search and can_adopt:
                             adoption = store.adoption_candidate(pair_id, search, report)
                             if adoption:
-                                validate_worker_overrides(
-                                    ServingOverrides(**adoption["parameters"]), worker_limits(snapshot, model)
-                                )
+                                validate_worker_overrides(ServingOverrides(**adoption["parameters"]), limits)
                                 recovery["adoption"] = adoption
                         store.save(pair_id, "running", report, recovery)
                         break
+                    except NightlyCapacityDeferred:
+                        raise
                     except NightlyStopped as exc:
                         report.append({"configuration": index + 1, "attempt": attempt + 1, "status": exc.reason})
                         store.save(pair_id, "running", report, recovery)
@@ -542,7 +839,7 @@ class NightlyScheduler:
                             state = exc.reason
                             raise
                         # Reset the lane before one bounded retry, even with identical settings.
-                        await self.restore(pair_id, recovery)
+                        await self._restore_lane(recovery, force_restart=True)
                     except (ValueError, RuntimeError) as exc:
                         report.append({"configuration": index + 1, "status": "failed", "reason": str(exc)[:1000]})
                         store.save(pair_id, "running", report, recovery)
@@ -553,6 +850,12 @@ class NightlyScheduler:
                     if state == "completed":
                         state = "failed"
                     break
+        except NightlyCapacityDeferred as exc:
+            state = CAPACITY_WAITING
+            report.append({"status": state, "reason": exc.detail[:1000]})
+        except LogosNodeCommandError as exc:
+            state = CAPACITY_WAITING if exc.reason_code == NIGHTLY_GPU_BUDGET_REASON else "failed"
+            report.append({"status": state, "reason": str(exc)[:1000]})
         except NightlyStopped as exc:
             state = exc.reason
         except asyncio.CancelledError:
@@ -569,12 +872,17 @@ class NightlyScheduler:
                 try:
                     if not LEASE_CHECK.get()():
                         raise RuntimeError("Maintenance lock lost; worker recovery remains pending")
-                    if search and state in {"completed", "window_closed"} and store.status(pair_id)["enabled"]:
+                    if state == CAPACITY_WAITING and recovery.pop("adoption", None):
+                        store.save(pair_id, "running", report, recovery)
+                    if (
+                        search
+                        and can_adopt
+                        and state in {"completed", "window_closed"}
+                        and store.status(pair_id)["enabled"]
+                    ):
                         adoption = store.adoption_candidate(pair_id, search, report)
                         if adoption:
-                            validate_worker_overrides(
-                                ServingOverrides(**adoption["parameters"]), worker_limits(snapshot, model)
-                            )
+                            validate_worker_overrides(ServingOverrides(**adoption["parameters"]), limits)
                             recovery["adoption"] = adoption
                             store.save(pair_id, "running", report, recovery)
                     await self.settle(pair_id, recovery, report)

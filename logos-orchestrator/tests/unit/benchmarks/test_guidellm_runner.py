@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import json
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -23,6 +24,13 @@ from logos.benchmarks.guidellm_runner import (
     send_warmup_request,
     successful_summary,
 )
+from logos.benchmarks.nightly import (
+    CAPACITY_WAITING,
+    NIGHTLY_CONTEXT,
+    NIGHTLY_GPU_BUDGET_REASON,
+    NightlyCapacityDeferred,
+)
+from logos.logosnode_registry import LogosNodeCommandError
 
 
 async def test_saved_requests_use_guidellm_and_persist_only_the_safe_summary(monkeypatch):
@@ -422,7 +430,16 @@ def test_successful_summary_requires_every_requested_sample() -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_preparation_failure_keeps_specific_error_and_skips_warmup(monkeypatch):
+@pytest.mark.parametrize(
+    ("nightly", "reason", "defers"),
+    [
+        (False, None, False),
+        (True, None, False),
+        (False, NIGHTLY_GPU_BUDGET_REASON, False),
+        (True, NIGHTLY_GPU_BUDGET_REASON, True),
+    ],
+)
+async def test_worker_preparation_failure_keeps_specific_error_and_skips_warmup(monkeypatch, nightly, reason, defers):
     updates = []
 
     class DummyDB:
@@ -435,23 +452,37 @@ async def test_worker_preparation_failure_keeps_specific_error_and_skips_warmup(
         def update_job_status(self, job_id, status, **kwargs):
             updates.append((job_id, status, kwargs))
 
-    error = "Benchmark model 'org/model' on worker 7: Not enough host RAM to load the model."
+    error = (
+        "GPU 0 lacks free memory for warm-up"
+        if reason
+        else "Benchmark model 'org/model' on worker 7: Not enough host RAM to load the model."
+    )
     runner = importlib.import_module("logos.benchmarks.guidellm_runner")
     monkeypatch.setattr(runner.shutil, "which", lambda _: "/usr/bin/guidellm")
     monkeypatch.setattr(importlib.import_module("logos.dbutils.dbmanager"), "DBManager", DummyDB)
     warmup = AsyncMock()
     monkeypatch.setattr(runner, "send_warmup_request", warmup)
-    await run_benchmark_job(
-        job_id=7,
-        model_provider_id=31,
-        target="http://127.0.0.1:8080/v1",
-        model="org/model",
-        api_key=None,
-        samples=5,
-        max_output_tokens=32,
-        serving_configuration={},
-        worker_preparer=AsyncMock(side_effect=RuntimeError(error)),
-    )
+    failure = LogosNodeCommandError(error, reason_code=reason) if reason else RuntimeError(error)
+    token = NIGHTLY_CONTEXT.set(nightly)
+    try:
+        outcome = pytest.raises(NightlyCapacityDeferred, match=CAPACITY_WAITING) if defers else nullcontext()
+        with outcome as deferred:
+            await run_benchmark_job(
+                job_id=7,
+                model_provider_id=31,
+                target="http://127.0.0.1:8080/v1",
+                model="org/model",
+                api_key=None,
+                samples=5,
+                max_output_tokens=32,
+                serving_configuration={},
+                worker_preparer=AsyncMock(side_effect=failure),
+            )
+    finally:
+        NIGHTLY_CONTEXT.reset(token)
+    if deferred is not None:
+        assert deferred.value.detail == error
+        assert deferred.value.__cause__ is failure
     assert updates[-1][0:2] == (7, "failed")
     assert updates[-1][2]["error_message"] == error
     failure = updates[-1][2]["result_payload"]["failure"]

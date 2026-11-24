@@ -31,14 +31,19 @@ describe('Benchmark runner', () => {
   });
   afterEach(() => { component.ngOnDestroy(); vi.restoreAllMocks(); });
 
-  it('opens benchmark links when only query parameters change and when another model reuses the route', async () => {
+  it('keeps the current view for a benchmark link and resets the view for a different model', async () => {
     const params = new BehaviorSubject(convertToParamMap({ id: '1' }));
-    const query = new BehaviorSubject(convertToParamMap({ tab: 'access' }));
+    const query = new BehaviorSubject(convertToParamMap({}));
     Object.assign(TestBed.inject(ActivatedRoute), { paramMap: params, queryParamMap: query });
     component.modelId.set(null);
     const fetch = vi.spyOn(component, 'fetchModel').mockResolvedValue();
     await component.ngOnInit();
+    expect(component.activeTab()).toBe('performance');
+    expect(component.visibleTabs()).toEqual(['performance', 'error_report', 'complete_logs', 'access', 'prices']);
+    query.next(convertToParamMap({ tab: 'access' }));
     expect(component.activeTab()).toBe('access');
+    query.next(convertToParamMap({}));
+    expect(component.activeTab()).toBe('performance');
     query.next(convertToParamMap({ tab: 'delays' }));
     expect(component.activeTab()).toBe('performance');
     expect(component.performanceView()).toBe('measurements');
@@ -46,9 +51,10 @@ describe('Benchmark runner', () => {
     expect(component.activeTab()).toBe('performance');
     query.next(convertToParamMap({ tab: 'performance', benchmark: '115' }));
     expect(component.linkedBenchmarkId()).toBe(115);
-    expect(component.performanceView()).toBe('results');
+    expect(component.performanceView()).toBe('measurements');
     expect(component.activeTab()).toBe('performance');
     params.next(convertToParamMap({ id: '2' }));
+    expect(component.performanceView()).toBe('results');
     expect(fetch.mock.calls.map(call => call[0])).toEqual([1, 2]);
     component.ngOnDestroy();
     query.next(convertToParamMap({ benchmark: '124' }));
@@ -297,6 +303,8 @@ describe('Benchmark provider picker', () => {
       const visible = [...fixture.nativeElement.querySelectorAll('.performance-view')].filter((panel: any) => !panel.hidden);
       expect(visible.map((panel: any) => panel.id)).toEqual([`performance-${view}`]);
     }
+    const sections = fixture.nativeElement.querySelectorAll('#performance-analysis details[name="performance-analysis"]') as NodeListOf<HTMLDetailsElement>;
+    expect(Array.from(sections, section => section.open)).toEqual([true, false, false]);
     expect(samples.value).toBe('7');
     expect(picker.value).toBe('2');
     expect(component.benchmarkSettingsOpen()).toBe(false);

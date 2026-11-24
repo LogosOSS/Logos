@@ -56,6 +56,7 @@ def status_description(status):
         "recovery_required": "Benchmark interrupted; worker recovery requires attention",
         "interrupted": "Benchmark interrupted",
         "completed": "Benchmark completed",
+        "capacity_deferred": "Benchmark deferred pending GPU capacity",
     }.get(status, status.replace("_", " ").capitalize())
 
 
@@ -78,7 +79,10 @@ def notification_message(payload):
                 "Check the nightly report for the status of the rollback.",
             ]
         )
-    title = "Nightly benchmark interrupted" if status.startswith("interrupted") else "Nightly benchmark finished"
+    if status == "capacity_deferred":
+        title = "Nightly benchmark deferred"
+    else:
+        title = "Nightly benchmark interrupted" if status.startswith("interrupted") else "Nightly benchmark finished"
     lines = [
         f"{payload['provider_name']} · {payload['successful_configurations']} successful configurations",
         f"{status_description(status)}.",

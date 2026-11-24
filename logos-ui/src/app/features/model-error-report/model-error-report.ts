@@ -7,8 +7,9 @@ import {
   inject,
   signal,
   viewChild,
+  viewChildren,
 } from '@angular/core';
-import { NgClass } from '@angular/common';
+import { NgClass, NgTemplateOutlet } from '@angular/common';
 import { NightlyBenchmarks } from './nightly-benchmarks';
 import { BenchmarkRunFailure, isBenchmarkWindowStop } from './benchmark-run-failure';
 import { BenchmarkResults } from './benchmark-results';
@@ -23,7 +24,7 @@ import {
   CdkVirtualScrollViewport,
   ScrollingModule,
 } from '@angular/cdk/scrolling';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { combineLatest, firstValueFrom, Subscription } from 'rxjs';
 
@@ -683,6 +684,7 @@ const GENERIC_CALIBRATION_ERROR_DETAIL_MAX_LINES = 80;
   imports: [
     RouterLink,
     NgClass,
+    NgTemplateOutlet,
     BenchmarkSettingsEditor,
     BenchmarkBatchEditor,
     BenchmarkComparison,
@@ -717,6 +719,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   // ==========================================================================
 
   private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
   private readonly modelService = inject(ModelManagementService);
   private readonly http = inject(HttpClient);
 
@@ -731,7 +734,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   readonly loading = signal(true);
   readonly loadError = signal(false);
 
-  readonly activeTab = signal<ModelErrorTab>('error_report');
+  readonly activeTab = signal<ModelErrorTab>('performance');
 
   private readonly expandedErrors = signal<ReadonlySet<string>>(new Set());
 
@@ -779,14 +782,52 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   private performanceRequestVersion = 0;
   readonly performanceError = signal(false);
   readonly deployedPairs = computed(() => this.benchmarkPairs().filter(pair => pair.provider_type === 'logosnode'));
+  readonly selectedOverviewPairId = signal<number | null>(null);
+  readonly overviewPair = computed(() => {
+    const pairs = this.deployedPairs();
+    const runs = this.performance();
+    const linkedPairId = runs.find(run => run.id === this.linkedBenchmarkId())?.model_provider_id;
+    const selected = pairs.find(pair => pair.model_provider_id === this.selectedOverviewPairId())
+      ?? pairs.find(pair => pair.model_provider_id === linkedPairId);
+    if (selected) return selected;
+
+    const measured = new Set(runs.map(run => run.model_provider_id));
+    const online = pairs.filter(pair => this.benchmarkAvailability().get(pair.model_provider_id) === 'online');
+    return online.find(pair => measured.has(pair.model_provider_id))
+      ?? online[0]
+      ?? pairs.find(pair => measured.has(pair.model_provider_id))
+      ?? pairs[0];
+  });
+  readonly overviewTimelineRuns = computed(() => {
+    const pair = this.overviewPair();
+    return pair ? this.performance().filter(run => run.model_provider_id === pair.model_provider_id) : this.performance();
+  });
+  readonly selectedNightlyPairId = signal<number | null>(null);
+  private readonly nightlyWorkers = viewChildren(NightlyBenchmarks);
+  readonly selectedNightlyWorker = computed(() => {
+    const pairId = this.selectedNightlyPairId();
+    return this.nightlyWorkers().find(worker => worker.pairId === pairId);
+  });
+  private readonly deployedConfiguration = viewChild(DeployedConfiguration);
+  readonly deployedBenchmarkIds = computed(() => {
+    const run = this.deployedConfiguration()?.deployedRun();
+    return new Set(run ? [run.id] : []);
+  });
+  readonly timelineDeploymentNote = computed(() => {
+    const configuration = this.deployedConfiguration();
+    const live = configuration?.deployment();
+    if (!live?.available || live.maintenance || live.mixed_configuration || this.deployedBenchmarkIds().size) return null;
+    return configuration?.hasUnreportedBatchingLimit()
+      ? 'Live benchmark unverified · Batching limit not reported'
+      : 'Live benchmark unverified';
+  });
   readonly performanceViews = [
-    { id: 'results', label: 'Overview', icon: 'pi-chart-line', description: 'Active configuration and recorded benchmark results' },
-    { id: 'run', label: 'Benchmarks', icon: 'pi-play', description: 'Configure a manual run or manage nightly benchmarks' },
-    { id: 'measurements', label: 'Request measurements', icon: 'pi-clock', description: 'Response times from production requests' },
-    { id: 'analysis', label: 'Analysis', icon: 'pi-sliders-h', description: 'Compare runs, inspect configurations and look up metrics' },
+    { id: 'results', label: 'Overview', icon: 'pi-chart-line' },
+    { id: 'run', label: 'Benchmarks', icon: 'pi-play' },
+    { id: 'measurements', label: 'Request measurements', icon: 'pi-clock' },
+    { id: 'analysis', label: 'Analysis', icon: 'pi-sliders-h' },
   ] as const;
   readonly performanceView = signal<'results' | 'run' | 'measurements' | 'analysis'>('results');
-  readonly performanceDescription = computed(() => this.performanceViews.find(view => view.id === this.performanceView())!.description);
   readonly linkedBenchmarkId = signal<number | null>(null);
   private navigation?: Subscription;
   readonly benchmarkStartingPairId = signal<number | null>(null);
@@ -863,6 +904,21 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     setTimeout(() => document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 
+  closeLinkedBenchmark(): void {
+    if (!this.route.snapshot.queryParamMap.has('benchmark')) return;
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { benchmark: null },
+      queryParamsHandling: 'merge',
+      preserveFragment: true,
+      replaceUrl: true,
+    });
+  }
+
+  toggleNightlyWorker(pairId: number): void {
+    this.selectedNightlyPairId.update(current => current === pairId ? null : pairId);
+  }
+
   updateBenchmarkSettings(settings: BenchmarkSettings): void {
     this.benchmarkSettings.set(settings);
     if (!settings.workload_id && this.benchmarkSampleSize() > 100) this.benchmarkSampleSize.set(100);
@@ -906,7 +962,7 @@ export class ModelErrorReport implements OnInit, OnDestroy {
     return [...grouped.entries()].map(([modelProviderId, benchmarks]) => ({
       modelProviderId,
       benchmarks,
-      selected: benchmarks.find(benchmark => benchmark.id === (selectedIds.get(modelProviderId) ?? this.linkedBenchmarkId())) ?? benchmarks[0]!,
+      selected: benchmarks.find(benchmark => benchmark.id === selectedIds.get(modelProviderId)) ?? benchmarks[0]!,
     }));
   });
   private performancePollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -923,9 +979,9 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   // ==========================================================================
 
   readonly tabs: readonly ModelErrorTab[] = [
+    'performance',
     'error_report',
     'complete_logs',
-    'performance',
     'access',
     'prices',
   ];
@@ -1214,24 +1270,32 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   async ngOnInit(): Promise<void> {
     this.navigation = combineLatest([this.route.paramMap, this.route.queryParamMap]).subscribe(([params, query]) => {
       const id = Number(params.get('id'));
+      const modelChanged = this.modelId() !== id;
       const requestedTab = query.get('tab');
       const tab = (requestedTab === 'delays' || requestedTab === 'improvement' ? 'performance' : requestedTab) as ModelErrorTab | null;
-      if (this.modelId() !== id) {
-        this.performanceView.set('results');
-        this.benchmarkSettingsOpen.set(false);
-      }
-      if (requestedTab === 'delays') this.performanceView.set('measurements');
       const benchmark = Number(query.get('benchmark'));
       const linked = Number.isSafeInteger(benchmark) && benchmark > 0 ? benchmark : null;
-      if (linked !== this.linkedBenchmarkId()) this.selectedBenchmarkIds.set(new Map());
-      this.linkedBenchmarkId.set(linked);
-      if (this.linkedBenchmarkId() !== null) {
-        this.activeTab.set('performance');
+      if (modelChanged) {
         this.performanceView.set('results');
+        this.benchmarkSettingsOpen.set(false);
+        this.selectedNightlyPairId.set(null);
+        this.selectedOverviewPairId.set(null);
+        this.selectedBenchmarkIds.set(new Map());
+      } else if (linked !== this.linkedBenchmarkId() && this.selectedOverviewPairId() === null) {
+        // Keep the same worker behind the dialog, including after a direct link closes.
+        this.selectedOverviewPairId.set(this.overviewPair()?.model_provider_id ?? null);
+      }
+      if (requestedTab === 'delays') this.performanceView.set('measurements');
+      this.linkedBenchmarkId.set(linked);
+      if (linked !== null) {
+        if (this.activeTab() !== 'performance') this.performanceView.set('results');
+        this.activeTab.set('performance');
       } else if (tab !== null && this.tabs.includes(tab)) {
         this.activeTab.set(tab);
+      } else {
+        this.activeTab.set('performance');
       }
-      if (this.modelId() !== id) {
+      if (modelChanged) {
         this.modelId.set(id);
         this.performance.set([]);
         void this.fetchModel(id);

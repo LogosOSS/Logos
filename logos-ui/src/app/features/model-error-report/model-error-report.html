@@ -514,17 +514,9 @@
         @case ('performance') {
           <div class="performance-workspace">
 
-          <div class="performance-header">
-            <div>
-              <h2>Performance</h2>
-              <p>{{ performanceDescription() }}</p>
-            </div>
-            <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()" [hidden]="performanceView() === 'run'" aria-controls="benchmark-setup"><i class="pi pi-play" aria-hidden="true"></i> Run benchmark</button>
-          </div>
-
           <nav class="performance-nav" aria-label="Performance sections">
             @for (view of performanceViews; track view.id) {
-              <button type="button" [class.performance-nav__active]="performanceView() === view.id"
+              <button type="button"
                 [attr.aria-pressed]="performanceView() === view.id" [attr.aria-controls]="'performance-' + view.id"
                 (click)="performanceView.set(view.id)"><i [class]="'pi ' + view.icon" aria-hidden="true"></i><span>{{ view.label }}</span></button>
             }
@@ -578,13 +570,41 @@
 
           <section id="performance-results" class="performance-view" aria-label="Performance overview" [hidden]="performanceView() !== 'results'">
           <div class="performance-overview">
-          <section class="deployment-overview" aria-label="Currently deployed">
+          @if (deployedPairs().length) {
+            <section class="nightly-overview" aria-labelledby="nightly-rotation-heading">
+              <h3 id="nightly-rotation-heading"><i class="pi pi-moon" aria-hidden="true"></i> Nightly rotation</h3>
+              <div class="nightly-overview__workers">
+                @for (pair of deployedPairs(); track pair.model_provider_id) {
+                  <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name"
+                    [selected]="selectedNightlyPairId() === pair.model_provider_id" (selectionChange)="toggleNightlyWorker(pair.model_provider_id)" />
+                }
+              </div>
+              @if (selectedNightlyWorker(); as worker) {
+                <ng-container [ngTemplateOutlet]="worker.details()" />
+              }
+            </section>
+          }
+          @if (deployedPairs().length > 1) {
+            <div class="overview-worker-tabs" role="group" aria-label="Worker for deployment and timeline">
+              <span>Worker</span>
+              @for (pair of deployedPairs(); track pair.model_provider_id) {
+                <button type="button" [attr.aria-pressed]="overviewPair()?.model_provider_id === pair.model_provider_id"
+                  aria-controls="performance-deployment performance-timeline"
+                  (click)="selectedOverviewPairId.set(pair.model_provider_id)">{{ pair.provider_name }}</button>
+              }
+            </div>
+          }
+          <section id="performance-deployment" class="deployment-overview" aria-label="Currently deployed">
             <h3><i class="pi pi-server" aria-hidden="true"></i> Currently deployed</h3>
             @for (pair of deployedPairs(); track pair.model_provider_id) {
-              <app-deployed-configuration [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [runs]="performance()" />
+              @if (overviewPair()?.model_provider_id === pair.model_provider_id) {
+                <app-deployed-configuration [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [runs]="overviewTimelineRuns()" />
+              }
             } @empty { <p>No local worker configurations are available for this model.</p> }
           </section>
-            <app-benchmark-results [runs]="performance()" [showHistory]="false" />
+            <app-benchmark-results id="performance-timeline" [runs]="overviewTimelineRuns()" [workerName]="overviewPair()?.provider_name ?? null"
+              [deployedBenchmarkIds]="deployedBenchmarkIds()" [lastAdoptionId]="deployedConfiguration()?.adoption()?.benchmark_id ?? null"
+              [deploymentNote]="timelineDeploymentNote()" [showHistory]="false" />
           </div>
 
           <div class="performance-results">
@@ -603,17 +623,16 @@
 
             <div class="empty-state">
               <h2>No benchmark results available</h2>
-              @if (linkedBenchmarkId(); as benchmarkId) { <p>Benchmark #{{ benchmarkId }} is no longer available.</p> }
               <p>Run a benchmark to measure throughput and response times.</p>
               <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()">Configure a benchmark</button>
             </div>
 
-          } @else {
-
-            <app-benchmark-results [runs]="performance()" [selectedRunId]="linkedBenchmarkId()" [showProgress]="false" />
-
-
-
+          }
+          @if (performance().length || linkedBenchmarkId() !== null) {
+            <app-benchmark-results [runs]="performance()" [selectedRunId]="linkedBenchmarkId()" [showProgress]="false"
+              [loading]="performanceLoading()" [loadError]="performanceError()"
+              [showHistory]="!performanceLoading() && !performanceError() && performance().length > 0"
+              (closeSelectedRun)="closeLinkedBenchmark()" />
           }
 
           </div>
@@ -710,14 +729,6 @@
           }
 
           </div>
-          @if (deployedPairs().length) {
-          <section class="nightly-overview" aria-label="Nightly benchmarks">
-            <header><h3><i class="pi pi-moon" aria-hidden="true"></i> Nightly benchmarks</h3><p>Test configurations automatically during the maintenance window.</p></header>
-            @for (pair of deployedPairs(); track pair.model_provider_id) {
-              <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" />
-            }
-          </section>
-          }
           </section>
 
           <section id="performance-measurements" class="performance-view performance-request-view" aria-label="Request measurements" [hidden]="performanceView() !== 'measurements'">
@@ -755,10 +766,12 @@
 
           <section id="performance-analysis" class="performance-view performance-advanced" aria-label="Benchmark analysis" [hidden]="performanceView() !== 'analysis'">
             <div class="performance-advanced__content">
-<section class="performance-comparison" aria-label="Charts and comparison"><h3><i class="pi pi-chart-bar" aria-hidden="true"></i> Charts and comparison</h3>
-              <app-benchmark-comparison [runs]="performance()" />
-            </section>
-<details class="performance-analysis-item" name="performance-analysis"><summary>Run details and saved configurations</summary>
+              <details class="performance-analysis-item" name="performance-analysis" open>
+                <summary><h3><i class="pi pi-chart-bar" aria-hidden="true"></i> Compare parameter values</h3></summary>
+                <app-benchmark-comparison [runs]="performance()" />
+              </details>
+              <details class="performance-analysis-item" name="performance-analysis">
+                <summary><h3><i class="pi pi-list" aria-hidden="true"></i> Inspect saved runs</h3></summary>
 
             <div class="performance-list">
 
@@ -922,8 +935,8 @@
 
             </div>
             </details>
-<details class="performance-analysis-item performance-glossary" name="performance-analysis">
-            <summary><span>Glossary &amp; abbreviations</span><small>Metrics and serving parameters</small></summary>
+          <details class="performance-analysis-item performance-glossary" name="performance-analysis">
+            <summary><h3><i class="pi pi-book" aria-hidden="true"></i> Benchmark glossary</h3></summary>
             <div class="glossary-sections">
               <section><h4>Metrics</h4><dl class="glossary-grid">
                 <div><dt>TTFT</dt><dd>Time to first token.</dd></div>

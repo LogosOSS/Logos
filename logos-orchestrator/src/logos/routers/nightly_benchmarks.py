@@ -14,7 +14,7 @@ from logos.benchmarks.nightly_overview import overview
 from logos.dbutils.dbmanager import DBManager
 from logos.dbutils.dbrequest import (
     BenchmarkWorkloadRequest,
-    NightlyStatusRequest,
+    NightlySelectionStatusRequest,
     NightlyUpdateRequest,
     RecentBenchmarkWorkloadRequest,
 )
@@ -33,32 +33,41 @@ def target_for(pair_id):
 
 
 def worker_ready(snapshot, online):
-    return online and bool(((snapshot or {}).get("runtime") or {}).get("supports_benchmark_restart"))
+    return online and bool(((snapshot or {}).get("runtime") or {}).get("supports_nightly_gpu_budget"))
 
 
 @router.post("/status")
-async def nightly_status(data: NightlyStatusRequest, request: Request):
+async def nightly_status(data: NightlySelectionStatusRequest, request: Request):
     _require_internal_secret(request)
     target = target_for(data.model_provider_id)
     result = store.status(data.model_provider_id)
     result["workload_policy"] = recent_requests.policy(local_now())
     snapshot = main._logosnode_registry.peek_runtime_snapshot(target["provider_id"])
     current = extract_serving_configuration(snapshot, target["model_name"])
+    scheduler = main._nightly_scheduler
+    preview = (
+        scheduler.preview_configuration(data.model_provider_id, target["provider_id"], target["model_name"], snapshot)
+        if scheduler is not None
+        and not result["recovery_required"]
+        and result["status"] not in {"preparing", "running"}
+        else None
+    )
+    baseline = current if preview is None else preview
     search = None
     if result.get("workload_id"):
         workload = workloads.load(result["workload_id"], target["model_id"])
         source = (result.get("optimizer") or {}).get("source")
         if source and source.get("username") == recent_requests.username():
             workload["source_selection"] = source
-        search = optimization.context(current, snapshot or {}, workload, result.get("optimizer") or {})
+        search = optimization.context(baseline, snapshot or {}, workload, result.get("optimizer") or {})
     result["plan"] = [
         run.model_dump()
         for run in (
             optimization.plan(
-                current, search, round_index=optimization.round_index(search["state"], local_now().date())
+                baseline, search, round_index=optimization.round_index(search["state"], local_now().date())
             )
             if search
-            else parameter_plan(current)
+            else parameter_plan(baseline)
         )
     ]
     result["workloads"] = workloads.list_for_model(target["model_id"]) if "model_id" in target else []
@@ -85,9 +94,11 @@ async def nightly_status(data: NightlyStatusRequest, request: Request):
         or result["recovery_required"]
         or result["status"] in {"preparing", "running", "recovery_required"},
     )
-    if result["deployment"]["configuration"] != current:
+    if result["deployment"]["configuration"] != baseline:
         result["deployment"]["series_key"] = None
-    result["selection"] = store.selection_summary(data.model_provider_id, result.get("workload_id"))
+    result["selection"] = store.selection_summary(
+        data.model_provider_id, result.get("workload_id"), length_comparison_id=data.length_comparison_id
+    )
     result["window"] = MaintenanceWindow.from_env().describe()
     result["timezone"] = result["window"]["timezone"]
     result["max_maintenance_nodes"] = maintenance_node_limit()

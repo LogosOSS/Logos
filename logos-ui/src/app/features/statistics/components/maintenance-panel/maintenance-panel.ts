@@ -112,7 +112,7 @@ export function recoveryRow(r: MaintenanceRecovery): MaintenanceHolderRow {
   const details: string[] = [];
   if (r.model_name) details.push(r.model_name);
   details.push(`Status: ${r.status}`);
-  details.push('Puts the original settings back on its own');
+  details.push('Restores the previous lane setup');
   return {
     key: `recovery:${r.model_provider_id}`,
     kind: 'recovery',
@@ -309,8 +309,7 @@ export class MaintenancePanel implements OnChanges {
   }
 
   /**
-   * Release a nightly recovery. The server first checks that the worker runs
-   * the original settings; after a refusal the row offers Force release.
+   * Release a nightly recovery after the server verifies the worker's previous lane setup.
    */
   async releaseRecovery(row: MaintenanceHolderRow): Promise<void> {
     if (row.modelProviderId == null || this.busyKey() !== null) return;
@@ -318,7 +317,7 @@ export class MaintenancePanel implements OnChanges {
     this.notice.set(null);
     try {
       await this.statisticsService.releaseRecovery(row.modelProviderId, false);
-      this.notice.set({ kind: 'success', text: `Recovery on ${row.provider} released. It runs its original settings.` });
+      this.notice.set({ kind: 'success', text: `Recovery on ${row.provider} released. Original lane setup confirmed.` });
       await this.refresh();
     } catch (err: unknown) {
       const refused = (err as { status?: number })?.status === 409;

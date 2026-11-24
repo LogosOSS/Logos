@@ -341,9 +341,8 @@ export class Models implements OnInit, OnDestroy {
     return `Not used for ${daysSince(iso)} days`;
   }
 
-  /** Model row click: the model details view, opened on the Access tab (hosting providers, team/key grant matrix). */
   openModel(model: Model): void {
-    this.router.navigate(['/models', model.id, 'details'], { queryParams: { tab: 'access' } });
+    this.router.navigate(['/models', model.id, 'details']);
   }
 
   // ── Delete flow ───────────────────────────────────────────────────────────

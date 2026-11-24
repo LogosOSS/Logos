@@ -159,31 +159,6 @@
 // Performance
 // ==========================================================================
 
-.performance-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 24px;
-
-  h2,
-  p {
-    margin: 0;
-  }
-
-  h2 {
-    color: rgb(var(--color-typography-100));
-    font-size: var(--model-detail-heading-size);
-    font-weight: var(--font-weight-semibold);
-  }
-
-  p {
-    margin-top: 3px;
-    color: rgb(var(--color-typography-500));
-    font-size: var(--model-detail-font-size);
-  }
-}
-
 .performance-live {
   display: inline-flex;
   align-items: center;
@@ -296,11 +271,6 @@
 }
 
 @media (max-width: 720px) {
-  .performance-header {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
   .performance-list,
   .metric-grid {
     grid-template-columns: 1fr;

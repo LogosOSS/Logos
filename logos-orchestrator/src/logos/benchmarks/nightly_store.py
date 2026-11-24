@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import text
 
-from logos.benchmarks.nightly import MAX_PAIRS_PER_NIGHT
+from logos.benchmarks.nightly import CAPACITY_WAITING, MAX_PAIRS_PER_NIGHT
 from logos.dbutils.dbmanager import DBManager, _init_engine
 from logos.maintenance_window import maintenance_node_limit
 
@@ -41,8 +41,10 @@ def rows() -> list[dict]:
             for row in db.session.execute(
                 text(
                     "SELECT * FROM nightly_benchmarks ORDER BY last_run_date NULLS FIRST, "
-                    "CASE WHEN status = 'continuing' THEN updated_at END NULLS FIRST, model_provider_id"
-                )
+                    "CASE WHEN status IN ('continuing', :capacity_waiting) THEN updated_at END NULLS FIRST, "
+                    "model_provider_id"
+                ),
+                {"capacity_waiting": CAPACITY_WAITING},
             ).mappings()
         ]
 
@@ -105,7 +107,8 @@ def set_enabled(pair_id: int, enabled: bool, expected: bool, workload_id=UNCHANG
                 "optimizer = CASE WHEN :change_workload AND workload_id IS DISTINCT FROM :workload_id "
                 "THEN '{}'::jsonb ELSE optimizer END, "
                 "status = CASE WHEN recovery IS NOT NULL THEN status "
-                "WHEN status = 'continuing' THEN status WHEN :enabled THEN 'scheduled' ELSE 'disabled' END "
+                "WHEN status IN ('continuing', :capacity_waiting) THEN status "
+                "WHEN :enabled THEN 'scheduled' ELSE 'disabled' END "
                 "WHERE model_provider_id = :id AND enabled = :expected AND (NOT :enabled OR recovery IS NULL) "
                 "AND (NOT :change_workload OR (workload_id IS NOT DISTINCT FROM :expected_workload "
                 "AND recovery IS NULL AND status NOT IN ('running', 'preparing', 'continuing', 'recovery_required')))"
@@ -117,6 +120,7 @@ def set_enabled(pair_id: int, enabled: bool, expected: bool, workload_id=UNCHANG
                 "change_workload": workload_id is not UNCHANGED,
                 "workload_id": None if workload_id is UNCHANGED else workload_id,
                 "expected_workload": expected_workload_id,
+                "capacity_waiting": CAPACITY_WAITING,
             },
         )
         if not changed.rowcount:
@@ -133,11 +137,11 @@ def claim(pair_id: int, day) -> bool:
                 text(
                     "UPDATE nightly_benchmarks SET last_run_date = :day, status = 'running', report = '[]'::jsonb "
                     "WHERE model_provider_id = :id AND enabled AND recovery IS NULL "
-                    "AND ((last_run_date = :day AND status = 'continuing') OR "
+                    "AND ((last_run_date = :day AND status IN ('continuing', :capacity_waiting)) OR "
                     "((last_run_date IS NULL OR last_run_date < :day) "
                     "AND (SELECT COUNT(*) FROM nightly_benchmarks WHERE last_run_date = :day) < :limit))"
                 ),
-                {"id": pair_id, "day": day, "limit": MAX_PAIRS_PER_NIGHT},
+                {"id": pair_id, "day": day, "limit": MAX_PAIRS_PER_NIGHT, "capacity_waiting": CAPACITY_WAITING},
             ).rowcount
         )
 
@@ -151,7 +155,7 @@ def bind_workload(pair_id, workload_id):
         changed = db.session.execute(
             text(
                 "UPDATE nightly_benchmarks SET workload_id = :workload WHERE model_provider_id = :id "
-                "AND recovery IS NULL AND status = 'running'"
+                "AND enabled AND status IN ('running', 'preparing')"
             ),
             {"id": pair_id, "workload": workload_id},
         )
@@ -546,12 +550,12 @@ def adoption_candidate(pair_id, search, report):
     return optimization.adoption_candidate(search, runs, report)
 
 
-def selection_summary(pair_id, workload_id=None):
+def selection_summary(pair_id, workload_id=None, *, length_comparison_id=None):
     """Return bounded comparison diagnostics without request or response content."""
-    return selection_summaries([pair_id], workload_id)[pair_id]
+    return selection_summaries([pair_id], workload_id, length_comparison_id=length_comparison_id)[pair_id]
 
 
-def selection_summaries(pair_ids, workload_id=None):
+def selection_summaries(pair_ids, workload_id=None, *, length_comparison_id=None):
     """The comparison diagnostics of several pairs from one query, newest 100 runs of each."""
     ids = list(dict.fromkeys(pair_ids))
     runs_by_pair = {pair_id: [] for pair_id in ids}
@@ -569,11 +573,11 @@ def selection_summaries(pair_ids, workload_id=None):
             ).mappings()
             for row in rows:
                 runs_by_pair[row["model_provider_id"]].append(dict(row))
-    return {pair_id: _summarize(runs, workload_id) for pair_id, runs in runs_by_pair.items()}
+    return {pair_id: _summarize(runs, workload_id, length_comparison_id) for pair_id, runs in runs_by_pair.items()}
 
 
-def _summarize(runs, workload_id):
-    from logos.benchmarks.optimization import eligibility_issues, rate
+def _summarize(runs, workload_id, length_comparison_id):
+    from logos.benchmarks.optimization import comparison_diagnostics, rate
 
     by_id = {run["id"]: run for run in runs}
     if not workload_id and runs:
@@ -584,15 +588,22 @@ def _summarize(runs, workload_id):
             continue
         nightly = run["configuration"].get("nightly") or {}
         baseline = by_id.get(nightly.get("baseline_id"))
-        issues = eligibility_issues(run, baseline) if baseline else ["No comparison baseline was recorded"]
-        comparisons.append(
-            {
-                "benchmark_id": run["id"],
-                "baseline_id": nightly.get("baseline_id"),
-                "throughput": rate(run),
-                "issues": issues,
-            }
+        include_length_changes = run["id"] == length_comparison_id
+        issues, length_mismatches, length_changes = (
+            comparison_diagnostics(run, baseline, include_length_changes=include_length_changes)
+            if baseline
+            else (["No comparison baseline was recorded"], 0, [])
         )
+        comparison = {
+            "benchmark_id": run["id"],
+            "baseline_id": nightly.get("baseline_id"),
+            "throughput": rate(run),
+            "issues": issues,
+            "length_mismatches": length_mismatches,
+        }
+        if include_length_changes:
+            comparison["length_changes"] = length_changes
+        comparisons.append(comparison)
     observed = [row for row in comparisons if row["throughput"] is not None]
     eligible = [row for row in observed if not row["issues"]]
     return {
@@ -679,8 +690,10 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
                 optimizer = dict(previous)
                 if not same_night:
                     optimizer.pop("last_round_result", None)
-            session["rounds"] += 1
-            session["successful_configurations"] += sum(item.get("status") == "success" for item in report)
+            successful = sum(item.get("status") == "success" for item in report)
+            if state != CAPACITY_WAITING or successful:
+                session["rounds"] += 1
+                session["successful_configurations"] += successful
             optimizer["nightly_session"] = session
         if state.startswith("interrupted") or state == "failed":
             reason = next((item["reason"] for item in reversed(report) if item.get("reason")), None)
@@ -709,7 +722,7 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
                 "optimizer": json.dumps(optimizer) if optimizer is not None else None,
             },
         )
-        if row["last_run_date"] is not None and state != "continuing":
+        if row["last_run_date"] is not None and state not in {"continuing", CAPACITY_WAITING}:
             event_optimizer = optimizer or row["optimizer"] or {}
             payload = {
                 "model_provider_id": pair_id,
@@ -742,14 +755,18 @@ def finalize_continuations(now):
         if connection is None:
             return
         for row in rows():
-            if row["status"] != "continuing" or row["recovery"] is not None:
+            if row["status"] not in {"continuing", CAPACITY_WAITING} or row["recovery"] is not None:
                 continue
             if (
                 not row["enabled"]
                 or row["last_run_date"] != now.date()
                 or not MaintenanceWindow.from_env().contains(now)
             ):
-                finish(row["model_provider_id"], "completed" if row["enabled"] else "disabled", row["report"])
+                if not row["enabled"]:
+                    state = "disabled"
+                else:
+                    state = "capacity_deferred" if row["status"] == CAPACITY_WAITING else "completed"
+                finish(row["model_provider_id"], state, row["report"])
 
 
 async def deliver_completion_events():

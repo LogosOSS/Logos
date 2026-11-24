@@ -15,6 +15,61 @@ function run(id: number): ModelProviderBenchmark {
 }
 
 describe('Deployment status on Overview', () => {
+  it('shows both batching limits when telemetry omits one and keeps the benchmark match unverified', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
+    const fixture = TestBed.createComponent(DeployedConfiguration);
+    fixture.componentRef.setInput('pairId', 1);
+    fixture.componentRef.setInput('providerName', 'Worker');
+    fixture.componentRef.setInput('runs', [run(1)]);
+    fixture.detectChanges();
+    const http = TestBed.inject(HttpTestingController);
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush({
+      deployment: { ...deployment, configuration: { max_num_seqs: 4 } },
+      optimizer: { production_adoption: { benchmark_id: 1, baseline_id: 1, baseline_throughput: 28, throughput: 29 } },
+    });
+    await Promise.resolve();
+    fixture.detectChanges();
+    const content: HTMLElement = fixture.nativeElement;
+    const limits = () => Array.from(content.querySelectorAll('.key-parameters > div'), row =>
+      [row.querySelector('dt')?.textContent, row.querySelector('dd')?.textContent].join(' '));
+
+    expect(limits()).toEqual(['Max sequences 4', 'Max batched tokens Not reported']);
+    expect(fixture.componentInstance.measurement()).toBeNull();
+    expect(fixture.componentInstance.deployedRun()).toBeNull();
+    const lastAdoption = content.querySelector('section[aria-label="Last confirmed adoption"]')!;
+    expect(lastAdoption.textContent).toContain('Last confirmed adoption');
+    expect(lastAdoption.textContent).toMatch(/28\.0\s*→.*29\.0 tok\/s/);
+    expect(lastAdoption.textContent).toContain('Sequences 4 · batch tokens 2048');
+    expect(lastAdoption.querySelector('a')?.getAttribute('href')).toContain('benchmark=1');
+
+    fixture.componentInstance.state.update(state => ({
+      ...state!, deployment: { ...deployment, configuration: { max_num_seqs: 0, max_num_batched_tokens: 2048 } },
+    }));
+    fixture.detectChanges();
+    expect(limits()).toEqual(['Max sequences Auto', 'Max batched tokens 2048']);
+    expect(fixture.componentInstance.measurement()).toBeNull();
+
+    fixture.componentInstance.state.update(state => ({ ...state!, deployment }));
+    fixture.detectChanges();
+    expect(limits()).toEqual(['Max sequences 4', 'Max batched tokens 2048']);
+    expect(fixture.componentInstance.measurement()?.id).toBe(1);
+    expect(content.querySelector('section[aria-label="Last confirmed adoption"]')).toBeNull();
+
+    fixture.componentRef.setInput('runs', [run(1), run(2)]);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.measurement()?.id).toBe(2);
+    expect(fixture.componentInstance.deployedRun()?.id).toBe(1);
+
+    fixture.componentInstance.state.update(state => ({
+      ...state!, deployment: { ...deployment, series_key: 'new-workload' },
+    }));
+    fixture.detectChanges();
+    expect(fixture.componentInstance.measurement()).toBeNull();
+    expect(fixture.componentInstance.deployedRun()?.id).toBe(1);
+    fixture.destroy();
+    http.verify();
+  });
+
   it('uses worker telemetry for the status and shows sleeping lane settings separately', async () => {
     TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
     const fixture = TestBed.createComponent(DeployedConfiguration);
@@ -52,6 +107,113 @@ describe('Deployment status on Overview', () => {
     fixture.destroy();
     http.verify();
   });
+
+  it('keeps selection details collapsed and lists only runs with exclusion reasons', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
+    const fixture = TestBed.createComponent(DeployedConfiguration);
+    fixture.componentRef.setInput('pairId', 1);
+    fixture.componentRef.setInput('providerName', 'Worker');
+    fixture.componentRef.setInput('runs', [run(1)]);
+    fixture.detectChanges();
+    const http = TestBed.inject(HttpTestingController);
+    const eligible = { benchmark_id: 1, baseline_id: 1, throughput: 29, issues: [] };
+    const excluded = { benchmark_id: 2, baseline_id: 1, throughput: 31,
+      issues: ['4 answer lengths differ by more than 20% from baseline', 'p95 increased'], length_mismatches: 4 };
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush({
+      deployment,
+      selection: { best_observed: excluded, best_eligible: eligible, comparisons: [excluded, eligible] },
+    });
+    await Promise.resolve();
+    fixture.detectChanges();
+    const content: HTMLElement = fixture.nativeElement;
+    expect(content.querySelector<HTMLDetailsElement>('.deployment-details')?.open).toBe(false);
+    expect(content.querySelector<HTMLDetailsElement>('.excluded-runs')?.open).toBe(false);
+    expect(content.querySelectorAll('.exclusion')).toHaveLength(1);
+    expect(Array.from(content.querySelectorAll('.exclusion__reasons li'), reason => reason.textContent?.trim())).toEqual(excluded.issues);
+    const details = content.querySelector<HTMLDetailsElement>('.answer-length-details')!;
+    expect(details.open).toBe(false);
+    http.expectNone(request => request.body.length_comparison_id !== undefined);
+    details.open = true;
+    details.dispatchEvent(new Event('toggle'));
+    const comparison = http.expectOne('/api/logosdb/model_benchmarks/nightly/status');
+    expect(comparison.request.body).toEqual({ model_provider_id: 1, length_comparison_id: 2 });
+    comparison.flush({ selection: { comparisons: [{ ...excluded, length_changes: [
+      { request_number: 1, baseline_tokens: 100, trial_tokens: 72, change_percent: -28 },
+      { request_number: 2, baseline_tokens: 100, trial_tokens: 140, change_percent: 40 },
+      { request_number: 3, baseline_tokens: 0, trial_tokens: 5, change_percent: null },
+      { request_number: 5, baseline_tokens: 50000, trial_tokens: 60001, change_percent: 20.002 },
+    ] }] } });
+    await Promise.resolve();
+    fixture.detectChanges();
+    const rows = Array.from(details.querySelectorAll('tbody tr'), entry =>
+      Array.from(entry.querySelectorAll('th, td'), cell => cell.textContent?.trim().replace(/\s+/g, ' ')));
+    expect(rows).toEqual([
+      ['#1', '100', '72', 'Shorter -28.0%'],
+      ['#2', '100', '140', 'Longer +40.0%'],
+      ['#3', '0', '5', 'Longer Zero baseline'],
+      ['#5', '50,000', '60,001', 'Longer +20.002%'],
+    ]);
+    fixture.destroy();
+    http.verify();
+  });
+
+  it('deduplicates length detail requests and lets a failed request be retried', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
+    const fixture = TestBed.createComponent(DeployedConfiguration);
+    fixture.componentRef.setInput('pairId', 1);
+    fixture.componentRef.setInput('providerName', 'Worker');
+    fixture.componentRef.setInput('runs', []);
+    fixture.detectChanges();
+    const component = fixture.componentInstance;
+    const http = TestBed.inject(HttpTestingController);
+    const status = '/api/logosdb/model_benchmarks/nightly/status';
+    http.expectOne(status).flush({ deployment });
+    await Promise.resolve();
+    expect(component.excludedComparisons()).toEqual([]);
+
+    const loading = component.loadAnswerLengthDetails(2);
+    const request = http.expectOne(status);
+    await component.loadAnswerLengthDetails(2);
+    http.expectNone(status);
+    request.flush({}, { status: 503, statusText: 'Service unavailable' });
+    await loading;
+    expect(component.answerLengthDetails().get(2)).toBe('error');
+
+    const retry = component.loadAnswerLengthDetails(2);
+    http.expectOne(status).flush({ selection: { comparisons: [] } });
+    await retry;
+    expect(component.answerLengthDetails().get(2)).toEqual([]);
+    await component.loadAnswerLengthDetails(2);
+    http.expectNone(status);
+    fixture.destroy();
+    http.verify();
+  });
+
+  it('discards length details that arrive after switching workers', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
+    const fixture = TestBed.createComponent(DeployedConfiguration);
+    fixture.componentRef.setInput('pairId', 1);
+    fixture.componentRef.setInput('providerName', 'Worker');
+    fixture.componentRef.setInput('runs', []);
+    fixture.detectChanges();
+    const component = fixture.componentInstance;
+    const http = TestBed.inject(HttpTestingController);
+    const status = '/api/logosdb/model_benchmarks/nightly/status';
+    http.expectOne(status).flush({ deployment });
+
+    const oldDetails = component.loadAnswerLengthDetails(2);
+    const oldRequest = http.expectOne(status);
+    fixture.componentRef.setInput('pairId', 4);
+    fixture.detectChanges();
+    const newRequest = http.expectOne(status);
+    expect(newRequest.request.body).toEqual({ model_provider_id: 4 });
+    newRequest.flush({ deployment });
+    oldRequest.flush({ selection: { comparisons: [{ benchmark_id: 2, length_changes: [] }] } });
+    await oldDetails;
+    expect(component.answerLengthDetails().has(2)).toBe(false);
+    fixture.destroy();
+    http.verify();
+  });
 });
 
 describe('Current deployment measurement', () => {
@@ -63,9 +225,10 @@ describe('Current deployment measurement', () => {
     expect(deployedMeasurement({ ...deployment, series_key: 'different-worker-version' }, [old])).toBeNull();
     expect(deployedMeasurement({ ...deployment, series_key: 'different-worker-version' }, [old], false)?.id).toBe(1);
   });
-  it('does not claim an offline, temporary or incomplete measurement as deployed performance', () => {
+  it('does not claim an offline, mixed, temporary or incomplete measurement as deployed performance', () => {
     expect(deployedMeasurement({ ...deployment, available: false }, [run(1)])).toBeNull();
     expect(deployedMeasurement({ ...deployment, maintenance: true }, [run(1)])).toBeNull();
+    expect(deployedMeasurement({ ...deployment, mixed_configuration: true }, [run(1)])).toBeNull();
     const incomplete = run(1); incomplete.metrics.request_totals.incomplete = 1;
     expect(deployedMeasurement(deployment, [incomplete])).toBeNull();
   });

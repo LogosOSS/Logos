@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from unittest.mock import Mock
 
+from logos.benchmarks.nightly import CAPACITY_WAITING, MAX_PAIRS_PER_NIGHT
 from logos.benchmarks.nightly_overview import overview
 
 
@@ -64,6 +65,23 @@ def test_deleted_deployments_still_consume_the_daily_quota():
     scheduler = Mock(target_lane=Mock(return_value=({"provider_id": 1}, {}, {})))
     result = overview([row(1)], scheduler, datetime.fromisoformat("2026-10-21T05:30:00+02:00"), claimed_count=2)
     assert result["next_date"] == date(2026, 10, 22)
+
+
+def test_capacity_wait_keeps_its_window_when_the_remaining_daily_quota_is_zero():
+    day = date(2026, 10, 21)
+    scheduler = Mock(target_lane=Mock(return_value=({"provider_id": 1}, {}, {})))
+    result = overview(
+        [{**row(1, last=day), "status": CAPACITY_WAITING}, row(2)],
+        scheduler,
+        datetime.fromisoformat("2026-10-21T05:30:00+02:00"),
+        claimed_count=MAX_PAIRS_PER_NIGHT,
+    )
+    assert result["next_date"] == day
+    waiting, queued = result["schedules"]
+    assert waiting["state"] == "waiting"
+    assert waiting["reason"] == "Waiting for enough free memory for the benchmark"
+    assert queued["state"] == "queued"
+    scheduler.target_lane.assert_called_once_with(2, disable_missing=False)
 
 
 def test_running_journal_is_reserved_not_reported_as_failed_recovery():

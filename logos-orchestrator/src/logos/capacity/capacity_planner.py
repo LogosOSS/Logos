@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from logos.asyncio_tasks import cancel_and_wait
 from logos.background_refresh import BackgroundRefreshedValue
+from logos.benchmarks.nightly import NIGHTLY_CONTEXT
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.logosnode_registry import LogosNodeCommandError, LogosNodeRuntimeRegistry
 from logos.monitoring import prometheus_metrics as prom
@@ -2106,23 +2107,38 @@ class CapacityPlanner:
         if self._registry and not self._registry.has_received_first_status(provider_id):
             raise RuntimeError(f"Worker {provider_id} has not reported its status yet. Retry after it connects.")
 
+        pinned = self._require_benchmark_lane_pin(provider_id, model_name)
         target = self._pick_request_target_lane(provider_id, model_name)
         if target is not None and self._benchmark_lane_is_ready(target):
             await self._drain_benchmark_lane(provider_id, model_name, target.lane_id, timeout_seconds)
+            self._require_benchmark_lane_pin(provider_id, model_name, pinned)
             return True
         if target is not None and target.runtime_state == "starting":
-            await self._wait_for_benchmark_lane_ready(provider_id, model_name, timeout_seconds)
+            await self._wait_for_benchmark_lane_ready(provider_id, model_name, timeout_seconds, lane_id=pinned)
+        elif pinned is not None:
+            raise RuntimeError(f"Nightly benchmark lane '{pinned}' on worker {provider_id} is no longer ready.")
         elif target is not None and target.runtime_state in {"sleeping", "cold"}:
             await self._prepare_existing_lane(provider_id, model_name, target, timeout_seconds, raise_on_failure=True)
         else:
             await self._cold_load_for_request(provider_id, model_name, timeout_seconds, raise_on_failure=True)
 
+        self._require_benchmark_lane_pin(provider_id, model_name, pinned)
         target = self._pick_request_target_lane(provider_id, model_name)
         if target is None or not self._benchmark_lane_is_ready(target):
             state = target.runtime_state if target is not None else "missing"
             raise RuntimeError(f"Benchmark model '{model_name}' on worker {provider_id} is not ready (state: {state}).")
         await self._drain_benchmark_lane(provider_id, model_name, target.lane_id, timeout_seconds)
+        self._require_benchmark_lane_pin(provider_id, model_name, pinned)
         return True
+
+    @staticmethod
+    def _require_benchmark_lane_pin(provider_id: int, model_name: str, expected: str | None = None) -> str | None:
+        pinned = benchmark_reservations.pinned_lane(provider_id, model_name)
+        if (NIGHTLY_CONTEXT.get() and pinned is None) or (expected is not None and pinned != expected):
+            raise RuntimeError(
+                f"Nightly benchmark for '{model_name}' on worker {provider_id} no longer owns its pinned lane"
+            )
+        return pinned
 
     def _refuse_benchmark_on_locked_worker(self, provider_id: int) -> None:
         """A benchmark wakes, loads, reconfigures and drains lanes, which a locked worker does not allow."""
@@ -2156,11 +2172,12 @@ class CapacityPlanner:
     ) -> bool:
         """Reload an idle vLLM lane and wait for its new configuration to be reported."""
         self._refuse_benchmark_on_locked_worker(provider_id)
-        from logos.benchmarks.guidellm_runner import apply_serving_overrides
+        from logos.benchmarks.guidellm_runner import apply_serving_overrides, benchmark_model_lane
         from logos.benchmarks.worker_limits import validate_worker_overrides, worker_limits
 
+        pinned = self._require_benchmark_lane_pin(provider_id, model_name)
         validate_worker_overrides(
-            overrides, worker_limits(self._registry.peek_runtime_snapshot(provider_id), model_name)
+            overrides, worker_limits(self._registry.peek_runtime_snapshot(provider_id), model_name, lane_id=pinned)
         )
 
         target = self._pick_request_target_lane(provider_id, model_name)
@@ -2170,7 +2187,9 @@ class CapacityPlanner:
                 (
                     lane
                     for lane in self._safe_get_lanes(provider_id)
-                    if lane.model_name == model_name and lane.runtime_state in {"error", "stopped"}
+                    if lane.model_name == model_name
+                    and lane.runtime_state in {"error", "stopped"}
+                    and (pinned is None or lane.lane_id == pinned)
                 ),
                 None,
             )
@@ -2180,6 +2199,7 @@ class CapacityPlanner:
         if not recovering:
             if not await self.prepare_benchmark_lane(provider_id, model_name, timeout_seconds):
                 return False
+            self._require_benchmark_lane_pin(provider_id, model_name, pinned)
             target = self._pick_request_target_lane(provider_id, model_name)
         if target is None:
             raise RuntimeError(
@@ -2188,19 +2208,24 @@ class CapacityPlanner:
         if recovering:
             await self._drain_benchmark_lane(provider_id, model_name, target.lane_id, timeout_seconds)
         async with self._lane_lock(provider_id, target.lane_id):
+            self._require_benchmark_lane_pin(provider_id, model_name, pinned)
             snapshot = self._registry.peek_runtime_snapshot(provider_id) or {}
-            lane = next(
-                (
-                    lane
-                    for lane in (snapshot.get("runtime") or {}).get("lanes", [])
-                    if lane.get("lane_id") == target.lane_id
-                ),
-                None,
+            lane = (
+                benchmark_model_lane(snapshot, model_name, lane_id=pinned)
+                if pinned is not None
+                else next(
+                    (
+                        lane
+                        for lane in (snapshot.get("runtime") or {}).get("lanes", [])
+                        if lane.get("lane_id") == target.lane_id
+                    ),
+                    None,
+                )
             )
             config = (lane or {}).get("lane_config") or {}
             if not config.get("vllm"):
                 raise RuntimeError("Serving overrides require an existing vLLM lane on this worker")
-            validate_worker_overrides(overrides, worker_limits(snapshot, model_name))
+            validate_worker_overrides(overrides, worker_limits(snapshot, model_name, lane=lane))
             current = config.get("vllm_config") or {}
             updated = apply_serving_overrides(current, overrides)
             if updated == current and not recovering:
@@ -2217,6 +2242,7 @@ class CapacityPlanner:
                         "updates": {"vllm_config": updated},
                         "require_idle": True,
                         **({"force_restart": True} if recovering else {}),
+                        **({"nightly_gpu_budget": True} if pinned is not None else {}),
                     },
                     timeout_seconds=int(timeout_seconds),
                 )
@@ -2237,9 +2263,18 @@ class CapacityPlanner:
                 confirmation_timeout = min(timeout_seconds, 30.0)
                 deadline = time.monotonic() + confirmation_timeout
                 while time.monotonic() < deadline:
+                    self._require_benchmark_lane_pin(provider_id, model_name, pinned)
                     snapshot = self._registry.peek_runtime_snapshot(provider_id) or {}
                     lanes = (snapshot.get("runtime") or {}).get("lanes", [])
-                    lane = next((item for item in lanes if item.get("lane_id") == target.lane_id), {})
+                    lane = next(
+                        (
+                            item
+                            for item in lanes
+                            if item.get("lane_id") == target.lane_id
+                            and (pinned is None or item.get("model") == model_name)
+                        ),
+                        {},
+                    )
                     actual = (lane.get("lane_config") or {}).get("vllm_config") or {}
                     if all(actual.get(key) == value for key, value in updated.items()):
                         break
@@ -2251,6 +2286,7 @@ class CapacityPlanner:
                     )
             finally:
                 self._release_lane_cold(provider_id, target.lane_id)
+        self._require_benchmark_lane_pin(provider_id, model_name, pinned)
         return await self.prepare_benchmark_lane(provider_id, model_name, timeout_seconds)
 
     @staticmethod
@@ -2262,11 +2298,17 @@ class CapacityPlanner:
         provider_id: int,
         model_name: str,
         timeout_seconds: float,
+        *,
+        lane_id: str | None = None,
     ) -> bool:
         """Wait for an already-starting lane instead of issuing a duplicate load."""
         deadline = time.monotonic() + timeout_seconds
         while True:
-            matching_lanes = [lane for lane in self._safe_get_lanes(provider_id) if lane.model_name == model_name]
+            matching_lanes = [
+                lane
+                for lane in self._safe_get_lanes(provider_id)
+                if lane.model_name == model_name and (lane_id is None or lane.lane_id == lane_id)
+            ]
             target = best_lane([lane for lane in matching_lanes if lane.runtime_state not in {"stopped", "error"}])
             if target is not None:
                 if target.runtime_state in {"loaded", "running"} and target.sleep_state != "sleeping":
@@ -6251,10 +6293,13 @@ class CapacityPlanner:
         provider_id: int,
         model_name: str,
     ) -> Optional[LaneSchedulerSignals]:
+        pinned = benchmark_reservations.pinned_lane(provider_id, model_name)
         lanes = [
             lane
             for lane in self._safe_get_lanes(provider_id)
-            if lane.model_name == model_name and lane.runtime_state not in {"stopped", "error"}
+            if lane.model_name == model_name
+            and lane.runtime_state not in {"stopped", "error"}
+            and (pinned is None or lane.lane_id == pinned)
         ]
         return best_lane(lanes)
 

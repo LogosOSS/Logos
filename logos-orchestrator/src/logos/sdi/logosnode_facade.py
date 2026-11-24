@@ -481,6 +481,17 @@ class LogosNodeSchedulingDataFacade:
             }
             benchmark_reservations.reserve(provider_id, "*", owner, draining=draining)
 
+    def reserve_model_for_drain(self, provider_id: int, model_name: str, owner: int) -> None:
+        """Pause new requests for the benchmark model while its current requests finish."""
+        with self._lock:
+            draining = {
+                request_id: model_name
+                for request_id, tracking in self._request_tracking.items()
+                if tracking.get("provider_id") == provider_id
+                and self.get_model_name(tracking["model_id"], provider_id) == model_name
+            }
+            benchmark_reservations.reserve_nightly(provider_id, model_name, owner, draining=draining)
+
     def model_inflight_requests(self, provider_id: int, model_name: str) -> int:
         """Count locally admitted requests, including sends not in worker status yet."""
         with self._lock:

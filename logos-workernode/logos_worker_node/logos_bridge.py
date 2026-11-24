@@ -7,6 +7,7 @@ import base64
 import copy
 import json
 import logging
+import math
 import os
 import subprocess
 import threading
@@ -33,7 +34,12 @@ from logos_worker_node import perf_trace as worker_perf
 from logos_worker_node import prometheus_metrics as prom
 from logos_worker_node.asyncio_tasks import cancel_and_wait, finish_shielded
 from logos_worker_node.gpu_slice import calibration_gpu_slice, parse_gpu_indices
-from logos_worker_node.lane_manager import _lane_id_from_config, _normalize_lane_id
+from logos_worker_node.lane_manager import (
+    NightlyGpuBudgetUnavailable,
+    NightlyLaneIdentityMismatch,
+    _lane_id_from_config,
+    _normalize_lane_id,
+)
 from logos_worker_node.metal import is_metal_backend
 from logos_worker_node.model_profiles import SYNC_MODEL_PROFILES_ACTION
 from logos_worker_node.models import (
@@ -983,6 +989,10 @@ class LogosBridgeClient:
                 "success": False,
                 "error": str(exc),
             }
+            if isinstance(exc, NightlyGpuBudgetUnavailable):
+                response["reason_code"] = "nightly_gpu_budget"
+            elif isinstance(exc, NightlyLaneIdentityMismatch):
+                response["reason_code"] = "nightly_lane_identity"
         # The lifecycle revision after the command: a status sampled at this
         # revision or later reflects whatever the command changed.
         revision = getattr(self._app.state.lane_manager, "status_revision", None)
@@ -1037,12 +1047,44 @@ class LogosBridgeClient:
         self._start_lifecycle_task(self._execute_in_order(ws, cmd_id, action, params), action, cmd_id)
 
     @staticmethod
+    def _added_lane_config(params: dict[str, Any]) -> LaneConfig:
+        """Parse the lane settings without the transient Nightly command options."""
+        command_options = {"nightly_gpu_budget", "nightly_restore_mib_by_gpu"}
+        return LaneConfig(**{key: value for key, value in params.items() if key not in command_options})
+
+    @staticmethod
+    def _nightly_restore_budget(value: Any) -> dict[int, float]:
+        if not isinstance(value, dict) or not value:
+            raise NightlyGpuBudgetUnavailable("a saved restore budget must identify its GPUs")
+        budget = {}
+        for key, mib in value.items():
+            index = str(key)
+            if not index.isascii() or not index.isdecimal() or type(mib) not in (int, float):
+                raise NightlyGpuBudgetUnavailable("a saved restore budget must contain GPU indices and MiB values")
+            try:
+                gpu, needs = int(index), float(mib)
+            except (OverflowError, ValueError) as exc:
+                raise NightlyGpuBudgetUnavailable("a saved restore budget contains invalid values") from exc
+            if gpu in budget or not math.isfinite(needs) or needs <= 0:
+                raise NightlyGpuBudgetUnavailable("a saved restore budget contains invalid values")
+            budget[gpu] = needs
+        return budget
+
+    @staticmethod
     def _command_target(action: str, params: dict[str, Any]) -> str | None:
         """The lane a lifecycle command changes, ``*`` for the whole worker, or None for a read."""
-        if action in {"add_lane", "delete_lane", "sleep_lane", "wake_lane", "reconfigure_lane"}:
+        if action in {
+            "add_lane",
+            "delete_lane",
+            "sleep_lane",
+            "wake_lane",
+            "reconfigure_lane",
+            "check_nightly_gpu_budget",
+            "release_nightly_gpu_budget",
+        }:
             try:
                 if action == "add_lane":
-                    return _lane_id_from_config(LaneConfig(**params))
+                    return _lane_id_from_config(LogosBridgeClient._added_lane_config(params))
                 lane_id = str(params.get("lane_id") or "").strip()
                 return _normalize_lane_id(lane_id) if lane_id else "*"
             except Exception:  # noqa: BLE001 — the command itself reports a bad config
@@ -1096,7 +1138,8 @@ class LogosBridgeClient:
     async def _execute_command(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         lane_manager = self._app.state.lane_manager
 
-        if action in _VRAM_GROWING_ACTIONS and self._calibration_session_is_live():
+        slice_safe = action in {"add_lane", "wake_lane"} and bool(getattr(lane_manager, "calibration_gpu_subset", None))
+        if action in _VRAM_GROWING_ACTIONS and self._calibration_session_is_live() and not slice_safe:
             # Last line of defence, at the resource itself. The server excludes
             # a calibrating worker from lane placement, but every mechanism it
             # has for knowing lags reality by some amount — an event in flight,
@@ -1138,13 +1181,33 @@ class LogosBridgeClient:
             return result.model_dump(mode="json")
 
         if action == "add_lane":
-            lane_config = LaneConfig(**params)
-            status = await lane_manager.add_lane(lane_config)
+            lane_config = self._added_lane_config(params)
+            nightly = params.get("nightly_gpu_budget") is True
+            options = {"nightly_gpu_budget": True} if nightly else {}
+            if "nightly_restore_mib_by_gpu" in params:
+                if not nightly:
+                    raise NightlyGpuBudgetUnavailable("a restore budget requires strict nightly admission")
+                options["nightly_restore_mib_by_gpu"] = self._nightly_restore_budget(
+                    params["nightly_restore_mib_by_gpu"]
+                )
+            status = await lane_manager.add_lane(lane_config, **options)
             return status.model_dump(mode="json")
 
         lane_id = str(params.get("lane_id", "")).strip()
+        if action == "check_nightly_gpu_budget":
+            needs = await lane_manager.check_nightly_gpu_budget(lane_id)
+            return {"ok": True, "required_mib_by_gpu": needs}
+        if action == "release_nightly_gpu_budget":
+            await lane_manager.release_nightly_gpu_budget(lane_id)
+            return {"ok": True}
         if action == "delete_lane":
-            await lane_manager.remove_lane(lane_id)
+            if "expected_model" in params:
+                expected_model = params["expected_model"]
+                if not isinstance(expected_model, str) or not expected_model:
+                    raise ValueError("expected_model must name the model to remove")
+                await lane_manager.remove_lane(lane_id, expected_model=expected_model)
+            else:
+                await lane_manager.remove_lane(lane_id)
             return {"ok": True, "lane_id": lane_id}
         if action == "sleep_lane":
             status = await lane_manager.sleep_lane(
@@ -1158,6 +1221,12 @@ class LogosBridgeClient:
             return status.model_dump(mode="json")
         if action == "reconfigure_lane":
             updates = params.get("updates") or {}
+            if params.get("nightly_gpu_budget") is True:
+                force = params.get("force_restart") is True
+                status = await lane_manager.reconfigure_lane(
+                    lane_id, updates, require_idle=True, force_restart=force, nightly_gpu_budget=True
+                )
+                return {**status.model_dump(mode="json"), **({"restarted": True} if force else {})}
             if params.get("force_restart"):
                 status = await lane_manager.reconfigure_lane(lane_id, updates, require_idle=True, force_restart=True)
                 return {**status.model_dump(mode="json"), "restarted": True}
@@ -2242,6 +2311,7 @@ class LogosBridgeClient:
         )
 
         terminal_event = "calibration_session_finished"
+        calibration_acquired = False
         lane_manager = getattr(self._app.state, "lane_manager", None)
         # Push a status carrying calibrating=True right away. The server holds
         # its optimistic mark for a bounded window after dispatching the start,
@@ -2281,27 +2351,38 @@ class LogosBridgeClient:
             all_plans = plans_from_app_config(cfg)
             plan_by_model = {p["model"]: p for p in all_plans}
 
-            # Free the calibration's GPU slice up front — but only that slice
-            # The probe is pinned to the slice (CUDA_VISIBLE_DEVICES),
-            # so it only competes for the slice's VRAM; lanes on the leftover
-            # GPUs keep serving for the rest of the session instead of sitting
-            # idle. Without the pin the kv-cache search would start against an
-            # already-loaded model on the measured GPUs and OOM at sizes that
-            # would otherwise fit. The Logos server re-spawns the stopped slice
-            # lanes via the normal apply_lanes path once the session ends.
+            # CUDA probes may start only after acquiring and draining their
+            # exact slice. The Metal backend keeps its worker-wide guard and
+            # doesn't need an NVIDIA pin.
             calibration_gpus: frozenset[int] = frozenset()
+            metal = is_metal_backend()
+            required_gpus: set[int] = set()
+            if not metal:
+                for model_name in models:
+                    plan = plan_by_model.get(model_name, {})
+                    pin = str(plan.get("gpu_devices") or "")
+                    overrides = plan.get("env_overrides") or {}
+                    if overrides.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID") != "PCI_BUS_ID":
+                        raise RuntimeError(f"Calibration GPU ordering is not confirmed for {model_name}")
+                    if not _plan_needs_gpu_pin(pin):
+                        parts = [part.strip() for part in pin.split(",")]
+                        indices = {int(part) for part in parts if part.isdigit()}
+                        if len(indices) != len(parts):
+                            raise RuntimeError(f"Calibration GPU pin for {model_name} is not confirmed")
+                        required_gpus.update(indices)
             if lane_manager is not None:
-                try:
-                    calibration_gpus = lane_manager.begin_calibration_session()
-                    stopped = await lane_manager.destroy_lanes_on_gpus(calibration_gpus)
-                    logger.info(
-                        "[Calibration] Calibration holds GPU(s) %s — stopped %d lane(s) on them; "
-                        "leftover lanes kept serving",
-                        sorted(calibration_gpus),
-                        stopped,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("[Calibration] calibration slice setup failed — continuing anyway")
+                calibration_gpus = await lane_manager.acquire_calibration_gpu_reservation(frozenset(required_gpus))
+                calibration_acquired = True
+            if not metal and (not calibration_gpus or not required_gpus <= calibration_gpus):
+                raise RuntimeError("Calibration requires a confirmed GPU slice covering every explicit pin")
+            if calibration_gpus:
+                stopped = await lane_manager.destroy_lanes_on_gpus(calibration_gpus)
+                logger.info(
+                    "[Calibration] Calibration holds GPU(s) %s — stopped %d lane(s) on them; "
+                    "leftover lanes kept serving",
+                    sorted(calibration_gpus),
+                    stopped,
+                )
 
             for model_name in models:
                 if session.cancel_event.is_set():
@@ -2619,10 +2700,11 @@ class LogosBridgeClient:
                 details=f"sleep_level={session.sleep_level}",
             )
             if lane_manager is not None:
-                try:
-                    lane_manager.end_calibration_session()
-                except Exception:  # noqa: BLE001
-                    logger.debug("[Calibration] end_calibration_session failed", exc_info=True)
+                if calibration_acquired:
+                    try:
+                        lane_manager.end_calibration_session()
+                    except Exception:  # noqa: BLE001
+                        logger.debug("[Calibration] end_calibration_session failed", exc_info=True)
                 try:
                     lane_manager.mark_status_dirty()
                 except Exception:  # noqa: BLE001

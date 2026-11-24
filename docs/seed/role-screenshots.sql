@@ -32,6 +32,8 @@ END $$;
 -- ---------------------------------------------------------------------------
 -- Wipe previous docs-role-screenshots run
 -- ---------------------------------------------------------------------------
+DELETE FROM providers WHERE name = 'Docs Secondary Worker';
+
 DELETE FROM nightly_benchmarks
 WHERE model_provider_id IN (
     SELECT mp.id FROM model_provider mp

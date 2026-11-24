@@ -1,14 +1,15 @@
-:host { display: block; min-width: 0; font: inherit; }
+:host { display: block; min-width: 0; font: inherit; container-type: inline-size; }
 .comparison { --plot-height: 200px; color: rgb(var(--color-typography-100)); font-size: var(--model-detail-font-size, .875rem); line-height: 1.5; }
-header, figcaption { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: .5rem 1rem; }
-h3 { margin: 0 0 .25rem; font-size: var(--model-detail-heading-size, 1rem); font-weight: 600; }
+figcaption { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: .5rem 1rem; }
 p { margin: 0; }
-.muted, .comparison-context, figcaption span, .axis-title, .box-legend, .comparison-note, .run-count, .unit { color: rgb(var(--color-typography-500)); }
+.comparison-context, figcaption span, .axis-title, .box-legend, .comparison-note, .run-count, .unit { color: rgb(var(--color-typography-500)); }
 label { display: grid; gap: .4rem; font-weight: 500; }
 select { width: 100%; min-width: 0; min-height: 44px; padding: .6rem .75rem; border: 1px solid rgb(var(--color-outline-300)); border-radius: .4rem; background: rgb(var(--color-surface-0)); color: inherit; font: inherit; text-overflow: ellipsis; }
 select:focus-visible, button:focus-visible, summary:focus-visible, .plot-scroll:focus-visible, .table-scroll:focus-visible { outline: 2px solid rgb(var(--color-primary-500)); outline-offset: 3px; }
-.baseline-picker { margin-top: 1.25rem; }
-.comparison-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+.comparison-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: .75rem; }
+@container (min-width: 36rem) {
+  .comparison-controls { grid-template-columns: minmax(0, 1.55fr) repeat(2, minmax(0, 1fr)); }
+}
 .comparison-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1.25rem 0 .75rem; padding: 1rem 0; border-top: 1px solid rgb(var(--color-outline-200)); border-bottom: 1px solid rgb(var(--color-outline-200)); }
 .comparison-summary dt { color: rgb(var(--color-typography-500)); }
 .comparison-summary dd { margin: .35rem 0 0; font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -60,10 +61,9 @@ tbody tr:hover { background: rgb(var(--color-surface-50)); }
 .date time { display: block; color: rgb(var(--color-typography-500)); }
 .active-metric { font-weight: 600; }
 .empty { padding: 1rem 0; color: rgb(var(--color-typography-500)); }
-@media (max-width: 760px) {
+@container (width < 36rem) {
   .comparison { --plot-height: 180px; }
-  .comparison-controls, .comparison-summary { grid-template-columns: 1fr; }
-  .comparison-summary { gap: .75rem; }
+  .comparison-summary { grid-template-columns: 1fr; gap: .75rem; }
   .comparison-summary > div { display: flex; justify-content: space-between; gap: 1rem; }
   .comparison-summary dd { margin: 0; font-size: inherit; text-align: right; }
 }
