@@ -1,31 +1,32 @@
 @use './performance-disclosure' as disclosure;
 :host { display: block; width: 100%; }
 .nightly {
-  border-top: 1px solid rgb(var(--color-typography-100) / .12); padding: 20px 0;
   color: rgb(var(--color-typography-700)); font-size: var(--model-detail-font-size, 1rem);
 }
 .nightly__heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .nightly__heading strong { color: rgb(var(--color-typography-0)); font-size: var(--model-detail-heading-size, 1rem); }
-.nightly__heading i { margin-right: .35rem; }
-.nightly__title { display: flex; flex-direction: column; align-items: flex-start; gap: .4rem; }
+.nightly__title { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; min-width: 0; }
+.nightly__title strong { overflow-wrap: anywhere; }
 p { margin: .4rem 0; line-height: 1.5; }
-button { padding: .6rem .85rem; border-radius: .5rem; border: 1px solid rgb(var(--color-outline-300)); background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-0)); font: inherit; font-weight: 500; cursor: pointer; }
+button { min-height: 44px; padding: .6rem .85rem; border-radius: .5rem; border: 1px solid rgb(var(--color-outline-300)); background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-0)); font: inherit; font-weight: 500; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
+.nightly__toggle:not([aria-haspopup]) { background: rgb(var(--color-primary-600)); color: rgb(var(--color-background-0)); border-color: transparent; }
 [role="alert"] { color: rgb(var(--color-error)); }
 small { display: block; margin-top: .75rem; overflow-wrap: anywhere; }
-summary { cursor: pointer; padding: .4rem 0; }
-label { display: block; margin: .65rem 0 .3rem; }
+label { display: block; margin: .65rem 0 .3rem; font-weight: 500; }
 input, select { box-sizing: border-box; min-width: 0; max-width: 100%; width: 100%; margin: .3rem 0 .65rem; padding: .6rem; border-radius: .5rem; border: 1px solid rgb(var(--color-outline-300)); background: rgb(var(--color-surface-0)); color: rgb(var(--color-typography-0)); font: inherit; }
 li { margin: .5rem 0; overflow-wrap: anywhere; }
 @media (max-width: 600px) { button { width: 100%; } }
 
 .nightly__status {
-  display: inline-flex; align-items: center; gap: .5rem;
-  padding: 0;
-  background: transparent; color: rgb(var(--color-typography-500)); font-weight: 500;
-  i { margin: 0; }
-  &.nightly__status--enabled { color: rgb(var(--color-typography-100)); background: transparent; }
-  &.nightly__status--blocked { color: rgb(var(--color-warning)); background: rgb(var(--color-warning) / .12); }
+  --nightly-status-color: var(--color-typography-500);
+  display: inline-flex; align-items: center; gap: .4rem;
+  padding: .25rem .6rem; border-radius: 999px;
+  background: rgb(var(--nightly-status-color) / .12);
+  color: rgb(var(--color-typography-100)); font-size: .875rem; font-weight: 500;
+  .status-dot { width: .5rem; height: .5rem; }
+  &.nightly__status--enabled { --nightly-status-color: var(--color-success); }
+  &.nightly__status--blocked { --nightly-status-color: var(--color-warning); }
 }
 
 .nightly__schedule { display: grid; gap: .75rem; margin: .75rem 0 1.25rem; }
@@ -48,16 +49,12 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 
 
 .nightly__summary { margin: 8px 0 0; font-size: .875rem; color: rgb(var(--color-typography-500)); }
-.nightly__heading strong { font-size: 1rem; }
-.nightly__heading button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; }
-.nightly__heading button i { margin: 0; }
-.nightly-management { --model-detail-font-size: 1rem; --model-detail-heading-size: 1rem; min-width: 0; font-size: 1rem; line-height: 1.5; }
-.nightly-management details { @include disclosure.section; }
-.nightly__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; width: 100%; gap: 12px; }
-.nightly__window { display: flex; align-items: center; gap: .5rem; font-weight: 600; }
+.nightly__workload { max-width: 32rem; margin: .75rem 0 .25rem; min-width: 0; }
+.nightly > details { border-top: 1px solid rgb(var(--color-typography-100) / .12); }
+.nightly details { @include disclosure.section; }
+.nightly > details > input, .nightly > details > label { max-width: 32rem; }
 .nightly__hint { color: rgb(var(--color-typography-500)); }
-.nightly-management label { font-weight: 500; }
-.nightly-management select {
+.nightly select {
   appearance: none;
   min-height: 44px;
   padding-inline: .75rem 2.5rem;
@@ -66,5 +63,4 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   background-position: right .875rem center;
   background-repeat: no-repeat;
 }
-@media (forced-colors: active) { .nightly-management select { appearance: auto; } }
-.nightly__actions button { width: auto; min-height: 44px; background: rgb(var(--color-primary-600)); color: rgb(var(--color-background-0)); border: 0; }
+@media (forced-colors: active) { .nightly select { appearance: auto; } }

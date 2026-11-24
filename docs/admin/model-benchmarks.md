@@ -19,7 +19,7 @@ Benchmarks measure speed and throughput. They do not grade the generated answers
 
 1. Open **Models → Model Management**.
 2. Select the model.
-3. Open **Performance → Run benchmark**.
+3. Open **Performance → Benchmarks**.
 4. Check the selected online worker, or select another available provider.
 5. Set the sample size.
 6. Select **Review benchmark**.
@@ -57,14 +57,14 @@ Each run preserves the source prompts, inference controls and output limits.
 The Hugging Face dataset, prompt column, seed and output-limit controls do not apply to these runs.
 Select **Concurrent** and set **Concurrent requests** to use the same load for each configuration.
 Batch configurations keep the selected saved dataset. They cannot vary its request count, seed or output limits.
-Create a saved dataset through **Nightly benchmarks → Manage → Request workload** before selecting it here.
+Create a saved dataset under **Performance → Overview → Nightly rotation → Request workload** before selecting it here.
 
 ![Manual benchmark with a saved request dataset](/img/roles/logos-admin-benchmark-saved-requests.png)
 
 ### Desktop Example
 
-**Performance → Overview** shows the current configuration and the record timeline.
-Select **Benchmarks** or **Run benchmark** to configure a manual run and manage nightly benchmarks.
+**Performance → Overview** shows **Nightly rotation**, **Currently deployed** and **Timeline**.
+Select **Benchmarks** to configure a manual run.
 Select **Request measurements** for production request times, or **Analysis** for comparisons and saved configurations.
 Expand **Overview → Benchmark runs** for the history. Active jobs remain visible in every section.
 
@@ -73,7 +73,7 @@ They demonstrate the interface, not a live benchmark measurement.
 Provider names and measured values depend on your deployment.
 Select an image to view it at full size.
 
-[![Desktop benchmark setup](/img/roles/logos-admin-nightly-results.png)](/img/roles/logos-admin-nightly-results.png)
+[![Performance overview with nightly rotation, deployed settings and timeline](/img/roles/logos-admin-nightly-results.png)](/img/roles/logos-admin-nightly-results.png)
 
 ## Confirm the Start
 
@@ -84,7 +84,7 @@ Select an image to view it at full size.
 Closing the dialog does not start a job.
 Closing the browser after confirmation does not stop a submitted job.
 After a successful start, the setup closes and **Performance** shows the job status.
-If the start fails, **Run benchmark** keeps your settings and shows the error.
+If the start fails, **Benchmarks** keeps your settings and shows the error.
 
 [![Desktop benchmark confirmation dialog](/img/roles/logos-admin-benchmark-confirmation.png)](/img/roles/logos-admin-benchmark-confirmation.png)
 
@@ -158,7 +158,7 @@ Expand **Run details and saved configurations** for the saved benchmark and serv
 
 ## Change Settings and Retry a Failed Model
 
-**Use for next benchmark** copies a historical run's settings and opens **Run benchmark**.
+**Use for next benchmark** copies a historical run's settings and opens **Benchmarks**.
 It does not change the stored result.
 Blank vLLM fields preserve the current worker values. Explicit `false` values remain overrides.
 
@@ -184,7 +184,7 @@ For deployment checks, use the [developer verification checklist](https://github
 
 ## Reload Worker GPU Limits
 
-1. Open **Run benchmark → Customize → vLLM settings for the next run**.
+1. Open **Benchmarks → Customize → vLLM settings for the next run**.
 2. Select **Reload GPU limits**.
 3. If the GPU count stays unknown, wait for a worker status update.
 4. Select **Reload GPU limits** again.

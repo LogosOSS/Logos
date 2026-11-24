@@ -18,37 +18,6 @@
 } @else if (selectedRunId() !== null) {
   <p role="status">Benchmark #{{ selectedRunId() }} is no longer available. Other saved results are shown below.</p>
 }
-@if (showHistory() && !activeProgress() && topRuns().length) {
-  <section class="top-configurations" aria-label="Top configurations so far">
-    <h3>Highest recorded throughput</h3>
-    <p class="results-note">Latest captured workload per provider. Older workloads are not ranked against it.</p>
-    @for (top of topRuns(); track top.run.model_provider_id) {
-      <article class="top-configuration">
-        <div class="results-heading">
-          <div><strong>{{ top.run.provider_name }}</strong><small>Run #{{ top.run.id }} · {{ top.run.recorded_at | date:'dd MMM yyyy, HH:mm Z' }}</small></div>
-          <strong class="top-configuration__rate">{{ top.rate | number:'1.1-1' }} <small>tok/s</small></strong>
-        </div>
-        <p class="results-note">{{ datasetLabel(top.run) }} · {{ top.run.sample_size }} requests
-          @for (setting of top.workload; track setting.key) {
-            @if (setting.captured && (setting.key === 'profile' || setting.key === 'max_concurrency' || setting.key === 'max_output_tokens')) { · {{ setting.label }}: {{ setting.value }} }
-          }
-        </p>
-        <div class="top-configuration__parameters">
-          @for (parameter of top.parameters; track parameter.key) {
-            @if (parameter.captured && ['max_num_seqs', 'max_num_batched_tokens', 'tensor_parallel_size', 'kv_cache_dtype'].includes(parameter.key)) { <span>{{ parameter.label }} <strong>{{ parameter.value }}</strong></span> }
-          }
-        </div>
-        <details>
-          <summary>Measured configuration</summary>
-          <div class="top-configuration__details">
-            <div><h4>Benchmark settings</h4><dl>@for (item of top.workload; track item.key) { <dt>{{ item.label }}</dt><dd>{{ item.value }}</dd> }</dl></div>
-            <div><h4>Serving parameters</h4><dl>@for (item of top.parameters; track item.key) { <dt>{{ item.label }}</dt><dd>{{ item.value }}</dd> }</dl></div>
-          </div>
-        </details>
-      </article>
-    }
-  </section>
-}
 @if (showProgress()) {
   <section class="benchmark-progress" aria-label="Performance timeline">
     <h3><i class="pi pi-chart-line" aria-hidden="true"></i> Timeline</h3>
@@ -105,23 +74,70 @@
     } @else {
       <p class="results-note" role="status">No comparable completed rounds yet. A complete baseline and matching workload are required.</p>
     }
-    <div class="timeline-policy">
-      <h4>When settings change</h4>
-      <p>Logos measures the current settings first, then tests each trial on the same requests at the same load. It adopts the fastest trial that passes all checks and beats that night’s baseline.</p>
-      <details><summary>What does Logos check?</summary>
-        <ul>
-          <li>Every request must finish successfully in the same environment and with the same finish reason as its baseline.</li>
-          <li>Each answer must stay within 20% of its baseline output token count.</li>
-          <li>The time to finish 95% of requests (p95) can rise by at most 10%.</li>
+    <details class="timeline-policy">
+      <summary>What does Logos check?</summary>
+      <ul class="timeline-policy__checks" role="list">
+        <li>
+          <i class="pi pi-sync" aria-hidden="true"></i>
+          <div><strong>Matched baseline</strong><p>Same requests, model, worker environment and load.</p></div>
+        </li>
+        <li>
+          <i class="pi pi-shield" aria-hidden="true"></i>
+          <div><strong>Complete responses</strong><p>All requests finish successfully with the same finish reasons and 80–120% of baseline answer length.</p></div>
+        </li>
+        <li>
+          <i class="pi pi-chart-line" aria-hidden="true"></i>
+          <div><strong>Higher throughput</strong><p>More output tokens/s. The time to finish 95% of requests (p95) can rise by at most 10%.</p></div>
+        </li>
+      </ul>
+      <div class="timeline-policy__examples">
+        <strong>Example with a 2.0 s p95 baseline</strong>
+        <ul role="list">
+          <li><i class="pi pi-check-circle" aria-hidden="true"></i> <strong>Pass</strong> 2.1 s (+5%)</li>
+          <li><i class="pi pi-times-circle" aria-hidden="true"></i> <strong>Fail</strong> 2.3 s (+15%)</li>
         </ul>
-        <p>Small gains can still reflect normal variation between runs. If no trial qualifies, Logos keeps the current settings. See <strong>Currently deployed</strong> for the confirmed configuration.</p>
-      </details>
-    </div>
+      </div>
+      <p class="timeline-policy__adoption">For saved request datasets, Logos applies the fastest passing trial after the worker confirms the settings.</p>
+    </details>
   </section>
 }
 @if (showHistory()) {
 <details class="run-history" [open]="selectedRunId() !== null">
-  <summary><h3><i class="pi pi-history" aria-hidden="true"></i> Benchmark runs <small>{{ rows().length }} results · output tok/s</small></h3></summary>
+  <summary>
+    <h3><i class="pi pi-history" aria-hidden="true"></i> Benchmark runs</h3>
+    <small>{{ rows().length }} results · output tok/s</small>
+  </summary>
+  @if (!activeProgress() && topRuns().length) {
+    <section class="top-configurations" aria-label="Top configurations so far">
+      <h3>Highest recorded throughput</h3>
+      <p class="results-note">Latest captured workload per provider.</p>
+      @for (top of topRuns(); track top.run.model_provider_id) {
+        <article class="top-configuration">
+          <div class="results-heading">
+            <div><strong>{{ top.run.provider_name }}</strong><small>Run #{{ top.run.id }} · {{ top.run.recorded_at | date:'dd MMM yyyy, HH:mm Z' }}</small></div>
+            <strong class="top-configuration__rate">{{ top.rate | number:'1.1-1' }} <small>tok/s</small></strong>
+          </div>
+          <p class="results-note">{{ datasetLabel(top.run) }} · {{ top.run.sample_size }} requests
+            @for (setting of top.workload; track setting.key) {
+              @if (setting.captured && (setting.key === 'profile' || setting.key === 'max_concurrency' || setting.key === 'max_output_tokens')) { · {{ setting.label }}: {{ setting.value }} }
+            }
+          </p>
+          <div class="top-configuration__parameters">
+            @for (parameter of top.parameters; track parameter.key) {
+              @if (parameter.captured && ['max_num_seqs', 'max_num_batched_tokens', 'tensor_parallel_size', 'kv_cache_dtype'].includes(parameter.key)) { <span>{{ parameter.label }} <strong>{{ parameter.value }}</strong></span> }
+            }
+          </div>
+          <details>
+            <summary>Measured configuration</summary>
+            <div class="top-configuration__details">
+              <div><h4>Benchmark settings</h4><dl>@for (item of top.workload; track item.key) { <dt>{{ item.label }}</dt><dd>{{ item.value }}</dd> }</dl></div>
+              <div><h4>Serving parameters</h4><dl>@for (item of top.parameters; track item.key) { <dt>{{ item.label }}</dt><dd>{{ item.value }}</dd> }</dl></div>
+            </div>
+          </details>
+        </article>
+      }
+    </section>
+  }
   <p class="results-note">Each run compared with its recorded nightly baseline. Starting measurements show 0% change.</p>
   <table>
     <thead><tr>

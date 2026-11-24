@@ -63,6 +63,7 @@ describe('Benchmark result baseline', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     const result = fixture.nativeElement.querySelector('.selected-result');
+    expect(document.activeElement).toBe(result);
     expect(result.textContent).toContain('Benchmark #2');
     expect(result.textContent).toContain('Sequences: 4 → 8');
     expect(result.textContent).toContain('+25.0%');
@@ -78,6 +79,7 @@ describe('Benchmark result baseline', () => {
     const history = fixture.nativeElement.querySelector('.run-history') as HTMLDetailsElement;
     const toggle = history.querySelector('summary')!;
     expect(history.open).toBe(false);
+    expect(history.querySelector('.top-configurations h3')?.textContent).toBe('Highest recorded throughput');
     toggle.click();
     expect(history.open).toBe(true);
     (history.querySelectorAll('.sortable button')[3] as HTMLButtonElement).click();
@@ -243,7 +245,13 @@ describe('Nightly progress', () => {
     fixture.detectChanges();
     expect(links()).toHaveLength(0);
     expect(timeline.textContent).toContain('complete baseline');
-    expect(timeline.textContent).toContain('When settings change');
+    const checks = timeline.querySelector('.timeline-policy') as HTMLDetailsElement;
+    expect(checks.open).toBe(false);
+    expect(checks.querySelector('summary')?.textContent).toBe('What does Logos check?');
+    expect([...checks.querySelectorAll('.timeline-policy__checks strong')].map(label => label.textContent))
+      .toEqual(['Matched baseline', 'Complete responses', 'Higher throughput']);
+    expect(checks.querySelector('.timeline-policy__examples')?.textContent).toContain('Pass 2.1 s (+5%)');
+    expect(checks.querySelector('.timeline-policy__examples')?.textContent).toContain('Fail 2.3 s (+15%)');
   });
 });
 

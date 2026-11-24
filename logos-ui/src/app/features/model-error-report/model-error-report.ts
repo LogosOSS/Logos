@@ -780,13 +780,12 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   readonly performanceError = signal(false);
   readonly deployedPairs = computed(() => this.benchmarkPairs().filter(pair => pair.provider_type === 'logosnode'));
   readonly performanceViews = [
-    { id: 'results', label: 'Overview', icon: 'pi-chart-line', description: 'Active configuration and recorded benchmark results' },
-    { id: 'run', label: 'Benchmarks', icon: 'pi-play', description: 'Configure a manual run or manage nightly benchmarks' },
-    { id: 'measurements', label: 'Request measurements', icon: 'pi-clock', description: 'Response times from production requests' },
-    { id: 'analysis', label: 'Analysis', icon: 'pi-sliders-h', description: 'Compare runs, inspect configurations and look up metrics' },
+    { id: 'results', label: 'Overview', icon: 'pi-chart-line' },
+    { id: 'run', label: 'Benchmarks', icon: 'pi-play' },
+    { id: 'measurements', label: 'Request measurements', icon: 'pi-clock' },
+    { id: 'analysis', label: 'Analysis', icon: 'pi-sliders-h' },
   ] as const;
   readonly performanceView = signal<'results' | 'run' | 'measurements' | 'analysis'>('results');
-  readonly performanceDescription = computed(() => this.performanceViews.find(view => view.id === this.performanceView())!.description);
   readonly linkedBenchmarkId = signal<number | null>(null);
   private navigation?: Subscription;
   readonly benchmarkStartingPairId = signal<number | null>(null);

@@ -514,14 +514,6 @@
         @case ('performance') {
           <div class="performance-workspace">
 
-          <div class="performance-header">
-            <div>
-              <h2>Performance</h2>
-              <p>{{ performanceDescription() }}</p>
-            </div>
-            <button type="button" class="benchmark-run-button" (click)="openBenchmarkSetup()" [hidden]="performanceView() === 'run'" aria-controls="benchmark-setup"><i class="pi pi-play" aria-hidden="true"></i> Run benchmark</button>
-          </div>
-
           <nav class="performance-nav" aria-label="Performance sections">
             @for (view of performanceViews; track view.id) {
               <button type="button" [class.performance-nav__active]="performanceView() === view.id"
@@ -578,6 +570,14 @@
 
           <section id="performance-results" class="performance-view" aria-label="Performance overview" [hidden]="performanceView() !== 'results'">
           <div class="performance-overview">
+          @if (deployedPairs().length) {
+            <section class="nightly-overview" aria-labelledby="nightly-rotation-heading">
+              <h3 id="nightly-rotation-heading"><i class="pi pi-moon" aria-hidden="true"></i> Nightly rotation</h3>
+              @for (pair of deployedPairs(); track pair.model_provider_id) {
+                <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" />
+              }
+            </section>
+          }
           <section class="deployment-overview" aria-label="Currently deployed">
             <h3><i class="pi pi-server" aria-hidden="true"></i> Currently deployed</h3>
             @for (pair of deployedPairs(); track pair.model_provider_id) {
@@ -710,14 +710,6 @@
           }
 
           </div>
-          @if (deployedPairs().length) {
-          <section class="nightly-overview" aria-label="Nightly benchmarks">
-            <header><h3><i class="pi pi-moon" aria-hidden="true"></i> Nightly benchmarks</h3><p>Test configurations automatically during the maintenance window.</p></header>
-            @for (pair of deployedPairs(); track pair.model_provider_id) {
-              <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" />
-            }
-          </section>
-          }
           </section>
 
           <section id="performance-measurements" class="performance-view performance-request-view" aria-label="Request measurements" [hidden]="performanceView() !== 'measurements'">

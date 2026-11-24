@@ -96,6 +96,7 @@ export class DeployedConfiguration implements OnDestroy {
   }).filter(item => item.captured));
   readonly keyParameters = computed(() => this.parameters().filter(item => ['max_num_seqs', 'max_num_batched_tokens'].includes(item.key)));
   readonly selection = computed(() => this.state()?.selection);
+  readonly excludedComparisons = computed(() => this.selection()?.comparisons.filter(comparison => comparison.issues.length) ?? []);
   readonly adoption = computed(() => this.state()?.optimizer?.production_adoption);
   private timer?: ReturnType<typeof setTimeout>;
   private generation = 0;

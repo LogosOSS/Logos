@@ -286,9 +286,10 @@ It rejects inference and control commands. Authentication, schedule changes,
 parameter plans and dataset previews use the local application services.
 
 Open **llama-3.1-8b-instruct → Performance** as `tobias.wasner`.
-Capture the **Performance** overview with the deployed result and record timeline.
-Select **Run benchmark** before capture. Capture the activation dialog,
-confirm activation, then capture the active card and deactivation dialog.
+Capture the **Performance → Overview** with the nightly rotation status, deployed result and timeline.
+For the schedule states, capture **Disabled**, select **Enable nightly rotation**,
+and then capture **Enabled** and the **Disable nightly rotation?** confirmation.
+Open **Benchmarks** for the manual benchmark setup shots.
 The example results are illustrative measurements, not a live GPU benchmark.
 For the running status card, run the seed with `LOGOS_DOCS_ACTIVE_BENCHMARK=true` inside the documentation container.
 This flag adds a status row only. It does not execute inference.
@@ -316,11 +317,11 @@ flows use a **concept** name (no role prefix); role-only list pages keep the
 | `logos-admin-statistics-requesters.png` | `tobias.wasner` | `/statistics?tab=requests` — **Requesters** list open | `roles/logos-admin.md` |
 | `logos-admin-models.png` | `tobias.wasner` | `/models` | `roles/logos-admin.md` |
 | `logos-admin-nightly-enable.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — nightly schedule ready to enable | `roles/logos-admin.md#nightly-benchmarks` |
-| `logos-admin-nightly-benchmarks.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Run a benchmark** and compact nightly status | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-benchmarks.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Overview → Nightly rotation** enabled | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-automatic-source.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — automatic recent-user source policy | `roles/logos-admin.md#nightly-benchmarks` |
-| `logos-admin-nightly-plan.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Manage → Schedule and test plan** | `roles/logos-admin.md#nightly-benchmarks` |
+| `logos-admin-nightly-plan.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Overview → Nightly rotation → Schedule and test plan** | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-nightly-workload.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — request dataset form | `roles/logos-admin.md#nightly-benchmarks` |
-| `logos-admin-nightly-results.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Currently deployed** summary and **Timeline** record chart | `roles/logos-admin.md#model-benchmarks` |
+| `logos-admin-nightly-results.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — **Nightly rotation**, **Currently deployed** and **Timeline** | `roles/logos-admin.md#model-benchmarks` |
 | `logos-admin-benchmark-notification.png` | `tobias.wasner` | Notification inbox — benchmark with captured result link | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-benchmark-linked-result.png` | `tobias.wasner` | `/models/<id>/details?tab=performance&benchmark=<id>` — selected result and parameter changes | `roles/logos-admin.md#nightly-benchmarks` |
 | `logos-admin-benchmark-saved-requests.png` | `tobias.wasner` | `/models/<id>/details?tab=performance` — manual benchmark with a saved request dataset | `roles/logos-admin.md#model-benchmarks` |

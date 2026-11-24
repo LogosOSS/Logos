@@ -10,13 +10,75 @@ describe('Nightly benchmark management', () => {
     TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
     http = TestBed.inject(HttpTestingController);
     control = TestBed.runInInjectionContext(() => new NightlyBenchmarks());
-    control.managing.set(true);
     control.pairId = 31;
     control.providerName = 'Worker A';
     control.state.set({ worker_ready: true, enabled: false, status: 'disabled', report: [], recovery_required: false,
       window: { start: '05:00', end: '08:00', benchmark_start_cutoff: '08:00', timezone: 'Europe/Berlin' } });
   });
   afterEach(() => { control.ngOnDestroy(); http.verify(); });
+
+  it('labels the rotation status and distinguishes worker recovery', async () => {
+    const fixture = TestBed.createComponent(NightlyBenchmarks);
+    fixture.componentRef.setInput('pairId', control.pairId);
+    fixture.componentRef.setInput('providerName', control.providerName);
+    fixture.detectChanges();
+    const ready = control.state()!;
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush(ready);
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const status: HTMLElement = fixture.nativeElement.querySelector('.nightly__status');
+    expect(status.textContent.trim()).toBe('Disabled');
+    expect(status.querySelector('.status-dot--gray')).not.toBeNull();
+
+    fixture.componentInstance.state.set({ ...ready, enabled: true, status: 'scheduled' });
+    fixture.detectChanges();
+    expect(status.textContent.trim()).toBe('Enabled');
+    expect(status.classList.contains('nightly__status--enabled')).toBe(true);
+
+    fixture.componentInstance.state.update(current => ({ ...current!, recovery_required: true }));
+    fixture.detectChanges();
+    expect(status.textContent).toMatch(/Enabled\s*· Recovery pending/);
+    expect(status.querySelector('.status-dot--warn')).not.toBeNull();
+  });
+
+  it('shows the workload inline and enables scheduling after applying the selection', async () => {
+    const fixture = TestBed.createComponent(NightlyBenchmarks);
+    fixture.componentRef.setInput('pairId', control.pairId);
+    fixture.componentRef.setInput('providerName', control.providerName);
+    fixture.detectChanges();
+    const dataset = { id: 'a'.repeat(64), name: 'Saved requests', request_count: 100, provenance: 'production' };
+    const available = { ...control.state()!, workloads: [dataset] };
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush(available);
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const section: HTMLElement = fixture.nativeElement.querySelector('section');
+    const workload = section.querySelector<HTMLSelectElement>('#nightly-workload-31')!;
+    const toggle = section.querySelector<HTMLButtonElement>('.nightly__toggle')!;
+    expect(workload.labels?.[0].textContent).toBe('Request workload');
+    expect(workload.closest('details')).toBeNull();
+    expect(toggle.disabled).toBe(false);
+
+    workload.value = dataset.id;
+    workload.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    expect(toggle.disabled).toBe(true);
+    const save = vi.spyOn(fixture.componentInstance, 'saveSource');
+    const apply = Array.from(section.querySelectorAll('button')).find(button => button.textContent.trim() === 'Apply dataset')!;
+    apply.click();
+    const applied = { ...available, workload_id: dataset.id };
+    const configure = http.expectOne('/api/logosdb/model_benchmarks/nightly/configure');
+    expect(configure.request.body.workload_id).toBe(dataset.id);
+    configure.flush(applied);
+    await Promise.resolve();
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush(applied);
+    await save.mock.results[0].value;
+    fixture.detectChanges();
+    expect(fixture.componentInstance.selectedWorkload).toBe(dataset.id);
+    expect(workload.value).toBe(dataset.id);
+    expect(toggle.disabled).toBe(false);
+  });
 
   it('changes the dataset with the saved dataset as its compare-and-set expectation', async () => {
     control.selectedWorkload = 'a'.repeat(64);
@@ -103,8 +165,6 @@ describe('Nightly benchmark management', () => {
     expect(enable.request.body).toEqual({ model_provider_id: 31, enabled: true, expected_enabled: false });
     enable.flush({ enabled: true, status: 'scheduled', report: [], recovery_required: false });
     await pending;
-    expect(control.managing()).toBe(false);
-    control.managing.set(true);
     await control.toggleNightly();
     expect(control.confirming()).toBe(true);
     http.expectNone('/api/logosdb/model_benchmarks/nightly/configure');
@@ -116,13 +176,13 @@ describe('Nightly benchmark management', () => {
     expect(control.state()!.enabled).toBe(false);
   });
 
-  it('keeps the dialog open with the server reason if activation fails', async () => {
+  it('shows the server reason if activation fails', async () => {
     const pending = control.toggleNightly();
     http.expectOne('/api/logosdb/model_benchmarks/nightly/configure').flush({ detail: 'State changed' }, { status: 409, statusText: 'Conflict' });
     await pending;
     expect(control.state()!.enabled).toBe(false);
     expect(control.error()).toBe('State changed');
-    expect(control.managing()).toBe(true);
+    expect(control.confirming()).toBe(false);
     expect(control.saving()).toBe(false);
   });
 

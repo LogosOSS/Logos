@@ -4,9 +4,10 @@ title: Nightly Benchmarks
 
 # Nightly Benchmarks
 
-Logos admins enable or disable a nightly schedule for each model/worker pair on
-**Model Details → Performance**. Select **Benchmarks → Manage** to inspect the schedule and parameter values for a worker. Automatic serving limits use explicit trial configurations. The preview reflects the worker's current
-settings; the scheduler builds the plan again when the nightly run starts.
+Logos admins manage each model/worker pair under **Model Details → Performance → Overview → Nightly rotation**.
+Expand **Schedule and test plan** under the worker to see the maintenance window and parameter values.
+The preview uses the worker's current settings. The scheduler builds the plan again when the nightly run starts.
+Trials use explicit serving limits when the current settings are automatic.
 
 Schedules are off by default and persist in PostgreSQL. The nightly plan is independent
 of the manual benchmark editor. Disabling a schedule cancels its active run and
@@ -17,30 +18,28 @@ restores the worker before it returns to production.
 See the [illustrated admin walkthrough](../roles/logos-admin.md#nightly-benchmarks)
 for screenshots of the plan and schedule controls.
 
-![Run a benchmark and compact nightly status](../static/img/roles/logos-admin-nightly-benchmarks.png)
+![Enabled nightly rotation in the performance overview](../static/img/roles/logos-admin-nightly-benchmarks.png)
 
-Select **Manage** beside the intended worker to inspect its workload, schedule and results.
+The worker shows its request workload, schedule and status. Expand **Schedule and test plan** for the parameter values.
 
 ![Nightly management with the schedule and test plan](../static/img/roles/logos-admin-nightly-plan.png)
 
 1. Sign in as a Logos Admin and open **Models**.
 2. Open the model's **Model Details → Performance** tab.
-3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Select **Manage** and review the time window and request workload.
-5. Select **Enable nightly runs**. The dialog explains any missing prerequisite.
-6. Check that the card shows **Enabled · in nightly rotation**.
+3. In **Overview**, find the intended worker under **Nightly rotation**.
+4. Review the time window and **Request workload**. Apply any dataset change before enabling the schedule.
+5. Select **Enable nightly rotation**. The worker shows any missing prerequisite beside the controls.
+6. Check for **Enabled** and a green dot beside the worker.
 
 The schedule persists after a page reload or browser close. To remove the pair
-from rotation, select **Manage → Disable nightly runs…** and confirm **Disable nightly runs**.
+from rotation, select **Disable nightly rotation…** and confirm **Disable nightly rotation**.
 Activation requires
 an updated, connected worker. Run admission also checks the lane and the other
 available workers.
 
-Select **Manage** to inspect the plan for this pair. The plan does not guarantee a reservation for tonight.
-The scheduler selects eligible pairs at runtime. Use **Run a benchmark** for the dataset editor and question previews.
-These controls configure manual runs. They do not alter the nightly workload.
+The scheduler selects eligible pairs at runtime. Use **Benchmarks → Customize** for the manual dataset editor and question previews.
 
-The next day, select **Manage**, then expand **Latest round results** and inspect each configuration's
+The next day, expand **Latest round results** under the worker and inspect each configuration's
 outcome, attempt and benchmark ID. Use **Overview** or **Analysis** for
 successful measurements. A finished plan can contain failed configurations;
 review individual outcomes before comparing throughput.
@@ -148,10 +147,9 @@ Hugging Face runs retain the original production settings.
 
 ## Fixed Request Workloads
 
-Use **Request workload** to replace Hugging Face data for a nightly schedule.
-The manual benchmark editor remains independent.
+Use **Request workload** under **Nightly rotation** to replace Hugging Face data for a nightly schedule.
 
-1. Choose **Recent FULL request logs** in the **Dataset** menu.
+1. Choose **Recent FULL request logs** in **Request workload**.
 2. Keep **Latest 100 requests** to use recent traffic regardless of age. For a time window, choose **Last 24 hours**, **Last 3 days** or **Last 7 days**.
 3. Select **Create and apply dataset**. Logos shows the number of requests saved. The selection ends when you create the dataset.
 
@@ -271,9 +269,9 @@ Trials show their change from the baseline of the same round, if available.
 Slower runs and excluded trials remain visible. Select a run to see its configuration and result.
 Select **Show all** to see more than the latest 6 runs.
 The timeline separates workloads and test settings. Measurements can span worker releases.
-Read **When settings change** for the nightly adoption rule.
-Expand **What does Logos check?** for the limits on output length and request latency.
-Expand **Currently deployed → Configuration & selection details** to inspect current settings and selection failures.
+Expand **What does Logos check?** for the nightly adoption checks and examples of the request latency limit.
+Expand **Currently deployed → Configuration & selection details** to inspect **Serving settings** and **Run selection**.
+Open **Why other runs were excluded** when it appears to see each run and its exclusion reasons.
 A completed eligible winner is saved before the next trial starts.
 Recovery can apply this saved winner if a later trial is interrupted. Disabling the schedule cancels pending adoption.
 These measurements do not establish statistical significance.

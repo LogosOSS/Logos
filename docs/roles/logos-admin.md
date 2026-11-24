@@ -223,17 +223,17 @@ This stop alone does not confirm that the worker is ready. Actual worker errors 
 
 The [Model Benchmarks guide](../admin/model-benchmarks.md) explains the confirmation dialog, single-run charts, batches and failed-model retries.
 
-The **Performance → Overview** section shows **Currently deployed** and **Timeline**.
-Select **Benchmarks** for manual runs and nightly settings, **Request measurements** for request times, or **Analysis** for comparisons.
+The **Performance → Overview** section shows **Nightly rotation**, **Currently deployed** and **Timeline**.
+Select **Benchmarks** for manual runs, **Request measurements** for request times, or **Analysis** for comparisons.
 Expand **Benchmark runs** to read saved runs grouped by dataset.
-Without a nightly series, **Highest recorded throughput** shows the best result within each provider's latest captured workload.
+Without a nightly series, expand **Benchmark runs** to find **Highest recorded throughput** for each provider's latest captured workload.
 Older workloads are not ranked against it. Unknown controls do not establish a comparison.
 Manual benchmarks do not apply these parameters automatically. Nightly runs with saved request datasets can apply verified improvements.
 
-Select **Run benchmark** to start a manual run. The page shows the provider, sample size and current test setup.
+Select **Benchmarks** for the manual run setup. The page shows the provider, sample size and current test setup.
 Select **Customize** to change advanced controls. Select **Done** to keep the settings and return to the start button.
 
-To benchmark saved requests manually, open **Run benchmark → Customize**.
+To benchmark saved requests manually, open **Benchmarks → Customize**.
 Select the saved dataset under **Input dataset**. Logos fixes the sample size to its request count.
 The run preserves each source request's output limit. Set the profile and concurrency for the comparison.
 **Repeat or compare settings** uses the same saved requests for every configuration.
@@ -254,32 +254,30 @@ Each dot shows output tokens per second (tok/s) on the vertical scale. An open c
 Each trial shows its change from the baseline of its round, if available.
 Select a run to see its settings and any reason for exclusion.
 Select **Show all** to see older runs.
-Read **When settings change** for the nightly adoption rule.
-Expand **What does Logos check?** for the limits on output length and request latency.
+Expand **What does Logos check?** for the nightly adoption checks and examples of the request latency limit.
 Expand **Benchmark runs** to see the latest 5 results per dataset.
 A baseline shows its own throughput and 0% change. Missing comparisons show why the baseline is unavailable. Select **Show all** to read older results.
 Select **Before**, **After** or **Change** to sort all results from highest to lowest.
 Select the same column again to reverse the order. Missing values stay at the end.
 
-![Performance overview with current configuration and absolute throughput timeline](../static/img/roles/logos-admin-nightly-results.png)
+![Performance overview with nightly rotation, deployed settings and throughput timeline](../static/img/roles/logos-admin-nightly-results.png)
 
-Read **Currently deployed** at the top of **Performance**.
+Read **Currently deployed** below **Nightly rotation** in **Performance → Overview**.
 The summary shows throughput, baseline, change and the main batching parameters.
-Expand **Configuration & selection details** for all settings, the worker state and the telemetry time.
+Expand **Configuration & selection details** for **Serving settings** and **Run selection**.
 The view identifies measurements with matching settings and the same measurement environment.
 Measurements from another environment appear with a historical label. They do not verify current performance.
 The measurement includes its benchmark number, baseline throughput, result throughput and percentage change.
 Temporary benchmark settings and recovery states do not establish the production configuration.
 The status distinguishes an offline worker, a sleeping model and a model waiting to start. A sleeping model can still show its configured settings. Active replicas with different settings are identified separately.
 Manual measurements can show their change from the first comparable dataset baseline. The summary labels this baseline as **Starting baseline**.
-The details also show the last confirmed adoption and reasons that exclude faster runs.
+**Run selection** shows the fastest measured run, the fastest run that passed the checks and the last confirmed adoption when those results are available.
+Expand **Why other runs were excluded** to read the reasons by run.
 A fresh comparison must verify a historical candidate before automatic adoption.
 
 ![Current worker configuration and its measured result](../static/img/roles/logos-admin-deployed-configuration.png)
 
-The overview shows **Currently deployed** above **Timeline** on desktop and mobile.
-Configuration details and benchmark history start closed.
-Select **Benchmarks** or **Run benchmark** for manual runs and nightly settings.
+Configuration details and benchmark history start closed on desktop and mobile.
 Select **Analysis** for the comparison charts, saved configurations and glossary.
 The large analysis sections open one at a time.
 **Charts and comparison** opens first. Select the **Reference run**, **Parameter** and **Metric**.
@@ -311,20 +309,17 @@ See the [nightly benchmark guide](../admin/nightly-benchmarks.md) for rotation, 
 
 1. Open a model from **Models**.
 2. Select **Performance**.
-3. Select **Run benchmark** and find **Nightly benchmarks** for the intended worker.
-4. Select **Manage** and check the time window and request workload.
-5. Select **Enable nightly runs**. If the button is unavailable, the dialog shows what needs attention.
+3. In **Overview**, find the intended worker under **Nightly rotation**.
+4. Check the time window and **Request workload** under the worker. Apply any dataset change.
+5. Select **Enable nightly rotation**. If the button is unavailable, the worker shows what needs attention.
 
 ![Nightly schedule ready to enable](../static/img/roles/logos-admin-nightly-enable.png)
 
-The card then shows **Enabled · in nightly rotation**.
+The worker then shows **Enabled** with a green dot.
 The schedule stays active after a page reload.
 Each night, Logos selects up to `LOGOS_NIGHTLY_MAX_PAIRS` eligible pairs, with new or older attempts first.
-Select **Manage** to inspect the parameter values for this pair. The plan does not guarantee a place for tonight.
+Expand **Schedule and test plan** to inspect the parameter values for this pair.
 
-The example uses illustrative measurements and an active nightly schedule.
-Use **Run a benchmark** to configure a run during the day.
-These controls do not change the nightly workload.
 Use **Request workload** to select a saved dataset for the nightly schedule.
 Choose **Recent FULL request logs**, keep **Latest 100 requests** and click **Create and apply dataset**. On production, this saves up to 100 replayable requests for the model from the production log. You can also select a time window. Each dataset has a 5 MB limit. For a hand-picked dataset, open **Select individual request IDs**.
 ![Create a fixed request dataset](../static/img/roles/logos-admin-nightly-workload.png)
@@ -349,27 +344,26 @@ If the measurement is deleted, then the page identifies the unavailable benchmar
 ![Selected benchmark with its result and changed parameters](../static/img/roles/logos-admin-benchmark-linked-result.png)
 
 
-![Run a benchmark and compact nightly status](../static/img/roles/logos-admin-nightly-benchmarks.png)
+![Enabled nightly rotation in the performance overview](../static/img/roles/logos-admin-nightly-benchmarks.png)
 
-Select **Manage** beside a worker to inspect its workload and schedule.
-The **Schedule and test plan** section explains the rounds and the maintenance window.
+The worker shows the workload and maintenance window. Expand **Schedule and test plan** for the rounds.
 
 ![Nightly management with the schedule and test plan](../static/img/roles/logos-admin-nightly-plan.png)
 
 Some deployments select a user instead of a fixed dataset.
-The management dialog shows **Latest 50 successful FULL requests**, the username and the cutoff.
+**Request workload** shows the configured number of successful FULL requests and the username.
 All configurations use the same selection for that night.
 The dataset controls are unavailable because the deployment setting controls this source.
-If fewer than 50 requests qualify, then the management dialog shows the selection error.
+The worker shows a selection error if too few requests qualify.
 See [deployment-specific request sources](../admin/nightly-benchmarks.md#deployment-specific-request-sources) for the exact rules.
 
 ![Nightly selection of recent user requests](../static/img/roles/logos-admin-nightly-automatic-source.png)
 
 To remove the pair from the nightly rotation:
 
-1. Select **Manage → Disable nightly runs…**.
-2. Read the dialog and select **Disable nightly runs**.
-3. Check that the card shows **Disabled · not scheduled**.
+1. Select **Disable nightly rotation…**.
+2. Read the dialog and select **Disable nightly rotation**.
+3. Check for **Disabled** and a gray dot beside the worker.
 
 Select **Cancel** to keep the schedule active.
 Deactivation stops an active benchmark and restores the worker configuration before production resumes.

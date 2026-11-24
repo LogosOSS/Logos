@@ -52,6 +52,31 @@ describe('Deployment status on Overview', () => {
     fixture.destroy();
     http.verify();
   });
+
+  it('keeps selection details collapsed and lists only runs with exclusion reasons', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
+    const fixture = TestBed.createComponent(DeployedConfiguration);
+    fixture.componentRef.setInput('pairId', 1);
+    fixture.componentRef.setInput('providerName', 'Worker');
+    fixture.componentRef.setInput('runs', [run(1)]);
+    fixture.detectChanges();
+    const http = TestBed.inject(HttpTestingController);
+    const eligible = { benchmark_id: 1, baseline_id: 1, throughput: 29, issues: [] };
+    const excluded = { benchmark_id: 2, baseline_id: 1, throughput: 31, issues: ['Output count changed', 'p95 increased'] };
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush({
+      deployment,
+      selection: { best_observed: excluded, best_eligible: eligible, comparisons: [excluded, eligible] },
+    });
+    await Promise.resolve();
+    fixture.detectChanges();
+    const content: HTMLElement = fixture.nativeElement;
+    expect(content.querySelector<HTMLDetailsElement>('.deployment-details')?.open).toBe(false);
+    expect(content.querySelector<HTMLDetailsElement>('.excluded-runs')?.open).toBe(false);
+    expect(content.querySelectorAll('.exclusion')).toHaveLength(1);
+    expect(Array.from(content.querySelectorAll('.exclusion li'), reason => reason.textContent?.trim())).toEqual(excluded.issues);
+    fixture.destroy();
+    http.verify();
+  });
 });
 
 describe('Current deployment measurement', () => {

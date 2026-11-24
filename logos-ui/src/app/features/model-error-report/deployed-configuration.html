@@ -24,26 +24,77 @@
     } @else { <p>No complete benchmark matches the active settings.</p> }
     <p class="key-parameters">@for (parameter of keyParameters(); track parameter.key) { <span>{{ parameter.label }} <strong>{{ parameter.value }}</strong></span> }</p>
   }
-  @if (state() && deployment()?.available) {
-    <details><summary>Configuration &amp; selection details</summary>
-      @if (result(); as row) {
-        <p>{{ datasetLabel(row.run) }} · {{ row.run.sample_size }} requests. {{ row.comparisonNote }}.</p>
-        <p>{{ measurement() ? 'Saved benchmark measurement, not live throughput.' : 'These settings match a saved run. Its environment could not be verified against current telemetry; a fresh comparison is required.' }}</p>
-      }
-      <p>Worker {{ deployment()?.lane_state ?? 'Unknown' }} · checked {{ deployment()?.observed_at | date:'dd MMM yyyy, HH:mm:ss Z' }}</p>
-      <dl class="parameters">@for (parameter of parameters(); track parameter.key) { <div><dt>{{ parameter.label }}</dt><dd>{{ parameter.value }}</dd></div> }</dl>
-      @if (selection()?.best_observed; as best) {
-        <h5>Highest recorded result · #{{ best.benchmark_id }} · {{ best.throughput | number:'1.1-1' }} tok/s</h5>
-        @for (issue of best.issues; track issue) { <p>{{ issue }}</p> }
-      }
-      @if (selection()?.best_eligible; as best) { <p>Highest result passing comparison checks: #{{ best.benchmark_id }} · {{ best.throughput | number:'1.1-1' }} tok/s. Adoption also requires a fresh improvement over the active baseline.</p> }
-      <details><summary>Why other runs were excluded</summary>
-        @for (comparison of selection()?.comparisons ?? []; track comparison.benchmark_id) {
-          @if (comparison.issues.length) { <p><strong>#{{ comparison.benchmark_id }} · {{ comparison.throughput === null ? 'No complete result' : (comparison.throughput | number:'1.1-1') + ' tok/s' }}</strong><br>{{ comparison.issues.join(' · ') }}</p> }
+  @if (deployment(); as current) {
+    @if (current.available) {
+      <details class="deployment-details">
+        <summary>Configuration &amp; selection details</summary>
+        <div class="deployment-details__grid">
+          <section class="deployment-details__section">
+            <h5><i class="pi pi-sliders-h" aria-hidden="true"></i> Serving settings</h5>
+            <p class="detail-note">
+              <i class="pi pi-clock" aria-hidden="true"></i>
+              <span>{{ current.lane_state ?? 'Unknown state' }}
+                @if (current.observed_at) { · Checked {{ current.observed_at | date:'dd MMM yyyy, HH:mm Z' }} }
+              </span>
+            </p>
+            @if (parameters().length) {
+              <dl class="parameters">
+                @for (parameter of parameters(); track parameter.key) {
+                  <div><dt>{{ parameter.label }}</dt><dd>{{ parameter.value }}</dd></div>
+                }
+              </dl>
+            }
+          </section>
+          <section class="deployment-details__section">
+            <h5><i class="pi pi-filter" aria-hidden="true"></i> Run selection</h5>
+            @if (result(); as row) {
+              <p class="detail-note"><i class="pi pi-database" aria-hidden="true"></i><span>{{ datasetLabel(row.run) }} · {{ row.run.sample_size }} requests</span></p>
+              <p class="detail-note"><i class="pi pi-chart-line" aria-hidden="true"></i><span>{{ row.comparisonNote }} · {{ measurement() ? 'Saved measurement' : 'Historical measurement · environment unverified' }}</span></p>
+            }
+            <dl class="selection-results">
+              @if (selection()?.best_observed; as best) {
+                <div>
+                  <dt><i class="pi pi-trophy" aria-hidden="true"></i> Fastest measured</dt>
+                  <dd>#{{ best.benchmark_id }} · {{ best.throughput | number:'1.1-1' }} tok/s @if (best.issues.length) { <small>Excluded</small> }</dd>
+                </div>
+              }
+              @if (selection()?.best_eligible; as best) {
+                <div>
+                  <dt><i class="pi pi-check-circle" aria-hidden="true"></i> Fastest passing checks</dt>
+                  <dd>#{{ best.benchmark_id }} · {{ best.throughput | number:'1.1-1' }} tok/s</dd>
+                </div>
+              }
+              <div>
+                <dt><i class="pi pi-history" aria-hidden="true"></i> Last confirmed adoption</dt>
+                <dd>
+                  @if (adoption(); as adopted) {
+                    #{{ adopted.benchmark_id }} · {{ adopted.baseline_throughput | number:'1.1-1' }} → {{ adopted.throughput | number:'1.1-1' }} tok/s
+                  } @else { None for this series }
+                </dd>
+              </div>
+            </dl>
+          </section>
+        </div>
+        @let excluded = excludedComparisons();
+        @if (excluded.length) {
+          <details class="excluded-runs">
+            <summary>Why other runs were excluded <small>{{ excluded.length }} {{ excluded.length === 1 ? 'run' : 'runs' }}</small></summary>
+            <ul class="exclusions" role="list">
+              @for (comparison of excluded; track comparison.benchmark_id) {
+                <li class="exclusion">
+                  <i class="pi pi-times-circle" aria-hidden="true"></i>
+                  <div>
+                    <p><strong>#{{ comparison.benchmark_id }}</strong> · {{ comparison.throughput === null ? 'No complete result' : (comparison.throughput | number:'1.1-1') + ' tok/s' }}</p>
+                    <ul>
+                      @for (issue of comparison.issues; track $index) { <li>{{ issue }}</li> }
+                    </ul>
+                  </div>
+                </li>
+              }
+            </ul>
+          </details>
         }
       </details>
-      @if (adoption(); as adopted) { <p>Last confirmed adoption: #{{ adopted.benchmark_id }} · {{ adopted.baseline_throughput | number:'1.1-1' }} → {{ adopted.throughput | number:'1.1-1' }} tok/s.</p> }
-      @else { <p>No automatic adoption has been confirmed for this series.</p> }
-    </details>
+    }
   }
 </section>

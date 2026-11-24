@@ -2,7 +2,6 @@ import { Component, Input, OnChanges, OnDestroy, inject, signal } from '@angular
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { FormsModule } from '@angular/forms';
-import { ModalFormComponent } from '../../shared/components/modal/modal-form/modal-form';
 import { ModalConfirmComponent } from '../../shared/components/modal/modal-confirm/modal-confirm';
 import { requestDatasetLabel } from './benchmark-configuration';
 
@@ -27,7 +26,7 @@ export interface NightlyStatus {
 @Component({
   selector: 'app-nightly-benchmarks',
   standalone: true,
-  imports: [ModalConfirmComponent, ModalFormComponent, FormsModule],
+  imports: [ModalConfirmComponent, FormsModule],
   templateUrl: './nightly-benchmarks.html',
   styleUrl: './nightly-benchmarks.scss',
 })
@@ -37,7 +36,6 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
   @Input({ required: true }) providerName!: string;
   private readonly http = inject(HttpClient);
   readonly state = signal<NightlyStatus | null>(null);
-  readonly managing = signal(false);
   readonly confirming = signal(false);
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
@@ -64,7 +62,6 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
     this.workloadName = '';
     this.logIds = '';
     this.confirming.set(false);
-    this.managing.set(false);
     clearTimeout(this.timer);
     void this.refresh();
   }
@@ -196,10 +193,9 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
 
   async toggleNightly(): Promise<void> {
     const state = this.state();
-    if (!this.managing() || !state || this.saving() || this.enableBlocker) return;
+    if (!state || this.saving() || this.enableBlocker) return;
     this.error.set(null);
     if (state.enabled) {
-      this.managing.set(false);
       this.confirming.set(true);
     } else {
       await this.setEnabled(true);
@@ -222,7 +218,6 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
       if (version !== this.version || this.destroyed) return;
       this.state.set({ ...this.state(), ...state, plan: state.plan ?? this.state()?.plan, window: state.window ?? this.state()?.window, max_maintenance_nodes: state.max_maintenance_nodes ?? this.state()?.max_maintenance_nodes });
       this.confirming.set(false);
-      this.managing.set(false);
       this.error.set(null);
     } catch (error) {
       if (version !== this.version || this.destroyed) return;
