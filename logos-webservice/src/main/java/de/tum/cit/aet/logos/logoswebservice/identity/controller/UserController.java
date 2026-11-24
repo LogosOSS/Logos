@@ -17,13 +17,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import de.tum.cit.aet.logos.logoswebservice.identity.service.ApiKeyAdminService;
 import de.tum.cit.aet.logos.logoswebservice.auth.AuthContext;
 import de.tum.cit.aet.logos.logoswebservice.identity.dto.CreateUserRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.identity.dto.ImportUsersRequestDTO;
 import de.tum.cit.aet.logos.logoswebservice.identity.dto.UpdateUserInfoRequestDTO;
-import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.identity.dto.UpdateUserRoleRequestDTO;
+import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
+import de.tum.cit.aet.logos.logoswebservice.identity.service.ApiKeyAdminService;
 import de.tum.cit.aet.logos.logoswebservice.identity.service.UserService;
 
 @RestController
@@ -93,6 +93,9 @@ public class UserController {
             @RequestAttribute("authContext") AuthContext auth,
             @PathVariable Integer userId,
             @RequestBody UpdateUserRoleRequestDTO body) {
+        if (java.util.Arrays.stream(Role.values()).noneMatch(r -> r.matches(body.role()))) {
+            return ResponseEntity.unprocessableEntity().body(Map.of("detail", "Invalid role"));
+        }
         return userService.updateRole(userId, body.role())
             .<ResponseEntity<?>>map(ResponseEntity::ok)
             .orElse(ResponseEntity.status(404).body(null));
@@ -136,7 +139,10 @@ public class UserController {
             @RequestAttribute("authContext") AuthContext auth,
             @RequestBody ImportUsersRequestDTO body) {
         List<ImportUsersRequestDTO.Row> rows = body.rows() == null ? List.of() : body.rows();
-        return ResponseEntity.ok(userService.importUsers(rows));
+        if (body.team_id() != null && !isLogosAdmin(auth) && !apiKeyAdminService.isTeamOwner(body.team_id(), auth.userId())) {
+            return forbidden();
+        }
+        return ResponseEntity.ok(userService.importUsers(rows, body.team_id(), auth.userId(), isLogosAdmin(auth)));
     }
 
     public static boolean isAppAdminOrAbove(AuthContext auth) {

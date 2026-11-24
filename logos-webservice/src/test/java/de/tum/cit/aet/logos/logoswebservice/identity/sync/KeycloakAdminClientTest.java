@@ -1,9 +1,7 @@
 package de.tum.cit.aet.logos.logoswebservice.identity.sync;
 
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -37,10 +35,9 @@ class KeycloakAdminClientTest {
         var server = MockRestServiceServer.bindTo(builder).build();
         var props = new KeycloakProperties(
             "logos",
-            new KeycloakProperties.Roles(List.of("itg-admin"), List.of("chair-member")),
             5,
             new KeycloakProperties.Sync(false, "0 0 * * * *", BASE, REALM, "logos-sync", "secret"),
-            List.of("-dev"), "logos", false);
+            "logos");
         return new Fixture(new KeycloakAdminClient(builder, props), server);
     }
 
@@ -80,24 +77,4 @@ class KeycloakAdminClientTest {
         f.server().verify();
     }
 
-    @Test
-    void getUserClaimNames_returnsRoleAndGroupNames() throws Exception {
-        var f = fixture();
-        f.server().expect(requestTo(BASE + "/realms/" + REALM + "/protocol/openid-connect/token"))
-            .andExpect(method(HttpMethod.POST))
-            .andRespond(withSuccess(json(Map.of("access_token", "tok3", "expires_in", 300)), MediaType.APPLICATION_JSON));
-        f.server().expect(requestTo(BASE + "/admin/realms/" + REALM + "/users/" + KEYCLOAK_ID + "/role-mappings/realm/composite"))
-            .andExpect(method(HttpMethod.GET))
-            .andExpect(header("Authorization", "Bearer tok3"))
-            .andRespond(withSuccess(json(List.of(Map.of("name", "app_developer"))), MediaType.APPLICATION_JSON));
-        f.server().expect(requestTo(BASE + "/admin/realms/" + REALM + "/users/" + KEYCLOAK_ID + "/groups"))
-            .andExpect(method(HttpMethod.GET))
-            .andExpect(header("Authorization", "Bearer tok3"))
-            .andRespond(withSuccess(json(List.of(Map.of("name", "chair-member"))), MediaType.APPLICATION_JSON));
-
-        Set<String> names = f.client().getUserClaimNames(KEYCLOAK_ID);
-
-        assertThat(names).containsExactlyInAnyOrder("app_developer", "chair-member");
-        f.server().verify();
-    }
 }

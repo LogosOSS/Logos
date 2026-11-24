@@ -50,6 +50,18 @@ class TeamControllerTest {
     }
 
     @Test
+    void teamPrivacyRequiresAnExplicitChoiceAndOnlyALogosAdminCanChangeIt() throws Exception {
+        mvc.perform(post("/teams").with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"name\":\"untargeted\"}")).andExpect(status().isBadRequest());
+        mvc.perform(patch("/teams/2001/privacy").with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"privacy_scope\":\"WORLDWIDE\"}")).andExpect(status().isForbidden());
+        mvc.perform(patch("/teams/2001/privacy").with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("{\"privacy_scope\":\"EU\"}")).andExpect(status().isOk());
+        mvc.perform(get("/teams/2001/members").with(TestJwt.adminUser())).andExpect(status().isOk())
+            .andExpect(jsonPath("$.team.privacy_scope").value("EU"));
+    }
+
+    @Test
     void listTeams_returns_teams_for_admin() throws Exception {
         mvc.perform(get("/teams").with(TestJwt.adminUser()))
            .andExpect(status().isOk())
@@ -82,7 +94,7 @@ class TeamControllerTest {
         mvc.perform(post("/teams")
                 .with(TestJwt.adminUser())
                 .contentType("application/json")
-                .content("{\"name\":\"new-team\",\"owner_ids\":[]}"))
+                .content("{\"name\":\"new-team\",\"privacy_scope\":\"LOCAL\",\"owner_ids\":[]}"))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.name").value("new-team"));
     }
@@ -121,39 +133,6 @@ class TeamControllerTest {
     void deleteTeam_forbidden_for_developer() throws Exception {
         mvc.perform(delete("/teams/2001").with(TestJwt.testUser()))
            .andExpect(status().isForbidden());
-    }
-
-    @Test
-    void deleteTeam_conflict_for_keycloak_team() throws Exception {
-        // 2002 is linked to a Keycloak group; its existence is Keycloak-owned.
-        mvc.perform(delete("/teams/2002").with(TestJwt.logosAdmin()))
-           .andExpect(status().isConflict());
-    }
-
-    @Test
-    void updateTeamName_conflict_for_keycloak_team() throws Exception {
-        mvc.perform(patch("/teams/2002/name")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"name\":\"renamed\"}"))
-           .andExpect(status().isConflict());
-    }
-
-    @Test
-    void deleteTeamMember_conflict_for_keycloak_member() throws Exception {
-        // 1006's membership in 2002 is Keycloak-sourced and would be re-added on sync.
-        mvc.perform(delete("/teams/2002/members/1006").with(TestJwt.logosAdmin()))
-           .andExpect(status().isConflict());
-    }
-
-    @Test
-    void updateTeamLimits_succeeds_for_keycloak_team() throws Exception {
-        // Limits are Logos-owned and stay editable even for Keycloak-managed teams.
-        mvc.perform(patch("/teams/2002")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"default_cloud_rpm_limit\":100}"))
-           .andExpect(status().isOk());
     }
 
     @Test
@@ -309,7 +288,7 @@ class TeamControllerTest {
         mvc.perform(post("/teams")
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
-                .content("{\"name\":\"dev-owned-team\",\"owner_ids\":[1005]}"))
+                .content("{\"name\":\"dev-owned-team\",\"privacy_scope\":\"LOCAL\",\"owner_ids\":[1005]}"))
            .andExpect(status().isConflict());
         // The rejected create must not leak a half-baked team.
         mvc.perform(get("/teams").with(TestJwt.logosAdmin()))
@@ -349,207 +328,4 @@ class TeamControllerTest {
     // it is logos_admin only: a team owner must not be able to pull an
     // arbitrary group into the team they own.
 
-    @Test
-    void updateKeycloakGroup_links_and_unlinks_for_logos_admin() throws Exception {
-        mvc.perform(patch("/teams/2001/keycloak-group")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":\"ios-26ws\"}"))
-           .andExpect(status().isOk());
-        mvc.perform(get("/teams").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$[?(@.id == 2001)].keycloak_group").value("ios-26ws"))
-           .andExpect(jsonPath("$[?(@.id == 2001)].managed").value(true));
-        mvc.perform(get("/teams/2001/members").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$.team.keycloak_group").value("ios-26ws"));
-
-        mvc.perform(patch("/teams/2001/keycloak-group")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":null}"))
-           .andExpect(status().isOk());
-        mvc.perform(get("/teams").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$[?(@.id == 2001)].keycloak_group").value((Object) null))
-           .andExpect(jsonPath("$[?(@.id == 2001)].managed").value(false));
-    }
-
-    // A claim carries a group path without its leading slash, so the stored
-    // link has to be normalized the same way or it would never match.
-    @Test
-    void updateKeycloakGroup_normalizes_the_value() throws Exception {
-        mvc.perform(patch("/teams/2001/keycloak-group")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":\"  /ios-26ws  \"}"))
-           .andExpect(status().isOk());
-        mvc.perform(get("/teams").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$[?(@.id == 2001)].keycloak_group").value("ios-26ws"));
-    }
-
-    @Test
-    void updateKeycloakGroup_blank_unlinks_the_team() throws Exception {
-        mvc.perform(patch("/teams/2002/keycloak-group")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":\"   \"}"))
-           .andExpect(status().isOk());
-        mvc.perform(get("/teams").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$[?(@.id == 2002)].keycloak_group").value((Object) null));
-    }
-
-    // uq_teams_keycloak_group: one group feeds exactly one team.
-    @Test
-    void updateKeycloakGroup_rejects_a_group_another_team_holds() throws Exception {
-        mvc.perform(patch("/teams/2001/keycloak-group")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":\"kc-team-group\"}"))
-           .andExpect(status().isConflict());
-        mvc.perform(get("/teams").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$[?(@.id == 2001)].keycloak_group").value((Object) null));
-    }
-
-    // Re-sending the link a team already holds is a no-op, not a self-conflict.
-    @Test
-    void updateKeycloakGroup_accepts_the_teams_own_group() throws Exception {
-        mvc.perform(patch("/teams/2002/keycloak-group")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":\"/kc-team-group\"}"))
-           .andExpect(status().isOk());
-        mvc.perform(get("/teams/2002/members").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$.members[?(@.username == 'kcmember')]").isNotEmpty());
-    }
-
-    // The membership sync strips the platform admin roles from the claim set
-    // before resolving teams, so a team linked to one would stay empty.
-    @Test
-    void updateKeycloakGroup_rejects_the_admin_roles() throws Exception {
-        for (String role : new String[]{"itg-admin", "chair-member"}) {
-            mvc.perform(patch("/teams/2001/keycloak-group")
-                    .with(TestJwt.logosAdmin())
-                    .contentType("application/json")
-                    .content("{\"keycloak_group\":\"" + role + "\"}"))
-               .andExpect(status().isBadRequest());
-        }
-    }
-
-    @Test
-    void updateKeycloakGroup_rejects_a_slash_only_value() throws Exception {
-        mvc.perform(patch("/teams/2001/keycloak-group")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":\"/\"}"))
-           .andExpect(status().isBadRequest());
-    }
-
-    @Test
-    void updateKeycloakGroup_forbidden_for_app_admin_owner() throws Exception {
-        mvc.perform(patch("/teams/2001/keycloak-group")
-                .with(TestJwt.adminUser())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":\"ios-26ws\"}"))
-           .andExpect(status().isForbidden());
-    }
-
-    @Test
-    void updateKeycloakGroup_forbidden_for_developer() throws Exception {
-        mvc.perform(patch("/teams/2001/keycloak-group")
-                .with(TestJwt.testUser())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":\"ios-26ws\"}"))
-           .andExpect(status().isForbidden());
-    }
-
-    @Test
-    void updateKeycloakGroup_not_found_for_unknown_team() throws Exception {
-        mvc.perform(patch("/teams/9999/keycloak-group")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":\"ios-26ws\"}"))
-           .andExpect(status().isNotFound());
-    }
-
-    // Keycloak-sourced memberships cannot be removed by hand, and nothing
-    // reconciles them once the team no longer resolves from their group — so
-    // dropping the link has to drop them too.
-    @Test
-    void updateKeycloakGroup_unlink_drops_the_synced_memberships() throws Exception {
-        mvc.perform(get("/teams/2002/members").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$.members[?(@.username == 'kcmember')]").isNotEmpty());
-        mvc.perform(patch("/teams/2002/keycloak-group")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":null}"))
-           .andExpect(status().isOk());
-        mvc.perform(get("/teams/2002/members").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$.members[?(@.username == 'kcmember')]").isEmpty());
-    }
-
-    // Unlinking hands the team back to Logos, including the name and existence
-    // the link was holding.
-    @Test
-    void unlinked_team_can_be_renamed_and_deleted() throws Exception {
-        mvc.perform(patch("/teams/2002/keycloak-group")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"keycloak_group\":null}"))
-           .andExpect(status().isOk());
-        mvc.perform(patch("/teams/2002/name")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"name\":\"ex-kc-team\"}"))
-           .andExpect(status().isOk());
-        mvc.perform(delete("/teams/2002").with(TestJwt.logosAdmin()))
-           .andExpect(status().isOk());
-    }
-
-    @Test
-    void createTeam_links_the_keycloak_group_for_logos_admin() throws Exception {
-        mvc.perform(post("/teams")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"name\":\"linked-team\",\"owner_ids\":[],\"keycloak_group\":\"/ios-26ws\"}"))
-           .andExpect(status().isOk());
-        mvc.perform(get("/teams").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$[?(@.name == 'linked-team')].keycloak_group").value("ios-26ws"));
-    }
-
-    @Test
-    void createTeam_rejects_a_keycloak_group_from_an_app_admin() throws Exception {
-        mvc.perform(post("/teams")
-                .with(TestJwt.adminUser())
-                .contentType("application/json")
-                .content("{\"name\":\"owner-linked-team\",\"owner_ids\":[],\"keycloak_group\":\"ios-26ws\"}"))
-           .andExpect(status().isForbidden());
-        mvc.perform(get("/teams").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$[?(@.name == 'owner-linked-team')]").isEmpty());
-    }
-
-    @Test
-    void createTeam_rejects_a_group_another_team_holds() throws Exception {
-        mvc.perform(post("/teams")
-                .with(TestJwt.logosAdmin())
-                .contentType("application/json")
-                .content("{\"name\":\"dup-linked-team\",\"owner_ids\":[],\"keycloak_group\":\"kc-team-group\"}"))
-           .andExpect(status().isConflict());
-        mvc.perform(get("/teams").with(TestJwt.logosAdmin()))
-           .andExpect(jsonPath("$[?(@.name == 'dup-linked-team')]").isEmpty());
-    }
-
-    // The group picker is optional: without directory access (the test profile
-    // leaves logos.auth.sync.enabled off) it reports that it has nothing to
-    // offer instead of failing, so the dialog falls back to a free-text field.
-    @Test
-    void listKeycloakGroups_reports_unavailable_without_directory_access() throws Exception {
-        mvc.perform(get("/teams/keycloak-groups").with(TestJwt.logosAdmin()))
-           .andExpect(status().isOk())
-           .andExpect(jsonPath("$.available").value(false))
-           .andExpect(jsonPath("$.groups").isEmpty());
-    }
-
-    @Test
-    void listKeycloakGroups_forbidden_for_app_admin() throws Exception {
-        mvc.perform(get("/teams/keycloak-groups").with(TestJwt.adminUser()))
-           .andExpect(status().isForbidden());
-    }
 }

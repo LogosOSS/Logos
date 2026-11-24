@@ -56,3 +56,8 @@ SELECT 'lg-e2e-developer-key', 'e2e-developer', 'developer', t.id, u.id, true
 FROM users u, teams t
 WHERE u.username = 'e2e.developer' AND t.name = 'e2e'
   AND NOT EXISTS (SELECT 1 FROM api_keys WHERE key_value = 'lg-e2e-developer-key');
+
+-- The UI tier signs in with this subject from its isolated test realm.
+INSERT INTO users (keycloak_id, username, prename, name, email, role)
+VALUES ('4b8ba942-99db-45a4-804a-3a706951c379', 'tobias.wasner', 'Tobias', 'Wasner', 'tobias.wasner@test.de', 'logos_admin')
+ON CONFLICT DO NOTHING;

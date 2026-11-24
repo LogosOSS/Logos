@@ -386,7 +386,6 @@ unused and can be removed.
 | `LOGOS_AGENT_SESSION_MODEL_URL` | `http://logos-agent-gateway` | Where sessions send model traffic — a gateway that exposes only the orchestrator's `/v1` model surface, so a session never reaches the rest of the internal network |
 | `LOGOS_AGENT_SESSION_GITHUB_TOKEN` | falls back to the token above | Given to containers; best without `workflow` scope |
 | `LOGOS_AGENT_DEPLOY_ENABLED` | `false` | Whether dev deploys may be dispatched at all |
-| `LOGOS_AGENT_REQUIRED_ROLE` | `logos_admin` | Realm role required to drive agents |
 | `LOGOS_AGENT_EGRESS_PROXY_URL` | `http://logos-agent-egress-proxy:3128` | The allowlisting HTTPS proxy for linked-repository sessions; empty turns internet access off for every session |
 
 ### The GitHub account
@@ -814,7 +813,7 @@ Logos Admins open **Agent Sessions → Security incidents**. Register the GitHub
 repositories that LogosOSSAgent may assess and patch. Enrollment authorizes
 credentialed checkout and verified fix PRs on that repository; team repository
 links do not grant this authority. The bot needs read and push access. All
-security endpoints use the same Keycloak Logos Admin check as agent controls.
+security endpoints use the same active Logos Admin role check as agent controls.
 
 Enrollment requires a **Build and test command**. Each assessment session snapshots
 this command; fix sessions run it from the repository root before publication.

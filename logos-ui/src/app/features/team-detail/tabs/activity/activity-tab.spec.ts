@@ -172,6 +172,27 @@ describe('ActivityTabComponent', () => {
   });
 
   describe('requester options', () => {
+    it('searches requester names and passes the selected user ID to the activity service', async () => {
+      component.teamId = 2001;
+      component.activity.set(makePayload({ requesters: [
+        { id: 11, label: 'Test User', requestCount: 40 },
+        { id: 24, label: 'Mai Tran', requestCount: 3 },
+      ] }));
+      fixture.detectChanges();
+      fixture.nativeElement.querySelector('button[aria-label^="Filter by requester"]').click();
+      fixture.detectChanges();
+      const menu = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Requesters filter"]')!;
+      const search = menu.querySelector<HTMLInputElement>('input')!;
+      search.value = 'rAn';
+      search.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+      const results = menu.querySelectorAll('button');
+      expect(results).toHaveLength(1);
+      expect(results[0].textContent).toContain('Mai Tran');
+      results[0].click();
+      await vi.waitFor(() => expect(getActivity).toHaveBeenCalledWith(2001, 7, { userId: 24, cursor: null }));
+    });
+
     it('offers everyone first, then each requester with its count', () => {
       // The count is what tells the owner which entry is worth opening; the
       // empty entry is the way back out of a filter.

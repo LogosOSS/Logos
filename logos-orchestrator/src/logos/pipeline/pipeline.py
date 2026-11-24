@@ -8,13 +8,13 @@ import datetime
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from logos import perf_trace
 from logos.classification.classification_manager import ClassificationManager
 from logos.classification.proxy_policy import ProxyPolicy
-from logos.dbutils.dbmodules import ThresholdLevel
+from logos.dbutils.dbmodules import privacy_allows
 from logos.dbutils.types import Deployment, get_unique_models_from_deployments
 from logos.monitoring import prometheus_metrics as prom
 from logos.monitoring.recorder import MonitoringRecorder
@@ -27,34 +27,6 @@ from .prefix_affinity import affinity_keys
 from .scheduler_interface import QueueTimeoutError, SchedulerInterface, SchedulingRequest
 
 logger = logging.getLogger(__name__)
-
-# Privacy levels in trust order (index 0 = strictest). Derived from the
-# ThresholdLevel declaration order — the single definition (dbutils/
-# dbmodules.py) that the Postgres enum threshold_enum and the webservice
-# Java enum mirror. A new level is therefore known to the router the moment
-# it is added to the enum, instead of requiring a second copy in here.
-PRIVACY_ORDER = tuple(level.value for level in ThresholdLevel)
-
-
-def _privacy_ok(threshold: str, level: str) -> bool:
-    """Whether a deployment with privacy ``level`` satisfies a request whose
-    policy demands ``threshold_privacy = threshold``.
-
-    The demand is met when the deployment is at least as trusted as required:
-    LOCAL deployments serve every threshold; a THIRD_PARTY_HARDWARE deployment
-    serves only requests that explicitly allow third-party hardware.
-
-    Fail closed, not open: an unrecognised threshold resolves to the
-    STRICTEST requirement (a policy typo then accepts only datacentre
-    deployments instead of every deployment), and an unrecognised level to the
-    LEAST trusted one (a deployment type the router has not been taught about
-    qualifies for nothing strict instead of everything). Before this, both
-    fallbacks failed open — a half-finished enum rollout silently made the
-    new tier eligible for the most confidential requests.
-    """
-    threshold_idx = PRIVACY_ORDER.index(threshold) if threshold in PRIVACY_ORDER else 0
-    level_idx = PRIVACY_ORDER.index(level) if level in PRIVACY_ORDER else len(PRIVACY_ORDER) - 1
-    return threshold_idx >= level_idx
 
 
 def resolve_queue_priority(
@@ -240,6 +212,7 @@ class RequestPipeline:
         # ranking — the caller already named the model.
         with perf_trace.phase(request_id, "pipeline.classify"):
             classification_result = self._classify(request)
+        request = replace(request, deployments=classification_result.deployments)
         if not classification_result.candidates:
             self.record_completion(
                 request_id=request_id,
@@ -519,6 +492,14 @@ class RequestPipeline:
 
         try:
             while True:
+                if pipeline_request is not None and pipeline_request.api_key_id is not None and deployment_info is None:
+                    self._release_scheduler_safe(scheduling_result, request_id, "ineligible deployment")
+                    return self._context_failure(
+                        scheduling_result,
+                        classification_result,
+                        request_id,
+                        error="Deployment is outside request permissions",
+                    )
                 try:
                     exec_context = await self._context_resolver.resolve_context(
                         model_id=scheduling_result.model_id,
@@ -527,6 +508,12 @@ class RequestPipeline:
                         request_id=request_id,
                         deployment_info=deployment_info,
                         wait_for_lane=False,
+                        api_key_id=pipeline_request.api_key_id if pipeline_request else None,
+                        privacy_threshold=(
+                            (pipeline_request.policy or {}).get("threshold_privacy")
+                            if pipeline_request is not None and pipeline_request.api_key_id is not None
+                            else None
+                        ),
                     )
                 except Exception as exc:  # noqa: BLE001
                     self._release_scheduler_safe(scheduling_result, request_id, "exception")
@@ -688,7 +675,7 @@ class RequestPipeline:
 
         threshold = policy.get("threshold_privacy", "CLOUD_NOT_IN_EU_BY_US_PROVIDER")
         privacy_deployments = [
-            d for d in request.deployments if _privacy_ok(threshold, d.get("privacy_level", "LOCAL"))
+            d for d in request.deployments if privacy_allows(threshold, d.get("privacy_level", "LOCAL"))
         ]
         allowed = get_unique_models_from_deployments(privacy_deployments)
 
@@ -730,7 +717,7 @@ class RequestPipeline:
             ],
         }
 
-        return _ClassificationResult(candidates=candidates, stats=stats)
+        return _ClassificationResult(candidates=candidates, stats=stats, deployments=privacy_deployments)
 
     def _extract_prompts(self, payload: Dict[str, Any]) -> Tuple[str, str]:
         """Extract user and system prompts from payload.
@@ -920,3 +907,4 @@ class RequestPipeline:
 class _ClassificationResult:
     candidates: List[Tuple[int, float, int]]  # (model_id, weight, priority)
     stats: Dict[str, Any]
+    deployments: list[Deployment] = field(default_factory=list)

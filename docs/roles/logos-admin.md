@@ -5,10 +5,7 @@ title: Logos Admin
 # Logos Admin
 
 The Logos Admin role (`logos_admin`) has full access to the platform. This
-includes every page in the UI, also the pages for operators. On the identity
-provider, an account becomes a Logos Admin if the account has the OIDC role
-that is configured in `KEYCLOAK_ROLES_LOGOS_ADMIN` (see the
-[installation guide](../admin/installation.md)).
+includes the operator pages. Logos Admins assign global roles in **Users**. An operator bootstraps the first admin during [installation](../admin/installation.md#first-logos-admin).
 
 The UI shows the role badge "Logos Admin" in the header menu.
 
@@ -408,7 +405,7 @@ Select **Add Provider**. The dialog asks for the classification first:
 ![Add Provider dialog with Anthropic selected](/img/roles/logos-admin-add-provider.png)
 
 Open **Edit Provider** to see the masked key. The key can show up to its last 3 characters.
-You can save changes to the provider without changing its key.
+For an existing cloud provider, open **Providers → Edit Provider**. Verify the processing commitment for its actual base URL, every connected deployment and any fallback with the provider. Select the applicable EU privacy level, set the regional **Base URL**, check **I verified EU processing for all deployments on this endpoint, including routing and fallback**, then save. Editing the base URL clears the confirmation. An unconfirmed provider remains unavailable to EU-scoped teams. Configure separate providers for endpoints with different regional guarantees. Provider-native batch has a separate processing path and is available to worldwide teams. EU-scoped teams can use the Logos-managed batch path.
 
 ![Edit Provider with the masked key and Rotate button](/img/roles/logos-admin-edit-cloud-key.png)
 
@@ -706,13 +703,7 @@ key, click **New key** for the deployer. The old key stops at once. A worker
 needs no key. It appears in the list when its node manager asks Logos for
 orders.
 
-## Policies
 
-Policies are the rules that decide which models a team or an API key can use.
-You assign policies to each team. The orchestrator evaluates them for every
-request.
-
-![Policies page](/img/roles/logos-admin-policies.png)
 
 ## Billing
 
@@ -723,57 +714,35 @@ the costs from the usage logs and from the configured catalogue prices.
 
 ## Users
 
-This page shows all users of the deployment, with their role, teams and
-status. Logos Admins can create users and roles, and can assign users to other
-roles. An App Admin can manage only App Developers.
+Use the role selector in **Users** to promote or demote an account, including accounts that sign in with Keycloak. The next management request uses the saved Logos role. To demote a team owner to App Developer, assign another eligible owner and remove the original ownership first. Keycloak continues to supply identity details and account availability.
 
 ![Users page](/img/roles/logos-admin-user-management.png)
 
 ## Teams
 
-This page shows the teams, their owners and their members. A team that gets its
-members from Keycloak has a lock badge. The badge shows the name of the linked
-group.
+The team list shows each team’s privacy setting, owners and members.
 
 ![Teams page](/img/roles/logos-admin-team-management.png)
 
 Select the **View permission history** action beside a team to open its permission audit log.
 The log starts with that team's ID as a filter.
 
-### Keycloak Group Links
+### Team privacy
 
-A team can get its members from a Keycloak group or a realm role. Then you do
-not add the members by hand. Only a Logos Admin sees this field, because a team
-owner controls the members, not the identity provider.
+In **New Team**, enter a name and choose where requests can be processed. Each team must have a privacy setting.
+Type part of a name or username in **Search owners**. Select each owner. Your selections stay when you change the search.
 
-To make the link, type the name of the group in the **New Team** dialog, or
-later in the **Settings** tab of the team. To remove the link, make the field
-empty.
+![New Team with EU processing and one owner selected after a name search](/img/roles/logos-admin-new-team.png)
 
-![New Team dialog with a Keycloak group](/img/roles/logos-admin-new-team.png)
+| Team privacy | Eligible deployments |
+| --- | --- |
+| Local models only | Logos workers classified as local |
+| Local models and cloud processing in the EU | Local workers and cloud endpoints with verified EU processing |
+| Local models and cloud processing worldwide | Local and international providers, subject to the key’s grants and the request’s privacy profile |
 
-A link has these effects:
+Change the setting under **Teams → Settings → Team privacy**. It applies to every key, including custom permissions and keys issued before the change. A model served at multiple providers stays available through its eligible deployments. Historical EU labels need the same endpoint confirmation when a request selects a geographically restricted profile. Existing optional routing profiles continue to restrict requests that select them, including profiles requiring an EU-based provider. Use **Team Management** for queue priority and the team’s **Settings** for budgets and limits. Operators manage optional profiles through the management API (`POST /logosdb/get_policies`, `/logosdb/add_policy`, `/logosdb/update_policy` and `/logosdb/delete_policy`). A client selects a stored profile with the `policy` header. Within the team’s privacy limit, the profile can set thresholds for latency, accuracy, cost and quality, plus priority and topic.
 
-- Each member of the group joins the team at the next login of that person, and
-  at the nightly directory sync.
-- Logos removes a person from the team at the first login after that person
-  leaves the group.
-- You cannot add or remove these members in the **Members** tab.
-- One group gives its members to one team only. You cannot link the platform
-  admin roles (`KEYCLOAK_ROLES_LOGOS_ADMIN` and `KEYCLOAK_ROLES_APP_ADMIN`),
-  because these roles give a role and not a team.
-- You cannot rename or delete the team while the link is in place. Remove the
-  link first. This also removes the members that Keycloak added.
-
-If the deployment can read the realm (`logos.auth.sync.enabled=true`), then the
-field shows the groups and the realm roles of the realm. It also shows how many
-of them you can select. If the deployment cannot read the realm, then type the
-name exactly as the login claim contains it. This is a group path without the
-first `/`.
-
-The **Settings** tab of the team shows the same field. For a linked team, this
-tab shows a note in place of the Danger Zone, because you cannot rename or
-delete the team.
+Logos keeps grants that the current privacy setting hides. Saving the visible permissions leaves those hidden grants in place. They become available again when the team and provider settings permit them.
 
 When you open a team, you see the same detail tabs as an owning App Admin sees.
 For the tabs Overview to Settings, see [App Admin → Teams](app-admin.md#teams).

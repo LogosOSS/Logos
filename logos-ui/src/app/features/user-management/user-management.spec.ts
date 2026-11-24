@@ -170,7 +170,7 @@ describe('UserManagement CSV import', () => {
 
     expect(userSvc.importUsers).toHaveBeenCalledWith([
       { prename: 'Tobias', name: 'Wasner', email: 'tobias.wasner@tum.de' },
-    ]);
+    ], null);
   });
 
   it('renders the mapping selects and the full-column preview table', async () => {

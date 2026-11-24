@@ -1,3 +1,5 @@
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
 import { TeamManagementService } from '../../../../core/services/team-management.service';
@@ -18,6 +20,7 @@ function teamDetail(overrides: Partial<TeamDetail> = {}): TeamDetail {
     default_local_tpm_limit: 10000,
     priority: null,
     managed: false,
+    privacy_scope: 'LOCAL',
     keycloak_group: null,
     show_on_public_stats: false,
     public_category: null,
@@ -44,156 +47,63 @@ describe('parseProviderCap', () => {
   });
 });
 
-describe('SettingsTabComponent — Keycloak link', () => {
-  const updateTeamKeycloakGroup = vi.fn();
-  const getKeycloakGroups = vi.fn();
-  const getPublicCategories = vi.fn();
-
-
+describe('SettingsTabComponent privacy', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    updateTeamKeycloakGroup.mockResolvedValue(undefined);
-    getKeycloakGroups.mockResolvedValue({ available: false, groups: [] });
-    getPublicCategories.mockResolvedValue([]);
-    TestBed.configureTestingModule({
-      providers: [
-        {
-          provide: TeamManagementService,
-          useValue: {
-            updateTeamKeycloakGroup,
-            getKeycloakGroups,
-            getPublicCategories,
-            updateTeamLimits: vi.fn(),
-            deleteTeam: vi.fn(),
-            getTeamProviderBudgets: vi.fn().mockResolvedValue([]),
-            getAllProviders: vi.fn().mockResolvedValue([]),
-          },
-        },
-      ],
-    });
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
   });
+  afterEach(() => TestBed.inject(HttpTestingController).verify());
 
-  function setup(team: TeamDetail, canLinkKeycloak = true): SettingsTabComponent {
-    const component = TestBed.runInInjectionContext(() => new SettingsTabComponent());
-    component.teamId = team.id;
-    component.team = team;
-    component.canEdit = true;
-    component.canLinkKeycloak = canLinkKeycloak;
-    // No teamId change, so this exercises the link path without the provider
-    // budgets the tab loads when it first lands on a team.
-    component.ngOnChanges({});
-    return component;
+  function setup(canManagePrivacy: boolean) {
+    const fixture = TestBed.createComponent(SettingsTabComponent);
+    fixture.componentRef.setInput('team', teamDetail({ privacy_scope: 'WORLDWIDE' }));
+    fixture.componentRef.setInput('canManagePrivacy', canManagePrivacy);
+    fixture.componentInstance.teamId = 7;
+    fixture.detectChanges();
+    return fixture;
   }
 
-  it('shows the link the team already holds', () => {
-    const component = setup(teamDetail({ managed: true, keycloak_group: 'ios-26ws' }));
-    expect(component.keycloakGroup()).toBe('ios-26ws');
-    expect(component.linkChanged()).toBe(false);
+  it('saves the selected scope exactly once and refreshes the permission catalog', async () => {
+    const fixture = setup(true);
+    const component = fixture.componentInstance;
+    const refreshed = vi.spyOn(component.refresh, 'emit');
+    const select: HTMLSelectElement = fixture.nativeElement.querySelector('#s-privacy');
+    expect(select.value).toBe('WORLDWIDE');
+    await component.savePrivacy();
+    select.value = 'EU';
+    select.dispatchEvent(new Event('change'));
+    const saving = component.savePrivacy();
+    await component.savePrivacy();
+    const request = TestBed.inject(HttpTestingController).expectOne({ method: 'PATCH', url: '/api/teams/7/privacy' });
+    expect(request.request.body).toEqual({ privacy_scope: 'EU' });
+    expect(refreshed).not.toHaveBeenCalled();
+    request.flush(null);
+    await saving;
+    expect(refreshed).toHaveBeenCalledOnce();
+    expect(component.privacySaving()).toBe(false);
   });
 
-  it('saves a typed group, trimmed', async () => {
-    const component = setup(teamDetail());
-    component.keycloakGroup.set('  ios-26ws ');
-
-    await component.saveKeycloakLink();
-
-    expect(updateTeamKeycloakGroup).toHaveBeenCalledWith(7, 'ios-26ws');
+  it('keeps the draft available for retry when the server rejects a privacy change', async () => {
+    const component = setup(true).componentInstance;
+    const refreshed = vi.spyOn(component.refresh, 'emit');
+    component.privacy.set('LOCAL');
+    const saving = component.savePrivacy();
+    TestBed.inject(HttpTestingController).expectOne('/api/teams/7/privacy')
+      .flush({ detail: 'Administrator required' }, { status: 403, statusText: 'Forbidden' });
+    await saving;
+    expect(component.privacyError()).toBe('Administrator required');
+    expect(component.privacySaving()).toBe(false);
+    expect(component.privacy()).toBe('LOCAL');
+    expect(refreshed).not.toHaveBeenCalled();
   });
 
-  it('sends null when the field is cleared, which unlinks the team', async () => {
-    const component = setup(teamDetail({ managed: true, keycloak_group: 'ios-26ws' }));
-    component.keycloakGroup.set('');
-
-    await component.saveKeycloakLink();
-
-    expect(updateTeamKeycloakGroup).toHaveBeenCalledWith(7, null);
-  });
-
-  // An unlinked team has nothing to remove, so the button must not offer it.
-  it('labels the button Save Link until a stored link is cleared', () => {
-    const unlinked = setup(teamDetail());
-    expect(unlinked.linkButtonLabel()).toBe('Save Link');
-    unlinked.keycloakGroup.set('ios-26ws');
-    expect(unlinked.linkButtonLabel()).toBe('Save Link');
-
-    const linked = setup(teamDetail({ managed: true, keycloak_group: 'ios-26ws' }));
-    expect(linked.linkButtonLabel()).toBe('Save Link');
-    linked.keycloakGroup.set('');
-    expect(linked.linkButtonLabel()).toBe('Remove Link');
-  });
-
-  it('does not save while the field still shows the stored link', async () => {
-    const component = setup(teamDetail({ managed: true, keycloak_group: 'ios-26ws' }));
-
-    await component.saveKeycloakLink();
-
-    expect(updateTeamKeycloakGroup).not.toHaveBeenCalled();
-  });
-
-  // A rejected group (reserved, already linked) is the one case where the
-  // server's own wording says what to fix, so it has to reach the tab.
-  it('reports the rejection the server sent', async () => {
-    const component = setup(teamDetail());
-    updateTeamKeycloakGroup.mockRejectedValue({
-      error: { detail: "Keycloak group 'ios-26ws' is already linked to team 'iOS'." },
-    });
-    component.keycloakGroup.set('ios-26ws');
-
-    await component.saveKeycloakLink();
-
-    expect(component.linkError()).toContain("already linked to team 'iOS'");
-  });
-
-  it('suggests only the groups no other team holds', async () => {
-    getKeycloakGroups.mockResolvedValue({
-      available: true,
-      groups: [
-        { name: 'ios-26ws', source: 'group', linked_team_id: null, linked_team_name: null },
-        { name: 'own', source: 'group', linked_team_id: 7, linked_team_name: 'iOS' },
-        { name: 'taken', source: 'role', linked_team_id: 9, linked_team_name: 'other' },
-      ],
-    });
-    const component = setup(teamDetail());
-    await Promise.resolve();
-
-    expect(component.availableKeycloakGroups().map((g) => g.name)).toEqual(['ios-26ws', 'own']);
-  });
-
-  it('offers no suggestions when the deployment has no directory access', async () => {
-    const component = setup(teamDetail());
-    await Promise.resolve();
-
-    expect(component.availableKeycloakGroups()).toEqual([]);
-  });
-
-  // A datalist has no affordance of its own, so the hint is the only thing
-  // telling the admin whether the realm can be browsed at all.
-  it('says how many groups can be picked when the realm is readable', async () => {
-    getKeycloakGroups.mockResolvedValue({
-      available: true,
-      groups: [
-        { name: 'ios-26ws', source: 'group', linked_team_id: null, linked_team_name: null },
-        { name: 'taken', source: 'role', linked_team_id: 9, linked_team_name: 'other' },
-      ],
-    });
-    const component = setup(teamDetail());
-    await Promise.resolve();
-
-    expect(component.groupPickerHint()).toContain('1 selectable');
-  });
-
-  it('tells the admin to type the claim name when the realm is unreadable', async () => {
-    const component = setup(teamDetail());
-    await Promise.resolve();
-
-    expect(component.groupPickerHint()).toContain('login claim');
-  });
-
-  it('asks for no group directory when the caller may not link one', async () => {
-    setup(teamDetail(), false);
-    await Promise.resolve();
-
-    expect(getKeycloakGroups).not.toHaveBeenCalled();
+  it('shows the saved scope read-only to a viewer without privacy management rights', async () => {
+    const fixture = setup(false);
+    const select: HTMLSelectElement = fixture.nativeElement.querySelector('#s-privacy');
+    expect(select.disabled).toBe(true);
+    expect(select.value).toBe('WORLDWIDE');
+    fixture.componentInstance.privacy.set('EU');
+    await fixture.componentInstance.savePrivacy();
+    TestBed.inject(HttpTestingController).expectNone('/api/teams/7/privacy');
   });
 });
 

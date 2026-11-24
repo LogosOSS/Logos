@@ -139,7 +139,8 @@ class GatewayVirtualResponseMvcTest {
             return new GatewayKey(1, "lg-test", "k", ApiKeyType.developer,
                 1, null, "test", false, null, 0, "BILLING");
         });
-        when(auth.deploymentsForModel(any(), any())).thenReturn(List.of());
+        when(auth.deploymentsForModel(any(), any())).thenReturn(List.of(new GatewayDeployment(1, "local", 10,
+            "Local worker", "logosnode", null, null, null, null, null, null, "LOCAL", null)));
         GatewayCloudForwarder cloud = new GatewayCloudForwarder(new ObjectMapper(), accounting) {
             @Override public ResponseEntity<StreamingResponseBody> forward(GatewayDeployment deployment,
                     String path, String query, String method, byte[] body, Map<String, List<String>> headers,

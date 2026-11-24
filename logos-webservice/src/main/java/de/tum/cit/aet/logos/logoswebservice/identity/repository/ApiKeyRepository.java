@@ -196,7 +196,7 @@ public interface ApiKeyRepository extends JpaRepository<ApiKey, Integer> {
         JOIN model_provider mp ON mp.model_id = tmp.model_id
         JOIN models m ON m.id = mp.model_id
         JOIN providers p ON p.id = mp.provider_id
-        JOIN team_provider_permissions tpp
+        JOIN allowed_team_provider_grants tpp
           ON tpp.team_id = tmp.team_id AND tpp.provider_id = mp.provider_id
         WHERE tmp.team_id = :teamId
         ORDER BY m.name, p.name
@@ -210,7 +210,7 @@ public interface ApiKeyRepository extends JpaRepository<ApiKey, Integer> {
         JOIN model_provider mp ON mp.model_id = akmp.model_id
         JOIN models m ON m.id = mp.model_id
         JOIN providers p ON p.id = mp.provider_id
-        JOIN api_key_provider_permissions akpp
+        JOIN allowed_key_provider_grants akpp
           ON akpp.api_key_id = akmp.api_key_id AND akpp.provider_id = mp.provider_id
         WHERE akmp.api_key_id = :keyId
         ORDER BY m.name, p.name
@@ -233,7 +233,7 @@ public interface ApiKeyRepository extends JpaRepository<ApiKey, Integer> {
         WHERE ak.use_custom_permissions = true
           AND (EXISTS (SELECT 1 FROM api_key_model_permissions akmp
                        WHERE akmp.api_key_id = ak.id AND akmp.model_id = :modelId)
-               OR EXISTS (SELECT 1 FROM api_key_provider_permissions akpp
+               OR EXISTS (SELECT 1 FROM allowed_key_provider_grants akpp
                           WHERE akpp.api_key_id = ak.id
                             AND akpp.provider_id IN (
                                 SELECT mp.provider_id FROM model_provider mp
@@ -248,7 +248,7 @@ public interface ApiKeyRepository extends JpaRepository<ApiKey, Integer> {
      */
     @Query(value = """
         SELECT akpp.api_key_id, akpp.provider_id
-        FROM api_key_provider_permissions akpp
+        FROM allowed_key_provider_grants akpp
         WHERE akpp.api_key_id IN (:keyIds)
           AND akpp.provider_id IN (
               SELECT mp.provider_id FROM model_provider mp

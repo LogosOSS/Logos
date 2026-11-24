@@ -22,7 +22,6 @@ import static org.mockito.Mockito.when;
 
 import de.tum.cit.aet.logos.logoswebservice.auth.KeycloakClaimExtractor;
 import de.tum.cit.aet.logos.logoswebservice.auth.KeycloakClaims;
-import de.tum.cit.aet.logos.logoswebservice.auth.KeycloakProperties;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 import de.tum.cit.aet.logos.logoswebservice.identity.entity.User;
 import de.tum.cit.aet.logos.logoswebservice.identity.service.KeycloakUserSyncService;
@@ -30,11 +29,7 @@ import de.tum.cit.aet.logos.logoswebservice.identity.service.KeycloakUserSyncSer
 class WebSocketAuthInterceptorTest {
 
     private final KeycloakUserSyncService syncService = mock(KeycloakUserSyncService.class);
-    private final KeycloakClaimExtractor extractor = new KeycloakClaimExtractor(
-        new KeycloakProperties("logos",
-            new KeycloakProperties.Roles(java.util.List.of(), java.util.List.of()), 5,
-            new KeycloakProperties.Sync(false, "", "", "tum", "logos-sync", ""),
-            java.util.List.of("-dev"), "logos", false));
+    private final KeycloakClaimExtractor extractor = new KeycloakClaimExtractor();
     private final WebSocketAuthInterceptor interceptor = new WebSocketAuthInterceptor(extractor, syncService);
 
     @AfterEach

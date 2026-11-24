@@ -41,6 +41,7 @@ export interface Provider {
   provider_type: ProviderType;
   cloud_provider_type: CloudProviderType | null;
   privacy_level: PrivacyLevel;
+  eu_processing_verified?: boolean;
 }
 
 /**
@@ -206,6 +207,7 @@ export interface AddProviderPayload {
   provider_type: ProviderType;
   cloud_provider_type?: CloudProviderType;
   privacy_level: PrivacyLevel;
+  eu_processing_verified?: boolean;
 }
 
 export interface UpdateProviderPayload {
@@ -218,4 +220,5 @@ export interface UpdateProviderPayload {
   provider_type?: ProviderType;
   cloud_provider_type?: CloudProviderType | null;
   privacy_level?: PrivacyLevel;
+  eu_processing_verified?: boolean;
 }

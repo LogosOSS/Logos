@@ -63,7 +63,7 @@ class TeamRepoLinkControllerTest {
         MvcResult created = mvc.perform(post("/teams")
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
-                .content("{\"name\":\"repo-link-foreign\",\"owner_ids\":[1003]}"))
+                .content("{\"name\":\"repo-link-foreign\",\"privacy_scope\":\"LOCAL\",\"owner_ids\":[1003]}"))
            .andExpect(status().isOk())
            .andReturn();
         int foreignTeamId = mapper.readTree(created.getResponse().getContentAsString()).get("id").asInt();

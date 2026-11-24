@@ -4,13 +4,7 @@ title: App Admin
 
 # App Admin
 
-The App Admin role (`app_admin`) manages the application for its people:
-users, teams and keys. An App Admin does not change the platform-level
-settings (providers, policies, billing, agent sessions). These settings stay
-with the [Logos Admin](logos-admin.md). On the identity provider, an account
-becomes an App Admin if the account has the OIDC role that is configured in
-`KEYCLOAK_ROLES_APP_ADMIN` (see the
-[installation guide](../admin/installation.md)).
+The App Admin role (`app_admin`) manages users, teams and keys. A [Logos Admin](logos-admin.md#users) assigns this role in Logos. Ownership grants management access to a specific team.
 
 The UI shows the role badge "App Admin" in the header menu.
 
@@ -59,12 +53,15 @@ key or a member has no individual limit.
 
 ### Members
 
-This tab shows the owners and the members, with budget and rate-limit
-overrides for each person. Add or remove people here. If a Keycloak group is
-linked to the team, then you cannot remove the members that Keycloak added.
-Logos makes these members agree with the group at each login.
+Open **Members → Import CSV** to add people to this team. **Add Member** remains available for a single account. The tab also shows owners and each person’s budget and rate-limit overrides.
 
-![Team detail — Members](/img/roles/team-detail-members.png)
+![Team members and the Import CSV action](/img/roles/team-detail-members.png)
+
+Choose a file, map the first name, last name and email columns, and select the rows to import. Existing accounts are matched by email, including Keycloak accounts. A repeated row leaves the membership and its developer key in place. Membership grants no global role or ownership.
+
+![Mapped CSV rows and the selected team](/img/roles/team-members-csv.png)
+
+In **Users → Import CSV** you can also choose one target team, map a team name column for assignments across teams, or import users without teams. Each team name must match an existing team you manage. An unknown team fails that row and other valid rows can still succeed. New users receive the App Developer role.
 
 ### Application Keys
 
@@ -77,7 +74,7 @@ key.
 #### API Key Model Permissions
 
 The model and provider permissions of the team are the default for the API
-keys of the team. They are not a maximum.
+keys of the team. Custom grants may include other catalog entries within the team’s privacy setting.
 
 | **Override Team Permissions** | Models and providers that the key can use |
 |-------------------------------|-------------------------------------------|
@@ -242,8 +239,10 @@ This tab shows which catalogue models the team can use.
 
 This tab shows the live queue state of the team, the recent request log, the
 token totals and the export function.
+Under **Requests**, open **Everyone in this team** and type part of a requester’s name.
+Select a result to show that person’s requests.
 
-![Team detail — Activity](/img/roles/team-detail-activity.png)
+![Team activity with the request log filtered to one requester](/img/roles/team-detail-activity.png)
 
 ### Cloud Usage
 
@@ -256,9 +255,7 @@ the team. Local models do not show here. For local models, see Activity.
 
 This tab shows the monthly budget of the team, the default key budget and the
 default cloud and local rate limits. An owner can also delete the team here.
-If a Keycloak group is linked to the team, then the tab shows the name of the
-group and no delete control. Only a Logos Admin can change or remove the link.
-See [Logos Admin → Keycloak Group Links](logos-admin.md#keycloak-group-links).
+The **Team privacy** section shows where the team’s requests can be processed. A Logos Admin can change it. See [Team privacy](logos-admin.md#team-privacy).
 
 Under **Public stats** you decide whether the team appears on the public
 statistics page (`/stats`). There you can also give the team a **Category**,

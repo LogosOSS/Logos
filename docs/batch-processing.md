@@ -15,6 +15,11 @@ in one of two places:
   use the capacity that interactive traffic does not use. They finish as fast as
   that capacity allows.
 
+Team privacy applies to new uploads and batches. Local and EU teams use the Logos-managed
+batch path, where each request follows the team's provider restrictions. If a team tightens
+its setting after submitting a provider-native batch, the team can still cancel that batch
+and delete its files. Logos continues to record the provider's usage for the existing job.
+
 Both places use the same API. A script uploads a file, polls, and starts the
 next batch. The script does not need to know which place Logos used.
 

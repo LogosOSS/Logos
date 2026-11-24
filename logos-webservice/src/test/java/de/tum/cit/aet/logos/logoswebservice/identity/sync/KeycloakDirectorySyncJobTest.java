@@ -2,7 +2,6 @@ package de.tum.cit.aet.logos.logoswebservice.identity.sync;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,7 +34,6 @@ class KeycloakDirectorySyncJobTest {
         when(adminClient.listUsersById()).thenReturn(Map.of(kcId.toString(),
             Map.of("username", "alice", "firstName", "Alice", "lastName", "Smith",
                    "email", "alice@example.com", "enabled", true)));
-        when(adminClient.getUserClaimNames(kcId.toString())).thenReturn(Set.of("app_developer"));
 
         job.syncAll();
 
@@ -44,7 +42,7 @@ class KeycloakDirectorySyncJobTest {
         KeycloakClaims claims = cap.getValue();
         assertThat(claims.keycloakId()).isEqualTo(kcId.toString());
         assertThat(claims.username()).isNull();
-        assertThat(claims.roleNames()).containsExactly("app_developer");
+        assertThat(claims.email()).isEqualTo("alice@example.com");
     }
 
     @Test

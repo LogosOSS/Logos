@@ -4,15 +4,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
-import de.tum.cit.aet.logos.logoswebservice.auth.KeycloakRoleMapper;
+
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.Policy;
 import de.tum.cit.aet.logos.logoswebservice.configuration.entity.ThresholdLevel;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.PolicyProjection;
 import de.tum.cit.aet.logos.logoswebservice.configuration.repository.PolicyRepository;
+import de.tum.cit.aet.logos.logoswebservice.identity.entity.Role;
 
 @Service
 public class PolicyService {
@@ -24,7 +26,7 @@ public class PolicyService {
     }
 
     public List<Map<String, Object>> getPolicies(String role, Integer userId) {
-        if (KeycloakRoleMapper.LOGOS_ADMIN.equals(role)) {
+        if (Role.Names.LOGOS_ADMIN.equals(role)) {
             return policyRepository.findAllForAdmin().stream().map(this::toMap).toList();
         }
         if (userId == null) return List.of();
@@ -86,7 +88,7 @@ public class PolicyService {
     }
 
     public Optional<Map<String, Object>> getPolicy(int policyId, String role, Integer userId) {
-        if (KeycloakRoleMapper.LOGOS_ADMIN.equals(role)) {
+        if (Role.Names.LOGOS_ADMIN.equals(role)) {
             return policyRepository.findByIdForAdmin(policyId).map(this::toMap);
         }
         if (userId == null) return Optional.empty();

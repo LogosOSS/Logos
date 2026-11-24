@@ -9,5 +9,6 @@ public record UpdateProviderRequestDTO(
     String authFormat,
     String providerType,
     String cloudProviderType,
-    String privacyLevel
+    String privacyLevel,
+    Boolean euProcessingVerified
 ) {}

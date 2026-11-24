@@ -69,6 +69,7 @@ public class ProviderService {
         m.put("base_url", p.getBaseUrl());
         m.put("provider_type", p.getProviderType() == null ? null : p.getProviderType().name());
         m.put("cloud_provider_type", p.getCloudProviderType() == null ? null : p.getCloudProviderType().name());
+        m.put("eu_processing_verified", p.isEuProcessingVerified());
         m.put("privacy_level", p.getPrivacyLevel() == null ? null : p.getPrivacyLevel().name());
         if (apiKeyChanged) {
             m.put("api_key_replaced", true);
@@ -99,6 +100,7 @@ public class ProviderService {
         p.setProviderType(providerType);
         p.setCloudProviderType(parseCloudProviderType(req.cloudProviderType()));
         p.setPrivacyLevel(ThresholdLevel.valueOf(req.privacyLevel()));
+        p.setEuProcessingVerified(Boolean.TRUE.equals(req.euProcessingVerified()));
 
         p.setApiKey(req.apiKey() == null || req.apiKey().isBlank() ? null : req.apiKey());
 
@@ -157,6 +159,9 @@ public class ProviderService {
         Map<String, Object> before = providerSnapshot(p, false);
         ProviderType newType = req.providerType() == null ? p.getProviderType() : parseProviderType(req.providerType());
         boolean replaceKey = req.apiKey() != null && !req.apiKey().isBlank();
+        String previousUrl = p.getBaseUrl();
+        var previousCloudType = p.getCloudProviderType();
+        var previousPrivacy = p.getPrivacyLevel();
         boolean typeChanged = newType != p.getProviderType();
         boolean apiKeyChanged = typeChanged || (replaceKey && !req.apiKey().equals(p.getApiKey()));
         if (req.providerName() != null) p.setName(req.providerName());
@@ -175,6 +180,12 @@ public class ProviderService {
                 throw new IllegalArgumentException("Invalid privacy_level");
             }
             p.setPrivacyLevel(ThresholdLevel.valueOf(req.privacyLevel()));
+        }
+        if (req.euProcessingVerified() != null) {
+            p.setEuProcessingVerified(req.euProcessingVerified());
+        } else if (typeChanged || !java.util.Objects.equals(previousUrl, p.getBaseUrl())
+                || previousCloudType != p.getCloudProviderType() || previousPrivacy != p.getPrivacyLevel()) {
+            p.setEuProcessingVerified(false);
         }
         providerRepository.save(p);
         auditLog.record("provider.updated", "provider", p.getId(), null, before, providerSnapshot(p, apiKeyChanged));
@@ -358,6 +369,7 @@ public class ProviderService {
         m.put("provider_type", p.getProviderType());
         m.put("cloud_provider_type", p.getCloudProviderType());
         m.put("privacy_level", p.getPrivacyLevel());
+        m.put("eu_processing_verified", p.getEuProcessingVerified());
         m.put("auth_name", p.getAuthName());
         m.put("auth_format", p.getAuthFormat());
         return m;

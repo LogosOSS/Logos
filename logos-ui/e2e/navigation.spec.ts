@@ -13,7 +13,6 @@ const ADMIN_ROUTES = [
   { path: '/statistics', title: /Statistics/i },
   { path: '/models', title: /Models/i },
   { path: '/providers', title: /Providers/i },
-  { path: '/policies', title: /Policies/i },
   { path: '/billing', title: /Billing/i },
   { path: '/user-management', title: /Users/i },
   { path: '/team-management', title: /Teams/i },

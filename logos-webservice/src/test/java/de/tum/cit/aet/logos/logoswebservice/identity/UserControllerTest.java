@@ -1,16 +1,6 @@
 package de.tum.cit.aet.logos.logoswebservice.identity;
 
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
-import org.springframework.mock.web.MockMultipartFile;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.jdbc.Sql;
-import org.springframework.test.web.servlet.MockMvc;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -18,6 +8,19 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.jdbc.Sql;
+import org.springframework.test.web.servlet.MockMvc;
 
 import de.tum.cit.aet.logos.logoswebservice.TestContainersConfig;
 import de.tum.cit.aet.logos.logoswebservice.TestJwt;
@@ -144,13 +147,12 @@ class UserControllerTest {
     }
 
     @Test
-    void patchUserRole_conflict_for_keycloak_user() throws Exception {
-        // Role is overwritten from Keycloak claims on every sync, so editing it is blocked.
+    void patchUserRole_succeeds_for_keycloak_user() throws Exception {
         mvc.perform(patch("/users/1001/role")
                 .with(TestJwt.logosAdmin())
                 .contentType("application/json")
                 .content("{\"role\":\"app_admin\"}"))
-        .andExpect(status().isConflict());
+        .andExpect(status().isOk());
     }
 
     @Test
@@ -228,6 +230,45 @@ class UserControllerTest {
         .andExpect(jsonPath("$.summary.existing").value(1))
         .andExpect(jsonPath("$.rows[0].status").value("existing"))
         .andExpect(jsonPath("$.rows[0].username").value("testuser"));
+    }
+
+    @Autowired JdbcTemplate jdbc;
+
+    @Test
+    void importExistingOwnerIntoTwoTeamsIsIdempotentAndReportsUnknownTeamPerRow() throws Exception {
+        String csvRows = """
+            {"rows":[
+              {"email":"admin@test.com","team":"test-team"},
+              {"email":"admin@test.com","team":"kc-team"},
+              {"email":"admin@test.com","team":"kc-team"},
+              {"email":"admin@test.com","team":"absent-team"}
+            ]}
+            """;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            mvc.perform(post("/users/import").with(TestJwt.logosAdmin()).contentType("application/json").content(csvRows))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.summary.existing").value(3))
+                .andExpect(jsonPath("$.summary.created").value(0))
+                .andExpect(jsonPath("$.summary.failed").value(1))
+                .andExpect(jsonPath("$.rows[3].error").value("Unknown team name"));
+        }
+        assertThat(jdbc.queryForList(
+            "SELECT is_owner FROM team_members WHERE user_id = 1002 ORDER BY team_id", Boolean.class))
+            .containsExactly(true, false);
+        assertThat(jdbc.queryForObject(
+            "SELECT role FROM users WHERE id = 1002", String.class)).isEqualTo("app_admin");
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM api_keys WHERE user_id = 1002 AND team_id = 2002", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void appAdminCannotAssignByNameOrIdOutsideOwnedTeams() throws Exception {
+        mvc.perform(post("/users/import").with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"team_id\":2002,\"rows\":[{\"email\":\"manual@test.com\"}]}"))
+            .andExpect(status().isForbidden());
+        mvc.perform(post("/users/import").with(TestJwt.adminUser()).contentType("application/json")
+                .content("{\"rows\":[{\"team\":\"kc-team\",\"email\":\"manual@test.com\"}]}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.summary.failed").value(1));
     }
 
     @Test

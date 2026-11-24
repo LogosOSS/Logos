@@ -1030,7 +1030,6 @@ variables:
 | `LOGOS_REDIS_PASSWORD` | required — Redis password | — |
 | `LOGOS_INTERNAL_SECRET` | a strong random string — the shared secret between web service and orchestrator | — |
 | `KEYCLOAK_ISSUER_URI` | your identity provider's issuer (`https://<idp>/realms/<realm>`) | — |
-| `KEYCLOAK_ROLES_LOGOS_ADMIN` / `KEYCLOAK_ROLES_APP_ADMIN` | the OIDC role names that map to the Logos roles (see [roles](developer/architecture#roles)) | — |
 | `PROMETHEUS_API_KEY` | optional — gates `/metrics`; unset denies all | — |
 | `HF_TOKEN` | optional — HuggingFace token for gated models; also distributed to connected workers | or set per worker |
 | `LOGOS_URL` | — | the core node's URL, e.g. `https://logos.example.org` |

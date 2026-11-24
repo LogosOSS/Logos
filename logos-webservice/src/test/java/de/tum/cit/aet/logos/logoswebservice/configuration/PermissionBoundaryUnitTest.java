@@ -67,6 +67,9 @@ class PermissionBoundaryUnitTest {
     }
 
     private void keyBelongsToOwnedTeam() {
+        when(providerRepo.teamForKey(KEY_ID)).thenReturn(Optional.of(TEAM_ID));
+        org.mockito.Mockito.lenient().when(providerRepo.eligibleModels(TEAM_ID)).thenReturn(java.util.Set.of(5001));
+        org.mockito.Mockito.lenient().when(providerRepo.eligibleProviders(TEAM_ID)).thenReturn(java.util.Set.of(6001));
         when(apiKeyAdminService.getKeyById(KEY_ID))
             .thenReturn(Optional.of(Map.of("team_id", TEAM_ID)));
         when(apiKeyAdminService.isTeamOwner(TEAM_ID, USER_ID)).thenReturn(true);
@@ -116,12 +119,12 @@ class PermissionBoundaryUnitTest {
 
     @Test
     void permissionCatalogGroupsModelsByProviderAndKeepsProvidersWithoutModels() {
-        when(providerRepo.findPermissionCatalog()).thenReturn(List.of(
+        when(providerRepo.findPermissionCatalog(TEAM_ID)).thenReturn(List.of(
             row(6001, "cloud", 5001, "gpt-4"),
             row(6001, "cloud", 5002, "gpt-3.5"),
             row(6002, "empty", null, null)));
 
-        List<Map<String, Object>> catalog = permissionService.getPermissionCatalog();
+        List<Map<String, Object>> catalog = permissionService.getPermissionCatalog(TEAM_ID);
 
         assertEquals(List.of(
             Map.of("id", 6001, "name", "cloud", "models", List.of(

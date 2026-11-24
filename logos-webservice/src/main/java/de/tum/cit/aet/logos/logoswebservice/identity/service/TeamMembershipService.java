@@ -44,7 +44,7 @@ public class TeamMembershipService {
     }
 
     @Transactional
-    public Optional<String> join(Integer userId, Integer teamId, boolean isOwner, TeamMemberSource source) {
+    public Optional<String> join(Integer userId, Integer teamId, boolean isOwner) {
         // Validate invariants before any persistence so that a rejected join
         // doesn't leak a half-baked team_members row.
         var userOpt = userRepository.findById(userId);
@@ -68,9 +68,7 @@ public class TeamMembershipService {
         member.setId(memberId);
         if (!alreadyMember) {
             member.setIsOwner(isOwner);
-            member.setSource(source);
-        } else if (source == TeamMemberSource.KEYCLOAK) {
-            member.setSource(TeamMemberSource.KEYCLOAK);
+            member.setSource(TeamMemberSource.MANUAL);
         }
         memberRepository.save(member);
         auditLog.record("team.member_joined", "team_member", teamId + "/" + userId, teamId,
