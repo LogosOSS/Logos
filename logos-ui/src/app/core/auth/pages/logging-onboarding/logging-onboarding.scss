@@ -147,10 +147,26 @@
   }
 
   .pi {
-    margin-top: 0.25em;
-    color: rgb(var(--option-accent));
+    --detail-color: color-mix(in srgb, rgb(var(--color-typography-500)) 55%, gray);
+
+    display: grid;
+    place-items: center;
+    flex: 0 0 1.125rem;
+    height: 1.125rem;
+    margin-top: 0.125rem;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--detail-color) 12%, transparent);
+    color: var(--detail-color);
     font-size: 0.75em;
   }
+
+  .pi-times {
+    --detail-color: rgb(var(--color-error));
+  }
+}
+
+.logging-option--full .option-details .pi-check {
+  --detail-color: color-mix(in srgb, rgb(var(--color-success)) 65%, rgb(var(--color-typography-0)));
 }
 
 .option-action {

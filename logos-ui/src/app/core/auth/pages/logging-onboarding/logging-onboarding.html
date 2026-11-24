@@ -13,7 +13,7 @@
         </p>
       } @else {
         <h1 id="logging-title">Choose your logging level</h1>
-        <p id="logging-scope">This choice applies to your active developer keys that use billing-only logging.</p>
+        <p id="logging-scope">This sets the default for your active developer keys that use billing-only logging.</p>
       }
     </header>
 
@@ -35,10 +35,11 @@
             <span class="option-icon"><i class="pi pi-chart-line"></i></span>
           </span>
           <span class="option-title">Full logging</span>
-          <span class="option-summary" id="full-summary">Help us find faster model settings with real requests like yours.</span>
+          <span class="option-summary" id="full-summary">Help improve Logos with your requests.</span>
           <span class="option-details" id="full-details">
-            <span><i class="pi pi-check" aria-hidden="true"></i> Stores request and response content, including prompts and generated answers</span>
-            <span><i class="pi pi-check" aria-hidden="true"></i> Lets Logos replay requests in benchmarks</span>
+            <span><i class="pi pi-check" aria-hidden="true"></i> Lets Logos replay your requests in benchmarks</span>
+            <span><i class="pi pi-check" aria-hidden="true"></i> Helps find faster model settings for similar requests</span>
+            <span><i class="pi pi-info-circle" aria-hidden="true"></i> Stores request and response content, including prompts and answers</span>
           </span>
           <span class="option-action" id="full-action">
             {{ savingChoice() === true ? 'Saving…' : 'Enable full logging' }}
@@ -54,9 +55,10 @@
             <span class="option-icon"><i class="pi pi-file"></i></span>
           </span>
           <span class="option-title">Billing-only logging</span>
-          <span class="option-summary" id="billing-summary">Keep your current logging settings.</span>
+          <span class="option-summary" id="billing-summary">Keep your existing usage and billing logs.</span>
           <span class="option-details" id="billing-details">
-            <span><i class="pi pi-check" aria-hidden="true"></i> Stores usage and billing data</span>
+            <span><i class="pi pi-times" aria-hidden="true"></i> No benchmark replays from billing logs</span>
+            <span><i class="pi pi-times" aria-hidden="true"></i> Your prompts aren't used to test faster model settings</span>
             <span><i class="pi pi-check" aria-hidden="true"></i> Keeps request and response content out of logs</span>
           </span>
           <span class="option-action" id="billing-action">
