@@ -253,6 +253,58 @@ describe('Nightly progress', () => {
     expect(checks.querySelector('.timeline-policy__examples')?.textContent).toContain('Pass 2.1 s (+5%)');
     expect(checks.querySelector('.timeline-policy__examples')?.textContent).toContain('Fail 2.3 s (+15%)');
   });
+
+  it('keeps the deployed benchmark visible and locatable among 50 runs', () => {
+    const fixture = TestBed.createComponent(BenchmarkResults);
+    const runs = Array.from({ length: 50 }, (_, index) => measured(index + 1, 50 + index, 1, 21));
+    fixture.componentRef.setInput('runs', runs);
+    fixture.componentRef.setInput('deployedBenchmarkIds', new Set([8]));
+    fixture.detectChanges();
+
+    const timeline = fixture.nativeElement.querySelector('.benchmark-progress') as HTMLElement;
+    const marked = () => timeline.querySelector<HTMLAnchorElement>('.timeline-run--deployed');
+    const jump = timeline.querySelector<HTMLButtonElement>('.timeline-deployment')!;
+    expect(timeline.querySelectorAll('.timeline-run')).toHaveLength(6);
+    expect(marked()?.textContent).toContain('#8');
+    expect(marked()?.getAttribute('aria-label')).toContain('Currently deployed');
+    expect(jump.textContent).toContain('Deployed · #8');
+
+    timeline.querySelector<HTMLButtonElement>('.timeline-toggle')?.click();
+    fixture.detectChanges();
+    expect(timeline.querySelectorAll('.timeline-run')).toHaveLength(50);
+    expect(timeline.querySelectorAll('.timeline-run--deployed')).toHaveLength(1);
+    jump.click();
+    expect(document.activeElement).toBe(marked());
+
+    fixture.componentRef.setInput('deployedBenchmarkIds', new Set());
+    fixture.detectChanges();
+    expect(marked()).toBeNull();
+    expect(timeline.querySelector('.timeline-deployment')).toBeNull();
+  });
+
+  it('defaults to a deployment group and follows a different worker or workload selection', () => {
+    const fixture = TestBed.createComponent(BenchmarkResults);
+    const first = measured(1, 40, 1, 21), deployed = measured(2, 50, 1, 21);
+    const newer = { ...measured(3, 45, 3, 22, 8), model_provider_id: 2, provider_id: 2, provider_name: 'Second worker' };
+    fixture.componentRef.setInput('runs', [first, deployed, newer]);
+    fixture.componentRef.setInput('deployedBenchmarkIds', new Set([2]));
+    fixture.detectChanges();
+
+    const content = fixture.nativeElement as HTMLElement;
+    const picker = content.querySelector<HTMLSelectElement>('.timeline-dataset')!;
+    expect(picker.selectedOptions[0].textContent).toContain('Deployed ·');
+    expect(content.querySelector('.timeline-run--deployed')?.textContent).toContain('#2');
+
+    picker.value = picker.options[0].value;
+    picker.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    expect(picker.selectedOptions[0].textContent).toContain('Second worker');
+    expect(content.querySelector('.timeline-run--deployed')).toBeNull();
+
+    fixture.componentRef.setInput('deployedBenchmarkIds', new Set([2, 3]));
+    fixture.detectChanges();
+    expect(content.querySelector('.timeline-run--deployed')?.textContent).toContain('#3');
+  });
 });
 
 

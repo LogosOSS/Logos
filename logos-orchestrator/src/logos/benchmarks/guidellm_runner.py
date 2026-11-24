@@ -281,20 +281,24 @@ def apply_serving_overrides(current: dict[str, Any], overrides: ServingOverrides
     return result
 
 
-def extract_serving_configuration(snapshot: dict[str, Any] | None, model: str) -> dict[str, Any]:
-    """Capture the live vLLM lane configuration for the benchmarked model."""
+def lane_is_serving(lane: dict[str, Any]) -> bool:
+    return lane.get("runtime_state") in {"loaded", "running"} and lane.get("sleep_state") != "sleeping"
+
+
+def benchmark_model_lane(snapshot: dict[str, Any] | None, model: str) -> dict[str, Any]:
     runtime = (snapshot or {}).get("runtime")
     if not isinstance(runtime, dict):
         return {}
     lanes = runtime.get("lanes")
     if not isinstance(lanes, list):
         return {}
+    matching = [lane for lane in lanes if isinstance(lane, dict) and lane.get("model") == model]
+    return next((lane for lane in matching if lane_is_serving(lane)), matching[0] if matching else {})
 
-    for lane in lanes:
-        if not isinstance(lane, dict) or lane.get("model") != model:
-            continue
-        return lane_serving_configuration(lane)
-    return {}
+
+def extract_serving_configuration(snapshot: dict[str, Any] | None, model: str) -> dict[str, Any]:
+    """Capture the live configuration, preferring the lane eligible to serve requests."""
+    return lane_serving_configuration(benchmark_model_lane(snapshot, model))
 
 
 def lane_serving_configuration(lane: dict[str, Any]) -> dict[str, Any]:

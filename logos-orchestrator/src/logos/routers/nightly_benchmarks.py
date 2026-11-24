@@ -44,21 +44,30 @@ async def nightly_status(data: NightlySelectionStatusRequest, request: Request):
     result["workload_policy"] = recent_requests.policy(local_now())
     snapshot = main._logosnode_registry.peek_runtime_snapshot(target["provider_id"])
     current = extract_serving_configuration(snapshot, target["model_name"])
+    scheduler = main._nightly_scheduler
+    preview = (
+        scheduler.preview_configuration(data.model_provider_id, target["provider_id"], target["model_name"], snapshot)
+        if scheduler is not None
+        and not result["recovery_required"]
+        and result["status"] not in {"preparing", "running"}
+        else None
+    )
+    baseline = current if preview is None else preview
     search = None
     if result.get("workload_id"):
         workload = workloads.load(result["workload_id"], target["model_id"])
         source = (result.get("optimizer") or {}).get("source")
         if source and source.get("username") == recent_requests.username():
             workload["source_selection"] = source
-        search = optimization.context(current, snapshot or {}, workload, result.get("optimizer") or {})
+        search = optimization.context(baseline, snapshot or {}, workload, result.get("optimizer") or {})
     result["plan"] = [
         run.model_dump()
         for run in (
             optimization.plan(
-                current, search, round_index=optimization.round_index(search["state"], local_now().date())
+                baseline, search, round_index=optimization.round_index(search["state"], local_now().date())
             )
             if search
-            else parameter_plan(current)
+            else parameter_plan(baseline)
         )
     ]
     result["workloads"] = workloads.list_for_model(target["model_id"]) if "model_id" in target else []
@@ -85,7 +94,7 @@ async def nightly_status(data: NightlySelectionStatusRequest, request: Request):
         or result["recovery_required"]
         or result["status"] in {"preparing", "running", "recovery_required"},
     )
-    if result["deployment"]["configuration"] != current:
+    if result["deployment"]["configuration"] != baseline:
         result["deployment"]["series_key"] = None
     result["selection"] = store.selection_summary(
         data.model_provider_id, result.get("workload_id"), length_comparison_id=data.length_comparison_id

@@ -22,26 +22,44 @@ export class BenchmarkResults {
   readonly configuration = recordConfiguration;
   readonly datasetLabel = benchmarkDatasetLabel;
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
+  readonly deployedBenchmarkIds = input<ReadonlySet<number>>(new Set<number>());
   readonly selectedRunId = input<number | null>(null);
   readonly showProgress = input(true);
   readonly showHistory = input(true);
   readonly selectedRow = computed(() => this.rows().find(row => row.run.id === this.selectedRunId()) ?? null);
   private readonly selectedResult = viewChild<ElementRef<HTMLElement>>('selectedResult');
+  private readonly timelineScroll = viewChild<ElementRef<HTMLElement>>('timelineScroll');
   private focusedRunId: number | null = null;
   readonly progress = computed(() => benchmarkProgress(this.runs()));
   readonly progressKey = signal('');
+  readonly deploymentGroups = computed(() => {
+    const ids = this.deployedBenchmarkIds();
+    return new Map(this.progress().flatMap(group => {
+      const deployed = group.points.find(point => ids.has(point.run.id));
+      return deployed ? [[group.key, deployed] as const] : [];
+    }));
+  });
   readonly activeProgress = computed(() => {
     const selected = this.selectedRunId();
-    return this.progress().find(group => group.key === this.progressKey())
-      ?? this.progress().find(group => selected !== null && group.runIds.includes(selected)) ?? this.progress()[0];
+    const charts = this.progress();
+    return charts.find(group => group.key === this.progressKey())
+      ?? charts.find(group => selected !== null && group.runIds.includes(selected))
+      ?? charts.find(group => this.deploymentGroups().has(group.key))
+      ?? charts[0];
+  });
+  readonly deployedPoint = computed(() => {
+    const chart = this.activeProgress();
+    return chart ? this.deploymentGroups().get(chart.key) : undefined;
   });
   readonly timelineLimit = 6;
   readonly expandedTimeline = signal<string | null>(null);
   readonly timelineRuns = computed(() => {
     const chart = this.activeProgress();
     if (!chart) return [];
-    const start = this.expandedTimeline() === chart.key ? 0 : -this.timelineLimit;
-    return chart.points.slice(start);
+    if (this.expandedTimeline() === chart.key) return chart.points;
+    const latest = chart.points.slice(-this.timelineLimit);
+    const deployed = this.deployedPoint();
+    return deployed && !latest.includes(deployed) ? [deployed, ...latest.slice(1)] : latest;
   });
   readonly showAll = signal(false);
   readonly sort = signal<{ key: ResultColumn; direction: 'ascending' | 'descending' } | null>(null);
@@ -97,6 +115,12 @@ export class BenchmarkResults {
     this.sort.update(previous => previous?.key === key
       ? previous.direction === 'ascending' ? { key, direction: 'descending' } : null
       : { key, direction: 'ascending' });
+  }
+
+  focusDeployedBenchmark(): void {
+    const link = this.timelineScroll()?.nativeElement.querySelector<HTMLAnchorElement>('.timeline-run--deployed');
+    link?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    link?.focus({ preventScroll: true });
   }
 
   readonly topRuns = computed(() => {

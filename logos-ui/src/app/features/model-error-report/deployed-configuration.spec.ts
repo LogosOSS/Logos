@@ -112,9 +112,10 @@ describe('Current deployment measurement', () => {
     expect(deployedMeasurement({ ...deployment, series_key: 'different-worker-version' }, [old])).toBeNull();
     expect(deployedMeasurement({ ...deployment, series_key: 'different-worker-version' }, [old], false)?.id).toBe(1);
   });
-  it('does not claim an offline, temporary or incomplete measurement as deployed performance', () => {
+  it('does not claim an offline, mixed, temporary or incomplete measurement as deployed performance', () => {
     expect(deployedMeasurement({ ...deployment, available: false }, [run(1)])).toBeNull();
     expect(deployedMeasurement({ ...deployment, maintenance: true }, [run(1)])).toBeNull();
+    expect(deployedMeasurement({ ...deployment, mixed_configuration: true }, [run(1)])).toBeNull();
     const incomplete = run(1); incomplete.metrics.request_totals.incomplete = 1;
     expect(deployedMeasurement(deployment, [incomplete])).toBeNull();
   });

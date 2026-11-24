@@ -52,7 +52,8 @@ function canonical(value: unknown): string {
 
 /** A recorded winner alone does not establish what the worker serves now. */
 export function deployedMeasurement(deployment: DeploymentSnapshot | undefined, runs: readonly ModelProviderBenchmark[], sameEnvironment = true) {
-  if (!deployment?.available || deployment.maintenance || (sameEnvironment && !deployment.series_key) || !Object.keys(deployment.configuration).length) return null;
+  if (!deployment?.available || deployment.maintenance || deployment.mixed_configuration
+    || (sameEnvironment && !deployment.series_key) || !Object.keys(deployment.configuration).length) return null;
   const current = canonical(deployment.configuration);
   return [...runs].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at) || b.id - a.id).find(run => {
     const nightly = run.configuration['nightly'] as { series_key?: string } | undefined;
@@ -103,7 +104,10 @@ export class DeployedConfiguration implements OnDestroy {
     };
     return labels[deployment?.status ?? ''] ?? 'No live status';
   });
-  readonly measurement = computed(() => deployedMeasurement(this.deployment(), this.runs().filter(run => run.model_provider_id === this.pairId())));
+  readonly measurement = computed(() => {
+    const deployment = this.deployment();
+    return deployment ? deployedMeasurement(deployment, this.runs().filter(run => run.model_provider_id === this.pairId())) : null;
+  });
   readonly historicalMeasurement = computed(() => this.measurement() ?? deployedMeasurement(this.deployment(),
     this.runs().filter(run => run.model_provider_id === this.pairId()), false));
   readonly result = computed(() => this.historicalMeasurement() ? deployedResult(this.historicalMeasurement()!, this.runs()) : null);

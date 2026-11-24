@@ -348,7 +348,7 @@ describe('MaintenancePanel', () => {
     await component.releaseRecovery(component.rows()[0]);
     component.askForceRelease(component.rows()[0]);
     fixture.detectChanges();
-    expect(document.body.textContent).toContain('may be benchmark settings');
+    expect(document.body.textContent).toContain('Check for missing lanes, temporary benchmark lanes and changed settings');
     releaseRecovery.mockResolvedValueOnce({ released: true, forced: true });
     getMaintenanceStatus.mockResolvedValue(FREE);
     await component.confirmForceRelease();

@@ -2110,8 +2110,11 @@ class CapacityPlanner:
         if target is not None and self._benchmark_lane_is_ready(target):
             await self._drain_benchmark_lane(provider_id, model_name, target.lane_id, timeout_seconds)
             return True
+        pinned = benchmark_reservations.pinned_lane(provider_id, model_name)
         if target is not None and target.runtime_state == "starting":
-            await self._wait_for_benchmark_lane_ready(provider_id, model_name, timeout_seconds)
+            await self._wait_for_benchmark_lane_ready(provider_id, model_name, timeout_seconds, lane_id=pinned)
+        elif pinned is not None:
+            raise RuntimeError(f"Nightly benchmark lane '{pinned}' on worker {provider_id} is no longer ready.")
         elif target is not None and target.runtime_state in {"sleeping", "cold"}:
             await self._prepare_existing_lane(provider_id, model_name, target, timeout_seconds, raise_on_failure=True)
         else:
@@ -2166,11 +2169,14 @@ class CapacityPlanner:
         target = self._pick_request_target_lane(provider_id, model_name)
         recovering = False
         if target is None:
+            pinned = benchmark_reservations.pinned_lane(provider_id, model_name)
             target = next(
                 (
                     lane
                     for lane in self._safe_get_lanes(provider_id)
-                    if lane.model_name == model_name and lane.runtime_state in {"error", "stopped"}
+                    if lane.model_name == model_name
+                    and lane.runtime_state in {"error", "stopped"}
+                    and (pinned is None or lane.lane_id == pinned)
                 ),
                 None,
             )
@@ -2200,7 +2206,7 @@ class CapacityPlanner:
             config = (lane or {}).get("lane_config") or {}
             if not config.get("vllm"):
                 raise RuntimeError("Serving overrides require an existing vLLM lane on this worker")
-            validate_worker_overrides(overrides, worker_limits(snapshot, model_name))
+            validate_worker_overrides(overrides, worker_limits(snapshot, model_name, lane=lane))
             current = config.get("vllm_config") or {}
             updated = apply_serving_overrides(current, overrides)
             if updated == current and not recovering:
@@ -2262,11 +2268,17 @@ class CapacityPlanner:
         provider_id: int,
         model_name: str,
         timeout_seconds: float,
+        *,
+        lane_id: str | None = None,
     ) -> bool:
         """Wait for an already-starting lane instead of issuing a duplicate load."""
         deadline = time.monotonic() + timeout_seconds
         while True:
-            matching_lanes = [lane for lane in self._safe_get_lanes(provider_id) if lane.model_name == model_name]
+            matching_lanes = [
+                lane
+                for lane in self._safe_get_lanes(provider_id)
+                if lane.model_name == model_name and (lane_id is None or lane.lane_id == lane_id)
+            ]
             target = best_lane([lane for lane in matching_lanes if lane.runtime_state not in {"stopped", "error"}])
             if target is not None:
                 if target.runtime_state in {"loaded", "running"} and target.sleep_state != "sleeping":
@@ -6251,10 +6263,13 @@ class CapacityPlanner:
         provider_id: int,
         model_name: str,
     ) -> Optional[LaneSchedulerSignals]:
+        pinned = benchmark_reservations.pinned_lane(provider_id, model_name)
         lanes = [
             lane
             for lane in self._safe_get_lanes(provider_id)
-            if lane.model_name == model_name and lane.runtime_state not in {"stopped", "error"}
+            if lane.model_name == model_name
+            and lane.runtime_state not in {"stopped", "error"}
+            and (pinned is None or lane.lane_id == pinned)
         ]
         return best_lane(lanes)
 

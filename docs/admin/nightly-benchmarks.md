@@ -142,8 +142,9 @@ Completed GuideLLM reports are stored in `model_provider_benchmarks` and appear
 in the existing performance comparison. Internal inference requests use the
 existing `log_entry` logging path. The nightly control shows per-configuration
 outcomes, retries and benchmark IDs. Failed or incomplete runs are not stored
-as successful throughput measurements. For saved request datasets, Logos automatically applies eligible improvements over the current production baseline.
-Hugging Face runs retain the original production settings.
+as successful throughput measurements. With a saved request dataset and one
+existing serving replica, Logos can apply an eligible improvement over the
+production baseline. Hugging Face runs retain the original production settings.
 
 ## Fixed Request Workloads
 
@@ -243,7 +244,8 @@ Among eligible candidates, Logos saves the highest observed aggregate throughput
 The historical winner remains until an eligible measurement exceeds its recorded throughput.
 These checks prevent selection through shorter or truncated answers. They do not measure answer quality.
 After each completed plan, Logos selects the fastest eligible measurement from that plan.
-If it exceeds the current production baseline, then Logos applies its sequence and batch-token limits.
+When it beats the production baseline and the round used a single existing
+serving replica, Logos applies its sequence and batch-token limits.
 Logos compares measurements from the same frozen dataset and environment.
 An older throughput record alone cannot trigger adoption.
 If no eligible configuration improves throughput, then the original production settings return.
@@ -265,7 +267,8 @@ Each completed run has one dot. Runs appear from left to right in completion ord
 The vertical axis shows output tokens per second (tok/s). Each stem starts at zero. An open circle marks a baseline.
 Trials show their change from the baseline of the same round, if available.
 Slower runs and excluded trials remain visible. Select a run to see its configuration and result.
-Select **Show all** to see more than the latest 6 runs.
+The collapsed timeline shows up to six runs, including the current deployment when measured.
+A blue ring marks its benchmark. Select **Deployed** to find it or **Show all** to see the full timeline.
 The timeline separates workloads and test settings. Measurements can span worker releases.
 Expand **What does Logos check?** for the nightly adoption checks and examples of the request latency limit.
 Expand **Currently deployed → Configuration & selection details** to inspect **Serving settings** and **Run selection**.
@@ -318,18 +321,24 @@ local-date claim limits distinct pairs after an application restart. Restored ro
 Existing manual benchmarks finish before nightly admission.
 
 The selected worker must be online, healthy and not calibrating.
-No spare worker is required. The model must have exactly one existing,
-loaded and awake vLLM lane. Production requests cannot enter the reserved node;
-existing traffic drains before a benchmark starts.
+Logos measures one isolated vLLM lane on that worker. It can load a temporary
+lane from the model's saved worker settings if the model has no ready lane.
+On a worker with several replicas, Logos selects one and drains competing
+lanes before changing their state. It can unload dynamic lanes to isolate the
+test or make room, and put static lanes with sleep support to sleep. If it
+cannot isolate the lane, it skips the benchmark. Production requests cannot
+enter the reserved node while it prepares or runs a benchmark.
 Requests already accepted by the scheduler can finish, including requests that still wait for transport access.
 New requests cannot use these exceptions. The exceptions end when each request finishes.
 Other workers remain available. Normal capacity-planner and manual lane mutations cannot alter the
 reserved node.
 
-Original settings are journaled before mutation and restored when no eligible improvement exists,
-on cancellation and before a retry. Cleanup restarts the lane even when the
-settings did not change. A failed restart that removed the lane can recreate it
-from its original configuration. If restoration fails, the reservation and
+Logos saves the original lane configurations before modifying them. After
+testing, it removes a temporary benchmark lane, reloads lanes it unloaded and
+wakes lanes it put to sleep. Automatic adoption applies to rounds that use
+one existing serving replica. Other rounds restore the previous lane setup
+and record their measurements. Cancellation and recovery
+use the same saved state. If restoration fails, the reservation and
 journal remain, and further nightly plans pause. The scheduler retries recovery
 before admitting other work, including after an application restart. It does
 not interrupt existing production requests if initial draining fails before
@@ -342,7 +351,7 @@ It marks the job as failed only after the worker confirms that its requests ende
 The journal selects the production configuration. Unknown worker status keeps the recovery journal active.
 Job age alone never permits recovery.
 
-Recovery waits only for the lane it restores, and for other lanes of the same model.
+Recovery waits for the benchmark lane, other lanes of the same model, and any additional lane it must restore.
 It reads the request counters from the worker itself.
 Production traffic on other lanes of the worker does not hold the recovery back.
 The worker also refuses the restart while the lane still has requests.
@@ -354,14 +363,15 @@ The orchestrator's own request counter does not delay a recovery.
 A recovery that cannot finish keeps the maintenance slot.
 The **Maintenance** status on the statistics page offers **Release recovery** for it.
 Logos first asks the worker for its lanes.
-It releases the recovery only if the lane runs its original settings again.
+It releases the recovery only after the worker confirms the original settings,
+the restored lanes and the removal of any temporary benchmark lane.
 Then it marks the recovery as `interrupted_recovered` and frees the worker.
 Open benchmark jobs of this recovery are marked as failed.
 
-If the worker is offline, the lane is missing, or its settings differ, Logos refuses (HTTP 409).
+If the worker is offline or the lane inventory differs from the saved state, Logos refuses (HTTP 409).
 The box then offers **Force release**.
-A forced release does not check the lane.
-The lane keeps whatever settings it runs now, and those can be benchmark settings.
+A forced release leaves the worker in its current state, which can include a
+temporary benchmark lane, changed settings or lanes waiting to be restored.
 Check or restore the lane on the worker before you force the release.
 Logos refuses both actions while a recovery or one of its jobs is running.
 The orchestrator log and the audit log (`provider.nightly_recovery_released`) record every release.

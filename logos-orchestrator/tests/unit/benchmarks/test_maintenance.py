@@ -726,6 +726,27 @@ async def test_release_recovery_of_an_unchanged_lane_needs_no_worker(recovery):
     assert await service.release_recovery(31) == {"released": True, "forced": False}
 
 
+@pytest.mark.parametrize("journal_key", ["removed_lanes", "slept_lanes"])
+async def test_release_recovery_requires_removing_the_temporary_lane_and_restoring_suspended_lanes(
+    recovery, journal_key
+):
+    service, state = recovery
+    config = {"lane_id": None, "model": "org/other-model", "vllm_config": dict(ORIGINAL)}
+    restored = {"lane_id": "org_other-model", "lane_config": config, "runtime_state": "running", "sleep_state": "awake"}
+    state["row"]["recovery"].update(temporary_lane=True, **{journal_key: [config]})
+    service.registry.send_command.return_value = {"lanes": [{"lane_id": "lane"}, restored]}
+    with pytest.raises(MaintenanceBusyError, match="temporary benchmark lane"):
+        await service.release_recovery(31)
+
+    service.registry.send_command.return_value = {"lanes": [{**restored, "runtime_state": "starting"}]}
+    with pytest.raises(MaintenanceBusyError, match="original lane"):
+        await service.release_recovery(31)
+
+    service.registry.send_command.return_value = {"lanes": [restored]}
+    assert await service.release_recovery(31) == {"released": True, "forced": False}
+    assert not _reserved()
+
+
 def test_a_worker_with_a_benchmark_or_a_calibration_claim_is_busy(coordinator):
     service, state = coordinator
     assert service.busy_reason(1) is None

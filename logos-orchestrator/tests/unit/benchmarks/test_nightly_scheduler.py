@@ -1,7 +1,8 @@
 import asyncio
+import copy
 from contextlib import nullcontext
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import DEFAULT, AsyncMock, MagicMock
 
 import pytest
 
@@ -18,7 +19,13 @@ def scheduler(monkeypatch):
     registry.has_received_first_status.return_value = True
     registry.is_calibrating.return_value = False
     registry.is_cordoned.return_value = False
-    registry.send_command = AsyncMock(return_value={"lanes": []})
+
+    def send_command(pid, action, *_args, **_kwargs):
+        if action == "get_runtime" and benchmark_reservations.owner(pid, "*") in {-31, -32, -33}:
+            return registry.peek_runtime_snapshot.return_value["runtime"]
+        return DEFAULT
+
+    registry.send_command = AsyncMock(return_value={"lanes": []}, side_effect=send_command)
     registry.active_provider_ids.return_value = [20, 21]
     registry.peek_runtime_snapshot.return_value = {
         "runtime": {
@@ -27,6 +34,7 @@ def scheduler(monkeypatch):
                 {
                     "lane_id": "lane",
                     "runtime_state": "running",
+                    "active_requests": 0,
                     "model": "model",
                     "lane_config": {
                         "lane_id": "lane",
@@ -43,6 +51,7 @@ def scheduler(monkeypatch):
     planner._facade.model_inflight_requests.return_value = 0
     planner._drain_lane = AsyncMock(return_value=True)
     planner.is_worker_locked.return_value = False
+    planner.is_lane_locked.return_value = False
     service = module.NightlyScheduler(registry, planner)
     service.restore = AsyncMock()
     db = MagicMock()
@@ -274,7 +283,7 @@ async def test_adoption_rolls_back_if_worker_never_reports_the_applied_settings_
 
     assert len(updates) == 2 and updates[-1] == {"vllm_config": original}
     assert report[0]["status"] == "adoption_failed"
-    assert "did not report that lane ready with those settings" in report[0]["reason"]
+    assert "did not report that lane lane ready with those settings" in report[0]["reason"]
     assert module.store.save.call_args.kwargs["adoption_failure"] == report[0]
     assert "adoption" not in journal
 
@@ -376,12 +385,12 @@ async def test_no_configuration_or_retry_starts_at_window_end(scheduler, monkeyp
 async def test_lost_cluster_lock_keeps_recovery_journal(scheduler, monkeypatch):
     async def submit(*args):
         async def run():
+            monkeypatch.setattr(module.store, "lock_held", lambda _: False)
             raise NightlyStopped("lease_lost")
 
         return 7, asyncio.create_task(run())
 
     scheduler.submit = submit
-    monkeypatch.setattr(module.store, "lock_held", lambda _: False)
     assert not await scheduler.run_schedule(31, MagicMock())
     scheduler.restore.assert_not_awaited()
     assert scheduler.saved[-1][3] is not None
@@ -393,7 +402,7 @@ async def test_failed_initial_drain_releases_worker_without_restart(scheduler):
     scheduler.submit = AsyncMock()
     assert await scheduler.run_schedule(31, MagicMock())
     scheduler.submit.assert_not_awaited()
-    scheduler.registry.send_command.assert_not_called()
+    scheduler.registry.send_command.assert_awaited_once_with(20, "get_runtime", {}, timeout_seconds=30)
     assert scheduler.saved[-1][1] == "failed"
     assert scheduler.saved[-1][3] is None
     assert benchmark_reservations.allows(20, "model", "production")
@@ -1015,3 +1024,171 @@ async def test_completed_winner_is_durable_before_a_later_trial_is_interrupted(s
     scheduler.restore.assert_awaited_once()
     assert scheduler.restore.call_args.args[1]["adoption"]["benchmark_id"] == 2
     assert any(item.get("status") == "adopted" for item in scheduler.saved[-1][2])
+
+
+def lane_status(lane_id, *, model="model", seqs=16, static=False, can_sleep=False):
+    return {
+        "lane_id": lane_id,
+        "model": model,
+        "runtime_state": "loaded",
+        "sleep_state": "awake" if can_sleep else "unsupported",
+        "sleep_mode_enabled": can_sleep,
+        "active_requests": 0,
+        "is_static": static,
+        "lane_config": {
+            "lane_id": lane_id,
+            "model": model,
+            "vllm": True,
+            "vllm_config": {"max_num_seqs": seqs, "max_num_batched_tokens": 4096},
+        },
+    }
+
+
+def simulate_worker(scheduler, lanes, *, max_lanes=0, missing_delete_succeeds=False):
+    runtime = scheduler.registry.peek_runtime_snapshot.return_value["runtime"]
+    runtime["lanes"] = copy.deepcopy(lanes)
+    scheduler.registry.reflects_command.return_value = True
+    scheduler.planner._safe_get_profiles.return_value = {}
+    scheduler.planner._estimate_lane_host_ram_mb.return_value = 0
+    scheduler.planner._check_host_ram_headroom_for_sleep.return_value = (True, 4096, 1024)
+    scheduler.planner._build_load_params.side_effect = lambda model, lane_id, *_: {
+        "model": model,
+        "lane_id": lane_id,
+        "vllm": True,
+        "vllm_config": {"max_num_seqs": 12, "max_num_batched_tokens": 4096},
+    }
+    scheduler.restore = module.NightlyScheduler.restore.__get__(scheduler)
+    events = []
+
+    async def send_command(_pid, action, params, *, timeout_seconds, on_dispatched=None):
+        if action == "get_runtime":
+            return copy.deepcopy(runtime)
+        if action == "get_lanes":
+            return {"lanes": copy.deepcopy(runtime["lanes"])}
+        lane_id = params["lane_id"]
+        events.append((action, lane_id))
+        future = asyncio.get_running_loop().create_future()
+        on_dispatched(future)
+        future.set_result({"lifecycle_revision": len(events)})
+        lane = next((item for item in runtime["lanes"] if item["lane_id"] == lane_id), None)
+        if action == "add_lane":
+            if max_lanes and len(runtime["lanes"]) >= max_lanes:
+                raise module.LogosNodeCommandError(f"MAX_LANES limit reached ({max_lanes})")
+            assert lane is None
+            lane = lane_status(lane_id, model=params["model"])
+            lane["lane_config"] = copy.deepcopy(params)
+            runtime["lanes"].append(lane)
+        elif action == "delete_lane":
+            if lane is None and not missing_delete_succeeds:
+                raise module.LogosNodeCommandError(str(KeyError(f"Lane '{lane_id}' not found")))
+            if lane is not None:
+                assert not lane["is_static"]
+                runtime["lanes"].remove(lane)
+            return {"ok": True, "lane_id": lane_id}
+        elif action == "sleep_lane":
+            assert lane["is_static"] and lane["sleep_mode_enabled"]
+            lane.update(runtime_state="sleeping", sleep_state="sleeping")
+        elif action == "wake_lane":
+            assert lane["runtime_state"] == "sleeping"
+            lane.update(runtime_state="loaded", sleep_state="awake")
+        elif action == "reconfigure_lane":
+            lane["lane_config"].update(params["updates"])
+            return {**copy.deepcopy(lane), "restarted": True}
+        else:
+            pytest.fail(f"Unexpected worker action {action}")
+        return copy.deepcopy(lane)
+
+    scheduler.registry.send_command.side_effect = send_command
+    return runtime, events
+
+
+@pytest.mark.parametrize("other_model_blocks_load", [False, True])
+async def test_nightly_loads_a_temporary_lane_and_restores_the_worker(scheduler, other_model_blocks_load):
+    initial = [lane_status("other", model="other-model")] if other_model_blocks_load else []
+    runtime, events = simulate_worker(scheduler, initial, max_lanes=1)
+    assert scheduler.preview_configuration(31, 20, "model", {"runtime": runtime})["max_num_seqs"] == 12
+    assert not events
+
+    async def submit(*args):
+        assert [(lane["lane_id"], lane["model"]) for lane in runtime["lanes"]] == [("nightly-31", "model")]
+        assert benchmark_reservations.pinned_lane(20, "model") == "nightly-31"
+        assert not benchmark_reservations.allows(20, "other-model", "production")
+        # A failed benchmark still cleans up the temporary lane.
+        return 7, asyncio.create_task(asyncio.sleep(0))
+
+    scheduler.submit = submit
+    assert await scheduler.run_schedule(31, MagicMock())
+    assert runtime["lanes"] == initial
+    if other_model_blocks_load:
+        assert events == [
+            ("add_lane", "nightly-31"),
+            ("delete_lane", "other"),
+            ("add_lane", "nightly-31"),
+            ("delete_lane", "nightly-31"),
+            ("add_lane", "other"),
+        ]
+    else:
+        assert events == [("add_lane", "nightly-31"), ("delete_lane", "nightly-31")]
+    assert benchmark_reservations.pinned_lane(20, "model") is None
+    assert benchmark_reservations.allows(20, "other-model", "production")
+
+
+async def test_nightly_suspends_competing_replicas_and_restores_each_after_cancellation(scheduler):
+    primary = lane_status("primary", static=True)
+    sleeping = lane_status("replica", static=True, can_sleep=True, seqs=32)
+    dynamic = lane_status("dynamic", seqs=24)
+    runtime, events = simulate_worker(scheduler, [primary, sleeping, dynamic])
+    started = asyncio.Event()
+
+    async def submit(*args):
+        lanes = {lane["lane_id"]: lane for lane in runtime["lanes"]}
+        assert set(lanes) == {"primary", "replica"}
+        assert lanes["replica"]["runtime_state"] == "sleeping"
+        assert benchmark_reservations.pinned_lane(20, "model") == "primary"
+        lanes["primary"]["lane_config"]["vllm_config"]["max_num_seqs"] = 99
+        started.set()
+        return 7, asyncio.create_task(asyncio.Event().wait())
+
+    scheduler.submit = submit
+    task = asyncio.create_task(scheduler.run_schedule(31, MagicMock()))
+    async with asyncio.timeout(3):
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert runtime["lanes"] == [primary, sleeping, dynamic]
+    assert events == [
+        ("sleep_lane", "replica"),
+        ("delete_lane", "dynamic"),
+        ("reconfigure_lane", "primary"),
+        ("reconfigure_lane", "replica"),
+        ("wake_lane", "replica"),
+        ("add_lane", "dynamic"),
+    ]
+    assert scheduler.saved[-1][1] == "interrupted"
+    assert benchmark_reservations.allows(20, "model", "production")
+
+
+async def test_recovery_waits_for_a_temporarily_removed_other_model(scheduler):
+    other = lane_status("other", model="other-model")
+    other["active_requests"] = 1
+    simulate_worker(scheduler, [other])
+    journal = {
+        "provider_id": 20,
+        "lane_id": "nightly-31",
+        "model": "model",
+        "removed_lanes": [other["lane_config"]],
+    }
+    assert not await scheduler.recovery_worker_idle(journal)
+
+
+async def test_recovery_accepts_an_already_removed_temporary_lane(scheduler):
+    _, events = simulate_worker(scheduler, [])
+    journal = {
+        "provider_id": 20,
+        "lane_id": "nightly-31",
+        "model": "model",
+        "temporary_lane": True,
+    }
+    await scheduler.restore(31, journal)
+    assert events == [("delete_lane", "nightly-31")]

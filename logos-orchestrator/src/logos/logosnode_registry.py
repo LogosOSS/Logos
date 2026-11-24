@@ -1337,8 +1337,12 @@ class LogosNodeRuntimeRegistry:
         lanes = (session.latest_runtime or {}).get("lanes") or []
         lane = next((lane for lane in lanes if lane.get("lane_id") == lane_id), None)
         model = lane.get("model") if lane else ((params or {}).get("payload") or {}).get("model")
-        if model and not benchmark_reservations.allows(session.provider_id, model, request_id):
-            raise LogosNodeCommandError("The lane is reserved for an active benchmark")
+        if model:
+            pinned = benchmark_reservations.pinned_lane(session.provider_id, model)
+            if (pinned is not None and lane_id != pinned) or not benchmark_reservations.allows(
+                session.provider_id, model, request_id
+            ):
+                raise LogosNodeCommandError("The lane is reserved for an active benchmark")
 
     async def send_command(
         self,
@@ -1781,12 +1785,14 @@ class LogosNodeRuntimeRegistry:
             str(lc.get("lane_id") or lc.get("model", "")): dict(lc) for lc in lane_configs if isinstance(lc, dict)
         }
 
-    def update_desired_lane_add(self, provider_id: int, lane_config: dict[str, Any]) -> None:
+    def update_desired_lane_add(
+        self, provider_id: int, lane_config: dict[str, Any], *, lane_id: str | None = None
+    ) -> None:
         """Record a single lane addition to the desired state."""
         session = self._sessions.get(int(provider_id))
         if session is None:
             return
-        lane_id = str(lane_config.get("lane_id") or lane_config.get("model", ""))
+        lane_id = lane_id or str(lane_config.get("lane_id") or lane_config.get("model", ""))
         if lane_id:
             session.desired_lanes[lane_id] = dict(lane_config)
 
@@ -1874,8 +1880,11 @@ class LogosNodeRuntimeRegistry:
     def _candidate_lanes(self, session: ProviderSession, model_name: str):
         if session.capabilities_models and model_name not in session.capabilities_models:
             return
+        pinned = benchmark_reservations.pinned_lane(session.provider_id, model_name)
         for lane in session.latest_runtime.get("lanes") or []:
             if not isinstance(lane, dict) or lane.get("model") != model_name:
+                continue
+            if pinned is not None and lane.get("lane_id") != pinned:
                 continue
             if lane.get("runtime_state") not in {"loaded", "running", "cold", "starting"}:
                 continue

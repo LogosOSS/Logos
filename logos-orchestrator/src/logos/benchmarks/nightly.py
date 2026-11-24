@@ -31,6 +31,11 @@ def pairs_per_night(value: str | None) -> int:
 MAX_PAIRS_PER_NIGHT = pairs_per_night(os.getenv("LOGOS_NIGHTLY_MAX_PAIRS"))
 
 
+def configured_lane_id(lane_config: dict) -> str:
+    """Resolve both explicit worker lane IDs and model-derived defaults."""
+    return str(lane_config.get("lane_id") or lane_config["model"]).replace("/", "_").replace(":", "_")
+
+
 def local_now() -> datetime:
     return datetime.now(timezone.utc).astimezone(ZoneInfo(MaintenanceWindow.from_env().timezone))
 

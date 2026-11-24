@@ -24,30 +24,39 @@
     @if (activeProgress(); as chart) {
       @if (progress().length > 1) {
         <select class="timeline-dataset" aria-label="Timeline dataset" [value]="chart.key" (change)="progressKey.set($any($event.target).value)">
-          @for (group of progress(); track group.key) { <option [value]="group.key" [selected]="group.key === chart.key">{{ group.label }}</option> }
+          @for (group of progress(); track group.key) {
+            <option [value]="group.key" [selected]="group.key === chart.key">{{ deploymentGroups().has(group.key) ? 'Deployed · ' : '' }}{{ group.label }}</option>
+          }
         </select>
       } @else { <p class="results-note">{{ chart.context }}</p> }
 
       <figure class="timeline-chart">
-        <figcaption>Output throughput <span>(tok/s)</span></figcaption>
+        <figcaption>
+          <div>Output throughput <span>(tok/s)</span></div>
+          @if (deployedPoint(); as deployed) {
+            <button type="button" class="timeline-deployment" (click)="focusDeployedBenchmark()"
+              [attr.aria-label]="'Show currently deployed benchmark #' + deployed.run.id">Deployed · #{{ deployed.run.id }}</button>
+          }
+        </figcaption>
         <div class="timeline-axes">
           <div class="timeline-ticks" aria-hidden="true">
             @for (tick of chart.ticks; track $index) {
               <span [style.bottom.%]="100 * (tick / chart.axisMax)">{{ tick | number:'1.0-6' }}</span>
             }
           </div>
-          <div class="timeline-scroll">
+          <div class="timeline-scroll" #timelineScroll>
             <div class="timeline-plot">
               <ol class="timeline-runs" aria-label="Benchmark runs in completion order">
                 @for (point of timelineRuns(); track point.run.id) {
+                  @let isDeployed = deployedBenchmarkIds().has(point.run.id);
                   @let kind = point.isBaseline ? 'Baseline' : point.run.configuration['nightly'] ? 'Trial' : 'Manual run';
                   @let change = point.gain === null ? '' : (point.gain > 0 ? '+' : '') + (point.gain | number:'1.1-1') + '%';
                   @let rate = point.rate | number:'1.1-1';
                   @let description = kind + ' #' + point.run.id + ' · ' + rate + ' tok/s · ' + (point.time | date:'dd MMM yyyy, HH:mm') +
                     (point.isBaseline ? '' : point.baselineId && change ? ' · ' + change + ' vs. baseline #' + point.baselineId : ' · No linked baseline') +
-                    (point.selectionNote ? ' · Excluded from adoption' : '');
+                    (point.selectionNote ? ' · Excluded from adoption' : '') + (isDeployed ? ' · Currently deployed' : '');
                   <li><a class="timeline-run" [class.timeline-run--baseline]="point.isBaseline"
-                    [class.timeline-run--excluded]="!!point.selectionNote" [attr.aria-label]="description" [title]="description"
+                    [class.timeline-run--deployed]="isDeployed" [attr.aria-label]="description" [title]="description"
                     [routerLink]="['/models', point.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: point.run.id }">
                     <span class="timeline-measure" aria-hidden="true" [attr.data-rate]="rate">
                       <span class="timeline-stem" [style.height.%]="100 * (point.rate / chart.axisMax)">
@@ -68,7 +77,7 @@
       @if (chart.points.length > timelineLimit) {
         <button type="button" class="timeline-toggle" [attr.aria-expanded]="expandedTimeline() === chart.key"
           (click)="expandedTimeline.set(expandedTimeline() === chart.key ? null : chart.key)">
-          {{ expandedTimeline() === chart.key ? 'Show latest ' + timelineLimit : 'Show all ' + chart.points.length + ' runs' }}
+          {{ expandedTimeline() === chart.key ? 'Show recent runs' : 'Show all ' + chart.points.length + ' runs' }}
         </button>
       }
     } @else {
@@ -97,7 +106,7 @@
           <li><i class="pi pi-times-circle" aria-hidden="true"></i> <strong>Fail</strong> 2.3 s (+15%)</li>
         </ul>
       </div>
-      <p class="timeline-policy__adoption">For saved request datasets, Logos applies the fastest passing trial after the worker confirms the settings.</p>
+      <p class="timeline-policy__adoption">With a saved workload and one existing serving lane, Logos can apply the fastest passing trial that beats the baseline.</p>
     </details>
   </section>
 }

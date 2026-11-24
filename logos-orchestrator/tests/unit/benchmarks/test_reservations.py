@@ -84,6 +84,28 @@ async def test_lane_selection_excludes_production_but_allows_benchmark(lease):
     assert await registry.select_lane_for_model(9001, "model", request_id="benchmark") == lane
 
 
+async def test_nightly_selects_and_sends_only_to_the_pinned_lane(lease):
+    benchmark_reservations.reserve(9001, "*", -9002)
+    try:
+        lease.pin_lane(9001, "model", -9002, "nightly")
+        lease.register_request(9001, "model", 9002, "benchmark")
+        registry = LogosNodeRuntimeRegistry()
+        replica = {"lane_id": "replica", "model": "model", "runtime_state": "running"}
+        nightly = {"lane_id": "nightly", "model": "model", "runtime_state": "running"}
+        session = ProviderSession(
+            9001, "worker", MagicMock(), capabilities_models={"model"}, latest_runtime={"lanes": [replica, nightly]}
+        )
+        registry._get_active_session = AsyncMock(return_value=session)
+        assert await registry.select_lane_for_model(9001, "model", request_id="benchmark") == nightly
+        with pytest.raises(LogosNodeCommandError, match="reserved"):
+            registry._check_benchmark_reservation(session, "infer_stream", {"lane_id": "replica"}, "benchmark")
+        session.latest_runtime["lanes"] = [replica]
+        assert await registry.select_lane_for_model(9001, "model", request_id="benchmark") is None
+    finally:
+        benchmark_reservations.release(-9002)
+    assert lease.pinned_lane(9001, "model") is None
+
+
 def test_transport_rechecks_requests_selected_before_reservation(lease):
     session = SimpleNamespace(provider_id=9001, latest_runtime={"lanes": [{"lane_id": "lane", "model": "model"}]})
     for action in ("infer", "infer_stream"):

@@ -16,6 +16,7 @@ class BenchmarkReservations:
 
     def __init__(self):
         self._owners: dict[tuple[int, str], int] = {}
+        self._lanes: dict[tuple[int, str], tuple[int, str]] = {}
         self._request_guards: dict[str, Callable[[], bool]] = {}
         self._draining: dict[str, tuple[int, str, int]] = {}
         self._requests: dict[str, tuple[int, str, int]] = {}
@@ -30,6 +31,18 @@ class BenchmarkReservations:
             self._owners[provider_id, model] = job_id
             for request_id, request_model in (draining or {}).items():
                 self._draining[request_id] = (provider_id, request_model, job_id)
+
+    def pin_lane(self, provider_id: int, model: str, owner: int, lane_id: str) -> None:
+        """Keep nightly requests on the journaled lane even if a replica becomes available."""
+        with self._lock:
+            if self._owners.get((provider_id, "*")) != owner:
+                raise RuntimeError("Nightly maintenance no longer owns this worker")
+            self._lanes[(provider_id, model)] = (owner, lane_id)
+
+    def pinned_lane(self, provider_id: int, model: str) -> str | None:
+        with self._lock:
+            pin = self._lanes.get((provider_id, model))
+            return pin[1] if pin else None
 
     def try_admit(self, provider_id: int, model: str, request_id: str, reserve_capacity: Callable[[], bool]) -> bool:
         """Atomically admit capacity before a benchmark can take ownership."""
@@ -110,6 +123,7 @@ class BenchmarkReservations:
         with self._lock:
             self._draining = {key: value for key, value in self._draining.items() if value[2] != job_id}
             self._owners = {key: owner for key, owner in self._owners.items() if owner != job_id}
+            self._lanes = {key: value for key, value in self._lanes.items() if value[0] != job_id}
             self._requests = {key: value for key, value in self._requests.items() if value[2] != job_id}
             self._request_guards = {key: guard for key, guard in self._request_guards.items() if key in self._requests}
 

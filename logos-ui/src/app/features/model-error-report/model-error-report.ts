@@ -7,6 +7,7 @@ import {
   inject,
   signal,
   viewChild,
+  viewChildren,
 } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { NightlyBenchmarks } from './nightly-benchmarks';
@@ -779,6 +780,15 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   private performanceRequestVersion = 0;
   readonly performanceError = signal(false);
   readonly deployedPairs = computed(() => this.benchmarkPairs().filter(pair => pair.provider_type === 'logosnode'));
+  private readonly deployedConfigurations = viewChildren(DeployedConfiguration);
+  readonly deployedBenchmarkIds = computed(() => {
+    const ids = new Set<number>();
+    for (const configuration of this.deployedConfigurations()) {
+      const measurement = configuration.measurement();
+      if (measurement) ids.add(measurement.id);
+    }
+    return ids;
+  });
   readonly performanceViews = [
     { id: 'results', label: 'Overview', icon: 'pi-chart-line' },
     { id: 'run', label: 'Benchmarks', icon: 'pi-play' },

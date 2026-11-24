@@ -584,7 +584,7 @@
               <app-deployed-configuration [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [runs]="performance()" />
             } @empty { <p>No local worker configurations are available for this model.</p> }
           </section>
-            <app-benchmark-results [runs]="performance()" [showHistory]="false" />
+            <app-benchmark-results [runs]="performance()" [deployedBenchmarkIds]="deployedBenchmarkIds()" [showHistory]="false" />
           </div>
 
           <div class="performance-results">

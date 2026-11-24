@@ -3,15 +3,15 @@
 import re
 
 from .configuration import ServingOverrides
-from .guidellm_runner import extract_serving_configuration
+from .guidellm_runner import benchmark_model_lane, lane_serving_configuration
 
 
-def worker_limits(snapshot: dict | None, model: str) -> dict:
+def worker_limits(snapshot: dict | None, model: str, *, lane: dict | None = None) -> dict:
     runtime = (snapshot or {}).get("runtime") or {}
     summary = runtime.get("devices") or {}
     devices = [(index, d) for index, d in enumerate(summary.get("devices", [])) if d.get("kind") == "nvidia"]
     known = bool(summary.get("nvidia_smi_available"))
-    lane = next((lane for lane in runtime.get("lanes", []) if lane.get("model") == model), {})
+    lane = benchmark_model_lane(snapshot, model) if lane is None else lane
     config = lane.get("lane_config") or {}
     selectors = [runtime.get("gpu_devices", "all")]
     if lane.get("is_static"):
@@ -49,7 +49,7 @@ def worker_limits(snapshot: dict | None, model: str) -> dict:
         "attention_backend_restrictions": restrictions,
         "gpu_count": len(devices) if known else None,
         "gpu_memory_bytes": int(min(memories) * 1024**2) if memories and min(memories) > 0 else None,
-        "current": extract_serving_configuration(snapshot, model),
+        "current": lane_serving_configuration(lane),
     }
 
 

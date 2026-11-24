@@ -59,10 +59,9 @@ shows **Free**.
 
 - **Calibrating**: click **Stop calibration** to end the calibration.
 - **Benchmarking**: click **Cancel benchmark** to end the benchmark.
-- **Nightly recovery**: the scheduler puts the original settings of the
-  worker back. This usually ends on its own. If it does not, click
-  **Release recovery**. Logos checks that the model runs its original settings
-  again, and then frees the slot.
+- **Nightly recovery**: the scheduler restores the worker's previous lanes
+  and settings. This usually ends on its own. If it does not, click
+  **Release recovery**. Logos verifies the lane setup before freeing the slot.
 
 A worker confirms the end of its calibration before the slot is free again. An
 offline worker cannot confirm it, and neither can a worker with old software.
@@ -248,9 +247,10 @@ A missing stream terminator or an earlier context limit makes the run fail.
 
 ![Frozen request batch plan and fixed settings](../static/img/roles/logos-admin-benchmark-frozen-batch.png)
 
-The **Timeline** shows the latest six complete runs for the selected workload.
+The **Timeline** shows up to six complete runs for the selected workload, including the current deployment when measured.
 Read the runs from left to right in completion order.
 Each dot shows output tokens per second (tok/s) on the vertical scale. An open circle marks a baseline.
+A blue ring marks the benchmark for the active configuration. Select **Deployed** to find it in a long timeline.
 Each trial shows its change from the baseline of its round, if available.
 Select a run to see its settings and any reason for exclusion.
 Select **Show all** to see older runs.
