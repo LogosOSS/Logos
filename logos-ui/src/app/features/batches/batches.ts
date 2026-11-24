@@ -8,9 +8,9 @@ import {
   signal,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { BatchKey, BatchModelPrice, BatchObject, BatchService } from '../../core/services/batch.service';
+import { BatchKey, BatchHistoricalModelCost, BatchObject, BatchService } from '../../core/services/batch.service';
 
-import { BatchInputSummary, estimateBatchCost, summarizeBatchInput } from './batch-estimate';
+import { BatchInputSummary, estimateHistoricalBatchCost, summarizeBatchInput } from './batch-estimate';
 
 /** Batch states the provider (or Logos) will not move away from on its own. */
 const TERMINAL = new Set(['completed', 'failed', 'expired', 'cancelled']);
@@ -47,13 +47,21 @@ export class Batches implements OnInit, OnDestroy {
   inputSummary = signal<BatchInputSummary | null>(null);
   readingFile = signal(false);
   estimateError = signal<string | null>(null);
-  modelPrices = signal<BatchModelPrice[]>([]);
-  loadingPrices = signal(false);
-  priceError = signal<string | null>(null);
-  averageResponseTokens = signal<number | null>(500);
-  estimatedCost = computed(() => {
+  history = signal<BatchHistoricalModelCost[]>([]);
+  loadingHistory = signal(false);
+  historyError = signal<string | null>(null);
+  estimates = computed(() => {
     const summary = this.inputSummary();
-    return summary ? estimateBatchCost(summary, this.modelPrices(), this.averageResponseTokens()) : null;
+    const history = this.history();
+    const execution = this.execution();
+    const scenarios = [
+      { mode: 'provider' as const, label: 'Provider batch' },
+      { mode: 'logos' as const, label: 'Logos replay' },
+    ];
+    return scenarios.filter(row => execution === 'auto' || execution === row.mode).map(row => ({
+      ...row,
+      usd: summary ? estimateHistoricalBatchCost(summary, history, row.mode) : null,
+    }));
   });
   endpoint = signal('/v1/chat/completions');
   execution = signal('auto');
@@ -61,6 +69,7 @@ export class Batches implements OnInit, OnDestroy {
   /** A batch still moving is worth polling for; a finished one is not. */
   hasRunning = computed(() => this.batches().some(batch => !TERMINAL.has(batch.status)));
 
+  private historySequence = 0;
   private pollHandle: ReturnType<typeof setInterval> | null = null;
 
   async ngOnInit(): Promise<void> {
@@ -69,7 +78,7 @@ export class Batches implements OnInit, OnDestroy {
       this.keys.set(keys);
       if (keys.length > 0) {
         this.selectedKeyId.set(keys[0].id);
-        await Promise.all([this.refresh(), this.loadPrices()]);
+        await this.refresh();
       }
     } catch {
       this.error.set('Could not load your API keys.');
@@ -92,7 +101,7 @@ export class Batches implements OnInit, OnDestroy {
   onKeyChange(value: string): void {
     this.selectedKeyId.set(Number(value));
     void this.refresh();
-    void this.loadPrices();
+    if (this.inputSummary()) void this.loadHistory();
   }
 
   async onFileSelected(event: Event): Promise<void> {
@@ -107,7 +116,7 @@ export class Batches implements OnInit, OnDestroy {
       const summary = summarizeBatchInput(await file.text());
       if (this.file() !== file) return;
       this.inputSummary.set(summary);
-      this.averageResponseTokens.set(summary.defaultResponseTokens);
+      void this.loadHistory();
     } catch (err) {
       if (this.file() !== file) return;
       this.estimateError.set(err instanceof Error ? err.message : 'Could not read the input file for the estimate.');
@@ -116,23 +125,21 @@ export class Batches implements OnInit, OnDestroy {
     }
   }
 
-  onResponseTokensChange(value: string): void {
-    this.averageResponseTokens.set(value.trim() ? Number(value) : null);
-  }
-
-  async loadPrices(): Promise<void> {
+  async loadHistory(): Promise<void> {
     const keyId = this.selectedKeyId();
-    this.modelPrices.set([]);
-    this.priceError.set(null);
+    const sequence = ++this.historySequence;
+    const isCurrent = () => this.historySequence === sequence && this.selectedKeyId() === keyId;
+    this.history.set([]);
+    this.historyError.set(null);
+    this.loadingHistory.set(keyId !== null);
     if (keyId === null) return;
-    this.loadingPrices.set(true);
     try {
-      const prices = await this.batchService.getPrices(keyId);
-      if (this.selectedKeyId() === keyId) this.modelPrices.set(prices);
+      const history = await this.batchService.getHistoricalCosts(keyId);
+      if (isCurrent()) this.history.set(history);
     } catch {
-      if (this.selectedKeyId() === keyId) this.priceError.set('Could not load model prices. Cost estimate unavailable.');
+      if (isCurrent()) this.historyError.set('Historical costs could not be loaded. Estimate unavailable.');
     } finally {
-      if (this.selectedKeyId() === keyId) this.loadingPrices.set(false);
+      if (isCurrent()) this.loadingHistory.set(false);
     }
   }
 

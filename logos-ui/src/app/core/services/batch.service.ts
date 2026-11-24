@@ -17,6 +17,13 @@ export interface BatchModelPrice {
   output_price_per_k_tokens: number | null;
 }
 
+/** Historical USD per completed request, null when the sample is too small. */
+export interface BatchHistoricalModelCost {
+  model_name: string;
+  provider_average_usd: number | null;
+  logos_average_usd: number | null;
+}
+
 /** The OpenAI batch object, as Logos reports it for either execution path. */
 export interface BatchObject {
   id: string;
@@ -50,6 +57,12 @@ export class BatchService {
   getPrices(apiKeyId: number): Promise<BatchModelPrice[]> {
     return firstValueFrom(
       this.http.get<BatchModelPrice[]>('/api/logosdb/batches/prices', { params: { apiKeyId } }),
+    );
+  }
+
+  getHistoricalCosts(apiKeyId: number): Promise<BatchHistoricalModelCost[]> {
+    return firstValueFrom(
+      this.http.get<BatchHistoricalModelCost[]>('/api/logosdb/batches/historical-costs', { params: { apiKeyId } }),
     );
   }
 

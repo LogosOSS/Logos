@@ -47,29 +47,31 @@
               <strong>{{ model.name }}</strong>{{ last ? '' : ', ' }}
             }
           </p>
-          <label class="field">
-            <span>Average response length (tokens per request)</span>
-            <input type="number" min="0" step="1" [value]="averageResponseTokens() ?? ''"
-              (input)="onResponseTokensChange($any($event.target).value)" />
-            <small>Prefilled from each line's output token limit, or 500 when absent. Embeddings have no output tokens.</small>
-          </label>
-          <p>{{ summary.requestCount | number }} requests · approximately {{ summary.inputTokens | number }} input tokens</p>
-          <p role="status" aria-live="polite">
-            @if (loadingPrices()) {
-              Loading model prices…
-            } @else if (priceError()) {
-              {{ priceError() }}
-            } @else if (estimatedCost() !== null) {
-              <strong>Estimated cost: {{ estimatedCost() | currency:'USD':'symbol':'1.2-6' }}</strong>
+          <p>{{ summary.requestCount | number }} submitted requests</p>
+          <div role="status" aria-live="polite">
+            @if (loadingHistory()) {
+              <p>Loading historical costs…</p>
+            } @else if (historyError()) {
+              <p>{{ historyError() }}</p>
             } @else {
-              Cost estimate unavailable. Check the response length and whether this key has prices for every model in the file.
+              @for (estimate of estimates(); track estimate.mode) {
+                <p><strong>{{ estimate.label }}:
+                  @if (estimate.usd !== null) {
+                    {{ estimate.usd | currency:'USD':'symbol':'1.2-6' }}
+                  } @else {
+                    Estimate unavailable (not enough history for every model)
+                  }
+                </strong></p>
+              }
             }
-          </p>
+          </div>
           <small>
-            Estimate only: input tokens use body characters ÷ 4. Uses the highest current standard token prices
-            across permitted providers and context tiers. Batch discounts, cache discounts and non-token charges
-            are not included. Actual cost can differ.
+            Counts requests per model and multiplies by the average finalized cost of comparable successful requests
+            on this API key in the last 30 days (up to 20,000 recent requests, at least 3 per model).
+            Provider batches use historical native batch costs; Logos replay uses ordinary request costs.
+            Automatic mode shows both scenarios because the actual route is chosen on submission.
           </small>
+          <p><strong>Estimate only. Actual cost can be higher. This does not set a spending cap or reserve budget.</strong></p>
         </div>
       }
       <p class="notice">
