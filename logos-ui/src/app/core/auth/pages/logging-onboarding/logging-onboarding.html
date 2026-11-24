@@ -1,8 +1,8 @@
 <main class="onboarding">
   <app-theme-toggle />
 
-  <section class="onboarding-card" aria-labelledby="logging-title">
-    @let saved = earlierChoice();
+  @let saved = earlierChoice();
+  <section class="onboarding-card" [class.onboarding-card--choices]="saved === null" aria-labelledby="logging-title">
     <header class="onboarding-header">
       <app-logo [size]="36" />
       @if (saved !== null) {
@@ -12,8 +12,8 @@
           You can review or change the logging level for each key in My Workspace.
         </p>
       } @else {
-        <h1 id="logging-title">Help make Logos faster</h1>
-        <p>Your requests can help us find faster model settings for work like yours. Thanks for helping improve Logos for everyone!</p>
+        <h1 id="logging-title">Choose your logging level</h1>
+        <p id="logging-scope">This choice applies to your active developer keys that use billing-only logging.</p>
       }
     </header>
 
@@ -22,29 +22,53 @@
         <a class="btn-primary" routerLink="/my-workspace" [replaceUrl]="true">Open My Workspace</a>
       </div>
     } @else {
-      <div class="logging-details" id="logging-details">
-        <h2>What full logging shares</h2>
-        <p>Logos stores request and response content, including prompts and generated answers, and can replay requests in benchmarks.</p>
-        <p>This applies to your active developer keys that use billing-only logging. You can change logging per key in My Workspace.</p>
-      </div>
+      @if (error()) {
+        <app-error-message [message]="error()" />
+      }
 
-      <div class="onboarding-actions">
-        @if (error()) {
-          <app-error-message [message]="error()" />
-        }
-
-        <button type="button" class="btn-primary" aria-describedby="logging-details"
+      <div class="logging-options" role="group" aria-label="Logging options">
+        <button type="button" class="logging-option logging-option--full" aria-labelledby="full-action"
+                aria-describedby="full-summary full-details logging-scope"
                 [disabled]="savingChoice() !== null" (click)="complete(true)">
-          {{ savingChoice() === true ? 'Saving…' : 'Enable full logging' }}
+          <span class="option-art" aria-hidden="true">
+            <span class="option-icon"><i class="pi pi-bolt"></i></span>
+            <span class="option-icon"><i class="pi pi-chart-line"></i></span>
+          </span>
+          <span class="option-title">Full logging</span>
+          <span class="option-summary" id="full-summary">Help us find faster model settings with real requests like yours.</span>
+          <span class="option-details" id="full-details">
+            <span><i class="pi pi-check" aria-hidden="true"></i> Stores request and response content, including prompts and generated answers</span>
+            <span><i class="pi pi-check" aria-hidden="true"></i> Lets Logos replay requests in benchmarks</span>
+          </span>
+          <span class="option-action" id="full-action">
+            {{ savingChoice() === true ? 'Saving…' : 'Enable full logging' }}
+            <i class="pi pi-arrow-right" aria-hidden="true"></i>
+          </span>
         </button>
-        <button type="button" class="billing-button" [disabled]="savingChoice() !== null" (click)="complete(false)">
-          @if (savingChoice() === false) {
-            Saving…
-          } @else {
-            Keep billing-only logging <span aria-hidden="true">:(</span>
-          }
+
+        <button type="button" class="logging-option" aria-labelledby="billing-action"
+                aria-describedby="billing-summary billing-details logging-scope"
+                [disabled]="savingChoice() !== null" (click)="complete(false)">
+          <span class="option-art" aria-hidden="true">
+            <span class="option-icon"><i class="pi pi-shield"></i></span>
+            <span class="option-icon"><i class="pi pi-file"></i></span>
+          </span>
+          <span class="option-title">Billing-only logging</span>
+          <span class="option-summary" id="billing-summary">Keep your current logging settings.</span>
+          <span class="option-details" id="billing-details">
+            <span><i class="pi pi-check" aria-hidden="true"></i> Stores usage and billing data</span>
+            <span><i class="pi pi-check" aria-hidden="true"></i> Keeps request and response content out of logs</span>
+          </span>
+          <span class="option-action" id="billing-action">
+            @if (savingChoice() === false) {
+              Saving…
+            } @else {
+              Keep billing-only logging <span aria-hidden="true">:(</span>
+            }
+          </span>
         </button>
       </div>
+      <p class="onboarding-note">You can change logging for each key in My Workspace.</p>
     }
   </section>
 </main>
