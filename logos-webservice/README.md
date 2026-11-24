@@ -166,7 +166,7 @@ Example changeset:
 
 ## Public stats (`GET /public/stats`)
 
-Unauthenticated aggregates for the `/stats` page. Rate-limited per source IP, and
+Unauthenticated aggregates for the `/usage` page. Rate-limited per source IP, and
 cached per window for `logos.public-stats.cache-ttl` (default `PT5M`, `0s` turns
 the cache off), so figures can be a few minutes old.
 

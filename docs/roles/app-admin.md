@@ -267,7 +267,7 @@ default cloud and local rate limits. An owner can also delete the team here.
 The **Team privacy** section shows where the team’s requests can be processed. A Logos Admin can change it. See [Team privacy](logos-admin.md#team-privacy).
 
 Under **Public stats** you decide whether the team appears on the public
-statistics page (`/stats`). There you can also give the team a **Category**,
+statistics page (`/usage`). There you can also give the team a **Category**,
 for example "Research" or "Teaching". The public page groups teams by this
 label. Select an existing category from the list, explicitly create a new one, or
 select **Uncategorized** to clear it. Apply these choices with **Save Public Stats**
