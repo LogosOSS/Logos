@@ -7,7 +7,7 @@ import { ModelProviderBenchmark } from '../../shared/models/provider.model';
 import { NightlyStatus } from './nightly-benchmarks';
 import { benchmarkDatasetLabel, servingConfigurationItems } from './benchmark-configuration';
 import { benchmarkResultRow } from './benchmark-result-row';
-import { benchmarkProgress } from './benchmark-progress';
+import { benchmarkProgress, recordConfiguration } from './benchmark-progress';
 import { comparisonValue } from './benchmark-comparison';
 
 interface AnswerLengthChange {
@@ -111,14 +111,24 @@ export class DeployedConfiguration implements OnDestroy {
   readonly historicalMeasurement = computed(() => this.measurement() ?? deployedMeasurement(this.deployment(),
     this.runs().filter(run => run.model_provider_id === this.pairId()), false));
   readonly result = computed(() => this.historicalMeasurement() ? deployedResult(this.historicalMeasurement()!, this.runs()) : null);
-  readonly parameters = computed(() => servingConfigurationItems({ configuration: { serving: this.deployment()?.configuration } }).filter(item => item.captured));
+  private readonly servingParameters = computed(() => servingConfigurationItems({
+    configuration: { serving: this.deployment()?.configuration },
+  }).map(item => item.key === 'max_num_seqs' && item.value === '0' ? { ...item, value: 'Auto' } : item));
+  readonly parameters = computed(() => this.servingParameters().filter(item => item.captured));
   readonly configuredParameters = computed(() => servingConfigurationItems({
     configuration: { serving: this.deployment()?.configured_settings },
   }).filter(item => item.captured));
-  readonly keyParameters = computed(() => this.parameters().filter(item => ['max_num_seqs', 'max_num_batched_tokens'].includes(item.key)));
+  readonly keyParameters = computed(() => this.servingParameters()
+    .filter(item => ['max_num_seqs', 'max_num_batched_tokens'].includes(item.key)));
+  readonly hasUnreportedBatchingLimit = computed(() => this.keyParameters().some(item => !item.captured));
   readonly selection = computed(() => this.state()?.selection);
   readonly excludedComparisons = computed(() => this.selection()?.comparisons.filter(comparison => comparison.issues.length) ?? []);
   readonly adoption = computed(() => this.state()?.optimizer?.production_adoption);
+  readonly adoptionRun = computed(() => {
+    const benchmarkId = this.adoption()?.benchmark_id;
+    return this.runs().find(run => run.id === benchmarkId && run.model_provider_id === this.pairId());
+  });
+  readonly recordedConfiguration = recordConfiguration;
   private timer?: ReturnType<typeof setTimeout>;
   private generation = 0;
   private destroyed = false;

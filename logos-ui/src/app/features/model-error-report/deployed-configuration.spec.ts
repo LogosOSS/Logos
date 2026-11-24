@@ -15,6 +15,48 @@ function run(id: number): ModelProviderBenchmark {
 }
 
 describe('Deployment status on Overview', () => {
+  it('shows both batching limits when telemetry omits one and keeps the benchmark match unverified', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
+    const fixture = TestBed.createComponent(DeployedConfiguration);
+    fixture.componentRef.setInput('pairId', 1);
+    fixture.componentRef.setInput('providerName', 'Worker');
+    fixture.componentRef.setInput('runs', [run(1)]);
+    fixture.detectChanges();
+    const http = TestBed.inject(HttpTestingController);
+    http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush({
+      deployment: { ...deployment, configuration: { max_num_seqs: 4 } },
+      optimizer: { production_adoption: { benchmark_id: 1, baseline_id: 1, baseline_throughput: 28, throughput: 29 } },
+    });
+    await Promise.resolve();
+    fixture.detectChanges();
+    const content: HTMLElement = fixture.nativeElement;
+    const limits = () => Array.from(content.querySelectorAll('.key-parameters span'), row => row.textContent?.trim());
+
+    expect(limits()).toEqual(['Max sequences 4', 'Max batched tokens Not reported']);
+    expect(content.textContent).toContain('Benchmark match unverified');
+    expect(fixture.componentInstance.measurement()).toBeNull();
+    const lastAdoption = content.querySelector('[data-testid="last-confirmed-adoption"]')!;
+    expect(lastAdoption.textContent).toContain('Last confirmed adoption');
+    expect(lastAdoption.textContent).toContain('28.0 → 29.0 tok/s');
+    expect(lastAdoption.textContent).toContain('Sequences 4 · batch tokens 2048');
+    expect(lastAdoption.querySelector('a')?.getAttribute('href')).toContain('benchmark=1');
+
+    fixture.componentInstance.state.update(state => ({
+      ...state!, deployment: { ...deployment, configuration: { max_num_seqs: 0, max_num_batched_tokens: 2048 } },
+    }));
+    fixture.detectChanges();
+    expect(limits()).toEqual(['Max sequences Auto', 'Max batched tokens 2048']);
+    expect(fixture.componentInstance.measurement()).toBeNull();
+
+    fixture.componentInstance.state.update(state => ({ ...state!, deployment }));
+    fixture.detectChanges();
+    expect(limits()).toEqual(['Max sequences 4', 'Max batched tokens 2048']);
+    expect(fixture.componentInstance.measurement()?.id).toBe(1);
+    expect(content.querySelector('[data-testid="last-confirmed-adoption"]')).toBeNull();
+    fixture.destroy();
+    http.verify();
+  });
+
   it('uses worker telemetry for the status and shows sleeping lane settings separately', async () => {
     TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])] });
     const fixture = TestBed.createComponent(DeployedConfiguration);

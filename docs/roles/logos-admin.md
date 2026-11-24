@@ -271,6 +271,8 @@ The summary shows throughput, baseline, change and the main batching parameters.
 Expand **Configuration & selection details** for **Serving settings** and **Run selection**.
 The view identifies measurements with matching settings and the same measurement environment.
 Measurements from another environment appear with a historical label. They do not verify current performance.
+If a batching limit shows **Not reported** and no benchmark matches, then the summary shows **Benchmark match unverified**.
+The summary can then show **Last confirmed adoption** separately and link to its saved benchmark.
 The measurement includes its benchmark number, baseline throughput, result throughput and percentage change.
 Temporary benchmark settings and recovery states do not establish the production configuration.
 The status distinguishes an offline worker, a sleeping model and a model waiting to start. A sleeping model can still show its configured settings. Active replicas with different settings are identified separately.

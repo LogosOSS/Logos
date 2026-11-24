@@ -21,8 +21,29 @@
         <div><span>Change</span><strong>{{ row.delta === null ? '—' : ((row.delta > 0 ? '+' : '') + (row.delta | number:'1.1-1') + '%') }}</strong></div>
       </div>
       <p class="deployment-caption"><a [routerLink]="['/models', row.run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: row.run.id }">Benchmark #{{ row.run.id }} ↗</a> · {{ row.run.recorded_at | date:'dd MMM yyyy, HH:mm' }}</p>
-    } @else { <p>No complete benchmark matches the active settings.</p> }
-    <p class="key-parameters">@for (parameter of keyParameters(); track parameter.key) { <span>{{ parameter.label }} <strong>{{ parameter.value }}</strong></span> }</p>
+    } @else {
+      <div>
+        @if (hasUnreportedBatchingLimit()) {
+          <p class="deployment-caption">Benchmark match unverified. Live telemetry is missing a batching limit.</p>
+        } @else { <p class="deployment-caption">No complete benchmark matches the active settings.</p> }
+        @if (adoption(); as adopted) {
+          @let run = adoptionRun();
+          <p class="deployment-caption" data-testid="last-confirmed-adoption">
+            <strong>Last confirmed adoption</strong> ·
+            @if (run) {
+              <a [routerLink]="['/models', run.model_id, 'details']" [queryParams]="{ tab: 'performance', benchmark: run.id }">Benchmark #{{ run.id }} ↗</a>
+            } @else { Benchmark #{{ adopted.benchmark_id }} }
+            · {{ adopted.baseline_throughput | number:'1.1-1' }} → {{ adopted.throughput | number:'1.1-1' }} tok/s
+            @if (run) { <br />{{ recordedConfiguration(run) }} }
+          </p>
+        }
+      </div>
+    }
+    <p class="key-parameters">
+      @for (parameter of keyParameters(); track parameter.key) {
+        <span>{{ parameter.label }} <strong>{{ parameter.captured ? parameter.value : 'Not reported' }}</strong></span>
+      }
+    </p>
   }
   @if (deployment(); as current) {
     @if (current.available) {

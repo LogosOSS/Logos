@@ -271,6 +271,8 @@ A blue ring marks its benchmark. Select **Deployed** to find it or **Show all** 
 The timeline separates workloads and test settings. Measurements can span worker releases.
 Expand **What does Logos check?** for the nightly adoption checks and examples of the request latency limit.
 Expand **Currently deployed → Configuration & selection details** to inspect **Serving settings** and **Run selection**.
+If a batching limit shows **Not reported** and no benchmark matches, then the summary shows **Benchmark match unverified**.
+The summary can then show **Last confirmed adoption** separately and link to its saved benchmark.
 Open **Why other runs were excluded** when it appears to see each run and its exclusion reasons.
 **Answer length changes** shows the baseline and trial token counts for each answer more than 20% shorter or longer. Request numbers follow the saved dataset order.
 A completed eligible winner is saved before the next trial starts.
