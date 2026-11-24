@@ -63,7 +63,7 @@ def database():
             )
             for sql in ElementTree.parse(migration).findall("{*}changeSet/{*}sql"):
                 conn.execute(text(sql.text))
-            privacy = migration.with_name("094_team_privacy.xml")
+            privacy = migration.with_name("095_team_privacy.xml")
             for change in ElementTree.parse(privacy).findall("{*}changeSet"):
                 if "contextFilter" not in change.attrib:
                     conn.execute(text(change.find("{*}sql").text))
