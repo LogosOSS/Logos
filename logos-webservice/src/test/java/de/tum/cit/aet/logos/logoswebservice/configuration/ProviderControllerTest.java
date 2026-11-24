@@ -309,6 +309,29 @@ class ProviderControllerTest {
            .andExpect(jsonPath("$.result").value("Updated Provider."));
     }
 
+    @Test
+    void changingTheEndpointRequiresNewEuProcessingConfirmation() throws Exception {
+        String verified = "SELECT eu_processing_verified FROM providers WHERE id = 6001";
+        String confirmation = """
+            {"provider_id":6001,"base_url":"https://eu.example.test","privacy_level":"CLOUD_IN_EU_BY_US_PROVIDER",
+             "eu_processing_verified":true}
+            """;
+        mvc.perform(post("/logosdb/update_provider").with(TestJwt.adminUser())
+                .contentType("application/json").content(confirmation))
+           .andExpect(status().isForbidden());
+        assertEquals(false, jdbc.queryForObject(verified, Boolean.class));
+        mvc.perform(post("/logosdb/update_provider").with(TestJwt.logosAdmin())
+                .contentType("application/json").content(confirmation))
+           .andExpect(status().isOk());
+        assertEquals(true, jdbc.queryForObject(verified, Boolean.class));
+        mvc.perform(post("/logosdb/update_provider").with(TestJwt.logosAdmin()).contentType("application/json")
+                .content("""
+                    {"provider_id":6001,"base_url":"https://global.example.test"}
+                    """))
+           .andExpect(status().isOk());
+        assertEquals(false, jdbc.queryForObject(verified, Boolean.class));
+    }
+
     @ParameterizedTest
     @NullSource
     @ValueSource(ints = {20, 200, 900})

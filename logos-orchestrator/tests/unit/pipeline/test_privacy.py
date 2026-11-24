@@ -6,6 +6,11 @@ misrouting but an over-routing — a deployment receiving more confidential
 data than the caller asked to keep away from it.
 """
 
+from unittest.mock import MagicMock
+
+import pytest
+
+from logos import main
 from logos.dbutils.dbmanager import VALID_PRIVACY_LEVELS
 from logos.dbutils.dbmodules import PRIVACY_ORDER, ThresholdLevel, privacy_allows
 
@@ -19,6 +24,26 @@ def test_order_is_trust_descending_and_complete() -> None:
     # outrank a datacentre box.
     assert PRIVACY_ORDER[0] == "LOCAL"
     assert PRIVACY_ORDER[-1] == "THIRD_PARTY_HARDWARE"
+
+
+@pytest.mark.parametrize(
+    ("stored", "requested", "effective"),
+    [
+        ("LOCAL", "CLOUD_NOT_IN_EU_BY_US_PROVIDER", "LOCAL"),
+        ("CLOUD_IN_EU_BY_US_PROVIDER", "LOCAL", "LOCAL"),
+        ("CLOUD_IN_EU_BY_EU_PROVIDER", "CLOUD_IN_EU_BY_US_PROVIDER", "CLOUD_IN_EU_BY_EU_PROVIDER"),
+        (None, "CLOUD_IN_EU_BY_US_PROVIDER", "CLOUD_IN_EU_BY_US_PROVIDER"),
+    ],
+)
+def test_model_string_can_only_tighten_selected_profile(monkeypatch, stored, requested, effective):
+    db = MagicMock()
+    selected = {"threshold_privacy": stored, "name": "routing profile"}
+    db.return_value.__enter__.return_value.get_policy.return_value = selected
+    monkeypatch.setattr(main, "DBManager", db)
+    body = {"model": f"logos-v1.0__policy_default=false__policy_privacy={requested}"}
+    policy = main._extract_policy({"policy": "17"}, "key", body)
+    assert policy == {"threshold_privacy": effective, "name": "routing profile"}
+    db.return_value.__enter__.return_value.get_policy.assert_called_once_with("key", 17)
 
 
 def test_local_threshold_is_datacentre_only() -> None:

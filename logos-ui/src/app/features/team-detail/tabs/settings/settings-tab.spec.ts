@@ -1,3 +1,5 @@
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
 import { TeamManagementService } from '../../../../core/services/team-management.service';
@@ -42,6 +44,66 @@ describe('parseProviderCap', () => {
     for (const input of ['abc', '12abc', '-5', '1.2.3', '$5', '9'.repeat(310)]) {
       expect(parseProviderCap(input)).toBeUndefined();
     }
+  });
+});
+
+describe('SettingsTabComponent privacy', () => {
+  beforeEach(() => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+  });
+  afterEach(() => TestBed.inject(HttpTestingController).verify());
+
+  function setup(canManagePrivacy: boolean) {
+    const fixture = TestBed.createComponent(SettingsTabComponent);
+    fixture.componentRef.setInput('team', teamDetail({ privacy_scope: 'WORLDWIDE' }));
+    fixture.componentRef.setInput('canManagePrivacy', canManagePrivacy);
+    fixture.componentInstance.teamId = 7;
+    fixture.detectChanges();
+    return fixture;
+  }
+
+  it('saves the selected scope exactly once and refreshes the permission catalog', async () => {
+    const fixture = setup(true);
+    const component = fixture.componentInstance;
+    const refreshed = vi.spyOn(component.refresh, 'emit');
+    const select: HTMLSelectElement = fixture.nativeElement.querySelector('#s-privacy');
+    expect(select.value).toBe('WORLDWIDE');
+    await component.savePrivacy();
+    select.value = 'EU';
+    select.dispatchEvent(new Event('change'));
+    const saving = component.savePrivacy();
+    await component.savePrivacy();
+    const request = TestBed.inject(HttpTestingController).expectOne({ method: 'PATCH', url: '/api/teams/7/privacy' });
+    expect(request.request.body).toEqual({ privacy_scope: 'EU' });
+    expect(refreshed).not.toHaveBeenCalled();
+    request.flush(null);
+    await saving;
+    expect(refreshed).toHaveBeenCalledOnce();
+    expect(component.privacySaving()).toBe(false);
+  });
+
+  it('keeps the draft available for retry when the server rejects a privacy change', async () => {
+    const component = setup(true).componentInstance;
+    const refreshed = vi.spyOn(component.refresh, 'emit');
+    component.privacy.set('LOCAL');
+    const saving = component.savePrivacy();
+    TestBed.inject(HttpTestingController).expectOne('/api/teams/7/privacy')
+      .flush({ detail: 'Administrator required' }, { status: 403, statusText: 'Forbidden' });
+    await saving;
+    expect(component.privacyError()).toBe('Administrator required');
+    expect(component.privacySaving()).toBe(false);
+    expect(component.privacy()).toBe('LOCAL');
+    expect(refreshed).not.toHaveBeenCalled();
+  });
+
+  it('shows the saved scope read-only to a viewer without privacy management rights', async () => {
+    const fixture = setup(false);
+    const select: HTMLSelectElement = fixture.nativeElement.querySelector('#s-privacy');
+    expect(select.disabled).toBe(true);
+    expect(select.value).toBe('WORLDWIDE');
+    fixture.componentInstance.privacy.set('EU');
+    await fixture.componentInstance.savePrivacy();
+    TestBed.inject(HttpTestingController).expectNone('/api/teams/7/privacy');
   });
 });
 

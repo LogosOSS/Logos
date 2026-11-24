@@ -252,10 +252,10 @@
   <p class="section-label">TEAM PRIVACY</p>
   <div class="settings-card">
     <label class="field-label" for="s-privacy">Where requests can be processed</label>
-    <select id="s-privacy" class="field-input" [value]="privacy()" [disabled]="!canManagePrivacy || privacySaving()"
+    <select id="s-privacy" class="field-input" [disabled]="!canManagePrivacy || privacySaving()"
       (change)="privacy.set($any($event.target).value)">
       @for (option of privacyOptions; track option[0]) {
-        <option [value]="option[0]">{{ option[1] }}</option>
+        <option [value]="option[0]" [selected]="option[0] === privacy()">{{ option[1] }}</option>
       }
     </select>
     <p class="settings-hint">Applies to existing and new team keys, including keys with custom permissions.</p>
