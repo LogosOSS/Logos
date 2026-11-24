@@ -231,7 +231,7 @@ class Settings:
     # change is not stuck, and killing it throws away everything it has done
     # without committing any of it. What this runner actually protects is
     # capacity, and that is protected by the things that measure capacity —
-    # the pause, the parallel ceiling, the trigger quota — none of which
+    # the pause and the parallel ceiling — neither of which
     # care how long a session has been at it. A session that really is stuck
     # is a thing a person can see on the page and cancel.
     session_timeout_s: int = _int("LOGOS_AGENT_SESSION_TIMEOUT_S", 0)

@@ -39,11 +39,10 @@ does not produce a second pull request next week, and an answered question
 is not answered twice. Only the *newest* changes-requested review of a pull
 request is work; the older ones were answered by it.
 
-**Bounded, and written down.** Self-queued sessions may *run* up to the
-parallel ceiling less a fifth of it, at least one place, kept for people —
-triggered sessions carry higher priorities and would otherwise win every
-slot. What does not fit is queued rather than forgotten: it becomes a row,
-in priority order, visible on the page as work waiting its turn.
+**Bounded, and written down.** Self-queued sessions share the full parallel
+ceiling with manual sessions. Eligible manual work gets the next admission
+without displacing work that already started. What does not fit is queued
+and visible on the page.
 """
 
 from __future__ import annotations
@@ -140,31 +139,9 @@ def _next_auto_name(existing: set[str]) -> str:
     return f"auto-{index}"
 
 
-def max_active_sessions(ceiling: int | None = None, *, person_waiting: bool = False) -> int:
-    """How many self-queued sessions may be active at once.
-
-    Derived rather than configured: the ceiling in force, less a fifth of
-    it and at least one place, kept for people. An operator who queues work by hand should
-    always find room next to the automation — triggered sessions have
-    higher priorities and would otherwise win every slot — but keeping half
-    the fleet idle for a session nobody has asked for is a poor trade on a
-    platform whose whole point is spending capacity that would go to waste.
-
-    It follows the *current* ceiling rather than the configured one, so
-    lowering the limit during an incident lowers this with it.
-
-    A ceiling of one has no place to keep: reserving it would stop the
-    automation altogether, also on an idle host (a small memory budget gives
-    exactly this ceiling). There the automation may take the one place
-    while no person's work waits for it.
-    """
-    limit = settings.max_parallel_sessions if ceiling is None else ceiling
-    # Never below zero: a ceiling of zero means nothing runs at all —
-    # including this.
-    quota = max(0, limit - max(1, limit // 5))
-    if quota == 0 and limit > 0 and not person_waiting:
-        return limit
-    return quota
+def max_active_sessions(ceiling: int | None = None) -> int:
+    """The shared parallel ceiling when no manual work takes precedence."""
+    return max(0, settings.max_parallel_sessions if ceiling is None else ceiling)
 
 
 def queue_workspace_limit() -> int:
