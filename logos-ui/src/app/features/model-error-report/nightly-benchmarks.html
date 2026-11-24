@@ -1,103 +1,82 @@
-<section class="nightly" [attr.aria-label]="'Nightly benchmarks on ' + providerName">
-  <div class="nightly__heading">
-    <div class="nightly__title">
-      <strong>{{ providerName }}</strong>
-      <span class="nightly__status" role="status" [class.nightly__status--enabled]="state()?.enabled && !state()?.recovery_required"
-        [class.nightly__status--blocked]="state()?.recovery_required">
-        <span class="status-dot" [class.status-dot--gray]="!state()?.enabled && !state()?.recovery_required"
-          [class.status-dot--warn]="state()?.recovery_required" aria-hidden="true"></span>
+<button type="button" class="nightly-tile" [class.nightly-tile--selected]="selected()"
+  [attr.aria-expanded]="selected()" [attr.aria-controls]="selected() ? 'nightly-panel-' + pairId : null"
+  (click)="selectionChange.emit()">
+  <i class="pi pi-server nightly-tile__icon" aria-hidden="true"></i>
+  <span class="nightly-tile__content">
+    <span class="nightly-tile__name">{{ providerName }}</span>
+    <span class="nightly__status">
+      <span class="status-dot" [class.status-dot--gray]="!state()?.enabled && !state()?.recovery_required"
+        [class.status-dot--warn]="state()?.recovery_required" aria-hidden="true"></span>
+      <span>
         @if (state(); as status) {
-          {{ status.enabled ? 'Enabled' : 'Disabled' }} @if (status.recovery_required) { · Recovery pending }
+          {{ status.enabled ? 'Enabled' : 'Disabled' }}
+          @if (status.deployment?.status === 'offline') { · Offline }
+          @if (status.recovery_required) { · Recovery pending }
         } @else {
-          {{ error() ? 'Status unavailable' : 'Loading nightly status…' }}
+          {{ error() ? 'Status unavailable' : 'Loading…' }}
         }
       </span>
-    </div>
-    @if (state()) {
-      <button type="button" class="nightly__toggle" (click)="toggleNightly()" [disabled]="saving() || !!enableBlocker"
-        [attr.aria-haspopup]="state()?.enabled ? 'dialog' : null"
-        [attr.aria-describedby]="enableBlocker ? 'nightly-blocker-' + pairId : null">
-        {{ state()?.enabled ? 'Disable nightly rotation…' : 'Enable nightly rotation' }}
-      </button>
-    }
-  </div>
-  @if (window; as timing) {
-    <p class="nightly__summary">{{ timing.start }}–{{ timing.end }} · {{ timing.timezone }} @if (state()?.last_run_date) { · Last run {{ state()?.last_run_date }} }</p>
-  }
-  @if (state()?.recovery_required) { <p role="alert">Worker recovery is pending. Nightly benchmarks are paused.</p> }
-  @if (enableBlocker; as reason) { <p class="nightly__hint" id="nightly-blocker-{{ pairId }}" role="status">{{ reason }}</p> }
-  @if (error() && !confirming()) { <p role="alert">{{ error() }}</p> }
-  @if (state(); as status) {
-    @if (!status.enabled && !enableBlocker) { <p class="nightly__hint">Other models on this worker can keep serving during each test round.</p> }
-    <div class="nightly__workload">
-      @if (automaticSource) {
-        <strong>Request workload</strong>
-        <p>Latest {{ status.workload_policy?.request_count }} successful FULL requests from {{ status.workload_policy?.username }} each night.</p>
-        @if (status.workload_policy?.error; as failure) { <p role="alert">{{ failure }}</p> }
-      } @else {
-        <label for="nightly-workload-{{ pairId }}">Request workload</label>
-        <select #workloadPicker id="nightly-workload-{{ pairId }}" (change)="selectWorkload(workloadPicker.value || null)" [disabled]="sourceLocked">
-          <option value="" [selected]="selectedWorkload === null">Hugging Face · GSM8K</option>
-          <option value="recent" [selected]="selectedWorkload === 'recent'">Recent FULL request logs</option>
-          @for (source of status.workloads ?? []; track source.id) {
-            <option [value]="source.id" [selected]="selectedWorkload === source.id">{{ source.provenance === 'production' ? 'Production · ' : '' }}{{ datasetLabel(source) }} · {{ source.request_count }} requests</option>
-          }
-        </select>
-        @if (selectedWorkload === 'recent') {
-          <label>Requests to include
-            <select [(ngModel)]="lookbackDays" [disabled]="sourceLocked">
-              <option [ngValue]="null">Latest 100 requests</option>
-              <option [ngValue]="1">Last 24 hours</option><option [ngValue]="3">Last 3 days</option><option [ngValue]="7">Last 7 days</option>
-            </select>
-          </label>
-          <p>Saves up to {{ lookbackDays === null ? 100 : 500 }} successful requests for this model with full logging.</p>
+    </span>
+  </span>
+  <i class="pi nightly-tile__chevron" [class.pi-chevron-down]="!selected()" [class.pi-chevron-up]="selected()" aria-hidden="true"></i>
+</button>
+
+<ng-template #details>
+  <section class="nightly" id="nightly-panel-{{ pairId }}" [attr.aria-labelledby]="'nightly-worker-' + pairId">
+    <div class="nightly__heading">
+      <div>
+        <h4 id="nightly-worker-{{ pairId }}">{{ providerName }}</h4>
+        @if (window; as timing) {
+          <p class="nightly__summary"><i class="pi pi-clock" aria-hidden="true"></i> {{ timing.start }}–{{ timing.end }} · {{ timing.timezone }}</p>
         }
-        @if (sourceEdited) { <button type="button" (click)="saveSource()" [disabled]="sourceLocked">{{ selectedWorkload === 'recent' ? 'Create and apply dataset' : 'Apply dataset' }}</button> }
-        @if (sourceNotice()) { <p role="status">{{ sourceNotice() }}</p> }
+      </div>
+      @if (state()) {
+        <button type="button" class="nightly__toggle" (click)="toggleNightly()" [disabled]="saving() || !!enableBlocker"
+          [attr.aria-haspopup]="state()?.enabled ? 'dialog' : null"
+          [attr.aria-describedby]="enableBlocker ? 'nightly-blocker-' + pairId : null">
+          {{ state()?.enabled ? 'Disable nightly rotation…' : 'Enable nightly rotation' }}
+        </button>
       }
     </div>
-    <details class="nightly__plan">
-      <summary>Schedule and test plan</summary>
-      @if (window; as timing) {
-        <dl class="nightly__schedule">
-          <div><dt>Window</dt><dd>{{ timing.start }}–{{ timing.end }} · {{ timing.timezone }}</dd></div>
-          <div><dt>Rotation</dt><dd>Model/worker pairs take turns until the window ends.</dd></div>
-          <div><dt>Stop</dt><dd>No new tests after {{ timing.benchmark_start_cutoff }}. At {{ timing.end }}, runs below 50% complete stop.</dd></div>
-        </dl>
+    @if (state()?.recovery_required) { <p role="alert">Worker recovery is pending. Nightly benchmarks are paused.</p> }
+    @if (enableBlocker; as reason) { <p class="nightly__summary" id="nightly-blocker-{{ pairId }}" role="status">{{ reason }}</p> }
+    @if (error() && !confirming()) { <p role="alert">{{ error() }}</p> }
+    @if (state(); as status) {
+      @if (status.enabled && status.status !== 'scheduled' && !status.recovery_required) {
+        <p class="nightly__summary" role="status">{{ statusLabel(status.status) }}</p>
       }
-      <ol class="nightly__steps">
-        <li><strong>Prepare and measure the baseline</strong><p>Freeze the night's inputs and reserve the benchmark lane's GPUs. Logos loads a temporary lane when needed.</p></li>
-        <li><strong>Test and refine</strong><p>Retest the saved candidate and vary the sequence and batch token limits. Only complete, comparable runs can update the candidate.</p></li>
-        <li><strong>Restore the lane</strong><p>Logos restores the previous settings. An eligible improvement can be applied when testing a single existing lane with a saved workload.</p></li>
-      </ol>
-      <details class="nightly__initial"><summary>Initial parameter values · {{ (status.plan?.length ?? 1) - 1 }} variants</summary>
-        <div class="nightly__table-scroll"><table>
-          <thead><tr><th>Configuration</th><th>Sequences</th><th>Batch tokens</th></tr></thead>
-          <tbody>@for (run of status.plan ?? []; track $index) {
-            <tr><th>{{ $index === 0 ? 'Baseline' : 'Candidate ' + $index }}</th><td>{{ run.serving_overrides['max_num_seqs'] ?? 'auto' }}</td><td>{{ run.serving_overrides['max_num_batched_tokens'] ?? 'auto' }}</td></tr>
-          }</tbody>
-        </table></div>
-        <p>Logos confirms the baseline after preparing the lane. Later rounds can test more variants.</p>
-      </details>
-      <p>Other models keep serving. Logos waits if the selected GPUs lack memory for the lane and its warm-up. Five minutes without progress stops a run.</p>
-    </details>
-    @if (status.enabled && status.status !== 'scheduled' && !status.recovery_required) { <small role="status">{{ statusLabel(status.status) }}</small> }
-    @if (status.report.length) {
-      <details><summary>Latest round results</summary>
-        <ul>@for (result of status.report; track $index) {
-          <li>@if (result.configuration) {Configuration {{ result.configuration }} · }{{ statusLabel(result.status) }}
-            @if (result.attempt) { · attempt {{ result.attempt }} }
-            @if (result.benchmark_id) { · benchmark #{{ result.benchmark_id }} }
-            @if (result.reason) { — {{ result.reason }} }
-          </li>
-        }</ul>
-        <p>Successful measurements appear in Overview and Analysis.</p>
-      </details>
+      <div class="nightly__workload">
+        @if (automaticSource) {
+          <strong>Request workload</strong>
+          <p class="nightly__summary">Latest {{ status.workload_policy?.request_count }} successful FULL requests from {{ status.workload_policy?.username }} each night.</p>
+          @if (status.workload_policy?.error; as failure) { <p role="alert">{{ failure }}</p> }
+        } @else {
+          <label for="nightly-workload-{{ pairId }}">Request workload</label>
+          <select #workloadPicker id="nightly-workload-{{ pairId }}" (change)="selectWorkload(workloadPicker.value || null)" [disabled]="sourceLocked">
+            <option value="" [selected]="selectedWorkload === null">Hugging Face · GSM8K</option>
+            <option value="recent" [selected]="selectedWorkload === 'recent'">Recent FULL request logs</option>
+            @for (source of status.workloads ?? []; track source.id) {
+              <option [value]="source.id" [selected]="selectedWorkload === source.id">{{ source.provenance === 'production' ? 'Production · ' : '' }}{{ datasetLabel(source) }} · {{ source.request_count }} requests</option>
+            }
+          </select>
+          @if (selectedWorkload === 'recent') {
+            <label>Requests to include
+              <select [(ngModel)]="lookbackDays" [disabled]="sourceLocked">
+                <option [ngValue]="null">Latest 100 requests</option>
+                <option [ngValue]="1">Last 24 hours</option><option [ngValue]="3">Last 3 days</option><option [ngValue]="7">Last 7 days</option>
+              </select>
+            </label>
+            <p class="nightly__summary">Saves up to {{ lookbackDays === null ? 100 : 500 }} successful requests for this model with full logging.</p>
+          }
+          @if (sourceEdited) { <button type="button" (click)="saveSource()" [disabled]="sourceLocked">{{ selectedWorkload === 'recent' ? 'Create and apply dataset' : 'Apply dataset' }}</button> }
+          @if (sourceNotice()) { <p role="status">{{ sourceNotice() }}</p> }
+        }
+      </div>
     }
-  }
-</section>
-<app-modal-confirm [visible]="confirming()" (visibleChange)="!saving() && confirming.set($event)"
-  title="Disable nightly rotation?" message="This cancels any active nightly run and restores the worker’s previous lane setup."
-  confirmLabel="Disable nightly rotation" [danger]="true" icon="pi-moon" [loading]="saving()" (confirmed)="confirmDisable()">
-  @if (error()) { <p modal-error role="alert">{{ error() }}</p> }
-</app-modal-confirm>
+  </section>
+  <app-modal-confirm [visible]="confirming()" (visibleChange)="!saving() && confirming.set($event)"
+    title="Disable nightly rotation?" message="This cancels any active nightly run and restores the worker’s previous lane setup."
+    confirmLabel="Disable nightly rotation" [danger]="true" icon="pi-moon" [loading]="saving()" (confirmed)="confirmDisable()">
+    @if (error()) { <p modal-error role="alert">{{ error() }}</p> }
+  </app-modal-confirm>
+</ng-template>

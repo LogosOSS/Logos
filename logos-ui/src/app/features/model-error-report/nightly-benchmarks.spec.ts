@@ -1,7 +1,25 @@
+import { NgTemplateOutlet } from '@angular/common';
+import { Component, viewChild } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting, HttpTestingController } from '@angular/common/http/testing';
-import { NightlyBenchmarks } from './nightly-benchmarks';
+import { provideRouter } from '@angular/router';
+import { ModelManagementService } from '../../core/services/model-management.service';
+import { Model } from '../../shared/models/model.model';
+import { ModelProviderBenchmark } from '../../shared/models/provider.model';
+import { ModelErrorReport } from './model-error-report';
+import { NightlyBenchmarks, NightlyStatus } from './nightly-benchmarks';
+
+@Component({
+  imports: [NightlyBenchmarks, NgTemplateOutlet],
+  template: `
+    <app-nightly-benchmarks #worker [pairId]="31" providerName="Worker A" [selected]="true" />
+    <ng-container [ngTemplateOutlet]="worker.details()" />
+  `,
+})
+class NightlySettingsHost {
+  readonly worker = viewChild.required(NightlyBenchmarks);
+}
 
 describe('Nightly benchmark management', () => {
   let control: NightlyBenchmarks;
@@ -34,7 +52,7 @@ describe('Nightly benchmark management', () => {
     fixture.componentInstance.state.set({ ...ready, enabled: true, status: 'scheduled' });
     fixture.detectChanges();
     expect(status.textContent.trim()).toBe('Enabled');
-    expect(status.classList.contains('nightly__status--enabled')).toBe(true);
+    expect(status.querySelector('.status-dot--gray, .status-dot--warn')).toBeNull();
 
     fixture.componentInstance.state.update(current => ({ ...current!, recovery_required: true }));
     fixture.detectChanges();
@@ -43,10 +61,9 @@ describe('Nightly benchmark management', () => {
   });
 
   it('shows the workload inline and enables scheduling after applying the selection', async () => {
-    const fixture = TestBed.createComponent(NightlyBenchmarks);
-    fixture.componentRef.setInput('pairId', control.pairId);
-    fixture.componentRef.setInput('providerName', control.providerName);
+    const fixture = TestBed.createComponent(NightlySettingsHost);
     fixture.detectChanges();
+    const worker = fixture.componentInstance.worker();
     const dataset = { id: 'a'.repeat(64), name: 'Saved requests', request_count: 100, provenance: 'production' };
     const available = { ...control.state()!, workloads: [dataset] };
     http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush(available);
@@ -64,7 +81,7 @@ describe('Nightly benchmark management', () => {
     workload.dispatchEvent(new Event('change'));
     fixture.detectChanges();
     expect(toggle.disabled).toBe(true);
-    const save = vi.spyOn(fixture.componentInstance, 'saveSource');
+    const save = vi.spyOn(worker, 'saveSource');
     const apply = Array.from(section.querySelectorAll('button')).find(button => button.textContent.trim() === 'Apply dataset')!;
     apply.click();
     const applied = { ...available, workload_id: dataset.id };
@@ -75,7 +92,7 @@ describe('Nightly benchmark management', () => {
     http.expectOne('/api/logosdb/model_benchmarks/nightly/status').flush(applied);
     await save.mock.results[0].value;
     fixture.detectChanges();
-    expect(fixture.componentInstance.selectedWorkload).toBe(dataset.id);
+    expect(worker.selectedWorkload).toBe(dataset.id);
     expect(workload.value).toBe(dataset.id);
     expect(toggle.disabled).toBe(false);
   });
@@ -207,5 +224,124 @@ describe('Nightly benchmark management', () => {
   it('distinguishes waiting for GPU capacity from a round deferred to another window', () => {
     expect(control.statusLabel('waiting_for_capacity')).toBe('Waiting for GPU capacity');
     expect(control.statusLabel('capacity_deferred')).toBe('Deferred until another maintenance window');
+  });
+});
+
+describe('Nightly worker selection', () => {
+  async function openOverview(runs: ModelProviderBenchmark[] = []) {
+    TestBed.configureTestingModule({ providers: [
+      provideRouter([]),
+      provideHttpClient(),
+      provideHttpClientTesting(),
+      { provide: ModelManagementService, useValue: {
+        getBenchmarkWorkerLimits: async () => ({ gpu_count: 1, current: {} }),
+        getBenchmarkWorkloads: async () => [],
+        getBenchmarkDatasetMetadata: async () => ({ dataset: 'openai/gsm8k', subset: 'main', split: 'test',
+          splits: [{ subset: 'main', split: 'test' }], text_columns: ['question'] }),
+      } },
+    ] });
+    const http = TestBed.inject(HttpTestingController);
+    const init = vi.spyOn(ModelErrorReport.prototype, 'ngOnInit').mockResolvedValue();
+    const fixture = TestBed.createComponent(ModelErrorReport);
+    const component = fixture.componentInstance;
+    component.model.set({ id: 1, name: 'Test model' } as Model);
+    component.loading.set(false);
+    component.activeTab.set('performance');
+    component.benchmarkPairs.set([31, 32, 33].map(id => ({
+      model_provider_id: id, provider_id: id, provider_name: `Worker ${id}`, provider_type: 'logosnode',
+      model_id: 1, model_name: 'Test model', endpoint_configured: true, authentication_configured: false,
+    })));
+    component.benchmarkAvailability.set(new Map([[31, 'online'], [32, 'online'], [33, 'offline']]));
+    component.performance.set(runs);
+    fixture.detectChanges();
+    init.mockRestore();
+
+    const ready = { worker_ready: true, enabled: true, status: 'scheduled', report: [], recovery_required: false,
+      window: { start: '05:00', end: '08:00', benchmark_start_cutoff: '08:00', timezone: 'Europe/Berlin' } };
+    const statuses = new Map<number, NightlyStatus>([
+      [31, ready],
+      [32, { ...ready, enabled: false, status: 'disabled' }],
+      [33, { ...ready, worker_ready: false, status: 'unavailable',
+        deployment: { status: 'offline' } }],
+    ]);
+    async function flushWorkerStatuses() {
+      for (const request of http.match('/api/logosdb/model_benchmarks/nightly/status')) {
+        request.flush(statuses.get(request.request.body.model_provider_id)!);
+      }
+      await fixture.whenStable();
+      fixture.detectChanges();
+    }
+
+    await flushWorkerStatuses();
+    return { fixture, http, flushWorkerStatuses };
+  }
+
+  it('shows three worker statuses and only the selected worker’s settings', async () => {
+    const { fixture, http } = await openOverview();
+    const overview: HTMLElement = fixture.nativeElement.querySelector('.nightly-overview');
+    const tiles = Array.from(overview.querySelectorAll<HTMLButtonElement>('app-nightly-benchmarks button'));
+    expect(tiles).toHaveLength(3);
+    expect(tiles[0].textContent).toContain('Enabled');
+    expect(tiles[1].textContent).toContain('Disabled');
+    expect(tiles[2].textContent).toMatch(/Offline/i);
+    expect(overview.querySelector('.nightly__toggle')).toBeNull();
+
+    tiles[0].click();
+    fixture.detectChanges();
+    expect(tiles[0].getAttribute('aria-expanded')).toBe('true');
+    expect(overview.querySelector('#nightly-workload-31')).not.toBeNull();
+
+    tiles[1].click();
+    fixture.detectChanges();
+    expect(tiles[0].getAttribute('aria-expanded')).toBe('false');
+    expect(tiles[1].getAttribute('aria-expanded')).toBe('true');
+    expect(overview.querySelector('#nightly-workload-31')).toBeNull();
+    expect(overview.querySelector('#nightly-workload-32')).not.toBeNull();
+
+    tiles[1].click();
+    fixture.detectChanges();
+    expect(tiles[1].getAttribute('aria-expanded')).toBe('false');
+    expect(overview.querySelector('.nightly__toggle')).toBeNull();
+    http.verify();
+  });
+
+  it('defaults to an online measured worker and switches the deployment and timeline together', async () => {
+    const measurement = (id: number, worker: number, baseline: number): ModelProviderBenchmark => ({
+      id, model_provider_id: worker, provider_id: worker, provider_name: `Worker ${worker}`,
+      model_id: 1, model_name: 'Test model', dataset: 'requests/demo', sample_size: 10,
+      configuration: {
+        workload: { id: 'demo', request_count: 10 },
+        nightly: { baseline_id: baseline },
+        benchmark: { strategy: { max_concurrency: 4 } },
+        measurement: { ended_at: `2026-10-21T04:0${id}:00Z` },
+      },
+      metrics: {
+        request_totals: { successful: 10, incomplete: 0, errored: 0, total: 10 },
+        aggregate_output_tokens_per_second: 100 + id,
+      },
+      recorded_at: '2026-10-21T04:00:00Z',
+    });
+    const { fixture, http, flushWorkerStatuses } = await openOverview([
+      measurement(1, 32, 1), measurement(2, 32, 1),
+      measurement(3, 33, 3), measurement(4, 33, 3),
+    ]);
+    const root: HTMLElement = fixture.nativeElement;
+    const workers = root.querySelectorAll<HTMLButtonElement>('.overview-worker-tabs button');
+    const deployed = () => root.querySelector('#performance-deployment app-deployed-configuration');
+    const timelineRunIds = () => Array.from(root.querySelectorAll<HTMLAnchorElement>('#performance-timeline .timeline-run'),
+      link => new URLSearchParams(link.search).get('benchmark'));
+
+    expect(workers).toHaveLength(3);
+    expect(workers[1].getAttribute('aria-pressed')).toBe('true');
+    expect(deployed()?.textContent).toContain('Worker 32');
+    expect(timelineRunIds()).toEqual(['1', '2']);
+
+    workers[2].click();
+    fixture.detectChanges();
+    await flushWorkerStatuses();
+    expect(workers[2].getAttribute('aria-pressed')).toBe('true');
+    expect(deployed()?.textContent).toContain('Worker 33');
+    expect(timelineRunIds()).toEqual(['3', '4']);
+    http.verify();
   });
 });

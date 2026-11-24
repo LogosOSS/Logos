@@ -9,7 +9,7 @@ import {
   viewChild,
   viewChildren,
 } from '@angular/core';
-import { NgClass } from '@angular/common';
+import { NgClass, NgTemplateOutlet } from '@angular/common';
 import { NightlyBenchmarks } from './nightly-benchmarks';
 import { BenchmarkRunFailure, isBenchmarkWindowStop } from './benchmark-run-failure';
 import { BenchmarkResults } from './benchmark-results';
@@ -684,6 +684,7 @@ const GENERIC_CALIBRATION_ERROR_DETAIL_MAX_LINES = 80;
   imports: [
     RouterLink,
     NgClass,
+    NgTemplateOutlet,
     BenchmarkSettingsEditor,
     BenchmarkBatchEditor,
     BenchmarkComparison,
@@ -780,14 +781,36 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   private performanceRequestVersion = 0;
   readonly performanceError = signal(false);
   readonly deployedPairs = computed(() => this.benchmarkPairs().filter(pair => pair.provider_type === 'logosnode'));
-  private readonly deployedConfigurations = viewChildren(DeployedConfiguration);
+  readonly selectedOverviewPairId = signal<number | null>(null);
+  readonly overviewPair = computed(() => {
+    const pairs = this.deployedPairs();
+    const runs = this.performance();
+    const linkedPairId = runs.find(run => run.id === this.linkedBenchmarkId())?.model_provider_id;
+    const selected = pairs.find(pair => pair.model_provider_id === this.selectedOverviewPairId())
+      ?? pairs.find(pair => pair.model_provider_id === linkedPairId);
+    if (selected) return selected;
+
+    const measured = new Set(runs.map(run => run.model_provider_id));
+    const online = pairs.filter(pair => this.benchmarkAvailability().get(pair.model_provider_id) === 'online');
+    return online.find(pair => measured.has(pair.model_provider_id))
+      ?? online[0]
+      ?? pairs.find(pair => measured.has(pair.model_provider_id))
+      ?? pairs[0];
+  });
+  readonly overviewTimelineRuns = computed(() => {
+    const pair = this.overviewPair();
+    return pair ? this.performance().filter(run => run.model_provider_id === pair.model_provider_id) : this.performance();
+  });
+  readonly selectedNightlyPairId = signal<number | null>(null);
+  private readonly nightlyWorkers = viewChildren(NightlyBenchmarks);
+  readonly selectedNightlyWorker = computed(() => {
+    const pairId = this.selectedNightlyPairId();
+    return this.nightlyWorkers().find(worker => worker.pairId === pairId);
+  });
+  private readonly deployedConfiguration = viewChild(DeployedConfiguration);
   readonly deployedBenchmarkIds = computed(() => {
-    const ids = new Set<number>();
-    for (const configuration of this.deployedConfigurations()) {
-      const measurement = configuration.measurement();
-      if (measurement) ids.add(measurement.id);
-    }
-    return ids;
+    const measurement = this.deployedConfiguration()?.measurement();
+    return new Set(measurement ? [measurement.id] : []);
   });
   readonly performanceViews = [
     { id: 'results', label: 'Overview', icon: 'pi-chart-line' },
@@ -870,6 +893,10 @@ export class ModelErrorReport implements OnInit, OnDestroy {
   openBenchmarkSetup(): void {
     this.performanceView.set('run');
     setTimeout(() => document.getElementById('benchmark-setup')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  }
+
+  toggleNightlyWorker(pairId: number): void {
+    this.selectedNightlyPairId.update(current => current === pairId ? null : pairId);
   }
 
   updateBenchmarkSettings(settings: BenchmarkSettings): void {
@@ -1228,11 +1255,16 @@ export class ModelErrorReport implements OnInit, OnDestroy {
       if (this.modelId() !== id) {
         this.performanceView.set('results');
         this.benchmarkSettingsOpen.set(false);
+        this.selectedNightlyPairId.set(null);
+        this.selectedOverviewPairId.set(null);
       }
       if (requestedTab === 'delays') this.performanceView.set('measurements');
       const benchmark = Number(query.get('benchmark'));
       const linked = Number.isSafeInteger(benchmark) && benchmark > 0 ? benchmark : null;
-      if (linked !== this.linkedBenchmarkId()) this.selectedBenchmarkIds.set(new Map());
+      if (linked !== this.linkedBenchmarkId()) {
+        this.selectedBenchmarkIds.set(new Map());
+        if (linked !== null) this.selectedOverviewPairId.set(null);
+      }
       this.linkedBenchmarkId.set(linked);
       if (this.linkedBenchmarkId() !== null) {
         this.activeTab.set('performance');

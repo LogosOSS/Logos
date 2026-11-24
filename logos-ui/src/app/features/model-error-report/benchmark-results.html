@@ -81,7 +81,7 @@
         </button>
       }
     } @else {
-      <p class="results-note" role="status">No comparable completed rounds yet. A complete baseline and matching workload are required.</p>
+      <p class="results-note" role="status">No comparable completed rounds{{ workerName() ? ' on ' + workerName() : '' }} yet. A complete baseline and matching workload are required.</p>
     }
     <details class="timeline-policy">
       <summary>What does Logos check?</summary>

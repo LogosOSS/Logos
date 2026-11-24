@@ -22,6 +22,7 @@ export class BenchmarkResults {
   readonly configuration = recordConfiguration;
   readonly datasetLabel = benchmarkDatasetLabel;
   readonly runs = input.required<readonly ModelProviderBenchmark[]>();
+  readonly workerName = input<string | null>(null);
   readonly deployedBenchmarkIds = input<ReadonlySet<number>>(new Set<number>());
   readonly selectedRunId = input<number | null>(null);
   readonly showProgress = input(true);

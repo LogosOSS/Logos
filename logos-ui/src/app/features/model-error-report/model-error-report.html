@@ -516,7 +516,7 @@
 
           <nav class="performance-nav" aria-label="Performance sections">
             @for (view of performanceViews; track view.id) {
-              <button type="button" [class.performance-nav__active]="performanceView() === view.id"
+              <button type="button"
                 [attr.aria-pressed]="performanceView() === view.id" [attr.aria-controls]="'performance-' + view.id"
                 (click)="performanceView.set(view.id)"><i [class]="'pi ' + view.icon" aria-hidden="true"></i><span>{{ view.label }}</span></button>
             }
@@ -573,18 +573,37 @@
           @if (deployedPairs().length) {
             <section class="nightly-overview" aria-labelledby="nightly-rotation-heading">
               <h3 id="nightly-rotation-heading"><i class="pi pi-moon" aria-hidden="true"></i> Nightly rotation</h3>
-              @for (pair of deployedPairs(); track pair.model_provider_id) {
-                <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" />
+              <div class="nightly-overview__workers">
+                @for (pair of deployedPairs(); track pair.model_provider_id) {
+                  <app-nightly-benchmarks [pairId]="pair.model_provider_id" [providerName]="pair.provider_name"
+                    [selected]="selectedNightlyPairId() === pair.model_provider_id" (selectionChange)="toggleNightlyWorker(pair.model_provider_id)" />
+                }
+              </div>
+              @if (selectedNightlyWorker(); as worker) {
+                <ng-container [ngTemplateOutlet]="worker.details()" />
               }
             </section>
           }
-          <section class="deployment-overview" aria-label="Currently deployed">
+          @if (deployedPairs().length > 1) {
+            <div class="overview-worker-tabs" role="group" aria-label="Worker for deployment and timeline">
+              <span>Worker</span>
+              @for (pair of deployedPairs(); track pair.model_provider_id) {
+                <button type="button" [attr.aria-pressed]="overviewPair()?.model_provider_id === pair.model_provider_id"
+                  aria-controls="performance-deployment performance-timeline"
+                  (click)="selectedOverviewPairId.set(pair.model_provider_id)">{{ pair.provider_name }}</button>
+              }
+            </div>
+          }
+          <section id="performance-deployment" class="deployment-overview" aria-label="Currently deployed">
             <h3><i class="pi pi-server" aria-hidden="true"></i> Currently deployed</h3>
             @for (pair of deployedPairs(); track pair.model_provider_id) {
-              <app-deployed-configuration [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [runs]="performance()" />
+              @if (overviewPair()?.model_provider_id === pair.model_provider_id) {
+                <app-deployed-configuration [pairId]="pair.model_provider_id" [providerName]="pair.provider_name" [runs]="overviewTimelineRuns()" />
+              }
             } @empty { <p>No local worker configurations are available for this model.</p> }
           </section>
-            <app-benchmark-results [runs]="performance()" [deployedBenchmarkIds]="deployedBenchmarkIds()" [showHistory]="false" />
+            <app-benchmark-results id="performance-timeline" [runs]="overviewTimelineRuns()" [workerName]="overviewPair()?.provider_name ?? null"
+              [deployedBenchmarkIds]="deployedBenchmarkIds()" [showHistory]="false" />
           </div>
 
           <div class="performance-results">
