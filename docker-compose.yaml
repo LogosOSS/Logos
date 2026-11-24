@@ -598,7 +598,7 @@ services:
       - internal
 
   logos-agent:
-    image: ${REGISTRY:-ghcr.io/logososs}/logos-agent:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-agent:${LOGOS_AGENT_IMAGE_TAG:-${IMAGE_TAG:-latest}}
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -658,7 +658,7 @@ services:
       LOGOS_AGENT_DEFAULT_MODEL: "${LOGOS_AGENT_DEFAULT_MODEL:-}"
 
       # Sessions run in this image, on this network, under these ceilings.
-      LOGOS_AGENT_WORKSPACE_IMAGE: "${REGISTRY:-ghcr.io/logososs}/logos-agent-workspace:${IMAGE_TAG:-latest}"
+      LOGOS_AGENT_WORKSPACE_IMAGE: "${REGISTRY:-ghcr.io/logososs}/logos-agent-workspace:${LOGOS_AGENT_IMAGE_TAG:-${IMAGE_TAG:-latest}}"
       # The internal session network: no external egress, the model gateway
       # is the only reachable peer. The egress network is for the runner's
       # trusted helper containers (checkout preparation, post-agent
@@ -771,7 +771,7 @@ services:
     # mount of ./agent-gateway/nginx.conf resolved to a missing path there,
     # Docker created an empty directory in its place, and the gateway served
     # its stock configuration and failed its health check forever.
-    image: ${REGISTRY:-ghcr.io/logososs}/logos-agent-gateway:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-agent-gateway:${LOGOS_AGENT_IMAGE_TAG:-${IMAGE_TAG:-latest}}
     container_name: logos-agent-gateway
     restart: unless-stopped
     profiles: ["agent"]
@@ -799,7 +799,7 @@ services:
   # CONNECT to those hosts, to public addresses, authenticated with a
   # per-session token. Everything else is refused. See app/egress_proxy.py.
   logos-agent-egress-proxy:
-    image: ${REGISTRY:-ghcr.io/logososs}/logos-agent:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-ghcr.io/logososs}/logos-agent:${LOGOS_AGENT_IMAGE_TAG:-${IMAGE_TAG:-latest}}
     container_name: logos-agent-egress-proxy
     command: ["python", "-m", "app.egress_proxy"]
     # Unlike the runner it needs no Docker socket and no root.

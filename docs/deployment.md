@@ -24,6 +24,38 @@ A deployment consists of:
 If a change requires no worker update, then set **deploy-workers** to `false` in **Logos - Deploy to Dev**.
 This option updates the central Dev server and leaves the GPU worker unchanged. The default updates both.
 
+## Deploy the agent stack manually on Dev
+
+Use this procedure on the Dev core host. Do not use it to update the core
+services or GPU workers. Use the Compose project and settings of the active
+Dev installation.
+
+1. Check that the Dev database and orchestrator are healthy.
+2. Use the Compose file that supports `LOGOS_AGENT_IMAGE_TAG`. Check that its
+   agent settings match the Dev host.
+3. Set `LOGOS_AGENT_IMAGE_TAG` in the host's protected `.env` to a published
+   tag for the agent, model gateway, and workspace images. If the variable
+   is absent, those images use `IMAGE_TAG` as before.
+4. Check the rendered image names. Do not print the full Compose
+   configuration because it can show credentials.
+5. Pull the agent images. Pull the workspace image separately because it
+   is not a Compose service.
+6. Start or replace only the three agent services. Use `--no-deps` to
+   leave the Dev core services unchanged.
+
+```bash
+docker compose --profile agent config --images
+docker compose --profile agent pull logos-agent logos-agent-gateway logos-agent-egress-proxy
+# Pull the matching workspace image from the configured registry.
+docker compose --profile agent up -d --no-deps --wait \
+  logos-agent-gateway logos-agent-egress-proxy logos-agent
+docker compose --profile agent ps logos-agent-gateway logos-agent-egress-proxy logos-agent
+```
+
+Check the runner and model gateway health. Check the model policy before you
+admit sessions. To revert an update, set the previous agent image tag and
+repeat the agent-only commands.
+
 ## Deployment credentials
 
 Store each host's credentials in its `.env` file.
