@@ -1138,9 +1138,7 @@ class LogosBridgeClient:
     async def _execute_command(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         lane_manager = self._app.state.lane_manager
 
-        slice_safe = action in {"add_lane", "wake_lane"} and bool(
-            getattr(lane_manager, "calibration_gpu_subset", None)
-        )
+        slice_safe = action in {"add_lane", "wake_lane"} and bool(getattr(lane_manager, "calibration_gpu_subset", None))
         if action in _VRAM_GROWING_ACTIONS and self._calibration_session_is_live() and not slice_safe:
             # Last line of defence, at the resource itself. The server excludes
             # a calibrating worker from lane placement, but every mechanism it
