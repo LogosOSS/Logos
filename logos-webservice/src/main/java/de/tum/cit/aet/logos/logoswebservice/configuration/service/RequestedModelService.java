@@ -433,7 +433,7 @@ public class RequestedModelService {
                 return true;
             }
             throw new ModelNotOnHuggingFaceException(
-                "Model not found on HuggingFace. Maybe it is a cloud model (unsupported)?");
+                "Model not found on Hugging Face. Maybe it is a cloud model (unsupported)?");
         }
         throw new HfReachabilityUnavailableException(
             "Hugging Face did not respond in time. Please try again later.");

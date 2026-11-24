@@ -413,7 +413,7 @@ const SHOTS = [
     go: async (p) => {
       await p.goto(BASE + "/models?tab=requests");
       await p.getByRole("button", { name: /example-chat repository is gated/ }).click();
-      await button(p, "Go to HuggingFace").waitFor();
+      await button(p, "Go to Hugging Face").waitFor();
     },
     after: (p) => button(p, "Cancel").click(),
   },

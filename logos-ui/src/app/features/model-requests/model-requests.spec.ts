@@ -378,7 +378,7 @@ describe('the gated model flag', () => {
         "The repository owner must still approve the access request.",
       );
       const confirm = [...document.body.querySelectorAll('button')].find(
-        (b) => b.textContent?.trim() === 'Go to HuggingFace',
+        (b) => b.textContent?.trim() === 'Go to Hugging Face',
       );
       expect(confirm).toBeDefined();
 
@@ -636,7 +636,7 @@ describe('the license agreement column', () => {
         'its license is only readable on Hugging Face after the',
       );
 
-      buttonOn(document.body, 'Go to HuggingFace')!.click();
+      buttonOn(document.body, 'Go to Hugging Face')!.click();
       fx.detectChanges();
       expect(openSpy).toHaveBeenCalledWith(
         'https://huggingface.co/meta-llama/llama-3.1-8b',

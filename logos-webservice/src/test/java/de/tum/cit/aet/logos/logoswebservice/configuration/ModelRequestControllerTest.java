@@ -429,7 +429,7 @@ class ModelRequestControllerTest {
                 .content("{\"name\": \"openai/does-not-exist\", \"team_id\": 2001}"))
            .andExpect(status().isBadRequest())
            .andExpect(jsonPath("$.error").value(
-               "Model not found on HuggingFace. Maybe it is a cloud model (unsupported)?"));
+               "Model not found on Hugging Face. Maybe it is a cloud model (unsupported)?"));
 
         // The precheck runs before the registry row is created: nothing was stored.
         assertThat(jdbc.queryForObject(

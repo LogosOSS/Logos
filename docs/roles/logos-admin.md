@@ -187,7 +187,7 @@ If you accept the terms, select the checkbox and then **Save**.
 ![License agreement and use policy for a requested model](/img/roles/model-request-license.png)
 
 A warning icon next to the model name identifies a gated repository.
-Select it to open **Gated model**. Select **Go to HuggingFace** to request access from the repository owner.
+Select it to open **Gated model**. Select **Go to Hugging Face** to request access from the repository owner.
 
 ![Gated model access dialog](/img/roles/model-request-gated.png)
 
