@@ -1138,7 +1138,10 @@ class LogosBridgeClient:
     async def _execute_command(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         lane_manager = self._app.state.lane_manager
 
-        if action in _VRAM_GROWING_ACTIONS and self._calibration_session_is_live():
+        slice_safe = action in {"add_lane", "wake_lane"} and bool(
+            getattr(lane_manager, "calibration_gpu_subset", None)
+        )
+        if action in _VRAM_GROWING_ACTIONS and self._calibration_session_is_live() and not slice_safe:
             # Last line of defence, at the resource itself. The server excludes
             # a calibrating worker from lane placement, but every mechanism it
             # has for knowing lags reality by some amount — an event in flight,
@@ -2310,6 +2313,7 @@ class LogosBridgeClient:
         )
 
         terminal_event = "calibration_session_finished"
+        calibration_acquired = False
         lane_manager = getattr(self._app.state, "lane_manager", None)
         # Push a status carrying calibrating=True right away. The server holds
         # its optimistic mark for a bounded window after dispatching the start,
@@ -2349,27 +2353,38 @@ class LogosBridgeClient:
             all_plans = plans_from_app_config(cfg)
             plan_by_model = {p["model"]: p for p in all_plans}
 
-            # Free the calibration's GPU slice up front — but only that slice
-            # The probe is pinned to the slice (CUDA_VISIBLE_DEVICES),
-            # so it only competes for the slice's VRAM; lanes on the leftover
-            # GPUs keep serving for the rest of the session instead of sitting
-            # idle. Without the pin the kv-cache search would start against an
-            # already-loaded model on the measured GPUs and OOM at sizes that
-            # would otherwise fit. The Logos server re-spawns the stopped slice
-            # lanes via the normal apply_lanes path once the session ends.
+            # CUDA probes may start only after acquiring and draining their
+            # exact slice. The Metal backend keeps its worker-wide guard and
+            # doesn't need an NVIDIA pin.
             calibration_gpus: frozenset[int] = frozenset()
+            metal = is_metal_backend()
+            required_gpus: set[int] = set()
+            if not metal:
+                for model_name in models:
+                    plan = plan_by_model.get(model_name, {})
+                    pin = str(plan.get("gpu_devices") or "")
+                    overrides = plan.get("env_overrides") or {}
+                    if overrides.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID") != "PCI_BUS_ID":
+                        raise RuntimeError(f"Calibration GPU ordering is not confirmed for {model_name}")
+                    if not _plan_needs_gpu_pin(pin):
+                        parts = [part.strip() for part in pin.split(",")]
+                        indices = {int(part) for part in parts if part.isdigit()}
+                        if len(indices) != len(parts):
+                            raise RuntimeError(f"Calibration GPU pin for {model_name} is not confirmed")
+                        required_gpus.update(indices)
             if lane_manager is not None:
-                try:
-                    calibration_gpus = lane_manager.begin_calibration_session()
-                    stopped = await lane_manager.destroy_lanes_on_gpus(calibration_gpus)
-                    logger.info(
-                        "[Calibration] Calibration holds GPU(s) %s — stopped %d lane(s) on them; "
-                        "leftover lanes kept serving",
-                        sorted(calibration_gpus),
-                        stopped,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("[Calibration] calibration slice setup failed — continuing anyway")
+                calibration_gpus = await lane_manager.acquire_calibration_gpu_reservation(frozenset(required_gpus))
+                calibration_acquired = True
+            if not metal and (not calibration_gpus or not required_gpus <= calibration_gpus):
+                raise RuntimeError("Calibration requires a confirmed GPU slice covering every explicit pin")
+            if calibration_gpus:
+                stopped = await lane_manager.destroy_lanes_on_gpus(calibration_gpus)
+                logger.info(
+                    "[Calibration] Calibration holds GPU(s) %s — stopped %d lane(s) on them; "
+                    "leftover lanes kept serving",
+                    sorted(calibration_gpus),
+                    stopped,
+                )
 
             for model_name in models:
                 if session.cancel_event.is_set():
@@ -2687,10 +2702,11 @@ class LogosBridgeClient:
                 details=f"sleep_level={session.sleep_level}",
             )
             if lane_manager is not None:
-                try:
-                    lane_manager.end_calibration_session()
-                except Exception:  # noqa: BLE001
-                    logger.debug("[Calibration] end_calibration_session failed", exc_info=True)
+                if calibration_acquired:
+                    try:
+                        lane_manager.end_calibration_session()
+                    except Exception:  # noqa: BLE001
+                        logger.debug("[Calibration] end_calibration_session failed", exc_info=True)
                 try:
                     lane_manager.mark_status_dirty()
                 except Exception:  # noqa: BLE001

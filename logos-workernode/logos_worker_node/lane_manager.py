@@ -536,14 +536,9 @@ class LaneManager:
         self._override_baselines: dict[str, dict[str, Any]] = {}
         self._staged_baselines: dict[str, dict[str, Any]] = {}
         self._explicit_lanes: set[str] = set()
-        # GPUs held by a running calibration session. Non-None while
-        # a session is live: auto-placement must not put new lanes on these GPUs
-        # and an explicit lane targeting them is refused, so the calibration's
-        # probe keeps the slice's VRAM to itself. Leftover GPUs stay placeable.
-        self._calibration_gpu_subset: frozenset[int] | None = None
-        # Nightly lanes hold their GPUs across trial restarts. Existing inference
-        # uses only its lane lock, so sharing a GPU does not interrupt serving.
-        self._nightly_gpu_holds: dict[str, frozenset[int]] = {}
+        # Durable GPU ownership across probe/trial restarts, not an inference
+        # lock. A kind-qualified owner keeps lane ids and calibration separate.
+        self._gpu_reservations: dict[tuple[str, str], frozenset[int]] = {}
         # Models in a lane startup/restart transition: their HF_HOME (possibly
         # the tmpfs RAM cache) is already chosen and vLLM is being
         # placed/spawned, but the handle only lands in _handles once the
@@ -649,18 +644,28 @@ class LaneManager:
         """Return True if the given lane_id is a static lane."""
         return lane_id in self._static_lane_ids
 
-    def _nightly_blocked_gpus(self, lane_id: str, *, nightly: bool = False) -> frozenset[int]:
-        return frozenset().union(
-            *(gpus for owner, gpus in self._nightly_gpu_holds.items() if not nightly or owner != lane_id)
-        )
+    def _has_gpu_reservation(self, kind: str) -> bool:
+        return any(owner_kind == kind for owner_kind, _ in self._gpu_reservations)
 
-    def _check_nightly_overlap(self, lane_id: str, gpus: frozenset[int] | None, *, nightly: bool = False) -> None:
-        held = self._nightly_gpu_holds.get(lane_id)
+    def _blocked_gpus(self, lane_id: str, *, nightly: bool = False) -> frozenset[int]:
+        owner = ("nightly", lane_id) if nightly else None
+        return frozenset().union(*(gpus for key, gpus in self._gpu_reservations.items() if key != owner))
+
+    def _check_gpu_overlap(self, lane_id: str, gpus: frozenset[int] | None, *, nightly: bool = False) -> None:
+        held = self._gpu_reservations.get(("nightly", lane_id))
         if not nightly and held is not None:
             raise RuntimeError(f"Lane '{lane_id}' is reserved for a nightly benchmark")
         if nightly and held is not None and gpus != held:
             raise NightlyGpuBudgetUnavailable(f"lane {lane_id} cannot change its reserved GPUs")
-        blocked = self._nightly_blocked_gpus(lane_id, nightly=nightly)
+        calibration = self.calibration_gpu_subset
+        if calibration is not None:
+            # Even a disjoint nightly trial is not admitted during calibration:
+            # the two maintenance lifecycles have separate worker-wide effects.
+            if nightly:
+                raise NightlyGpuBudgetUnavailable("a calibration session is holding this worker")
+            if calibration and (gpus is None or gpus & calibration):
+                raise ValueError(f"GPU(s) {sorted(calibration)} are reserved for a calibration session")
+        blocked = self._blocked_gpus(lane_id, nightly=nightly)
         if blocked and (gpus is None or gpus & blocked):
             if nightly:
                 raise NightlyGpuBudgetUnavailable(f"GPU(s) {sorted(blocked)} are already reserved")
@@ -670,15 +675,13 @@ class LaneManager:
         """Pin a known GPU set while the caller holds its lane and GPU locks."""
         if not gpus:
             raise NightlyGpuBudgetUnavailable(f"lane {lane_id} has no confirmed GPU group to reserve")
-        self._check_nightly_overlap(lane_id, gpus, nightly=True)
-        if gpus & (self._calibration_gpu_subset or frozenset()):
-            raise NightlyGpuBudgetUnavailable("the benchmark GPUs are reserved for calibration")
-        self._nightly_gpu_holds[lane_id] = gpus
+        self._check_gpu_overlap(lane_id, gpus, nightly=True)
+        self._gpu_reservations[("nightly", lane_id)] = gpus
 
     async def release_nightly_gpu_budget(self, lane_id: str) -> None:
         """Release the reservation once the selected lane has been restored."""
         async with self._lock.scoped([lane_id]):
-            self._nightly_gpu_holds.pop(lane_id, None)
+            self._gpu_reservations.pop(("nightly", lane_id), None)
 
     # ------------------------------------------------------------------
     # Calibration session
@@ -687,7 +690,7 @@ class LaneManager:
     @property
     def calibration_gpu_subset(self) -> frozenset[int] | None:
         """GPUs held by a running calibration session, or ``None`` when idle."""
-        return self._calibration_gpu_subset
+        return self._gpu_reservations.get(("calibration", ""))
 
     def _busy_gpu_indices(self) -> frozenset[int]:
         """GPU indices touched by any currently running vLLM lane.
@@ -697,7 +700,7 @@ class LaneManager:
         """
         busy: set[int] = set()
         gpu_sets = [
-            self._lane_gpu_set(handle.lane_config.gpu_devices)
+            self._launch_gpu_set(handle.lane_config)
             for handle in self._handles.values()
             if handle.lane_config is not None and handle.lane_config.vllm
         ]
@@ -710,11 +713,17 @@ class LaneManager:
             busy |= gset
         return frozenset(busy)
 
-    def begin_calibration_session(self) -> frozenset[int]:
+    async def acquire_calibration_gpu_reservation(self, required_gpus: frozenset[int] = frozenset()) -> frozenset[int]:
+        """Fence the selected GPUs after admitted lane operations have passed."""
+        async with self._lock:
+            return self.begin_calibration_session(required_gpus)
+
+    def begin_calibration_session(self, required_gpus: frozenset[int] = frozenset()) -> frozenset[int]:
         """Hold a GPU slice for a calibration run, preferring idle GPUs.
 
-        Returns the held slice — the node's largest power-of-two GPU count,
-        picked from currently-idle GPUs first (so a model loaded on GPU 0
+        Explicit calibration pins must be included in the hold. The usual
+        slice is the node's largest power-of-two GPU count, with its other
+        slots picked from currently-idle GPUs first (so a model loaded on GPU 0
         doesn't force calibration onto ``[0, 1]`` while ``[1, 2]`` sit idle;
         see :func:`select_calibration_gpus`). Only falls back to the naive
         ``0..slice_size-1`` slice when too few GPUs are idle to cover the
@@ -723,23 +732,31 @@ class LaneManager:
         probe keeps the slice's VRAM to itself. Lanes outside the slice are
         unaffected and keep serving during the session.
         """
-        if self._nightly_gpu_holds:
+        if self._has_gpu_reservation("nightly"):
             raise RuntimeError("A nightly benchmark is holding GPUs on this worker")
+        if self.calibration_gpu_subset is not None:
+            raise RuntimeError("A calibration session already holds this worker")
         total = self._gpu_device_count()
         busy = self._busy_gpu_indices()
-        self._calibration_gpu_subset = frozenset(select_calibration_gpus(total, busy))
-        if self._calibration_gpu_subset:
+        if not required_gpus <= set(range(total)):
+            raise RuntimeError("An explicit calibration GPU pin is outside the confirmed GPU inventory")
+        preferred = select_calibration_gpus(total, busy)
+        slots = max(0, len(preferred) - len(required_gpus))
+        available = [gpu for gpu in preferred if gpu not in required_gpus]
+        subset = required_gpus | frozenset(available[:slots])
+        self._gpu_reservations[("calibration", "")] = subset
+        if subset:
             logger.info(
                 "Calibration session holds GPU(s) %s (%s) — new lanes on these are "
                 "refused; leftover GPU(s) stay placeable",
-                sorted(self._calibration_gpu_subset),
-                "fully idle" if not (busy & self._calibration_gpu_subset) else "includes busy GPU(s)",
+                sorted(subset),
+                "fully idle" if not (busy & subset) else "includes busy GPU(s)",
             )
-        return self._calibration_gpu_subset
+        return subset
 
     def end_calibration_session(self) -> None:
         """Release the calibration GPU slice held by :meth:`begin_calibration_session`."""
-        self._calibration_gpu_subset = None
+        self._gpu_reservations.pop(("calibration", ""), None)
 
     def _validate_vllm_runtime_requirements(self, lanes: Iterable[LaneConfig]) -> None:
         vllm_lane_ids = [_lane_id_from_config(lane) for lane in lanes if lane.vllm]
@@ -759,6 +776,12 @@ class LaneManager:
     # Declarative API
     # ------------------------------------------------------------------
 
+    def _check_apply_gpu_reservations(self) -> None:
+        if self._has_gpu_reservation("nightly"):
+            raise RuntimeError("Cannot replace the desired lanes while a nightly benchmark holds GPUs")
+        if self._has_gpu_reservation("calibration"):
+            raise RuntimeError("Cannot replace the desired lanes during a calibration session")
+
     async def apply_lanes(self, desired: list[LaneConfig]) -> LaneApplyResult:
         """
         Declarative: describe the desired set of lanes.
@@ -773,6 +796,7 @@ class LaneManager:
 
         Returns a result with all actions taken and final lane statuses.
         """
+        self._check_apply_gpu_reservations()
         # Count static lanes that will be re-injected (running but not in desired)
         desired_lid_set = {_lane_id_from_config(lc) for lc in desired}
         static_reinject_count = sum(
@@ -796,8 +820,7 @@ class LaneManager:
         for lid in predrain_ids:
             await self._drain_lane_inflight(lid)
         async with self._lock:
-            if self._nightly_gpu_holds:
-                raise RuntimeError("Cannot replace the desired lanes while a nightly benchmark holds GPUs")
+            self._check_apply_gpu_reservations()
             actions: list[LaneAction] = []
             errors: list[str] = []
             rolled_back = False
@@ -1140,7 +1163,7 @@ class LaneManager:
                     f"Cannot remove lane '{lane_id}': it does not serve model {expected_model!r}"
                 )
         if lane_id in self._handles:
-            self._check_nightly_overlap(lane_id, self._lane_launch_gpus(lane_id), nightly=expected_model is not None)
+            self._check_gpu_overlap(lane_id, self._lane_launch_gpus(lane_id), nightly=expected_model is not None)
 
     async def _remove_lane_drained(self, lane_id: str, *, expected_model: str | None = None) -> None:
         loop = asyncio.get_running_loop()
@@ -1493,7 +1516,7 @@ class LaneManager:
             self._clear_transition(lane_id)
 
     async def _sleep_lane(self, lane_id: str, level: int, mode: str) -> LaneStatus:
-        self._check_nightly_overlap(lane_id, self._lane_launch_gpus(lane_id))
+        self._check_gpu_overlap(lane_id, self._lane_launch_gpus(lane_id))
         if mode != "force":
             self._set_transition(lane_id, "draining")
             await self._drain_lane_inflight(lane_id)
@@ -1502,7 +1525,7 @@ class LaneManager:
         # Host RAM is taken only once the lane and its GPUs are held, so a
         # sleep waiting for a start on its GPU holds up no other sleep.
         async with self._holding_lane(lane_id, queue=False), self._host_ram_lock:
-            self._check_nightly_overlap(lane_id, self._lane_launch_gpus(lane_id))
+            self._check_gpu_overlap(lane_id, self._lane_launch_gpus(lane_id))
             if len(self._handles) == 1:
                 logger.warning(
                     "Sleeping the only active lane '%s' — worker will have zero serving capacity",
@@ -1582,7 +1605,7 @@ class LaneManager:
             if lc is None:
                 raise ValueError(f"Lane '{lane_id}' has no lane config")
             if lc.vllm:
-                self._check_nightly_overlap(lane_id, self._launch_gpu_set(lc))
+                self._check_gpu_overlap(lane_id, self._launch_gpu_set(lc))
             try:
                 await handle.wake_up()
                 # Lane is serveable again; acquire may admit before the
@@ -2229,7 +2252,7 @@ class LaneManager:
             for lid, handle in self._handles.items()
             if handle.lane_config is not None
             and handle.lane_config.vllm
-            and self._lane_touches_gpus(handle.lane_config.gpu_devices, gpu_set)
+            and ((gpus := self._launch_gpu_set(handle.lane_config)) is None or gpus & gpu_set)
         )
 
     async def destroy_lanes_on_gpus(self, gpu_set: set[int]) -> int:
@@ -2666,7 +2689,8 @@ class LaneManager:
             return None
         if lowered == "none":
             return frozenset()
-        return frozenset(int(part) for part in raw.split(",") if part.isdigit())
+        parts = raw.split(",")
+        return frozenset(map(int, parts)) if all(part.isdigit() for part in parts) else None
 
     def _lane_touches_gpus(self, gpu_devices: str | None, gpu_set: set[int]) -> bool:
         """True when a lane's GPU set intersects *gpu_set* (guard)."""
@@ -2908,7 +2932,7 @@ class LaneManager:
         options = {"nightly": True} if nightly else {}
         placed = await self._place_gpu_devices(lane_id, lane_config, busy_gpus, **options)
         if placed.vllm:
-            self._check_nightly_overlap(lane_id, self._launch_gpu_set(placed), nightly=nightly)
+            self._check_gpu_overlap(lane_id, self._launch_gpu_set(placed), nightly=nightly)
         if placed.gpu_devices and not lane_config.gpu_devices:
             self._auto_pins[lane_id] = placed.gpu_devices
         return placed
@@ -3031,16 +3055,9 @@ class LaneManager:
         if nightly:
             for row in allowed_rows:
                 row["free_mb"] = max(0.0, row["free_mb"] - _NIGHTLY_WARMUP_HEADROOM_MB)
-        nightly_blocked = self._nightly_blocked_gpus(lane_id, nightly=nightly)
-        if nightly_blocked:
-            allowed_rows = [row for row in allowed_rows if int(row["index"]) not in nightly_blocked]
-            if len(allowed_rows) < lane_config.vllm_config.parallel_gpu_count:
-                raise RuntimeError(f"GPU(s) {sorted(nightly_blocked)} are reserved for a nightly benchmark")
-        if self._calibration_gpu_subset:
-            # A running calibration holds its slice's VRAM for the probe — a new
-            # lane may only take the leftover GPUs.
-            held = set(self._calibration_gpu_subset)
-            allowed_rows = [row for row in allowed_rows if int(row["index"]) not in held]
+        reserved_gpus = self._blocked_gpus(lane_id, nightly=nightly)
+        if reserved_gpus:
+            allowed_rows = [row for row in allowed_rows if int(row["index"]) not in reserved_gpus]
         tp_size = lane_config.vllm_config.parallel_gpu_count
         if busy_gpus:
             allowed_rows = [row for row in allowed_rows if int(row["index"]) not in busy_gpus]
@@ -3050,15 +3067,9 @@ class LaneManager:
                     f"too few left for lane '{lane_id}' (tp={tp_size})"
                 )
         if len(allowed_rows) < tp_size:
-            if self._calibration_gpu_subset:
-                # Fail fast rather than fall back to cuda:0 (a held slice GPU):
-                # the lane simply cannot be placed until the session ends.
-                raise RuntimeError(
-                    f"Auto-placement: no leftover GPU subset for lane '{lane_id}' "
-                    f"model={lane_config.model} (tp={tp_size}) — a calibration session "
-                    f"holds GPU(s) {sorted(self._calibration_gpu_subset)}. "
-                    "The lane is placed once the session ends."
-                )
+            if reserved_gpus:
+                operation = "a calibration session" if self.calibration_gpu_subset else "a nightly benchmark"
+                raise RuntimeError(f"GPU(s) {sorted(reserved_gpus)} are reserved for {operation}")
             if faulted_indices:
                 # Unpinned, the lane would see every GPU and could start on a
                 # faulted one.
@@ -3083,7 +3094,7 @@ class LaneManager:
 
         required_total_mb = self._estimate_lane_vram_mb(lane_config)
         if required_total_mb <= 0:
-            if faulted_indices or nightly_blocked or self._model_restricts_gpus(lane_config.model):
+            if faulted_indices or reserved_gpus or self._model_restricts_gpus(lane_config.model):
                 # Without an estimate there is nothing to fit, but leaving the
                 # lane unpinned would let it start on a faulted GPU or outside
                 # the model's GPU choice: take the allowed GPUs with the most
@@ -3300,7 +3311,7 @@ class LaneManager:
             minimum_by_gpu.keys() != gpus or any(not math.isfinite(mib) or mib <= 0 for mib in minimum_by_gpu.values())
         ):
             raise NightlyGpuBudgetUnavailable(f"saved memory budget for lane {lane_id} does not match its GPU group")
-        self._check_nightly_overlap(lane_id, gpus, nightly=True)
+        self._check_gpu_overlap(lane_id, gpus, nightly=True)
         budget_flags = {
             "--config",
             "--gpu-memory-utilization",
@@ -3640,26 +3651,14 @@ class LaneManager:
             else:
                 lane_config = await self._place_for_spawn(lane_id, lane_config, claim)
             actual_gpus = self._launch_gpu_set(lane_config)
-            self._check_nightly_overlap(lane_id, actual_gpus, nightly=nightly_gpu_budget)
-            # Last line of defence at the resource itself: an operator-explicit
-            # gpu_devices pin that lands on the calibration's held slice is
-            # refused (auto-placement already avoids the slice). Leftover
-            # GPUs are allowed.
-            if (
-                self._calibration_gpu_subset
-                and lane_config.vllm
-                and self._lane_touches_gpus(lane_config.gpu_devices, self._calibration_gpu_subset)
-            ):
-                raise ValueError(
-                    f"Lane '{lane_id}' would run on GPU(s) {lane_config.gpu_devices or 'all'} held by a "
-                    f"running calibration session (slice {sorted(self._calibration_gpu_subset)}). "
-                    "Placement is refused until the session ends; leftover GPU(s) remain available."
-                )
+            self._check_gpu_overlap(lane_id, actual_gpus, nightly=nightly_gpu_budget)
             if nightly_gpu_budget:
                 await self._require_nightly_gpu_budget(lane_id, lane_config, minimum_by_gpu=minimum_by_gpu)
                 self._claim_nightly_gpus(lane_id, actual_gpus)
             else:
                 await self._wait_for_vram_headroom(lane_id, lane_config)
+            if lane_config.vllm:
+                self._check_gpu_overlap(lane_id, actual_gpus, nightly=nightly_gpu_budget)
             transfer.status.reference_vram_mb = self._estimate_lane_vram_mb(lane_config) or None
             port = self._port_alloc.allocate(lane_id)
             self._note_lane_spawn(lane_id, lane_config.model)
@@ -3824,10 +3823,10 @@ class LaneManager:
         does not place onto the memory the old process frees.
         """
         if new_config.vllm:
-            self._check_nightly_overlap(lane_id, self._launch_gpu_set(new_config), nightly=nightly)
+            self._check_gpu_overlap(lane_id, self._launch_gpu_set(new_config), nightly=nightly)
         old_config = self._handles[lane_id].lane_config
         if old_config is not None and old_config.vllm:
-            self._check_nightly_overlap(lane_id, self._launch_gpu_set(old_config), nightly=nightly)
+            self._check_gpu_overlap(lane_id, self._launch_gpu_set(old_config), nightly=nightly)
         if scoped:
             self._loading_gpus[lane_id] = self._launch_gpu_set(new_config)
         # The old handle leaves _handles' protection the moment its process is
@@ -3878,6 +3877,7 @@ class LaneManager:
                 new_config = await self._auto_place_gpu_devices(lane_id, new_config, **options)
                 if nightly:
                     await self._require_nightly_gpu_budget(lane_id, new_config, minimum_by_gpu=nightly_vram_needs)
+                self._check_gpu_overlap(lane_id, self._launch_gpu_set(new_config), nightly=nightly)
                 transfer.status.reference_vram_mb = self._estimate_lane_vram_mb(new_config) or None
                 # A calibration slice is picked without the lock: it must see
                 # where the replacement starts, not where the old process ran.
