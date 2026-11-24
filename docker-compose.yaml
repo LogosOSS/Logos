@@ -573,7 +573,7 @@ services:
       timeout: 5s
       retries: 10
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     networks:
       - internal
 
@@ -864,6 +864,7 @@ services:
 volumes:
   data_volume:
   postgres_data:
+    name: ${LOGOS_DB_VOLUME_NAME:-${COMPOSE_PROJECT_NAME}_postgres_data}
   agent_artifacts:
   # Named literally (not project-scoped) so its Docker name is exactly the
   # value LOGOS_AGENT_STATE_VOLUME hands to the runner: a bind source is

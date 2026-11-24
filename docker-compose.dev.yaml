@@ -442,7 +442,7 @@ services:
       timeout: 5s
       retries: 10
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     networks:
       - internal
 
@@ -487,6 +487,7 @@ services:
 volumes:
   data_volume:
   postgres_data:
+    name: ${LOGOS_DB_VOLUME_NAME:-${COMPOSE_PROJECT_NAME}_postgres_data}
 
 networks:
   internal:
