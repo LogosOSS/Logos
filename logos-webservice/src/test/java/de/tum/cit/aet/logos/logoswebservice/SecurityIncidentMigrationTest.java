@@ -39,7 +39,8 @@ class SecurityIncidentMigrationTest {
         }
         List<String> securityMigrations = List.of(
             "liquibase/changelog/080_security_incidents.xml",
-            "liquibase/changelog/081_security_manual_updates.xml");
+            "liquibase/changelog/081_security_manual_updates.xml",
+            "liquibase/changelog/094_security_feed_retry_window.xml");
         for (String migration : securityMigrations) {
             master = master.replace("    <include file=\"" + migration + "\"/>\n", "");
             assertThat(master).doesNotContain(migration);
@@ -63,14 +64,17 @@ class SecurityIncidentMigrationTest {
             migrate(directory, "liquibase/changelog/master.xml");
 
             assertThat(previousHistory(jdbc)).containsExactlyElementsOf(previousHistory);
-            assertThat(jdbc.queryForList("SELECT id FROM databasechangelog WHERE filename IN (?, ?) ORDER BY orderexecuted",
-                String.class, securityMigrations.get(0), securityMigrations.get(1)))
-                .containsExactly("080-security-incidents", "081-security-manual-updates");
+            assertThat(jdbc.queryForList("SELECT id FROM databasechangelog WHERE filename IN (?, ?, ?) ORDER BY orderexecuted",
+                String.class, securityMigrations.get(0), securityMigrations.get(1), securityMigrations.get(2)))
+                .containsExactly("080-security-incidents", "081-security-manual-updates", "094-security-feed-retry-window");
             assertThat(jdbc.queryForObject("SELECT pg_get_functiondef("
                 + "'public.logos_price_usage(integer,integer,timestamptz,text,jsonb)'::regprocedure)", String.class))
                 .isEqualTo(pricing);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns "
                 + "WHERE table_schema='public' AND table_name='security_incidents' AND column_name='manual_override'", Integer.class))
+                .isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns "
+                + "WHERE table_schema='public' AND table_name='security_feed_state' AND column_name='retry_since'", Integer.class))
                 .isEqualTo(1);
         }
     }
@@ -78,7 +82,8 @@ class SecurityIncidentMigrationTest {
     private static List<String> previousHistory(JdbcTemplate jdbc) {
         return jdbc.queryForList("SELECT row_to_json(d)::text FROM databasechangelog d "
             + "WHERE filename NOT IN ('liquibase/changelog/080_security_incidents.xml', "
-            + "'liquibase/changelog/081_security_manual_updates.xml') ORDER BY orderexecuted", String.class);
+            + "'liquibase/changelog/081_security_manual_updates.xml', "
+            + "'liquibase/changelog/094_security_feed_retry_window.xml') ORDER BY orderexecuted", String.class);
     }
 
     private static void migrate(Path directory, String master) throws Exception {
