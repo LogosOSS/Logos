@@ -87,8 +87,9 @@ export const ADVANCED_FIELDS: AdvancedField[] = [
       label: 'Max. parallel requests',
       kind: 'int',
       min: 1,
+      max: 65536,
       placeholder: 'Default',
-      help: 'Requests the engine processes at the same time. Empty lets vLLM or the calibrated profile decide.',
+      help: 'Requests the engine processes at the same time. Empty lets vLLM or the calibrated profile decide. The usable upper limit depends on the KV cache.',
     },
     {
       key: 'enable_prefix_caching',
