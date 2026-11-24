@@ -672,6 +672,18 @@ def test_capacity_wait_reuses_its_daily_claim_and_emits_one_deferred_event(datab
 
     store.finalize_continuations(datetime.fromisoformat("2026-10-29T07:59:59+01:00"))
     assert store.status(31)["status"] == CAPACITY_WAITING
+    workload_id = "c" * 64
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO benchmark_workloads(id, name, model_id, model_name, provenance, requests, request_count) "
+                "VALUES (:id, 'Next workload', 11, 'model-a', 'synthetic', '[{}]'::jsonb, 1)"
+            ),
+            {"id": workload_id},
+        )
+    updated = store.set_enabled(31, True, True, workload_id, None)
+    assert updated["workload_id"] == workload_id
+    assert updated["status"] == CAPACITY_WAITING
     with engine.connect() as connection:
         assert connection.execute(text("SELECT COUNT(*) FROM benchmark_completion_events")).scalar_one() == 0
     assert store.claim(31, day)

@@ -107,7 +107,8 @@ def set_enabled(pair_id: int, enabled: bool, expected: bool, workload_id=UNCHANG
                 "optimizer = CASE WHEN :change_workload AND workload_id IS DISTINCT FROM :workload_id "
                 "THEN '{}'::jsonb ELSE optimizer END, "
                 "status = CASE WHEN recovery IS NOT NULL THEN status "
-                "WHEN status = 'continuing' THEN status WHEN :enabled THEN 'scheduled' ELSE 'disabled' END "
+                "WHEN status IN ('continuing', :capacity_waiting) THEN status "
+                "WHEN :enabled THEN 'scheduled' ELSE 'disabled' END "
                 "WHERE model_provider_id = :id AND enabled = :expected AND (NOT :enabled OR recovery IS NULL) "
                 "AND (NOT :change_workload OR (workload_id IS NOT DISTINCT FROM :expected_workload "
                 "AND recovery IS NULL AND status NOT IN ('running', 'preparing', 'continuing', 'recovery_required')))"
@@ -119,6 +120,7 @@ def set_enabled(pair_id: int, enabled: bool, expected: bool, workload_id=UNCHANG
                 "change_workload": workload_id is not UNCHANGED,
                 "workload_id": None if workload_id is UNCHANGED else workload_id,
                 "expected_workload": expected_workload_id,
+                "capacity_waiting": CAPACITY_WAITING,
             },
         )
         if not changed.rowcount:
