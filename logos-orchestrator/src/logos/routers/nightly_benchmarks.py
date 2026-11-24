@@ -33,7 +33,7 @@ def target_for(pair_id):
 
 
 def worker_ready(snapshot, online):
-    return online and bool(((snapshot or {}).get("runtime") or {}).get("supports_benchmark_restart"))
+    return online and bool(((snapshot or {}).get("runtime") or {}).get("supports_nightly_gpu_budget"))
 
 
 @router.post("/status")

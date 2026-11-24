@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 from fastapi import WebSocket
 
-from logos.benchmarks.nightly import LEASE_CHECK, NIGHTLY_CONTEXT
+from logos.benchmarks.nightly import LEASE_CHECK, NIGHTLY_CONTEXT, configured_lane_id
 from logos.benchmarks.reservations import benchmark_reservations
 from logos.errors import UpstreamStreamError
 from logos.monitoring import prometheus_metrics as prom
@@ -51,6 +51,10 @@ class LogosNodeOfflineError(RuntimeError):
 class LogosNodeCommandError(RuntimeError):
     """Raised when a worker command RPC returns an error."""
 
+    def __init__(self, message: str, *, reason_code: str | None = None) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
 
 class LogosNodeCommandRejectedError(LogosNodeCommandError):
     """The worker explicitly refused a command without accepting it.
@@ -58,8 +62,8 @@ class LogosNodeCommandRejectedError(LogosNodeCommandError):
     ``errors`` holds the problems one by one when the worker listed them.
     """
 
-    def __init__(self, message: str, errors: list[str] | None = None) -> None:
-        super().__init__(message)
+    def __init__(self, message: str, errors: list[str] | None = None, *, reason_code: str | None = None) -> None:
+        super().__init__(message, reason_code=reason_code)
         self.errors: list[str] = list(errors or [])
 
 
@@ -1307,8 +1311,39 @@ class LogosNodeRuntimeRegistry:
             )
 
     @staticmethod
+    def _check_nightly_mutation(session, action, params) -> None:
+        provider_id = session.provider_id
+        if not benchmark_reservations.is_nightly_reserved(provider_id):
+            return
+        if (
+            action in {"apply_lanes", "start_calibration_session"}
+            or benchmark_reservations.owner(provider_id, "*") is not None
+        ):
+            raise LogosNodeCommandError("Worker is reserved for nightly benchmarks")
+        params = params or {}
+        lane_id = configured_lane_id(
+            {"lane_id": str(params.get("lane_id") or "").strip(), "model": params.get("model") or ""}
+        )
+        lanes = (session.latest_runtime or {}).get("lanes") or []
+        live_model = next((lane.get("model") for lane in lanes if lane.get("lane_id") == lane_id), None)
+        desired = getattr(session, "desired_lanes", {})
+        desired_model = (desired.get(lane_id) or {}).get("model")
+        pinned_model = benchmark_reservations.pinned_model(provider_id, lane_id)
+        target_model = params.get("model") if action == "add_lane" else (params.get("updates") or {}).get("model")
+        if (
+            (action == "add_lane" and not target_model)
+            or (action != "add_lane" and not (pinned_model or live_model or desired_model))
+            or any(
+                model and benchmark_reservations.is_nightly_reserved(provider_id, model)
+                for model in (pinned_model, live_model, desired_model, target_model)
+            )
+        ):
+            raise LogosNodeCommandError("The lane is reserved for nightly benchmarks")
+
+    @staticmethod
     def _check_benchmark_reservation(session, action, params, request_id) -> None:
-        if NIGHTLY_CONTEXT.get() and action not in {
+        nightly = NIGHTLY_CONTEXT.get()
+        if nightly and action not in {
             "cancel_command",
             "get_runtime",
             "get_lanes",
@@ -1316,21 +1351,16 @@ class LogosNodeRuntimeRegistry:
         }:
             if not LEASE_CHECK.get()():
                 raise LogosNodeCommandError("Nightly execution lease was lost before worker dispatch")
-        if (
-            action
-            in {
-                "add_lane",
-                "delete_lane",
-                "reconfigure_lane",
-                "sleep_lane",
-                "wake_lane",
-                "apply_lanes",
-                "start_calibration_session",
-            }
-            and benchmark_reservations.owner(session.provider_id, "*") is not None
-            and not NIGHTLY_CONTEXT.get()
-        ):
-            raise LogosNodeCommandError("Worker is reserved for nightly benchmarks")
+        if not nightly and action in {
+            "add_lane",
+            "delete_lane",
+            "reconfigure_lane",
+            "sleep_lane",
+            "wake_lane",
+            "apply_lanes",
+            "start_calibration_session",
+        }:
+            LogosNodeRuntimeRegistry._check_nightly_mutation(session, action, params)
         if action not in {"infer", "infer_stream"}:
             return
         lane_id = (params or {}).get("lane_id")
@@ -1510,7 +1540,9 @@ class LogosNodeRuntimeRegistry:
 
         if not bool(result.get("success", False)):
             _undo_optimistic_calibration_mark()
-            raise LogosNodeCommandError(str(result.get("error", "unknown worker command error")))
+            raise LogosNodeCommandError(
+                str(result.get("error", "unknown worker command error")), reason_code=result.get("reason_code")
+            )
         payload = result.get("result", {})
         # A worker that declines a command answers it — the transport succeeded,
         # so the check above sees nothing. Refusals travel in the payload as
@@ -1526,6 +1558,7 @@ class LogosNodeRuntimeRegistry:
             raise LogosNodeCommandRejectedError(
                 str(payload.get("error", f"worker refused '{action}'")),
                 [str(item) for item in listed] if isinstance(listed, list) else None,
+                reason_code=payload.get("reason_code"),
             )
         return payload
 

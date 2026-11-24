@@ -4488,7 +4488,8 @@ async def test_unloading_reports_remaining_vram_even_after_detaching(monkeypatch
     manager = _manager_with_handles({"lane": handle})
     monkeypatch.setattr(manager, "_query_process_vram_map", AsyncMock(side_effect=[{123: 8192}, {123: 2048}, {}]))
 
-    async def unload(lane_id):
+    async def unload(lane_id, *, expected_model=None):
+        assert expected_model is None
         (initial,) = await manager.lane_transfer_statuses()
         assert initial.operation == "unloading"
         assert initial.resident_vram_mb == initial.reference_vram_mb == 8192

@@ -62,6 +62,7 @@ _HANDLE_CLOSE_TIMEOUT = 10
 # on top of the estimate. OFFSET_MB adds a fixed safety margin on top.
 _GPU_PLACEMENT_SECURITY_RATIO = 1.005
 _GPU_PLACEMENT_HEADROOM_OFFSET_MB = 0.0
+_NIGHTLY_WARMUP_HEADROOM_MB = 512.0
 _CRASH_RESTART_COOLDOWN_S = 30.0
 _MAX_CRASH_RESTARTS = 5  # per lane; budget resets on confirmed successful restart
 
@@ -289,6 +290,17 @@ class LaneNotServingError(RuntimeError):
     a lane that is being torn down (which surfaces as RemoteProtocolError)."""
 
 
+class NightlyGpuBudgetUnavailable(RuntimeError):
+    """The worker cannot safely admit this Nightly benchmark right now."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"Nightly GPU budget unavailable: {reason}")
+
+
+class NightlyLaneIdentityMismatch(RuntimeError):
+    """The identifier for a temporary benchmark lane points to another model."""
+
+
 _NEVER_SERVED: Any = object()
 
 # What vLLM prints when a calibration's memory figures do not hold on a node.
@@ -350,7 +362,7 @@ class LaneManager:
         gpu_device_count: Callable[[], int] | None = None,
         per_gpu_vram_mb: Callable[[], float] | None = None,
         gpu_snapshot: Callable[[], Awaitable[DeviceSummary]] | None = None,
-        gpu_force_poll: Callable[[], Awaitable[None]] | None = None,
+        gpu_force_poll: Callable[[], Awaitable[bool | None]] | None = None,
         max_lanes: int = 0,
         model_cache: Any | None = None,
         auto_reboot_on_stuck_gpu: bool = True,
@@ -529,6 +541,9 @@ class LaneManager:
         # and an explicit lane targeting them is refused, so the calibration's
         # probe keeps the slice's VRAM to itself. Leftover GPUs stay placeable.
         self._calibration_gpu_subset: frozenset[int] | None = None
+        # Nightly lanes hold their GPUs across trial restarts. Existing inference
+        # uses only its lane lock, so sharing a GPU does not interrupt serving.
+        self._nightly_gpu_holds: dict[str, frozenset[int]] = {}
         # Models in a lane startup/restart transition: their HF_HOME (possibly
         # the tmpfs RAM cache) is already chosen and vLLM is being
         # placed/spawned, but the handle only lands in _handles once the
@@ -634,6 +649,37 @@ class LaneManager:
         """Return True if the given lane_id is a static lane."""
         return lane_id in self._static_lane_ids
 
+    def _nightly_blocked_gpus(self, lane_id: str, *, nightly: bool = False) -> frozenset[int]:
+        return frozenset().union(
+            *(gpus for owner, gpus in self._nightly_gpu_holds.items() if not nightly or owner != lane_id)
+        )
+
+    def _check_nightly_overlap(self, lane_id: str, gpus: frozenset[int] | None, *, nightly: bool = False) -> None:
+        held = self._nightly_gpu_holds.get(lane_id)
+        if not nightly and held is not None:
+            raise RuntimeError(f"Lane '{lane_id}' is reserved for a nightly benchmark")
+        if nightly and held is not None and gpus != held:
+            raise NightlyGpuBudgetUnavailable(f"lane {lane_id} cannot change its reserved GPUs")
+        blocked = self._nightly_blocked_gpus(lane_id, nightly=nightly)
+        if blocked and (gpus is None or gpus & blocked):
+            if nightly:
+                raise NightlyGpuBudgetUnavailable(f"GPU(s) {sorted(blocked)} are already reserved")
+            raise RuntimeError(f"GPU(s) {sorted(blocked)} are reserved for a nightly benchmark")
+
+    def _claim_nightly_gpus(self, lane_id: str, gpus: frozenset[int]) -> None:
+        """Pin a known GPU set while the caller holds its lane and GPU locks."""
+        if not gpus:
+            raise NightlyGpuBudgetUnavailable(f"lane {lane_id} has no confirmed GPU group to reserve")
+        self._check_nightly_overlap(lane_id, gpus, nightly=True)
+        if gpus & (self._calibration_gpu_subset or frozenset()):
+            raise NightlyGpuBudgetUnavailable("the benchmark GPUs are reserved for calibration")
+        self._nightly_gpu_holds[lane_id] = gpus
+
+    async def release_nightly_gpu_budget(self, lane_id: str) -> None:
+        """Release the reservation once the selected lane has been restored."""
+        async with self._lock.scoped([lane_id]):
+            self._nightly_gpu_holds.pop(lane_id, None)
+
     # ------------------------------------------------------------------
     # Calibration session
     # ------------------------------------------------------------------
@@ -677,6 +723,8 @@ class LaneManager:
         probe keeps the slice's VRAM to itself. Lanes outside the slice are
         unaffected and keep serving during the session.
         """
+        if self._nightly_gpu_holds:
+            raise RuntimeError("A nightly benchmark is holding GPUs on this worker")
         total = self._gpu_device_count()
         busy = self._busy_gpu_indices()
         self._calibration_gpu_subset = frozenset(select_calibration_gpus(total, busy))
@@ -748,6 +796,8 @@ class LaneManager:
         for lid in predrain_ids:
             await self._drain_lane_inflight(lid)
         async with self._lock:
+            if self._nightly_gpu_holds:
+                raise RuntimeError("Cannot replace the desired lanes while a nightly benchmark holds GPUs")
             actions: list[LaneAction] = []
             errors: list[str] = []
             rolled_back = False
@@ -1023,21 +1073,26 @@ class LaneManager:
     # Imperative lane operations
     # ------------------------------------------------------------------
 
-    async def add_lane(self, lane_config: LaneConfig) -> LaneStatus:
+    async def add_lane(self, lane_config: LaneConfig, *, nightly_gpu_budget: bool = False) -> LaneStatus:
         """Add a single lane."""
         lid = _lane_id_from_config(lane_config)
         self._validate_vllm_runtime_requirements([lane_config])
         if self._max_lanes > 0 and len(self._handles) >= self._max_lanes:
+            if nightly_gpu_budget:
+                raise NightlyGpuBudgetUnavailable(f"MAX_LANES limit reached ({self._max_lanes})")
             raise ValueError(f"MAX_LANES limit reached ({self._max_lanes})")
         async with self._lock.scoped([lid]) as claim:
             if lid in self._handles:
                 raise ValueError(f"Lane '{lid}' already exists")
-            await self._add_lane_unlocked(lid, lane_config, claim=claim)
+            if nightly_gpu_budget:
+                await self._add_lane_unlocked(lid, lane_config, claim=claim, nightly_gpu_budget=True)
+            else:
+                await self._add_lane_unlocked(lid, lane_config, claim=claim)
             status = await self._get_status_unlocked(lid)
         await self._notify_lane_added()
         return status
 
-    async def remove_lane(self, lane_id: str) -> None:
+    async def remove_lane(self, lane_id: str, *, expected_model: str | None = None) -> None:
         """Remove a single lane and free its port.
 
         Drains in-flight requests first so eviction (e.g. a logos-nosleep model
@@ -1050,20 +1105,34 @@ class LaneManager:
         """
         if lane_id in self._static_lane_ids:
             raise ValueError(f"Cannot remove static lane '{lane_id}'")
+        self._check_nightly_delete(lane_id, expected_model)
         handle = self._handles.get(lane_id)
+        if expected_model is not None and handle is None:
+            raise KeyError(f"Lane '{lane_id}' not found")
         transfer = None
         if handle is not None:
             config = handle.lane_config
             transfer = self._begin_lane_transfer(lane_id, config.model if config else "", "unloading", handle)
         self._set_transition(lane_id, "stopping")
         try:
-            await self._remove_lane_drained(lane_id)
+            await self._remove_lane_drained(lane_id, expected_model=expected_model)
         finally:
             self._clear_transition(lane_id)
             if transfer is not None:
                 self._end_lane_transfer(lane_id, transfer)
 
-    async def _remove_lane_drained(self, lane_id: str) -> None:
+    def _check_nightly_delete(self, lane_id: str, expected_model: str | None) -> None:
+        if expected_model is not None:
+            handle = self._handles.get(lane_id)
+            config = handle.lane_config if handle is not None else None
+            if handle is not None and (config is None or config.model != expected_model):
+                raise NightlyLaneIdentityMismatch(
+                    f"Cannot remove lane '{lane_id}': it does not serve model {expected_model!r}"
+                )
+        if lane_id in self._handles:
+            self._check_nightly_overlap(lane_id, self._lane_launch_gpus(lane_id), nightly=expected_model is not None)
+
+    async def _remove_lane_drained(self, lane_id: str, *, expected_model: str | None = None) -> None:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _LANE_SLEEP_DRAIN_TIMEOUT_S
         while True:
@@ -1072,6 +1141,7 @@ class LaneManager:
             # Held until the process has exited: a start on these GPUs must
             # not see their memory free up while it profiles.
             async with self._holding_lane(lane_id, queue=False):
+                self._check_nightly_delete(lane_id, expected_model)
                 detached = self._detach_if_drained(lane_id, loop.time() >= deadline)
                 if detached is not None:
                     await self._finalize_unloaded(lane_id, *detached)
@@ -1145,7 +1215,13 @@ class LaneManager:
         return handle, port
 
     async def reconfigure_lane(
-        self, lane_id: str, updates: dict[str, Any], *, require_idle: bool = False, force_restart: bool = False
+        self,
+        lane_id: str,
+        updates: dict[str, Any],
+        *,
+        require_idle: bool = False,
+        force_restart: bool = False,
+        nightly_gpu_budget: bool = False,
     ) -> LaneStatus:
         """Apply partial updates to an existing lane (stop-then-start if restart needed).
 
@@ -1158,10 +1234,17 @@ class LaneManager:
             async with self._lock.scoped([lane_id], gpus):
                 if self._pinned_gpus(lane_id) == gpus:
                     status = await self._reconfigure_unlocked(
-                        lane_id, updates, require_idle=require_idle, force_restart=force_restart, held_gpus=gpus
+                        lane_id,
+                        updates,
+                        require_idle=require_idle,
+                        force_restart=force_restart,
+                        held_gpus=gpus,
+                        nightly_gpu_budget=nightly_gpu_budget,
                     )
                     if status is not _NEEDS_WHOLE_LOCK:
                         return status
+        if nightly_gpu_budget:
+            raise NightlyGpuBudgetUnavailable(f"lane {lane_id} cannot be restarted within its pinned GPU group")
         async with self._lock:
             return await self._reconfigure_unlocked(
                 lane_id, updates, require_idle=require_idle, force_restart=force_restart
@@ -1183,6 +1266,7 @@ class LaneManager:
         require_idle: bool,
         force_restart: bool,
         held_gpus: frozenset[int] | None = None,
+        nightly_gpu_budget: bool = False,
     ) -> Any:
         """The body of reconfigure_lane.
 
@@ -1227,6 +1311,8 @@ class LaneManager:
                 if lane_id not in self._static_lane_ids:
                     current_data["gpu_devices"] = ""
         new_lc = LaneConfig(**current_data)
+        if nightly_gpu_budget:
+            new_lc = self._auto_tensor_parallel(new_lc)
         if held_gpus is not None and (
             parallel_changed
             or self._launch_gpu_set(new_lc) != held_gpus
@@ -1263,7 +1349,12 @@ class LaneManager:
                     f"Cannot apply vLLM settings: model '{current.model}' still has {active} active request(s). "
                     "Wait for them to finish, or run the benchmark with the current settings."
                 )
-            await self._restart_lane_unlocked(lane_id, new_lc, scoped=held_gpus is not None)
+            if nightly_gpu_budget:
+                needs = await self._require_nightly_gpu_budget(lane_id, new_lc, replacing=handle)
+                self._claim_nightly_gpus(lane_id, held_gpus)
+                await self._restart_lane_unlocked(lane_id, new_lc, scoped=True, nightly=True, nightly_vram_needs=needs)
+            else:
+                await self._restart_lane_unlocked(lane_id, new_lc, scoped=held_gpus is not None)
             if not changed:
                 self._settle_node_overrides(lane_id)
             if changed:
@@ -1392,6 +1483,7 @@ class LaneManager:
             self._clear_transition(lane_id)
 
     async def _sleep_lane(self, lane_id: str, level: int, mode: str) -> LaneStatus:
+        self._check_nightly_overlap(lane_id, self._lane_launch_gpus(lane_id))
         if mode != "force":
             self._set_transition(lane_id, "draining")
             await self._drain_lane_inflight(lane_id)
@@ -1400,6 +1492,7 @@ class LaneManager:
         # Host RAM is taken only once the lane and its GPUs are held, so a
         # sleep waiting for a start on its GPU holds up no other sleep.
         async with self._holding_lane(lane_id, queue=False), self._host_ram_lock:
+            self._check_nightly_overlap(lane_id, self._lane_launch_gpus(lane_id))
             if len(self._handles) == 1:
                 logger.warning(
                     "Sleeping the only active lane '%s' — worker will have zero serving capacity",
@@ -1478,6 +1571,8 @@ class LaneManager:
             lc = handle.lane_config
             if lc is None:
                 raise ValueError(f"Lane '{lane_id}' has no lane config")
+            if lc.vllm:
+                self._check_nightly_overlap(lane_id, self._launch_gpu_set(lc))
             try:
                 await handle.wake_up()
                 # Lane is serveable again; acquire may admit before the
@@ -2787,7 +2882,7 @@ class LaneManager:
         return False
 
     async def _auto_place_gpu_devices(
-        self, lane_id: str, lane_config: LaneConfig, busy_gpus: frozenset[int] = frozenset()
+        self, lane_id: str, lane_config: LaneConfig, busy_gpus: frozenset[int] = frozenset(), *, nightly: bool = False
     ) -> LaneConfig:
         """Place the lane and remember the pin when placement chose it."""
         if self._automatic_pin_outside_selection(lane_id, lane_config):
@@ -2800,13 +2895,16 @@ class LaneManager:
             )
             lane_config = lane_config.model_copy(update={"gpu_devices": ""})
             self._auto_pins.pop(lane_id, None)
-        placed = await self._place_gpu_devices(lane_id, lane_config, busy_gpus)
+        options = {"nightly": True} if nightly else {}
+        placed = await self._place_gpu_devices(lane_id, lane_config, busy_gpus, **options)
+        if placed.vllm:
+            self._check_nightly_overlap(lane_id, self._launch_gpu_set(placed), nightly=nightly)
         if placed.gpu_devices and not lane_config.gpu_devices:
             self._auto_pins[lane_id] = placed.gpu_devices
         return placed
 
     async def _place_gpu_devices(
-        self, lane_id: str, lane_config: LaneConfig, busy_gpus: frozenset[int] = frozenset()
+        self, lane_id: str, lane_config: LaneConfig, busy_gpus: frozenset[int] = frozenset(), *, nightly: bool = False
     ) -> LaneConfig:
         """Pick an explicit GPU set for auto-managed vLLM lanes.
 
@@ -2920,6 +3018,14 @@ class LaneManager:
             return lane_config
 
         allowed_rows = [row for row in device_rows if int(row["index"]) in set(allowed_indices)]
+        if nightly:
+            for row in allowed_rows:
+                row["free_mb"] = max(0.0, row["free_mb"] - _NIGHTLY_WARMUP_HEADROOM_MB)
+        nightly_blocked = self._nightly_blocked_gpus(lane_id, nightly=nightly)
+        if nightly_blocked:
+            allowed_rows = [row for row in allowed_rows if int(row["index"]) not in nightly_blocked]
+            if len(allowed_rows) < lane_config.vllm_config.parallel_gpu_count:
+                raise RuntimeError(f"GPU(s) {sorted(nightly_blocked)} are reserved for a nightly benchmark")
         if self._calibration_gpu_subset:
             # A running calibration holds its slice's VRAM for the probe — a new
             # lane may only take the leftover GPUs.
@@ -2967,7 +3073,7 @@ class LaneManager:
 
         required_total_mb = self._estimate_lane_vram_mb(lane_config)
         if required_total_mb <= 0:
-            if faulted_indices or self._model_restricts_gpus(lane_config.model):
+            if faulted_indices or nightly_blocked or self._model_restricts_gpus(lane_config.model):
                 # Without an estimate there is nothing to fit, but leaving the
                 # lane unpinned would let it start on a faulted GPU or outside
                 # the model's GPU choice: take the allowed GPUs with the most
@@ -3145,6 +3251,158 @@ class LaneManager:
         )
         return lane_config.model_copy(update={"gpu_devices": selector})
 
+    async def check_nightly_gpu_budget(self, lane_id: str) -> dict[int, float]:
+        """Check and reserve the GPUs of an existing lane before benchmarking it."""
+        gpus = self._pinned_gpus(lane_id)
+        if not gpus:
+            raise NightlyGpuBudgetUnavailable(f"lane {lane_id} has no confirmed GPU pin")
+        async with self._lock.scoped([lane_id], gpus):
+            handle = self._handles.get(lane_id)
+            if handle is None or self._pinned_gpus(lane_id) != gpus:
+                raise NightlyGpuBudgetUnavailable(f"lane {lane_id} changed placement")
+            needs = await self._require_nightly_gpu_budget(lane_id, handle.lane_config, replacing=handle)
+            self._claim_nightly_gpus(lane_id, gpus)
+            return needs
+
+    async def _require_nightly_gpu_budget(
+        self,
+        lane_id: str,
+        config: LaneConfig,
+        *,
+        replacing: ProcessHandle | None = None,
+        minimum_by_gpu: dict[int, float] | None = None,
+    ) -> dict[int, float]:
+        """Admit a Nightly launch against live per-GPU room while holding its GPU locks."""
+        vc = config.vllm_config
+        gpus = self._launch_gpu_set(config)
+        if (
+            not config.vllm
+            or vc is None
+            or not gpus
+            or not all(part.strip().isdigit() for part in config.gpu_devices.split(","))
+        ):
+            raise NightlyGpuBudgetUnavailable(f"lane {lane_id} has no confirmed NVIDIA GPU group")
+        global_args = self._vllm_engine_config.global_extra_args
+        count = self._launch_gpu_count(vc, global_args)
+        if count != len(gpus) or count != vc.parallel_gpu_count:
+            raise NightlyGpuBudgetUnavailable(f"lane {lane_id} has ambiguous GPU parallelism")
+        self._check_nightly_overlap(lane_id, gpus, nightly=True)
+        budget_flags = {
+            "--config",
+            "--gpu-memory-utilization",
+            "--device-memory-utilization",
+            "--kv-cache-memory-bytes",
+            "--num-gpu-blocks-override",
+        }
+        kv_mb = self._parse_memory_to_mb(vc.kv_cache_memory_bytes)
+        if kv_mb <= 0 or any(
+            arg.partition("=")[0].replace("_", "-") in budget_flags for arg in (*global_args, *vc.extra_args)
+        ):
+            raise NightlyGpuBudgetUnavailable(f"lane {lane_id} requires an explicit KV-cache budget in its vLLM config")
+        if self._gpu_force_poll is None or self._gpu_snapshot is None:
+            raise NightlyGpuBudgetUnavailable("fresh GPU telemetry is unavailable")
+        try:
+            refreshed = await self._gpu_force_poll()
+            snapshot = await self._gpu_snapshot() if refreshed is not False else None
+        except Exception as exc:
+            raise NightlyGpuBudgetUnavailable("fresh GPU telemetry is unavailable") from exc
+        if snapshot is None or not snapshot.nvidia_smi_available:
+            raise NightlyGpuBudgetUnavailable("fresh GPU telemetry is unavailable")
+        devices = {
+            int(device.extra["index"]): device
+            for device in snapshot.devices
+            if device.kind == "nvidia" and device.health != "faulted" and str(device.extra.get("index", "")).isdigit()
+        }
+        allowed = self._allowed_gpu_indices(config.model, devices.keys() - set(snapshot.faulted_gpu_indices))
+        if not gpus.issubset(allowed):
+            raise NightlyGpuBudgetUnavailable(f"GPU placement for lane {lane_id} is not healthy and allowed")
+
+        profile = self._model_profiles.get_profile(config.model) if self._model_profiles else None
+        estimate = self._estimate_lane_vram_mb(config) / count
+        measured = await self._nightly_process_gpu_vram(replacing.status().pid) if replacing is not None else {}
+        available_footprint = (
+            math.isfinite(estimate)
+            and estimate > kv_mb
+            and (
+                profile is not None
+                and profile.residency_source == "calibrated"
+                and not profile.calibration_stale
+                and (profile.tensor_parallel_size or 1) == count == vc.tensor_parallel_size
+            )
+        )
+        if not available_footprint and not all(
+            measured.get(devices[index].device_id, 0.0) > kv_mb or (minimum_by_gpu or {}).get(index, 0.0) > kv_mb
+            for index in gpus
+        ):
+            raise NightlyGpuBudgetUnavailable(f"lane {lane_id} has no calibrated or measured VRAM footprint")
+        per_gpu_total_mb = float(self._per_gpu_vram_mb() or 0.0)
+        gmu = effective_gmu(vc, profile=profile, per_gpu_total_mb=per_gpu_total_mb, kv_cache_per_gpu_mb=kv_mb)
+        needs = {}
+        for index in sorted(gpus):
+            device = devices[index]
+            total, free = device.memory_total_mb, device.memory_free_mb
+            if not math.isfinite(total) or not math.isfinite(free) or total <= 0 or not 0 <= free <= total:
+                raise NightlyGpuBudgetUnavailable(f"GPU {index} has invalid memory telemetry")
+            # Give back only this lane's measured allocation, on its own GPU.
+            # An estimate alone never credits memory before stopping a process.
+            lane_mb = min(measured.get(device.device_id, 0.0), total - free)
+            footprint = max(estimate if available_footprint else 0.0, lane_mb)
+            required = max(footprint, gmu * total) + _NIGHTLY_WARMUP_HEADROOM_MB
+            required = max(required, (minimum_by_gpu or {}).get(index, 0.0))
+            if free + lane_mb < required:
+                raise NightlyGpuBudgetUnavailable(
+                    f"GPU {index} on lane {lane_id} has {free + lane_mb:.0f} MiB available "
+                    f"and needs {required:.0f} MiB including warm-up"
+                )
+            needs[index] = required
+        return needs
+
+    async def _nightly_process_gpu_vram(self, root_pid: int | None) -> dict[str, float]:
+        """Measure only VRAM allocated by this lane and its subprocesses, by GPU UUID."""
+        if not root_pid:
+            return {}
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "nvidia-smi",
+                "--query-compute-apps=gpu_uuid,pid,used_memory",
+                "--format=csv,noheader,nounits",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except OSError:
+            return {}
+        try:
+            async with asyncio.timeout(8):
+                stdout, _ = await proc.communicate()
+        except TimeoutError:
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+            await proc.wait()
+            return {}
+        if proc.returncode != 0:
+            return {}
+        result: dict[str, float] = {}
+        parents: dict[int, int | None] = {}
+        for line in stdout.decode(errors="replace").splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) != 3 or not parts[1].isdigit():
+                continue
+            gpu_uuid, pid, raw = parts
+            try:
+                value = float(raw)
+            except ValueError:
+                continue
+            if (
+                math.isfinite(value)
+                and value > 0
+                and self._resolve_owner_pid(int(pid), {root_pid}, parents) == root_pid
+            ):
+                result[gpu_uuid] = result.get(gpu_uuid, 0.0) + value
+        return result
+
     async def _wait_for_vram_headroom(
         self,
         lane_id: str,
@@ -3283,7 +3541,9 @@ class LaneManager:
             max_attempts,
         )
 
-    async def _add_lane_unlocked(self, lane_id: str, lane_config: LaneConfig, claim: Claim | None = None) -> None:
+    async def _add_lane_unlocked(
+        self, lane_id: str, lane_config: LaneConfig, claim: Claim | None = None, *, nightly_gpu_budget: bool = False
+    ) -> None:
         """Start a lane.
 
         The caller holds either the whole lock or, with *claim*, the lane alone;
@@ -3292,6 +3552,8 @@ class LaneManager:
         # Loads still starting count too: they hold a slot already.
         starting = sum(1 for lid in self._pending_lane_configs if lid != lane_id)
         if self._max_lanes > 0 and len(self._handles) + starting >= self._max_lanes:
+            if nightly_gpu_budget:
+                raise NightlyGpuBudgetUnavailable(f"MAX_LANES limit reached ({self._max_lanes})")
             raise ValueError(f"MAX_LANES limit reached ({self._max_lanes})")
         # The re-plan does not take self._lock, and the handle only lands in
         # _handles after the spawn succeeds — reserve the model before its
@@ -3353,7 +3615,12 @@ class LaneManager:
             self._forget_lane_overrides(lane_id)
             lane_config = self._apply_model_vllm_overrides(lane_config, lane_id)
             lane_config = self._auto_tensor_parallel(lane_config)
-            lane_config = await self._place_for_spawn(lane_id, lane_config, claim)
+            if nightly_gpu_budget:
+                lane_config = await self._place_for_spawn(lane_id, lane_config, claim, nightly=True)
+            else:
+                lane_config = await self._place_for_spawn(lane_id, lane_config, claim)
+            actual_gpus = self._launch_gpu_set(lane_config)
+            self._check_nightly_overlap(lane_id, actual_gpus, nightly=nightly_gpu_budget)
             # Last line of defence at the resource itself: an operator-explicit
             # gpu_devices pin that lands on the calibration's held slice is
             # refused (auto-placement already avoids the slice). Leftover
@@ -3368,7 +3635,11 @@ class LaneManager:
                     f"running calibration session (slice {sorted(self._calibration_gpu_subset)}). "
                     "Placement is refused until the session ends; leftover GPU(s) remain available."
                 )
-            await self._wait_for_vram_headroom(lane_id, lane_config)
+            if nightly_gpu_budget:
+                await self._require_nightly_gpu_budget(lane_id, lane_config)
+                self._claim_nightly_gpus(lane_id, actual_gpus)
+            else:
+                await self._wait_for_vram_headroom(lane_id, lane_config)
             transfer.status.reference_vram_mb = self._estimate_lane_vram_mb(lane_config) or None
             port = self._port_alloc.allocate(lane_id)
             self._note_lane_spawn(lane_id, lane_config.model)
@@ -3459,7 +3730,9 @@ class LaneManager:
             self._load_finished.set()
             self._load_finished = asyncio.Event()
 
-    async def _place_for_spawn(self, lane_id: str, lane_config: LaneConfig, claim: Claim | None) -> LaneConfig:
+    async def _place_for_spawn(
+        self, lane_id: str, lane_config: LaneConfig, claim: Claim | None, *, nightly: bool = False
+    ) -> LaneConfig:
         """Pick the lane's GPUs; with *claim*, also take them for the start.
 
         A holder of the whole lock places directly: no other load is starting.
@@ -3473,6 +3746,7 @@ class LaneManager:
             # without the lock and must see where this lane starts.
             self._loading_gpus[lane_id] = self._launch_gpu_set(placed)
             return placed
+        nightly_options = {"nightly": True} if nightly else {}
         while True:
             async with self._placement_lock:
                 # Taken before the placement awaits: a load that finishes
@@ -3483,13 +3757,19 @@ class LaneManager:
                 placed: LaneConfig | None = None
                 try:
                     if busy == frozenset():
-                        placed = await self._auto_place_gpu_devices(lane_id, lane_config)
+                        placed = await self._auto_place_gpu_devices(lane_id, lane_config, **nightly_options)
                     elif busy is not None:
-                        placed = await self._auto_place_gpu_devices(lane_id, lane_config, busy_gpus=busy)
-                except RuntimeError:
+                        placed = await self._auto_place_gpu_devices(
+                            lane_id, lane_config, busy_gpus=busy, **nightly_options
+                        )
+                except RuntimeError as exc:
                     if not busy:
+                        if nightly and not isinstance(exc, NightlyGpuBudgetUnavailable):
+                            raise NightlyGpuBudgetUnavailable(str(exc)) from exc
                         raise
                 gpus = self._launch_gpu_set(placed) if placed is not None else None
+                if nightly and placed is not None and not gpus:
+                    raise NightlyGpuBudgetUnavailable(f"lane {lane_id} cannot be placed on a confirmed GPU group")
                 clear = placed is not None and (not others or (gpus is not None and not gpus & busy))
                 if clear:
                     self._loading_gpus[lane_id] = gpus
@@ -3512,6 +3792,8 @@ class LaneManager:
         new_config: LaneConfig,
         *,
         scoped: bool = False,
+        nightly: bool = False,
+        nightly_vram_needs: dict[int, float] | None = None,
     ) -> None:
         """
         Reconfigure a lane by stopping the old process first, then spawning a
@@ -3521,6 +3803,11 @@ class LaneManager:
         to. Those GPUs count as loading from the start, so a load elsewhere
         does not place onto the memory the old process frees.
         """
+        if new_config.vllm:
+            self._check_nightly_overlap(lane_id, self._launch_gpu_set(new_config), nightly=nightly)
+        old_config = self._handles[lane_id].lane_config
+        if old_config is not None and old_config.vllm:
+            self._check_nightly_overlap(lane_id, self._launch_gpu_set(old_config), nightly=nightly)
         if scoped:
             self._loading_gpus[lane_id] = self._launch_gpu_set(new_config)
         # The old handle leaves _handles' protection the moment its process is
@@ -3565,8 +3852,12 @@ class LaneManager:
                 # destroy(). Refresh and allow CUDA reclamation before placement.
                 if self._gpu_force_poll is not None:
                     await self._gpu_force_poll()
-                await self._wait_for_vram_headroom(lane_id, new_config)
-                new_config = await self._auto_place_gpu_devices(lane_id, new_config)
+                if not nightly:
+                    await self._wait_for_vram_headroom(lane_id, new_config)
+                options = {"nightly": True} if nightly else {}
+                new_config = await self._auto_place_gpu_devices(lane_id, new_config, **options)
+                if nightly:
+                    await self._require_nightly_gpu_budget(lane_id, new_config, minimum_by_gpu=nightly_vram_needs)
                 transfer.status.reference_vram_mb = self._estimate_lane_vram_mb(new_config) or None
                 # A calibration slice is picked without the lock: it must see
                 # where the replacement starts, not where the old process ran.

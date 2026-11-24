@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from logos.benchmarks.configuration import BenchmarkSettings, ServingOverrides
-from logos.benchmarks.nightly import PROGRESS
+from logos.benchmarks.nightly import NIGHTLY_CONTEXT, NIGHTLY_GPU_BUDGET_REASON, PROGRESS, NightlyCapacityDeferred
 from logos.benchmarks.nightly_store import write_progress
 
 DATASET = "openai/gsm8k"
@@ -620,6 +620,8 @@ async def run_benchmark_job(
                     },
                 },
             )
+        if NIGHTLY_CONTEXT.get() and getattr(exc, "reason_code", None) == NIGHTLY_GPU_BUDGET_REASON:
+            raise NightlyCapacityDeferred(message) from exc
     finally:
         lease_task.cancel()
         await asyncio.gather(lease_task, return_exceptions=True)

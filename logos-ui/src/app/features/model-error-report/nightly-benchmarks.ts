@@ -152,7 +152,8 @@ export class NightlyBenchmarks implements OnChanges, OnDestroy {
 
   statusLabel(value: string): string {
     const labels: Record<string, string> = {
-      scheduled: 'Waiting in nightly rotation', unavailable: 'Waiting for an available worker', preparing: 'Preparing worker', running: 'Benchmark in progress',
+      scheduled: 'Waiting in nightly rotation', unavailable: 'Waiting for an available worker', preparing: 'Preparing benchmark lane', running: 'Benchmark in progress',
+      waiting_for_capacity: 'Waiting for GPU capacity', capacity_deferred: 'Deferred until another maintenance window',
       continuing: 'Ready for another optimization round', completed: 'Finished — see results', disabled: 'Deactivated', success: 'Successful', failed: 'Failed',
       stalled: 'Stopped after five minutes without progress', preparation_timeout: 'Preparation timed out',
       window_closed: this.window ? `No new runs after ${this.window.benchmark_start_cutoff}` : 'Benchmark start window closed', window_closed_below_half: this.window ? `Stopped at ${this.window.end} below 50% complete` : 'Stopped below 50% at the maintenance cutoff',

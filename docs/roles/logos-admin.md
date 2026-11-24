@@ -345,6 +345,9 @@ If the measurement is deleted, then the page identifies the unavailable benchmar
 ![Enabled nightly rotation in the performance overview](../static/img/roles/logos-admin-nightly-benchmarks.png)
 
 The worker shows the workload and maintenance window. Expand **Schedule and test plan** for the rounds.
+Logos checks GPU memory for the benchmark lane and its warm-up before the round.
+If the worker needs more GPU memory, then the schedule shows **Waiting for GPU capacity**.
+Other models on the same worker continue to serve requests.
 
 ![Nightly management with the schedule and test plan](../static/img/roles/logos-admin-nightly-plan.png)
 

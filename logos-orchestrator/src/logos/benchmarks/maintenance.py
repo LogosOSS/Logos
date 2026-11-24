@@ -204,8 +204,8 @@ class MaintenanceCoordinator:
 
         Without ``force`` the worker must confirm the original lanes and
         settings. With ``force`` the journal is dropped without that proof and
-        the worker retains its current lanes. Either way the recovery's own orphaned
-        benchmark jobs are failed and the worker's reservation is lifted.
+        the worker retains its current lanes. The worker must still release
+        any held GPU group before the journal can be cleared.
         """
         import importlib
 
@@ -263,6 +263,20 @@ class MaintenanceCoordinator:
                     store.finish_recovery_jobs(jobs)
                     for job in jobs:
                         benchmark_reservations.release(job)
+                if recovery.get("gpu_budget"):
+                    try:
+                        await self.registry.send_command(
+                            provider_id,
+                            "release_nightly_gpu_budget",
+                            {"lane_id": recovery["lane_id"]},
+                            timeout_seconds=30,
+                        )
+                    except (LogosNodeOfflineError, LogosNodeCommandError, TimeoutError) as exc:
+                        raise MaintenanceBusyError(
+                            "The worker has not confirmed release of the benchmark GPUs"
+                        ) from exc
+                    if not store.lock_held(connection) or not store.execution_lock_held(execution, pair_id):
+                        raise MaintenanceBusyError("Maintenance command is still in progress")
                 store.save(pair_id, "interrupted_recovered", row["report"], None)
                 benchmark_reservations.release(-pair_id)
         logger.warning(

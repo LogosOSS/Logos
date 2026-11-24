@@ -726,6 +726,21 @@ async def test_release_recovery_of_an_unchanged_lane_needs_no_worker(recovery):
     assert await service.release_recovery(31) == {"released": True, "forced": False}
 
 
+async def test_even_forced_recovery_keeps_its_journal_until_the_gpu_hold_is_released(recovery):
+    service, state = recovery
+    state["row"]["recovery"].update(model_scoped=True, gpu_budget=True, mutated=False)
+    service.registry.send_command.side_effect = [LogosNodeOfflineError("offline"), {"ok": True}]
+    with pytest.raises(MaintenanceBusyError, match="has not confirmed release"):
+        await service.release_recovery(31, force=True)
+    assert not state["saved"] and _reserved()
+
+    assert await service.release_recovery(31, force=True) == {"released": True, "forced": True}
+    service.registry.send_command.assert_awaited_with(
+        20, "release_nightly_gpu_budget", {"lane_id": "lane"}, timeout_seconds=30
+    )
+    assert not _reserved()
+
+
 @pytest.mark.parametrize("journal_key", ["removed_lanes", "slept_lanes"])
 async def test_release_recovery_requires_removing_the_temporary_lane_and_restoring_suspended_lanes(
     recovery, journal_key

@@ -28,7 +28,7 @@
   @if (enableBlocker; as reason) { <p class="nightly__hint" id="nightly-blocker-{{ pairId }}" role="status">{{ reason }}</p> }
   @if (error() && !confirming()) { <p role="alert">{{ error() }}</p> }
   @if (state(); as status) {
-    @if (!status.enabled && !enableBlocker) { <p class="nightly__hint">The worker pauses serving requests during each test round.</p> }
+    @if (!status.enabled && !enableBlocker) { <p class="nightly__hint">Other models on this worker can keep serving during each test round.</p> }
     <div class="nightly__workload">
       @if (automaticSource) {
         <strong>Request workload</strong>
@@ -66,9 +66,9 @@
         </dl>
       }
       <ol class="nightly__steps">
-        <li><strong>Prepare and measure the baseline</strong><p>Freeze the night's inputs and test one isolated lane. Logos loads a temporary lane when needed.</p></li>
+        <li><strong>Prepare and measure the baseline</strong><p>Freeze the night's inputs and reserve the benchmark lane's GPUs. Logos loads a temporary lane when needed.</p></li>
         <li><strong>Test and refine</strong><p>Retest the saved candidate and vary the sequence and batch token limits. Only complete, comparable runs can update the candidate.</p></li>
-        <li><strong>Restore the worker</strong><p>Logos restores the previous lane setup. An eligible improvement can be applied when testing a single existing lane with a saved workload.</p></li>
+        <li><strong>Restore the lane</strong><p>Logos restores the previous settings. An eligible improvement can be applied when testing a single existing lane with a saved workload.</p></li>
       </ol>
       <details class="nightly__initial"><summary>Initial parameter values · {{ (status.plan?.length ?? 1) - 1 }} variants</summary>
         <div class="nightly__table-scroll"><table>
@@ -79,9 +79,9 @@
         </table></div>
         <p>Logos confirms the baseline after preparing the lane. Later rounds can test more variants.</p>
       </details>
-      <p>The worker pauses serving requests during each round. Five minutes without progress stops a run. Completion is reported after the worker confirms its final production configuration.</p>
+      <p>Other models keep serving. Logos waits if the selected GPUs lack memory for the lane and its warm-up. Five minutes without progress stops a run.</p>
     </details>
-    @if (status.enabled && status.status !== 'scheduled' && !status.recovery_required) { <small>{{ statusLabel(status.status) }}</small> }
+    @if (status.enabled && status.status !== 'scheduled' && !status.recovery_required) { <small role="status">{{ statusLabel(status.status) }}</small> }
     @if (status.report.length) {
       <details><summary>Latest round results</summary>
         <ul>@for (result of status.report; track $index) {

@@ -186,6 +186,86 @@ def test_nightly_node_reservation_blocks_all_models_until_restoration():
     assert lease.allows(1, "m", "production")
 
 
+def test_nightly_model_remains_reserved_between_jobs():
+    lease = BenchmarkReservations()
+    lease.reserve_nightly(1, "benchmark-model", -31)
+    lease.pin_lane(1, "benchmark-model", -31, "benchmark-lane")
+    dequeue = MagicMock(return_value=(None, None))
+    assert lease.admit_queued(1, "benchmark-model", dequeue) == (None, None)
+    dequeue.assert_not_called()
+    assert lease.admit_queued(1, "other", dequeue) == (None, None)
+    dequeue.assert_called_once_with(None)
+    assert lease.owner(1, "*") is None
+    assert lease.provider_owner(1) == -31
+    assert lease.is_nightly_reserved(1)
+    assert not lease.is_nightly_reserved(1, "other")
+    with pytest.raises(RuntimeError, match="reserved"):
+        lease.reserve(1, "benchmark-model", 7)
+    with pytest.raises(RuntimeError, match="reserved"):
+        lease.reserve(1, "benchmark-model", 7, nightly_owner=-32)
+    lease.reserve(1, "benchmark-model", 7, nightly_owner=-31)
+    lease.register_request(1, "benchmark-model", 7, "benchmark")
+    assert lease.provider_owner(1) == 7
+    assert lease.allows(1, "benchmark-model", "benchmark")
+    assert not lease.allows(1, "benchmark-model", "production")
+    assert lease.allows(1, "other", "production")
+    lease.release(7)
+    assert lease.provider_owner(1) == -31
+    assert lease.pinned_lane(1, "benchmark-model") == "benchmark-lane"
+    assert not lease.allows(1, "benchmark-model", "production")
+    lease.release(-31)
+    assert lease.provider_owner(1) is None
+    assert lease.pinned_lane(1, "benchmark-model") is None
+    assert lease.allows(1, "benchmark-model", "production")
+
+
+def test_nightly_model_guard_preserves_other_models_on_the_same_worker():
+    facade = LogosNodeSchedulingDataFacade(MagicMock())
+    provider = MagicMock(provider_id=9001)
+    provider._model_id_to_name = {1: "benchmark-model", 2: "other"}
+    provider.get_model_status.return_value = SimpleNamespace(queue_depth=0)
+    provider.try_reserve_capacity.return_value = True
+    facade._get_provider_for_model = MagicMock(return_value=provider)
+    facade.get_model_name = MagicMock(side_effect=lambda model_id, _: provider._model_id_to_name[model_id])
+    facade.on_request_start("already-admitted", 1, 9001)
+    session = SimpleNamespace(
+        provider_id=9001,
+        latest_runtime={
+            "lanes": [
+                {"lane_id": "benchmark-lane", "model": "benchmark-model"},
+                {"lane_id": "other-lane", "model": "other"},
+            ]
+        },
+    )
+    check = LogosNodeRuntimeRegistry._check_benchmark_reservation
+    facade.reserve_model_for_drain(9001, "benchmark-model", -31)
+    try:
+        # Already admitted target-model work can finish during the prepare step.
+        check(session, "infer", {"lane_id": "benchmark-lane"}, "already-admitted")
+        assert not facade.try_reserve_capacity(1, 9001, "new-target-request")
+        assert facade.try_reserve_capacity(2, 9001, "new-other-request")
+        check(session, "infer", {"lane_id": "other-lane"}, "new-other-request")
+
+        for action in ("delete_lane", "reconfigure_lane", "sleep_lane", "wake_lane"):
+            with pytest.raises(LogosNodeCommandError, match="reserved"):
+                check(session, action, {"lane_id": "benchmark-lane"}, None)
+            check(session, action, {"lane_id": "other-lane"}, None)
+        with pytest.raises(LogosNodeCommandError, match="reserved"):
+            check(session, "add_lane", {"model": "benchmark-model"}, None)
+        check(session, "add_lane", {"model": "other"}, None)
+        for action in ("apply_lanes", "start_calibration_session"):
+            with pytest.raises(LogosNodeCommandError, match="reserved"):
+                check(session, action, {}, None)
+
+        benchmark_reservations.pin_lane(9001, "benchmark-model", -31, "benchmark-lane")
+        session.latest_runtime["lanes"] = [{"lane_id": "other-lane", "model": "other"}]
+        with pytest.raises(LogosNodeCommandError, match="reserved"):
+            check(session, "add_lane", {"lane_id": "benchmark-lane", "model": "other"}, None)
+    finally:
+        benchmark_reservations.finish_request("new-other-request")
+        benchmark_reservations.release(-31)
+
+
 def test_nightly_owner_allows_recovery_but_blocks_unrelated_lane_changes():
     from logos.benchmarks.nightly import NIGHTLY_CONTEXT
 
@@ -348,6 +428,39 @@ async def test_worker_ok_false_has_an_explicit_refusal_type():
     registry._get_active_session = AsyncMock(return_value=session)
     with pytest.raises(LogosNodeCommandRejectedError, match="degraded"):
         await registry.send_command(9001, "reconfigure_lane")
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"success": False, "error": "Insufficient GPU headroom", "reason_code": "nightly_gpu_budget"},
+        {
+            "success": True,
+            "result": {"ok": False, "error": "Insufficient GPU headroom", "reason_code": "nightly_gpu_budget"},
+        },
+    ],
+)
+async def test_worker_budget_refusal_preserves_reason_code(result):
+    import asyncio
+
+    registry = LogosNodeRuntimeRegistry()
+    session = SimpleNamespace(
+        provider_id=9001,
+        latest_runtime={},
+        pending_commands={},
+        send_lock=asyncio.Lock(),
+        calibrating=False,
+        optimistic_calibration_until=None,
+    )
+
+    async def reply(message):
+        session.pending_commands.pop(message["cmd_id"]).set_result(result)
+
+    session.websocket = SimpleNamespace(send_json=AsyncMock(side_effect=reply))
+    registry._get_active_session = AsyncMock(return_value=session)
+    with pytest.raises(LogosNodeCommandError, match="Insufficient GPU headroom") as error:
+        await registry.send_command(9001, "add_lane")
+    assert error.value.reason_code == "nightly_gpu_budget"
 
 
 def test_lost_execution_lease_blocks_worker_mutations_but_allows_cleanup():

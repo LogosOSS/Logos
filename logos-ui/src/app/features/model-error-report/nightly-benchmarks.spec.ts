@@ -203,4 +203,9 @@ describe('Nightly benchmark management', () => {
     expect(control.statusLabel('window_closed')).toContain('08:00');
     expect(control.statusLabel('window_closed_below_half')).toContain('08:00');
   });
+
+  it('distinguishes waiting for GPU capacity from a round deferred to another window', () => {
+    expect(control.statusLabel('waiting_for_capacity')).toBe('Waiting for GPU capacity');
+    expect(control.statusLabel('capacity_deferred')).toBe('Deferred until another maintenance window');
+  });
 });

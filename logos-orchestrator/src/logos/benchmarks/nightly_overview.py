@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 
-from logos.benchmarks.nightly import MAX_PAIRS_PER_NIGHT
+from logos.benchmarks.nightly import CAPACITY_WAITING, MAX_PAIRS_PER_NIGHT
 from logos.maintenance_window import MaintenanceWindow, maintenance_node_limit
 
 
@@ -14,7 +14,7 @@ def overview(schedules, scheduler, now, *, recovery_pending=False, claimed_count
     if claimed_count is not None:
         claimed = claimed_count
     next_day = now.date()
-    continuing = any(row.get("status") == "continuing" and row["enabled"] for row in schedules)
+    continuing = any(row.get("status") in {"continuing", CAPACITY_WAITING} and row["enabled"] for row in schedules)
     if now >= end or (claimed >= MAX_PAIRS_PER_NIGHT and not continuing):
         next_day += timedelta(days=1)
         claimed = 0
@@ -31,10 +31,12 @@ def overview(schedules, scheduler, now, *, recovery_pending=False, claimed_count
         if row.get("recovery"):
             state, reason = "blocked", "Worker recovery is pending"
             if row.get("status") in {"running", "preparing"}:
-                state, reason = "busy", "Worker is reserved for a benchmark or restoration"
+                state, reason = "busy", "Benchmark model is reserved for testing or restoration"
         elif row["enabled"]:
             if blocked:
                 state, reason = "blocked", "Nightly rotation waits for the reserved worker"
+            elif row["last_run_date"] == next_day and row.get("status") == CAPACITY_WAITING:
+                state, reason = "waiting", "Waiting for enough free memory for the benchmark"
             elif row["last_run_date"] == next_day:
                 state, reason = (
                     ("next", "Another optimization round in this window; production configuration confirmed")

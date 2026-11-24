@@ -33,6 +33,7 @@ from logos.benchmarks.huggingface_datasets import dataset_metadata, search_datas
 from logos.benchmarks.nightly import (
     NIGHTLY_CONTEXT,
     PROGRESS,
+    NightlyCapacityDeferred,
     NightlyStopped,
     RunProgress,
     can_start,
@@ -825,7 +826,12 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
         )
 
     if is_internal_worker_benchmark:
-        benchmark_reservations.reserve(provider_id, model_name, job_id)
+        benchmark_reservations.reserve(
+            provider_id,
+            model_name,
+            job_id,
+            nightly_owner=-data.model_provider_id if owns_nightly_reservation else None,
+        )
 
     async def nightly_run():
         progress = RunProgress(data.samples)
@@ -836,7 +842,8 @@ async def internal_run_model_benchmark(data: InternalBenchmarkRequest, request: 
             )
         except NightlyStopped as exc:
             with DBManager() as db:
-                db.update_job_status(job_id, "failed", error_message=exc.reason)
+                detail = exc.detail[:1000] if isinstance(exc, NightlyCapacityDeferred) else exc.reason
+                db.update_job_status(job_id, "failed", error_message=detail)
             raise
         finally:
             PROGRESS.pop(job_id, None)
@@ -1109,7 +1116,7 @@ def _why_not_calibrated(model: str, snapshot: Dict[str, Any], needing: List[str]
 async def internal_logosnode_calibrate_uncalibrated(data: InternalCalibrateRequest, request: Request):
     """Calibrate uncalibrated models on a worker, called by Spring after JWT validation."""
     _require_internal_secret(request)
-    if benchmark_reservations.owner(data.provider_id, "*") is not None:
+    if benchmark_reservations.is_nightly_reserved(data.provider_id):
         raise HTTPException(status_code=409, detail="Worker is reserved for nightly benchmarks")
     snap = _main._logosnode_registry.peek_runtime_snapshot(data.provider_id)
     if snap is None:

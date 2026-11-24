@@ -33,7 +33,12 @@ from logos_worker_node import perf_trace as worker_perf
 from logos_worker_node import prometheus_metrics as prom
 from logos_worker_node.asyncio_tasks import cancel_and_wait, finish_shielded
 from logos_worker_node.gpu_slice import calibration_gpu_slice, parse_gpu_indices
-from logos_worker_node.lane_manager import _lane_id_from_config, _normalize_lane_id
+from logos_worker_node.lane_manager import (
+    NightlyGpuBudgetUnavailable,
+    NightlyLaneIdentityMismatch,
+    _lane_id_from_config,
+    _normalize_lane_id,
+)
 from logos_worker_node.metal import is_metal_backend
 from logos_worker_node.model_profiles import SYNC_MODEL_PROFILES_ACTION
 from logos_worker_node.models import (
@@ -983,6 +988,10 @@ class LogosBridgeClient:
                 "success": False,
                 "error": str(exc),
             }
+            if isinstance(exc, NightlyGpuBudgetUnavailable):
+                response["reason_code"] = "nightly_gpu_budget"
+            elif isinstance(exc, NightlyLaneIdentityMismatch):
+                response["reason_code"] = "nightly_lane_identity"
         # The lifecycle revision after the command: a status sampled at this
         # revision or later reflects whatever the command changed.
         revision = getattr(self._app.state.lane_manager, "status_revision", None)
@@ -1039,7 +1048,15 @@ class LogosBridgeClient:
     @staticmethod
     def _command_target(action: str, params: dict[str, Any]) -> str | None:
         """The lane a lifecycle command changes, ``*`` for the whole worker, or None for a read."""
-        if action in {"add_lane", "delete_lane", "sleep_lane", "wake_lane", "reconfigure_lane"}:
+        if action in {
+            "add_lane",
+            "delete_lane",
+            "sleep_lane",
+            "wake_lane",
+            "reconfigure_lane",
+            "check_nightly_gpu_budget",
+            "release_nightly_gpu_budget",
+        }:
             try:
                 if action == "add_lane":
                     return _lane_id_from_config(LaneConfig(**params))
@@ -1139,12 +1156,27 @@ class LogosBridgeClient:
 
         if action == "add_lane":
             lane_config = LaneConfig(**params)
-            status = await lane_manager.add_lane(lane_config)
+            if params.get("nightly_gpu_budget") is True:
+                status = await lane_manager.add_lane(lane_config, nightly_gpu_budget=True)
+            else:
+                status = await lane_manager.add_lane(lane_config)
             return status.model_dump(mode="json")
 
         lane_id = str(params.get("lane_id", "")).strip()
+        if action == "check_nightly_gpu_budget":
+            needs = await lane_manager.check_nightly_gpu_budget(lane_id)
+            return {"ok": True, "required_mib_by_gpu": needs}
+        if action == "release_nightly_gpu_budget":
+            await lane_manager.release_nightly_gpu_budget(lane_id)
+            return {"ok": True}
         if action == "delete_lane":
-            await lane_manager.remove_lane(lane_id)
+            if "expected_model" in params:
+                expected_model = params["expected_model"]
+                if not isinstance(expected_model, str) or not expected_model:
+                    raise ValueError("expected_model must name the model to remove")
+                await lane_manager.remove_lane(lane_id, expected_model=expected_model)
+            else:
+                await lane_manager.remove_lane(lane_id)
             return {"ok": True, "lane_id": lane_id}
         if action == "sleep_lane":
             status = await lane_manager.sleep_lane(
@@ -1158,6 +1190,12 @@ class LogosBridgeClient:
             return status.model_dump(mode="json")
         if action == "reconfigure_lane":
             updates = params.get("updates") or {}
+            if params.get("nightly_gpu_budget") is True:
+                force = params.get("force_restart") is True
+                status = await lane_manager.reconfigure_lane(
+                    lane_id, updates, require_idle=True, force_restart=force, nightly_gpu_budget=True
+                )
+                return {**status.model_dump(mode="json"), **({"restarted": True} if force else {})}
             if params.get("force_restart"):
                 status = await lane_manager.reconfigure_lane(lane_id, updates, require_idle=True, force_restart=True)
                 return {**status.model_dump(mode="json"), "restarted": True}

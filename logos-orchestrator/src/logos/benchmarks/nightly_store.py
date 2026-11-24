@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import text
 
-from logos.benchmarks.nightly import MAX_PAIRS_PER_NIGHT
+from logos.benchmarks.nightly import CAPACITY_WAITING, MAX_PAIRS_PER_NIGHT
 from logos.dbutils.dbmanager import DBManager, _init_engine
 from logos.maintenance_window import maintenance_node_limit
 
@@ -41,8 +41,10 @@ def rows() -> list[dict]:
             for row in db.session.execute(
                 text(
                     "SELECT * FROM nightly_benchmarks ORDER BY last_run_date NULLS FIRST, "
-                    "CASE WHEN status = 'continuing' THEN updated_at END NULLS FIRST, model_provider_id"
-                )
+                    "CASE WHEN status IN ('continuing', :capacity_waiting) THEN updated_at END NULLS FIRST, "
+                    "model_provider_id"
+                ),
+                {"capacity_waiting": CAPACITY_WAITING},
             ).mappings()
         ]
 
@@ -133,11 +135,11 @@ def claim(pair_id: int, day) -> bool:
                 text(
                     "UPDATE nightly_benchmarks SET last_run_date = :day, status = 'running', report = '[]'::jsonb "
                     "WHERE model_provider_id = :id AND enabled AND recovery IS NULL "
-                    "AND ((last_run_date = :day AND status = 'continuing') OR "
+                    "AND ((last_run_date = :day AND status IN ('continuing', :capacity_waiting)) OR "
                     "((last_run_date IS NULL OR last_run_date < :day) "
                     "AND (SELECT COUNT(*) FROM nightly_benchmarks WHERE last_run_date = :day) < :limit))"
                 ),
-                {"id": pair_id, "day": day, "limit": MAX_PAIRS_PER_NIGHT},
+                {"id": pair_id, "day": day, "limit": MAX_PAIRS_PER_NIGHT, "capacity_waiting": CAPACITY_WAITING},
             ).rowcount
         )
 
@@ -151,7 +153,7 @@ def bind_workload(pair_id, workload_id):
         changed = db.session.execute(
             text(
                 "UPDATE nightly_benchmarks SET workload_id = :workload WHERE model_provider_id = :id "
-                "AND recovery IS NULL AND status = 'running'"
+                "AND enabled AND status IN ('running', 'preparing')"
             ),
             {"id": pair_id, "workload": workload_id},
         )
@@ -686,8 +688,10 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
                 optimizer = dict(previous)
                 if not same_night:
                     optimizer.pop("last_round_result", None)
-            session["rounds"] += 1
-            session["successful_configurations"] += sum(item.get("status") == "success" for item in report)
+            successful = sum(item.get("status") == "success" for item in report)
+            if state != CAPACITY_WAITING or successful:
+                session["rounds"] += 1
+                session["successful_configurations"] += successful
             optimizer["nightly_session"] = session
         if state.startswith("interrupted") or state == "failed":
             reason = next((item["reason"] for item in reversed(report) if item.get("reason")), None)
@@ -716,7 +720,7 @@ def finish(pair_id, state, report, search=None, *, resume_after_recovery=False):
                 "optimizer": json.dumps(optimizer) if optimizer is not None else None,
             },
         )
-        if row["last_run_date"] is not None and state != "continuing":
+        if row["last_run_date"] is not None and state not in {"continuing", CAPACITY_WAITING}:
             event_optimizer = optimizer or row["optimizer"] or {}
             payload = {
                 "model_provider_id": pair_id,
@@ -749,14 +753,18 @@ def finalize_continuations(now):
         if connection is None:
             return
         for row in rows():
-            if row["status"] != "continuing" or row["recovery"] is not None:
+            if row["status"] not in {"continuing", CAPACITY_WAITING} or row["recovery"] is not None:
                 continue
             if (
                 not row["enabled"]
                 or row["last_run_date"] != now.date()
                 or not MaintenanceWindow.from_env().contains(now)
             ):
-                finish(row["model_provider_id"], "completed" if row["enabled"] else "disabled", row["report"])
+                if not row["enabled"]:
+                    state = "disabled"
+                else:
+                    state = "capacity_deferred" if row["status"] == CAPACITY_WAITING else "completed"
+                finish(row["model_provider_id"], state, row["report"])
 
 
 async def deliver_completion_events():

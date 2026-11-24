@@ -29,6 +29,7 @@ ws.addEventListener('open', () => {
     type: 'status',
     runtime: {
       supports_benchmark_restart: true,
+      supports_nightly_gpu_budget: true,
       devices: {
         nvidia_smi_available: true,
         devices: [{ kind: 'nvidia', name: 'Documentation GPU', memory_total_mb: 46080 }],

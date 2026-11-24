@@ -2223,6 +2223,11 @@ class CapacityPlanner:
                         "updates": {"vllm_config": updated},
                         "require_idle": True,
                         **({"force_restart": True} if recovering else {}),
+                        **(
+                            {"nightly_gpu_budget": True}
+                            if benchmark_reservations.pinned_lane(provider_id, model_name)
+                            else {}
+                        ),
                     },
                     timeout_seconds=int(timeout_seconds),
                 )

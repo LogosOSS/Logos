@@ -257,7 +257,7 @@ Automatic adoption applies to the running lane. Central node model configuration
 Logos allows up to 15 minutes for fresh readiness telemetry after a restart command succeeds.
 If adoption fails, then Logos records a separate notification for Logos Admins and tries to restore the original configuration.
 The notification links to the eligible benchmark and shows the parameter values, throughput gain, and failure reason.
-If rollback fails, then the worker remains reserved until recovery succeeds.
+If rollback fails, then the benchmark lane and its GPUs remain reserved until recovery succeeds.
 After an application restart, recovery completes the recorded adoption or restores the original settings.
 A disabled schedule cancels pending adoption.
 The round report identifies an adopted benchmark or an adoption failure.
@@ -320,29 +320,23 @@ The lock excludes new manual benchmarks until the batch finishes cleanup. A pers
 local-date claim limits distinct pairs after an application restart. Restored rounds can continue within the same window.
 Existing manual benchmarks finish before nightly admission.
 
-The selected worker must be online, healthy and not calibrating.
-Logos measures one isolated vLLM lane on that worker. It can load a temporary
-lane from the model's saved worker settings if the model has no ready lane.
-On a worker with several replicas, Logos selects one and drains competing
-lanes before changing their state. It can unload dynamic lanes to isolate the
-test or make room, and put static lanes with sleep support to sleep. If it
-cannot isolate the lane, it skips the benchmark. Production requests cannot
-enter the reserved node while it prepares or runs a benchmark.
-Requests already accepted by the scheduler can finish, including requests that still wait for transport access.
-New requests cannot use these exceptions. The exceptions end when each request finishes.
-Other workers remain available. Normal capacity-planner and manual lane mutations cannot alter the
-reserved node.
+The selected worker must be online, healthy and not calibrating. Logos measures one vLLM lane.
+If the model has no ready lane, then Logos can start a temporary lane.
+If the model has several replicas on the worker, then Logos directs benchmark requests to the selected lane.
+The scheduler lets requests already accepted for that model finish before the round starts.
+Other models on the same worker and other workers continue to serve requests.
 
-Logos saves the original lane configurations before modifying them. After
-testing, it removes a temporary benchmark lane, reloads lanes it unloaded and
-wakes lanes it put to sleep. Automatic adoption applies to rounds that use
-one existing serving replica. Other rounds restore the previous lane setup
-and record their measurements. Cancellation and recovery
-use the same saved state. If restoration fails, the reservation and
-journal remain, and further nightly plans pause. The scheduler retries recovery
-before admitting other work, including after an application restart. It does
-not interrupt existing production requests if initial draining fails before
-any benchmark changed the worker.
+The worker reserves the selected GPU group for the benchmark lane. It checks the estimated GPU memory for the lane and its warm-up.
+The check uses live NVIDIA memory telemetry, an explicit KV-cache budget, and a calibrated or measured lane footprint.
+Existing production lanes can continue to serve on those GPUs. New loads and other changes that increase memory use on the group wait.
+If the benchmark cannot fit alongside existing lanes, then Logos waits for capacity and can retry within the maintenance window.
+Logos preserves existing production lanes when a temporary lane needs more capacity.
+
+Logos saves the benchmark lane configuration before it changes the lane. After testing, it restores that configuration or removes the temporary lane.
+Automatic adoption applies to rounds that use one existing serving replica.
+Cancellation and recovery use the same saved state.
+If restoration fails, then Logos keeps the reservation and journal and pauses further nightly plans.
+The scheduler checks for recovery after an application restart.
 
 Recovery uses a separate execution lock to detect an interrupted nightly run.
 A live execution, an unrelated job, or a manual benchmark claim prevents recovery.
@@ -351,7 +345,8 @@ It marks the job as failed only after the worker confirms that its requests ende
 The journal selects the production configuration. Unknown worker status keeps the recovery journal active.
 Job age alone never permits recovery.
 
-Recovery waits for the benchmark lane, other lanes of the same model, and any additional lane it must restore.
+Recovery waits for the benchmark lane and other lanes of the same model.
+If a journal from an earlier version includes additional lanes, then recovery waits for those lanes too.
 It reads the request counters from the worker itself.
 Production traffic on other lanes of the worker does not hold the recovery back.
 The worker also refuses the restart while the lane still has requests.
@@ -376,9 +371,8 @@ Check or restore the lane on the worker before you force the release.
 Logos refuses both actions while a recovery or one of its jobs is running.
 The orchestrator log and the audit log (`provider.nightly_recovery_released`) record every release.
 
-Metal workers with valid measured telemetry support `max_num_seqs` and `max_num_batched_tokens` changes.
-Metal does not permit GPU topology, memory, or attention backend overrides through this benchmark path.
-The scheduler checks worker support before it reserves the worker or consumes a nightly slot.
+Nightly GPU budgets require NVIDIA GPU telemetry. The scheduler checks worker support before it admits a round.
+Manual benchmarks on Metal support changes to `max_num_seqs` and `max_num_batched_tokens` with valid measured telemetry.
 
 The application retains its existing single-orchestrator routing architecture;
 this feature does not introduce multi-process worker-session sharing.
@@ -471,8 +465,7 @@ The old `LOGOS_NIGHTLY_ALLOW_SINGLE_WORKER` variable no longer controls admissio
 
 The configured maintenance limit applies to benchmarks and automatic calibration. An operator can start manual calibration on separate workers concurrently. Each worker accepts one calibration at a time, and active benchmarks or recovery block new calibrations.
 The selected worker must still be online, healthy and free of calibration.
-Existing requests drain first. New normal requests cannot enter a reserved worker.
-If all workers are reserved, normal requests must wait.
+Existing requests for the benchmarked model finish first. Other models on the same worker can continue to serve.
 All time limits, recovery checks and configuration restoration still apply.
 This setting does not enable schedules. Enable each intended model/worker pair separately.
 
@@ -566,7 +559,9 @@ last successful measurement. The current pair limit is the code constant
 |---|---|
 | `scheduled` | Enabled and waiting in the rotation. Check the time window and other pairs' priority. |
 | `unavailable` | Admission skipped the pair. Read the report for worker, lane or capacity requirements. No nightly slot was consumed. |
-| `preparing` / `running` | The pair has a nightly slot. The scheduler reserves the worker and executes its plan. |
+| `preparing` / `running` | The scheduler reserves the benchmark lane's GPU group and executes the plan. |
+| `waiting_for_capacity` | The round needs more GPU capacity. The scheduler can retry within the current maintenance window. |
+| `capacity_deferred` | The maintenance window ended while the round waited for GPU capacity. |
 | `continuing` | The production configuration is confirmed. Another round waits for its turn within this window. |
 | `completed` | The night finished. Inspect individual outcomes; this does not mean every configuration succeeded. |
 | `window_closed` | No further configuration can start after 08:00. |
@@ -612,6 +607,7 @@ Before the first production activation, complete these steps:
 10. Test both sides of the 08:00 completion threshold with that clock.
 11. Set the maintenance limit to `2`.
 12. Verify parallel runs on different workers and sequential runs on the same worker.
-13. Verify that other workers still accept production traffic.
+13. Verify that other models on the selected worker still accept production traffic.
+14. Fill the selected GPUs and verify that the nightly round waits for capacity.
 
 A UI or database test alone does not verify an overnight run on real GPU hardware.

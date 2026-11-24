@@ -1,13 +1,19 @@
 import asyncio
 import copy
 from contextlib import nullcontext
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import DEFAULT, AsyncMock, MagicMock
 
 import pytest
 
 from logos.benchmarks import nightly_scheduler as module
-from logos.benchmarks.nightly import NightlyStopped
+from logos.benchmarks.nightly import (
+    CAPACITY_RETRY_SECONDS,
+    CAPACITY_WAITING,
+    NIGHTLY_GPU_BUDGET_REASON,
+    NightlyCapacityDeferred,
+    NightlyStopped,
+)
 from logos.benchmarks.reservations import benchmark_reservations
 
 
@@ -21,7 +27,7 @@ def scheduler(monkeypatch):
     registry.is_cordoned.return_value = False
 
     def send_command(pid, action, *_args, **_kwargs):
-        if action == "get_runtime" and benchmark_reservations.owner(pid, "*") in {-31, -32, -33}:
+        if action == "get_runtime" and benchmark_reservations.provider_owner(pid) in {-31, -32, -33}:
             return registry.peek_runtime_snapshot.return_value["runtime"]
         return DEFAULT
 
@@ -30,6 +36,7 @@ def scheduler(monkeypatch):
     registry.peek_runtime_snapshot.return_value = {
         "runtime": {
             "supports_benchmark_restart": True,
+            "supports_nightly_gpu_budget": True,
             "lanes": [
                 {
                     "lane_id": "lane",
@@ -70,9 +77,7 @@ def scheduler(monkeypatch):
     monkeypatch.setattr(module.store, "recovery_jobs", lambda _: [])
     monkeypatch.setattr(module.store, "fence_recovery_jobs", lambda _: None)
     monkeypatch.setattr(module.store, "finish_recovery_jobs", lambda _: None)
-    planner._facade.reserve_worker_for_drain.side_effect = lambda pid, owner: benchmark_reservations.reserve(
-        pid, "*", owner
-    )
+    planner._facade.reserve_model_for_drain.side_effect = benchmark_reservations.reserve_nightly
     monkeypatch.setattr(module.store, "record_comparison", MagicMock())
     monkeypatch.setattr(module.store, "adoption_candidate", MagicMock(return_value=None))
     monkeypatch.setattr(module.store, "finalize_continuations", MagicMock())
@@ -319,6 +324,7 @@ async def test_pending_adoption_is_completed_after_restart(scheduler):
 @pytest.mark.parametrize("baseline_stalls", [False, True])
 async def test_stall_retries_once_and_requires_a_successful_baseline(scheduler, baseline_stalls):
     calls = []
+    scheduler._restore_lane = AsyncMock()
 
     async def submit(pair, settings):
         calls.append(settings.model_dump())
@@ -343,6 +349,8 @@ async def test_stall_retries_once_and_requires_a_successful_baseline(scheduler, 
         assert scheduler.saved[-1][1] == "continuing"
     assert scheduler.saved[-1][3] is None
     assert benchmark_reservations.owner(20, "other") is None
+    scheduler._restore_lane.assert_awaited()
+    assert all(call.kwargs == {"force_restart": True} for call in scheduler._restore_lane.await_args_list)
 
 
 async def test_cutoff_stops_remaining_configurations_and_restores(scheduler):
@@ -361,7 +369,7 @@ async def test_cutoff_stops_remaining_configurations_and_restores(scheduler):
     assert scheduler.saved[-1][1] == "window_closed_below_half"
 
 
-async def test_recovery_failure_holds_node_and_stops_other_schedules(scheduler):
+async def test_recovery_failure_holds_target_model_and_stops_other_schedules(scheduler):
     scheduler.restore.side_effect = RuntimeError("worker disconnected")
 
     async def submit(*args):
@@ -371,7 +379,8 @@ async def test_recovery_failure_holds_node_and_stops_other_schedules(scheduler):
     assert not await scheduler.run_schedule(31, MagicMock())
     assert scheduler.saved[-1][1] == "recovery_required"
     assert scheduler.saved[-1][3] is not None
-    assert not benchmark_reservations.allows(20, "other", "production")
+    assert not benchmark_reservations.allows(20, "model", "production")
+    assert benchmark_reservations.allows(20, "other", "production")
 
 
 async def test_no_configuration_or_retry_starts_at_window_end(scheduler, monkeypatch):
@@ -396,9 +405,9 @@ async def test_lost_cluster_lock_keeps_recovery_journal(scheduler, monkeypatch):
     assert scheduler.saved[-1][3] is not None
 
 
-async def test_failed_initial_drain_releases_worker_without_restart(scheduler):
+async def test_failed_initial_drain_releases_target_without_restart(scheduler):
     scheduler.restore = module.NightlyScheduler.restore.__get__(scheduler)
-    scheduler.planner._drain_lane.return_value = False
+    scheduler.recovery_worker_idle = AsyncMock(side_effect=RuntimeError("Cannot read request counts"))
     scheduler.submit = AsyncMock()
     assert await scheduler.run_schedule(31, MagicMock())
     scheduler.submit.assert_not_awaited()
@@ -450,6 +459,25 @@ async def test_unavailable_pair_does_not_consume_a_nightly_slot(scheduler, rotat
     await scheduler.tick()
     assert claimed == {32, 33}
     assert scheduler.saved[0][1] == "unavailable"
+
+
+async def test_capacity_deferral_retries_after_cooldown_during_the_same_window(scheduler, rotation, monkeypatch):
+    rows, _ = rotation
+    claimed_at = module.local_now()
+    rows[0].update(last_run_date=claimed_at.date(), status=CAPACITY_WAITING, updated_at=claimed_at)
+    for row in rows[1:]:
+        row["enabled"] = False
+    claim = MagicMock(return_value=True)
+    monkeypatch.setattr(module.store, "claim", claim)
+
+    await scheduler.tick()
+    claim.assert_not_called()
+    scheduler.run_schedule.assert_not_awaited()
+
+    monkeypatch.setattr(module, "local_now", lambda: claimed_at + timedelta(seconds=CAPACITY_RETRY_SECONDS))
+    await scheduler.tick()
+    claim.assert_called_once_with(31, claimed_at.date())
+    assert scheduler.run_schedule.await_args.args[0] == 31
 
 
 async def test_all_pending_recovery_precedes_any_new_pair(scheduler, rotation):
@@ -547,29 +575,20 @@ async def test_automatic_calibration_claim_is_reattached_after_restart(scheduler
     scheduler.calibration._tick.assert_awaited_once()
 
 
-async def test_metal_plan_runs_all_batching_configurations(scheduler):
-    snapshot = scheduler.registry.peek_runtime_snapshot.return_value
-    snapshot["runtime"]["devices"] = {
-        "mode": "metal",
-        "nvidia_smi_available": False,
-        "telemetry_available": True,
-        "devices": [{"kind": "metal", "memory_total_mb": 24000}],
-    }
-
-    async def submit(*args):
-        return 7, asyncio.create_task(asyncio.sleep(0, result=1))
-
-    scheduler.submit = AsyncMock(side_effect=submit)
+async def test_worker_without_gpu_budget_support_does_not_start_a_nightly_round(scheduler):
+    scheduler.registry.peek_runtime_snapshot.return_value["runtime"]["supports_nightly_gpu_budget"] = False
+    scheduler.submit = AsyncMock()
     assert await scheduler.run_schedule(31, MagicMock())
-    assert scheduler.submit.await_count == 5
-    assert scheduler.saved[-1][1] == "continuing"
+    scheduler.submit.assert_not_awaited()
+    scheduler.planner._facade.reserve_model_for_drain.assert_not_called()
+    assert "Nightly GPU budgets" in scheduler.saved[-1][2][0]["reason"]
 
 
 async def test_unknown_inventory_is_rejected_before_worker_is_drained(scheduler):
     scheduler.registry.peek_runtime_snapshot.return_value["runtime"]["devices"] = {}
     scheduler.submit = AsyncMock()
     assert await scheduler.run_schedule(31, MagicMock())
-    scheduler.planner._facade.reserve_worker_for_drain.assert_not_called()
+    scheduler.planner._facade.reserve_model_for_drain.assert_not_called()
     scheduler.planner._drain_lane.assert_not_awaited()
     scheduler.submit.assert_not_awaited()
 
@@ -729,7 +748,8 @@ async def test_explicit_single_worker_maintenance_runs_and_restores(scheduler, m
     scheduler.registry.active_provider_ids.return_value = [20]
 
     async def submit(*args):
-        assert not benchmark_reservations.allows(20, "other", "new-production-request")
+        assert not benchmark_reservations.allows(20, "model", "new-production-request")
+        assert benchmark_reservations.allows(20, "other", "new-production-request")
         return 7, asyncio.create_task(asyncio.sleep(0, result=1))
 
     scheduler.submit = AsyncMock(side_effect=submit)
@@ -1067,16 +1087,26 @@ def simulate_worker(scheduler, lanes, *, max_lanes=0, missing_delete_succeeds=Fa
             return {"lanes": copy.deepcopy(runtime["lanes"])}
         lane_id = params["lane_id"]
         events.append((action, lane_id))
-        future = asyncio.get_running_loop().create_future()
-        on_dispatched(future)
-        future.set_result({"lifecycle_revision": len(events)})
+        if on_dispatched is not None:
+            future = asyncio.get_running_loop().create_future()
+            on_dispatched(future)
+            future.set_result({"lifecycle_revision": len(events)})
         lane = next((item for item in runtime["lanes"] if item["lane_id"] == lane_id), None)
+        if action == "check_nightly_gpu_budget":
+            assert lane is not None
+            return {"ok": True}
+        if action == "release_nightly_gpu_budget":
+            return {"ok": True}
         if action == "add_lane":
             if max_lanes and len(runtime["lanes"]) >= max_lanes:
-                raise module.LogosNodeCommandError(f"MAX_LANES limit reached ({max_lanes})")
+                raise module.LogosNodeCommandError(
+                    f"MAX_LANES limit reached ({max_lanes})", reason_code=NIGHTLY_GPU_BUDGET_REASON
+                )
             assert lane is None
             lane = lane_status(lane_id, model=params["model"])
-            lane["lane_config"] = copy.deepcopy(params)
+            lane["lane_config"] = {
+                key: copy.deepcopy(value) for key, value in params.items() if key != "nightly_gpu_budget"
+            }
             runtime["lanes"].append(lane)
         elif action == "delete_lane":
             if lane is None and not missing_delete_succeeds:
@@ -1102,48 +1132,111 @@ def simulate_worker(scheduler, lanes, *, max_lanes=0, missing_delete_succeeds=Fa
     return runtime, events
 
 
-@pytest.mark.parametrize("other_model_blocks_load", [False, True])
-async def test_nightly_loads_a_temporary_lane_and_restores_the_worker(scheduler, other_model_blocks_load):
-    initial = [lane_status("other", model="other-model")] if other_model_blocks_load else []
-    runtime, events = simulate_worker(scheduler, initial, max_lanes=1)
+async def test_nightly_loads_a_temporary_lane_alongside_production(scheduler):
+    initial = [lane_status("other", model="other-model")]
+    initial[0]["active_requests"] = 3
+    runtime, events = simulate_worker(scheduler, initial)
     assert scheduler.preview_configuration(31, 20, "model", {"runtime": runtime})["max_num_seqs"] == 12
     assert not events
 
     async def submit(*args):
-        assert [(lane["lane_id"], lane["model"]) for lane in runtime["lanes"]] == [("nightly-31", "model")]
+        assert [(lane["lane_id"], lane["model"]) for lane in runtime["lanes"]] == [
+            ("other", "other-model"),
+            ("nightly-31", "model"),
+        ]
         assert benchmark_reservations.pinned_lane(20, "model") == "nightly-31"
-        assert not benchmark_reservations.allows(20, "other-model", "production")
+        assert benchmark_reservations.allows(20, "other-model", "production")
         # A failed benchmark still cleans up the temporary lane.
         return 7, asyncio.create_task(asyncio.sleep(0))
 
     scheduler.submit = submit
     assert await scheduler.run_schedule(31, MagicMock())
     assert runtime["lanes"] == initial
-    if other_model_blocks_load:
-        assert events == [
-            ("add_lane", "nightly-31"),
-            ("delete_lane", "other"),
-            ("add_lane", "nightly-31"),
-            ("delete_lane", "nightly-31"),
-            ("add_lane", "other"),
-        ]
-    else:
-        assert events == [("add_lane", "nightly-31"), ("delete_lane", "nightly-31")]
+    assert events == [
+        ("add_lane", "nightly-31"),
+        ("delete_lane", "nightly-31"),
+        ("release_nightly_gpu_budget", "nightly-31"),
+    ]
+    add = next(call for call in scheduler.registry.send_command.await_args_list if call.args[1] == "add_lane")
+    assert add.args[2]["nightly_gpu_budget"] is True
     assert benchmark_reservations.pinned_lane(20, "model") is None
     assert benchmark_reservations.allows(20, "other-model", "production")
 
 
-async def test_nightly_suspends_competing_replicas_and_restores_each_after_cancellation(scheduler):
+async def test_nightly_defers_when_a_temporary_lane_does_not_fit(scheduler):
+    initial = [lane_status("other", model="other-model")]
+    runtime, events = simulate_worker(scheduler, initial, max_lanes=1)
+    scheduler.submit = AsyncMock()
+
+    assert await scheduler.run_schedule(31, MagicMock())
+
+    scheduler.submit.assert_not_awaited()
+    assert runtime["lanes"] == initial
+    assert all(lane_id == "nightly-31" for _, lane_id in events)
+    assert events[0] == ("add_lane", "nightly-31")
+    assert events[-1] == ("release_nightly_gpu_budget", "nightly-31")
+    assert scheduler.saved[-1][1] == CAPACITY_WAITING
+    assert scheduler.saved[-1][2][-1] == {"status": CAPACITY_WAITING, "reason": "MAX_LANES limit reached (1)"}
+    assert benchmark_reservations.provider_owner(20) is None
+
+
+async def test_capacity_deferral_during_a_trial_restores_without_adopting(scheduler, monkeypatch):
+    target, snapshot, lane = scheduler.target_lane(31)
+    target["model_id"] = 1
+    scheduler.target_lane = lambda _: (target, snapshot, lane)
+    monkeypatch.setattr(module.store, "status", lambda _: {"enabled": True, "workload_id": "a" * 64})
+    monkeypatch.setattr(
+        module.workloads,
+        "load",
+        lambda *args: {"id": "a" * 64, "name": "Saved requests", "request_count": 10, "provenance": "synthetic"},
+    )
+    module.store.adoption_candidate.side_effect = lambda pair, search, report: adoption() if len(report) >= 2 else None
+    original = lane_status("lane")
+    runtime, events = simulate_worker(scheduler, [original])
+    submitted = 0
+
+    async def submit(*args):
+        nonlocal submitted
+        submitted += 1
+        if submitted == 3:
+            raise NightlyCapacityDeferred("GPU headroom fell below the warm-up budget")
+        if submitted == 2:
+            runtime["lanes"][0]["lane_config"]["vllm_config"]["max_num_seqs"] = 20
+        return submitted, asyncio.create_task(asyncio.sleep(0, result=submitted))
+
+    scheduler.submit = submit
+    assert await scheduler.run_schedule(31, MagicMock())
+
+    assert submitted == 3
+    assert runtime["lanes"] == [original]
+    assert events == [
+        ("check_nightly_gpu_budget", "lane"),
+        ("reconfigure_lane", "lane"),
+        ("release_nightly_gpu_budget", "lane"),
+    ]
+    assert scheduler.saved[-1][1] == CAPACITY_WAITING
+    assert scheduler.saved[-1][2][-1] == {
+        "status": CAPACITY_WAITING,
+        "reason": "GPU headroom fell below the warm-up budget",
+    }
+    assert benchmark_reservations.provider_owner(20) is None
+
+
+async def test_nightly_restores_only_the_benchmark_lane_after_cancellation(scheduler):
     primary = lane_status("primary", static=True)
-    sleeping = lane_status("replica", static=True, can_sleep=True, seqs=32)
+    replica = lane_status("replica", static=True, can_sleep=True, seqs=32)
     dynamic = lane_status("dynamic", seqs=24)
-    runtime, events = simulate_worker(scheduler, [primary, sleeping, dynamic])
+    other = lane_status("other", model="other-model")
+    other["active_requests"] = 1
+    runtime, events = simulate_worker(scheduler, [primary, replica, dynamic, other])
     started = asyncio.Event()
 
     async def submit(*args):
         lanes = {lane["lane_id"]: lane for lane in runtime["lanes"]}
-        assert set(lanes) == {"primary", "replica"}
-        assert lanes["replica"]["runtime_state"] == "sleeping"
+        assert set(lanes) == {"primary", "replica", "dynamic", "other"}
+        assert lanes["replica"] == replica
+        assert lanes["dynamic"] == dynamic
+        assert lanes["other"] == other
         assert benchmark_reservations.pinned_lane(20, "model") == "primary"
         lanes["primary"]["lane_config"]["vllm_config"]["max_num_seqs"] = 99
         started.set()
@@ -1156,14 +1249,11 @@ async def test_nightly_suspends_competing_replicas_and_restores_each_after_cance
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-    assert runtime["lanes"] == [primary, sleeping, dynamic]
+    assert runtime["lanes"] == [primary, replica, dynamic, other]
     assert events == [
-        ("sleep_lane", "replica"),
-        ("delete_lane", "dynamic"),
+        ("check_nightly_gpu_budget", "primary"),
         ("reconfigure_lane", "primary"),
-        ("reconfigure_lane", "replica"),
-        ("wake_lane", "replica"),
-        ("add_lane", "dynamic"),
+        ("release_nightly_gpu_budget", "primary"),
     ]
     assert scheduler.saved[-1][1] == "interrupted"
     assert benchmark_reservations.allows(20, "model", "production")

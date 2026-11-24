@@ -18,6 +18,9 @@ STALL_SECONDS = 300
 PREPARATION_SECONDS = 900
 POLL_SECONDS = 1
 DEFAULT_PAIRS_PER_NIGHT = 2
+CAPACITY_RETRY_SECONDS = 60
+CAPACITY_WAITING = "waiting_for_capacity"
+NIGHTLY_GPU_BUDGET_REASON = "nightly_gpu_budget"
 
 
 def pairs_per_night(value: str | None) -> int:
@@ -77,6 +80,14 @@ class NightlyStopped(RuntimeError):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+class NightlyCapacityDeferred(NightlyStopped):
+    """A safe GPU allocation was unavailable; retry in the maintenance window."""
+
+    def __init__(self, detail: str):
+        super().__init__(CAPACITY_WAITING)
+        self.detail = detail
 
 
 async def supervise(
