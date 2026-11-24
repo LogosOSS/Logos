@@ -526,7 +526,7 @@
               (click)="allOpen.set(!allOpen())"
             >
               <span>All engine settings</span>
-              <i class="pi" [class.pi-chevron-up]="showAll()" [class.pi-chevron-down]="!showAll()" aria-hidden="true"></i>
+              <i class="pi" [class.pi-chevron-down]="showAll()" [class.pi-chevron-right]="!showAll()" aria-hidden="true"></i>
             </button>
             @if (showAll()) {
               <p class="hint hint--note">

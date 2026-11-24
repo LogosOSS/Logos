@@ -161,13 +161,13 @@ export class StatisticsService {
   private http = inject(HttpClient);
 
   getRequestPayloads(requestId: string): Promise<RequestPayloads> {
-    return firstValueFrom((this.http as any).query('/api/logosdb/request_payloads', {
+    return firstValueFrom(this.http.query<RequestPayloads>('/api/logosdb/request_payloads', {
       request_id: requestId,
     }));
   }
 
   getRequestRouting(requestId: string): Promise<RequestRouting> {
-    return firstValueFrom((this.http as any).query('/api/logosdb/request_routing', {
+    return firstValueFrom(this.http.query<RequestRouting>('/api/logosdb/request_routing', {
       request_id: requestId,
     }));
   }
@@ -197,7 +197,7 @@ export class StatisticsService {
       errorsOnly: boolean;
     },
   ): Promise<ScopeOptions> {
-    return firstValueFrom((this.http as any).query('/api/logosdb/request_log_scope_options', {
+    return firstValueFrom(this.http.query<ScopeOptions>('/api/logosdb/request_log_scope_options', {
       start_date: startIso,
       end_date: endIso,
       team_id: scope.teamId,
@@ -215,7 +215,7 @@ export class StatisticsService {
    * per model and provider, narrowed to the page scope.
    */
   getRequestLatencyStats(startIso: string, endIso: string, scope: RequestLatencyScope): Promise<RequestLatencyStats> {
-    return firstValueFrom((this.http as any).query('/api/logosdb/request_latency_stats', {
+    return firstValueFrom(this.http.query<RequestLatencyStats>('/api/logosdb/request_latency_stats', {
       start_date: startIso,
       end_date: endIso,
       team_id: scope.teamId,
@@ -247,7 +247,7 @@ export class StatisticsService {
     cursor: RequestCursor | null,
   ): Promise<LatestRequestsPage> {
     return firstValueFrom(
-      (this.http as any).query('/api/logosdb/latest_requests', {
+      this.http.query<LatestRequestsPage>('/api/logosdb/latest_requests', {
         start: startIso,
         end: endIso,
         limit,

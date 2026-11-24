@@ -1278,6 +1278,20 @@ describe('NodeModel', () => {
       expect(root.textContent).toContain('can mark the calibration of this model as outdated');
     });
 
+    it('points the toggle of All engine settings to the right when closed and down when open', async () => {
+      const root = await open();
+      const toggle = (): HTMLElement => root.querySelector<HTMLElement>('.all-toggle')!;
+
+      expect(toggle().querySelector('.pi-chevron-right')).not.toBeNull();
+      expect(toggle().querySelector('.pi-chevron-down')).toBeNull();
+
+      toggle().click();
+      fixture.detectChanges();
+
+      expect(toggle().querySelector('.pi-chevron-down')).not.toBeNull();
+      expect(toggle().querySelector('.pi-chevron-right')).toBeNull();
+    });
+
     it('narrows the list to what the filter matches and opens the lower part for it', async () => {
       const root = await open();
 
