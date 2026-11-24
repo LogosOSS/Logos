@@ -49,9 +49,15 @@ setup('authenticate as a Logos admin', async ({ page }) => {
   // than for one specific path.
   const shell = page.locator('app-shell');
   const keepBilling = page.getByRole('button', { name: 'Keep billing-only logging', exact: true });
-  await expect(shell.or(keepBilling)).toBeVisible({ timeout: 30_000 });
-  if (await keepBilling.isVisible()) {
-    await keepBilling.click();
+  while (!(await shell.isVisible())) {
+    await expect(shell.or(keepBilling)).toBeVisible({ timeout: 30_000 });
+    if (await keepBilling.isVisible()) {
+      const [saved] = await Promise.all([
+        page.waitForResponse(response => response.url().endsWith('/logging-onboarding')),
+        keepBilling.click(),
+      ]);
+      expect(saved.ok()).toBe(true);
+    }
   }
   await expect(shell).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('button', { name: /sign in with tum/i })).toHaveCount(0);

@@ -27,6 +27,7 @@ export class AuthService {
   currentUser = signal<User | null>(null);
   status      = signal<AuthStatus>('checking');
   role        = computed<UserRole | null>(() => this.currentUser()?.role ?? null);
+  pendingLoggingTeams = computed(() => this.currentUser()?.logging_onboarding_teams ?? []);
 
   constructor() {
     // initKeycloak() (APP_INITIALIZER) has already run check-sso by now.
@@ -69,21 +70,22 @@ export class AuthService {
     }
   }
 
-  async completeLoggingOnboarding(fullLogging: boolean): Promise<boolean> {
+  async completeLoggingOnboarding(teamId: number, fullLogging: boolean): Promise<boolean> {
     const userId = this.currentUser()?.user_id;
     let savedChoice = fullLogging;
     try {
       await firstValueFrom(
-        this.http.post<void>('/api/me/logging-onboarding', { full_logging: fullLogging }),
+        this.http.post<void>(`/api/teams/${teamId}/logging-onboarding`, { full_logging: fullLogging }),
       );
     } catch (error) {
       if (!(error instanceof HttpErrorResponse) || error.status !== HttpStatusCode.Conflict
           || typeof error.error?.full_logging !== 'boolean') throw error;
       savedChoice = error.error.full_logging;
     }
-    this.currentUser.update((user) =>
-      user && user.user_id === userId ? { ...user, logging_onboarding_pending: false } : user,
-    );
+    this.currentUser.update((user) => user && user.user_id === userId ? {
+      ...user,
+      logging_onboarding_teams: (user.logging_onboarding_teams ?? []).filter((team) => team.id !== teamId),
+    } : user);
     return savedChoice;
   }
 

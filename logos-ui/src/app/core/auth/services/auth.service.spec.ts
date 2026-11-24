@@ -13,7 +13,7 @@ const pendingUser: User = {
   email: 'developer@example.com',
   role: 'app_developer',
   teams: [],
-  logging_onboarding_pending: true,
+  logging_onboarding_teams: [{ id: 10, name: 'First team' }, { id: 20, name: 'Second team' }],
 };
 
 describe('AuthService', () => {
@@ -51,27 +51,27 @@ describe('AuthService', () => {
     expect(await service.freshToken(true)).toBe('');
   });
 
-  it('reports a successful onboarding choice and clears the pending flag', async () => {
+  it('clears only the team with a successful onboarding choice', async () => {
     service.currentUser.set(pendingUser);
-    const result = service.completeLoggingOnboarding(true);
-    const request = http.expectOne({ method: 'POST', url: '/api/me/logging-onboarding' });
+    const result = service.completeLoggingOnboarding(10, true);
+    const request = http.expectOne({ method: 'POST', url: '/api/teams/10/logging-onboarding' });
     expect(request.request.body).toEqual({ full_logging: true });
     request.flush(null, { status: 204, statusText: 'No Content' });
 
     expect(await result).toBe(true);
-    expect(service.currentUser()?.logging_onboarding_pending).toBe(false);
+    expect(service.pendingLoggingTeams().map(team => team.id)).toEqual([20]);
   });
 
   it.each([true, false])('reports the saved choice (%s) on conflict', async (savedChoice) => {
     service.currentUser.set(pendingUser);
-    const result = service.completeLoggingOnboarding(!savedChoice);
-    http.expectOne('/api/me/logging-onboarding').flush(
+    const result = service.completeLoggingOnboarding(20, !savedChoice);
+    http.expectOne('/api/teams/20/logging-onboarding').flush(
       { full_logging: savedChoice },
       { status: 409, statusText: 'Conflict' },
     );
 
     expect(await result).toBe(savedChoice);
-    expect(service.currentUser()?.logging_onboarding_pending).toBe(false);
+    expect(service.pendingLoggingTeams().map(team => team.id)).toEqual([10]);
   });
 
   it.each([
@@ -79,19 +79,19 @@ describe('AuthService', () => {
     { status: 503, body: {} },
   ])('keeps onboarding pending after a failed save ($status)', async ({ status, body }) => {
     service.currentUser.set(pendingUser);
-    const result = service.completeLoggingOnboarding(true);
-    http.expectOne('/api/me/logging-onboarding').flush(body, { status, statusText: 'Save failed' });
+    const result = service.completeLoggingOnboarding(10, true);
+    http.expectOne('/api/teams/10/logging-onboarding').flush(body, { status, statusText: 'Save failed' });
 
     await expect(result).rejects.toMatchObject({ status });
-    expect(service.currentUser()?.logging_onboarding_pending).toBe(true);
+    expect(service.pendingLoggingTeams().map(team => team.id)).toEqual([10, 20]);
   });
 
   it('leaves a different account pending when an earlier save finishes', async () => {
     service.currentUser.set(pendingUser);
-    const result = service.completeLoggingOnboarding(true);
+    const result = service.completeLoggingOnboarding(10, true);
     const otherUser = { ...pendingUser, user_id: 2 };
     service.currentUser.set(otherUser);
-    http.expectOne('/api/me/logging-onboarding').flush(null, { status: 204, statusText: 'No Content' });
+    http.expectOne('/api/teams/10/logging-onboarding').flush(null, { status: 204, statusText: 'No Content' });
 
     await result;
     expect(service.currentUser()).toBe(otherUser);

@@ -6,20 +6,22 @@
     <header class="onboarding-header">
       <app-logo [size]="36" />
       @if (saved !== null) {
-        <h1 id="logging-title" #savedChoiceHeading tabindex="-1">Logging choice already saved</h1>
+        <h1 id="logging-title" #heading tabindex="-1">Logging choice already saved</h1>
         <p>
           {{ saved ? 'Your earlier choice to enable full logging was saved.' : 'Your earlier choice to keep billing-only logging was saved.' }}
-          You can review or change the logging level for each key in My Workspace.
+          You can review or change your developer key's logging level for <strong>{{ team()?.name }}</strong> in My Workspace.
         </p>
       } @else {
-        <h1 id="logging-title">Choose your logging level</h1>
-        <p id="logging-scope">This sets the default for your active developer keys that use billing-only logging.</p>
+        <h1 id="logging-title" #heading tabindex="-1">Choose your logging level</h1>
+        <p id="logging-scope">This sets the default for your own developer key in <strong>{{ team()?.name }}</strong>.</p>
       }
     </header>
 
     @if (saved !== null) {
       <div class="onboarding-actions">
-        <a class="btn-primary" routerLink="/my-workspace" [replaceUrl]="true">Open My Workspace</a>
+        <button type="button" class="btn-primary" (click)="continueAfterConflict()">
+          {{ pendingTeams().length ? 'Continue to next team' : 'Open My Workspace' }}
+        </button>
       </div>
     } @else {
       @if (error()) {

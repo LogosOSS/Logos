@@ -13,13 +13,12 @@ a Logos API key and the URL of the Logos instance.
 1. Open the Logos URL in a browser.
 2. Sign in with the configured identity provider.
 
-Logos offers a one-time choice when you sign in with an active developer key
-that uses billing-only logging.
+At sign-in, Logos offers a logging choice for each team where your developer
+key uses billing-only logging. Each choice applies to your own key in that team.
 
 - **Keep billing-only logging** keeps your current logging settings.
 - **Enable full logging** lets Logos store request and response content for
-  your active developer keys that use billing-only logging. Logos can replay
-  requests in benchmarks to test model settings.
+  that key. Logos can replay requests in benchmarks to test model settings.
 
 You can continue with either choice. To change logging for a key later, open
 **My Workspace** and select the logging level for that key.

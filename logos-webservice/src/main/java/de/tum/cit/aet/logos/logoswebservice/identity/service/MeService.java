@@ -39,7 +39,7 @@ public class MeService {
                 .map(t -> new TeamResponseDTO(t.getId(), t.getName()))
                 .toList();
             return new MeResponseDTO(user.getId(), user.getUsername(), user.getPrename(), user.getName(),
-                user.getEmail(), user.getRole(), teams, loggingOnboarding.isPending(userId));
+                user.getEmail(), user.getRole(), teams, loggingOnboarding.pendingTeams(userId));
         });
     }
 
