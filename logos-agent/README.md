@@ -829,11 +829,37 @@ The runner checks the queue every 5 minutes and ingests these feeds hourly:
   of material impact. This covers early vendor notices and infrastructure outside
   package catalogs, such as BMC, BIOS, or PVE advisories.
 
-On first start, feeds cover the previous 7 days. Feed outages are visible in the
-dashboard and do not advance the cursor. Advisory IDs deduplicate intake.
+On first start, feeds cover the previous 7 days, with a one-hour overlap.
+The start of each unfinished window is persisted before contacting the source,
+including on the first poll. Feed outages and partial pagination are visible in
+the dashboard and retain that window across retries and restarts. Only a fully
+completed poll advances the successful checkpoint. GitHub search dates truncate
+to whole seconds and include the boundary; advisory IDs deduplicate replays.
 Registering a repository queues existing incidents for that repository. Reports
 of ordinary low/medium findings are rejected. High findings need manual impact
 triage or confirmation of exploitation from KEV.
+
+Apply the webservice's migration 094 before updating the agent. For an older
+installation that has never successfully polled, the previous implementation
+did not retain the first attempted window. Recover its earliest required UTC
+timestamp from operational records; the current error alone may describe a
+later attempt. To queue an idempotent GitHub backfill, run this SQL against the
+management database with the psql variable `feed_since` set to that timestamp:
+
+```sql
+INSERT INTO security_feed_state (name, retry_since)
+VALUES ('github', :'feed_since'::timestamptz)
+ON CONFLICT (name) DO UPDATE SET
+    retry_since=LEAST(security_feed_state.retry_since, EXCLUDED.retry_since);
+```
+
+This only records an earlier pending boundary; it does not fabricate a successful
+poll or remove existing incidents. The next enabled feed poll replays the window
+and deduplicates its records, even if the last success was less than an hour ago.
+A narrower in-flight poll cannot clear a newly requested earlier boundary. The
+20-page limit still applies: an incomplete replay remains pending with a visible
+error instead of silently advancing. Changes to source metadata can advance an
+incident's revision and trigger reassessment during a backfill.
 
 Each repository has its own assessment, evidence, checked commit, next check,
 linked session, PR and status history. Analysis checks lockfiles, transitive
