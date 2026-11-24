@@ -13,4 +13,5 @@ export interface User {
   email: string;
   role: UserRole;
   teams: Team[];
+  logging_onboarding_pending?: boolean;
 }

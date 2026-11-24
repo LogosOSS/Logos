@@ -104,4 +104,5 @@
     <include file="liquibase/changelog/097_requested_model_license.xml"/>
     <include file="liquibase/changelog/098_model_license_approvals_nullable_user.xml"/>
     <include file="liquibase/changelog/099_requested_model_use_policy.xml"/>
+    <include file="liquibase/changelog/100_user_logging_onboarding.xml"/>
 </databaseChangeLog>

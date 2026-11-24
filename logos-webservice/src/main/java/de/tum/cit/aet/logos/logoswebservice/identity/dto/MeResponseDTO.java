@@ -9,5 +9,6 @@ public record MeResponseDTO(
     String name,
     String email,
     String role,
-    List<TeamResponseDTO> teams
+    List<TeamResponseDTO> teams,
+    boolean logging_onboarding_pending
 ) {}

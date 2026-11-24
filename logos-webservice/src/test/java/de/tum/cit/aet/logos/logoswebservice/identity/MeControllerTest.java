@@ -5,11 +5,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.jdbc.Sql;
 import org.springframework.test.web.servlet.MockMvc;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -33,6 +35,7 @@ import de.tum.cit.aet.logos.logoswebservice.TestJwt;
 class MeControllerTest {
 
     @Autowired MockMvc mvc;
+    @Autowired JdbcTemplate jdbc;
     @MockitoBean JwtDecoder jwtDecoder;
 
     @Test
@@ -47,7 +50,79 @@ class MeControllerTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.username").value("testuser"))
            .andExpect(jsonPath("$.role").value("app_developer"))
+           .andExpect(jsonPath("$.logging_onboarding_pending").value(true))
            .andExpect(jsonPath("$.user_id").isNumber());
+    }
+
+    @Test
+    void optInOnlyChangesActiveDeveloperKeysInTheUsersTeams() throws Exception {
+        jdbc.update("""
+            INSERT INTO api_keys (id, key_value, name, key_type, user_id, team_id, is_active, log) VALUES
+                (3010, 'test-app-key', 'app key', 'application', 1001, 2001, true, 'BILLING'),
+                (3011, 'test-disabled-key', 'disabled key', 'developer', 1001, 2001, false, 'BILLING'),
+                (3012, 'test-orphan-key', 'orphan key', 'developer', 1001, 2002, true, 'BILLING')
+            """);
+
+        submitLoggingChoice(true);
+
+        assertThat(keyLog(3001)).isEqualTo("FULL");
+        for (int untouchedKey : new int[] {3003, 3010, 3011, 3012}) {
+            assertThat(keyLog(untouchedKey)).isEqualTo("BILLING");
+        }
+        assertThat(jdbc.queryForObject(
+            "SELECT full_logging FROM user_logging_onboarding WHERE user_id = 1001", Boolean.class)).isTrue();
+        mvc.perform(get("/me").with(TestJwt.testUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.logging_onboarding_pending").value(false));
+
+        jdbc.update("UPDATE api_keys SET log = 'BILLING' WHERE id = 3001");
+        submitLoggingChoice(true);
+        assertThat(keyLog(3001)).isEqualTo("BILLING");
+    }
+
+    @Test
+    void declineKeepsBillingAndCannotBeOverwrittenByARepeatedSubmission() throws Exception {
+        submitLoggingChoice(false);
+        submitLoggingChoice(true);
+
+        assertThat(keyLog(3001)).isEqualTo("BILLING");
+        assertThat(jdbc.queryForObject(
+            "SELECT full_logging FROM user_logging_onboarding WHERE user_id = 1001", Boolean.class)).isFalse();
+        mvc.perform(get("/me").with(TestJwt.testUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.logging_onboarding_pending").value(false));
+    }
+
+    @Test
+    void requiresAuthenticationAndAnExplicitChoice() throws Exception {
+        mvc.perform(post("/me/logging-onboarding")
+                .contentType("application/json")
+                .content("{\"full_logging\":true}"))
+           .andExpect(status().isUnauthorized());
+        mvc.perform(post("/me/logging-onboarding").with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{}"))
+           .andExpect(status().isBadRequest());
+        assertThat(keyLog(3001)).isEqualTo("BILLING");
+    }
+
+    @Test
+    void doesNotOfferOnboardingWithoutAnEligibleKey() throws Exception {
+        jdbc.update("UPDATE api_keys SET is_active = false WHERE id = 3001");
+        mvc.perform(get("/me").with(TestJwt.testUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.logging_onboarding_pending").value(false));
+    }
+
+    private void submitLoggingChoice(boolean fullLogging) throws Exception {
+        mvc.perform(post("/me/logging-onboarding").with(TestJwt.testUser())
+                .contentType("application/json")
+                .content("{\"full_logging\":" + fullLogging + "}"))
+           .andExpect(status().isNoContent());
+    }
+
+    private String keyLog(int keyId) {
+        return jdbc.queryForObject("SELECT log::text FROM api_keys WHERE id = ?", String.class, keyId);
     }
 
     @Test

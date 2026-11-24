@@ -69,6 +69,16 @@ export class AuthService {
     }
   }
 
+  async completeLoggingOnboarding(fullLogging: boolean): Promise<void> {
+    const userId = this.currentUser()?.user_id;
+    await firstValueFrom(
+      this.http.post<void>('/api/me/logging-onboarding', { full_logging: fullLogging }),
+    );
+    this.currentUser.update((user) =>
+      user && user.user_id === userId ? { ...user, logging_onboarding_pending: false } : user,
+    );
+  }
+
   /** Redirects to Keycloak for an authorization-code (PKCE) login. */
   login(): void {
     void this.keycloak.login();

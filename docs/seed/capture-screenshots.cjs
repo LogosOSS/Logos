@@ -85,7 +85,14 @@ async function login(browser, user, dark = false) {
   await page.fill("#password", "password");
   await page.click("#kc-login");
   await page.waitForURL((u) => u.toString().startsWith(BASE), { timeout: 30000 });
-  await page.locator(".shell-layout").waitFor();
+  const shell = page.locator(".shell-layout");
+  const keepBilling = page.getByRole("radio", { name: "Keep billing-only logging" });
+  await shell.or(keepBilling).waitFor();
+  if (await keepBilling.isVisible()) {
+    await keepBilling.check();
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+  }
+  await shell.waitFor();
   return { ctx, page };
 }
 

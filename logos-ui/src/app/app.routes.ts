@@ -3,6 +3,7 @@ import { authGuard } from './core/auth/guards/auth.guard';
 import { roleGuard } from './core/auth/guards/role.guard';
 import { hasKeysGuard } from './core/auth/guards/has-keys.guard';
 import { hasTeamGuard } from './core/auth/guards/has-team.guard';
+import { hasLoggingOnboarding, requireLoggingOnboarding } from './core/auth/guards/logging-onboarding.guard';
 import { ALL_ROLES } from './shared/constants/roles';
 
 export const routes: Routes = [
@@ -18,8 +19,21 @@ export const routes: Routes = [
     loadComponent: () => import('./features/public-stats/public-stats').then(m => m.PublicStats),
   },
   {
+    path: 'onboarding',
+    canActivate: [authGuard],
+    children: [
+      {
+        path: '',
+        title: 'Request logging · Logos',
+        canActivate: [hasLoggingOnboarding],
+        loadComponent: () => import('./core/auth/pages/logging-onboarding/logging-onboarding').then(m => m.LoggingOnboarding),
+      },
+    ],
+  },
+  {
     path: '',
     canActivate: [authGuard],
+    canActivateChild: [requireLoggingOnboarding],
     loadComponent: () => import('./core/layout/shell/shell').then(m => m.Shell),
     children: [
       { path: 'settings', title: 'Account settings · Logos', loadComponent: () => import('./features/account-settings/account-settings').then(m => m.AccountSettings) },

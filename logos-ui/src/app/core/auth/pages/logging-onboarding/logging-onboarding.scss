@@ -1,0 +1,89 @@
+@use 'styles/glass' as *;
+
+.onboarding {
+  position: relative;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 4.5rem 1rem 2rem;
+  background: rgb(var(--shell-background));
+}
+
+.onboarding-card {
+  @include glass-surface;
+  width: 100%;
+  max-width: 36rem;
+  padding: clamp(1.25rem, 5vw, 2rem);
+  box-shadow: 0 2rem 5rem rgb(var(--shadow-color) / var(--opacity-border));
+}
+
+.onboarding-header {
+  margin-bottom: 1.5rem;
+
+  h1 {
+    margin: 0.75rem 0 0.5rem;
+    font-size: var(--font-size-2xl);
+    line-height: 1.2;
+  }
+
+  p {
+    margin: 0;
+  }
+}
+
+form,
+fieldset {
+  display: grid;
+  gap: 0.75rem;
+}
+
+fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+.logging-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.875rem;
+  border: 1px solid rgb(var(--color-outline-200) / var(--opacity-border));
+  border-radius: 0.75rem;
+  cursor: pointer;
+
+  &:has(input:checked) {
+    border-color: rgb(var(--nav-active-stroke) / var(--nav-active-stroke-opacity));
+    background: rgb(var(--nav-active-fill) / var(--nav-active-fill-opacity));
+  }
+
+  input {
+    appearance: auto;
+    flex: 0 0 auto;
+    margin-top: 0.25rem;
+    accent-color: rgb(var(--color-primary-500));
+  }
+
+  strong {
+    display: block;
+    margin-bottom: 0.25rem;
+  }
+}
+
+.onboarding-header p,
+.logging-option span span,
+.logging-note {
+  color: rgb(var(--color-typography-300));
+  line-height: var(--line-height-normal);
+}
+
+.logging-note {
+  margin: 0.25rem 0;
+  font-size: var(--font-size-sm);
+}
+
+.btn-primary {
+  min-height: 2.75rem;
+  justify-content: center;
+}

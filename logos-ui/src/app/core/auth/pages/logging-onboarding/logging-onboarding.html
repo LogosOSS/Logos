@@ -1,0 +1,47 @@
+<main class="onboarding">
+  <app-theme-toggle />
+
+  <section class="onboarding-card" aria-labelledby="logging-title">
+    <header class="onboarding-header">
+      <app-logo [size]="36" />
+      <h1 id="logging-title">Choose how Logos logs your requests</h1>
+      <p>This choice applies to your active developer keys that use billing-only logging.</p>
+    </header>
+
+    <form (submit)="$event.preventDefault(); complete()">
+      <fieldset aria-labelledby="logging-title" [disabled]="saving()">
+        <label class="logging-option">
+          <input type="radio" name="request-logging" [checked]="choice() === false"
+                 aria-labelledby="billing-label" aria-describedby="billing-details" (change)="choice.set(false)" />
+          <span>
+            <strong id="billing-label">Keep billing-only logging</strong>
+            <span id="billing-details">Logos stores usage and billing data.</span>
+          </span>
+        </label>
+
+        <label class="logging-option">
+          <input type="radio" name="request-logging" [checked]="choice() === true"
+                 aria-labelledby="full-label" aria-describedby="full-details" (change)="choice.set(true)" />
+          <span>
+            <strong id="full-label">Enable full logging</strong>
+            <span id="full-details">
+              Logos also stores request and response content, including prompts and generated answers.
+              Logos can replay requests in benchmarks to test model settings and help make similar requests
+              faster over time.
+            </span>
+          </span>
+        </label>
+      </fieldset>
+
+      <p class="logging-note">Both options let you continue using Logos. You can change logging per key in My Workspace.</p>
+
+      @if (error()) {
+        <app-error-message [message]="error()" />
+      }
+
+      <button type="submit" class="btn-primary" [disabled]="choice() === null || saving()">
+        {{ saving() ? 'Saving…' : 'Continue' }}
+      </button>
+    </form>
+  </section>
+</main>

@@ -47,7 +47,14 @@ setup('authenticate as a Logos admin', async ({ page }) => {
   // Back in the SPA, past the auth guard. The landing route depends on the
   // account's roles, so this waits for the authenticated shell to mount rather
   // than for one specific path.
-  await expect(page.locator('app-shell')).toBeVisible({ timeout: 30_000 });
+  const shell = page.locator('app-shell');
+  const keepBilling = page.getByRole('radio', { name: 'Keep billing-only logging' });
+  await expect(shell.or(keepBilling)).toBeVisible({ timeout: 30_000 });
+  if (await keepBilling.isVisible()) {
+    await keepBilling.check();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  }
+  await expect(shell).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('button', { name: /sign in with tum/i })).toHaveCount(0);
 
   await page.context().storageState({ path: STORAGE_STATE });
